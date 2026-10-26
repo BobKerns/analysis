@@ -1,0 +1,9 @@
+#!/bin/sh
+# Background scenario builds (#300): tell this worktree's builder to look
+# again, when this workspace opted in (sim builder install). Never blocks or
+# fails the git command.
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -f "$top/data/shared/state/builder/config.json" ] || exit 0
+[ -x "$top/.venv/bin/sim" ] || exit 0
+"$top/.venv/bin/sim" builder notify --quiet --data-dir "$top/data/shared/sim" >/dev/null 2>&1 &
+exit 0

@@ -163,7 +163,9 @@ Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only wa
 
 ### 8. Stamp-induced filename collisions
 
-Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` ([ADR-002](ADR-002-storage-schema.md) §File layout). If two runs collide on filename (sub-second invocations against an identical scenario), append `_<n>` starting at 2. The `simulation_run` row is the source of truth; the filename is for human convenience.
+Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` ([ADR-002](ADR-002-storage-schema.md) §File layout). Two runs of a scenario started in the same second would want the same name, so the timestamp takes `-<n>`, starting at 2 (`<timestamp>-2_<scenario>_<shortTreeId>`), as a batch folder's does. The name is claimed by creating the file exclusively, never by checking first, so two processes can't both get it (`locks.reserve_run_path`). Readers order runs by timestamp and then `<n>` (`locks.run_name_key`): plain name order would put `-2_` before `_`. The `simulation_run` row is the source of truth; the filename is for human convenience.
+
+A load rewrites the scenario's intent files in place (`state/intent/<scenario>.sqlite3`, its `base_case.sqlite3`), so `sim load` and `sim run` hold an exclusive lock on the scenario (`state/intent/.locks/<scenario>.lock`, an `flock`) from the load to the end of the run. A second build of the same scenario waits, saying once on stderr who holds it; other scenarios build alongside. Pruning (§10) takes no lock; it already leaves anything under ten minutes old alone.
 
 ### 9. Install and upgrade behavior
 
@@ -201,6 +203,19 @@ A run is a function of its code, its Python and its data (§1-2), all recorded i
 - for a batch, every member reached a final status and the batch has the scenario's own `ensemble_size` members (one made by `sim run --ensemble-size N` at another size isn't what `sim all` would make).
 
 A skipped scenario prints `unchanged since <run>; skipped`, and the summary counts them. `--force` reruns every scenario. A dirty tree is never trusted, on either side: its state is in no tree. A skipped scenario isn't reloaded either, so it doesn't become the current scenario (§4a). (`sim/freshness.py`.)
+
+### 12. Background builds (`sim builder`)
+
+A workspace pair (a code worktree and the data repo it links, §4) can keep every scenario's runs current in the background. One daemon per pair rebuilds whatever §11 says a rerun could change, so the background builds are what `sim all` would build.
+
+- **Opt-in, per workspace.** `sim builder install` checks that the pair names each other (the code worktree's `data/shared` is the data repo, and the data dir's `.analysis` names the code worktree), records it in the data repo's `state/builder/config.json`, and installs the data repo's hooks. `scripts/setup.sh` runs it when it links a data repo, except under CI or an agent. Template data isn't a git repo and can't opt in. `ANALYSIS_BUILDER=off` turns everything below off (the tests set it); `sim builder uninstall` opts out.
+- **Triggers.** `post-commit`, `post-checkout`, `post-merge` and `post-rewrite` hooks in both repos (the code repo's in `.githooks/`; the data repo's in its hooks directory, a stub that finds its pair through the committing worktree's `sim/.analysis`, chained after any hook already there) run `sim builder notify` in the background. It leaves a request and starts the daemon if none is running. A hook never blocks or fails the git command.
+- **The daemon.** Its files are in `state/builder/` (one per data worktree): `daemon.lock`, held for its life (at most one per workspace); `status.json`; `requests/`; `builder.log`. Each request makes it rebuild its queue from the trees as they are now, so a checkout flushes and rebuilds the queue, and an unchanged tree just recreates it. It builds one scenario at a time, each as a child `sim load <scenario>` under the scenario's lock (§8), which doesn't change the current scenario (§4a). Order: scenarios someone is waiting on, the current scenario, plain runs, then ensembles, then by name. It exits after its queue has been empty for two minutes.
+- **Code must match `main`.** It builds only while the code paths of §11 are committed and their trees equal the local `main` branch's (`ANALYSIS_BUILDER_MAIN` names another). Otherwise it is disabled: it builds nothing and nobody waits. Local `main`, not `origin/main`: a background fetch, or choosing not to pull, changes nothing.
+- **Stale builds stop.** A build whose code trees or scenario data tree no longer match is cancelled (its process group is killed; the partial run is left for §10) and requeued. A change to the code restarts the daemon, so it never builds with code it imported earlier. A scenario whose data scope is dirty waits.
+- **Failures.** A failed build is recorded with the code and data trees it ran with, and isn't retried until one of them changes.
+- **Readers wait.** `latest_run_path`, `latest_ensemble_batch` and `scenario_run_path` (the CLI's reports and the notebooks) first ask whether a build of the scenario is pending: queued or building, or stale by §11 while the code matches `main`. If so, they move it to the front, start the daemon if needed, and wait, printing a line and progress every 30 seconds. Ctrl-C gives up the wait and opens the latest existing run. `freshness` reads them with `wait=False`.
+- **Commands.** `sim builder status` (running or not, why it's disabled, the build in progress, the queue, scenarios waiting on dirty data, failures), `start`, `stop`, `notify`, `log`, `install`, `uninstall`.
 
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
@@ -249,3 +264,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#233](https://github.com/BobKerns/analysis/issues/233): a command that changes the current scenario, including by renaming or deleting it, says so (§4a).
 - [#282](https://github.com/BobKerns/analysis/issues/282): a template scenario read from the code repository is covered by `code_version`, not `scenario_tree_id` (§2).
 - [#298](https://github.com/BobKerns/analysis/issues/298): `sim all` skips a scenario whose latest run has the same code trees, Python and data tree, all clean, and reruns it with `--force` (new §11).
+- [#300](https://github.com/BobKerns/analysis/issues/300): run-file names collide-proof by exclusive create with a `-<n>` timestamp suffix, and a per-scenario build lock (§8); background builds (new §12).

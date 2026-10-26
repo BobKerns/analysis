@@ -31,6 +31,7 @@ carryforward
 carryforwards
 categoriser
 ccon
+CLAUDECODE
 clsname
 cmap
 collinearity
@@ -42,9 +43,11 @@ conftest
 corrcoef
 counterclock
 cpus
+CREAT
 Damodaran
 darkorange
 dasharray
+datarepo
 dataviz
 dateutil
 ddof
@@ -69,6 +72,7 @@ fontsize
 footgun
 framealpha
 frombuffer
+ftruncate
 gethostname
 getpid
 Ghostty
@@ -92,6 +96,7 @@ jupyterhub
 keepends
 kendalltau
 kernelspec
+killpg
 Kolmogorov
 kstest
 labelbottom
@@ -151,6 +156,7 @@ preflights
 preroll
 prio
 purelib
+pwrite
 pyeb
 pypi
 pytestmark
@@ -158,6 +164,8 @@ QQQX
 QSBS
 rcond
 rcpie
+RDONLY
+RDWR
 recategorize
 recomputable
 reconstructable
@@ -169,6 +177,7 @@ renderable
 repoints
 reprompts
 rerunnable
+rescan
 retarget
 reweighted
 ripwire
@@ -190,6 +199,7 @@ SHASUMS
 shellcheck
 Shiller
 sidefx
+signum
 Simons
 Smirnov
 Sobol
@@ -250,6 +260,7 @@ vmax
 vmin
 worktree
 worktrees
+WRONLY
 xdata
 xdate
 xdist

@@ -69,7 +69,7 @@ from analysis.sim.series_db import (
     pair_members,
     write_series_db,
 )
-from analysis.sim.locks import LockHolder, build_lock, reserve_run_path
+from analysis.sim.locks import BUILDER_CHILD_ENV, LockHolder, build_lock, reserve_run_path
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
@@ -414,6 +414,8 @@ def _make_current(data_dir: Path, name: str) -> None:
     """Record ``name`` as the current scenario, and say so on stderr when that
     changes it (#233): later commands only say ``Using scenario X``, which is
     easy to miss when X is not the one expected."""
+    if os.environ.get(BUILDER_CHILD_ENV):
+        return  # a background build (#300) never moves the user's current scenario
     previous = read_current_scenario(data_dir)
     if previous == name:
         return
@@ -12251,3 +12253,154 @@ def _walk_commands(command: click.Command, seen: set[int]) -> Iterable[click.Com
 for _command in _walk_commands(sim_group_command, set()):
     _wrap_to_ask_again(_command)
 
+
+@sim_group_command.group(name="builder")
+def builder_group() -> None:
+    """Background scenario builds (#300).
+
+    Once a workspace opts in (``sim builder install``, which
+    ``scripts/setup.sh`` runs), commits, checkouts, merges and rebases in
+    either repo start or poke a background builder that rebuilds every
+    scenario whose results could have changed. Opening a scenario's run waits
+    for a pending build of it. It builds only when the code is committed and
+    matches the local main branch. ANALYSIS_BUILDER=off turns it off.
+    """
+
+
+def _builder_data_dir(data_dir: Path | None) -> Path:
+    return _resolve_data_dir(data_dir).resolve()
+
+
+_BUILDER_DATA_DIR = click.option(
+    "--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+
+
+@builder_group.command(name="install")
+@_BUILDER_DATA_DIR
+def builder_install(data_dir: Path | None) -> None:
+    """Opt this workspace pair in: check the code worktree and the data repo
+    name each other, record the pair, and install the data repo's hooks."""
+    from analysis.sim import builder
+
+    try:
+        done = builder.install(_builder_data_dir(data_dir))
+    except ValueError as exc:
+        raise click.ClickException(f"not a workspace pair: {exc}") from None
+    for line in done:
+        click.echo(line)
+    click.echo(builder.notify(_builder_data_dir(data_dir)))
+
+
+@builder_group.command(name="uninstall")
+@_BUILDER_DATA_DIR
+def builder_uninstall(data_dir: Path | None) -> None:
+    """Opt this workspace out and stop its builder."""
+    from analysis.sim import builder
+
+    for line in builder.uninstall(_builder_data_dir(data_dir)):
+        click.echo(line)
+
+
+@builder_group.command(name="notify")
+@_BUILDER_DATA_DIR
+@click.option("--quiet", is_flag=True, default=False, help="Print nothing (for hooks).")
+def builder_notify(data_dir: Path | None, quiet: bool) -> None:
+    """Ask the builder to look for work, starting it if it isn't running.
+    The git hooks call this."""
+    from analysis.sim import builder
+
+    line = builder.notify(_builder_data_dir(data_dir))
+    if not quiet:
+        click.echo(line)
+
+
+@builder_group.command(name="start")
+@_BUILDER_DATA_DIR
+def builder_start(data_dir: Path | None) -> None:
+    """Start the builder now (same as ``notify``)."""
+    from analysis.sim import builder
+
+    click.echo(builder.notify(_builder_data_dir(data_dir)))
+
+
+@builder_group.command(name="stop")
+@_BUILDER_DATA_DIR
+def builder_stop(data_dir: Path | None) -> None:
+    """Stop the builder, cancelling the build in progress. The next commit
+    or opened run starts it again."""
+    import signal as signals
+
+    from analysis.sim import builder
+
+    paths = builder.BuilderPaths.for_data(_builder_data_dir(data_dir))
+    pid = builder.read_status(paths).get("pid")
+    if not builder.daemon_alive(paths) or not isinstance(pid, int):
+        click.echo("the builder isn't running")
+        return
+    os.kill(pid, signals.SIGTERM)
+    click.echo(f"stopping the builder (pid {pid})")
+
+
+@builder_group.command(name="run", hidden=True)
+@_BUILDER_DATA_DIR
+def builder_run(data_dir: Path | None) -> None:
+    """Run the builder in the foreground (what ``start`` launches)."""
+    from analysis.sim import builder
+
+    raise SystemExit(builder.run_daemon(
+        _builder_data_dir(data_dir), echo=lambda text: click.echo(text),
+    ))
+
+
+@builder_group.command(name="status")
+@_BUILDER_DATA_DIR
+def builder_status(data_dir: Path | None) -> None:
+    """What the builder is doing: running or not, why it's off, the build in
+    progress, the queue, what waits on dirty data, and recent failures."""
+    from analysis.sim import builder
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    if builder.read_config(paths) is None:
+        click.echo("background builds aren't installed here (sim builder install)")
+        return
+    if builder.switched_off():
+        click.echo("background builds are off here (ANALYSIS_BUILDER=off)")
+    trees, reason = builder.main_check()
+    if trees is None:
+        click.echo(f"disabled: {reason}")
+    status = builder.read_status(paths)
+    alive = builder.daemon_alive(paths)
+    state = f"{status.get('state', 'running')}, pid {status.get('pid')}" if alive else "not running"
+    click.echo(f"builder: {state}")
+    if alive:
+        current = status.get("current")
+        if current:
+            started = datetime.fromtimestamp(current["started"], UTC).strftime("%H:%M:%SZ")
+            click.echo(f"building: {current['scenario']} (since {started})")
+        queue = status.get("queue") or []
+        click.echo(f"queue: {', '.join(queue) if queue else '(empty)'}")
+    for name, why in sorted((status.get("waiting") or {}).items()):
+        click.echo(f"waiting: {name} ({why})")
+    for name, failed in sorted((status.get("failed") or {}).items()):
+        click.echo(f"failed: {name}: {failed.get('message')}")
+    click.echo(f"log: {paths.log}")
+
+
+@builder_group.command(name="log")
+@_BUILDER_DATA_DIR
+@click.option("-n", "lines", type=int, default=40, show_default=True, help="Lines to show.")
+def builder_log(data_dir: Path | None, lines: int) -> None:
+    """The end of the builder's log."""
+    from analysis.sim import builder
+
+    log = builder.BuilderPaths.for_data(_builder_data_dir(data_dir)).log
+    try:
+        text = log.read_text(errors="replace").splitlines()
+    except FileNotFoundError:
+        click.echo(f"(no log yet: {log})")
+        return
+    for line in text[-lines:]:
+        click.echo(line)

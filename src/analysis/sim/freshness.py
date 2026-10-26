@@ -74,8 +74,9 @@ def _trees(repo: Repo, commit: str) -> tuple[str, ...] | None:
 def _latest(runs_dir: Path, scenario: str) -> tuple[Path, list[Path]] | None:
     """The scenario's newest run: a run file, or a Monte Carlo batch, with
     the run files that make it up."""
-    run = latest_run_path(runs_dir, scenario)
-    batch = latest_ensemble_batch(runs_dir / scenario, mode="monte_carlo")
+    # Never waits on the background builder (#300), which asks this itself.
+    run = latest_run_path(runs_dir, scenario, wait=False)
+    batch = latest_ensemble_batch(runs_dir / scenario, mode="monte_carlo", wait=False)
     # Both names start with the same UTC timestamp format.
     if batch is not None and (run is None or batch.name >= run.name.split("_", 1)[0]):
         return batch, sorted(batch.glob("member_*.sqlite3"))

@@ -192,8 +192,13 @@ def find_state_dir(data_dir: Path | str | None, default: Path | str) -> Path:
     return (Path(data_dir).resolve().parent / default).resolve()
 
 
-def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path | None:
+def latest_run_path(
+    runs_dir: Path | str, scenario: str | None = None, *, wait: bool = True,
+) -> Path | None:
     """Most recent run file under ``runs_dir``, or ``None`` if there is none.
+
+    For a named ``scenario``, first waits for a pending background build of
+    it (#300, ``builder.await_fresh``) unless ``wait`` is False.
 
     Run filenames are ``<timestamp>[-N]_<scenario>_<data-version>.sqlite3``
     (``-N`` when runs collided in one second, #300), so they sort
@@ -203,6 +208,9 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
     ``higher_base``'s runs.
     """
     from analysis.sim.locks import run_name_key
+
+    if scenario and wait:
+        _await_fresh(Path(runs_dir), scenario)
 
     glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
     re_pattern = (re.compile(rf"[^_]+_{re.escape(scenario)}_[^_]*[.]sqlite3") if scenario
@@ -242,7 +250,15 @@ def batch_mode(batch_dir: Path) -> str:
     return "monte_carlo"
 
 
-def latest_ensemble_batch(recipe_dir: Path, mode: str | None = None) -> Path | None:
+def _await_fresh(runs_dir: Path, scenario: str) -> None:
+    from analysis.sim.builder import await_fresh
+
+    await_fresh(runs_dir, scenario)
+
+
+def latest_ensemble_batch(
+    recipe_dir: Path, mode: str | None = None, *, wait: bool = True,
+) -> Path | None:
     """The most recently generated batch subfolder under ``recipe_dir`` that
     holds at least one member run file or a batch manifest, or ``None`` if
     there isn't one.
@@ -257,9 +273,12 @@ def latest_ensemble_batch(recipe_dir: Path, mode: str | None = None) -> Path | N
     invisible.
 
     ``mode`` (ADR-007 §5) restricts the search to ``"monte_carlo"`` or
-    ``"sensitivity"`` batches; ``None`` accepts either.
+    ``"sensitivity"`` batches; ``None`` accepts either. Unless ``wait`` is
+    False, first waits for a pending background build of the recipe (#300).
     """
     recipe_dir = Path(recipe_dir)
+    if wait:
+        _await_fresh(recipe_dir.parent, recipe_dir.name)
     if not recipe_dir.is_dir():
         return None
     batches = sorted(p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode))

@@ -1,6 +1,7 @@
 #!/bin/sh
 # One-time repo setup: a C toolchain, uv, pinned Python, git hooks, deps,
-# notebook filter, Node.js and the lint tools, and the link to the data repo.
+# notebook filter, Node.js and the lint tools, the link to the data repo, and
+# background scenario builds (sim builder install; not under CI or an agent).
 # Safe to re-run; every step is idempotent.
 set -eu
 
@@ -251,5 +252,18 @@ scripts/link-data.sh
 # just sets this repo's identical values again.
 echo "Configuring merges in the data repo..."
 set_merge_config data/shared
+
+# Background scenario builds (#300): on by default for a person's own
+# workspace with a linked data repo; never under CI or an agent, whose
+# checkouts aren't the person's workspace. `sim builder install` opts in later.
+if [ "${ANALYSIS_NO_BUILDER-}" ] || [ "${CI-}" ] || [ "${CLAUDECODE-}" ] \
+        || [ "${CLAUDE_CODE_REMOTE-}" ] || [ "${AI_AGENT-}" ]; then
+    echo "Skipping background builds (CI, an agent, or ANALYSIS_NO_BUILDER);"
+    echo "  turn them on with: .venv/bin/sim builder install --data-dir data/shared/sim"
+elif [ -L data/shared ]; then
+    echo "Turning on background scenario builds..."
+    .venv/bin/sim builder install --data-dir data/shared/sim || \
+        echo "  (not turned on; see the message above)" >&2
+fi
 
 echo "Setup complete."

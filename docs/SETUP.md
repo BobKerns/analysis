@@ -53,6 +53,16 @@ Either way, this then gives you a working environment:
 source data/shared/sim/activate-analysis
 ```
 
+With a data repo linked, it then turns on background scenario builds
+(`sim builder install`; [ADR-004](architecture/ADR-004-reproducibility-and-activation.md) §12):
+commits, checkouts, merges and rebases in either repo rebuild, in the
+background, every scenario whose results could have changed, and opening a
+scenario's run waits for a pending build of it. It builds only while the code
+is committed and matches your local `main`. Setup skips this under CI or an
+agent (`CI`, `CLAUDECODE`, `CLAUDE_CODE_REMOTE` or `AI_AGENT` set) or with
+`ANALYSIS_NO_BUILDER=1`; `sim builder install` turns it on later, and
+`sim builder uninstall` off. `sim builder status` says what it's doing.
+
 ## What the script does, step by step (for reference or manual setup)
 
 1. Install a C toolchain: on Ubuntu, Debian or WSL,
@@ -109,6 +119,10 @@ source data/shared/sim/activate-analysis
     ```
     With no argument it asks for the path. Once `data/shared` exists, re-running
     it leaves it alone; remove `data/shared` to link a different data repo.
+10. Turn on background scenario builds, for a linked data repo:
+    ```sh
+    .venv/bin/sim builder install --data-dir data/shared/sim
+    ```
 
 ## Drawing chain flowcharts in the terminal
 
