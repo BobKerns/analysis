@@ -151,6 +151,31 @@ def test_recipes_pair_though_their_first_succeeded_members_differ(
     assert seeds.paired_with("other") == []
 
 
+def test_controls_read_the_last_finished_batch_while_one_builds(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+) -> None:
+    """Building the notebook controls doesn't wait for a background build
+    (#300), so a recipe's newest batch may have no finished member yet: a
+    member file whose run hasn't written its tables, under a provisional
+    manifest. The batch before it stands in."""
+    from analysis.sim.ensemble import member_run_statuses
+    from analysis.sim.notebook_ui.ensemble_widgets import (
+        RecipeSeeds, recipe_accounts, settled_batch,
+    )
+
+    seeded_ensemble_batch("baseline", 1)
+    finished = seeded_ensemble_batch("child", 1)
+    building = runs_dir / "child" / "2026-01-02T000000Z"
+    building.mkdir()
+    (building / "batch_manifest.json").write_text('{"mode": "monte_carlo"}')
+    (building / "member_0000.sqlite3").touch()
+    assert member_run_statuses(building) == {"member_0000": "running"}
+    assert settled_batch(runs_dir, "child") == (finished, [0, 1, 2])
+    assert RecipeSeeds(runs_dir, ["baseline", "child"]).paired_with("baseline") == ["child"]
+    accounts, lots, years = recipe_accounts(runs_dir, ["child"])
+    assert accounts and "child" in lots and years
+
+
 def test_a_batch_with_no_succeeded_member_gets_no_store(tmp_path: Path) -> None:
     """An empty store would be trusted, and read as an ensemble of no futures."""
     from analysis.sim.cli import _write_series_db

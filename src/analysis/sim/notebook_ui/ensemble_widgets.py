@@ -24,6 +24,7 @@ from analysis.sim.ensemble import (
     risk_summary,
     summary_with_percentiles,
 )
+from analysis.sim.loader import is_ensemble_batch
 from analysis.sim.ensemble_plots import (
     band_edges,
     ensemble_compare_figure,
@@ -107,6 +108,28 @@ def _account(choice: object) -> str | None:
     return choice if isinstance(choice, str) else None
 
 
+def settled_batch(runs_dir: Path, recipe: str) -> tuple[Path, list[int]] | None:
+    """``recipe``'s newest Monte Carlo batch with a succeeded member, and
+    the indexes of its succeeded members, without waiting for a background
+    build (#300). Building the controls reads this; only drawing a recipe
+    waits. A batch still being built may have no finished member yet, so
+    an older batch stands in for it."""
+    from analysis.sim.locks import run_name_key
+
+    recipe_dir = Path(runs_dir) / recipe
+    if not recipe_dir.is_dir():
+        return None
+    batches = sorted((p for p in recipe_dir.iterdir() if is_ensemble_batch(p, "monte_carlo")),
+                     key=lambda p: run_name_key(p.name), reverse=True)
+    for batch_dir in batches:
+        indexes = sorted(int(stem.removeprefix("member_"))
+                         for stem, status in member_run_statuses(batch_dir).items()
+                         if status == "succeeded")
+        if indexes:
+            return batch_dir, indexes
+    return None
+
+
 def recipe_accounts(
     runs_dir: Path, recipes: list[str],
 ) -> tuple[list[str], dict[str, dict[str, list[str]]], list[int]]:
@@ -114,25 +137,17 @@ def recipe_accounts(
     accounts and their lots (#170), single-lot ones included so a union
     across recipes misses none (a Lot dropdown shows for two or more), and
     every calendar year any of them runs over (#245), read from one member
-    of each recipe's latest batch, since a recipe's members share their
-    accounts and dates."""
+    of each recipe's latest batch with one (``settled_batch``), since a
+    recipe's members share their accounts and dates."""
     accounts: set[str] = set()
     lots: dict[str, dict[str, list[str]]] = {}
     years: set[int] = set()
     for recipe in recipes:
-        # Building the controls reads every recipe's latest batch as it is;
-        # only drawing a recipe waits for its background build (#300).
-        batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo",
-                                          wait=False)
-        if batch_dir is None:
+        settled = settled_batch(runs_dir, recipe)
+        if settled is None:
             continue
-        member = next(
-            (stem for stem, status in member_run_statuses(batch_dir).items()
-             if status == "succeeded"), None,
-        )
-        if member is None:
-            continue
-        con = RunConnection(batch_dir / f"{member}.sqlite3")
+        batch_dir, indexes = settled
+        con = RunConnection(batch_dir / f"member_{indexes[0]:04d}.sqlite3")
         try:
             accounts.update(con.account_kinds().index)
             lots[recipe] = con.lots_by_account(single=True)
@@ -153,17 +168,13 @@ class RecipeSeeds:
         self._indexes: dict[str, set[int]] = {}
         self._seeds: dict[tuple[str, int], int | None] = {}
         for recipe in recipes:
-            # Without waiting for builds (#300): a rebuild keeps the
-            # recipe's seed, so pairing read from the batch on hand holds.
-            batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo",
-                                              wait=False)
-            if batch_dir is None:
+            # A rebuild keeps the recipe's seed, so pairing read from the
+            # batch on hand holds for the one being built (#300).
+            settled = settled_batch(runs_dir, recipe)
+            if settled is None:
                 continue
-            self._batches[recipe] = batch_dir
-            self._indexes[recipe] = {
-                int(stem.removeprefix("member_"))
-                for stem, status in member_run_statuses(batch_dir).items()
-                if status == "succeeded"}
+            self._batches[recipe], indexes = settled
+            self._indexes[recipe] = set(indexes)
 
     def _seed(self, recipe: str, index: int) -> int | None:
         key = (recipe, index)
