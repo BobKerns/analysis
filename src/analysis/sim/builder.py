@@ -38,6 +38,7 @@ import fcntl
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -331,7 +332,7 @@ class _Daemon:
         self.data_dir = data_dir.resolve()
         self.paths = BuilderPaths.for_data(self.data_dir)
         self.echo = echo
-        self.writer = builder_log.LogWriter(self.paths.log_dir, on_new_day=self.prune_logs)
+        self.writer = builder_log.LogWriter(self.paths.log_dir, on_new_day=self.new_day)
         self.queue: list[str] = []
         self.first: list[str] = []
         # Builds preempted for a scenario someone is waiting on: next in line.
@@ -357,6 +358,26 @@ class _Daemon:
 
     def log(self, text: str) -> None:
         self.echo(self.writer.event(text))
+
+    def new_day(self) -> None:
+        self.follow_stderr()
+        self.prune_logs()
+
+    def follow_stderr(self) -> None:
+        """When this daemon's stderr is a log file (as spawn_daemon starts
+        it), point it at today's, so a traceback lands beside the records it
+        follows, not in the file of the day the daemon started."""
+        try:
+            if not stat.S_ISREG(os.fstat(2).st_mode):
+                return  # a terminal (`sim builder run` by hand) or nothing
+            path = builder_log.file_for(self.paths.log_dir, datetime.now())
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        except OSError:
+            return
+        sys.stderr.flush()
+        os.dup2(fd, 2)
+        os.close(fd)
 
     def prune_logs(self) -> None:
         """Old log files, by ``.retention.yaml``'s ``logs:`` rules."""
@@ -474,9 +495,9 @@ class _Daemon:
         build = self.build
         if build is None:
             return
-        self.log(f"cancelling {build.scenario}: {why}")
         _kill(build.process)
-        build.drain()
+        build.drain()  # the rest of its output stays under its `building` record
+        self.log(f"cancelled {build.scenario}: {why}")
         self.build = None
 
     def start_next(self, trees: tuple[str, ...]) -> None:

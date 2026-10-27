@@ -73,6 +73,7 @@ fontsize
 footgun
 framealpha
 frombuffer
+fstat
 ftruncate
 gethostname
 getpid

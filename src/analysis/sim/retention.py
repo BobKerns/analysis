@@ -27,7 +27,7 @@ included), and so is each scenario's newest successful run and batch. A
 missing or empty section prunes nothing of that kind.
 
 ``logs`` rules rank the builder's daily log files (``state/builder/logs/``)
-newest first, by their last write; the daemon applies them as it starts and
+newest first by the date in their names, aged from the end of that day; the daemon applies them as it starts and
 each time it starts a new day's file (``builder_log.prune_logs``), and the
 newest file is always kept.
 """

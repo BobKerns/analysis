@@ -98,17 +98,13 @@ def test_a_day_change_starts_a_new_file_and_the_files_read_as_one_log(builder_di
     writer.output("before midnight")
     writer.event("built base (1s)", _at(0))
     writer.output("after")  # follows its record into today's file
-    legacy = builder_dir / "builder.log"
-    legacy.write_text("2020-01-01 00:00:00 started (pid 1)\nraw old output\n")
     files = blog.log_files(builder_dir)
-    assert [f.name for f in files] == ["builder.log", f"builder-{yesterday:%Y-%m-%d}.log",
+    assert [f.name for f in files] == [f"builder-{yesterday:%Y-%m-%d}.log",
                                        f"builder-{datetime.now():%Y-%m-%d}.log"]
     assert days == ["new"]
     records = blog.read_records(builder_dir)
-    assert [r.text for r in records] == ["started (pid 1)", "building base", "built base (1s)"]
-    # A pre-#314 log's raw lines are build output: shown only with -v.
-    assert records[0].output() == ["raw old output"] and records[0].always() == []
-    assert records[2].body == ["  after"]
+    assert [r.text for r in records] == ["building base", "built base (1s)"]
+    assert records[0].body == ["  before midnight"] and records[1].body == ["  after"]
 
 
 def test_logs_rules_prune_old_files_and_keep_the_newest(builder_dir: Path) -> None:
@@ -124,7 +120,9 @@ def test_logs_rules_prune_old_files_and_keep_the_newest(builder_dir: Path) -> No
     doomed = blog.plan_log_prune(builder_dir, rules)
     assert len(doomed) == 7 and blog.file_for(log_dir, datetime.now()) not in doomed
     rules = parse_retention("logs:\n  - since: 5 days\n", base=builder_dir).logs
-    assert len(blog.plan_log_prune(builder_dir, rules)) == 5
+    # Aged from the end of each file's day: the one from 5 days ago ended
+    # within the last 5 days, the one from 6 days ago didn't.
+    assert len(blog.plan_log_prune(builder_dir, rules)) == 4
     assert blog.plan_log_prune(builder_dir, None) == []  # no section: keep all
 
 
@@ -174,3 +172,52 @@ def test_all_cannot_be_combined_with_a_limit(test_data_dir: Path) -> None:
     result = CliRunner().invoke(main, ["sim", "builder", "log", "--data-dir", str(test_data_dir),
                                        "-a", "-n", "3"])
     assert result.exit_code == 2 and "--all" in result.output
+
+
+def test_retention_ranks_log_files_by_the_date_in_their_names(builder_dir: Path) -> None:
+    log_dir = builder_dir / "logs"
+    log_dir.mkdir(parents=True)
+    today = blog.file_for(log_dir, datetime.now())
+    yesterday = blog.file_for(log_dir, datetime.now() - timedelta(days=1))
+    older = blog.file_for(log_dir, datetime.now() - timedelta(days=2))
+    for path in (today, yesterday, older):
+        path.write_text("x\n")
+    # A late write to an older file (a build begun before midnight) doesn't
+    # move it up: it ranks by its name.
+    then = time.time() - 86400 * 5
+    os.utime(yesterday, (then, then))
+    os.utime(older, None)
+    rules = parse_retention("logs:\n  - keep: 2\n", base=builder_dir).logs
+    assert blog.plan_log_prune(builder_dir, rules) == [older]
+
+
+def test_lines_before_a_files_first_event_are_dated_by_its_last_write(
+    builder_dir: Path, test_data_dir: Path,
+) -> None:
+    path = blog.file_for(builder_dir / "logs", datetime.now())
+    path.parent.mkdir(parents=True)
+    path.write_text("Traceback (most recent call last):\nImportError: boom\n")
+    assert _log(data_dir=test_data_dir) == ["Traceback (most recent call last):",
+                                            "ImportError: boom"]
+
+
+def test_follow_counts_the_output_of_a_build_already_running(builder_dir: Path) -> None:
+    writer = blog.LogWriter(builder_dir / "logs")
+    writer.event("building base", _at(1))
+    writer.output("written before -f")
+    seen: list[str] = []
+    done = threading.Event()
+    thread = threading.Thread(target=blog.follow, args=(builder_dir, seen.append),
+                              kwargs={"verbose": False, "stop": done.is_set, "poll": 0.01})
+    thread.start()
+    try:
+        time.sleep(0.05)
+        writer.output("after")
+        writer.event("base failed (exit 1, 1s)", _at(0))
+        deadline = time.monotonic() + 5
+        while len(seen) < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        done.set()
+        thread.join(timeout=5)
+    assert seen[1:] == ["  ... last 2 line(s) of its output:", "  written before -f", "  after"]

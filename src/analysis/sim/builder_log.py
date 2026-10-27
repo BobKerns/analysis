@@ -10,7 +10,7 @@ it follows and is shown even without ``-v``.
 A new file is started each day (local time, like the timestamps),
 ``state/builder/logs/builder-YYYY-MM-DD.log``, switched only at an event so
 a record never straddles two files; read together, oldest first, they are
-the log. A ``builder.log`` from before #314 is read as its oldest part. The
+the log. The
 ``logs:`` section of ``.retention.yaml`` prunes old files (ADR-004 §10).
 """
 
@@ -44,7 +44,6 @@ __all__ = [
 ]
 
 INDENT = "  "
-LEGACY_NAME = "builder.log"
 # Lines of a failed build's output shown under its failure without -v.
 FAILED_TAIL = 10
 
@@ -63,16 +62,11 @@ def file_for(log_dir: Path, now: datetime) -> Path:
 
 
 def log_files(builder_dir: Path) -> list[Path]:
-    """The log's files, oldest first: a pre-#314 ``builder.log``, then the
-    daily files by date."""
-    files = []
-    legacy = builder_dir / LEGACY_NAME
-    if legacy.is_file():
-        files.append(legacy)
+    """The log's daily files, oldest first."""
     log_dir = builder_dir / "logs"
-    if log_dir.is_dir():
-        files.extend(sorted(p for p in log_dir.iterdir() if _FILE.match(p.name) and p.is_file()))
-    return files
+    if not log_dir.is_dir():
+        return []
+    return sorted(p for p in log_dir.iterdir() if _FILE.match(p.name) and p.is_file())
 
 
 class LogWriter:
@@ -129,10 +123,9 @@ class LogWriter:
 class Record:
     """One event line and the lines after it, up to the next event."""
 
-    at: datetime | None  # None: lines before a file's first event
+    at: datetime | None  # lines before a file's first event: its last write
     header: str
     body: list[str] = field(default_factory=list)
-    legacy: bool = False  # from a pre-#314 builder.log: its raw lines are output
 
     @property
     def text(self) -> str:
@@ -140,20 +133,23 @@ class Record:
         return match[2] if match else self.header
 
     def output(self) -> list[str]:
-        """The build-output lines (indented, or anything in a legacy file)."""
-        return [ln for ln in self.body if self.legacy or _indented(ln)]
+        """The build-output lines (the indented ones)."""
+        return [ln for ln in self.body if _indented(ln)]
 
     def always(self) -> list[str]:
         """Body lines shown even without -v: unindented ones, which only the
         daemon's own stderr (a traceback) writes."""
-        return [] if self.legacy else [ln for ln in self.body if ln.strip() and not _indented(ln)]
+        return [ln for ln in self.body if ln.strip() and not _indented(ln)]
 
 
 def _indented(line: str) -> bool:
     return line[:1].isspace()
 
 
-def _parse(lines: Iterable[str], legacy: bool) -> Iterator[Record]:
+def _parse(lines: Iterable[str], written: datetime | None = None) -> Iterator[Record]:
+    """Records of one file. Lines before its first event (a traceback the
+    daemon wrote before it could log anything) are dated ``written``, the
+    file's last write, so a time window still finds them."""
     record: Record | None = None
     for line in lines:
         line = line.rstrip("\n")
@@ -161,10 +157,10 @@ def _parse(lines: Iterable[str], legacy: bool) -> Iterator[Record]:
         if match:
             if record is not None:
                 yield record
-            record = Record(datetime.strptime(match[1], _STAMP_FORMAT), line, legacy=legacy)
+            record = Record(datetime.strptime(match[1], _STAMP_FORMAT), line)
         elif record is None:
             if line.strip():
-                record = Record(None, line, legacy=legacy)
+                record = Record(written, line)
         else:
             record.body.append(line)
     if record is not None:
@@ -177,9 +173,10 @@ def read_records(builder_dir: Path) -> list[Record]:
     for path in log_files(builder_dir):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
+            written = datetime.fromtimestamp(path.stat().st_mtime)
         except OSError:
             continue
-        out.extend(_parse(text.splitlines(), legacy=path.name == LEGACY_NAME))
+        out.extend(_parse(text.splitlines(), written=written))
     return out
 
 
@@ -222,6 +219,14 @@ def follow(
     pending = ""
     tails: dict[str, deque[str]] = {}
     building: str | None = None
+    # A build already running when -f starts: its output so far counts
+    # toward the tail shown if it fails.
+    records = read_records(builder_dir)
+    if records:
+        started = _BUILDING.match(records[-1].text)
+        if started:
+            building = started[1]
+            tails[building] = deque(records[-1].output(), maxlen=FAILED_TAIL)
 
     def show(line: str) -> None:
         nonlocal building
@@ -275,8 +280,11 @@ def follow(
 def plan_log_prune(
     builder_dir: Path, rules: tuple[Rule, ...] | None, *, now: datetime | None = None,
 ) -> list[Path]:
-    """Log files the ``logs:`` rules would delete. The newest file is always
-    kept; files are ranked newest first, ``made`` being their last write."""
+    """Log files the ``logs:`` rules would delete. Files are ranked newest
+    first by the date in their name, and a file's age is from the end of
+    that day (Bob: a late write to an older file is from a build that
+    started that day, so it belongs to that day). The newest file is always
+    kept."""
     if rules is None:
         return []
     now = now or datetime.now(UTC)
@@ -285,13 +293,16 @@ def plan_log_prune(
     for rank, path in enumerate(files):
         if rank == 0:
             continue
-        try:
-            made = datetime.fromtimestamp(path.stat().st_mtime, UTC)
-        except OSError:
-            continue
-        if not any(rule.keeps(rank, made, now) for rule in rules):
+        if not any(rule.keeps(rank, _file_end(path), now) for rule in rules):
             doomed.append(path)
     return doomed
+
+
+def _file_end(path: Path) -> datetime:
+    """The latest a daily file's records can be from: the end of its (local) day."""
+    match = _FILE.match(path.name)
+    assert match is not None  # log_files lists only daily files
+    return (datetime.strptime(match[1], "%Y-%m-%d") + timedelta(days=1)).astimezone(UTC)
 
 
 def prune_logs(data_dir: Path, builder_dir: Path, *, now: datetime | None = None) -> list[Path]:

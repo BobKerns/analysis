@@ -511,3 +511,23 @@ def test_a_builds_output_is_logged_indented_under_its_record(
     assert records[0].body == ["  loading", "  oops"]
     assert records[1].text.startswith(f"{name} failed (exit 3, ")
     assert "sim builder log" in daemon.failed[name]["message"]
+
+
+def test_a_cancelled_builds_output_stays_under_its_record(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import builder_log
+
+    monkeypatch.setattr(builder, "_sim_executable", lambda: [
+        "sh", "-c", 'echo "started"; sleep 30', "sim"])
+    daemon.scan()
+    name = daemon.queue[0]
+    daemon.start_next(("t1",))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not any(
+            r.body for r in builder_log.read_records(daemon.paths.dir)):
+        time.sleep(0.02)
+    daemon.cancel("test")
+    records = builder_log.read_records(daemon.paths.dir)
+    assert [r.text for r in records] == [f"building {name}", f"cancelled {name}: test"]
+    assert records[0].body == ["  started"] and records[1].body == []
