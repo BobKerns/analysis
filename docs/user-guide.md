@@ -708,10 +708,14 @@ The table supplies the spread. `vary_low`, `vary_high` and `vary_mode` stay
 blank. The person needs a `sex` (`f` or `m`) in `persons.csv`, which `sim
 person edit <id> --sex f` sets.
 
-A person can have another country's table: `persons.csv`'s `life_table`
-names an aux `life_table__<name>.csv`, and blank reads `life_table.csv`.
-The templates ship `jp`, Japan's 2023 table, which `sim person edit <id>
---life-table jp` picks. Use a country's own table rather than a later
+A lifespan can read another country's table: `lifespan.csv`'s optional
+`life_table` column names an aux `life_table__<name>.csv`, and blank reads
+`life_table.csv`. The templates ship `jp`, Japan's 2023 table, which `sim
+person lifespan set <id> 90 --vary life_table --life-table jp` picks. It is
+per scenario, like the age, so one scenario (or a mix-in) can try another
+table and another median, to compare. `scripts/blend_life_tables.py` builds
+a table between two, such as one for someone who has lived in both
+countries. Use a country's own table rather than a later
 `age_at_death` on the US one. The set-forward moves the table's median but
 keeps its spread, and the US tail is fatter: for a woman alive at 60, with
 the median put at Japan's (about 90), the shifted US table gives about a

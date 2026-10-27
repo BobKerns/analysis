@@ -29,7 +29,6 @@ CREATE TABLE person (
     display     TEXT NOT NULL,
     birthdate   TEXT NOT NULL,
     sex         TEXT,  -- #222: 'f' or 'm', or NULL; a life_table lifespan needs it
-    life_table  TEXT,  -- #315: an aux life_table__<name>.csv's name; NULL for life_table.csv
     role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
 );
@@ -348,6 +347,8 @@ CREATE TABLE person_lifespan (
     -- #222: a life_table lifespan's set-forward in years (negative is a
     -- set-back), solved at load so the table's median is age_at_death.
     life_table_set_forward REAL,
+    -- #315: the aux life_table__<name>.csv's name; NULL for life_table.csv
+    life_table TEXT,
     PRIMARY KEY (scenario_id, person)
 );
 

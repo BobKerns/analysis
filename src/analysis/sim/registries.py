@@ -607,10 +607,8 @@ DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
 
 # ADR-003 §4.1 and §4.9.
 PERSONS_CSV_HEADER: tuple[str, ...] = (
-    "id", "display", "birthdate", "sex", "life_table", "role", "meta_json",
+    "id", "display", "birthdate", "sex", "role", "meta_json",
 )
-# #315: persons.csv `life_table` names the aux life_table__<name>.csv a
-# person's lifespan reads; blank (or no such column) is life_table.csv.
 # #222: persons.csv `sex`, which picks a life table's column. Optional (an
 # older persons.csv has no such column), but required of a person with a
 # `life_table` lifespan.
@@ -618,8 +616,11 @@ PERSON_SEXES: tuple[str, ...] = ("f", "m")
 LIFE_TABLE_Q_COLUMNS: dict[str, str] = {"f": "q_female", "m": "q_male"}
 LIFESPAN_CSV_HEADER: tuple[str, ...] = (
     "person", "age_at_death", "vary_distribution", "vary_low", "vary_high", "vary_mode",
-    "vary_correlate_with", "vary_correlation",
+    "vary_correlate_with", "vary_correlation", "life_table",
 )
+# #315: lifespan.csv `life_table` names the aux life_table__<name>.csv the
+# person's age is read against in this scenario; blank (or no such column)
+# is life_table.csv. Per scenario, so scenarios can compare tables.
 
 # #221: a lifespan varies by age, uniform or triangular; #222 adds
 # `life_table`, drawn from aux life_table.csv around a median of

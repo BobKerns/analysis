@@ -200,18 +200,17 @@ def test_a_persons_csv_without_a_sex_column_still_loads(
 
 def test_a_named_life_table_is_read_for_that_person(
     write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
-    set_life_table: Callable[[str, str], None],
 ) -> None:
     write_lifespans("alice,90,life_table,,,,,", "bill,84,life_table,,,,,")
     us = _distribution(load_test_copy().intent_path, "alice")
-    set_life_table("alice", "jp")
+    write_lifespans("alice,90,life_table,,,,,,jp", "bill,84,life_table,,,,,")
 
     recipe = load_test_copy().intent_path
     jp, bill = _distribution(recipe, "alice"), _distribution(recipe, "bill")
 
     assert sqlite3.connect(recipe).execute(
-        "SELECT id, life_table FROM person ORDER BY id").fetchall() == [
-        ("alice", "jp"), ("bill", None), ("joint", None)]
+        "SELECT person, life_table FROM person_lifespan ORDER BY person").fetchall() == [
+        ("alice", "jp"), ("bill", None)]
     assert jp.central() == us.central() == 90
     # Japan's own table has a thinner tail than the US one read younger.
     assert jp.quantile(0.95) < us.quantile(0.95) - 1
@@ -219,18 +218,18 @@ def test_a_named_life_table_is_read_for_that_person(
 
 
 def test_a_named_life_table_must_be_in_the_lineage(
-    load_test_copy: Callable[[], LoadResult], set_life_table: Callable[[str, str], None],
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    set_life_table("bill", "xx")
+    write_lifespans("bill,84,,,,,,,xx")  # a fixed age too: `sim person show` reads the table
 
     with pytest.raises(LoadError, match=r"life_table 'xx' needs aux/life_table__xx\.csv"):
         load_test_copy()
 
 
 def test_a_life_table_name_must_be_a_plain_name(
-    load_test_copy: Callable[[], LoadResult], set_life_table: Callable[[str, str], None],
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    set_life_table("bill", "../JP")
+    write_lifespans("bill,84,life_table,,,,,,../JP")
 
     with pytest.raises(LoadError, match="life_table must name an aux"):
         load_test_copy()
@@ -366,14 +365,31 @@ def test_person_edit_sets_the_sex(test_data_dir: Path) -> None:
     assert "sex must be one of" in refused.output
 
 
-def test_person_edit_sets_the_life_table(test_data_dir: Path) -> None:
-    result = _sim(test_data_dir, "person", "edit", "alice", "--life-table", "jp")
+def test_lifespan_set_takes_a_life_table_per_scenario(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    result = _sim(test_data_dir, "person", "lifespan", "set", "alice", "90",
+                  "--vary", "life_table", "--life-table", "jp", "--scenario", "retire_alice")
     assert result.exit_code == 0, result.output
-    assert "alice,Alice (fake),1965-03-15,f,jp,primary," in (test_data_dir / "persons.csv").read_text()
+    assert "age 90 (life_table, jp table)" in result.output
+    assert "alice,90,life_table,,,,,,jp" in retire_alice_csv("lifespan.csv").read_text()
 
-    cleared = _sim(test_data_dir, "person", "edit", "alice", "--life-table", "")
+    cleared = _sim(test_data_dir, "person", "lifespan", "set", "alice", "--life-table", "",
+                   "--scenario", "retire_alice")
     assert cleared.exit_code == 0, cleared.output
-    assert "alice,Alice (fake),1965-03-15,f,,primary," in (test_data_dir / "persons.csv").read_text()
+    assert "alice,90,life_table,,,,,," in retire_alice_csv("lifespan.csv").read_text()
+
+
+def test_lifespan_set_asks_for_the_life_table_when_guided(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "person", "lifespan", "set", "alice", "--scenario", "retire_alice",
+        "--data-dir", str(test_data_dir)], input="90\nlife_table\n\njp\n")
+
+    assert result.exit_code == 0, result.output
+    assert "life table (jp; blank for the default)" in result.output
+    assert "alice,90,life_table,,,,,,jp" in retire_alice_csv("lifespan.csv").read_text()
 
 
 # ---------- the extractors ----------
@@ -433,3 +449,18 @@ def test_the_extractor_reads_an_hld_table_and_extends_its_open_interval(repo_roo
     assert float(tables["male"][108]) == pytest.approx(gompertz(108), abs=0.01)
     female = [float(tables["female"][age]) for age in range(100, 110)]
     assert female == sorted(female)  # the death rate keeps rising
+
+
+def test_the_blend_averages_hazards_by_weight(repo_root: Path) -> None:
+    import runpy
+
+    blend = runpy.run_path(str(repo_root / "scripts" / "blend_life_tables.py"))["blend"]
+    a = {0: {"q_female": 0.1, "q_male": 0.2}, 1: {"q_female": 0.5, "q_male": 0.5}}
+    b = {0: {"q_female": 0.3, "q_male": 0.2}}
+
+    mixed = blend([(a, 3), (b, 1)])
+
+    hazard = 0.75 * -math.log(0.9) + 0.25 * -math.log(0.7)
+    assert mixed[0]["q_female"] == pytest.approx(1 - math.exp(-hazard))
+    assert mixed[0]["q_male"] == pytest.approx(0.2)
+    assert mixed[1] == {"q_female": 1.0, "q_male": 1.0}  # past b's last age

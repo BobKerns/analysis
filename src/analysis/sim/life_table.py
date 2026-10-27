@@ -118,12 +118,13 @@ def life_table_in(
 
 
 def person_table(con: sqlite3.Connection, person: str) -> str | None:
-    """The life table ``person`` names in persons.csv (#315), or None for the
-    default; None too in a file from before the column."""
-    columns = {row[1] for row in con.execute("PRAGMA table_info(person)")}
+    """The life table ``person``'s lifespan.csv row names (#315), or None for
+    the default: no row, a blank cell, or a file from before the column."""
+    columns = {row[1] for row in con.execute("PRAGMA table_info(person_lifespan)")}
     if "life_table" not in columns:
         return None
-    found = con.execute("SELECT life_table FROM person WHERE id = ?", (person,)).fetchone()
+    found = con.execute(
+        "SELECT life_table FROM person_lifespan WHERE person = ?", (person,)).fetchone()
     return (found[0] or None) if found else None
 
 

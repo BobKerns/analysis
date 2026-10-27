@@ -211,11 +211,9 @@ def test_the_terminal_figure_leaves_room_for_the_prompt(monkeypatch: pytest.Monk
 
 def test_person_show_reads_and_names_a_persons_own_table(
     test_data_dir: Path, write_lifespans: Callable[..., None],
-    set_life_table: Callable[[str, str], None],
 ) -> None:
-    """#315: a person whose persons.csv names a life table is drawn from it."""
-    write_lifespans("alice,90,life_table,,,,,")
-    set_life_table("alice", "jp")
+    """#315: a person whose lifespan names a life table is drawn from it."""
+    write_lifespans("alice,90,life_table,,,,,,jp")
 
     result = _sim(test_data_dir, "alice")
 

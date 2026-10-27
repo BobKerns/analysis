@@ -123,7 +123,6 @@ CREATE TABLE person (
     display     TEXT NOT NULL,
     birthdate   TEXT NOT NULL,
     sex         TEXT,  -- 'f' or 'm', or NULL; a life_table lifespan needs it
-    life_table  TEXT,  -- an aux life_table__<name>.csv's name; NULL for life_table.csv
     role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
 );
@@ -441,6 +440,8 @@ CREATE TABLE person_lifespan (
     -- a life_table lifespan's set-forward in years (negative is a set-back),
     -- solved at load so the table's median is age_at_death
     life_table_set_forward REAL,
+    -- the aux life_table__<name>.csv's name (#315); NULL for life_table.csv
+    life_table TEXT,
     PRIMARY KEY (scenario_id, person)
 );
 
@@ -959,4 +960,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#280](https://github.com/BobKerns/analysis/issues/280): `calendar_event.vary_process_start` (Intent layer DDL; schema 46).
 - [#281](https://github.com/BobKerns/analysis/issues/281): `calendar_event.date_refs_json`, for dates written relative to a `date_marker` (Intent layer DDL; schema 47).
 - [#291](https://github.com/BobKerns/analysis/issues/291): `calendar_event.vary_resume`, for a return row that puts back what governed its series (Intent layer DDL; schema 48).
-- [#315](https://github.com/BobKerns/analysis/issues/315): `person.life_table`, the life table a person's lifespan reads (Intent layer DDL; schema 49).
+- [#315](https://github.com/BobKerns/analysis/issues/315): `person_lifespan.life_table`, the life table a scenario reads a person's lifespan against (Intent layer DDL; schema 49).

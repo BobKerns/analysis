@@ -3096,14 +3096,18 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
 })
 
 
+# lifespan.csv's life_table (#315) is optional too.
+_BACKFILLABLE_COLUMNS = _BACKFILLABLE_CALENDAR_COLUMNS | {"life_table"}
+
+
 def _append_csv_row(path: Path, header: tuple[str, ...],
                     row: dict[str, str], *, replace: int | None = None) -> None:
     """Append a row to a CSV, aligning columns by name via pandas. With
     ``replace``, overwrite that data row (0-based) instead.
 
     If the file exists, its header must contain every column of ``header``
-    except the backfillable ones (currently just calendar.csv's ADR-006
-    additions), which are added blank on every existing row instead; this
+    except the backfillable ones (calendar.csv's ADR-006 additions and
+    lifespan.csv's life_table), which are added blank on every existing row instead; this
     still catches real schema drift rather than silently writing misaligned
     columns.
     """
@@ -3112,7 +3116,7 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         existing = list(df.columns)
         missing = [c for c in header if c not in existing]
-        not_backfillable = [c for c in missing if c not in _BACKFILLABLE_CALENDAR_COLUMNS]
+        not_backfillable = [c for c in missing if c not in _BACKFILLABLE_COLUMNS]
         if not_backfillable:
             raise click.ClickException(
                 f"CSV header mismatch in {path}\n"
@@ -11253,9 +11257,6 @@ def _read_persons(path: Path) -> pd.DataFrame:
     if "sex" not in df.columns and "birthdate" in df.columns:
         # #222 added sex; a persons.csv from before then gains it, blank.
         df.insert(list(df.columns).index("birthdate") + 1, "sex", "")
-    if "life_table" not in df.columns and "sex" in df.columns:
-        # #315 added life_table, likewise.
-        df.insert(list(df.columns).index("sex") + 1, "life_table", "")
     missing = [c for c in registries.PERSONS_CSV_HEADER if c not in df.columns]
     if missing:
         raise click.ClickException(
@@ -11296,13 +11297,12 @@ def _check_sex(text: str) -> str:
 def _person_fields(
     current: dict[str, str], roles: list[str], *, guided: bool,
     display: str | None, birthdate: str | None, role: str | None, meta_json: str | None,
-    sex: str | None = None, life_table: str | None = None, tables: Sequence[str] = (),
+    sex: str | None = None,
 ) -> dict[str, str]:
-    """A person's display, birthdate, sex, life table, role and meta_json:
-    each one given, or when ``guided``, asked for with ``current``'s value as
-    the default; or else ``current``'s. A blank role is no role; a blank sex
-    is none (only a life_table lifespan needs one); a blank life table is
-    the default aux life_table.csv (#315), ``tables`` naming the others."""
+    """A person's display, birthdate, sex, role and meta_json: each one
+    given, or when ``guided``, asked for with ``current``'s value as the
+    default; or else ``current``'s. A blank role is no role; a blank sex is
+    none (only a life_table lifespan needs one)."""
     if guided:
         if display is None:
             display = click.prompt("display", default=current.get("display") or None)
@@ -11313,11 +11313,6 @@ def _person_fields(
             sex = _prompt_with_completion(
                 "sex (f or m; blank for none, needed only for a life-table lifespan)",
                 list(registries.PERSON_SEXES), default=current.get("sex") or "",
-            )
-        if life_table is None and tables:
-            life_table = _prompt_with_completion(
-                f"life table ({', '.join(tables)}; blank for the default)", list(tables),
-                default=current.get("life_table") or "",
             )
         if role is None:
             role = _prompt_with_completion(
@@ -11330,8 +11325,6 @@ def _person_fields(
         "birthdate": _check_birthdate(
             birthdate if birthdate is not None else current.get("birthdate", "")),
         "sex": _check_sex(sex if sex is not None else current.get("sex", "")),
-        "life_table": (life_table if life_table is not None
-                       else current.get("life_table", "")).strip(),
         "role": (role if role is not None else current.get("role", "")).strip(),
         # An edit leaves a meta_json it wasn't given exactly as it is, blank included.
         "meta_json": _check_meta_json(meta_json) if meta_json is not None
@@ -11340,18 +11333,6 @@ def _person_fields(
     if not fields["display"]:
         raise click.ClickException("display is required")
     return fields
-
-
-def _life_tables(data_dir: Path, scenario: str | None) -> list[str]:
-    """The named life tables (#315) in the scenario's lineage: the scenario
-    given, else the current one; none when there's no scenario to look in."""
-    from analysis.sim import names
-
-    name = scenario or read_current_scenario(data_dir)
-    try:
-        return names.series_names(data_dir, name, "life_table") if name else []
-    except (OSError, ValueError):
-        return []  # an unknown scenario is reported when the edit checks it
 
 
 def _role_choices(df: pd.DataFrame) -> list[str]:
@@ -11364,9 +11345,6 @@ _PERSON_OPTIONS = (
     click.option("--birthdate", default=None, help="Birthdate, YYYY-MM-DD."),
     click.option("--sex", default=None,
                  help="f or m ('' for none); a life_table lifespan needs it."),
-    click.option("--life-table", type=completion.LIFE_TABLE, default=None,
-                 help="The aux life_table__<name>.csv this person's lifespan reads, by "
-                      "<name> ('' for the default life_table.csv)."),
     click.option("--role", default=None,
                  help="primary, secondary, or another role; '' for none."),
     click.option("--meta-json", default=None, help="JSON metadata (default {})."),
@@ -11413,8 +11391,7 @@ def _write_persons(
 @_person_options
 def person_add(
     person_id: str | None, display: str | None, birthdate: str | None, sex: str | None,
-    life_table: str | None, role: str | None, meta_json: str | None, scenario: str | None,
-    data_dir: Path | None,
+    role: str | None, meta_json: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Add a person to persons.csv, asking for a display name and birthdate
     not given (and then the sex, role and meta_json).
@@ -11434,11 +11411,9 @@ def person_add(
         raise click.ClickException("a person needs an id")
     if person_id in set(df["id"]):
         raise click.ClickException(f"person already exists: {person_id!r} (sim person edit)")
-    guided = display is None or birthdate is None
     fields = _person_fields(
-        {}, _role_choices(df), guided=guided,
+        {}, _role_choices(df), guided=display is None or birthdate is None,
         display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex,
-        life_table=life_table, tables=_life_tables(data, scenario) if guided else (),
     )
     row = pd.DataFrame([{"id": person_id, **fields}])
     _write_persons(data, scenario, pd.concat([df, row], ignore_index=True).fillna(""), before)
@@ -11450,8 +11425,7 @@ def person_add(
 @_person_options
 def person_edit(
     person_id: str | None, display: str | None, birthdate: str | None, sex: str | None,
-    life_table: str | None, role: str | None, meta_json: str | None, scenario: str | None,
-    data_dir: Path | None,
+    role: str | None, meta_json: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Change a person in persons.csv. With no options, asks for each field
     with its current value as the default; options change just those fields.
@@ -11473,11 +11447,10 @@ def person_edit(
             f"unknown person {person_id!r}; persons: {sorted(df['id'])}")
     idx = matches[0]
     current = {c: str(df.at[idx, c]) for c in df.columns}
-    guided = all(v is None for v in (display, birthdate, sex, life_table, role, meta_json))
+    guided = all(v is None for v in (display, birthdate, sex, role, meta_json))
     fields = _person_fields(
         current, _role_choices(df), guided=guided,
         display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex,
-        life_table=life_table, tables=_life_tables(data, scenario) if guided else (),
     )
     if all(fields[k] == current.get(k, "") for k in fields):
         click.echo(f"person '{current['id']}' unchanged")
@@ -11520,12 +11493,14 @@ def _lifespan_fields(
     current: dict[str, str], parents: list[str], *, guided: bool,
     age: str | None, vary: str | None, low: str | None, high: str | None, mode: str | None,
     correlate_with: str | None, correlation: str | None,
+    life_table: str | None = None, tables: Sequence[str] = (),
 ) -> dict[str, str]:
-    """A lifespan row's age and vary_* cells (#221): each one given, or when
-    ``guided``, asked for with ``current``'s value as the default; or else
-    ``current``'s. ``vary`` 'none' (or a blank one) drops the distribution
-    and its bounds; a blank mode is the age; a blank correlate-with drops the
-    correlation."""
+    """A lifespan row's age, vary_* and life_table cells (#221, #315): each
+    one given, or when ``guided``, asked for with ``current``'s value as the
+    default; or else ``current``'s. ``vary`` 'none' (or a blank one) drops
+    the distribution and its bounds; a blank mode is the age; a blank
+    correlate-with drops the correlation; a blank life table is the default
+    life_table.csv, and ``tables`` names the others to offer."""
     if guided:
         if age is None:
             age = click.prompt("age at death (years, e.g. 84.5)",
@@ -11554,11 +11529,16 @@ def _lifespan_fields(
                 correlation = click.prompt(
                     "correlation (-1..1)", default=current.get("vary_correlation") or None,
                 )
+        if life_table is None and (tables or current.get("life_table")):
+            life_table = _prompt_with_completion(
+                f"life table ({', '.join(tables)}; blank for the default)", list(tables),
+                default=current.get("life_table") or "",
+            )
 
     def pick(given: str | None, column: str) -> str:
         return (given if given is not None else current.get(column, "")).strip()
 
-    fields = {"age_at_death": pick(age, "age_at_death")}
+    fields = {"age_at_death": pick(age, "age_at_death"), "life_table": pick(life_table, "life_table")}
     if not fields["age_at_death"]:
         raise click.ClickException("an age at death is required")
     _check_age(fields["age_at_death"], "age at death")
@@ -11599,7 +11579,8 @@ def _lifespan_fields(
 def _lifespan_summary(row: dict[str, str]) -> str:
     """A lifespan row as one phrase: ``age 84 (triangular 75..95)``."""
     vary = setup_listings.lifespan_vary_text(row)
-    return f"age {row.get('age_at_death', '')}" + (f" ({vary})" if vary else "")
+    notes = [n for n in (vary, row.get("life_table") and f"{row['life_table']} table") if n]
+    return f"age {row.get('age_at_death', '')}" + (f" ({', '.join(notes)})" if notes else "")
 
 
 def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
@@ -11630,12 +11611,15 @@ def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
               help="Correlation parent: lifespan:<person>, a varying calendar row "
                    "or a latent factor ('' for none).")
 @click.option("--correlation", default=None, help="Correlation with that parent, -1..1.")
+@click.option("--life-table", type=completion.LIFE_TABLE, default=None,
+              help="The aux life_table__<name>.csv to read the age against, by <name> "
+                   "('' for the default life_table.csv).")
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def lifespan_set(
     person: str | None, age: str | None, vary: str | None, low: str | None, high: str | None,
     mode: str | None, correlate_with: str | None, correlation: str | None,
-    scenario: str | None, data_dir: Path | None,
+    life_table: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Set PERSON's AGE at death in years (e.g. 84.5), and how it varies.
 
@@ -11645,7 +11629,9 @@ def lifespan_set(
     --mode); the base case, member 0, is AGE. With --vary life_table the age
     is drawn from the aux life table for the person's sex, shifted so its
     median is AGE (no --low, --high or --mode); the shift and the
-    percentile ages it gives are printed.
+    percentile ages it gives are printed. --life-table reads another
+    population's table, aux/life_table__<name>.csv, for this person in this
+    scenario; AGE is then the median on that table.
 
     With no AGE and no options, asks for each field with its current value
     as the default; otherwise just the fields given change. Written to this
@@ -11666,13 +11652,14 @@ def lifespan_set(
     before = _file_bytes(path)
     found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
     current = {k: v for k, v in (found.row if found else {}).items() if k != "final_month"}
-    given = (age, vary, low, high, mode, correlate_with, correlation)
+    given = (age, vary, low, high, mode, correlate_with, correlation, life_table)
     guided = all(v is None for v in given)
     fields = _lifespan_fields(
         current, _lifespan_parents(data, scenario_name, person) if guided else [],
         guided=guided,
         age=age, vary=vary, low=low, high=high, mode=mode,
-        correlate_with=correlate_with, correlation=correlation,
+        correlate_with=correlate_with, correlation=correlation, life_table=life_table,
+        tables=names.series_names(data, scenario_name, "life_table") if guided else (),
     )
     row = {"person": person, **fields}
     df = _own_lifespans(path)
