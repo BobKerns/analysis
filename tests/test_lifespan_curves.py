@@ -86,6 +86,21 @@ def test_the_figure_has_two_panels_a_person_and_the_household(
     assert len(lifespan_figure(persons[:1]).axes) == 2
 
 
+def test_the_charts_span_the_scenario_and_share_the_pdf_scale(
+    lifespans: Callable[..., list[PersonLifespan]],
+) -> None:
+    alice, bill = persons = lifespans("alice,88,life_table,,,,,")
+    axes = lifespan_figure(persons).axes
+
+    # retire_alice runs 2026-05 through 2040-12.
+    assert axes[0].get_xlim() == pytest.approx((alice.age_now, alice.age_now + 176 / 12))
+    assert axes[3].get_xlim() == pytest.approx((bill.age_now, bill.age_at_end))
+    assert axes[0].get_ylim() == axes[2].get_ylim()
+    peak = max(chance for p in persons for _age, chance, _by in p.yearly())
+    assert axes[0].get_ylim()[1] == pytest.approx(peak * 1.05)
+    assert axes[4].get_xlim() == pytest.approx((2026 + 4 / 12, 2041))
+
+
 def test_the_scenario_connection_reads_the_lifespans(test_data_dir: Path) -> None:
     with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
         persons, notes = scenario.lifespans()

@@ -35,11 +35,6 @@ __all__ = [
     "Household", "PersonLifespan", "household", "lifespan_figure", "person_lifespans",
 ]
 
-# The chart's x axis stops where all but this share have died, rather than
-# at the table's last age, 130, where nothing is visible.
-_TAIL = 0.001
-
-
 @dataclass(frozen=True)
 class PersonLifespan:
     """One person's age-at-death distribution from the scenario start.
@@ -55,6 +50,7 @@ class PersonLifespan:
     sex: str
     birthdate: date
     start: date
+    end: date
     dist: LifeTableAge
     adjusted: bool
     set_forward: float
@@ -69,6 +65,12 @@ class PersonLifespan:
     def age_now(self) -> float:
         """Age in years at the scenario start, in whole months."""
         return self.dist.start / 12
+
+    @property
+    def age_at_end(self) -> float:
+        """Age in years at the end of the scenario's last month: where the
+        charts stop, since nothing past it reaches the plan."""
+        return (months_since_birth(self.birthdate, self.end) + 1) / 12
 
     def quantile(self, q: float) -> float:
         return self.dist.quantile(q)
@@ -93,8 +95,8 @@ def person_lifespans(con: sqlite3.Connection) -> tuple[list[PersonLifespan], lis
     """Every person with a sex in the intent (or run file) behind ``con``,
     in persons.csv order, and a note for each one with a sex that can't be
     drawn (no life table in the lineage, say)."""
-    start_text = con.execute("SELECT start FROM scenario").fetchone()[0]
-    start = parse_month(start_text)
+    start_text, end_text = con.execute('SELECT start, "end" FROM scenario').fetchone()
+    start, end = parse_month(start_text), parse_month(end_text)
     lifespans = {
         row[0]: tuple(row)[1:] for row in con.execute(
             "SELECT person, age_at_death, vary_distribution, life_table_set_forward "
@@ -118,7 +120,7 @@ def person_lifespans(con: sqlite3.Connection) -> tuple[list[PersonLifespan], lis
             continue
         found.append(PersonLifespan(
             person=person, display=display, sex=sex, birthdate=parse_day(birthdate),
-            start=start, dist=dist, adjusted=adjusted,
+            start=start, end=end, dist=dist, adjusted=adjusted,
             set_forward=set_forward if adjusted else 0.0,
             assumed_age=None if adjusted else age, vary=vary,
         ))
@@ -196,14 +198,11 @@ def _band_of(q: float) -> tuple[float, float, float] | None:
     return color
 
 
-def _last_age(p: PersonLifespan) -> float:
-    return p.quantile(1 - _TAIL) + 1
-
-
-def _draw_pdf(ax: Axes, p: PersonLifespan) -> None:
+def _draw_pdf(ax: Axes, p: PersonLifespan, peak: float) -> None:
     """Bars for the chance of dying at each age, colored by the fan band
-    the age's middle falls in (pale gray outside 5–95%)."""
-    rows = [r for r in p.yearly() if r[0] <= _last_age(p)]
+    the age's middle falls in (pale gray outside 5–95%), up to ``peak``,
+    the highest bar of any person's, so the persons' charts compare."""
+    rows = [r for r in p.yearly() if r[0] < p.age_at_end]
     for age, chance, by_end in rows:
         middle = by_end - chance / 2
         color = _band_of(middle) or (0.88, 0.88, 0.88)
@@ -215,7 +214,8 @@ def _draw_pdf(ax: Axes, p: PersonLifespan) -> None:
     ax.set_xlabel("age")
     ax.yaxis.set_major_formatter(PercentFormatter(1.0, decimals=1))
     ax.grid(True, axis="y", alpha=0.3)
-    ax.set_xlim(p.age_now, _last_age(p))
+    ax.set_xlim(p.age_now, p.age_at_end)
+    ax.set_ylim(0, peak * 1.05)
     ax.legend(framealpha=FRAME_ALPHA, fontsize="small")
 
 
@@ -235,7 +235,7 @@ def _draw_cdf(ax: Axes, p: PersonLifespan) -> None:
     ax.set_ylim(0, 1)
     ax.yaxis.set_major_formatter(PercentFormatter(1.0, decimals=0))
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(p.age_now, _last_age(p))
+    ax.set_xlim(p.age_now, p.age_at_end)
     ax.legend(framealpha=FRAME_ALPHA, fontsize="small", loc="center left")
 
 
@@ -256,15 +256,17 @@ def _draw_household(ax: Axes, h: Household) -> None:
         ax.axvspan(_decimal_year(h.last_death_quantile(lo)),
                    _decimal_year(h.last_death_quantile(hi)), color=color, linewidth=0,
                    label=f"last death {label}")
-    end = max(_add_months(h.start, k) for k, p in enumerate(h.any_alive) if p >= _TAIL)
-    length = (end.year - h.start.year) * 12 + end.month - h.start.month + 1
-    years = [_decimal_year(h.start) + k / 12 for k in range(length)]
-    ax.plot(years, h.any_alive[:length], color="midnightblue", linewidth=2.5,
+    end = h.persons[0].end
+    length = min(len(h.any_alive), (end.year - h.start.year) * 12 + end.month - h.start.month + 1)
+    years = [_decimal_year(h.start) + k / 12 for k in range(length + 1)]
+    # Each curve starts at its value on the first day, before any month's deaths.
+    any_alive, all_alive = (1.0, *h.any_alive), (1.0, *h.all_alive)
+    ax.plot(years, any_alive[:length + 1], color="midnightblue", linewidth=2.5,
             label="at least one alive")
-    ax.plot(years, h.all_alive[:length], color="purple", linewidth=1.5, linestyle=":",
+    ax.plot(years, all_alive[:length + 1], color="purple", linewidth=1.5, linestyle=":",
             label="all alive" if len(h.persons) > 2 else "both alive")
     for p, alive in zip(h.persons, h.alive, strict=True):
-        ax.plot(years, alive[:length], linewidth=1, linestyle="--", label=f"{p.display} alive")
+        ax.plot(years, (1.0, *alive)[:length + 1], linewidth=1, linestyle="--", label=f"{p.display} alive")
     median = h.last_death_quantile(0.5)
     ax.axvline(_decimal_year(median), color="midnightblue", linewidth=1,
                label=f"median last death {median.year}")
@@ -288,8 +290,9 @@ def lifespan_figure(persons: list[PersonLifespan], *, show_household: bool = Tru
     rows = len(persons) + (1 if joint else 0)
     fig = Figure(figsize=(12, 3.8 * rows), layout="constrained")
     grid = fig.add_gridspec(rows, 2)
+    peak = max(chance for p in persons for _age, chance, _by in p.yearly())
     for i, p in enumerate(persons):
-        _draw_pdf(fig.add_subplot(grid[i, 0]), p)
+        _draw_pdf(fig.add_subplot(grid[i, 0]), p, peak)
         _draw_cdf(fig.add_subplot(grid[i, 1]), p)
     if joint:
         _draw_household(fig.add_subplot(grid[rows - 1, :]), household(persons))
