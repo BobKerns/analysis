@@ -1527,6 +1527,7 @@ def test_state_itemized_deduction_falls_back_to_federal_when_absent(
         con.close()
 
 
+@pytest.mark.usefixtures("without_template_aux")
 def test_state_tax_reads_its_own_standard_deduction(
     test_data_dir: Path, tmp_path: Path, add_state_tax: Callable[[], None],
 ) -> None:

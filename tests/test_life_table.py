@@ -156,6 +156,7 @@ def test_a_bad_life_table_lifespan_fails_the_load(
         load_test_copy()
 
 
+@pytest.mark.usefixtures("without_template_aux")
 def test_a_life_table_lifespan_needs_the_aux_table(
     write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     test_data_dir: Path,

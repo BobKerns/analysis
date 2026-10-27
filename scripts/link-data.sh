@@ -55,6 +55,8 @@ if [ "$mode" = template ]; then
     # The t_ template scenarios are read from this repo's templates/ (ADR-003
     # §4.5a); a copy in the data would replace them and go stale.
     find "$SHARED/sim/scenarios" -mindepth 1 -maxdepth 1 -name 't_*' -exec rm -r {} +
+    # So are the aux tables (#317), all but the household's filing status.
+    find "$SHARED/sim/aux" -name '*.csv' ! -name filing_status.csv -delete
     printf '%s\n' "$REPO" > "$SHARED/sim/.analysis"
     echo "Built template data in $SHARED, used as 'test'."
     echo "Activate it with: source $SHARED/sim/activate-analysis"

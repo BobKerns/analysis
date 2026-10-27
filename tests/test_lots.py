@@ -608,6 +608,7 @@ def _bracket_rows(path: Path, status: str) -> list[tuple[int, int]]:
                   for r in rows)
 
 
+@pytest.mark.usefixtures("without_template_aux")
 def test_long_term_gains_are_taxed_at_the_preferential_rates(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,

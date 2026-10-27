@@ -98,6 +98,7 @@ from analysis.sim.loader import (
     current_scenario_path,
     is_ensemble_batch,
     list_scenario_names,
+    template_aux_copies,
     load_scenario,
     open_intent_db,
     find_state_dir,
@@ -315,7 +316,8 @@ def _load_locked(
 @click.option(
     "-v", "--verbose", is_flag=True, default=False,
     help="With --all, also warn of things defined but not read yet (unused "
-    "latent factors, set_rate rows nothing reads), as a single check does.",
+    "latent factors, set_rate rows nothing reads), as a single check does. "
+    "Also list the data repo's aux/ files that only copy templates/aux/.",
 )
 def check(
     scenario_name: str | None, data_dir: Path | None, check_all: bool, verbose: bool,
@@ -325,10 +327,17 @@ def check(
     A single scenario's check also warns of things defined but not read yet;
     --all leaves those out unless --verbose is given (#204), since base and
     mix-in scenarios define many on purpose for the scenarios built on them.
+    --verbose also names the shared aux/ files that only copy templates/aux/
+    (#317), which can be deleted.
     """
     if check_all and scenario_name is not None:
         raise click.UsageError("give a scenario name or --all, not both")
     resolved = _resolve_data_dir(data_dir)
+    if verbose:
+        for name in template_aux_copies(resolved):
+            click.echo(
+                f"note: aux/{name} is the same as templates/aux/{name}, which is read "
+                "anyway; deleting it lets later template updates through", err=True)
     if not check_all:
         ref = _resolve_scenario(resolved, scenario_name)
         _check_scenario(resolved, ref.name, unused=True)

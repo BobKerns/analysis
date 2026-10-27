@@ -25,6 +25,8 @@ from pathlib import Path
 
 TEMPLATE_PREFIX = "t_"
 TEMPLATE_SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "templates" / "scenarios"
+# The tax-law aux tables, read beneath the data repo's aux/ (#317).
+TEMPLATE_AUX_DIR = TEMPLATE_SCENARIOS_DIR.parent / "aux"
 # What a mix-in only scenario is loaded on top of when loaded by itself
 # (#259): it has nothing, and its dates and seed only fill blanks.
 MIXIN_BASE = "t_empty"
