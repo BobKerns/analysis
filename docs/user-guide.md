@@ -351,7 +351,9 @@ tax year, by looking back over everything that happened that year (the
   If the file does not exist, long-term gains are taxed the same as ordinary
   income.
 - **Filing status** comes from the `filing_status` aux table for that tax
-  year. One exception: MFJ or MFS automatically changes to Single, starting
+  year: your data repo's `aux/filing_status.csv`, one row per date such as
+  `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
+  computes tax fails to load without a row. One exception: MFJ or MFS automatically changes to Single, starting
   the year after a primary person's final month in `lifespan.csv`. You do
   not need to add a matching row to `filing_status.csv` yourself; see Part 4.7.
 - **Deductions**: the standard deduction, from `standard_deduction.csv`,
@@ -707,6 +709,20 @@ younger (an age set-forward or set-back), however much puts its median at 80.
 The table supplies the spread. `vary_low`, `vary_high` and `vary_mode` stay
 blank. The person needs a `sex` (`f` or `m`) in `persons.csv`, which `sim
 person edit <id> --sex f` sets.
+
+A lifespan can read another country's table: `lifespan.csv`'s optional
+`life_table` column names an aux `life_table__<name>.csv`, and blank reads
+`life_table.csv`. The templates ship `jp`, Japan's 2023 table, which `sim
+person lifespan set <id> 90 --vary life_table --life-table jp` picks. It is
+per scenario, like the age, so one scenario (or a mix-in) can try another
+table and another median, to compare. `scripts/blend_life_tables.py` builds
+a table between two, such as one for someone who has lived in both
+countries. Use a country's own table rather than a later
+`age_at_death` on the US one. The set-forward moves the table's median but
+keeps its spread, and the US tail is fatter: for a woman alive at 60, with
+the median put at Japan's (about 90), the shifted US table gives about a
+12% chance of reaching 100 and 2.5% of reaching 105, while Japan's own
+gives 6.5% and 0.5%.
 
 `sim person lifespan set alice 80 --vary life_table` prints what the median
 means: how many years older or younger the table is read, the mortality

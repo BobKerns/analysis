@@ -616,8 +616,11 @@ PERSON_SEXES: tuple[str, ...] = ("f", "m")
 LIFE_TABLE_Q_COLUMNS: dict[str, str] = {"f": "q_female", "m": "q_male"}
 LIFESPAN_CSV_HEADER: tuple[str, ...] = (
     "person", "age_at_death", "vary_distribution", "vary_low", "vary_high", "vary_mode",
-    "vary_correlate_with", "vary_correlation",
+    "vary_correlate_with", "vary_correlation", "life_table",
 )
+# #315: lifespan.csv `life_table` names the aux life_table__<name>.csv the
+# person's age is read against in this scenario; blank (or no such column)
+# is life_table.csv. Per scenario, so scenarios can compare tables.
 
 # #221: a lifespan varies by age, uniform or triangular; #222 adds
 # `life_table`, drawn from aux life_table.csv around a median of

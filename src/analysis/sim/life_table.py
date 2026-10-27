@@ -34,7 +34,8 @@ from analysis.sim.distributions import DistributionError
 
 __all__ = [
     "LifeTable", "LifeTableAge", "LifeTableError", "life_table_from_rows",
-    "life_table_for", "life_table_in", "months_since_birth", "solve_set_forward", "equivalent_multiplier",
+    "life_table_for", "life_table_in", "months_since_birth", "person_table", "table_file",
+    "solve_set_forward", "equivalent_multiplier",
 ]
 
 LIFE_TABLE_KIND = "life_table"
@@ -78,15 +79,21 @@ def life_table_from_rows(rows: list[tuple[int, float]]) -> LifeTable:
     return LifeTable(tuple(by_age[a] for a in ages))
 
 
+def table_file(name: str | None) -> str:
+    """The aux file a life table comes from (#315): ``life_table.csv`` for
+    the default, ``life_table__<name>.csv`` for a named one."""
+    return f"{LIFE_TABLE_KIND}__{name}.csv" if name else f"{LIFE_TABLE_KIND}.csv"
+
+
 def life_table_for(
-    payloads: list[tuple[str, dict]], sex: str, on: str,
+    payloads: list[tuple[str, dict]], sex: str, on: str, name: str | None = None,
 ) -> LifeTable:
-    """``sex``'s (``f``/``m``) table from ``life_table`` aux payloads, each
-    with its ``effective_date``: the vintage in effect on ``on`` (the latest
-    on or before it, like every aux table), or the earliest if every vintage
-    is later."""
+    """``sex``'s (``f``/``m``) table from one life table's aux payloads
+    (``name``'s, for the message), each with its ``effective_date``: the
+    vintage in effect on ``on`` (the latest on or before it, like every aux
+    table), or the earliest if every vintage is later."""
     if not payloads:
-        raise LifeTableError("no aux life_table.csv in this scenario's lineage")
+        raise LifeTableError(f"no aux {table_file(name)} in this scenario's lineage")
     dates = sorted({d for d, _ in payloads})
     eligible = [d for d in dates if d <= on]
     effective = eligible[-1] if eligible else dates[0]
@@ -96,15 +103,29 @@ def life_table_for(
     ])
 
 
-def life_table_in(con: sqlite3.Connection, sex: str, on: str) -> LifeTable:
-    """``life_table_for`` over an intent's or run file's ``aux_table``."""
+def life_table_in(
+    con: sqlite3.Connection, sex: str, on: str, name: str | None = None,
+) -> LifeTable:
+    """``life_table_for`` over an intent's or run file's ``aux_table``: the
+    default table, or the one ``name``s (#315)."""
     return life_table_for(
         [(d, json.loads(p)) for d, p in con.execute(
-            "SELECT effective_date, payload_json FROM aux_table WHERE kind = ?",
-            (LIFE_TABLE_KIND,),
+            "SELECT effective_date, payload_json FROM aux_table WHERE kind = ? AND series IS ?",
+            (LIFE_TABLE_KIND, name or None),
         )],
-        sex, on,
+        sex, on, name,
     )
+
+
+def person_table(con: sqlite3.Connection, person: str) -> str | None:
+    """The life table ``person``'s lifespan.csv row names (#315), or None for
+    the default: no row, a blank cell, or a file from before the column."""
+    columns = {row[1] for row in con.execute("PRAGMA table_info(person_lifespan)")}
+    if "life_table" not in columns:
+        return None
+    found = con.execute(
+        "SELECT life_table FROM person_lifespan WHERE person = ?", (person,)).fetchone()
+    return (found[0] or None) if found else None
 
 
 def months_since_birth(birthdate: str | date, month: str | date) -> int:

@@ -12,6 +12,19 @@ see `prices/README.md`. Growth-rate and inflation series are different: they are
 per-scenario projections, so each scenario has its own `series/` folder (no
 shared default here) — see "Per-scenario overrides" below.
 
+## Read from the code repository
+
+The loader reads this folder itself, beneath a data repo's own `aux/`, so a
+data repo needs none of these files: it adds a file only to change one, and a
+same-named file there replaces this one whole. Don't copy them; a copy hides
+the next update to the template. `sim check -v` names any data-repo file that
+is still an exact copy.
+
+The exception is `filing_status.csv`, shipped here with only its header: the
+household's filing status is the data repo's to give, in its own
+`aux/filing_status.csv`, one row per date (`2026-01-31,MFJ`). A scenario that
+computes tax won't load without one.
+
 ## How a row is used
 
 Every aux table has an `effective_date` column. The simulator picks the row whose
@@ -69,7 +82,7 @@ every other scenario.
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
 | `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state `tax_accumulator` rule, keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, the `tax_accumulator` rule uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
-| `filing_status.csv` | The set of filing-status codes valid on each effective date (acts as an enum table). |
+| `filing_status.csv` | The household's filing status from each effective date, one row per change. Empty here: put the household's in the data repo's `aux/`. A joint filer becomes Single the year after a death without a row. |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |
 | `inflation__cpi.csv` | Annual inflation rate (CPI = Consumer Price Index, the standard cost-of-living measure published by the US Bureau of Labor Statistics) used to grow non-indexed amounts, and by the CPI-constant-dollar views/reports regardless of what any scenario's own CSVs reference. Kept here, rather than in `series/`, so that lookup always has a default; a scenario can still override it. |
 | `rmd_factors.csv` | IRS Uniform Lifetime Table divisors used to compute Required Minimum Distributions. One row per (effective_date, age). |
@@ -79,6 +92,7 @@ every other scenario.
 | `energy_credits.csv` | Federal energy-efficiency credit/rebate rate and cap, by category (`heat_pump`, `induction_range`, `ev_charger`, ...) and effective date. **Expiring credits need an explicit zero-rate row on their expiration date** -- the lookup takes the latest `effective_date <= month`, so an omitted row means "still in effect," not "expired." OBBBA (2025) ended 25C/25D for property placed in service after 2025-12-31 and 30C after 2026-06-30; the shipped rows reflect that. Not yet wired to a call site -- see `engine._lookup_energy_credit`. |
 | `ltcg_brackets.csv` | Federal long-term capital gain brackets — see "Long-term capital gain rates" below. |
 | `life_table.csv` | SSA's period life table: `q_female` and `q_male`, the chance of dying before the next birthday at each age 0–119. Read only by a lifespan with `vary_distribution` `life_table`, which draws the age at death from it around the median you give. Refresh it from a newer Trustees Report with `scripts/extract_ssa_life_table.py`, keeping the old rows: each vintage is dated December of its year. |
+| `life_table__<name>.csv` | Another country's life table, in the same columns, for a lifespan whose `lifespan.csv` `life_table` cell names it (blank uses `life_table.csv`), per scenario. `scripts/blend_life_tables.py` mixes two. `__jp` is Japan's 2023 table from the Human Life-Table Database, extracted with `scripts/extract_hld_life_table.py`; it ends at an open "105 and over" group, extrapolated to 108 with a death rate that keeps rising, and no one reaches 110 (the few recorded cases past it are largely record errors). Use a country's own table rather than shifting `life_table.csv` older or younger: the shift keeps the US spread, and the US tail past 95 is much fatter than Japan's. |
 
 ### Filing status codes
 
@@ -184,12 +198,11 @@ The cleanest way is to ask the AI assistant. A prompt that works:
 
 > Update `prototype_data/aux/federal_brackets.csv`,
 > `prototype_data/aux/standard_deduction.csv`,
-> `prototype_data/aux/state_brackets__CA.csv`, and
-> `prototype_data/aux/filing_status.csv` with the latest IRS and CA FTB
-> figures. Use the most recent IRS Revenue Procedure for federal and FTB's
+> and `prototype_data/aux/state_brackets__CA.csv` with the latest IRS and
+> CA FTB figures. Use the most recent IRS Revenue Procedure for federal and FTB's
 > annual indexing announcement (in "Tax News") for California. Filing statuses:
 > MFJ, Single, MFS. Exclude CA's Mental Health / Behavioral Health Services Tax
-> (the extra 1% over $1M). Then mirror the four files into `templates/aux/`
+> (the extra 1% over $1M). Then mirror the three files into `templates/aux/`
 > and run `uv run pytest`.
 
 Authoritative sources the AI should pull from:

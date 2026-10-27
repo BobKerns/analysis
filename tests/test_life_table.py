@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -156,6 +157,7 @@ def test_a_bad_life_table_lifespan_fails_the_load(
         load_test_copy()
 
 
+@pytest.mark.usefixtures("without_template_aux")
 def test_a_life_table_lifespan_needs_the_aux_table(
     write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     test_data_dir: Path,
@@ -192,6 +194,59 @@ def test_a_persons_csv_without_a_sex_column_still_loads(
     assert "sex" not in persons.read_text().splitlines()[0]
 
     load_test_copy()
+
+
+# ---------- a person's own table (#315) ----------
+
+
+def test_a_named_life_table_is_read_for_that_person(
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_lifespans("alice,90,life_table,,,,,", "bill,84,life_table,,,,,")
+    us = _distribution(load_test_copy().intent_path, "alice")
+    write_lifespans("alice,90,life_table,,,,,,jp", "bill,84,life_table,,,,,")
+
+    recipe = load_test_copy().intent_path
+    jp, bill = _distribution(recipe, "alice"), _distribution(recipe, "bill")
+
+    assert sqlite3.connect(recipe).execute(
+        "SELECT person, life_table FROM person_lifespan ORDER BY person").fetchall() == [
+        ("alice", "jp"), ("bill", None)]
+    assert jp.central() == us.central() == 90
+    # Japan's own table has a thinner tail than the US one read younger.
+    assert jp.quantile(0.95) < us.quantile(0.95) - 1
+    assert bill.central() == 84  # Bill keeps the default table
+
+
+def test_a_named_life_table_must_be_in_the_lineage(
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_lifespans("bill,84,,,,,,,xx")  # a fixed age too: `sim person show` reads the table
+
+    with pytest.raises(LoadError, match=r"life_table 'xx' needs aux/life_table__xx\.csv"):
+        load_test_copy()
+
+
+def test_a_life_table_name_must_be_a_plain_name(
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_lifespans("bill,84,life_table,,,,,,../JP")
+
+    with pytest.raises(LoadError, match="life_table must name an aux"):
+        load_test_copy()
+
+
+def test_a_named_life_table_with_a_gap_names_its_file(
+    load_test_copy: Callable[[], LoadResult], test_data_dir: Path,
+) -> None:
+    path = test_data_dir / "aux" / "life_table__jp.csv"
+    path.write_text("".join(
+        line for line in path.read_text().splitlines(keepends=True)
+        if not line.startswith("2023-12-31,50,")
+    ))
+
+    with pytest.raises(LoadError, match=r"aux life_table__jp\.csv \(2023-12\): ages must be"):
+        load_test_copy()
 
 
 # ---------- members ----------
@@ -311,7 +366,34 @@ def test_person_edit_sets_the_sex(test_data_dir: Path) -> None:
     assert "sex must be one of" in refused.output
 
 
-# ---------- the extractor ----------
+def test_lifespan_set_takes_a_life_table_per_scenario(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    result = _sim(test_data_dir, "person", "lifespan", "set", "alice", "90",
+                  "--vary", "life_table", "--life-table", "jp", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "age 90 (life_table, jp table)" in result.output
+    assert "alice,90,life_table,,,,,,jp" in retire_alice_csv("lifespan.csv").read_text()
+
+    cleared = _sim(test_data_dir, "person", "lifespan", "set", "alice", "--life-table", "",
+                   "--scenario", "retire_alice")
+    assert cleared.exit_code == 0, cleared.output
+    assert "alice,90,life_table,,,,,," in retire_alice_csv("lifespan.csv").read_text()
+
+
+def test_lifespan_set_asks_for_the_life_table_when_guided(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "person", "lifespan", "set", "alice", "--scenario", "retire_alice",
+        "--data-dir", str(test_data_dir)], input="90\nlife_table\n\njp\n")
+
+    assert result.exit_code == 0, result.output
+    assert "life table (jp; blank for the default)" in result.output
+    assert "alice,90,life_table,,,,,,jp" in retire_alice_csv("lifespan.csv").read_text()
+
+
+# ---------- the extractors ----------
 
 
 def test_the_extractor_reads_the_ssa_page(repo_root: Path) -> None:
@@ -328,3 +410,58 @@ def test_the_extractor_reads_the_ssa_page(repo_root: Path) -> None:
     )
 
     assert extract(page) == ("2023", [(0, "0.006015", "0.005125"), (1, "0.000479", "0.000392")])
+
+
+_HLD_TEXT = """Table A. Abridged Life Tables for Testland, 2023
+Male
+        x               nq x            lx
+       0      (W)      0.00065        100 000
+{male}
+Female
+        x               nq x            lx
+{female}
+"""
+
+
+def _hld_rows(q: Callable[[int], float], expectancy: float) -> str:
+    rows = [f"       {age}{'      (Y)' if age == 0 else ''}      {q(age):.5f}       99 000"
+            for age in range(105)]
+    rows.append(f"105 -      1.00000        56        56        59        59      {expectancy}")
+    return "\n".join(rows)
+
+
+def test_the_extractor_reads_an_hld_table_and_extends_its_open_interval(repo_root: Path) -> None:
+    import runpy
+
+    script = runpy.run_path(str(repo_root / "scripts" / "extract_hld_life_table.py"))
+
+    # Gompertz: the hazard grows 10% a year, which the extrapolation should keep.
+    def gompertz(age: int) -> float:
+        return 1 - math.exp(-0.0001 * 1.1 ** (age + 0.5))
+
+    year, tables = script["extract"](_HLD_TEXT.format(
+        male=_hld_rows(gompertz, 1.0), female=_hld_rows(lambda a: gompertz(a + 3), 1.3)))
+
+    assert year == "2023"
+    assert sorted(tables) == ["female", "male"]
+    assert all(sorted(t) == list(range(110)) for t in tables.values())
+    assert tables["male"][109] == tables["female"][109] == "1.000000"  # no one reaches 110
+    assert tables["male"][104] == f"{gompertz(104):.5f}"
+    assert float(tables["male"][108]) == pytest.approx(gompertz(108), abs=0.01)
+    female = [float(tables["female"][age]) for age in range(100, 110)]
+    assert female == sorted(female)  # the death rate keeps rising
+
+
+def test_the_blend_averages_hazards_by_weight(repo_root: Path) -> None:
+    import runpy
+
+    blend = runpy.run_path(str(repo_root / "scripts" / "blend_life_tables.py"))["blend"]
+    a = {0: {"q_female": 0.1, "q_male": 0.2}, 1: {"q_female": 0.5, "q_male": 0.5}}
+    b = {0: {"q_female": 0.3, "q_male": 0.2}}
+
+    mixed = blend([(a, 3), (b, 1)])
+
+    hazard = 0.75 * -math.log(0.9) + 0.25 * -math.log(0.7)
+    assert mixed[0]["q_female"] == pytest.approx(1 - math.exp(-hazard))
+    assert mixed[0]["q_male"] == pytest.approx(0.2)
+    assert mixed[1] == {"q_female": 1.0, "q_male": 1.0}  # past b's last age

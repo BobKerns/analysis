@@ -301,7 +301,8 @@ def test_lifespan_set_with_no_options_asks_for_each_field(
     sim: Callable[..., Result], test_scenarios_dir: Path,
 ) -> None:
     folder = test_scenarios_dir / "retire_alice"
-    answers = "\n".join(["84", "triangular", "75", "95", "", ""]) + "\n"
+    # Age, distribution, bounds, mode, correlation, and the default life table.
+    answers = "\n".join(["84", "triangular", "75", "95", "", "", ""]) + "\n"
 
     result = sim("person", "lifespan", "set", "alice", "--scenario", "retire_alice",
                  input=answers)

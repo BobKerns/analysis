@@ -622,9 +622,14 @@ _LIFESPAN_HEADER = (
 @pytest.fixture(scope="function")
 def write_lifespans(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Write the private retire_alice copy's lifespan.csv (#221) from rows of
-    its cells, after the header: ``write_lifespans("alice,80,life_table,,,,,")``."""
+    its cells, after the header: ``write_lifespans("alice,80,life_table,,,,,")``,
+    or with a ninth cell naming a life table, ``"alice,90,life_table,,,,,,jp"``."""
     def _write(*rows: str) -> None:
-        retire_alice_csv("lifespan.csv").write_text(_LIFESPAN_HEADER + "".join(f"{r}\n" for r in rows))
+        # A row with a ninth cell gives the optional life_table (#315).
+        header = _LIFESPAN_HEADER
+        if any(r.count(",") == 8 for r in rows):
+            header = header.replace("\n", ",life_table\n")
+        retire_alice_csv("lifespan.csv").write_text(header + "".join(f"{r}\n" for r in rows))
     return _write
 
 
@@ -1512,3 +1517,11 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
         return path
 
     return _fake
+
+
+@pytest.fixture(scope="function")
+def without_template_aux(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide the code repository's templates/aux/ (#317) from the loader, so a
+    test that deletes one of the private copy's aux tables sees it missing
+    instead of the template's copy filling in."""
+    monkeypatch.setattr("analysis.sim.loader.TEMPLATE_AUX_DIR", tmp_path_factory.mktemp("no_template_aux"))

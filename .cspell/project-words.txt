@@ -109,6 +109,7 @@ lastrowid
 liab
 libc
 libedit
+lifetable
 linalg
 linestyle
 linthresh
@@ -120,6 +121,7 @@ markerfacecolor
 markersize
 mcolors
 metas
+MHLW
 midnightblue
 mktree
 modelcontextprotocol
@@ -149,8 +151,12 @@ overfit
 pacman
 pathoplexus
 pcon
+pdftotext
 Pewsey
 plottable
+polyfit
+polyval
+poppler
 PRCC
 PRCCᵢ
 preflighted
@@ -219,6 +225,7 @@ subkind
 subkinds
 subshell
 subshells
+supercentenarians
 symlog
 tailnet
 tailweight
@@ -231,6 +238,7 @@ TCSANOW
 tcsetattr
 tctronics
 Termius
+Testland
 testpaths
 textconv
 textcoords

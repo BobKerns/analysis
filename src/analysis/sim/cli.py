@@ -98,6 +98,7 @@ from analysis.sim.loader import (
     current_scenario_path,
     is_ensemble_batch,
     list_scenario_names,
+    template_aux_copies,
     load_scenario,
     open_intent_db,
     find_state_dir,
@@ -315,7 +316,8 @@ def _load_locked(
 @click.option(
     "-v", "--verbose", is_flag=True, default=False,
     help="With --all, also warn of things defined but not read yet (unused "
-    "latent factors, set_rate rows nothing reads), as a single check does.",
+    "latent factors, set_rate rows nothing reads), as a single check does. "
+    "Also list the data repo's aux/ files that only copy templates/aux/.",
 )
 def check(
     scenario_name: str | None, data_dir: Path | None, check_all: bool, verbose: bool,
@@ -325,10 +327,17 @@ def check(
     A single scenario's check also warns of things defined but not read yet;
     --all leaves those out unless --verbose is given (#204), since base and
     mix-in scenarios define many on purpose for the scenarios built on them.
+    --verbose also names the shared aux/ files that only copy templates/aux/
+    (#317), which can be deleted.
     """
     if check_all and scenario_name is not None:
         raise click.UsageError("give a scenario name or --all, not both")
     resolved = _resolve_data_dir(data_dir)
+    if verbose:
+        for name in template_aux_copies(resolved):
+            click.echo(
+                f"note: aux/{name} is the same as templates/aux/{name}, which is read "
+                "anyway; deleting it lets later template updates through", err=True)
     if not check_all:
         ref = _resolve_scenario(resolved, scenario_name)
         _check_scenario(resolved, ref.name, unused=True)
@@ -3096,14 +3105,18 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
 })
 
 
+# lifespan.csv's life_table (#315) is optional too.
+_BACKFILLABLE_COLUMNS = _BACKFILLABLE_CALENDAR_COLUMNS | {"life_table"}
+
+
 def _append_csv_row(path: Path, header: tuple[str, ...],
                     row: dict[str, str], *, replace: int | None = None) -> None:
     """Append a row to a CSV, aligning columns by name via pandas. With
     ``replace``, overwrite that data row (0-based) instead.
 
     If the file exists, its header must contain every column of ``header``
-    except the backfillable ones (currently just calendar.csv's ADR-006
-    additions), which are added blank on every existing row instead; this
+    except the backfillable ones (calendar.csv's ADR-006 additions and
+    lifespan.csv's life_table), which are added blank on every existing row instead; this
     still catches real schema drift rather than silently writing misaligned
     columns.
     """
@@ -3112,7 +3125,7 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         existing = list(df.columns)
         missing = [c for c in header if c not in existing]
-        not_backfillable = [c for c in missing if c not in _BACKFILLABLE_CALENDAR_COLUMNS]
+        not_backfillable = [c for c in missing if c not in _BACKFILLABLE_COLUMNS]
         if not_backfillable:
             raise click.ClickException(
                 f"CSV header mismatch in {path}\n"
@@ -11198,14 +11211,15 @@ def person_show(
 
     quantiles = (0.05, 0.2, 0.4, 0.5, 0.6, 0.8, 0.95)
     for p in persons:
+        table = f"{p.table} " if p.table else ""  # a named table (#315)
         if p.centered:
             varies = {None: "fixed", "life_table": "drawn from this curve"}.get(
                 p.vary, f"{p.vary} across members")
-            how = (f"age at death {p.age_at_death:g} ({varies}); the {p.sex} table read "
+            how = (f"age at death {p.age_at_death:g} ({varies}); the {table}{p.sex} table read "
                    f"{abs(p.set_forward):.1f} years {'older' if p.set_forward >= 0 else 'younger'} "
                    f"puts its median there (the plain table's is {p.table_median:.1f})")
         else:
-            how = f"the plain {p.sex} table; the scenario sets no age at death"
+            how = f"the plain {table}{p.sex} table; the scenario sets no age at death"
         click.echo(f"{p.display} ({p.person}), {p.age_now:.1f} at the start of {name}: {how}")
         ages = Table(header_style="bold", title="age at death by percentile", title_justify="left")
         for q in quantiles:
@@ -11488,12 +11502,14 @@ def _lifespan_fields(
     current: dict[str, str], parents: list[str], *, guided: bool,
     age: str | None, vary: str | None, low: str | None, high: str | None, mode: str | None,
     correlate_with: str | None, correlation: str | None,
+    life_table: str | None = None, tables: Sequence[str] = (),
 ) -> dict[str, str]:
-    """A lifespan row's age and vary_* cells (#221): each one given, or when
-    ``guided``, asked for with ``current``'s value as the default; or else
-    ``current``'s. ``vary`` 'none' (or a blank one) drops the distribution
-    and its bounds; a blank mode is the age; a blank correlate-with drops the
-    correlation."""
+    """A lifespan row's age, vary_* and life_table cells (#221, #315): each
+    one given, or when ``guided``, asked for with ``current``'s value as the
+    default; or else ``current``'s. ``vary`` 'none' (or a blank one) drops
+    the distribution and its bounds; a blank mode is the age; a blank
+    correlate-with drops the correlation; a blank life table is the default
+    life_table.csv, and ``tables`` names the others to offer."""
     if guided:
         if age is None:
             age = click.prompt("age at death (years, e.g. 84.5)",
@@ -11522,11 +11538,16 @@ def _lifespan_fields(
                 correlation = click.prompt(
                     "correlation (-1..1)", default=current.get("vary_correlation") or None,
                 )
+        if life_table is None and (tables or current.get("life_table")):
+            life_table = _prompt_with_completion(
+                f"life table ({', '.join(tables)}; blank for the default)", list(tables),
+                default=current.get("life_table") or "",
+            )
 
     def pick(given: str | None, column: str) -> str:
         return (given if given is not None else current.get(column, "")).strip()
 
-    fields = {"age_at_death": pick(age, "age_at_death")}
+    fields = {"age_at_death": pick(age, "age_at_death"), "life_table": pick(life_table, "life_table")}
     if not fields["age_at_death"]:
         raise click.ClickException("an age at death is required")
     _check_age(fields["age_at_death"], "age at death")
@@ -11567,7 +11588,8 @@ def _lifespan_fields(
 def _lifespan_summary(row: dict[str, str]) -> str:
     """A lifespan row as one phrase: ``age 84 (triangular 75..95)``."""
     vary = setup_listings.lifespan_vary_text(row)
-    return f"age {row.get('age_at_death', '')}" + (f" ({vary})" if vary else "")
+    notes = [n for n in (vary, row.get("life_table") and f"{row['life_table']} table") if n]
+    return f"age {row.get('age_at_death', '')}" + (f" ({', '.join(notes)})" if notes else "")
 
 
 def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
@@ -11598,12 +11620,15 @@ def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
               help="Correlation parent: lifespan:<person>, a varying calendar row "
                    "or a latent factor ('' for none).")
 @click.option("--correlation", default=None, help="Correlation with that parent, -1..1.")
+@click.option("--life-table", type=completion.LIFE_TABLE, default=None,
+              help="The aux life_table__<name>.csv to read the age against, by <name> "
+                   "('' for the default life_table.csv).")
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def lifespan_set(
     person: str | None, age: str | None, vary: str | None, low: str | None, high: str | None,
     mode: str | None, correlate_with: str | None, correlation: str | None,
-    scenario: str | None, data_dir: Path | None,
+    life_table: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Set PERSON's AGE at death in years (e.g. 84.5), and how it varies.
 
@@ -11613,7 +11638,9 @@ def lifespan_set(
     --mode); the base case, member 0, is AGE. With --vary life_table the age
     is drawn from the aux life table for the person's sex, shifted so its
     median is AGE (no --low, --high or --mode); the shift and the
-    percentile ages it gives are printed.
+    percentile ages it gives are printed. --life-table reads another
+    population's table, aux/life_table__<name>.csv, for this person in this
+    scenario; AGE is then the median on that table.
 
     With no AGE and no options, asks for each field with its current value
     as the default; otherwise just the fields given change. Written to this
@@ -11634,13 +11661,14 @@ def lifespan_set(
     before = _file_bytes(path)
     found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
     current = {k: v for k, v in (found.row if found else {}).items() if k != "final_month"}
-    given = (age, vary, low, high, mode, correlate_with, correlation)
+    given = (age, vary, low, high, mode, correlate_with, correlation, life_table)
     guided = all(v is None for v in given)
     fields = _lifespan_fields(
         current, _lifespan_parents(data, scenario_name, person) if guided else [],
         guided=guided,
         age=age, vary=vary, low=low, high=high, mode=mode,
-        correlate_with=correlate_with, correlation=correlation,
+        correlate_with=correlate_with, correlation=correlation, life_table=life_table,
+        tables=names.series_names(data, scenario_name, "life_table") if guided else (),
     )
     row = {"person": person, **fields}
     df = _own_lifespans(path)

@@ -39,6 +39,7 @@ from analysis.sim.distributions import (
     rewrite_outcomes,
 )
 from analysis.sim.lineage import (
+    TEMPLATE_AUX_DIR,
     TEMPLATE_SCENARIOS_DIR,
     ScenarioCycleError,
     is_template,
@@ -70,7 +71,7 @@ __all__ = [
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
-    "set_scenario_enabled", "write_current_scenario",
+    "set_scenario_enabled", "template_aux_copies", "write_current_scenario",
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
@@ -536,6 +537,22 @@ def resolve_scenario_name(
         branch=head.branch,
         dirty=head.dirty,
     )
+
+
+def template_aux_copies(data_dir: Path) -> list[str]:
+    """The data repo's shared ``aux/`` files that match the code repository's
+    ``templates/aux/`` byte for byte (#317). The loader reads the template's
+    anyway, so each can be deleted, and while it stays it hides the
+    template's later updates."""
+    folder = data_dir / "aux"
+    if not folder.is_dir():
+        return []
+    return [
+        path.name for path in sorted(folder.glob("*.csv"))
+        if path.name != "filing_status.csv"  # the household's, even while empty
+        and (TEMPLATE_AUX_DIR / path.name).is_file()
+        and path.read_bytes() == (TEMPLATE_AUX_DIR / path.name).read_bytes()
+    ]
 
 
 def list_scenario_names(data_dir: Path, scenarios_dir: Path | None = None) -> list[str]:
@@ -1151,10 +1168,13 @@ def load_scenario(
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
     )
     life_tables_ok = _validate_life_tables(aux_rows, issues)
+    life_tables: dict[str | None, list[tuple[str, dict[str, Any]]]] = {}
+    for kind, name, payload, eff in aux_rows:
+        if kind == life_table.LIFE_TABLE_KIND:
+            life_tables.setdefault(name, []).append((eff, payload))
     lifespan_links = _validate_lifespan(
         lifespan_rows, persons, scenario_row.get("start", ""), issues,
-        life_tables=[(eff, payload) for kind, _, payload, eff in aux_rows
-                     if kind == life_table.LIFE_TABLE_KIND] if life_tables_ok else None,
+        life_tables=life_tables if life_tables_ok else None,
     )
     _validate_calendar_correlation(calendar_rows, issues, unused, lifespan_links)
     _validate_series_references(
@@ -1193,6 +1213,7 @@ def load_scenario(
     )
     _validate_retirement_owners(accounts, persons, issues)
     _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
+    _validate_filing_status(scheduled_rows, aux_rows, scenario_row, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
@@ -1602,6 +1623,9 @@ def _merged_override_files(
     replaces a less specific one of the same name wholesale, not merged row by
     row.
 
+    Under ``aux`` the code repository's ``templates/aux/`` comes first, below
+    the data repo's own (#317).
+
     ``series/`` is scenario-only (``include_shared=False``): growth rates and
     inflation series are per-scenario projections, not tax-law facts, so there
     is no shared ``series/`` at the data repo root -- what's "shared" is
@@ -1609,9 +1633,12 @@ def _merged_override_files(
     other per-scenario file (ADR-003 §4.1d).
     """
     merged: dict[str, Path] = {}
-    tiers = (*((data_dir,) if include_shared else ()), *reversed(scenario_dirs))
+    # The code repository's templates/aux/ is the lowest tier (#317): the
+    # tax-law tables every data repo would otherwise keep a copy of.
+    template = (TEMPLATE_AUX_DIR,) if include_shared and subfolder == "aux" else ()
+    tiers = (*template, *((data_dir,) if include_shared else ()), *reversed(scenario_dirs))
     for d in tiers:
-        folder = d / subfolder
+        folder = d if d == TEMPLATE_AUX_DIR else d / subfolder
         if folder.is_dir():
             for path in folder.glob("*.csv"):
                 merged[path.name] = path
@@ -2535,6 +2562,51 @@ def _validate_retirement_owners(
 
 IRMAA_PARAMS = frozenset({"parts", "filing_status_aux"})
 IRMAA_PARTS = ("B+D", "B", "D")
+
+
+FILING_STATUS_RULE_KINDS = frozenset({"tax_accumulator", "irmaa"})
+
+
+def _validate_filing_status(
+    rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scenario_row: dict[str, str], issues: list[str],
+) -> None:
+    """The household's filing status (#317): one ``filing_status`` row per
+    date, and a row in force by the end of the scenario's first year for each
+    rule that taxes by it. The templates ship the file empty, since the
+    status is the household's choice, so a data repo that never set one
+    fails here rather than in the middle of a run (a death still makes a
+    joint filer Single without a row)."""
+    kinds = {"filing_status"}
+    needs: dict[str, str] = {}
+    for where, row in _located(rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") not in FILING_STATUS_RULE_KINDS:
+            continue
+        params = _safe_json(row.get("params_json") or "{}") or {}
+        kind = str(params.get("filing_status_aux", "filing_status"))
+        kinds.add(kind)
+        needs.setdefault(kind, f"{where} ({row.get('name', '')})")
+    by_kind: dict[str, dict[str, list[str]]] = {}
+    for kind, _series, payload, effective in aux_rows:
+        if kind in kinds:
+            by_kind.setdefault(kind, {}).setdefault(effective, []).append(
+                str(payload.get("filing_status", "")))
+    for kind, dated in sorted(by_kind.items()):
+        for effective, statuses in sorted(dated.items()):
+            if len(statuses) > 1:
+                issues.append(
+                    f"aux/{kind}.csv: {effective} gives {len(statuses)} filing statuses "
+                    f"({', '.join(statuses)}); a date takes one, the household's")
+    start = scenario_row.get("start", "")
+    if len(start) < 4 or not start[:4].isdigit():
+        return  # reported where the start is read
+    year_end = f"{start[:4]}-12-31"
+    for kind, where in sorted(needs.items()):
+        if not any(effective <= year_end for effective in by_kind.get(kind, {})):
+            issues.append(
+                f"{where}: taxes by filing status, but aux/{kind}.csv has no row in force "
+                f"by {year_end}; add one with the household's status (MFJ, Single or MFS)")
 
 
 def _validate_irmaa(
@@ -4421,7 +4493,7 @@ def _validate_lifespan(
     scenario_start: str,
     issues: list[str],
     *,
-    life_tables: list[tuple[str, dict[str, Any]]] | None = None,
+    life_tables: dict[str | None, list[tuple[str, dict[str, Any]]]] | None = None,
 ) -> dict[str, tuple[str, str]]:
     """lifespan.csv (#221): each row names a person and an ``age_at_death``,
     which becomes the row's ``final_month`` from the person's birthdate. A
@@ -4431,9 +4503,10 @@ def _validate_lifespan(
     ``vary_correlation`` go together, on a varying row, rho in [-1, 1]; the
     parent is checked with the calendar's forest. A ``life_table`` row
     (#222) takes no bounds; its set-forward is solved here from the person's
-    sex and the aux ``life_table`` in ``life_tables`` (effective date,
-    payload), and kept on the row for the writer; ``None`` (a broken table,
-    already reported) skips that.
+    sex and the aux life table the row's ``life_table`` names (#315; blank
+    for the default ``life_table.csv``), out of ``life_tables`` (name ->
+    (effective date, payload)), and kept on the row for the writer; ``None``
+    (a broken table, already reported) skips that.
 
     Returns each varying row's correlation node (``lifespan:<person>``),
     mapped to its parent (or "") and where to report it."""
@@ -4469,10 +4542,23 @@ def _validate_lifespan(
         except ValueError:
             continue  # persons.csv reports the bad birthdate
         _validate_lifespan_vary(row, age, birthdates[person], scenario_start, where, issues, links)
+        table = (row.get("life_table") or "").strip() or None
+        if table is not None and not re.fullmatch(r"[a-z0-9_]+", table):
+            issues.append(
+                f"{where}: life_table must name an aux life_table__<name>.csv in lowercase "
+                f"letters, digits and _ (got '{table}')")
+            continue
+        # Checked for a fixed age too: `sim person show` reads the table.
+        if table is not None and life_tables is not None and table not in life_tables:
+            issues.append(
+                f"{where}: life_table '{table}' needs aux/{life_table.table_file(table)}, "
+                "which isn't in this scenario's lineage")
+            continue
+        row["life_table"] = table or ""
         if (row.get("vary_distribution") or "").strip() == registries.LIFE_TABLE_DISTRIBUTION:
             _solve_life_table(
                 row, sexes[person], birthdates[person], scenario_start, life_tables,
-                where, issues,
+                where, issues, table=table,
             )
     return links
 
@@ -4483,11 +4569,12 @@ _SET_FORWARD_KEY = "life_table_set_forward"
 
 def _solve_life_table(
     row: dict[str, Any], sex: str, birthdate: str, scenario_start: str,
-    life_tables: list[tuple[str, dict[str, Any]]] | None, where: str, issues: list[str],
+    life_tables: dict[str | None, list[tuple[str, dict[str, Any]]]] | None,
+    where: str, issues: list[str], *, table: str | None = None,
 ) -> None:
-    """A ``life_table`` lifespan's set-forward (#222): the one that puts the
-    table's median age at death, given alive at the scenario start, at
-    ``age_at_death``."""
+    """A ``life_table`` lifespan's set-forward (#222): the one that puts
+    ``table``'s median age at death (#315; None for the default table),
+    given alive at the scenario start, at ``age_at_death``."""
     if sex not in registries.PERSON_SEXES:
         issues.append(
             f"{where}: a life_table lifespan needs '{row['person']}'s sex "
@@ -4497,10 +4584,10 @@ def _solve_life_table(
     if not scenario_start or life_tables is None:
         return  # reported where the start or the table is read
     try:
-        table = life_table.life_table_for(life_tables, sex, scenario_start)
+        q = life_table.life_table_for(life_tables.get(table, []), sex, scenario_start, table)
         start = life_table.months_since_birth(birthdate, scenario_start)
         median = round(float(row["age_at_death"]) * 12)
-        row[_SET_FORWARD_KEY] = life_table.solve_set_forward(table, start, median)
+        row[_SET_FORWARD_KEY] = life_table.solve_set_forward(q, start, median)
     except life_table.LifeTableError as e:
         issues.append(f"{where}: life_table age_at_death {row['age_at_death']}: {e}")
     except ValueError:
@@ -4510,15 +4597,15 @@ def _solve_life_table(
 def _validate_life_tables(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
 ) -> bool:
-    """Each ``life_table`` vintage (#222): its ages run 0, 1, 2, ... once
-    each, and every q is a probability. Whether all of them do."""
+    """Each vintage of each life table (#222, #315): its ages run 0, 1, 2,
+    ... once each, and every q is a probability. Whether all of them do."""
     before = len(issues)
-    vintages: dict[str, list[dict[str, Any]]] = {}
-    for kind, _, payload, effective in aux_rows:
+    vintages: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for kind, name, payload, effective in aux_rows:
         if kind == life_table.LIFE_TABLE_KIND:
-            vintages.setdefault(effective, []).append(payload)
-    for effective, payloads in sorted(vintages.items()):
-        where = f"aux life_table.csv ({effective[:7]})"
+            vintages.setdefault((name or "", effective), []).append(payload)
+    for (name, effective), payloads in sorted(vintages.items()):
+        where = f"aux {life_table.table_file(name)} ({effective[:7]})"
         ages = sorted(p["age"] for p in payloads if isinstance(p["age"], int))
         if len(ages) != len(payloads) or ages != list(range(len(ages))):
             issues.append(f"{where}: ages must be whole numbers 0, 1, 2, ... each once, no gaps")
@@ -4964,7 +5051,8 @@ def _write_intent(
         con.execute(
             "INSERT INTO person_lifespan(scenario_id, person, age_at_death, final_month, "
             "vary_distribution, vary_low, vary_high, vary_mode, vary_correlate_with, "
-            "vary_correlation, life_table_set_forward) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_correlation, life_table_set_forward, life_table) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 scenario_id, lf["person"], float(lf["age_at_death"]), lf["final_month"],
                 lf.get("vary_distribution") or None,
@@ -4975,6 +5063,7 @@ def _write_intent(
                 if lf.get("vary_distribution") == "triangular" else None,
                 lf.get("vary_correlate_with") or None, _opt_float(lf.get("vary_correlation")),
                 lf.get(_SET_FORWARD_KEY),
+                (lf.get("life_table") or "").strip() or None,
             ),
         )
     counts["person_lifespan"] = len(lifespan_rows)

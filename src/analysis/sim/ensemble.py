@@ -60,7 +60,7 @@ from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 from analysis.sim import units
 from analysis.sim.dates import final_month_for_age, place_month
 from analysis.sim.life_table import (
-    LifeTableAge, LifeTableError, life_table_in, months_since_birth,
+    LifeTableAge, LifeTableError, life_table_in, months_since_birth, person_table,
 )
 from analysis.sim.registries import (
     DATE_MARKER_KIND,
@@ -712,7 +712,7 @@ def life_table_age(con: sqlite3.Connection, person: str, set_forward: float) -> 
     if found is None or not found[1] or start is None or set_forward is None:
         raise EnsembleError(f"lifespan of {person!r}: life_table needs a sex and a solved set-forward")
     try:
-        table = life_table_in(con, found[1], start[0])
+        table = life_table_in(con, found[1], start[0], person_table(con, person))
     except LifeTableError as e:
         raise EnsembleError(f"lifespan of {person!r}: {e}") from e
     return LifeTableAge(table, months_since_birth(found[0], start[0]), set_forward)

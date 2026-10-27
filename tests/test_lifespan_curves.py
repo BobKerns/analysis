@@ -207,3 +207,15 @@ def test_the_terminal_figure_leaves_room_for_the_prompt(monkeypatch: pytest.Monk
 
     assert width * dpi == pytest.approx(200 * 10)
     assert height * dpi == pytest.approx((50 - 3) * 24)
+
+
+def test_person_show_reads_and_names_a_persons_own_table(
+    test_data_dir: Path, write_lifespans: Callable[..., None],
+) -> None:
+    """#315: a person whose lifespan names a life table is drawn from it."""
+    write_lifespans("alice,90,life_table,,,,,,jp")
+
+    result = _sim(test_data_dir, "alice")
+
+    assert result.exit_code == 0, result.output
+    assert "the jp f table read" in result.output

@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -347,6 +347,8 @@ CREATE TABLE person_lifespan (
     -- #222: a life_table lifespan's set-forward in years (negative is a
     -- set-back), solved at load so the table's median is age_at_death.
     life_table_set_forward REAL,
+    -- #315: the aux life_table__<name>.csv's name; NULL for life_table.csv
+    life_table TEXT,
     PRIMARY KEY (scenario_id, person)
 );
 

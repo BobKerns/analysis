@@ -431,6 +431,7 @@ def test_irmaa_tier_keeps_a_conversions_magi_within_the_tier(irmaa_run: Run) -> 
     assert _summary(run).loc[2031, "federal_irmaa_tier"] == 0
 
 
+@pytest.mark.usefixtures("without_template_aux")
 def test_irmaa_tier_needs_a_tier_table_and_a_whole_number(
     load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
     test_data_dir: Path,
