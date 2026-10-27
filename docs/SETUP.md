@@ -62,7 +62,8 @@ is committed and matches your local `main` (or the branch
 `sim builder install BRANCH` names). Setup skips this under CI or an
 agent (`CI`, `CLAUDECODE`, `CLAUDE_CODE_REMOTE` or `AI_AGENT` set) or with
 `ANALYSIS_NO_BUILDER=1`; `sim builder install` turns it on later, and
-`sim builder uninstall` off. `sim builder status` says what it's doing.
+`sim builder uninstall` off. `sim builder status` says what it's doing,
+and `sim builder log` what it did in the last hour (`-v` adds build output).
 
 ## What the script does, step by step (for reference or manual setup)
 

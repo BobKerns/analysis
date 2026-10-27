@@ -22,3 +22,8 @@ runs:
 # state/), e.g. state/runs/<stamp>_<scenario>_<version>.sqlite3. Pinning a
 # batch keeps both its runs and its member intents.
 pins: []
+
+# The background builder's log, one file per day (state/builder/logs/).
+logs:
+  - keep: 7
+    since: 30 days

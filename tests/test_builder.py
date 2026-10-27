@@ -492,3 +492,22 @@ def test_looking_up_a_scenario_never_waits_for_its_build(
     assert waited and set(waited) == {"base"}
     asked = len(waited)
     assert ref.run_path is None and len(waited) == asked  # waited for once
+
+
+def test_a_builds_output_is_logged_indented_under_its_record(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import builder_log
+
+    monkeypatch.setattr(builder, "_sim_executable", lambda: [
+        "sh", "-c", 'echo "loading"; echo "oops" >&2; exit 3', "sim"])
+    daemon.scan()
+    name = daemon.queue[0]
+    daemon.start_next(("t1",))
+    _wait_until_done(daemon)
+    records = builder_log.read_records(daemon.paths.dir)
+    assert [r.text.split(" (")[0] for r in records] == [f"building {name}",
+                                                       f"{name} failed"]
+    assert records[0].body == ["  loading", "  oops"]
+    assert records[1].text.startswith(f"{name} failed (exit 3, ")
+    assert "sim builder log" in daemon.failed[name]["message"]

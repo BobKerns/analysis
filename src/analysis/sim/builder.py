@@ -28,7 +28,8 @@ Rules (Bob, #300):
 Everything lives in the data repo's ``state/builder/`` (untracked, and one
 per data worktree): ``config.json`` (the opt-in and the pair),
 ``daemon.lock`` (held for the daemon's life), ``status.json``, ``requests/``
-(pokes and "build this next"), ``builder.log``.
+(pokes and "build this next"), ``logs/`` (one file a day, #314: see
+``builder_log``).
 """
 
 from __future__ import annotations
@@ -39,12 +40,15 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from analysis.sim import builder_log
 from analysis.sim.loader import (
     DEFAULT_INTENT_DIR,
     DEFAULT_RUNS_DIR,
@@ -116,8 +120,8 @@ class BuilderPaths:
         return self.dir / "requests"
 
     @property
-    def log(self) -> Path:
-        return self.dir / "builder.log"
+    def log_dir(self) -> Path:
+        return self.dir / "logs"
 
     @property
     def runs_dir(self) -> Path:
@@ -274,10 +278,14 @@ def spawn_daemon(paths: BuilderPaths, data_dir: Path) -> None:
     code = (read_config(paths) or {}).get("code_dir")
     sim = Path(code) / ".venv" / "bin" / "sim" if code else None
     command = [str(sim)] if sim is not None and sim.exists() else _sim_executable()
-    with open(paths.log, "ab") as log:
+    # The daemon writes its log itself; only what it can't (a traceback) goes
+    # to stderr, kept in the log unindented, so shown without -v.
+    log = builder_log.file_for(paths.log_dir, datetime.now())
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "ab") as stderr:
         subprocess.Popen(
             [*command, "builder", "run", "--data-dir", str(data_dir)],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
             start_new_session=True, env=env, close_fds=True,
         )
 
@@ -309,6 +317,13 @@ class _Build:
     process: subprocess.Popen[bytes]
     started: float
     wanted: bool = False  # someone is waiting for it: never preempted
+    reader: threading.Thread | None = None  # copies its output into the log
+
+    def drain(self) -> None:
+        """Let the reader copy the last of the output, so the outcome's
+        record comes after it."""
+        if self.reader is not None:
+            self.reader.join(timeout=5)
 
 
 class _Daemon:
@@ -316,6 +331,7 @@ class _Daemon:
         self.data_dir = data_dir.resolve()
         self.paths = BuilderPaths.for_data(self.data_dir)
         self.echo = echo
+        self.writer = builder_log.LogWriter(self.paths.log_dir, on_new_day=self.prune_logs)
         self.queue: list[str] = []
         self.first: list[str] = []
         # Builds preempted for a scenario someone is waiting on: next in line.
@@ -340,7 +356,16 @@ class _Daemon:
         return [list(trees), data_stamps(self.data_dir, scenario).tree_id]
 
     def log(self, text: str) -> None:
-        self.echo(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}")
+        self.echo(self.writer.event(text))
+
+    def prune_logs(self) -> None:
+        """Old log files, by ``.retention.yaml``'s ``logs:`` rules."""
+        from analysis.sim.retention import RetentionError
+
+        try:
+            builder_log.prune_logs(self.data_dir, self.paths.dir)
+        except RetentionError as exc:
+            self.log(f"log files not pruned: {exc}")
 
     def write_status(self) -> None:
         current = None
@@ -451,6 +476,7 @@ class _Daemon:
             return
         self.log(f"cancelling {build.scenario}: {why}")
         _kill(build.process)
+        build.drain()
         self.build = None
 
     def start_next(self, trees: tuple[str, ...]) -> None:
@@ -462,13 +488,18 @@ class _Daemon:
         env = {**os.environ, BUILDER_SWITCH_ENV: "off", BUILDER_CHILD_ENV: "1"}
         self.log(f"building {name}")
         self.paths.dir.mkdir(parents=True, exist_ok=True)
-        with open(self.paths.log, "ab") as log:
-            process = subprocess.Popen(
-                [*_sim_executable(), "load", name, "--data-dir", str(self.data_dir)],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                start_new_session=True, env=env, close_fds=True,
-            )
-        self.build = _Build(name, key, process, time.time(), wanted)
+        process = subprocess.Popen(
+            [*_sim_executable(), "load", name, "--data-dir", str(self.data_dir)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            start_new_session=True, env=env, close_fds=True,
+        )
+        assert process.stdout is not None
+        # A thread, so a chatty build never blocks on a full pipe while the
+        # loop sleeps.
+        reader = threading.Thread(target=self.writer.copy, args=(process.stdout,),
+                                  name=f"log {name}", daemon=True)
+        reader.start()
+        self.build = _Build(name, key, process, time.time(), wanted, reader)
         self.cancelled.pop(name, None)
         self.state = "building"
 
@@ -478,28 +509,30 @@ class _Daemon:
         if build is None or build.process.poll() is None:
             return False
         self.build = None
+        build.drain()
         from analysis.sim.freshness import code_tree, unchanged_run
 
         code = build.process.returncode
+        took = _took(time.time() - build.started)
         still_stale = code == 0 and unchanged_run(
             self.data_dir, self.paths.runs_dir, build.scenario, code_tree()) is None
         if code == 0 and not still_stale:
             self.failed.pop(build.scenario, None)
-            self.log(f"built {build.scenario}")
+            self.log(f"built {build.scenario} ({took})")
         elif still_stale:
             # An ensemble with failed members: `sim load` exits 0, but the
             # batch is incomplete, so it would be queued again at once.
             self.failed[build.scenario] = {
                 "key": build.key, "exit": 0, "at": time.time(),
-                "message": f"built, but not every member succeeded; see {self.paths.log}",
+                "message": "built, but not every member succeeded; see sim builder log",
             }
-            self.log(f"{build.scenario} built incomplete (failed members)")
+            self.log(f"{build.scenario} built incomplete (failed members, {took})")
         else:
             self.failed[build.scenario] = {
                 "key": build.key, "exit": code, "at": time.time(),
-                "message": f"exit {code}; see {self.paths.log}",
+                "message": f"exit {code}; see sim builder log",
             }
-            self.log(f"{build.scenario} failed (exit {code})")
+            self.log(f"{build.scenario} failed (exit {code}, {took})")
         return True
 
     def run(self) -> int:
@@ -510,7 +543,7 @@ class _Daemon:
         except BlockingIOError:
             os.close(lock)
             return 0  # one is already running; it has the request
-        _trim_log(self.paths.log)
+        self.prune_logs()
         configured = (read_config(self.paths) or {}).get("code_dir")
         if configured and code_dir() != Path(configured).resolve():
             self.log(f"not started: this is {code_dir()}, but the pair's code is {configured}")
@@ -568,18 +601,14 @@ class _Daemon:
         return 0
 
 
-def _trim_log(log: Path, limit: int = 1 << 20) -> None:
-    """Keep the log's last quarter once it passes ``limit`` bytes. Each
-    daemon trims it as it starts; builds append to it."""
-    try:
-        if log.stat().st_size <= limit:
-            return
-        with open(log, "rb") as f:
-            f.seek(-limit // 4, os.SEEK_END)
-            tail = f.read()
-    except OSError:
-        return
-    log.write_bytes(tail[tail.find(b"\n") + 1:])
+def _took(seconds: float) -> str:
+    """``42s``, ``3m38s``, ``1h05m``."""
+    seconds = round(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
 
 
 def _kill(process: subprocess.Popen[bytes]) -> None:
@@ -739,7 +768,7 @@ def _wait(paths: BuilderPaths, scenario: str, made: float, echo: Callable[[str],
                     echo(f"the background build of {scenario} is done")
                 return
         if not alive and time.monotonic() - started > 10:
-            echo(f"the background builder stopped; see {paths.log}")
+            echo("the background builder stopped; see sim builder log")
             return
         if time.monotonic() - last_progress >= 30:
             last_progress = time.monotonic()

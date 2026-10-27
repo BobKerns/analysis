@@ -14,6 +14,9 @@ rules in ``$ANALYSIS_DATA_DIR/.retention.yaml``, which they create with
         since: 7 days
     pins:               # never pruned; relative to the data repo root
       - state/runs/<stamp>_<scenario>_<version>.sqlite3
+    logs:               # the background builder's daily log files (#314)
+      - keep: 7
+        since: 30 days
 
 Items are grouped per scenario and kind (single runs, run batches, intent
 batches) and ranked newest first. An item is kept when any rule keeps it, and
@@ -22,6 +25,11 @@ newest; ``since: <duration>``: made within that long). Whatever the rules
 say, the newest item of each group is kept (a failed run's latest attempt
 included), and so is each scenario's newest successful run and batch. A
 missing or empty section prunes nothing of that kind.
+
+``logs`` rules rank the builder's daily log files (``state/builder/logs/``)
+newest first, by their last write; the daemon applies them as it starts and
+each time it starts a new day's file (``builder_log.prune_logs``), and the
+newest file is always kept.
 """
 
 from __future__ import annotations
@@ -49,6 +57,7 @@ __all__ = [
     "Retention",
     "RetentionError",
     "Rule",
+    "parse_duration",
     "parse_retention",
     "plan_prune",
     "prune_state",
@@ -84,6 +93,11 @@ runs:
 # state/), e.g. state/runs/<stamp>_<scenario>_<version>.sqlite3. Pinning a
 # batch keeps both its runs and its member intents.
 pins: []
+
+# The background builder's log, one file per day (state/builder/logs/).
+logs:
+  - keep: 7
+    since: 30 days
 """
 
 # `sim run` names: `<stamp>[-N]_<scenario>_<data version>.sqlite3` for a
@@ -94,7 +108,7 @@ _STAMP = r"\d{4}-\d\d-\d\dT\d{6}Z"
 _RUN_FILE = re.compile(rf"^({_STAMP})(?:-(\d+))?_(.+)_[^_]+\.sqlite3$")
 _BATCH_DIR = re.compile(rf"^({_STAMP})(?:-(\d+))?$")
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(minute|hour|day|week)s?\s*$", re.IGNORECASE)
-_SECTIONS = ("intents", "runs", "pins")
+_SECTIONS = ("intents", "runs", "pins", "logs")
 # Beyond this, `now - since` could leave datetime's range.
 _LONGEST_SINCE = timedelta(days=366_000)
 # A run or batch written to this recently may still be in progress in another
@@ -128,6 +142,7 @@ class Retention:
     intents: tuple[Rule, ...] | None = None
     runs: tuple[Rule, ...] | None = None
     pins: tuple[Path, ...] = ()
+    logs: tuple[Rule, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -183,7 +198,7 @@ def parse_retention(text: str, *, base: Path) -> Retention:
     if doc is None:
         return Retention()
     if not isinstance(doc, dict):
-        raise RetentionError("expected a mapping with intents, runs and pins")
+        raise RetentionError("expected a mapping with intents, runs, pins and logs")
     unknown = sorted(str(k) for k in doc if k not in _SECTIONS)
     if unknown:
         raise RetentionError(f"unknown section(s): {', '.join(unknown)} "
@@ -196,6 +211,7 @@ def parse_retention(text: str, *, base: Path) -> Retention:
         intents=_rules("intents", doc.get("intents")),
         runs=_rules("runs", doc.get("runs")),
         pins=tuple((base / p.strip()).resolve() for p in pins),
+        logs=_rules("logs", doc.get("logs")),
     )
 
 
@@ -227,9 +243,18 @@ def _rules(section: str, raw: Any) -> tuple[Rule, ...] | None:
 
 
 def _duration(where: str, raw: Any) -> timedelta:
+    try:
+        return parse_duration(raw)
+    except RetentionError as exc:
+        raise RetentionError(f"{where}: since {exc}") from None
+
+
+def parse_duration(raw: Any) -> timedelta:
+    """``'3 days'`` (minutes, hours, days or weeks) as a timedelta; also
+    what ``sim builder log --since`` takes."""
     match = _DURATION.match(str(raw))
     if match is None:
-        raise RetentionError(f"{where}: since must look like '3 days' (minutes, hours, "
+        raise RetentionError(f"must look like '3 days' (minutes, hours, "
                              f"days or weeks), got {raw!r}")
     amount, unit = float(match[1]), match[2].lower()
     try:
@@ -237,7 +262,7 @@ def _duration(where: str, raw: Any) -> timedelta:
     except OverflowError:
         since = _LONGEST_SINCE + _LONGEST_SINCE
     if since > _LONGEST_SINCE:
-        raise RetentionError(f"{where}: since is longer than 1000 years, got {raw!r}")
+        raise RetentionError(f"is longer than 1000 years, got {raw!r}")
     return since
 
 

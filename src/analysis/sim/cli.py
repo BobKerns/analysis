@@ -12736,21 +12736,64 @@ def builder_status(data_dir: Path | None) -> None:
         click.echo(f"waiting: {name} ({why})")
     for name, failed in sorted((status.get("failed") or {}).items()):
         click.echo(f"failed: {name}: {failed.get('message')}")
-    click.echo(f"log: {paths.log}")
+    click.echo(f"log: {paths.log_dir} (sim builder log)")
 
 
 @builder_group.command(name="log")
 @_BUILDER_DATA_DIR
-@click.option("-n", "lines", type=int, default=40, show_default=True, help="Lines to show.")
-def builder_log(data_dir: Path | None, lines: int) -> None:
-    """The end of the builder's log."""
-    from analysis.sim import builder
+@click.option("-n", "count", type=click.IntRange(min=1), default=None,
+              help="The newest N records, however old (with --since, the newest N within it).")
+@click.option("--since", default=None, metavar="DURATION",
+              help="Records from this long ago on, e.g. '3 days' (minutes, hours, days or "
+                   "weeks). Default: 1 hour, unless -n is given.")
+@click.option("-a", "--all", "show_all", is_flag=True, default=False, help="Every record kept.")
+@click.option("-v", "--verbose", is_flag=True, default=False,
+              help="Show each build's output (the indented lines).")
+@click.option("-f", "--follow", is_flag=True, default=False,
+              help="Oldest first, then print what is added until Ctrl-C.")
+def builder_log(
+    data_dir: Path | None, count: int | None, since: str | None,
+    show_all: bool, verbose: bool, follow: bool,
+) -> None:
+    """The builder's log, newest record first.
 
-    log = builder.BuilderPaths.for_data(_builder_data_dir(data_dir)).log
-    try:
-        text = log.read_text(errors="replace").splitlines()
-    except FileNotFoundError:
-        click.echo(f"(no log yet: {log})")
+    A record is one event (a build starting, finishing, failing or being
+    cancelled; the builder starting or stopping) and the build output after
+    it, which only -v shows; a failed build shows the end of its output
+    anyway. One file is kept a day, pruned by .retention.yaml's logs: rules.
+    """
+    from analysis.sim import builder, builder_log as blog
+    from analysis.sim.retention import RetentionError, parse_duration
+
+    if show_all and (count is not None or since is not None):
+        raise click.UsageError("--all shows every record; leave out -n and --since")
+    window = None
+    if not show_all and (since is not None or count is None):
+        try:
+            window = parse_duration(since if since is not None else "1 hour")
+        except RetentionError as exc:
+            raise click.BadParameter(str(exc), param_hint="--since") from None
+    paths = builder.BuilderPaths.for_data(_builder_data_dir(data_dir))
+    records = blog.read_records(paths.dir)
+    tails = {} if verbose else blog.failure_tails(records)
+    chosen = list(enumerate(records))
+    if window is not None:
+        cutoff = blog.since_cutoff(window)
+        chosen = [(i, r) for i, r in chosen if r.at is not None and r.at >= cutoff]
+    if count is not None:
+        chosen = chosen[-count:]
+    if not records and not follow:
+        click.echo(f"(no log yet: {paths.log_dir})")
         return
-    for line in text[-lines:]:
-        click.echo(line)
+    if not chosen and not follow:
+        older = "-n N or -a" if window is not None else "-a"
+        click.echo(f"(nothing in the log since {since or '1 hour'} ago; {older} shows older records)")
+        return
+    for i, record in (chosen if follow else reversed(chosen)):
+        for line in blog.render(record, verbose, tails.get(i)):
+            click.echo(line)
+    if follow:
+        try:
+            blog.follow(paths.dir, click.echo, verbose=verbose)
+        except KeyboardInterrupt:
+            pass
