@@ -1,10 +1,11 @@
 """Each person's age-at-death distribution, as numbers and as a chart (#312).
 
 For every person with a sex, the life table (#222) gives the chance of dying
-in each month from the scenario start on. A ``life_table`` lifespan reads the
-table with the set-forward the loader solved, so the curve is the one the
-ensemble draws from; any other person gets the plain table, with the age the
-scenario assumes marked on it. With two or more such persons the household
+in each month from the scenario start on, read older or younger so its
+median is the scenario's age at death: for a ``life_table`` lifespan the
+set-forward the loader solved, so the curve is the one the ensemble draws
+from, and the same solve for any other lifespan. The plain table's median is
+marked beside it; a person with no age at death gets the plain table. With two or more such persons the household
 curve is the chance that at least one is still alive, month by month: the
 plan runs until the last death. The lifespans are taken as independent, as
 the ensemble draws them unless a correlation row says otherwise.
@@ -27,7 +28,9 @@ from matplotlib.ticker import FuncFormatter, PercentFormatter
 
 from analysis.sim.dates import parse_day, parse_month
 from analysis.sim.ensemble import REPORT_PERCENTILES
-from analysis.sim.life_table import LifeTableAge, LifeTableError, life_table_in, months_since_birth
+from analysis.sim.life_table import (
+    LifeTableAge, LifeTableError, life_table_in, months_since_birth, solve_set_forward,
+)
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.registries import LIFE_TABLE_DISTRIBUTION
 
@@ -41,9 +44,13 @@ class PersonLifespan:
 
     ``cdf[k]`` is the chance the person's final month is ``k`` months after
     the scenario's first month or earlier; ``dist`` answers quantiles in
-    years of age. ``adjusted`` says the table is read with the lifespan's
-    solved ``set_forward``; otherwise it is the plain table, and
-    ``assumed_age`` is the scenario's fixed (or base-case) age, if any."""
+    years of age. When the scenario sets an ``age_at_death``, the table is
+    read ``set_forward`` years older (``centered``) so its median is that
+    age, whatever the lifespan's ``vary``: a ``life_table`` lifespan's own
+    solved set-forward, which the ensemble draws from, or the same solve
+    for a fixed or uniform/triangular one, to show what that age means
+    against the table. Otherwise it is the plain table. ``table_median`` is
+    the plain table's median, for comparison."""
 
     person: str
     display: str
@@ -52,10 +59,11 @@ class PersonLifespan:
     start: date
     end: date
     dist: LifeTableAge
-    adjusted: bool
+    centered: bool
     set_forward: float
-    assumed_age: float | None
+    age_at_death: float | None
     vary: str | None
+    table_median: float
 
     @property
     def cdf(self) -> tuple[float, ...]:
@@ -114,19 +122,26 @@ def person_lifespans(con: sqlite3.Connection) -> tuple[list[PersonLifespan], lis
             notes.append(f"{person}: no birthdate, so no age to read the life table at")
             continue
         age, vary, set_forward = lifespans.get(person, (None, None, None))
-        adjusted = vary == LIFE_TABLE_DISTRIBUTION and set_forward is not None
+        months = months_since_birth(birthdate, start)
         try:
             table = life_table_in(con, sex, start_text)
-            dist = LifeTableAge(table, months_since_birth(birthdate, start),
-                                set_forward if adjusted else 0.0)
         except LifeTableError as e:
             notes.append(f"{person}: {e}")
             continue
+        if age is not None and not (vary == LIFE_TABLE_DISTRIBUTION and set_forward is not None):
+            try:
+                set_forward = solve_set_forward(table, months, round(age * 12))
+            except LifeTableError as e:
+                notes.append(f"{person}: age at death {age:g}: {e}; showing the plain table")
+                set_forward = None
+        centered = age is not None and set_forward is not None
         found.append(PersonLifespan(
             person=person, display=display, sex=sex, birthdate=parse_day(birthdate),
-            start=start, end=end, dist=dist, adjusted=adjusted,
-            set_forward=set_forward if adjusted else 0.0,
-            assumed_age=None if adjusted else age, vary=vary,
+            start=start, end=end,
+            dist=LifeTableAge(table, months, set_forward if centered else 0.0),
+            centered=centered, set_forward=set_forward if centered else 0.0,
+            age_at_death=age, vary=vary,
+            table_median=LifeTableAge(table, months, 0.0).quantile(0.5),
         ))
     return found, notes
 
@@ -244,13 +259,16 @@ def _draw_cdf(ax: Axes, p: PersonLifespan) -> None:
 
 
 def _mark_ages(ax: Axes, p: PersonLifespan) -> None:
-    """The median as a solid line; the scenario's own age, when the table
-    isn't adjusted to it, as a dashed orange one."""
-    ax.axvline(p.quantile(0.5), color="midnightblue", linewidth=1,
-               label=f"median {p.quantile(0.5):.1f}")
-    if p.assumed_age is not None:
-        ax.axvline(p.assumed_age, color="darkorange", linewidth=1.2, linestyle="--",
-                   label=f"scenario's age {p.assumed_age:g}")
+    """The curve's median as a solid line (the scenario's age at death, when
+    it sets one) and, when the curve is centered there, the plain table's
+    median as a dashed orange one, for comparison."""
+    median = p.quantile(0.5)
+    ax.axvline(median, color="midnightblue", linewidth=1,
+               label=f"scenario's age {p.age_at_death:g} (median)" if p.centered
+               else f"median {median:.1f}")
+    if p.centered:
+        ax.axvline(p.table_median, color="darkorange", linewidth=1.2, linestyle="--",
+                   label=f"table's median {p.table_median:.1f}")
 
 
 def _draw_household(ax: Axes, h: Household) -> None:

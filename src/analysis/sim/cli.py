@@ -11137,9 +11137,10 @@ def person_show(
     """Show how long PERSON may live: the age-at-death distribution the
     life table gives, from the scenario start.
 
-    A life_table lifespan reads the table with its solved set-forward, so the
-    numbers are the ones an ensemble draws from; anyone else gets the plain
-    table for their sex, beside the age the scenario assumes. Prints the
+    The table for their sex is read older or younger so its median is the
+    scenario's age at death (for a life_table lifespan, the curve an ensemble
+    draws from), and the plain table's median is shown beside it; with no
+    age at death, the plain table. Prints the
     percentile ages and, every five years, the chance of having died by then.
 
     Without PERSON, shows every person with a sex, then the household: the
@@ -11176,14 +11177,14 @@ def person_show(
 
     quantiles = (0.05, 0.2, 0.4, 0.5, 0.6, 0.8, 0.95)
     for p in persons:
-        if p.adjusted:
-            how = (f"life_table lifespan, median {p.quantile(0.5):.1f}: the table read "
-                   f"{abs(p.set_forward):.1f} years {'older' if p.set_forward >= 0 else 'younger'}")
-        elif p.assumed_age is not None:
-            how = (f"the plain {p.sex} table; the scenario assumes {p.assumed_age:g}"
-                   + (f" ({p.vary} across members)" if p.vary else ""))
+        if p.centered:
+            varies = {None: "fixed", "life_table": "drawn from this curve"}.get(
+                p.vary, f"{p.vary} across members")
+            how = (f"age at death {p.age_at_death:g} ({varies}); the {p.sex} table read "
+                   f"{abs(p.set_forward):.1f} years {'older' if p.set_forward >= 0 else 'younger'} "
+                   f"puts its median there (the plain table's is {p.table_median:.1f})")
         else:
-            how = f"the plain {p.sex} table; the scenario sets no lifespan"
+            how = f"the plain {p.sex} table; the scenario sets no age at death"
         click.echo(f"{p.display} ({p.person}), {p.age_now:.1f} at the start of {name}: {how}")
         ages = Table(header_style="bold", title="age at death by percentile", title_justify="left")
         for q in quantiles:

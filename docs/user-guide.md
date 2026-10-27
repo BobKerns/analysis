@@ -717,8 +717,11 @@ e.g. about 200% of the table's death rates), and the ages at the 10th, 25th,
 
 `sim person show [person]` shows the whole distribution for each person with
 a sex: the ages at death by percentile and, every five years, the chance of
-having died by then. A `life_table` lifespan is shown as an ensemble draws
-it; anyone else with the plain table and the age the scenario assumes. With
+having died by then. Each is centered on the scenario's age at death: the
+table read older or younger so its median is that age, as a `life_table`
+lifespan's ensemble draws it, and for a fixed age the same shift, to show
+what the age implies; the plain table's median is shown beside it. To see
+the plain table itself, set the age at death to that median. With
 no person it ends with the household: the year the last of them dies, by
 percentile, taking the lifespans as independent, since a plan has to last
 until then. `--graph` (or `--graph-file lifespans.png`) draws each person's

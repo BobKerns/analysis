@@ -54,16 +54,27 @@ def test_a_person_with_a_sex_but_no_birthdate_gets_a_note(
     assert notes == ["pet: no birthdate, so no age to read the life table at"]
 
 
-def test_a_life_table_lifespan_is_drawn_with_its_median_at_the_authored_age(
+def test_each_curve_is_centered_on_the_scenarios_age_at_death(
     lifespans: Callable[..., list[PersonLifespan]],
 ) -> None:
-    alice, bill = lifespans("alice,88,life_table,,,,,", "bill,84,,,,,,")
+    alice, bill = lifespans("alice,88,life_table,,,,,", "bill,78,uniform,75,81,,,")
 
-    assert alice.adjusted and alice.assumed_age is None
-    assert alice.quantile(0.5) == pytest.approx(88.0, abs=1 / 12)
-    # Bill's fixed age doesn't move the table; it is marked beside it.
-    assert not bill.adjusted and bill.set_forward == 0.0 and bill.assumed_age == 84.0
-    assert bill.quantile(0.5) != pytest.approx(84.0, abs=0.5)
+    # Bill's age isn't a life_table one, but the curve is centered on it all
+    # the same; the plain table's median is kept beside it.
+    for p, age in ((alice, 88.0), (bill, 78.0)):
+        assert p.centered and p.age_at_death == age
+        assert p.quantile(0.5) == pytest.approx(age, abs=1 / 12)
+    assert alice.set_forward < 0 < bill.set_forward
+    assert bill.table_median == pytest.approx(82.7, abs=0.1)
+
+
+def test_a_person_with_no_age_at_death_gets_the_plain_table(
+    lifespans: Callable[..., list[PersonLifespan]],
+) -> None:
+    _alice, bill = lifespans()
+
+    assert not bill.centered and bill.set_forward == 0.0 and bill.age_at_death is None
+    assert bill.quantile(0.5) == bill.table_median
 
 
 def test_the_yearly_chances_start_now_and_add_up(lifespans: Callable[..., list[PersonLifespan]]) -> None:
@@ -139,8 +150,9 @@ def test_person_show_prints_percentiles_and_the_household(
     result = _sim(test_data_dir)
 
     assert result.exit_code == 0, result.output
-    assert "life_table lifespan, median 88.0" in result.output
-    assert "the plain m table; the scenario assumes 84" in result.output
+    assert "age at death 88 (drawn from this curve); the f table read" in result.output
+    assert "age at death 84 (fixed); the m table read" in result.output
+    assert "(the plain table's is 82.7)" in result.output
     assert "Died by then" in result.output and "p95" in result.output
     assert "household: the year the last of alice, bill dies" in result.output
 
@@ -151,7 +163,7 @@ def test_person_show_one_person_leaves_out_the_household(test_data_dir: Path) ->
     assert result.exit_code == 0, result.output
     assert "Bill (fake)" in result.output and "Alice (fake)" not in result.output
     assert "household" not in result.output
-    assert "the scenario sets no lifespan" in result.output
+    assert "the scenario sets no age at death" in result.output
 
 
 def test_person_show_refuses_a_person_without_a_sex(test_data_dir: Path) -> None:
