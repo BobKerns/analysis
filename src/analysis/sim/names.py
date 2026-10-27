@@ -16,7 +16,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from analysis.sim import registries
-from analysis.sim.lineage import load_order, scenario_dir, template_names
+from analysis.sim.lineage import TEMPLATE_AUX_DIR, load_order, scenario_dir, template_names
 
 __all__ = [
     "account_names",
@@ -134,8 +134,9 @@ def person_ids(data_dir: Path) -> list[str]:
 def series_names(data_dir: Path, scenario: str, kind: str | None = None) -> list[str]:
     """The series of ``kind`` (``rate``, ``inflation``, ...), or of any kind,
     that the scenario's ``series/`` and ``aux/`` folders and the shared
-    ``aux/`` have a file for: ``<kind>__<name>.csv``."""
-    folders = [data_dir / "aux"]
+    ``aux/`` (and the code repository's ``templates/aux/``, #317) have a
+    file for: ``<kind>__<name>.csv``."""
+    folders = [TEMPLATE_AUX_DIR, data_dir / "aux"]
     for d in _lineage_dirs(data_dir, scenario):
         folders += [d / "series", d / "aux"]
     names = set()

@@ -485,6 +485,15 @@ facts, so `series/` has **no** root-level tier at all; it exists only under
 `scenarios/<name>/series/`, and what's "shared" across scenarios is just the ordinary
 inheritance below.
 
+Beneath the data repo's `aux/` sits one more tier, the analysis code repository's own
+`templates/aux/` ([#317](https://github.com/BobKerns/analysis/issues/317)): the tax-law and
+demographic tables it ships, read like a template scenario (§4.5a) without a copy in the data
+repo. A data repo's `aux/<file>.csv` of the same name replaces it, so a data repo keeps only
+what it changes, and above all its `filing_status.csv`, which the templates ship with no rows:
+the household's status is its own. `sim check -v` names the data repo's `aux/` files that
+match the template's byte for byte, since each can go, and while it stays it hides the
+template's later updates.
+
 A scenario may add its own `scenarios/<name>/aux/<file>.csv`, `scenarios/<name>/prices/<file>.csv`,
 `scenarios/<name>/itemizations/<file>.csv`, or `scenarios/<name>/series/<file>.csv` — same
 filename as an ancestor's (or the shared default, for the first three) to replace it, or a
@@ -494,7 +503,8 @@ lots use).
 - **Resolution is whole-file, per filename, most specific first:** the scenario's own file,
   else its ancestors' in reverse load order (§4.5: following `parent_scenario` all the way
   up, mix-ins after the main parent's line, so a mix-in's file beats the main parent's), else — for
-  `aux/`/`prices/`/`itemizations/` only — the shared file at the data repo root. A match
+  `aux/`/`prices/`/`itemizations/` only — the shared file at the data repo root, else — for
+  `aux/` only — the code repository's `templates/aux/`. A match
   replaces the entire file; there is no row-level merge across tiers (unlike
   `accounts.csv`/`account_lots.csv`/etc., which do merge by key, §4.5).
 - **A derived scenario without its own override inherits its parent's.** Overriding a
@@ -616,7 +626,7 @@ Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation
 - **`inflation__<series>.csv`**:
   `effective_date`, `annual_rate` (percent; deterministic projection; future ensembles substitute realizations)
 - **`filing_status.csv`**:
-  `effective_date`, `filing_status` (rows reflect transitions; one row per change)
+  `effective_date`, `filing_status`: the household's status, one row per change, so one row per date. The templates ship it with only its header. A scenario with a `tax_accumulator` or `irmaa` rule (§2.6, §2.11) needs a row in force by the end of its first year, and a date with two rows is a load error. A taxpayer's death still makes MFJ or MFS Single from the next year without a row (§4.9).
 - **`rmd_start_age.csv`**:
   `effective_date`, `start_age`
 - **`ltcg_brackets.csv`** (optional): `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate`. Federal long-term capital gain rates in the shape of `federal_brackets.csv`, but a band's `floor` is the taxable income, gain included, at which its rate starts (0%, 15%, 20%). See §2.6.
@@ -1189,3 +1199,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#300](https://github.com/BobKerns/analysis/issues/300): a scenario folder's `.disable` file, built only when named (new §4.1f).
 - [#259](https://github.com/BobKerns/analysis/issues/259): templates as parents in `scenario edit`, parents asked one at a time, and mix-in only scenarios with no parent or dates, made by `create --no-parent` (§4.5, §4.5a).
 - [#315](https://github.com/BobKerns/analysis/issues/315): `lifespan.csv` gains an optional `life_table` naming an aux `life_table__<name>.csv`, read for that person in that scenario instead of `life_table.csv`; the templates ship Japan's (§4.4, §4.9).
+- [#317](https://github.com/BobKerns/analysis/issues/317): the code repository's `templates/aux/` is the lowest `aux/` tier; `filing_status.csv` is the household's, one row per date, checked at load (§4.1d, §4.4).

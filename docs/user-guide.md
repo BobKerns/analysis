@@ -351,7 +351,9 @@ tax year, by looking back over everything that happened that year (the
   If the file does not exist, long-term gains are taxed the same as ordinary
   income.
 - **Filing status** comes from the `filing_status` aux table for that tax
-  year. One exception: MFJ or MFS automatically changes to Single, starting
+  year: your data repo's `aux/filing_status.csv`, one row per date such as
+  `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
+  computes tax fails to load without a row. One exception: MFJ or MFS automatically changes to Single, starting
   the year after a primary person's final month in `lifespan.csv`. You do
   not need to add a matching row to `filing_status.csv` yourself; see Part 4.7.
 - **Deductions**: the standard deduction, from `standard_deduction.csv`,

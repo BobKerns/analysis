@@ -17,7 +17,10 @@ paths (listed in [scenarios/README.md](scenarios/README.md); see "Template scena
 [the calibration guide](../docs/guides/historical-calibration.md#template-scenarios)).
 Don't copy those folders: a `t_` name your data repo has no folder for is
 read from this code repository, so the templates stay current as the code
-changes. `link-data.sh --template` leaves them out of its copy. To change
+changes. `link-data.sh --template` leaves them out of its copy. The same goes for
+`aux/`: the loader reads this repository's `templates/aux/` beneath your own,
+so keep only `aux/filing_status.csv` (give it your household's status) and
+any table you change; `link-data.sh --template` copies only that file. To change
 one, copy just that folder into your `scenarios/`; it then replaces the
 template whole.
 
@@ -61,7 +64,9 @@ template whole.
 ## Per-scenario overrides for aux/, prices/, series/ and itemizations/
 
 `aux/`, `prices/` and `itemizations/` at the data repo root are the shared defaults every
-scenario uses unless it says otherwise: tax law, security prices, and cost-basis itemizations
+scenario uses unless it says otherwise (and beneath `aux/`, this code repository's own
+`templates/aux/`, so a data repo's `aux/` holds only what it changes plus its
+`filing_status.csv`): tax law, security prices, and cost-basis itemizations
 are the same regardless of which what-if you're running. `series/` is different: growth-rate
 and inflation assumptions are properly per-scenario projections, so `series/` has **no**
 shared root default — it only exists under `scenarios/<name>/series/`, and what's "shared" is

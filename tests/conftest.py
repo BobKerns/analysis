@@ -1517,3 +1517,11 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
         return path
 
     return _fake
+
+
+@pytest.fixture(scope="function")
+def without_template_aux(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide the code repository's templates/aux/ (#317) from the loader, so a
+    test that deletes one of the private copy's aux tables sees it missing
+    instead of the template's copy filling in."""
+    monkeypatch.setattr("analysis.sim.loader.TEMPLATE_AUX_DIR", tmp_path_factory.mktemp("no_template_aux"))

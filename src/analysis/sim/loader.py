@@ -39,6 +39,7 @@ from analysis.sim.distributions import (
     rewrite_outcomes,
 )
 from analysis.sim.lineage import (
+    TEMPLATE_AUX_DIR,
     TEMPLATE_SCENARIOS_DIR,
     ScenarioCycleError,
     is_template,
@@ -70,7 +71,7 @@ __all__ = [
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
-    "set_scenario_enabled", "write_current_scenario",
+    "set_scenario_enabled", "template_aux_copies", "write_current_scenario",
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
@@ -536,6 +537,22 @@ def resolve_scenario_name(
         branch=head.branch,
         dirty=head.dirty,
     )
+
+
+def template_aux_copies(data_dir: Path) -> list[str]:
+    """The data repo's shared ``aux/`` files that match the code repository's
+    ``templates/aux/`` byte for byte (#317). The loader reads the template's
+    anyway, so each can be deleted, and while it stays it hides the
+    template's later updates."""
+    folder = data_dir / "aux"
+    if not folder.is_dir():
+        return []
+    return [
+        path.name for path in sorted(folder.glob("*.csv"))
+        if path.name != "filing_status.csv"  # the household's, even while empty
+        and (TEMPLATE_AUX_DIR / path.name).is_file()
+        and path.read_bytes() == (TEMPLATE_AUX_DIR / path.name).read_bytes()
+    ]
 
 
 def list_scenario_names(data_dir: Path, scenarios_dir: Path | None = None) -> list[str]:
@@ -1196,6 +1213,7 @@ def load_scenario(
     )
     _validate_retirement_owners(accounts, persons, issues)
     _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
+    _validate_filing_status(scheduled_rows, aux_rows, scenario_row, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
@@ -1605,6 +1623,9 @@ def _merged_override_files(
     replaces a less specific one of the same name wholesale, not merged row by
     row.
 
+    Under ``aux`` the code repository's ``templates/aux/`` comes first, below
+    the data repo's own (#317).
+
     ``series/`` is scenario-only (``include_shared=False``): growth rates and
     inflation series are per-scenario projections, not tax-law facts, so there
     is no shared ``series/`` at the data repo root -- what's "shared" is
@@ -1612,9 +1633,12 @@ def _merged_override_files(
     other per-scenario file (ADR-003 §4.1d).
     """
     merged: dict[str, Path] = {}
-    tiers = (*((data_dir,) if include_shared else ()), *reversed(scenario_dirs))
+    # The code repository's templates/aux/ is the lowest tier (#317): the
+    # tax-law tables every data repo would otherwise keep a copy of.
+    template = (TEMPLATE_AUX_DIR,) if include_shared and subfolder == "aux" else ()
+    tiers = (*template, *((data_dir,) if include_shared else ()), *reversed(scenario_dirs))
     for d in tiers:
-        folder = d / subfolder
+        folder = d if d == TEMPLATE_AUX_DIR else d / subfolder
         if folder.is_dir():
             for path in folder.glob("*.csv"):
                 merged[path.name] = path
@@ -2538,6 +2562,51 @@ def _validate_retirement_owners(
 
 IRMAA_PARAMS = frozenset({"parts", "filing_status_aux"})
 IRMAA_PARTS = ("B+D", "B", "D")
+
+
+FILING_STATUS_RULE_KINDS = frozenset({"tax_accumulator", "irmaa"})
+
+
+def _validate_filing_status(
+    rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scenario_row: dict[str, str], issues: list[str],
+) -> None:
+    """The household's filing status (#317): one ``filing_status`` row per
+    date, and a row in force by the end of the scenario's first year for each
+    rule that taxes by it. The templates ship the file empty, since the
+    status is the household's choice, so a data repo that never set one
+    fails here rather than in the middle of a run (a death still makes a
+    joint filer Single without a row)."""
+    kinds = {"filing_status"}
+    needs: dict[str, str] = {}
+    for where, row in _located(rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") not in FILING_STATUS_RULE_KINDS:
+            continue
+        params = _safe_json(row.get("params_json") or "{}") or {}
+        kind = str(params.get("filing_status_aux", "filing_status"))
+        kinds.add(kind)
+        needs.setdefault(kind, f"{where} ({row.get('name', '')})")
+    by_kind: dict[str, dict[str, list[str]]] = {}
+    for kind, _series, payload, effective in aux_rows:
+        if kind in kinds:
+            by_kind.setdefault(kind, {}).setdefault(effective, []).append(
+                str(payload.get("filing_status", "")))
+    for kind, dated in sorted(by_kind.items()):
+        for effective, statuses in sorted(dated.items()):
+            if len(statuses) > 1:
+                issues.append(
+                    f"aux/{kind}.csv: {effective} gives {len(statuses)} filing statuses "
+                    f"({', '.join(statuses)}); a date takes one, the household's")
+    start = scenario_row.get("start", "")
+    if len(start) < 4 or not start[:4].isdigit():
+        return  # reported where the start is read
+    year_end = f"{start[:4]}-12-31"
+    for kind, where in sorted(needs.items()):
+        if not any(effective <= year_end for effective in by_kind.get(kind, {})):
+            issues.append(
+                f"{where}: taxes by filing status, but aux/{kind}.csv has no row in force "
+                f"by {year_end}; add one with the household's status (MFJ, Single or MFS)")
 
 
 def _validate_irmaa(
