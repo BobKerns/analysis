@@ -441,12 +441,14 @@ class ScenarioRef:
             intent += " — *not loaded; run `sim load`*"
         # Describing a scenario never waits for its build.
         run_path = self.run.latest()
+        building = not self.run.done()
         if run_path is None:
-            run = f"*no runs in `{self.runs_dir}`; run `sim run`*"
+            run = (f"*no runs in `{self.runs_dir}` yet; one is being built*" if building
+                   else f"*no runs in `{self.runs_dir}`; run `sim run`*")
         else:
             run = f"`{run_path}` — {_mtime(run_path)}"
-        if not self.run.done():
-            run += " *(a newer one is being built)*"
+            if building:
+                run += " *(a newer one is being built)*"
         return (
             f"**scenario `{self.name}`**\n\n"
             f"| | |\n|---|---|\n"

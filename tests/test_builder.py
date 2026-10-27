@@ -363,9 +363,12 @@ def test_the_builder_never_queues_a_disabled_scenario(
 ) -> None:
     from analysis.sim.loader import DISABLE_FILE
 
+    daemon.scan()
+    assert "base" in daemon.queue and "base" not in daemon.cancelled
     (daemon.data_dir / "scenarios" / "base" / DISABLE_FILE).write_text("")
     daemon.scan()
     assert "base" not in daemon.queue and daemon.queue
+    assert daemon.cancelled["base"]["why"] == "it was disabled"  # for a reader waiting on it
     # Nor does a reader wait for it: the builder would never build it.
     assert not builder._pending(daemon.paths, daemon.data_dir, "base")
 
@@ -435,7 +438,12 @@ def test_an_edit_cancels_the_build_and_its_dependents_wait_for_a_commit(
     assert daemon.build is None and build.process.poll() is not None
     assert "base" not in daemon.queue and "retire_alice" not in daemon.queue
     assert daemon.waiting == {"base": "data dirty", "retire_alice": "data dirty"}
-    assert daemon.cancelled["base"]["why"] == "its inputs changed"
+    assert daemon.cancelled["base"]["why"] == "its data has uncommitted changes"
+    # retire_alice was only queued, but a reader waiting on it hears the same.
+    assert daemon.cancelled["retire_alice"]["why"] == "its data has uncommitted changes"
+    daemon.write_status()
+    again = builder._Daemon(daemon.data_dir, echo=lambda _text: None)
+    assert set(again.cancelled) == {"base", "retire_alice"}  # kept across a restart
 
 
 @pytest.mark.slow
@@ -477,7 +485,8 @@ def test_looking_up_a_scenario_never_waits_for_its_build(
     monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name: waited.append(name))
     ref = loader.resolve_scenario_name(data_dir, "base")
     assert not ref.run.done()  # its build is in progress
-    assert ref.run.latest() is None and "being built" in ref.describe()
+    assert ref.run.latest() is None and "no runs" in ref.describe()
+    assert "yet; one is being built" in ref.describe() and "newer" not in ref.describe()
     assert waited == []
     assert ref.run_path is None
     assert waited and set(waited) == {"base"}

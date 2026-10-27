@@ -325,7 +325,7 @@ class _Daemon:
         self.failed: dict[str, dict[str, Any]] = dict(self.status.get("failed") or {})
         # Builds stopped because their inputs changed (an edit, #309), so a
         # reader waiting on one says so rather than that it is done.
-        self.cancelled: dict[str, dict[str, Any]] = {}
+        self.cancelled: dict[str, dict[str, Any]] = dict(self.status.get("cancelled") or {})
         self.build: _Build | None = None
         self.state = "starting"
         self.reason: str | None = None
@@ -388,13 +388,25 @@ class _Daemon:
             if unchanged_run(self.data_dir, self.paths.runs_dir, name, code) is None:
                 queue.append(name)
         self.waiting = waiting
+
+        def why_dropped(name: str) -> str:
+            if name in disabled:
+                return "it was disabled"
+            if name in waiting:
+                return "its data has uncommitted changes"
+            return "its inputs changed"
+
+        # Queued builds no longer to be done: a reader waiting on one must
+        # hear that it was cancelled, not that it is done.
+        for name in set(self.queue) - set(queue):
+            if name in disabled or name in waiting:
+                self.cancelled[name] = {"at": time.time(), "why": why_dropped(name)}
         if self.build is not None:
-            if self.build.scenario in disabled:
-                self.cancel(f"{self.build.scenario}: disabled")
-            elif self.build.key != self.key(self.build.scenario, trees):
-                name = self.build.scenario
-                self.cancel(f"{name}: its inputs changed")
-                self.cancelled[name] = {"at": time.time(), "why": "its inputs changed"}
+            name = self.build.scenario
+            if name in disabled or self.build.key != self.key(name, trees):
+                why = why_dropped(name)
+                self.cancel(f"{name}: {why}")
+                self.cancelled[name] = {"at": time.time(), "why": why}
             if self.build is not None and self.build.scenario in queue:
                 queue.remove(self.build.scenario)
         self.queue = self.order(queue)
