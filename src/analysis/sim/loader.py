@@ -66,7 +66,7 @@ __all__ = [
     "BATCH_MANIFEST_FILENAME",
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
-    "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
+    "LoadError", "LoadResult", "DataDirtyRefused", "PendingRun", "ScenarioRef",
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
@@ -357,6 +357,45 @@ def scenario_run_path(
             or _latest_ensemble_member_zero(Path(runs_dir), name, wait=wait))
 
 
+class PendingRun:
+    """The run file that stands for a scenario (``scenario_run_path``), not
+    yet waited for (#309). Looking a scenario up never waits on its
+    background build (#300); only opening its run does, so a command that
+    edits the scenario, and so makes that build stale, never waits for it.
+
+    Like a future: :meth:`result` waits for a pending build and returns the
+    run then on hand, :meth:`done` asks whether it would have to wait, and
+    :meth:`latest` reads the run on hand now, never waiting."""
+
+    def __init__(self, runs_dir: Path, name: str, path: Path | None = None) -> None:
+        self.runs_dir = runs_dir
+        self.name = name
+        self._path = path
+        self._known = path is not None  # a run named outright waits for nothing
+
+    def done(self) -> bool:
+        if self._known:
+            return True
+        from analysis.sim.builder import build_pending
+
+        return not build_pending(self.runs_dir, self.name)
+
+    def result(self) -> Path | None:
+        if not self._known:
+            self._path = scenario_run_path(self.runs_dir, self.name)
+            self._known = True
+        return self._path
+
+    def latest(self) -> Path | None:
+        if self._known:
+            return self._path
+        return scenario_run_path(self.runs_dir, self.name, wait=False)
+
+    def __repr__(self) -> str:
+        state = f"{self._path}" if self._known else "not waited for"
+        return f"PendingRun({self.name!r}: {state})"
+
+
 @dataclass(frozen=True)
 class ScenarioRef:
     """A resolved scenario: what it is called, where it lives, what state it is in."""
@@ -368,11 +407,17 @@ class ScenarioRef:
     intent_dir: Path
     intent_path: Path
     runs_dir: Path
-    run_path: Path | None
+    run: PendingRun = field(compare=False)
     state_dir: Path
     commit: str | None
     branch: str | None
     dirty: bool = False
+
+    @property
+    def run_path(self) -> Path | None:
+        """The scenario's run, once any pending background build of it is
+        done (``run.result()``): reading it may wait."""
+        return self.run.result()
 
     @property
     def loaded(self) -> bool:
@@ -394,10 +439,16 @@ class ScenarioRef:
             intent += f" — loaded {_mtime(self.intent_path)}"
         else:
             intent += " — *not loaded; run `sim load`*"
-        if self.run_path is None:
-            run = f"*no runs in `{self.runs_dir}`; run `sim run`*"
+        # Describing a scenario never waits for its build.
+        run_path = self.run.latest()
+        building = not self.run.done()
+        if run_path is None:
+            run = (f"*no runs in `{self.runs_dir}` yet; one is being built*" if building
+                   else f"*no runs in `{self.runs_dir}`; run `sim run`*")
         else:
-            run = f"`{self.run_path}` — {_mtime(self.run_path)}"
+            run = f"`{run_path}` — {_mtime(run_path)}"
+            if building:
+                run += " *(a newer one is being built)*"
         return (
             f"**scenario `{self.name}`**\n\n"
             f"| | |\n|---|---|\n"
@@ -469,9 +520,8 @@ def resolve_scenario_name(
                 else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
         )
     )
-    run_path = (Path(run_path).resolve() if run_path is not None
-                else scenario_run_path(resolved_runs_dir, name)
-    )
+    run = PendingRun(resolved_runs_dir, name,
+                     Path(run_path).resolve() if run_path is not None else None)
     return ScenarioRef(
         name=name,
         data_dir=data_dir,
@@ -480,7 +530,7 @@ def resolve_scenario_name(
         intent_dir=resolved_intent_dir,
         intent_path=resolved_intent_dir / f"{name}.sqlite3",
         runs_dir=resolved_runs_dir,
-        run_path=run_path,
+        run=run,
         state_dir=state_dir,
         commit=head.commit,
         branch=head.branch,

@@ -59,6 +59,7 @@ from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV, is_buildin
 __all__ = [
     "BuilderPaths",
     "await_fresh",
+    "build_pending",
     "daemon_alive",
     "main_check",
     "notify",
@@ -322,6 +323,9 @@ class _Daemon:
         self.waiting: dict[str, str] = {}
         self.status = read_status(self.paths)
         self.failed: dict[str, dict[str, Any]] = dict(self.status.get("failed") or {})
+        # Builds stopped because their inputs changed (an edit, #309), so a
+        # reader waiting on one says so rather than that it is done.
+        self.cancelled: dict[str, dict[str, Any]] = dict(self.status.get("cancelled") or {})
         self.build: _Build | None = None
         self.state = "starting"
         self.reason: str | None = None
@@ -346,7 +350,7 @@ class _Daemon:
         _write_json(self.paths.status, {
             "pid": os.getpid(), "state": self.state, "reason": self.reason,
             "current": current, "queue": self.queue, "waiting": self.waiting,
-            "failed": self.failed, "updated": time.time(),
+            "failed": self.failed, "cancelled": self.cancelled, "updated": time.time(),
         })
 
     def scan(self) -> None:
@@ -384,11 +388,25 @@ class _Daemon:
             if unchanged_run(self.data_dir, self.paths.runs_dir, name, code) is None:
                 queue.append(name)
         self.waiting = waiting
+
+        def why_dropped(name: str) -> str:
+            if name in disabled:
+                return "it was disabled"
+            if name in waiting:
+                return "its data has uncommitted changes"
+            return "its inputs changed"
+
+        # Queued builds no longer to be done: a reader waiting on one must
+        # hear that it was cancelled, not that it is done.
+        for name in set(self.queue) - set(queue):
+            if name in disabled or name in waiting:
+                self.cancelled[name] = {"at": time.time(), "why": why_dropped(name)}
         if self.build is not None:
-            if self.build.scenario in disabled:
-                self.cancel(f"{self.build.scenario}: disabled")
-            elif self.build.key != self.key(self.build.scenario, trees):
-                self.cancel(f"{self.build.scenario}: its inputs changed")
+            name = self.build.scenario
+            if name in disabled or self.build.key != self.key(name, trees):
+                why = why_dropped(name)
+                self.cancel(f"{name}: {why}")
+                self.cancelled[name] = {"at": time.time(), "why": why}
             if self.build is not None and self.build.scenario in queue:
                 queue.remove(self.build.scenario)
         self.queue = self.order(queue)
@@ -451,6 +469,7 @@ class _Daemon:
                 start_new_session=True, env=env, close_fds=True,
             )
         self.build = _Build(name, key, process, time.time(), wanted)
+        self.cancelled.pop(name, None)
         self.state = "building"
 
     def finished(self) -> bool:
@@ -626,21 +645,11 @@ def await_fresh(
     pending, move it to the front and wait for it. Does nothing where the
     builder isn't installed, is off or disabled, or the run is current.
     Ctrl-C gives up the wait (the latest existing run is opened)."""
-    if switched_off() or is_building():
+    found = _pending_build(runs_dir, scenario)
+    if found is None:
         return
-    paths = BuilderPaths(Path(runs_dir).resolve().parent)
-    config = read_config(paths)
-    if config is None or paths.runs_dir != Path(runs_dir).resolve():
-        return
-    key = (paths.state_dir, scenario)
-    signature = _signature(paths, config)
-    if _checked.get(key) == signature:
-        return
+    paths, data_dir = found
     echo = echo or (lambda text: print(text, file=sys.stderr))
-    data_dir = Path(config["data_dir"])
-    if not _pending(paths, data_dir, scenario):
-        _checked[key] = signature
-        return
     made = _request(paths, "first", scenario)
     if not daemon_alive(paths):
         spawn_daemon(paths, data_dir)
@@ -648,6 +657,33 @@ def await_fresh(
         _wait(paths, scenario, made, echo)
     except KeyboardInterrupt:
         echo(f"gave up waiting for {scenario}; opening its latest run, which may be out of date")
+
+
+def build_pending(runs_dir: Path, scenario: str) -> bool:
+    """Whether opening ``scenario``'s run would wait for a background build
+    (:func:`await_fresh`), asked without waiting or moving it up the queue."""
+    return _pending_build(runs_dir, scenario) is not None
+
+
+def _pending_build(runs_dir: Path, scenario: str) -> tuple[BuilderPaths, Path] | None:
+    """The workspace's paths and data dir when a background build of
+    ``scenario`` is pending, else None (remembered until something that
+    could change the answer does)."""
+    if switched_off() or is_building():
+        return None
+    paths = BuilderPaths(Path(runs_dir).resolve().parent)
+    config = read_config(paths)
+    if config is None or paths.runs_dir != Path(runs_dir).resolve():
+        return None
+    key = (paths.state_dir, scenario)
+    signature = _signature(paths, config)
+    if _checked.get(key) == signature:
+        return None
+    data_dir = Path(config["data_dir"])
+    if not _pending(paths, data_dir, scenario):
+        _checked[key] = signature
+        return None
+    return paths, data_dir
 
 
 def _pending(paths: BuilderPaths, data_dir: Path, scenario: str) -> bool:
@@ -693,8 +729,12 @@ def _wait(paths: BuilderPaths, scenario: str, made: float, echo: Callable[[str],
             current = (status.get("current") or {}).get("scenario")
             if scenario != current and scenario not in (status.get("queue") or []):
                 failed = (status.get("failed") or {}).get(scenario)
+                cancelled = (status.get("cancelled") or {}).get(scenario)
                 if failed is not None and failed.get("at", 0) >= made:
                     echo(f"the background build of {scenario} failed: {failed.get('message')}")
+                elif cancelled is not None and cancelled.get("at", 0) >= made:
+                    echo(f"the background build of {scenario} was cancelled: {cancelled.get('why')}; "
+                         "opening its latest run, which is out of date")
                 else:
                     echo(f"the background build of {scenario} is done")
                 return

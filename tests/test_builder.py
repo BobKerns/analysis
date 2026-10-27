@@ -363,9 +363,12 @@ def test_the_builder_never_queues_a_disabled_scenario(
 ) -> None:
     from analysis.sim.loader import DISABLE_FILE
 
+    daemon.scan()
+    assert "base" in daemon.queue and "base" not in daemon.cancelled
     (daemon.data_dir / "scenarios" / "base" / DISABLE_FILE).write_text("")
     daemon.scan()
     assert "base" not in daemon.queue and daemon.queue
+    assert daemon.cancelled["base"]["why"] == "it was disabled"  # for a reader waiting on it
     # Nor does a reader wait for it: the builder would never build it.
     assert not builder._pending(daemon.paths, daemon.data_dir, "base")
 
@@ -397,3 +400,95 @@ def test_a_build_a_reader_asks_for_while_it_runs_is_not_preempted(
     daemon.first.append(daemon.queue[0])  # then another, on something else
     daemon.preempt()
     assert daemon.build is running and running.wanted
+
+
+# -- #309: an edit cancels, never waits ---------------------------------------
+
+
+@pytest.mark.slow
+def test_an_edit_cancels_the_build_and_its_dependents_wait_for_a_commit(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editing base makes its build, and retire_alice's (built on it), stale:
+    the build is cancelled, not requeued, until the edit is committed."""
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    data_repo = git.Repo(daemon.data_dir.parent)
+    _commit(data_repo, {}, "the scenarios")
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.first = ["base"]
+    daemon.scan()
+    daemon.start_next(("t1",))
+    build = daemon.build
+    assert build is not None and build.scenario == "base"
+    from analysis.sim import loader
+
+    waited: list[str] = []
+    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name: waited.append(name))
+    poked: list[Path] = []
+    monkeypatch.setattr(builder, "notify", lambda data_dir, **_kw: poked.append(data_dir) or "")
+    result = CliRunner().invoke(main, ["sim", "scenario", "edit", "base", "--description", "edited",
+                                       "--data-dir", str(daemon.data_dir)])
+    assert result.exit_code == 0, result.output
+    assert poked == [daemon.data_dir]  # the edit asked the builder to look again
+    assert waited == []  # and never waited for the build it makes stale
+    daemon.scan()
+    assert daemon.build is None and build.process.poll() is not None
+    assert "base" not in daemon.queue and "retire_alice" not in daemon.queue
+    assert daemon.waiting == {"base": "data dirty", "retire_alice": "data dirty"}
+    assert daemon.cancelled["base"]["why"] == "its data has uncommitted changes"
+    # retire_alice was only queued, but a reader waiting on it hears the same.
+    assert daemon.cancelled["retire_alice"]["why"] == "its data has uncommitted changes"
+    daemon.write_status()
+    again = builder._Daemon(daemon.data_dir, echo=lambda _text: None)
+    assert set(again.cancelled) == {"base", "retire_alice"}  # kept across a restart
+
+
+@pytest.mark.slow
+def test_a_reader_waiting_on_a_cancelled_build_says_so(
+    running_daemon: BuilderPaths, builder_on: None,
+) -> None:
+    paths = running_daemon
+    builder._write_json(paths.status, {"state": "building", "queue": ["base"], "updated": 0})
+
+    def cancel() -> None:
+        time.sleep(1.0)
+        builder._write_json(paths.status, {
+            "state": "idle", "queue": [], "updated": time.time(),
+            "cancelled": {"base": {"at": time.time(), "why": "its inputs changed"}}})
+
+    lines: list[str] = []
+    canceller = threading.Thread(target=cancel)
+    canceller.start()
+    builder.await_fresh(paths.runs_dir, "base", echo=lines.append)
+    canceller.join()
+    assert lines[-1] == ("the background build of base was cancelled: its inputs changed; "
+                         "opening its latest run, which is out of date")
+
+
+def test_looking_up_a_scenario_never_waits_for_its_build(
+    running_daemon: BuilderPaths, builder_on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#309: the lookup hands back the run as something to wait on; only
+    asking for the run itself waits."""
+    from analysis.sim import loader
+
+    paths = running_daemon
+    config = builder.read_config(paths)
+    assert config is not None
+    data_dir = Path(config["data_dir"])
+    builder._write_json(paths.status, {"state": "building", "current": {"scenario": "base"},
+                                       "queue": [], "updated": time.time()})
+    waited: list[str] = []
+    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name: waited.append(name))
+    ref = loader.resolve_scenario_name(data_dir, "base")
+    assert not ref.run.done()  # its build is in progress
+    assert ref.run.latest() is None and "no runs" in ref.describe()
+    assert "yet; one is being built" in ref.describe() and "newer" not in ref.describe()
+    assert waited == []
+    assert ref.run_path is None
+    assert waited and set(waited) == {"base"}
+    asked = len(waited)
+    assert ref.run_path is None and len(waited) == asked  # waited for once
