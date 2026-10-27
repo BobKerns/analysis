@@ -715,6 +715,22 @@ e.g. about 200% of the table's death rates), and the ages at the 10th, 25th,
 50th, 75th and 90th percentiles. For a man 70 at the start with a median of
 80, the 2023 table gives about 72 at the 10th percentile and 88 at the 90th.
 
+`sim person show [person]` shows the whole distribution for each person with
+a sex: the ages at death by percentile and, every five years, the chance of
+having died by then. Each is centered on the scenario's age at death: the
+table read older or younger so its median is that age, as a `life_table`
+lifespan's ensemble draws it, and for a fixed age the same shift, to show
+what the age implies; the plain table's median is shown beside it. To see
+the plain table itself, set the age at death to that median. With
+no person it ends with the household: the year the last of them dies, by
+percentile, taking the lifespans as independent, since a plan has to last
+until then. `--graph` (or `--graph-file lifespans.png`) draws each person's
+chance of dying at each age and of having died by it, shaded like the
+ensemble fan chart, and the chance that someone in the household is still
+alive each year. In a terminal that reports its size, `--graph` fills its
+width and height, less three lines for the prompt. `notebooks/lifespan.ipynb`
+shows the same chart, shrunk to fit the window.
+
 There's deliberately no separate multiplier to set. With the median held
 fixed, multiplying the death rates changes the spread by a year or two at
 most, because the table's shape dominates. To weigh a different median,
@@ -1214,6 +1230,7 @@ machine too small for a notebook comfortably.
 | one-time transfers | `sim transfer list` |
 | a scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `sim scenario show [scenario]` |
 | persons and their lifespans | `sim person list` |
+| each person's age-at-death distribution, and the household's last death | `sim person show [person] [--graph]` |
 | calendar rows of every kind, with where each is defined | `sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |

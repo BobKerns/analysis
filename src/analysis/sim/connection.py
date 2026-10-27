@@ -23,7 +23,7 @@ from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import pandas as pd
 import traitlets
@@ -35,6 +35,9 @@ from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, Death, DollarM
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
 from .schema import connect_sim_file
+
+if TYPE_CHECKING:
+    from analysis.sim.lifespan_curves import PersonLifespan
 
 # Category-bucketing defaults for RunConnection's derived-data methods below.
 # Notebooks may pass their own mapping/set to override any of these.
@@ -1324,6 +1327,17 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    # -- lifespans --
+
+    def lifespans(self) -> tuple[list[PersonLifespan], list[str]]:
+        """Each person with a sex, with the age-at-death distribution the
+        life table gives (#312), and a note for each one it can't draw:
+        ``lifespan_curves.person_lifespans`` on this scenario's intent."""
+        from analysis.sim.lifespan_curves import person_lifespans
+
+        self._ensure_fresh()
+        return person_lifespans(self._con)
 
     # -- tag writes --
 

@@ -15,6 +15,7 @@ from contextvars import ContextVar
 import html as html_lib
 import os
 import re
+import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
@@ -239,7 +240,8 @@ class SingleScenarioConnections(Connections):
 
         As with :meth:`show`, `fn` must accept arbitrary keyword arguments
         (end its signature with ``**_``): it receives the same context
-        keywords, such as ``member``, and ``run``.
+        keywords, such as ``member``, and ``run``, which is None when the
+        scenario has no run (``scenario_picker(require_run=False)``).
 
         Parameters
         ----------
@@ -249,15 +251,21 @@ class SingleScenarioConnections(Connections):
             Additional keyword arguments to pass to `fn`.
         
         """
-        def _invoke_with_scenario(run: RunConnection, *args, **kwargs):
+        def _invoke_with_scenario(run: RunConnection | None, *args, **kwargs):
             return fn(self.scenario, *args, run=run, **kwargs)
+        _scenario_only.add(_invoke_with_scenario)
         return self.show(_invoke_with_scenario, *args, **kwargs)
 
     def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
-        if self.run is None:
+        if self.run is None and fn not in _scenario_only:
             raise RuntimeError("No run connection available")
         return fn(self.run, *args, **kwargs)
+
+
+# show_scenario's wrappers: they read the scenario, so they run without a run
+# (#312's lifespan notebook, with scenario_picker(require_run=False)).
+_scenario_only: weakref.WeakSet[Callable] = weakref.WeakSet()
 
 
 def _open_single(

@@ -9064,16 +9064,23 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
     _show_image(image, graph_file, protocol, cell, "chain-")
 
 
-def _draw_figure(fig: Any, graph_file: Path | None, prefix: str) -> None:
+def _draw_figure(
+    fig: Any, graph_file: Path | None, prefix: str,
+    fit: Callable[[tuple[float, float]], Any] | None = None,
+) -> None:
     """Draw the matplotlib figure ``fig`` as ``_draw_chain_graph`` draws a
     chart: into ``graph_file``, else in the terminal, else into a PNG file
     named with ``prefix``. For the terminal, at the resolution that makes the
-    figure's text the size of the terminal's own."""
+    figure's text the size of the terminal's own; and when ``fit`` is given
+    and the terminal reports its size, the figure ``fit`` draws at the
+    terminal's size in inches instead (``_terminal_figure_size``)."""
     from analysis.sim import chain_graph
     from analysis.sim.ensemble_plots import figure_bytes
 
     protocol = chain_graph.terminal_protocol() if graph_file is None else None
     cell = chain_graph.cell_size() if protocol else None
+    if fit is not None and cell is not None:
+        fig = fit(_terminal_figure_size(cell))
     try:
         image = figure_bytes(fig, _graph_format(graph_file), dpi=_figure_dpi(cell))
     except (OSError, ValueError) as error:
@@ -9084,6 +9091,19 @@ def _draw_figure(fig: Any, graph_file: Path | None, prefix: str) -> None:
 # Matplotlib's text is 10pt; a terminal cell is about 1.2 times its font's height.
 _FIGURE_FONT_PT = 10
 _LINE_HEIGHT = 1.2
+
+
+# Terminal lines left free under a chart drawn to fit, for the shell's prompt.
+_PROMPT_LINES = 3
+
+
+def _terminal_figure_size(cell: tuple[float, float]) -> tuple[float, float]:
+    """The terminal's width, and its height less room for the prompt, in
+    inches at ``_figure_dpi(cell)``: the size of a figure that fills it."""
+    size = shutil.get_terminal_size()
+    dpi = _figure_dpi(cell)
+    return (size.columns * cell[0] / dpi,
+            max(1, size.lines - _PROMPT_LINES) * cell[1] / dpi)
 
 
 def _figure_dpi(cell: tuple[float, float] | None) -> float:
@@ -11119,6 +11139,99 @@ def person_list(scenario: str | None, data_dir: Path | None) -> None:
             person.varies, person.lifespan_defined_in,
         )))
     _print_wide(table)
+
+
+@person_group_command.command("show")
+@click.argument("person", required=False, type=completion.PERSON)
+@click.option("--graph", "as_graph", is_flag=True,
+              help="Draw the chart in the terminal (kitty or iTerm2 image protocol), filling "
+                   "it less three lines for the prompt, or write a PNG file when the terminal "
+                   "can't show images.")
+@click.option("--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
+              help="Write the chart to this .png or .svg file.")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def person_show(
+    person: str | None, as_graph: bool, graph_file: Path | None,
+    scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show how long PERSON may live: the age-at-death distribution the
+    life table gives, from the scenario start.
+
+    The table for their sex is read older or younger so its median is the
+    scenario's age at death (for a life_table lifespan, the curve an ensemble
+    draws from), and the plain table's median is shown beside it; with no
+    age at death, the plain table. Prints the
+    percentile ages and, every five years, the chance of having died by then.
+
+    Without PERSON, shows every person with a sex, then the household: the
+    chance that at least one is still alive each year, taking the lifespans
+    as independent. --graph and --graph-file draw each person's chance of
+    dying at each age and of having died by it, shaded like the ensemble
+    fan chart, and the household's curve.
+    """
+    from rich.table import Table
+
+    from analysis.sim.lifespan_curves import household, lifespan_figure, person_lifespans
+
+    _check_graph_options(as_graph, graph_file)
+    data = _resolve_data_dir(data_dir)
+    with _intent_db(data, scenario) as (con, name):
+        persons, notes = person_lifespans(con)
+        if person is not None:
+            person = person.strip()
+            sexes = dict(con.execute("SELECT id, sex FROM person").fetchall())
+    for note in notes:
+        click.echo(f"  note: {note}", err=True)
+    if person is not None:
+        if person not in sexes:
+            raise click.ClickException(f"unknown person {person!r}; persons: {sorted(sexes)}")
+        if not sexes[person]:
+            raise click.ClickException(
+                f"{person!r} has no sex in persons.csv; the life table needs one "
+                f"(sim person edit {person} --sex f|m)")
+        persons = [p for p in persons if p.person == person]
+        if not persons:
+            raise click.ClickException(f"no life table for {person!r} in {name!r}")
+    if not persons:
+        raise click.ClickException(f"no person in {name!r} has a sex for the life table to read")
+
+    quantiles = (0.05, 0.2, 0.4, 0.5, 0.6, 0.8, 0.95)
+    for p in persons:
+        if p.centered:
+            varies = {None: "fixed", "life_table": "drawn from this curve"}.get(
+                p.vary, f"{p.vary} across members")
+            how = (f"age at death {p.age_at_death:g} ({varies}); the {p.sex} table read "
+                   f"{abs(p.set_forward):.1f} years {'older' if p.set_forward >= 0 else 'younger'} "
+                   f"puts its median there (the plain table's is {p.table_median:.1f})")
+        else:
+            how = f"the plain {p.sex} table; the scenario sets no age at death"
+        click.echo(f"{p.display} ({p.person}), {p.age_now:.1f} at the start of {name}: {how}")
+        ages = Table(header_style="bold", title="age at death by percentile", title_justify="left")
+        for q in quantiles:
+            ages.add_column(f"p{round(q * 100):02d}", justify="right")
+        ages.add_row(*(f"{p.quantile(q):.1f}" for q in quantiles))
+        _print_wide(ages)
+        years = Table(header_style="bold")
+        for column in ("Age", "Year", "Died by then", "Still alive"):
+            years.add_column(column, justify="right")
+        for age, _chance, by_end in p.yearly():
+            if (age + 1) % 5 == 0 and by_end < 0.999:
+                years.add_row(str(age + 1), str(p.birthdate.year + age + 1),
+                              f"{by_end:.0%}", f"{1 - by_end:.0%}")
+        _print_wide(years)
+    if len(persons) > 1:
+        h = household(persons)
+        click.echo("household: the year the last of "
+                   f"{', '.join(p.person for p in persons)} dies, by percentile")
+        last = Table(header_style="bold")
+        for q in quantiles:
+            last.add_column(f"p{round(q * 100):02d}", justify="right")
+        last.add_row(*(str(h.last_death_quantile(q).year) for q in quantiles))
+        _print_wide(last)
+    if as_graph or graph_file is not None:
+        _draw_figure(lifespan_figure(persons), graph_file, "lifespan-",
+                     fit=lambda size: lifespan_figure(persons, size=size))
 
 
 # ---------- person add|edit, lifespan set|clear (#192) ----------

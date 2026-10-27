@@ -109,6 +109,31 @@ def test_scenario_picker_require_run_false_allows_missing_run(tmp_path: Path) ->
     container.close()
 
 
+def test_show_scenario_draws_without_a_run(tmp_path: Path) -> None:
+    """A widget that reads only the scenario (#312's lifespans) draws with
+    run=None; a widget that needs the run still refuses."""
+    import pytest
+
+    data = _copy_prototype(tmp_path)
+    intent_dir, runs_dir = _state_dirs(data)
+    result = CliRunner().invoke(
+        main,
+        ["sim", "load", "retire_alice", "--data-dir", str(data),
+         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+         "--allow-dirty-data", "--no-run"],
+    )
+    assert result.exit_code == 0, result.output
+    _widget, container, _dropdown = scenario_picker(data, "retire_alice", require_run=False)
+
+    drawn: list[tuple] = []
+    container.show_scenario(lambda sc, **kwargs: drawn.append((sc, kwargs)))
+
+    assert drawn == [(container.scenario, {"run": None, "member": 0})]
+    with pytest.raises(RuntimeError, match="No run connection"):
+        container._invoke(lambda rc, **_: None)
+    container.close()
+
+
 def test_scenario_picker_require_run_true_raises_when_missing(tmp_path: Path) -> None:
     import pytest
 

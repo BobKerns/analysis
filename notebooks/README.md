@@ -32,6 +32,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | one-time transfers | `analysis sim transfer list` |
 | the scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `analysis sim scenario show [SCENARIO]` |
 | persons and their lifespans | `analysis sim person list` |
+| each person's age-at-death distribution, and the household's last death (`lifespan.ipynb`) | `analysis sim person show [PERSON] [--graph]` |
 | calendar events of every kind, with their variation | `analysis sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `analysis sim ytd list` |
 | itemizations, their totals and what references them | `analysis sim itemization list`, `analysis sim itemization show NAME` |
