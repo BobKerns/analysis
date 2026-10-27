@@ -19,6 +19,7 @@ template whole. :func:`scenario_dir` is the one place that decides.
 from __future__ import annotations
 
 import csv
+from collections.abc import Sequence
 from pathlib import Path
 
 
@@ -117,6 +118,13 @@ def is_mixin_only(scenarios_dir: Path, name: str) -> bool:
     row = _first_row(Path(scenarios_dir) / name)
     return bool(row) and not parse_parents(row.get("parent_scenario")) \
         and not row.get("start", "").strip() and not row.get("end", "").strip()
+
+
+def is_mixin_only_order(parents: Sequence[str], order: Sequence[str]) -> bool:
+    """Whether a scenario's recorded parents and load order are a mix-in
+    only scenario's: no parents, yet loaded on ``MIXIN_BASE`` (an ordinary
+    root's order is just itself). For an intent read without the data repo."""
+    return not parents and len(order) > 1 and order[0] == MIXIN_BASE
 
 
 def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False) -> list[str]:

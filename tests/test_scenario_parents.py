@@ -153,6 +153,21 @@ def test_a_mix_in_only_scenario_does_not_run(test_data_dir: Path) -> None:
     assert "mix-in only" in result.output and "run kid" in result.output
 
 
+def test_a_mix_in_only_intent_does_not_run_without_the_data_repo(test_data_dir: Path, intent_dir: Path,
+                                                                runs_dir: Path) -> None:
+    assert _sim(test_data_dir, "scenario", "create", "extra", "--no-parent").exit_code == 0
+    loaded = _sim(test_data_dir, "load", "extra", "--intent-dir", str(intent_dir),
+                  "--allow-dirty-data", "--no-run")
+    assert loaded.exit_code == 0, loaded.output
+    result = CliRunner().invoke(
+        main, ["sim", "run", "extra", "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+               "--allow-dirty-data"],
+        env={"ANALYSIS_DATA_DIR": None},
+    )
+    assert result.exit_code != 0
+    assert "mix-in only" in result.output, result.output
+
+
 def test_list_marks_a_mix_in_only_scenario(test_data_dir: Path) -> None:
     assert _sim(test_data_dir, "scenario", "create", "extra", "--no-parent").exit_code == 0
     [summary] = [s for s in sc.scenario_summaries(test_data_dir) if s.name == "extra"]

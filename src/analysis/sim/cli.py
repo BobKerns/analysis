@@ -18,7 +18,7 @@ import tempfile
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn
 
 import click
 import pandas as pd
@@ -131,6 +131,7 @@ from analysis.sim.lineage import (
     MIXIN_BASE,
     default_description,
     is_mixin_only,
+    is_mixin_only_order,
     load_order,
     parse_parents,
     read_parents,
@@ -557,11 +558,7 @@ def run(
         resolved_data_dir = resolved_data_dir or _resolve_data_dir(data_dir)
         scenario_name = _resolve_scenario(resolved_data_dir, scenario_name).name
         if is_mixin_only(resolved_data_dir / "scenarios", scenario_name):
-            users = sc.dependents(resolved_data_dir / "scenarios", scenario_name)
-            raise click.ClickException(
-                f"{scenario_name} is a mix-in only scenario (no parent, start or end), so it doesn't "
-                f"run by itself; run {', '.join(users) if users else 'a scenario that mixes it in'}, "
-                "or give it --start and --end (`sim scenario edit`)")
+            _refuse_mixin_only_run(scenario_name, sc.dependents(resolved_data_dir / "scenarios", scenario_name))
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
@@ -585,6 +582,9 @@ def run(
                     f"intent file not found: {intent_path}\n"
                     f"  run: analysis sim load {scenario_name}"
                 )
+            elif _intent_is_mixin_only(intent_path):
+                # Without the data repo, the intent a `sim check` left says so.
+                _refuse_mixin_only_run(scenario_name, [])
             resolved_by = run_by or os.environ.get("USER") or "unknown"
             _run_loaded(
                 scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
@@ -597,6 +597,31 @@ def run(
         # as its scenario's newest attempt, it is never pruned itself.
         if resolved_data_dir is not None:
             _prune_state(resolved_data_dir, resolved_intent_dir, resolved_runs_dir)
+
+
+def _refuse_mixin_only_run(name: str, users: Sequence[str]) -> NoReturn:
+    raise click.ClickException(
+        f"{name} is a mix-in only scenario (no parent, start or end), so it doesn't "
+        f"run by itself; run {', '.join(users) if users else 'a scenario that mixes it in'}, "
+        "or give it --start and --end (`sim scenario edit`)")
+
+
+def _intent_is_mixin_only(intent_path: Path) -> bool:
+    """Whether the intent was loaded from a mix-in only scenario, by the
+    parents and load order it recorded (``lineage.is_mixin_only_order``)."""
+    con = connect_sim_file(intent_path)
+    try:
+        row = con.execute("SELECT parents_json, load_order_json FROM scenario").fetchone()
+    except sqlite3.Error:
+        return False
+    finally:
+        con.close()
+    if row is None:
+        return False
+    try:
+        return is_mixin_only_order(json.loads(row[0] or "[]"), json.loads(row[1] or "[]"))
+    except json.JSONDecodeError:
+        return False
 
 
 def _prune_state(data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:
