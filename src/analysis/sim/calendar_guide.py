@@ -641,6 +641,8 @@ class Guide:
 
     ``ask(text, choices, default)`` reads one line; ``checkers`` maps a field
     type to a function that raises ``click.ClickException`` for a bad answer.
+    ``askers`` maps a field's param to its own way of asking, given the
+    current answer (a scenario's parents, asked one name at a time).
     """
 
     def __init__(
@@ -649,8 +651,10 @@ class Guide:
         checkers: Mapping[FieldType, Callable[[str], object]],
         echo: Callable[[str], None] = click.echo,
         canonical_date: Callable[[KindSpec, str], str] | None = None,
+        askers: Mapping[str, Callable[[str | None], str]] | None = None,
     ) -> None:
         self._ask = ask
+        self._askers = dict(askers or {})
         self._checkers = checkers
         self._echo = echo
         # How a kind's date reads once loaded, so that two spellings of one
@@ -663,6 +667,8 @@ class Guide:
     ) -> str:
         """Ask one field until its answer is acceptable. ``current`` is the
         answer being changed, offered as the default."""
+        if (asker := self._askers.get(field_.param)) is not None:
+            return asker(current)
         choices = list(field_.choices(ctx, answers)) if field_.choices else []
         if field_.type == "yesno":
             choices = ["y", "n"]

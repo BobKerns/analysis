@@ -190,3 +190,11 @@ def test_every_naming_param_completes() -> None:
         and not isinstance(param.type, NameType)
     ]
     assert missing == []
+
+
+def test_parents_completes_the_name_after_the_last_colon(data_dir: Path) -> None:
+    # #259: the whole value is one word, so each name in it completes.
+    assert _complete(data_dir, "scenario edit retire_alice --parents ba") == ["base"]
+    assert _complete(data_dir, "scenario edit retire_alice --parents base:t_great") == [
+        "base:t_great_inflation"]
+    assert "base:base" not in _complete(data_dir, "scenario edit retire_alice --parents base:")
