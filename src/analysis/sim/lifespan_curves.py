@@ -109,6 +109,10 @@ def person_lifespans(con: sqlite3.Connection) -> tuple[list[PersonLifespan], lis
         "SELECT id, display, birthdate, sex FROM person WHERE sex IS NOT NULL AND sex != '' "
         "ORDER BY rowid"
     )):
+        if not birthdate:
+            # A household pseudo-person may have a sex but no birthdate.
+            notes.append(f"{person}: no birthdate, so no age to read the life table at")
+            continue
         age, vary, set_forward = lifespans.get(person, (None, None, None))
         adjusted = vary == LIFE_TABLE_DISTRIBUTION and set_forward is not None
         try:

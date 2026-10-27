@@ -39,6 +39,21 @@ def test_only_persons_with_a_sex_are_drawn(lifespans: Callable[..., list[PersonL
     assert [p.person for p in lifespans()] == ["alice", "bill"]
 
 
+def test_a_person_with_a_sex_but_no_birthdate_gets_a_note(
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    with (test_data_dir / "persons.csv").open("a") as f:
+        f.write("pet,Pet (fake),,f,,{}\n")
+    con = sqlite3.connect(load_test_copy().intent_path)
+    try:
+        persons, notes = person_lifespans(con)
+    finally:
+        con.close()
+
+    assert [p.person for p in persons] == ["alice", "bill"]
+    assert notes == ["pet: no birthdate, so no age to read the life table at"]
+
+
 def test_a_life_table_lifespan_is_drawn_with_its_median_at_the_authored_age(
     lifespans: Callable[..., list[PersonLifespan]],
 ) -> None:
