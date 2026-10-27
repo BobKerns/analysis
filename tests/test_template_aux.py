@@ -3,6 +3,7 @@ household's filing status checked at load (#317)."""
 
 from __future__ import annotations
 
+import csv
 import json
 import sqlite3
 from collections.abc import Callable
@@ -97,3 +98,30 @@ def test_check_verbose_names_aux_files_that_copy_the_templates(test_data_dir: Pa
 
     assert result.exit_code == 0, result.output
     assert "note: aux/federal_brackets.csv is the same as templates/aux/federal_brackets.csv" in result.output
+
+
+# ---------- the template tables are complete (#319) ----------
+
+_TEMPLATE_TABLES = sorted(p for p in TEMPLATE_AUX_DIR.glob("*.csv") if p.name != "filing_status.csv")
+
+
+@pytest.mark.parametrize("path", _TEMPLATE_TABLES, ids=lambda p: p.name)
+def test_every_template_table_has_rows(path: Path) -> None:
+    """Every data repo reads these, so a stub breaks whoever lacks their own."""
+    with path.open(newline="") as fh:
+        assert len(list(csv.DictReader(fh))) > 0
+
+
+@pytest.mark.parametrize("path", [p for p in _TEMPLATE_TABLES if "filing_status" in
+                                  p.read_text().splitlines()[0].split(",")], ids=lambda p: p.name)
+def test_filing_status_tables_cover_every_status(path: Path) -> None:
+    """A death makes a joint filer Single, so a table with only MFJ fails mid-run."""
+    with path.open(newline="") as fh:
+        statuses = {row["filing_status"] for row in csv.DictReader(fh)}
+    assert statuses >= {"MFJ", "Single", "MFS"}
+
+
+def test_the_rmd_factors_cover_every_age_from_72() -> None:
+    with (TEMPLATE_AUX_DIR / "rmd_factors.csv").open(newline="") as fh:
+        ages = sorted(int(row["age"]) for row in csv.DictReader(fh))
+    assert ages == list(range(72, 131))
