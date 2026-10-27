@@ -9064,16 +9064,23 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
     _show_image(image, graph_file, protocol, cell, "chain-")
 
 
-def _draw_figure(fig: Any, graph_file: Path | None, prefix: str) -> None:
+def _draw_figure(
+    fig: Any, graph_file: Path | None, prefix: str,
+    fit: Callable[[tuple[float, float]], Any] | None = None,
+) -> None:
     """Draw the matplotlib figure ``fig`` as ``_draw_chain_graph`` draws a
     chart: into ``graph_file``, else in the terminal, else into a PNG file
     named with ``prefix``. For the terminal, at the resolution that makes the
-    figure's text the size of the terminal's own."""
+    figure's text the size of the terminal's own; and when ``fit`` is given
+    and the terminal reports its size, the figure ``fit`` draws at the
+    terminal's size in inches instead (``_terminal_figure_size``)."""
     from analysis.sim import chain_graph
     from analysis.sim.ensemble_plots import figure_bytes
 
     protocol = chain_graph.terminal_protocol() if graph_file is None else None
     cell = chain_graph.cell_size() if protocol else None
+    if fit is not None and cell is not None:
+        fig = fit(_terminal_figure_size(cell))
     try:
         image = figure_bytes(fig, _graph_format(graph_file), dpi=_figure_dpi(cell))
     except (OSError, ValueError) as error:
@@ -9084,6 +9091,19 @@ def _draw_figure(fig: Any, graph_file: Path | None, prefix: str) -> None:
 # Matplotlib's text is 10pt; a terminal cell is about 1.2 times its font's height.
 _FIGURE_FONT_PT = 10
 _LINE_HEIGHT = 1.2
+
+
+# Terminal lines left free under a chart drawn to fit, for the shell's prompt.
+_PROMPT_LINES = 3
+
+
+def _terminal_figure_size(cell: tuple[float, float]) -> tuple[float, float]:
+    """The terminal's width, and its height less room for the prompt, in
+    inches at ``_figure_dpi(cell)``: the size of a figure that fills it."""
+    size = shutil.get_terminal_size()
+    dpi = _figure_dpi(cell)
+    return (size.columns * cell[0] / dpi,
+            max(1, size.lines - _PROMPT_LINES) * cell[1] / dpi)
 
 
 def _figure_dpi(cell: tuple[float, float] | None) -> float:
@@ -11124,8 +11144,9 @@ def person_list(scenario: str | None, data_dir: Path | None) -> None:
 @person_group_command.command("show")
 @click.argument("person", required=False, type=completion.PERSON)
 @click.option("--graph", "as_graph", is_flag=True,
-              help="Draw the chart in the terminal (kitty or iTerm2 image protocol), or write "
-                   "a PNG file when the terminal can't show images.")
+              help="Draw the chart in the terminal (kitty or iTerm2 image protocol), filling "
+                   "it less three lines for the prompt, or write a PNG file when the terminal "
+                   "can't show images.")
 @click.option("--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
               help="Write the chart to this .png or .svg file.")
 @_LISTING_SCENARIO_OPTION
@@ -11209,7 +11230,8 @@ def person_show(
         last.add_row(*(str(h.last_death_quantile(q).year) for q in quantiles))
         _print_wide(last)
     if as_graph or graph_file is not None:
-        _draw_figure(lifespan_figure(persons), graph_file, "lifespan-")
+        _draw_figure(lifespan_figure(persons), graph_file, "lifespan-",
+                     fit=lambda size: lifespan_figure(persons, size=size))
 
 
 # ---------- person add|edit, lifespan set|clear (#192) ----------

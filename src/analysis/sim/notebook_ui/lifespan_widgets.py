@@ -4,8 +4,10 @@ by ``lifespan_curves`` as ``sim person show --graph`` draws it."""
 
 from __future__ import annotations
 
+import base64
+
 import pandas as pd
-from IPython.display import Image, display
+from IPython.display import HTML, display
 
 from analysis.sim.connection import ScenarioConnection
 from analysis.sim.ensemble_plots import figure_bytes
@@ -39,5 +41,12 @@ def lifespan_widget(scenario: ScenarioConnection, *, show_household: bool = True
             index=pd.Index(["year of the last death"], name="household"), columns=columns,
         ))
     # A plain Figure rendered to PNG, not pyplot: see ensemble_widgets (#119).
-    display(Image(data=figure_bytes(lifespan_figure(persons, show_household=show_household)),
-                  format="png"))
+    png = figure_bytes(lifespan_figure(persons, show_household=show_household))
+    # Shown no wider than its cell and no taller than the window, less about
+    # three lines (as `sim person show --graph` leaves for the prompt), so
+    # the whole chart is on screen at once; it scales, keeping its shape.
+    display(HTML(
+        f'<img src="data:image/png;base64,{base64.b64encode(png).decode()}" '
+        'style="max-width: 100%; max-height: calc(100vh - 4.5em); '
+        'width: auto; height: auto;" alt="age-at-death distributions">'
+    ))

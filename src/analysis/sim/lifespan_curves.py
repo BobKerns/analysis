@@ -302,15 +302,32 @@ def _draw_household(ax: Axes, h: Household) -> None:
     ax.legend(framealpha=FRAME_ALPHA, fontsize="small", loc="lower left")
 
 
-def lifespan_figure(persons: list[PersonLifespan], *, show_household: bool = True) -> Figure:
+# Each row's height in inches when the caller doesn't size the figure, and the
+# least a row gets when it does: below that the titles and legends collide.
+ROW_HEIGHT = 3.4
+MIN_ROW_HEIGHT = 2.2
+
+
+def lifespan_rows(persons: list[PersonLifespan], *, show_household: bool = True) -> int:
+    """How many rows of charts ``lifespan_figure`` draws."""
+    return len(persons) + (1 if show_household and len(persons) > 1 else 0)
+
+
+def lifespan_figure(
+    persons: list[PersonLifespan], *, show_household: bool = True,
+    size: tuple[float, float] | None = None,
+) -> Figure:
     """One row per person, its PDF beside its CDF, and with two or more
     persons and ``show_household``, a last row across both columns for the
-    household's chance that at least one is alive."""
+    household's chance that at least one is alive. ``size`` is the whole
+    figure's (width, height) in inches, to fill a terminal; each row gets
+    at least ``MIN_ROW_HEIGHT``."""
     if not persons:
         raise ValueError("no persons with a sex to draw")
-    joint = show_household and len(persons) > 1
-    rows = len(persons) + (1 if joint else 0)
-    fig = Figure(figsize=(12, 3.8 * rows), layout="constrained")
+    rows = lifespan_rows(persons, show_household=show_household)
+    joint = rows > len(persons)
+    width, height = size or (12, ROW_HEIGHT * rows)
+    fig = Figure(figsize=(width, max(height, MIN_ROW_HEIGHT * rows)), layout="constrained")
     grid = fig.add_gridspec(rows, 2)
     peak = max(chance for p in persons for _age, chance, _by in p.yearly())
     for i, p in enumerate(persons):

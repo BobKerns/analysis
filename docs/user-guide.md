@@ -727,7 +727,9 @@ percentile, taking the lifespans as independent, since a plan has to last
 until then. `--graph` (or `--graph-file lifespans.png`) draws each person's
 chance of dying at each age and of having died by it, shaded like the
 ensemble fan chart, and the chance that someone in the household is still
-alive each year. `notebooks/lifespan.ipynb` shows the same chart.
+alive each year. In a terminal that reports its size, `--graph` fills its
+width and height, less three lines for the prompt. `notebooks/lifespan.ipynb`
+shows the same chart, shrunk to fit the window.
 
 There's deliberately no separate multiplier to set. With the median held
 fixed, multiplying the death rates changes the spread by a year or two at

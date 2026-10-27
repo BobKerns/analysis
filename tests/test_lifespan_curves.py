@@ -181,3 +181,29 @@ def test_person_show_writes_the_graph_file(test_data_dir: Path, tmp_path: Path) 
 
     assert result.exit_code == 0, result.output
     assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_a_sized_figure_fills_the_size_but_keeps_rows_readable(
+    lifespans: Callable[..., list[PersonLifespan]],
+) -> None:
+    persons = lifespans()
+
+    assert tuple(lifespan_figure(persons, size=(20, 9)).get_size_inches()) == (20, 9)
+    # Three rows in two inches would collide: each row keeps its minimum.
+    assert tuple(lifespan_figure(persons, size=(20, 2)).get_size_inches()) == (20, 3 * 2.2)
+
+
+def test_the_terminal_figure_leaves_room_for_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import shutil
+
+    from analysis.sim import cli
+
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *a, **k: os.terminal_size((200, 50)))
+    cell = (10.0, 24.0)
+    dpi = cli._figure_dpi(cell)
+
+    width, height = cli._terminal_figure_size(cell)
+
+    assert width * dpi == pytest.approx(200 * 10)
+    assert height * dpi == pytest.approx((50 - 3) * 24)
