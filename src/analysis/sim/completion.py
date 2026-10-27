@@ -242,6 +242,9 @@ TAG_FILTER = NameType(_in_scenario(lambda d, s: [*names.tag_tokens(d, s), *_tag_
                       "tag", check=False)
 ITEMIZATION = NameType(_in_scenario(names.itemization_names), "itemization",
                        known=_in_scenario(lambda d, s: [f"@{n}" for n in names.itemization_names(d, s)]))
+LIFE_TABLE = NameType(
+    _in_scenario(lambda d, s: names.series_names(d, s, "life_table")), "life table",
+)  # #315: the <name> of an aux life_table__<name>.csv
 PERSON = NameType(lambda ctx, data_dir: names.person_ids(data_dir), "person")  # noqa: ARG005
 # An account's owner: a person, or both of them.
 OWNER = NameType(lambda ctx, data_dir: [*names.person_ids(data_dir), "joint"], "owner")  # noqa: ARG005

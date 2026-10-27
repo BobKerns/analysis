@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -29,6 +29,7 @@ CREATE TABLE person (
     display     TEXT NOT NULL,
     birthdate   TEXT NOT NULL,
     sex         TEXT,  -- #222: 'f' or 'm', or NULL; a life_table lifespan needs it
+    life_table  TEXT,  -- #315: an aux life_table__<name>.csv's name; NULL for life_table.csv
     role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
 );

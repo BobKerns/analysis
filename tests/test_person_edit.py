@@ -50,19 +50,20 @@ def test_person_add_with_options_writes_the_row(
     assert "every scenario" in result.output
     assert _persons(test_data_dir)["carol"] == {
         "id": "carol", "display": "Carol (fake)", "birthdate": "1995-02-03", "sex": "",
-        "role": "secondary", "meta_json": "{}",
+        "life_table": "", "role": "secondary", "meta_json": "{}",
     }
 
 
 def test_person_add_asks_for_what_is_missing(
     sim: Callable[..., Result], test_data_dir: Path,
 ) -> None:
-    result = sim("person", "add", "carol", input="Carol (fake)\n1995-02-03\nf\n\n\n")
+    result = sim("person", "add", "carol", input="Carol (fake)\n1995-02-03\nf\njp\n\n\n")
 
     assert result.exit_code == 0, result.output
+    assert "life table (jp; blank for the default)" in result.output
     carol = _persons(test_data_dir)["carol"]
-    assert (carol["display"], carol["birthdate"], carol["sex"], carol["role"]) == (
-        "Carol (fake)", "1995-02-03", "f", "")
+    assert (carol["display"], carol["birthdate"], carol["sex"], carol["life_table"], carol["role"]) == (
+        "Carol (fake)", "1995-02-03", "f", "jp", "")
 
 
 @pytest.mark.parametrize(("args", "message"), [
@@ -93,7 +94,8 @@ def test_person_edit_option_changes_only_that_field(
     result = sim("person", "edit", "bill", "--role", "secondary")
 
     assert result.exit_code == 0, result.output
-    assert _persons(test_data_dir)["bill"] == {**before, "role": "secondary"}
+    # The rewrite adds persons.csv's optional life_table column (#315), blank.
+    assert _persons(test_data_dir)["bill"] == {**before, "life_table": "", "role": "secondary"}
 
 
 def test_person_edit_option_keeps_a_blank_meta_json(
@@ -113,12 +115,12 @@ def test_person_edit_asks_with_current_values_as_defaults(
 ) -> None:
     before = _persons(test_data_dir)["bill"]
 
-    # Keep display, sex and role; change the birthdate and meta_json.
-    result = sim("person", "edit", "bill", input='\n1967-09-01\n\n\n{"note": 1}\n')
+    # Keep display, sex, life table and role; change the birthdate and meta_json.
+    result = sim("person", "edit", "bill", input='\n1967-09-01\n\n\n\n{"note": 1}\n')
 
     assert result.exit_code == 0, result.output
     assert _persons(test_data_dir)["bill"] == {
-        **before, "birthdate": "1967-09-01", "meta_json": '{"note": 1}'}
+        **before, "life_table": "", "birthdate": "1967-09-01", "meta_json": '{"note": 1}'}
 
 
 def test_person_edit_refuses_when_persons_csv_changes_meanwhile(
@@ -155,7 +157,7 @@ def test_a_persons_change_must_leave_every_scenario_loading(
     """persons.csv is shared, so a scenario outside the preflighted one's
     lineage is checked too."""
     persons = test_data_dir / "persons.csv"
-    persons.write_text(persons.read_text() + "carol,Carol (fake),1995-02-03,,{}\n")
+    persons.write_text(persons.read_text() + "carol,Carol (fake),1995-02-03,,,{}\n")
     derive_scenario("other", "base", files={"lifespan.csv": "person,age_at_death\ncarol,65\n"})
     frame = pd.read_csv(persons, dtype=str, keep_default_na=False)
     before = persons.read_text()

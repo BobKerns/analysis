@@ -1512,3 +1512,20 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
         return path
 
     return _fake
+
+
+@pytest.fixture(scope="function")
+def set_life_table(test_data_dir: Path) -> Callable[[str, str], None]:
+    """Name a life table for one person in the private copy's persons.csv
+    (#315), adding the optional ``life_table`` column after ``sex``:
+    ``set_life_table("alice", "jp")`` reads aux/life_table__jp.csv for Alice."""
+    import pandas as pd
+
+    def _set(person: str, table: str) -> None:
+        path = test_data_dir / "persons.csv"
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        if "life_table" not in frame.columns:
+            frame.insert(int(frame.columns.get_loc("sex")) + 1, "life_table", "")
+        frame.loc[frame["id"] == person, "life_table"] = table
+        frame.to_csv(path, index=False, lineterminator="\n")
+    return _set

@@ -29,7 +29,8 @@ from matplotlib.ticker import FuncFormatter, PercentFormatter
 from analysis.sim.dates import parse_day, parse_month
 from analysis.sim.ensemble import REPORT_PERCENTILES
 from analysis.sim.life_table import (
-    LifeTableAge, LifeTableError, life_table_in, months_since_birth, solve_set_forward,
+    LifeTableAge, LifeTableError, life_table_in, months_since_birth, person_table,
+    solve_set_forward,
 )
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.registries import LIFE_TABLE_DISTRIBUTION
@@ -64,6 +65,9 @@ class PersonLifespan:
     age_at_death: float | None
     vary: str | None
     table_median: float
+    table: str | None = None
+    """The aux life table read (#315): ``life_table__<table>.csv``, or
+    ``life_table.csv`` when None."""
 
     @property
     def cdf(self) -> tuple[float, ...]:
@@ -123,8 +127,9 @@ def person_lifespans(con: sqlite3.Connection) -> tuple[list[PersonLifespan], lis
             continue
         age, vary, set_forward = lifespans.get(person, (None, None, None))
         months = months_since_birth(birthdate, start)
+        name = person_table(con, person)
         try:
-            table = life_table_in(con, sex, start_text)
+            table = life_table_in(con, sex, start_text, name)
         except LifeTableError as e:
             notes.append(f"{person}: {e}")
             continue
@@ -141,7 +146,7 @@ def person_lifespans(con: sqlite3.Connection) -> tuple[list[PersonLifespan], lis
             dist=LifeTableAge(table, months, set_forward if centered else 0.0),
             centered=centered, set_forward=set_forward if centered else 0.0,
             age_at_death=age, vary=vary,
-            table_median=LifeTableAge(table, months, 0.0).quantile(0.5),
+            table_median=LifeTableAge(table, months, 0.0).quantile(0.5), table=name,
         ))
     return found, notes
 
@@ -268,7 +273,7 @@ def _mark_ages(ax: Axes, p: PersonLifespan) -> None:
                else f"median {median:.1f}")
     if p.centered:
         ax.axvline(p.table_median, color="darkorange", linewidth=1.2, linestyle="--",
-                   label=f"table's median {p.table_median:.1f}")
+                   label=f"{p.table + ' ' if p.table else ''}table's median {p.table_median:.1f}")
 
 
 def _draw_household(ax: Axes, h: Household) -> None:

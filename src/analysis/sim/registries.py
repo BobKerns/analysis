@@ -607,8 +607,10 @@ DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
 
 # ADR-003 §4.1 and §4.9.
 PERSONS_CSV_HEADER: tuple[str, ...] = (
-    "id", "display", "birthdate", "sex", "role", "meta_json",
+    "id", "display", "birthdate", "sex", "life_table", "role", "meta_json",
 )
+# #315: persons.csv `life_table` names the aux life_table__<name>.csv a
+# person's lifespan reads; blank (or no such column) is life_table.csv.
 # #222: persons.csv `sex`, which picks a life table's column. Optional (an
 # older persons.csv has no such column), but required of a person with a
 # `life_table` lifespan.
