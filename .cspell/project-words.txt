@@ -45,6 +45,7 @@ counterclock
 cpus
 CREAT
 Damodaran
+darkgreen
 darkorange
 dasharray
 datarepo
@@ -79,6 +80,7 @@ Ghostty
 gmtoffset
 Gompertz
 gpgsign
+gridspec
 gterm
 heloc
 hexsha

@@ -246,3 +246,9 @@ class LifeTableAge:
 
     def central(self) -> float:
         return self.quantile(0.5)
+
+    def monthly_cdf(self) -> tuple[int, tuple[float, ...]]:
+        """The month (since birth) the curve starts at, and the chance the
+        final month is that month or earlier, month by month from it to the
+        last, where it reaches 1 (#312's charts)."""
+        return self._curve.start, tuple(self._curve.cdf)
