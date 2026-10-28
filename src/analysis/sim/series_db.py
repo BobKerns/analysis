@@ -280,12 +280,25 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
                 con.execute("INSERT INTO series VALUES (?, ?, ?)",
                             (subject_ids[key], member_id, _pack(values)))
         con.execute("INSERT INTO batch VALUES (1, ?, ?, ?, ?)",
-                    (FORMAT_VERSION, _code_hash(), datetime.now(UTC).isoformat(), meta_json))
+                    (FORMAT_VERSION, _code_hash(), datetime.now(UTC).isoformat(),
+                     _pool_meta(batch_dir, meta_json)))
         con.commit()
     finally:
         con.close()
     os.replace(tmp, path)
     return path
+
+
+def _pool_meta(batch_dir: Path, meta_json: str) -> str:
+    """The meta a batch's reports read: its first member's, but for a pool
+    (ADR-009) with the pool's own ``reserve`` in place of its base
+    component's, when the pool sets one."""
+    from analysis.sim.pool import pool_record
+
+    record = pool_record(batch_dir)
+    if record is None or "reserve" not in record:
+        return meta_json
+    return json.dumps({**json.loads(meta_json or "{}"), "reserve": record["reserve"]})
 
 
 def build_series_db(batch_dir: Path, on_member: Callable[[], None] | None = None) -> Path:
@@ -372,6 +385,10 @@ class EnsembleSeries:
                 in con.execute("SELECT id, kind, account, lot, account_kind FROM subject ORDER BY id")
             }
         self._frames: dict[tuple[Any, ...], pd.DataFrame] = {}
+        from analysis.sim.pool import pool_record
+
+        # ADR-009: a pool's components may hold different accounts.
+        self.is_pool = pool_record(self.batch_dir) is not None
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)
@@ -450,6 +467,11 @@ class EnsembleSeries:
         columns: dict[str, pd.Series] = {}
         for member_id, member in self._members.items():
             if member_id not in nominal:
+                if self.is_pool and nominal:
+                    # A pool member whose component lacks the account holds
+                    # none of it, rather than dropping out of the pooled
+                    # statistics (ADR-009 §7), as a scenario compare does (#174).
+                    columns[member.stem] = pd.Series(0.0, index=member.months)
                 continue
             values = pd.Series(nominal[member_id], index=member.months)
             columns[member.stem] = self._convert(subject, account_kind, member, values, mode)

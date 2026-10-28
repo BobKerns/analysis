@@ -6,7 +6,8 @@ distribution's own 5th, 50th and 95th percentiles marked, and a histogram
 of the members' ``u``, which a correct setup spreads evenly over 0 to 1.
 ``pair_view`` is a scatter of two correlated nodes' scores. Both work on
 ``draws_db.draws_frames`` (testable without a kernel); ``draws_widget``
-wires them to recipe, batch, node and pair pickers.
+wires them to recipe, batch, node and pair pickers, plus a component
+picker for a pool (ADR-009), whose components are checked one at a time.
 """
 
 from __future__ import annotations
@@ -21,7 +22,9 @@ from IPython.display import display
 
 from analysis.frames import named_rows
 
-from analysis.sim.draws_db import build_draws_db, draws_db_path, draws_frames
+from analysis.sim.draws_db import (
+    build_draws_db, component_frames, components, draws_db_current, draws_frames,
+)
 from analysis.sim.ensemble import EnsembleError
 from analysis.sim.notebook_ui.pickers import find_data_dir, find_runs_dir, note_picks
 from analysis.sim.notebook_ui.sensitivity_widgets import (
@@ -154,10 +157,14 @@ def draws_widget(*,
     recipe = widgets.Dropdown(options=list_sensitivity_recipes(runs_dir, find_data_dir(data_dir)),
                               description="Recipe:")
     batch = widgets.Dropdown(options=[], description="Batch:", layout=widgets.Layout(width="max-content"))
+    # A pool's members come from several ensembles, each drawn from its own
+    # distributions, so the checks are per component; hidden otherwise.
+    component = widgets.Dropdown(options=[], description="Component:",
+                                 layout=widgets.Layout(width="max-content", display="none"))
     node = widgets.Dropdown(options=[], description="Node:")
     pair = widgets.Dropdown(options=[], description="Pair:", layout=widgets.Layout(width="max-content"))
     table_out, node_out, pair_out = widgets.Output(), widgets.Output(), widgets.Output()
-    state: dict[str, Any] = {"frames": None, "loading": False}
+    state: dict[str, Any] = {"frames": None, "batch_frames": None, "loading": False}
 
     def _draw_node(*_: object) -> None:
         frames = state["frames"]
@@ -173,20 +180,38 @@ def draws_widget(*,
             _show(pair_out, lambda: pair_view(frames, *pair.value))
 
     def _on_batch(*_: object) -> None:
-        state["frames"] = None
+        state["frames"] = state["batch_frames"] = None
         for out in (table_out, node_out, pair_out):
             out.clear_output()
         if batch.value is None:
             return
         try:
-            if not draws_db_path(batch.value).is_file():
+            if not draws_db_current(batch.value):
                 build_draws_db(batch.value)
             frames = draws_frames(batch.value)
         except EnsembleError as exc:
             with table_out:
                 display(StyledMarkdown(f"_{exc}_"))
             return
+        state["batch_frames"] = frames
+        names = components(frames)
+        state["loading"] = True
+        try:
+            component.options = names
+            component.value = names[0] if names else None
+        finally:
+            state["loading"] = False
+        component.layout.display = None if len(names) > 1 else "none"
+        _on_component()
+
+    def _on_component(*_: object) -> None:
+        batch_frames = state["batch_frames"]
+        if batch_frames is None or state["loading"]:
+            return
+        frames = component_frames(batch_frames, component.value) if component.value else batch_frames
         state["frames"] = frames
+        for out in (table_out, node_out, pair_out):
+            out.clear_output()
         with table_out:
             if frames["draw_check"].empty:
                 display(StyledMarkdown("_A one-at-a-time batch draws nothing at random; "
@@ -217,9 +242,10 @@ def draws_widget(*,
     recipe.observe(_on_recipe, names="value")
     note_picks(find_data_dir(data_dir), recipe)
     batch.observe(_on_batch, names="value")
+    component.observe(_on_component, names="value")
     node.observe(_draw_node, names="value")
     pair.observe(_draw_pair, names="value")
     return widgets.VBox([
-        widgets.HBox([recipe, batch]), table_out,
+        widgets.HBox([recipe, batch, component]), table_out,
         node, node_out, pair, pair_out,
     ])

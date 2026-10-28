@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from analysis.sim import builder_log
+from analysis.sim.lineage import is_pool
 from analysis.sim.loader import (
     DEFAULT_INTENT_DIR,
     DEFAULT_RUNS_DIR,
@@ -466,17 +467,19 @@ class _Daemon:
     def order(self, queue: list[str]) -> list[str]:
         """Scenarios someone is waiting on, then builds they preempted, then
         the working set's, most recently used first (#322), then plain runs
-        before ensembles (quick results first), then by name."""
+        before ensembles (quick results first), then pools, which reuse
+        their components' runs (ADR-009), then by name."""
         first = [n for n in self.first if n in queue]
         resume = [n for n in self.resume if n in queue]
         used = working_set_order(self.data_dir)
         runs = self.paths.runs_dir
+        scenarios = self.data_dir / "scenarios"
 
         def rank(name: str) -> tuple[int, int, int, int, str]:
             pos = first.index(name) if name in first else len(first)
             again = resume.index(name) if name in resume else len(resume)
             recent = used.get(name, len(used))
-            ensemble = (runs / name).is_dir()
+            ensemble = 2 if is_pool(scenarios, name) else int((runs / name).is_dir())
             return (pos, again, recent, ensemble, name)
 
         return sorted(queue, key=rank)

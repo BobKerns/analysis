@@ -170,6 +170,30 @@ def _ensembles(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
     ]
 
 
+def _pools(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
+    from analysis.sim.lineage import is_pool
+    return [name for name in names.scenario_names(data_dir) if is_pool(data_dir / "scenarios", name)]
+
+
+def _pool_components(ctx: click.Context, data_dir: Path) -> list[str]:
+    """What a pool can draw from: the ensembles that aren't pools (ADR-009)."""
+    pools = set(_pools(ctx, data_dir))
+    return [name for name in _ensembles(ctx, data_dir) if name not in pools]
+
+
+class PoolComponent(NameType):
+    """A pool's ``COMPONENT[=PCT]``: TAB completes the name before any ``=``;
+    not re-asked, since the weight makes it more than a name."""
+
+    def shell_complete(
+        self, ctx: click.Context, param: click.Parameter, incomplete: str,
+    ) -> list[CompletionItem]:
+        if "=" in incomplete:
+            return []
+        typed = incomplete.lower()
+        return [CompletionItem(c) for c in self.choices(ctx) if c.lower().startswith(typed)]
+
+
 def _correlate_with(data_dir: Path, scenario: str) -> list[str]:
     """What a ``vary_correlate_with`` can name: a calendar row, or a
     person's lifespan node."""
@@ -204,6 +228,8 @@ PARENTS = ParentList(_scenarios, "scenario", check=False)
 # `sim explain`'s target: a scenario, or a run file's path, which no list holds.
 SCENARIO_OR_RUNFILE = NameType(_scenarios, "scenario", check=False)
 ENSEMBLE = NameType(_ensembles, "ensemble")
+POOL = NameType(_pools, "pool")
+POOL_COMPONENT = PoolComponent(_pool_components, "ensemble", check=False)
 ACCOUNT = NameType(_in_scenario(names.account_names), "account")
 # `sim invest` makes the account when it's new.
 ACCOUNT_OR_NEW = NameType(_in_scenario(names.account_names), "account", check=False)

@@ -10,8 +10,9 @@ runs them inside a staged edit (``staging.staged_edit``), so a rename that
 would leave any scenario unable to load is never written.
 
 A scenario itself is renamed with :func:`rename_scenario`: its folder, its
-``scenario.csv`` name, every child's ``parent_scenario``, the data repo's
-``.current_scenario``, and the links to it in the data repo's README files.
+``scenario.csv`` name, every child's ``parent_scenario``, every pool's
+components (ADR-009), the data repo's ``.current_scenario``, and the links
+to it in the data repo's README files.
 :func:`copy_scenario` makes a sibling copy under a new name (issue #295).
 """
 
@@ -520,6 +521,34 @@ def copy_scenario(data_dir: Path, old: str, new: str, *, created_by: str | None 
     return sorted(path.relative_to(data_dir).as_posix() for path in new_dir.rglob("*") if path.is_file())
 
 
+def _repoint_pool(
+    old: str, new: str, described: list[tuple[str, str]],
+) -> Callable[[dict[str, str]], None]:
+    """A pool's components follow a rename (ADR-009), as a child's parents
+    do; a made-up description that follows is added to ``described`` as
+    (before, after), for the README to follow too."""
+    from analysis.sim import pool
+
+    def edit(row: dict[str, str]) -> None:
+        try:
+            meta = json.loads(row.get("meta_json") or "{}")
+        except json.JSONDecodeError:
+            return
+        spec = meta.get(pool.POOL_KEY) if isinstance(meta, dict) else None
+        if not isinstance(spec, dict):
+            return
+        renamed = pool.renamed_spec(spec, old, new)
+        if renamed is None:
+            return
+        before = list(spec["components"])
+        meta[pool.POOL_KEY] = renamed
+        row["meta_json"] = json.dumps(meta, separators=(",", ":"))
+        if (row.get("description") or "").strip() == pool.default_description(before):
+            row["description"] = pool.default_description(list(renamed["components"]))
+            described.append((pool.default_description(before), row["description"]))
+    return edit
+
+
 def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
     """Rename scenario ``old`` to ``new`` in data repo ``data_dir`` (a staged
     copy, in the CLI). Returns what changed, as paths relative to
@@ -551,9 +580,20 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
     if _rewrite_scenario_csv(new_dir / "scenario.csv", _rename_self(old, new)):
         changed.append(f"scenarios/{new}/scenario.csv")
     for each in scenario_folders(scenarios):
-        if _rewrite_scenario_csv(scenarios / each / "scenario.csv", _repoint_parents(old, new)):
-            if f"scenarios/{each}/scenario.csv" not in changed:
-                changed.append(f"scenarios/{each}/scenario.csv")
+        described: list[tuple[str, str]] = []
+        for edit in (_repoint_parents(old, new), _repoint_pool(old, new, described)):
+            if _rewrite_scenario_csv(scenarios / each / "scenario.csv", edit):
+                if f"scenarios/{each}/scenario.csv" not in changed:
+                    changed.append(f"scenarios/{each}/scenario.csv")
+        readme = scenarios / each / "README.md"
+        for before, after_text in described:
+            if readme.is_file():
+                text = readme.read_text(encoding="utf-8")
+                lines = [after_text if line == before else line for line in text.split("\n")]
+                if "\n".join(lines) != text:
+                    readme.write_text("\n".join(lines), encoding="utf-8")
+                    if f"scenarios/{each}/README.md" not in changed:
+                        changed.append(f"scenarios/{each}/README.md")
     current = data_dir / CURRENT_SCENARIO_FILE
     if current.is_file() and not current.is_symlink() and current.read_text(encoding="utf-8").strip() == old:
         current.write_text(f"{new}\n", encoding="utf-8")

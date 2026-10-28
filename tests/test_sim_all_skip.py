@@ -25,34 +25,6 @@ def _commit(repo: git.Repo, files: dict[str, str], message: str) -> str:
 
 
 @pytest.fixture
-def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
-    """A stand-in code repo `sim all` compares runs against, so the test
-    doesn't depend on whether this checkout has uncommitted changes."""
-    repo = git.Repo.init(tmp_path / "code", b="main")
-    with repo.config_writer() as cw:
-        cw.set_value("commit", "gpgsign", "false")
-    _commit(repo, {"src/engine.py": "v1\n", "pyproject.toml": "", "uv.lock": "",
-                   "docs/guide.md": "one\n"}, "init")
-
-    monkeypatch.setattr(freshness, "code_tree", lambda: freshness.code_tree_of(repo))
-    return repo
-
-
-def _stamp_runs(runs_dir: Path, repo: git.Repo) -> None:
-    """Record the stand-in repo's HEAD, clean, as the code every run ran,
-    and date the plain runs earlier, in order, so a rerun is always the
-    newest."""
-    for n, run_file in enumerate(sorted(runs_dir.glob("*_*.sqlite3"))):
-        run_file.rename(run_file.with_name(
-            f"2000-01-01T{n:06d}Z_{run_file.name.split('_', 1)[1]}"))
-    for run_file in runs_dir.rglob("*.sqlite3"):
-        with sqlite3.connect(run_file) as con:
-            if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'simulation_run'").fetchone():
-                con.execute("UPDATE simulation_run SET code_version = ?, code_dirty = 0",
-                            (repo.head.commit.hexsha,))
-
-
-@pytest.fixture
 def sim_all(
     commit_test_data: Callable[[], Path], intent_dir: Path, runs_dir: Path,
 ) -> Callable[..., str]:
@@ -75,11 +47,11 @@ def _skipped(output: str) -> list[str]:
 
 
 def test_sim_all_skips_scenarios_whose_runs_cannot_have_changed(
-    sim_all: Callable[..., str], code_repo: git.Repo, runs_dir: Path,
+    sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
 ) -> None:
     first = sim_all()
     assert _skipped(first) == []
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
 
     second = sim_all()
     assert _skipped(second) == ["base", "retire_alice"]
@@ -88,10 +60,10 @@ def test_sim_all_skips_scenarios_whose_runs_cannot_have_changed(
 
 
 def test_a_change_to_code_reruns_but_a_docs_commit_does_not(
-    sim_all: Callable[..., str], code_repo: git.Repo, runs_dir: Path,
+    sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
 ) -> None:
     sim_all()
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
     _commit(code_repo, {"docs/guide.md": "two\n"}, "docs only")
     assert _skipped(sim_all()) == ["base", "retire_alice"]
 
@@ -100,19 +72,20 @@ def test_a_change_to_code_reruns_but_a_docs_commit_does_not(
 
 
 def test_uncommitted_code_always_reruns(
-    sim_all: Callable[..., str], code_repo: git.Repo, runs_dir: Path,
+    sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
 ) -> None:
     sim_all()
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
     (Path(str(code_repo.working_tree_dir)) / "src" / "engine.py").write_text("edited\n")
     assert _skipped(sim_all()) == []
 
 
 def test_a_data_change_reruns_only_the_scenarios_that_read_it(
-    sim_all: Callable[..., str], code_repo: git.Repo, runs_dir: Path, test_data_dir: Path,
+    sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None],
+    runs_dir: Path, test_data_dir: Path,
 ) -> None:
     sim_all()
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
     data = git.Repo(test_data_dir)
     readme = test_data_dir / "scenarios" / "retire_alice" / "notes.txt"
     readme.write_text("a note\n")
@@ -120,15 +93,15 @@ def test_a_data_change_reruns_only_the_scenarios_that_read_it(
 
     _commit(data, {}, "a note")
     assert _skipped(sim_all()) == ["base"]  # changed since its run
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
     assert _skipped(sim_all()) == ["base", "retire_alice"]
 
 
 def test_a_run_made_from_dirty_code_is_never_trusted(
-    sim_all: Callable[..., str], code_repo: git.Repo, runs_dir: Path,
+    sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
 ) -> None:
     sim_all()
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
     for run_file in runs_dir.glob("*retire_alice*.sqlite3"):
         with sqlite3.connect(run_file) as con:
             con.execute("UPDATE simulation_run SET code_dirty = 1")
@@ -137,7 +110,7 @@ def test_a_run_made_from_dirty_code_is_never_trusted(
 
 @pytest.mark.slow
 def test_an_ensemble_batch_of_another_size_reruns(
-    sim_all: Callable[..., str], code_repo: git.Repo, runs_dir: Path,
+    sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
     test_data_dir: Path, intent_dir: Path,
 ) -> None:
     """A batch `sim run --ensemble-size N` made at another size isn't the
@@ -155,9 +128,9 @@ def test_an_ensemble_batch_of_another_size_reruns(
         "sim", "run", "recipe", "--ensemble-size", "3", "--data-dir", str(test_data_dir),
         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir), "--allow-dirty-code"])
     assert result.exit_code == 0, result.output
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
     assert "recipe" not in _skipped(sim_all())
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
     assert _skipped(sim_all()) == ["base", "recipe", "retire_alice"]
 
 
@@ -175,13 +148,14 @@ def test_a_batch_with_unreadable_state_reruns(
 
 
 def test_a_disabled_scenario_is_not_built_and_changes_no_child(
-    sim_all: Callable[..., str], code_repo: git.Repo, runs_dir: Path, test_data_dir: Path,
+    sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None],
+    runs_dir: Path, test_data_dir: Path,
 ) -> None:
     """`sim scenario disable` (#300) commits a `.disable` file in the folder.
     `sim all` leaves the scenario out; its children still build, and since
     the file isn't part of their data, they stay unchanged."""
     sim_all()
-    _stamp_runs(runs_dir, code_repo)
+    stamp_runs(runs_dir)
     result = CliRunner().invoke(main, ["sim", "scenario", "disable", "base",
                                        "--data-dir", str(test_data_dir)])
     assert result.exit_code == 0, result.output
