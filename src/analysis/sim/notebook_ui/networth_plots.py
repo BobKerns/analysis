@@ -356,20 +356,39 @@ def guard_rails_widget(rc: RunConnection,
                                indent=False, layout=widgets.Layout(width="auto"))
     chart_out = widgets.Output()
     table_out = widgets.Output()
-    try:
-        rails = guard_rails.run_rails(rc, rc.scenario.scenarios_dir)
-    except guard_rails.GuardRailError as exc:
-        with chart_out:
+
+    def _read_rails() -> list[guard_rails.GuardRail] | None:
+        """The rails as the file has them now, or None, said why in chart_out."""
+        try:
+            scenarios_dir = rc.scenario.scenarios_dir
+        except RuntimeError:  # a run file opened without its data repo
+            print(f"{rc.name} was opened without its scenario, so its guard rails "
+                  "can't be read; open it with open_run().")
+            return None
+        try:
+            rails = guard_rails.run_rails(rc, scenarios_dir)
+        except guard_rails.GuardRailError as exc:
             print(f"The guard rails of {rc.name} don't load; `sim check {rc.name}` lists:")
             for issue in exc.issues:
                 print(f"  {issue}")
-        return widgets.VBox([chart_out])
-    if not rails:
-        with chart_out:
+            return None
+        if not rails:
             print(f"No guard rails in {rc.name}; `sim guard-rail add` adds one.")
-        return widgets.VBox([chart_out])
+            return None
+        return rails
+
+    with chart_out:
+        if _read_rails() is None:
+            return widgets.VBox([chart_out])
 
     def _redraw(*_):
+        with chart_out:
+            clear_output(wait=True)
+            rails = _read_rails()
+        if rails is None:
+            with table_out:
+                clear_output()
+            return
         mode = dollar_mode.value
         unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
         results = guard_rails.evaluate_run(rc, rails, mode)

@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
+import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
@@ -102,9 +103,12 @@ def guard_rail_figure(
         if not span:
             continue
         position = {year: i for i, year in enumerate(span)}
-        first = frames[rails[0].rail.name].reindex(span)
+        # Rails sharing a measure may cover different years: the measure line
+        # spans them all.
+        measure = pd.concat([f["measure"] for f in frames.values()])
+        measure = measure[~measure.index.duplicated()].reindex(span)
         x = np.arange(len(span))
-        top.plot(x, first["measure"], color=_MEASURE_COLOR, linewidth=2, marker="o",
+        top.plot(x, measure, color=_MEASURE_COLOR, linewidth=2, marker="o",
                  markersize=4, label=_measure_label(key), zorder=3)
         for r in rails:
             frame = frames[r.rail.name].reindex(span)

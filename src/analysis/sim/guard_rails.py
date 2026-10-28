@@ -204,6 +204,7 @@ def read_rows(scenarios_dir: Path, scenario_name: str) -> tuple[list[_Row], list
                 )
                 continue
             last = reader.line_num
+            seen: dict[str, int] = {}  # a name's line in this file
             for values in reader:
                 line, last = last + 1, reader.line_num
                 cells = [v.strip() for v in values]
@@ -215,6 +216,11 @@ def read_rows(scenarios_dir: Path, scenario_name: str) -> tuple[list[_Row], list
                 row = dict(zip(header, (cells + [""] * len(header))[:len(header)], strict=True))
                 if not row["name"]:
                     issues.append(f"{where}: name is blank")
+                    continue
+                if (first := seen.setdefault(row["name"], line)) != line:
+                    # A child's row replaces its parent's; one file naming a
+                    # rail twice is a mistake, not an override.
+                    issues.append(f"{where}: rail {row['name']!r} is already on line {first}")
                     continue
                 prior = merged.get(row["name"])
                 cells_now = {**prior.cells, **row} if prior is not None else row

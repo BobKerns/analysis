@@ -2757,6 +2757,10 @@ def _echo_guard_rail_comparison(
                 click.echo(f"  error: {issue}", err=True)
             raise click.ClickException(
                 f"the guard rails of {name!r} don't load ({len(exc.issues)} issue(s))") from None
+        if rails and mode == DollarMode.CPI_CONSTANT and rc.cpi_index().isna().all():
+            raise click.ClickException(
+                f"no 'cpi' inflation index in the run of {name}, so no CPI-constant "
+                "guard rail margins; pass --dollars nominal")
         results[name] = guard_rails.evaluate_run(rc, rails, mode) if rails else []
     frames = guard_rails.comparison_frames(results, baseline, variants)
     if not frames:

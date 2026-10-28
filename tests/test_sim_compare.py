@@ -350,3 +350,22 @@ def test_sim_compare_guard_rails_says_when_there_are_none(
     default = compare_runs("retire_alice", "higher_pay")  # every section, rails only if any
     assert default.exit_code == 0, default.output
     assert "Guard rail" not in default.output
+
+
+def test_sim_compare_guard_rails_refuses_cpi_constant_without_a_cpi_index(
+    compare_runs: Callable[..., Result], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard-rails section alone reads no net worth, so it checks for a
+    CPI index itself rather than showing the rails as covering no years."""
+    from analysis.sim.connection import RunConnection
+
+    original = RunConnection.cpi_index
+    monkeypatch.setattr(RunConnection, "cpi_index",
+                        lambda self: original(self) * float("nan"))
+    result = compare_runs("retire_alice", "higher_pay", "--section", "guard-rails")
+    assert result.exit_code == 1, result.output
+    assert "no 'cpi' inflation index in the run of retire_alice" in result.output
+    nominal = compare_runs("retire_alice", "higher_pay", "--section", "guard-rails",
+                           "--dollars", "nominal")
+    assert nominal.exit_code == 0, nominal.output
+    assert "gk_upper:" in nominal.output  # a share of the portfolio needs no CPI
