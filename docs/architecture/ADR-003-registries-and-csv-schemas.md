@@ -343,6 +343,7 @@ flowchart TB
         aux["aux/*.csv — tax-law facts"]
         prices["prices/*.csv — security prices"]
         itemizations["itemizations/*.csv — @name rollups"]
+        strategies["strategies/*.py — strategy code (opt)"]
     end
     subgraph base["scenarios/base/ (root scenario)"]
         base_files["accounts.csv, account_lots.csv,
@@ -399,6 +400,12 @@ flowchart LR
 (security_price__SYMBOL.csv)"]
     itemizations["itemizations/
 (@name.csv)"]
+    strategy_rows["strategies.csv
+(chain, kind, params_json)"]
+    targets["targets.csv
+(target_set)"]
+    code["strategies/ (shared)
+(kind)"]
 
     values -->|account_name| accounts
     chains -->|account_name + lot| values
@@ -418,6 +425,10 @@ a blank opening_balance| prices
     values -->|opening_balance/opening_cost_basis/
 prior_year_end_balance = @name| itemizations
     scheduled -->|amount = @name| itemizations
+    strategy_rows -->|chain| chains
+    strategy_rows -->|kind| code
+    strategy_rows -->|params_json: target set| targets
+    strategy_rows -->|params_json: tag| accounts
 ```
 
 A chain's own file (`chains/<role>/<name>.csv`) is itself a list of `account_name` (+ `lot`)
@@ -461,6 +472,8 @@ What each symbol is made of, by asset class, for the portfolio overview (`sim al
 | `weight` | percent | ✓ | `0%` to `100%`; the weights of one (`symbol`, `as_of`) set must add up to 100 |
 
 For a date the overview uses the symbol's latest set on or before it, else its earliest. A lot with no rows for its symbol is classed by its account subkind (`cash`, `real_estate`, `vehicle`/`other_asset` as `other`; a `CASH` symbol is cash and a `CD` symbol is `cd`), and otherwise shown as `unclassified`, so a gap is visible. The weights are static per date: the model does not rebalance or let allocations drift with relative price movements, only follow the dated sets you give it, so a lot's class mix at any date is its balance times that date's weights. The file may be omitted.
+
+A lot with no symbol (one that grows at a rate series) is classed by a row whose `symbol` is the lot's `<account>:<lot>` key, e.g. `Asset_IRA_Alice:stable`, used when the lot's symbol (if any) has no rows. A ticker never holds a colon, so the upper-case rule for symbols doesn't apply to a key, and `sim prices fetch`, symbol completion and the symbol listings skip keys. A key naming an account a scenario has, but a lot it doesn't, is reported by `sim check` (the file is shared, so another scenario may have the lot). Renaming the account or the lot rewrites its keys, keeping the old one as well while a scenario the rename doesn't reach still has the old name. A responsive strategy's portfolio (§4.11) must have every asset lot classed, by its symbol, its key or its subkind: an `unclassified` one is a load error naming the row to add.
 
 #### 4.1c Shared base: `data_repo/itemizations/<name>.csv` (optional)
 
@@ -774,6 +787,8 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 
 **A chain's role is the folder its file is in** (`registries.CHAIN_ROLES`), and the file name is the chain name. A `source` chain is drawn from: a rule's `from_account`, a calendar transfer's `account_1`, a lot's `refill_chain`, an `rmd` rule's chain. A `destination` chain is paid into: a rule's `to_account`, a calendar transfer's `account_2`, a lot's `overflow_chain`. A step naming another chain names one of the same role. The loader rejects a chain used against its role, a chain file directly under `chains/` or in a folder that names no role, and one name in both folders of one scenario; a leaf chain (one lot) plays either part. No chain is both: money drawn through a chain and money paid through it follow different policies, so the role also says which one a reader follows. Money drawn from a source chain may first refill the lots it reaches, but never passes through their overflow; money paid into a destination chain may overflow on from the lots it reaches, but never passes through their refill chains. `sim chain show --graph` (and the Mermaid source `--mermaid` prints) draws a chain that way, every arrow pointing the way money moves.
 
+**A chain a strategy owns** ([ADR-010](ADR-010-responsive-strategies.md), §4.11). When a strategy owns an interior chain, each draw through it (or sweep into it) first asks the strategy which leaves pay (or receive); its moves post through the same leaf paths a step uses, and whatever it leaves outstanding falls through to the steps above as usual. A step's `maximum` and `percent` bind those steps, not the strategy's moves. A strategy can't own a destination chain with `tax_character` or `basis_of` steps, whose meaning depends on the step order.
+
 **Withdrawing from a taxable lot.** A draw or sweep leg out of a `taxable` non-cash lot (e.g. in a `brokerage_taxable` account) splits into a `return_of_capital` leg and a gain leg (`engine._post_withdrawal`). Basis is tracked **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)); an account's basis is the sum over its lots (the `account_state` view). The split is pro-rata to the fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount // balance`); it reduces that lot's basis, and its `quantity` when tracked. The gain leg is `stcg` if the lot was acquired a year or less before the sale, else `ltcg`. Money moved into a basis-tracked lot adds to its basis (and shares), except built-in growth, which is total return and leaves basis alone. A realized loss (basis exceeds proceeds) is a negative gain leg, the same convention as a `year_to_date.csv` loss carryforward; the tax accumulator nets and limits it (§2.6). A sweep into a destination chain with a basis step for the lot is not split this way; the chain characterizes it (below). The lot needs an `opening_cost_basis` (a zero balance starts at basis 0); an untracked basis (`NULL`) raises, telling the author to add it to `account_lots.csv`.
 
 #### 4.8 Per-scenario: `data_repo/scenarios/<name>/calendar.csv`
@@ -864,6 +879,36 @@ Two mechanisms cover this, both posting **balance-neutral** `transfer_event` row
 Writes directly into `year_to_date` (`UNIQUE (scenario_id, name)`).
 
 `analysis sim ytd list` shows these rows with the scheduled rows' catch-ups. `sim ytd add [<name> <from> <to> <amount>]` appends a row, taking `--from-lot`, `--to-lot`, `--tax-character`, `--year` and `--description` as options and asking for whatever it needs and was not given (a lot only when a blank one would not say which, as for a transfer, §7); a negative amount follows `--` on the command line. `sim ytd edit [<name>]` is guided: options set those fields and write at once, and with none it shows the fields and asks which to change. `sim ytd delete [<name>]` removes a row (`--yes` skips the question). Each goes through a staged edit (§7). As for scheduled rules, editing an inherited row writes an override of the whole row, and deleting an override brings back the inherited row. An inherited row can't be removed (§4.5), so deleting one writes an override with `amount` 0, which posts nothing.
+
+#### 4.11 Per-scenario: `data_repo/scenarios/<name>/strategies.csv` (optional), and `data_repo/strategies/`
+
+Which responsive strategies the scenario runs ([ADR-010](ADR-010-responsive-strategies.md)). Merged down the lineage by `name`, a later scenario's row replacing the earlier one's whole. The code is a built-in kind (`analysis.sim.strategies`) or a module in the data repo's shared `strategies/` folder (`*.py`; a module whose name starts with `_` is a helper and registers nothing), which is inside the provenance scope and snapshotted into the intent when a data-repo kind is in use.
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `name` | text | ✓ | unique within the scenario's lineage |
+| `kind` | text | ✓ | a registered kind (`sim strategy kinds`) |
+| `chain` | text | ✓ | the interior chain it owns (§4.7): not an account's own leaf chain. A source chain needs a kind with a `draw` hook, a destination chain one with `place`. One enabled strategy per chain |
+| `start` | YYYY-MM | | first month it decides; blank is the scenario's start |
+| `end` | YYYY-MM | | last month it decides; blank is the end. Outside `start`/`end` the chain's steps decide alone |
+| `enabled` | bool | | `true` (blank) or `false`. A disabled row is still checked; a child sets it `false` to run a parent's scenario without the strategy |
+| `params_json` | json | | an object of the kind's parameters, with percents (`"5%"`) and dollars (`"1200.00"`) written as in CSV cells; checked against the kind and stored in cents and millionths |
+| `description` | text | | |
+
+A kind that fails to import, an unknown kind, a chain that doesn't fit, a parameter the kind rejects (a tag no account carries, a target set `targets.csv` lacks), or an unclassified lot in a tagged portfolio (§4.1b) is a load error naming the row. `sim strategy add|edit|delete` edit the file through a staged edit (§7); editing an inherited row writes an override of the whole row, and deleting an inherited one is refused in favor of `--disable`.
+
+#### 4.12 Per-scenario: `data_repo/scenarios/<name>/targets.csv` (optional)
+
+Named sets of asset-class target weights a strategy steers by ([ADR-010](ADR-010-responsive-strategies.md) §5). Merged down the lineage by (`target_set`, `as_of`, `asset_class`).
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `target_set` | text | ✓ | the set's name, as a strategy's `targets` parameter names it |
+| `as_of` | YYYY-MM | | the month these weights start; blank holds at every date. The set in force is the latest on or before the month, else the earliest, so a glide path is more rows |
+| `asset_class` | enum | ✓ | as in §4.1b |
+| `weight` | percent | ✓ | `0%` to `100%`; one (`target_set`, `as_of`) must add up to 100%. A class a set leaves out has target 0% |
+
+`sim target set SET CLASS=PERCENT ... [--as-of]` writes one set (a class the scenario inherits in that set and the command leaves out is written as `0%`, since a child can't remove a parent's row), `sim target delete` removes the scenario's own rows, and `sim target list` shows the merged sets.
 
 ### 5. Default priorities
 
@@ -1201,3 +1246,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#315](https://github.com/BobKerns/analysis/issues/315): `lifespan.csv` gains an optional `life_table` naming an aux `life_table__<name>.csv`, read for that person in that scenario instead of `life_table.csv`; the templates ship Japan's (§4.4, §4.9).
 - [#317](https://github.com/BobKerns/analysis/issues/317): the code repository's `templates/aux/` is the lowest `aux/` tier; `filing_status.csv` is the household's, one row per date, checked at load (§4.1d, §4.4).
 - [#324](https://github.com/BobKerns/analysis/issues/324): a scenario built only on mix-in only scenarios, with no dates of its own, is mix-in only too, recorded in `scenario.mixin_only`; `scenario edit` names each scenario it makes one (§4.5).
+- [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies: `<account>:<lot>` keys in `allocations.csv` (§4.1b), a chain a strategy owns (§4.7), new `strategies.csv` and `strategies/` (§4.11) and `targets.csv` (§4.12), and the data repo map (§4.0).

@@ -1,3 +1,4 @@
+# cspell:ignore nohooks nosuch
 """Responsive strategies (#326 stage 1a, ADR-010): the API, finding kinds,
 validating strategies.csv/targets.csv at load, and the engine asking a
 strategy at a refill draw.
@@ -703,3 +704,30 @@ def test_a_child_target_set_zeroes_classes_it_leaves_out(
     assert result.exit_code == 0, result.output
     assert "stock_us 100%, bond 0%" in result.output
     assert "main,,bond,0%" in strategy_csv("alice_last_leaf", "targets.csv").read_text()
+
+
+def test_rebalance_places_overflow_into_the_underweight_class(
+    strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """Checking overflows into a strategy-owned destination chain listing the
+    IRA first: with bonds overweight, the money goes to the brokerage's stock."""
+    destination = strategy_csv("alice_rebalance", "chains") / "destination"
+    destination.mkdir()
+    (destination / "portfolio_place.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\n"
+        "Asset_TraditionalIRA_Alice,default,,,,\nAsset_Brokerage_Joint,default,,,,\n"
+    )
+    lots = strategy_csv("alice_rebalance", "account_lots.csv")
+    lots.write_text(lots.read_text().replace(
+        "Asset_Checking,,,,,,,5000.00,,,2000.00,,portfolio_draw,,,,,",
+        "Asset_Checking,,,,,,,5000.00,,,2000.00,6000.00,portfolio_draw,,,,portfolio_place,",
+    ))
+    path = strategy_csv("alice_rebalance", "strategies.csv")
+    path.write_text(path.read_text() + 'place_by_allocation,rebalance,portfolio_place,,,,'
+                    '"{""portfolio"":""portfolio:invest"",""targets"":""main""}",\n')
+    run = run_strategy_scenario("alice_rebalance")
+    places = [r for r in _decisions(run) if r[1] == "place"]
+    assert places, "checking never overflowed"
+    _month, _hook, asked, chosen, fallback, note, _detail, _memory = places[0]
+    assert chosen == asked and fallback == 0
+    assert note.startswith("stock_us ") and f"into {BROKERAGE}" in note

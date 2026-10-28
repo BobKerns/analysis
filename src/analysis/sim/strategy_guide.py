@@ -43,8 +43,8 @@ class ParamInfo:
 
 
 def _field_docs(params: type) -> dict[str, str]:
-    """The string literal under each field of ``params`` (attribute
-    docstrings), read from its source; {} when the source can't be read."""
+    """The string literal under each field of ``params`` (each attribute's
+    docstring), read from its source; {} when the source can't be read."""
     try:
         tree = ast.parse(textwrap.dedent(inspect.getsource(params)))
     except (OSError, TypeError, SyntaxError):
@@ -90,7 +90,7 @@ def kind_params(cls: type[Strategy]) -> list[ParamInfo]:
 
 
 def describe_kind(cls: type[Strategy]) -> str:
-    """The kind's docstring, dedented, paragraphs kept."""
+    """The kind's docstring without its indentation, paragraphs kept."""
     return inspect.cleandoc(cls.__doc__ or "").strip()
 
 

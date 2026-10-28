@@ -33,6 +33,8 @@ data_repo/
         ...                 # one CSV per aux_table.kind; `kind__series.csv`
     itemizations/
         <name>.csv          # expansions for `@name` monetary references
+    strategies/
+        <module>.py         # the household's strategy code ([ADR-010](ADR-010-responsive-strategies.md))
     scenarios/
         retire_2030/
             scenario.csv    # one-row scenario header (incl. parent_scenario)
@@ -42,6 +44,8 @@ data_repo/
             calendar.csv    # CalendarEvents
             lifespan.csv    # per-person age at death
             year_to_date.csv # partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10)
+            strategies.csv  # which strategies run, on which chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.11)
+            targets.csv     # allocation targets ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12)
             chains/
                 source/asset_checking_liquidity.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
                 destination/salary_split.csv
@@ -105,9 +109,10 @@ state/
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | ✓ | ✓ (snapshot) |
 | `year_to_date` | ✓ | ✓ (snapshot) |
 | `ensemble_manifest`, `ensemble_draw`, `ensemble_tail_scale`, `ensemble_path_shock` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
+| `strategy`, `strategy_source`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -143,6 +148,39 @@ CREATE TABLE security_allocation (
     asset_class  TEXT NOT NULL,
     weight_micros INTEGER NOT NULL,
     PRIMARY KEY (symbol, as_of, asset_class)
+);
+
+-- Responsive strategies (ADR-010 §4). The data repo's strategy modules, by
+-- name, copied whole when an enabled strategy is a data-repo kind; the engine
+-- imports from here, never from the data repo.
+CREATE TABLE strategy_source (
+    module  TEXT PRIMARY KEY,
+    sha256  TEXT NOT NULL,
+    source  TEXT NOT NULL
+);
+
+-- The scenario's enabled strategies (strategies.csv, merged over the
+-- lineage). Each owns one interior chain; params_json is already in stored
+-- units (cents, millionths).
+CREATE TABLE strategy (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    kind        TEXT NOT NULL,
+    chain_id    INTEGER NOT NULL UNIQUE REFERENCES chain(id),
+    start       TEXT,
+    "end"       TEXT,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    description TEXT NOT NULL DEFAULT ''
+);
+
+-- Allocation targets (targets.csv). One set of weights per (target_set,
+-- as_of); as_of '' holds at every date; weights of one set sum to 1000000.
+CREATE TABLE allocation_target (
+    target_set    TEXT NOT NULL,
+    as_of         TEXT NOT NULL DEFAULT '',
+    asset_class   TEXT NOT NULL,
+    weight_micros INTEGER NOT NULL,
+    PRIMARY KEY (target_set, as_of, asset_class)
 );
 
 CREATE TABLE account (
@@ -675,7 +713,10 @@ CREATE TABLE transfer_event (
     parent_event_id INTEGER REFERENCES transfer_event(id),
     from_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
     to_lot_id       INTEGER NOT NULL REFERENCES account_lot(id),
-    meta_json       TEXT NOT NULL DEFAULT '{}'
+    meta_json       TEXT NOT NULL DEFAULT '{}',
+    -- The strategy decision whose move posted this leg (ADR-010 §4); the
+    -- leg keeps its own reason_kind.
+    strategy_decision_id INTEGER REFERENCES strategy_decision(id)
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
 CREATE INDEX idx_xfer_from     ON transfer_event(from_account);
@@ -683,6 +724,26 @@ CREATE INDEX idx_xfer_to       ON transfer_event(to_account);
 CREATE INDEX idx_xfer_reason   ON transfer_event(reason_kind, reason_id);
 CREATE INDEX idx_xfer_parent   ON transfer_event(parent_event_id);
 CREATE INDEX idx_xfer_taxchar  ON transfer_event(tax_character);
+CREATE INDEX idx_xfer_decision ON transfer_event(strategy_decision_id);
+
+-- One strategy hook's answer (ADR-010 §4): what it was asked, what its own
+-- moves posted, and what the chain's steps then covered. A hook that
+-- answered "no opinion" writes no row.
+CREATE TABLE strategy_decision (
+    id             INTEGER PRIMARY KEY,
+    step_id        INTEGER NOT NULL REFERENCES simulation_step(id),
+    strategy_id    INTEGER NOT NULL REFERENCES strategy(id),
+    hook           TEXT NOT NULL CHECK (hook IN ('draw','place')),
+    chain_id       INTEGER REFERENCES chain(id),
+    asked_cents    INTEGER NOT NULL,
+    chosen_cents   INTEGER NOT NULL,
+    fallback_cents INTEGER NOT NULL,
+    note           TEXT NOT NULL DEFAULT '',
+    detail_json    TEXT NOT NULL DEFAULT '{}',
+    -- The strategy's memory after the call, only when the call changed it.
+    memory_json    TEXT
+);
+CREATE INDEX idx_decision_step ON strategy_decision(step_id);
 
 -- #199: basis a sale could not recover, from a chain step whose
 -- tax_character is return_of_capital. No money moved, so it is not a
@@ -770,6 +831,9 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `scenario` | The scenario this file represents (one row). |
 | `person_lifespan` | Optional per-person age at death for a scenario, its final month, and how it varies ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
 | `year_to_date` | Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
+| `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
+| `allocation_target` | Named, dated sets of asset-class target weights (from `targets.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12). |
+| `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
@@ -965,3 +1029,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#291](https://github.com/BobKerns/analysis/issues/291): `calendar_event.vary_resume`, for a return row that puts back what governed its series (Intent layer DDL; schema 48).
 - [#315](https://github.com/BobKerns/analysis/issues/315): `person_lifespan.life_table`, the life table a scenario reads a person's lifespan against (Intent layer DDL; schema 49).
 - [#324](https://github.com/BobKerns/analysis/issues/324): `scenario.mixin_only`, so a run without the data repo still refuses a mix-in only scenario now that one may have parents (Intent layer DDL; schema 50).
+- [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies' `strategy`, `strategy_source` and `allocation_target` (Intent layer DDL), `strategy_decision` and `transfer_event.strategy_decision_id` (Ledger layer DDL; schema 51).
