@@ -176,6 +176,35 @@ def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False)
     return order
 
 
+def pool_base(scenarios_dir: Path, name: str) -> str | None:
+    """A pool's base component as its ``meta_json`` names it (the first
+    component unless ``base`` says otherwise), unchecked; ``None`` for a
+    scenario that isn't a pool, or names no component."""
+    spec = read_meta(scenario_dir(scenarios_dir, name)).get(POOL_KEY)
+    if not isinstance(spec, dict):
+        return None
+    base = spec.get("base")
+    if isinstance(base, str) and base:
+        return base
+    components = spec.get("components")
+    first = next(iter(components), None) if isinstance(components, (dict, list)) else None
+    return first if isinstance(first, str) else None
+
+
+def reading_order(scenarios_dir: Path, scenario_name: str) -> list[str]:
+    """:func:`load_order`, except for a pool (ADR-009 §6): its base
+    component's load order, then the pool. What a report reads from the
+    data repo rather than the run (guard rails, the names to complete) a
+    pool inherits from its base component, as it does the reserve, and
+    may override in its own folder."""
+    base = pool_base(scenarios_dir, scenario_name)
+    if base is None or base == scenario_name or not scenario_dir(scenarios_dir, base).is_dir():
+        return load_order(scenarios_dir, scenario_name)
+    if is_pool(scenarios_dir, base):  # a pool of pools is refused; read just the pool
+        return [scenario_name]
+    return [*(n for n in load_order(scenarios_dir, base) if n != scenario_name), scenario_name]
+
+
 def lineage_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False) -> list[str]:
     """:func:`load_order` without ``MIXIN_BASE`` under a mix-in only
     scenario: just the scenarios its ``parent_scenario`` links reach, root

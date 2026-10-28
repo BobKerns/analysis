@@ -16,7 +16,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from analysis.sim import registries
-from analysis.sim.lineage import TEMPLATE_AUX_DIR, load_order, scenario_dir, template_names
+from analysis.sim.lineage import TEMPLATE_AUX_DIR, reading_order, scenario_dir, template_names
 
 __all__ = [
     "account_names",
@@ -45,9 +45,10 @@ def _rows(path: Path) -> Iterator[dict[str, str]]:
 
 
 def _lineage_dirs(data_dir: Path, scenario: str) -> list[Path]:
-    """The scenario's folder and every one it inherits from, root first."""
+    """The scenario's folder and every one it inherits from, root first; a
+    pool's base component's, then the pool's own (``reading_order``)."""
     scenarios = data_dir / "scenarios"
-    return [scenario_dir(scenarios, name) for name in load_order(scenarios, scenario)]
+    return [scenario_dir(scenarios, name) for name in reading_order(scenarios, scenario)]
 
 
 def _column(paths: Iterable[Path], column: str) -> list[str]:
@@ -60,6 +61,12 @@ def _stems(folders: Iterable[Path], pattern: str = "*.csv") -> set[str]:
         path.stem for folder in folders if folder.is_dir()
         for path in folder.glob(pattern) if not path.stem.startswith("_")
     }
+
+
+def lineage_rows(data_dir: Path, scenario: str, filename: str) -> list[dict[str, str]]:
+    """Every row of ``filename`` in the scenario's folders, root first,
+    unmerged: what's named anywhere in its lineage."""
+    return [row for d in _lineage_dirs(data_dir, scenario) for row in _rows(d / filename)]
 
 
 def scenario_names(data_dir: Path) -> list[str]:

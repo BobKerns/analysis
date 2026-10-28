@@ -42,8 +42,9 @@ __all__ = [
 # 100% in the micros `units.percent_to_micros` returns.
 _WHOLE = 100 * units.MICROS_PER_PERCENT
 # What a pool folder may hold besides dotfiles: everything else is a
-# scenario's, and would be silently ignored.
-_POOL_FILES = {"scenario.csv", "README.md"}
+# scenario's, and would be silently ignored. Its guard rails are read by
+# the reports, over its base component's (ADR-009 §6).
+_POOL_FILES = {"scenario.csv", "README.md", "guard_rails.csv"}
 
 
 def default_description(components: Sequence[str]) -> str:
@@ -200,7 +201,8 @@ def _own_row_issues(scenarios_dir: Path, name: str, meta: Mapping[str, Any]) -> 
     extra = sorted(p.name for p in folder.iterdir()
                    if not p.name.startswith(".") and p.name not in _POOL_FILES) if folder.is_dir() else []
     if extra:
-        issues.append(f"{name}: a pool holds only scenario.csv and README.md; nothing reads "
+        issues.append(f"{name}: a pool holds only scenario.csv, README.md and guard_rails.csv; "
+                      "nothing reads "
                       f"{', '.join(extra)}")
     return issues
 
@@ -253,6 +255,23 @@ def pool_issues(data_dir: Path, name: str) -> list[str]:
             f"{'has' if len(small) == 1 else 'have'} ({', '.join(str(sizes[c]) for c in small)}); "
             "pool member j is member j of one component, so every component needs at least "
             "the pool's size")
+    return issues + _rail_issues(data_dir, name)
+
+
+def _rail_issues(data_dir: Path, name: str) -> list[str]:
+    """The pool's guard rails (its own over its base component's), parsed,
+    and what they name checked against the base component's lineage: the
+    one the reports judge by its member 0 (ADR-009 §6)."""
+    from analysis.sim import guard_rails, names
+
+    rows, issues = guard_rails.read_rows(Path(data_dir) / "scenarios", name)
+    rails, more = guard_rails.parse_rows(rows)
+    issues += more
+    if rails:
+        refs = guard_rails.references_from_rows(*(
+            names.lineage_rows(Path(data_dir), name, f)
+            for f in ("accounts.csv", "scheduled.csv", "calendar.csv")))
+        issues += guard_rails.check_references(rails, refs)
     return issues
 
 

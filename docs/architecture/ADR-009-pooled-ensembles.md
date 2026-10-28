@@ -16,7 +16,7 @@ The members already exist as files. Simulating them again would cost the whole b
 
 ### 1. A pool is a scenario that names its components
 
-A **pool** is a scenario folder holding only `scenario.csv` and `README.md` (dotfiles, such as `.disable`, aside). Its `scenario.csv` has no parent, dates or seed; its `meta_json` has a `pool` key naming the component ensembles and their weights (`lineage.is_pool`):
+A **pool** is a scenario folder holding only `scenario.csv`, `README.md` and, optionally, `guard_rails.csv` (dotfiles, such as `.disable`, aside). Its `scenario.csv` has no parent, dates or seed; its `meta_json` has a `pool` key naming the component ensembles and their weights (`lineage.is_pool`):
 
 ```json
 {"pool": {"components": {"e_great_inflation": "15%", "e_financial_crisis": "30%",
@@ -67,6 +67,7 @@ A pool's batch is an ordinary batch of members, so `sim ensemble summary|compare
 
 - **The summary** prints, under its header, the pool's members by component with their weights and shared seed (`pool of 3, seed 7: e_great_inflation 36 (15%), ...`), and which components the worst 5% of members came from, ranked by each member's lowest CPI-constant value over the run, the worst point of a lifetime rather than where it ends (`worst 5% (12) by lowest CPI-constant value: 6 e_pandemic_spike, 5 e_great_inflation, ...`). The pooled tail means rest on those members, so a small count from a component is a reason for more members. There is no other breakdown by component: each component's own report is one command away.
 - **The reserve** is the pool's own, when it sets one, else its base component's (`series_db._pool_meta`).
+- **Guard rails** (ADR-003 §4.11) are read along the base component's lineage and then the pool's own `guard_rails.csv` (`lineage.reading_order`), so a pool inherits its base component's rails by name and can add or override them. A single-run report on a pool's member (`sim report guard-rails`, `sim explain`) judges it by the pool's rails (`guard_rails.run_scenario_name`), and the pool's check (§1) checks them against the names its base component's lineage defines. Name completion for a pool follows the same order.
 
 An account or lot only some components have is 0 in the members without it, as a scenario comparison treats an account one side lacks (#174), so the account choices are every component's. Comparing a pool with one of its own components pairs each member that came from that component with itself, a difference of exactly 0, which `P(ahead)` counts as not ahead: correct, and easy to misread.
 

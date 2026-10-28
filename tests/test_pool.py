@@ -113,7 +113,7 @@ def test_a_pool_bigger_than_a_component_is_refused(test_data_dir: Path, pool_sce
 
 def test_a_pool_folder_holds_nothing_else(test_data_dir: Path, pool_scenarios: str) -> None:
     (test_data_dir / "scenarios" / pool_scenarios / "calendar.csv").write_text("date\n", encoding="utf-8")
-    assert any("only scenario.csv and README.md" in i for i in pl.pool_issues(test_data_dir, pool_scenarios))
+    assert any("a pool holds only" in i for i in pl.pool_issues(test_data_dir, pool_scenarios))
 
 
 def test_nothing_loads_a_pool_or_builds_on_one(
@@ -276,3 +276,43 @@ def test_sim_all_builds_a_pool_after_its_components_without_running_them_twice(
     out = result.output
     assert out.index("ensemble e_b") < out.index("pool mix")
     assert "component e_a: running" not in out and "component e_b: running" not in out
+
+
+# ---------- guard rails ----------
+
+_FOUR_PERCENT = ("--measure", "withdrawals", "--side", "above", "--basis", "initial_portfolio",
+                 "--threshold", "4%")
+
+
+def test_a_pool_has_its_base_components_rails_and_its_own(test_data_dir: Path, pool_scenarios: str) -> None:
+    data = ("--data-dir", str(test_data_dir))
+    added = _sim("guard-rail", "add", "wd_cap", *_FOUR_PERCENT, "--scenario", "e_a", *data)
+    assert added.exit_code == 0, added.output
+    own = _sim("guard-rail", "add", "pool_budget", "--measure", "spending", "--side", "above",
+               "--basis", "cpi_constant", "--threshold", "90000", "--scenario", pool_scenarios, *data)
+    assert own.exit_code == 0, own.output
+    listed = _sim("guard-rail", "list", "--scenario", pool_scenarios, *data)
+    assert listed.exit_code == 0, listed.output
+    assert {"four_percent", "wd_cap", "pool_budget"} <= set(listed.output.split())
+    assert pl.pool_issues(test_data_dir, pool_scenarios) == []
+
+
+def test_a_pools_rail_naming_an_unknown_tag_fails_its_check(
+    test_data_dir: Path, pool_scenarios: str,
+) -> None:
+    (test_data_dir / "scenarios" / pool_scenarios / "guard_rails.csv").write_text(
+        "name,measure,select,side,basis,threshold\n"
+        "fun,spending,purpose:nope,above,cpi_constant,1000.00\n", encoding="utf-8")
+    assert any("purpose:nope" in i for i in pl.pool_issues(test_data_dir, pool_scenarios))
+
+
+@pytest.mark.slow
+def test_a_pools_report_judges_its_member_0_by_the_pools_rails(
+    pool_batch: Path, test_data_dir: Path, pool_scenarios: str,
+) -> None:
+    data = ("--data-dir", str(test_data_dir))
+    added = _sim("guard-rail", "add", "wd_cap", *_FOUR_PERCENT, "--scenario", pool_scenarios, *data)
+    assert added.exit_code == 0, added.output
+    report = _sim("report", "guard-rails", "--scenario", pool_scenarios, *data)
+    assert report.exit_code == 0, report.output
+    assert "wd_cap" in report.output and "(mix, run member_0000.sqlite3)" in report.output

@@ -42,7 +42,7 @@ import pandas as pd
 from analysis.frames import index_years
 from analysis.sim import measures, registries, units
 from analysis.sim.dates import month_end_iso, parse_relative_date, place_month
-from analysis.sim.lineage import load_order
+from analysis.sim.lineage import reading_order
 from analysis.sim.lineage import scenario_dir as _scenario_dir
 from analysis.sim.types import DollarMode
 
@@ -185,10 +185,12 @@ class _Row:
 def read_rows(scenarios_dir: Path, scenario_name: str) -> tuple[list[_Row], list[str]]:
     """The scenario's rails as rows, merged down its load order by ``name``
     the way the loader merges ``scheduled.csv``: a later scenario's row
-    replaces the cells its file has. Also the issues of reading them."""
+    replaces the cells its file has. A pool's are its base component's,
+    under its own (``lineage.reading_order``). Also the issues of reading
+    them."""
     issues: list[str] = []
     merged: dict[str, _Row] = {}
-    for name in load_order(scenarios_dir, scenario_name):
+    for name in reading_order(scenarios_dir, scenario_name):
         path = _scenario_dir(scenarios_dir, name) / GUARD_RAILS_FILE
         if not path.exists():
             continue
@@ -384,11 +386,23 @@ def scenario_rails(
     return rails
 
 
+def run_scenario_name(rc: RunConnection) -> str:
+    """Whose rails a run is judged by: its scenario's, except a pool
+    member's (ADR-009), whose run is a component's but whose rails are
+    the pool's."""
+    from analysis.sim.pool import pool_record
+
+    batch = Path(rc.run_path).parent
+    if pool_record(batch) is not None:
+        return batch.parent.name
+    return str(rc.items("scenario")["name"].iloc[0])
+
+
 def run_rails(rc: RunConnection, scenarios_dir: Path) -> list[GuardRail]:
-    """The rails of the run's scenario, read from the data repo now (they
-    are a lens, not part of the run) and checked against the run."""
-    name = str(rc.items("scenario")["name"].iloc[0])
-    return scenario_rails(scenarios_dir, name, references_from_run(rc))
+    """The rails of the run's scenario (:func:`run_scenario_name`), read
+    from the data repo now (they are a lens, not part of the run) and
+    checked against the run."""
+    return scenario_rails(scenarios_dir, run_scenario_name(rc), references_from_run(rc))
 
 
 # ---------- a run's monthly series ----------
