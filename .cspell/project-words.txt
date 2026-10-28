@@ -73,6 +73,7 @@ facecolor
 Fenwick
 fignums
 figsize
+flatnonzero
 fontsize
 footgun
 framealpha
@@ -198,6 +199,7 @@ rerunnable
 rescan
 retarget
 reweighted
+rint
 ripwire
 rmds
 rollup
@@ -205,10 +207,12 @@ rollups
 rootdir
 Roths
 roundtrips
+rtol
 runfile
 scen
 sdir
 secho
+semideviation
 servname
 setopt
 setp
@@ -221,6 +225,7 @@ signum
 Simons
 Smirnov
 Sobol
+Sortino
 sourceable
 sqls
 SRRC

@@ -59,7 +59,7 @@ from analysis.sim.notebook_ui.styled import StyledMarkdown
 __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
-    "ensemble_table_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
+    "ensemble_table_widget", "ensemble_guard_rails_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
     "RecipeSeeds", "LoadingIndicator",
 ]
 
@@ -599,6 +599,116 @@ def ensemble_widget(*_,
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
     return widgets.VBox([dropdown, controls.row(lot_picker), loading, out])
+
+
+def ensemble_guard_rails_widget(*_,
+                                data_dir: Path | str | None = None,
+                                state_dir: Path | None = None,
+                                runs_dir: Path | str | None = None,
+                                controls: EnsembleControls | None = None,
+                                default: str | None = None,
+                                **__,
+                                ) -> widgets.VBox:
+    """An ensemble's members against its recipe's guard rails (#305): per
+    rail, annual and cumulative, the share of members past it each year,
+    the share ever past it so far, and their RMS overshoot, charted and
+    tabled, then a whole-run summary. ``controls`` shares the dollars and
+    the years shown with the other ensemble widgets (the account doesn't
+    apply: a rail names its own measure).
+
+    The rails are read from the recipe's guard_rails.csv at each draw, so
+    an edited rail shows without a rerun. The shares look back over the
+    whole run; the years picked only limit what is shown."""
+    from analysis.sim import guard_rails
+    from analysis.sim.guard_rail_charts import ENSEMBLE_CAVEAT, ensemble_guard_rail_figure
+
+    resolved_data_dir = find_data_dir(data_dir)
+    runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default])
+    dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
+    if _default(recipes, default) is not None:
+        dropdown.value = default
+    controls = controls or EnsembleControls(runs_dir=runs_dir)
+    dollar_picker, time_range = controls.dollar_picker, controls.time_range
+    loading = LoadingIndicator()
+    out = widgets.Output()
+
+    def _redraw(*_: object) -> None:
+        with out:
+            if not dropdown.value:
+                clear_output()
+                return
+            try:
+                _draw(dropdown.value)
+            finally:
+                loading.finish()
+
+    def _draw(recipe: str) -> None:
+        scenarios_dir = resolved_data_dir / "scenarios"
+        if not scenarios_dir.is_dir():
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**Guard rails are read from the data repo, and there is "
+                                   f"none at {resolved_data_dir}.** Source `activate-analysis` "
+                                   "or pass `data_dir=`."))
+            return
+        try:
+            rails = guard_rails.ensemble_rails(scenarios_dir, recipe)
+        except guard_rails.GuardRailError as exc:
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**The guard rails of {recipe} don't load**; "
+                                   f"`sim check {recipe}` lists:\n\n"
+                                   + "\n".join(f"- {issue}" for issue in exc.issues)))
+            return
+        if not rails:
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**No guard rails in {recipe}**; `sim guard-rail add` adds one."))
+            return
+        opened = _open_recipe(runs_dir, recipe, loading)
+        if opened is None:
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**No Monte Carlo batch for {recipe}.**"))
+            return
+        batch_dir, store, failed_count = opened
+        mode = dollar_picker.value
+        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        loading.note(f"Evaluating {recipe}'s guard rails")
+        shown = [r for r in guard_rails.ensemble_results(store, rails, mode) if r.applies]
+        low, high = time_range.value
+        clear_output(wait=True)
+        display(StyledMarkdown(
+            f"{recipe}: {len(store)} member(s)"
+            + (f", {failed_count} failed" if failed_count else "")
+            + f", {unit} dollars (batch {batch_dir.name})"))
+        if not shown:
+            display(StyledMarkdown("No guard rail covers these members' years."))
+            return
+        display(_png(ensemble_guard_rail_figure(
+            shown, f"Guard rails ({recipe})", unit=unit, years=(low, high),
+            deaths=store.base_case_deaths())))
+        for r in shown:
+            table = guard_rails.ensemble_rail_frame(r)
+            table = table[(table.index >= low) & (table.index <= high)]
+            display(StyledMarkdown(f"**{r.rail.name}** ({r.rail.sense}): {r.rail.describe()}"))
+            display(table.style.format(
+                {c: "{:.0%}" if not c.startswith("rms") else "${:,.0f}" for c in table.columns},
+                na_rep=""))
+        display(StyledMarkdown("**Over the whole run**"))
+        display(guard_rails.ensemble_summary_frame(shown).style.format(
+            {"past": "{:.0%}", "ever_past": "{:.0%}", "past_at_end": "{:.0%}",
+             "rms_over": "${:,.0f}"}))
+        display(StyledMarkdown(ENSEMBLE_CAVEAT))
+
+    dropdown.observe(_redraw, names="value")
+    note_picks(resolved_data_dir, dropdown)
+    for picker in (dollar_picker, time_range):
+        picker.observe(_redraw, names="value")
+    when_cell_is_done(_redraw)
+    return widgets.VBox([
+        dropdown,
+        widgets.HBox([dollar_picker, time_range],
+                     layout=widgets.Layout(flex_flow="row wrap", align_items="center")),
+        loading, out,
+    ])
 
 
 class _Sides:

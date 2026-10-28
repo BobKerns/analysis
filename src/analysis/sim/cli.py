@@ -1563,6 +1563,7 @@ def ensemble_compare(
         _echo_year_table(year_end_values(
             risk_summary(frame, reserve_dollars, cpi_frames.get(name))
         ))
+    _echo_ensemble_rail_deltas(data_dir, baseline, variant, sides, mode)
     if as_graph or graph_file is not None:
         from analysis.sim.ensemble_plots import ensemble_compare_figure, ensemble_fan_figure
 
@@ -1581,6 +1582,170 @@ def ensemble_compare(
                 deaths=sides[name].base_case_deaths(),
             )
         _draw_figure(figure, graph_file, "ensemble-")
+
+
+def _ensemble_guard_rails(
+    data_dir: Path | None, recipe: str, store: EnsembleSeries, mode: DollarMode,
+    rail_names: Sequence[str] = (), *, required: bool = True,
+) -> list[guard_rails.EnsembleRailResult] | None:
+    """``recipe``'s rails (#305) on the store's members, in ``mode`` dollars.
+    Rails are read from the data repo; without one, ``required`` fails and
+    otherwise there are none to show (None)."""
+    try:
+        scenarios_dir = _resolve_data_dir(data_dir) / "scenarios"
+    except click.ClickException:
+        if required:
+            raise
+        return None
+    try:
+        rails = guard_rails.ensemble_rails(scenarios_dir, recipe)
+    except guard_rails.GuardRailError as exc:
+        for issue in exc.issues:
+            click.echo(f"  error: {issue}", err=True)
+        raise click.ClickException(
+            f"the guard rails of {recipe!r} don't load ({len(exc.issues)} issue(s))") from None
+    except LoadError:
+        if required:
+            raise click.ClickException(f"no scenario {recipe!r} in the data repo") from None
+        return None
+    if rail_names:
+        known = {rail.name: rail for rail in rails}
+        if missing := [n for n in rail_names if n not in known]:
+            raise click.ClickException(
+                f"no guard rail {', '.join(map(repr, missing))} in {recipe!r}"
+                + (f"; it has {', '.join(sorted(known))}" if known else ""))
+        rails = [known[n] for n in dict.fromkeys(rail_names)]
+    if rails and mode == DollarMode.CPI_CONSTANT and store.frame(None, mode).isna().all().any():
+        raise click.ClickException(
+            f"a member of {recipe!r} has no 'cpi' inflation index, so no CPI-constant "
+            "guard rail figures; pass --dollars nominal")
+    return guard_rails.ensemble_results(store, rails, mode) if rails else []
+
+
+def _echo_rail_share_table(frame: pd.DataFrame) -> None:
+    """Shares (``past``, ``ever_past``, their ``Δ``) as percents, the rest
+    as dollars, under one header row, as ``_echo_year_table`` prints."""
+    def cell(column: str, value: float) -> str:
+        if pd.isna(value):
+            return ""
+        if column.lstrip("Δ").startswith(("past", "ever_past")):
+            return f"{value:+.0%}" if column.startswith("Δ") else f"{value:.0%}"
+        return f"{value:+,.0f}" if column.startswith("Δ") else f"{value:,.0f}"
+
+    header = ["year", *frame.columns]
+    rows = [[str(year), *(cell(c, v) for c, v in zip(frame.columns, row, strict=True))]
+            for year, row in frame.iterrows()]
+    widths = [max(len(c) for c in column) for column in zip(header, *rows, strict=True)]
+    for line in (header, *rows):
+        click.echo("  " + "  ".join(c.rjust(w) for c, w in zip(line, widths, strict=True)))
+
+
+_ENSEMBLE_RAIL_LEGEND = (
+    "past: the share of members past the rail that year; ever_past: past it in some year so far;",
+    "rms_over: the root mean square of how far past, members inside counting as zero;",
+    "cum: the same for the cumulative margin",
+)
+
+
+@ensemble_group_command.command("guard-rails")
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
+@_ENSEMBLE_RUNS_DIR_OPTION
+@_ENSEMBLE_DATA_DIR_OPTION
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to report on; default: the latest.",
+)
+@click.option("--rail", "rail_names", type=completion.GUARD_RAIL, multiple=True,
+              help="Only this rail; repeat for more.")
+@click.option(
+    "--dollars", type=click.Choice([m.value for m in DollarMode]),
+    default=DollarMode.CPI_CONSTANT.value, show_default=True,
+    help="Dollars the RMS overshoot is reported in.",
+)
+@_ENSEMBLE_GRAPH_OPTION
+@_ENSEMBLE_GRAPH_FILE_OPTION
+def ensemble_guard_rails(
+    scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    rail_names: tuple[str, ...], dollars: str, as_graph: bool, graph_file: Path | None,
+) -> None:
+    """How an ensemble's members stand against its guard rails (#305).
+
+    Per rail and year, annual and cumulative (`cum`): the share of members
+    past it that year, the share past it in some year so far, and the RMS
+    overshoot, the root mean square of how far past the members are, those
+    inside counting as zero (so it mixes how often with how far: read it
+    beside the share). Then per rail and form, over the whole run: the share
+    of member-years past, the share of members ever past, the share past in
+    their last year (for the cumulative form, the members who end the plan
+    overdrawn) and the RMS over every member-year.
+
+    The rails are the recipe's guard_rails.csv as it is now, read from the
+    data repo: editing one reruns nothing. --graph draws the shares and RMS.
+
+    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    _check_graph_options(as_graph, graph_file)
+    resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+    _note_use(data_dir, scenario_name)
+    mode = DollarMode(dollars)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    store = _open_series(batch_dir)
+    results = _ensemble_guard_rails(data_dir, scenario_name, store, mode, rail_names)
+    if not results:
+        click.echo(f"no guard rails in {scenario_name!r}; `sim guard-rail add` adds one")
+        return
+    click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); "
+               f"guard rails, {_DOLLAR_LABELS[mode]}")
+    for line in _ENSEMBLE_RAIL_LEGEND:
+        click.echo(f"  {line}")
+    shown = [r for r in results if r.applies]
+    for r in results:
+        if not r.applies:
+            click.echo(f"  {r.rail.name} covers none of these members' years")
+    for r in shown:
+        click.echo(f"\n{r.rail.name} ({r.rail.sense}): {r.rail.describe()}")
+        _echo_rail_share_table(guard_rails.ensemble_rail_frame(r))
+    if not shown:
+        return
+    summary = guard_rails.ensemble_summary_frame(shown)
+    click.echo("\nOver the whole run:")
+    width = max(len(str(v)) for v in summary["rail"])
+    click.echo(f"  {'rail':<{width}}  {'form':<10}  {'members':>7}  {'member-years past':>17}"
+               f"  {'ever past':>9}  {'past at end':>11}  {'RMS past':>10}")
+    for row in named_rows(summary):
+        click.echo(f"  {row.rail:<{width}}  {row.form:<10}  {row.members:>7}  "
+                   f"{float(row.past):>17.0%}  {float(row.ever_past):>9.0%}  "
+                   f"{float(row.past_at_end):>11.0%}  {float(row.rms_over):>10,.0f}")
+    if as_graph or graph_file is not None:
+        from analysis.sim.guard_rail_charts import ensemble_guard_rail_figure
+
+        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        _draw_figure(ensemble_guard_rail_figure(
+            shown, f"Guard rails ({scenario_name})", unit=unit,
+            deaths=store.base_case_deaths()), graph_file, "ensemble-")
+
+
+def _echo_ensemble_rail_deltas(
+    data_dir: Path | None, baseline: str, variant: str,
+    sides: Mapping[str, EnsembleSeries], mode: DollarMode,
+) -> None:
+    """``sim ensemble compare``'s guard rails (#305): per rail both recipes
+    have, matched by name, the variant's change in each share and RMS.
+    Nothing without a data repo, or when neither recipe has rails."""
+    found = {name: _ensemble_guard_rails(data_dir, name, sides[name], mode, required=False)
+             for name in (baseline, variant)}
+    if not any(found.values()):
+        return
+    frames = guard_rails.ensemble_comparison_frames(found[baseline] or [], found[variant] or [])
+    if not frames:
+        click.echo("guard rails: none in both recipes")
+        return
+    click.echo(f"guard rails, {variant} − {baseline} ({_DOLLAR_LABELS[mode]}): Δ of each share "
+               "of members past and of the RMS overshoot")
+    for rail, frame in frames.items():
+        click.echo(f"{rail}:")
+        _echo_rail_share_table(frame)
 
 
 @ensemble_group_command.command("sensitivity")
