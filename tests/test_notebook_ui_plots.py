@@ -241,3 +241,25 @@ def test_guard_rails_widget_says_a_scenario_has_none(
         widget = guard_rails_widget(rc)
     assert len(widget.children) == 1
     assert "No guard rails in retire_alice" in capsys.readouterr().out
+
+
+def test_guard_rails_widget_says_a_run_without_its_scenario_has_no_rails(
+    retire_alice_run: RunConnection, capsys: pytest.CaptureFixture[str],
+) -> None:
+    with RunConnection(retire_alice_run.run_path) as rc:
+        widget = guard_rails_widget(rc)
+    assert len(widget.children) == 1
+    assert "opened without its scenario" in capsys.readouterr().out
+
+
+def test_guard_rails_widget_rereads_the_rails_on_each_draw(
+    run_test_copy, test_data_dir: Path, write_guard_rails, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Rails are a lens: an edit shows on the next draw, with no rerun."""
+    with open_run(run_test_copy(), "retire_alice", data_dir=test_data_dir) as rc:
+        widget = guard_rails_widget(rc)
+        controls, _chart_out, _table_out = widget.children
+        capsys.readouterr()
+        write_guard_rails()
+        controls.children[2].value = False  # "Carried at return" redraws
+    assert "No guard rails in retire_alice" in capsys.readouterr().out

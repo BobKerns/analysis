@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from analysis.sim import guard_rails as gr
 from analysis.sim.connection import RunConnection
 from analysis.sim.guard_rail_charts import guard_rail_figure, rail_colors
@@ -37,3 +39,18 @@ def test_colors_follow_the_rails_sense(retire_alice_run: RunConnection, scenario
     colors = rail_colors(results)
     assert colors["four_percent"] != colors["gk_upper"]
     assert colors["gk_lower"] == "#2a78d6"  # the first positive rail: blue
+
+
+def test_the_measure_spans_every_rail_sharing_it(retire_alice_run: RunConnection) -> None:
+    """Rails on one measure but different years: the measure line covers
+    them all, not just the first rail's."""
+    early, _ = gr.parse_cells({"name": "early", "measure": "spending", "side": "above",
+                               "threshold": "90000.00", "basis": "nominal", "end": "2033-12"})
+    late, _ = gr.parse_cells({"name": "late", "measure": "spending", "side": "above",
+                              "threshold": "90000.00", "basis": "nominal", "start": "2036-01"})
+    assert early is not None and late is not None
+    fig = guard_rail_figure(gr.evaluate_run(retire_alice_run, [early, late]), "two windows")
+    measure = fig.axes[0].get_lines()[0]
+    years = [int(label.get_text()) for label in fig.axes[1].get_xticklabels()]
+    assert not any(np.isnan(np.asarray(measure.get_ydata(), dtype=float)))
+    assert years[0] <= 2033 and years[-1] >= 2036

@@ -165,6 +165,18 @@ def test_a_rail_naming_what_the_scenario_lacks_fails_the_load(
     assert any(problem in issue for issue in caught.value.issues), caught.value.issues
 
 
+def test_a_rail_named_twice_in_one_file_fails_the_load(
+    write_guard_rails: Callable[..., Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Only a child's row replaces a rail: within one file a repeated name is
+    a mistake, not a silent merge."""
+    write_guard_rails(RAIL, {**RAIL, "threshold": "5%"})
+    with pytest.raises(LoadError) as caught:
+        load_test_copy()
+    assert any("line 3: rail 'r' is already on line 2" in issue
+               for issue in caught.value.issues), caught.value.issues
+
+
 def test_an_unknown_column_fails_the_load(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
