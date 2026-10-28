@@ -245,14 +245,14 @@ def test_edit_refuses_a_cycle_through_a_descendant(test_data_dir: Path, test_chi
     assert (test_child_scenario / "scenario.csv").read_text() == before
 
 
-def test_edit_refuses_what_breaks_a_descendant(test_data_dir: Path, test_child_scenario: Path,
-                                               test_grandchild_scenario: Path) -> None:
-    # child inherits its dates; with no parent, grandchild would have none
-    # anywhere and quietly become mix-in only (#324).
+def test_edit_says_which_scenarios_it_makes_mix_in_only(test_data_dir: Path, test_child_scenario: Path,
+                                                        test_grandchild_scenario: Path) -> None:
+    # child inherits its dates; with no parent, it and grandchild have none
+    # anywhere, so they become mix-in only (#324): allowed, but said.
     result = _sim(test_data_dir, "scenario", "edit", "child", "--parents", "")
-    assert result.exit_code != 0, result.output
-    assert "lineage of grandchild, making it mix-in only" in result.output, result.output
-    assert read_parents(test_child_scenario) == ["retire_alice"]
+    assert result.exit_code == 0, result.output
+    assert "now mix-in only" in result.output and "child, grandchild" in result.output, result.output
+    assert read_parents(test_child_scenario) == []
 
 
 def test_edit_unknown_scenario(test_data_dir: Path) -> None:

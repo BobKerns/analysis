@@ -287,10 +287,12 @@ def test_one_date_in_the_lineage_is_still_a_load_error(test_data_dir: Path) -> N
     assert "end is blank here and in every scenario it builds on" in result.output, result.output
 
 
-def test_edit_refuses_to_make_a_dated_scenario_mix_in_only(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+def test_edit_may_make_a_dated_scenario_mix_in_only(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    # Taking a template out from under a mix-in, say, leaving only mix-ins.
     _mixin_on_mixin(test_data_dir)
-    assert _sim(test_data_dir, "scenario", "create", "kid", "retire_alice").exit_code == 0
+    assert _sim(test_data_dir, "scenario", "create", "kid", "t_empty", "extra").exit_code == 0
+    assert not is_mixin_only(test_scenarios_dir, "kid")
     result = _sim(test_data_dir, "scenario", "edit", "kid", "--parents", "extra")
-    assert result.exit_code != 0
-    assert "lineage of kid, making it mix-in only" in result.output, result.output
-    assert read_parents(test_scenarios_dir / "kid") == ["retire_alice"]
+    assert result.exit_code == 0, result.output
+    assert "now mix-in only" in result.output and "kid" in result.output, result.output
+    assert is_mixin_only(test_scenarios_dir, "kid")

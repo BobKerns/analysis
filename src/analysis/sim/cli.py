@@ -130,7 +130,6 @@ from analysis.sim.dates import (
 )
 from analysis.sim.lineage import (
     MIXIN_BASE,
-    ScenarioCycleError,
     default_description,
     is_mixin_only,
     load_order,
@@ -10848,8 +10847,7 @@ def _apply_scenario_edit(
             changes = sc.edit_scenario_row(folder, values, meta)
         except LoadError as exc:
             raise click.ClickException("; ".join(exc.issues)) from None
-        _refuse_new_mixin_only(edit.data_dir / "scenarios", runnable,
-                               keep=name if values.get("parent_scenario") == "" else None)
+        now_mixin_only = _new_mixin_only(edit.data_dir / "scenarios", runnable)
         new_row = sc._scenario_row(folder)
         builds_on = parse_parents(new_row.get("parent_scenario"))
         # A blank description reads as the default, as `--description ''` sets it.
@@ -10866,6 +10864,9 @@ def _apply_scenario_edit(
     click.echo(f"edited scenario {name}")
     for change in changes:
         click.echo(f"  {change.field}: {change.old or '(inherited)'} -> {change.new or '(inherited)'}")
+    if now_mixin_only:
+        click.echo(f"NOTE: now mix-in only (no start or end anywhere in the lineage), so "
+                   f"`sim run` refuses and `sim all` skips: {', '.join(now_mixin_only)}", err=True)
     if readme == "written":
         click.echo(f"  README.md: written; edit {data / 'scenarios' / name / 'README.md'} "
                    "to say what the scenario is for")
@@ -10876,21 +10877,11 @@ def _apply_scenario_edit(
                    "and it has been edited by hand; update it to match", err=True)
 
 
-def _refuse_new_mixin_only(scenarios_dir: Path, runnable: Sequence[str], *, keep: str | None) -> None:
-    """Refuse an edit that leaves no dates anywhere in a ``runnable``
-    scenario's lineage: it would quietly become mix-in only (#324) and stop
-    running. Only ``keep``, a scenario explicitly given no parents, may (#259).
-    A cycle is left for the load to report."""
-    try:
-        for n in runnable:
-            load_order(scenarios_dir, n, strict=True)
-    except ScenarioCycleError:
-        return
-    if lost := [n for n in runnable if n != keep and is_mixin_only(scenarios_dir, n)]:
-        raise click.ClickException(
-            f"this would leave no start or end anywhere in the lineage of {', '.join(lost)}, "
-            f"making {'it' if len(lost) == 1 else 'them'} mix-in only; give it a --start and "
-            "--end, or build it on a dated scenario")
+def _new_mixin_only(scenarios_dir: Path, runnable: Sequence[str]) -> list[str]:
+    """Which ``runnable`` scenarios an edit left with no dates anywhere in
+    their lineage, so mix-in only (#324): allowed, since that may be the
+    point, but said, since they stop running by themselves."""
+    return [n for n in runnable if is_mixin_only(scenarios_dir, n)]
 
 
 def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
