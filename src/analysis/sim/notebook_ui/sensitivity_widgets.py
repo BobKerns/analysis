@@ -37,6 +37,7 @@ from analysis.sim.notebook_ui.pickers import (
     ReportYearPicker,
     find_data_dir,
     find_runs_dir,
+    note_picks,
 )
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.types import DeltaScale, DollarMode, HeatmapValue
@@ -714,6 +715,7 @@ def sensitivity_widget(*,
     _on_recipe()
     _on_batch()
     recipe.observe(_on_recipe, names="value")
+    note_picks(find_data_dir(data_dir), recipe)
     batch.observe(_on_batch, names="value")
     dollar_picker.observe(_on_units, names="value")
     scale_picker.observe(_on_units, names="value")

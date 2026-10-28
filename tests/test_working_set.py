@@ -61,6 +61,13 @@ def test_a_deleted_scenario_goes(test_data_dir: Path) -> None:
     assert read_working_set(test_data_dir) == ["base"]
 
 
+def test_a_damaged_file_is_an_empty_working_set(test_data_dir: Path) -> None:
+    working_set_path(test_data_dir).write_bytes(b"base\n\xff\xfe\n")
+    assert read_working_set(test_data_dir) == []
+    working_set.use(test_data_dir, "retire_alice")
+    assert read_working_set(test_data_dir) == ["retire_alice"]
+
+
 def test_a_background_build_is_not_use(
     test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -64,7 +64,7 @@ export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
 printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
 	_analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
 
-for _analysis_ignored in .analysis .current_scenario .analysis_user .retention.yaml; do
+for _analysis_ignored in .analysis .current_scenario .working_set .analysis_user .retention.yaml; do
 	if [ ! -f "$ANALYSIS_DATA_DIR/.gitignore" ]; then
 		printf '%s\n' "$_analysis_ignored" > "$ANALYSIS_DATA_DIR/.gitignore" || \
 			_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.gitignore"

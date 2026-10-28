@@ -40,8 +40,8 @@ def read_working_set(data_dir: Path | str) -> list[str]:
     since have been deleted or disabled."""
     try:
         text = working_set_path(data_dir).read_text(encoding="utf-8")
-    except OSError:
-        return []
+    except (OSError, UnicodeDecodeError):
+        return []  # best effort: a damaged file is an empty working set
     seen: dict[str, None] = {}
     for line in text.splitlines():
         if name := line.strip():
@@ -83,7 +83,7 @@ def _write(data_dir: Path, names: Iterable[str]) -> None:
         return  # never write through a link out of the data repo
     text = "".join(f"{name}\n" for name in names)
     try:
-        if path.is_file() and path.read_text(encoding="utf-8") == text:
+        if path.is_file() and path.read_bytes() == text.encode("utf-8"):
             return
         fd, tmp = tempfile.mkstemp(prefix=f"{WORKING_SET_FILE}.", dir=data_dir)
         try:
