@@ -84,7 +84,7 @@ ln -s "$target" "$SHARED"
 printf '%s\n' "$REPO" > "$SHARED/sim/.analysis"
 
 # Keep the per-machine files out of the data repo, as activate-analysis does.
-for ignored in .analysis .current_scenario .analysis_user; do
+for ignored in .analysis .current_scenario .working_set .analysis_user; do
     if [ ! -f "$SHARED/sim/.gitignore" ] || ! grep -qxF "$ignored" "$SHARED/sim/.gitignore"; then
         printf '%s\n' "$ignored" >> "$SHARED/sim/.gitignore"
     fi

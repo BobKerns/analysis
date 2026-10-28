@@ -306,6 +306,25 @@ def enabled_scenario_names(
             if name not in disabled]
 
 
+def note_picks(data_dir: Path, *pickers: widgets.ValueWidget) -> None:
+    """Picking a scenario in a notebook is use of it (#322): when any of
+    ``pickers`` changes, every scenario they now show moves to the top of
+    the working set, the first picker's topmost. A value is a name, a tuple
+    of names (a multiple select), or None. The pick the widget starts on
+    isn't one."""
+    from analysis.sim import working_set
+
+    def _picked(*_: object) -> None:
+        names: list[str] = []
+        for picker in pickers:
+            value = picker.value
+            names.extend(value if isinstance(value, tuple) else [value] if value else [])
+        working_set.use(data_dir, *names)
+
+    for picker in pickers:
+        picker.observe(_picked, names="value")
+
+
 def find_data_dir(data_dir: Path | str | None = None) -> Path:
     """
     Find the data directory for the analysis repository. Works from notebook files
@@ -554,6 +573,7 @@ def scenario_picker(
 
     dropdown.observe(_on_change, names="value")
     member_dropdown.observe(_on_member_change, names="value")
+    note_picks(data_dir, dropdown)
     traitlets.link((dropdown, "value"), (container, "value"))
     _sync_member_dropdown()
     _redraw()
@@ -756,6 +776,7 @@ def multi_scenario_picker(
 
     baseline_picker.observe(_on_change, names="value")
     variant_picker.observe(_on_change, names="value")
+    note_picks(data_dir, baseline_picker, variant_picker)
     _redraw()
 
     picker_widget = widgets.VBox(

@@ -36,7 +36,7 @@ from analysis.expenses.baseline import (
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, lot_guide, names, prices, readme,
     registries, rename, reports, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols,
-    units, ytd_guide,
+    units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -431,6 +431,7 @@ def _resolve_scenario(
             click.echo(f"Using scenario {ref.name}", err=True)
             if ctx is not None:
                 ctx.meta[_SCENARIO_ANNOUNCED] = True
+        working_set.use(data_dir, ref.name)  # working on it is use too (#322)
     elif remember:
         _make_current(data_dir, ref.name)
     return ref
@@ -442,6 +443,7 @@ def _make_current(data_dir: Path, name: str) -> None:
     easy to miss when X is not the one expected."""
     if os.environ.get(BUILDER_CHILD_ENV):
         return  # a background build (#300) never moves the user's current scenario
+    working_set.use(data_dir, name)  # first in the builder's order (#322)
     previous = read_current_scenario(data_dir)
     if previous == name:
         return
@@ -455,6 +457,16 @@ def _announce_current(name: str | None, previous: str | None) -> None:
     was = f" (was {previous})" if previous else ""
     now = f"Current scenario is now {name}" if name else "No scenario is current now"
     click.secho(f"{now}{was}", err=True, bold=True)
+
+
+def _note_use(data_dir: Path | None, *names: str | None) -> None:
+    """Record use of ``names`` (#322) by a command that reads only runs, so
+    may have no data repo (``--runs-dir``): then there is nothing to record."""
+    try:
+        data = _resolve_data_dir(data_dir)
+    except click.ClickException:
+        return
+    working_set.use(data, *names)
 
 
 def _resolve_data_dir(data_dir: Path | None) -> Path:
@@ -1406,6 +1418,7 @@ def ensemble_summary(
         known = _ask_again_once_known(scenario_name=scenario_name)
         account, lot = known["account"], known["lot"]
     after_tax = not pre_tax and account is None
+    _note_use(data_dir, scenario_name)
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
@@ -1490,6 +1503,7 @@ def ensemble_compare(
         known = _ask_again_once_known(baseline=baseline, variant=variant)
         account, lot = known["account"], known["lot"]
     after_tax = not pre_tax and account is None
+    _note_use(data_dir, baseline, variant)
     mode = DollarMode(dollars)
     sides: dict[str, EnsembleSeries] = {}
     for name in (baseline, variant):
@@ -2559,6 +2573,8 @@ def compare_command(
         variants = tuple(_compare_variants(data, ref.runs_dir, baseline))
     if baseline in variants or len(set(variants)) < len(variants):
         raise click.UsageError("name each scenario once, the baseline only as BASELINE")
+    # Every scenario compared is in use (#322), the baseline topmost.
+    working_set.use(data, baseline, *variants)
     if (as_graph or graph_file is not None) and len(variants) > _COMPARE_MAX_GRAPHED:
         raise click.UsageError(
             f"--graph draws at most {_COMPARE_MAX_GRAPHED} variants; name fewer, "
@@ -2702,6 +2718,7 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
         return
     # It says what changed itself, in place of the usual notice.
     ref = _resolve_scenario(data_dir_p, scenario, remember=False)
+    working_set.use(data_dir_p, ref.name)
     if ref.name == previous:
         click.echo(f"Unchanged: {ref.name}")
     else:
@@ -10561,6 +10578,7 @@ def _rename_scenario(old: str | None, new: str | None, data_dir: Path | None, *,
     if leftover.is_dir() and not any(path.is_file() or path.is_symlink() for path in leftover.rglob("*")):
         shutil.rmtree(leftover)
     _echo_renamed("scenario", old, new, changed)
+    working_set.use(data, new)  # renaming a scenario is working on it (#322)
     if rename.CURRENT_SCENARIO_FILE in changed:
         _announce_current(new, old)
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
@@ -10921,6 +10939,7 @@ def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what
     # nothing to validate, and a scenario that fails to load can go too.
     shutil.rmtree(folder)
     click.echo(f"deleted scenario {name}")
+    working_set.remove(data, name)
     if read_current_scenario(data) == name:
         current_scenario_path(data).unlink(missing_ok=True)
         _announce_current(None, name)
