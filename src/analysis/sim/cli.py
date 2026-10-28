@@ -628,15 +628,27 @@ def _refuse_mixin_only_run(name: str, users: Sequence[str]) -> NoReturn:
 
 def _intent_is_mixin_only(intent_path: Path) -> bool:
     """Whether the intent was loaded from a mix-in only scenario, as the
-    loader recorded (``scenario.mixin_only``)."""
+    loader recorded (``scenario.mixin_only``). An intent from before schema
+    50 has no such column; there only a root mix-in was one, loaded with no
+    parents on ``MIXIN_BASE``."""
     con = connect_sim_file(intent_path)
     try:
-        row = con.execute("SELECT mixin_only FROM scenario").fetchone()
+        try:
+            row = con.execute("SELECT mixin_only FROM scenario").fetchone()
+            return bool(row and row[0])
+        except sqlite3.OperationalError:
+            row = con.execute("SELECT parents_json, load_order_json FROM scenario").fetchone()
     except sqlite3.Error:
         return False
     finally:
         con.close()
-    return bool(row and row[0])
+    if row is None:
+        return False
+    try:
+        parents, order = json.loads(row[0] or "[]"), json.loads(row[1] or "[]")
+    except json.JSONDecodeError:
+        return False
+    return not parents and len(order) > 1 and order[0] == MIXIN_BASE
 
 
 def _prune_state(data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:

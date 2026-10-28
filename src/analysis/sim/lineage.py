@@ -116,13 +116,17 @@ def is_mixin_only(scenarios_dir: Path, name: str) -> bool:
     span, so it has none, and it can't run by itself; loaded by itself (to
     check it), it sits on ``MIXIN_BASE``. Its parents, if any, are mix-ins
     too."""
-    if not _first_row(Path(scenarios_dir) / name):
+    # Only a whole, acyclic lineage shows there are no dates: a missing
+    # parent or a cycle is the loader's to report, not a mix-in.
+    try:
+        order = lineage_order(scenarios_dir, name, strict=True)
+    except ScenarioCycleError:
         return False
-    for n in lineage_order(scenarios_dir, name):
+    for n in order:
         if is_template(scenarios_dir, n):
             return False
         row = _first_row(scenario_dir(scenarios_dir, n))
-        if row.get("start", "").strip() or row.get("end", "").strip():
+        if not row or row.get("start", "").strip() or row.get("end", "").strip():
             return False
     return True
 
