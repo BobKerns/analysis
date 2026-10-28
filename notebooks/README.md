@@ -25,7 +25,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | --- | --- |
 | accounts and opening balances | `analysis sim account list` |
 | the lots in an account | `analysis sim account holdings <account>` |
-| the portfolio by asset class | `analysis sim allocation` |
+| the portfolio by asset class (`accounts.ipynb`'s pie) | `analysis sim allocation`; no chart yet (#327) |
 | the accounts holding a symbol | `analysis sim account holders <symbol>` |
 | chains, as a table and one chain at a time as a flowchart | `analysis sim chain list`, `analysis sim chain show CHAIN [--graph \| --mermaid]` |
 | scheduled transactions | `analysis sim scheduled list` |
@@ -37,17 +37,19 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | year-to-date rows | `analysis sim ytd list` |
 | itemizations, their totals and what references them | `analysis sim itemization list`, `analysis sim itemization show NAME` |
 | a run's summary: provenance, lots, year-end net worth, negative-balance warnings | `analysis sim explain [SCENARIO \| RUNFILE]` |
-| net worth by year or month, CPI-constant (default) or nominal | `analysis sim networth [SCENARIO] [--monthly] [--dollars cpi_constant\|nominal]` |
-| balance history of an account or lot (`accounts.ipynb`) | `analysis sim account history ACCOUNT [--lot LOT] [--yearly]` |
-| income and expenses by category (`net_worth.ipynb`) | `analysis sim report income`, `analysis sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
-| economic income carried down to the change in net worth, after tax or pre-tax (`net_worth.ipynb`) | `analysis sim report income [--pre-tax]` |
-| realized vs. unrealized gains (`net_worth.ipynb`) | `analysis sim report gains` |
+| net worth by year or month, CPI-constant (default) or nominal | `analysis sim networth [SCENARIO] [--monthly] [--dollars cpi_constant\|nominal]`; no chart yet (#327) |
+| balance history of an account or lot (`accounts.ipynb`) | `analysis sim account history ACCOUNT [--lot LOT] [--yearly]`; no chart yet (#327) |
+| income and expenses by category (`net_worth.ipynb`) | `analysis sim report income`, `analysis sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]`; no charts yet (#327) |
+| economic income carried down to the change in net worth, after tax or pre-tax (`net_worth.ipynb`) | `analysis sim report income [--pre-tax]`; no chart yet (#327) |
+| realized vs. unrealized gains (`net_worth.ipynb`) | `analysis sim report gains`; no chart yet (#327) |
 | federal and state tax with their AGI, deduction and taxable income, and tax reconciliation (`net_worth.ipynb`) | `analysis sim report tax [--reconciliation]` |
-| every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
-| an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]]` |
+| every event, filtered by reason/tax/account/date | none yet (#189) |
+| an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot, and its fan chart | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]] [--graph]` |
 | two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--account NAME [--lot LOT]] [--graph]` |
-| two ensembles compared on risk: percentile, paired and tail-mean deltas | `analysis sim ensemble compare <baseline> <variant> [--account NAME [--lot LOT]]` |
-| which varying rows matter, and when (`sensitivity.ipynb`) | `analysis sim ensemble sensitivity <recipe>` |
+| two ensembles compared on risk: percentile, paired and tail-mean deltas | `analysis sim ensemble compare <baseline> <variant> [--account NAME [--lot LOT]] [--graph]` |
+| a baseline ensemble against several others in one table (`ensemble.ipynb`) | none yet (#328) |
+| which varying rows matter, and when (`sensitivity.ipynb`) | `analysis sim ensemble sensitivity <recipe>`; tables only, no charts yet (#329) |
+| an ensemble batch's draws against their distributions and correlations (`sensitivity.ipynb`) | `analysis sim ensemble draws <recipe> [--node NODE] [--csv FILE]`; no charts yet (#330) |
 
 Views with no terminal equivalent yet are listed in [TODO.md](../TODO.md), which also asks for a periodic review of what is missing.
 
