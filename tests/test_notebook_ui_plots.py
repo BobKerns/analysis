@@ -20,6 +20,7 @@ from analysis.sim.notebook_ui.networth_plots import (
     economic_income_widget,
     expenses_widget,
     gains_widget,
+    guard_rails_widget,
     income_widget,
     net_worth_widget,
 )
@@ -212,3 +213,53 @@ def test_cpi_constant_expense_balances_preserve_zero_monthly_flow(
         converted = rc.cpi_balance_pivot("expense")
 
         assert converted.loc["2027-01-31":, "Expense_Living"].diff().iloc[1:].eq(0).all()
+
+
+def test_guard_rails_widget_builds_with_its_controls(retire_alice_run: RunConnection) -> None:
+    widget = guard_rails_widget(retire_alice_run)
+    controls, _chart_out, _table_out = widget.children
+    dollar_mode, _time_range, carried = controls.children
+    assert dollar_mode.value == DollarMode.CPI_CONSTANT
+    assert carried.value
+
+
+@pytest.mark.slow
+def test_guard_rails_widget_redraws_on_each_control(retire_alice_run: RunConnection) -> None:
+    widget = guard_rails_widget(retire_alice_run)
+    controls, _chart_out, _table_out = widget.children
+    dollar_mode, time_range, carried = controls.children
+    dollar_mode.value = DollarMode.NOMINAL  # each redraws; none may raise
+    carried.value = False
+    time_range.value = (2035, 2040)
+
+
+def test_guard_rails_widget_says_a_scenario_has_none(
+    run_test_copy, test_data_dir: Path, write_guard_rails, capsys: pytest.CaptureFixture[str],
+) -> None:
+    write_guard_rails()
+    with open_run(run_test_copy(), "retire_alice", data_dir=test_data_dir) as rc:
+        widget = guard_rails_widget(rc)
+    assert len(widget.children) == 1
+    assert "No guard rails in retire_alice" in capsys.readouterr().out
+
+
+def test_guard_rails_widget_says_a_run_without_its_scenario_has_no_rails(
+    retire_alice_run: RunConnection, capsys: pytest.CaptureFixture[str],
+) -> None:
+    with RunConnection(retire_alice_run.run_path) as rc:
+        widget = guard_rails_widget(rc)
+    assert len(widget.children) == 1
+    assert "opened without its scenario" in capsys.readouterr().out
+
+
+def test_guard_rails_widget_rereads_the_rails_on_each_draw(
+    run_test_copy, test_data_dir: Path, write_guard_rails, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Rails are a lens: an edit shows on the next draw, with no rerun."""
+    with open_run(run_test_copy(), "retire_alice", data_dir=test_data_dir) as rc:
+        widget = guard_rails_widget(rc)
+        controls, _chart_out, _table_out = widget.children
+        capsys.readouterr()
+        write_guard_rails()
+        controls.children[2].value = False  # "Carried at return" redraws
+    assert "No guard rails in retire_alice" in capsys.readouterr().out

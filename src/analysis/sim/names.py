@@ -114,6 +114,11 @@ def ytd_names(data_dir: Path, scenario: str) -> list[str]:
     return _column((d / "year_to_date.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
 
 
+def guard_rail_names(data_dir: Path, scenario: str) -> list[str]:
+    """The names of the scenario's guard rails (#305), its own and inherited."""
+    return _column((d / "guard_rails.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
+
+
 def calendar_row_names(data_dir: Path, scenario: str) -> list[str]:
     """The names of the scenario's named calendar rows (latent factors among
     them), its own and inherited."""

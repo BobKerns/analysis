@@ -221,6 +221,7 @@ STRATEGY = NameType(_in_scenario(names.strategy_names), "strategy")
 TARGET_SET = NameType(_in_scenario(names.target_set_names), "target set")
 TARGET_SET_OR_NEW = NameType(_in_scenario(names.target_set_names), "target set", check=False)
 STRATEGY_KIND = NameType(lambda ctx, data_dir: names.strategy_kind_names(data_dir), "strategy kind")  # noqa: ARG005
+GUARD_RAIL = NameType(_in_scenario(names.guard_rail_names), "guard rail")
 # A row may also be picked by its number or by text in it, so any value goes.
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
 # A calendar date: a literal one, or relative to a date marker (#281), whose

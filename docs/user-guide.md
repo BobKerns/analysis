@@ -257,6 +257,7 @@ project word could be confused with a general word, that is pointed out.
 | **Scheduled transaction / rule** | One row in `scheduled.csv`. It is a rule that moves money, either on a regular schedule or just once. |
 | **Debit / credit** | The two sides of one money movement. A **debit** takes money out of a lot: a payment, a withdrawal, or the "from" side of any transfer. A **credit** puts money into a lot: the "to" side. For an asset lot, a debit lowers the balance and a credit raises it. For a liability (a loan or a card), a debit is borrowing more, so what you owe goes up, and a credit is paying it down. The refill check runs before each debit, which is why the chain flowcharts label refill "before a debit". These are everyday banking senses, not the bookkeeping ones, where debiting an asset account *raises* it. |
 | **Refill / overflow** | A lot's own rule for keeping its balance in a range. If a payment would drop it below `minimum_balance`, money is drawn from `refill_chain` first. If it goes above `maximum_balance`, the extra is swept into `overflow_chain` at the end of the month. Each lot can have its own setting. |
+| **Guard rail** | A line a scenario's spending, or its withdrawals from the portfolio, should stay on one side of, such as the 4% rule. A row of `guard_rails.csv`; reports show how far inside or past it each year was, and over the years. It doesn't change the run. See Part 4.15 and [the guard rails guide](guides/guard-rails.md). |
 | **RMD subject account** | The IRA or 401(k) account a Required Minimum Distribution is calculated from. If that account has more than one lot, you must name the account in `params_json`, and `from_account` must be a chain that lists only that account's lots. |
 
 ### Simulation words used by ensembles
@@ -1140,7 +1141,31 @@ more than that rate on average, surcharge included; otherwise it stops at the
 floor. Both use this year's tiers, which is all you know in December; the
 floors usually rise, so this errs safe.
 
-### 4.15 Draw from whatever is overweight (responsive strategies)
+### 4.15 Guard rails: watch spending against a line
+
+A guard rail is a line spending, or the withdrawals from your savings,
+should stay on one side of: "take no more than 4% a year", "cut back if the
+withdrawal rate climbs past 6%", a budget in today's dollars. Rails don't
+change the run; they are a way to read it. Each rail is a row of the
+scenario's `guard_rails.csv`:
+
+```text
+name,measure,side,threshold,basis,sense,start
+four_percent,withdrawals,above,4%,initial_portfolio,negative,2031-01
+gk_lower,withdrawals,below,4%,portfolio,positive,2031-01
+budget,spending,above,85000.00,cpi_constant,negative,2031-01
+```
+
+`sim guard-rail add` writes one, asking for each field. `sim report
+guard-rails` then shows each year's **margin**, the room left before the
+rail (negative is past it), and the **cumulative margin**, those added up
+since the rail began: room banked, or overdrawn. A `positive` rail is one
+where past it is good news, such as room to spend more. Since rails aren't
+part of the run, changing one needs no new run. [The guard rails
+guide](guides/guard-rails.md) explains the usual rails, how to write them
+and how to read the results.
+
+### 4.16 Draw from whatever is overweight (responsive strategies)
 
 A chain draws its steps in the order you wrote them, whatever your
 portfolio looks like. A **strategy** decides instead, from the month's
@@ -1224,7 +1249,8 @@ the VS Code tasks (see below), you don't need to type either command: use the
 After a run, `sim explain [scenario]` prints a short summary of the
 scenario's latest run: whether it finished successfully, the lots at the end
 of the run, net worth at each year end, and every time an account went
-negative (with what its refill chain did about it). This is the fastest way
+negative (with what its refill chain did about it), and each stretch of
+years past a guard rail (Part 4.15). This is the fastest way
 to check "did this do roughly what I expected" before opening a notebook.
 `sim networth [scenario]` shows net worth by year (`--monthly` for every
 month) with inflation taken out, so decades compare at a glance;
@@ -1251,7 +1277,8 @@ balance still owes doesn't show at all.
 by side, as `scenario_compare.ipynb` does: whether the runs came from the same
 code and data, the rules, calendar events, accounts and lots each defines
 differently, net worth at each year end with each variant's difference, and
-the month after which each variant stays ahead (break-even). `--account NAME`
+the month after which each variant stays ahead (break-even), and each
+scenario's guard rail margins when any has rails. `--account NAME`
 adds that account's balance, `--section` prints only the parts you name, and
 `--graph` draws net worth (or the account) over time in the terminal. Leave
 out BASELINE to start from the current scenario.
@@ -1265,7 +1292,7 @@ None of them need you to write any code.
 | --- | --- |
 | `scenario_overview.ipynb` | The scenario's setup, without needing a run: people, accounts, chains, scheduled rules, calendar events. Good for checking a scenario is set up the way you intended, before running it. |
 | `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, and the portfolio by asset class. |
-| `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, and economic income down to the change in net worth. |
+| `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, economic income down to the change in net worth, and where the run stands against its guard rails. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
 | `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range, with a running balance for one account and each refill linked to the debit that triggered it — good for auditing "why did this happen." |
 | `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the 5th–95th percentiles, plus a year-end table of mean/median/SD and the 5th, 20th, ... 95th percentiles. |
@@ -1301,6 +1328,8 @@ machine too small for a notebook comfortably.
 | economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax]` |
 | realized vs. unrealized gains by year | `sim report gains` |
 | federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation]` |
+| where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried]` |
+| a scenario's guard rails | `sim guard-rail list` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.
@@ -1374,4 +1403,5 @@ asset-class mix; see Part 4.11.
 - [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
 - [`docs/guides/century-of-rates.md`](guides/century-of-rates.md) — a century of inflation, interest rates and stock returns: what carries over from one year to the next.
 - [`docs/guides/chains.md`](guides/chains.md) — chains step by step: drawing and sweeping, shares, chains inside chains, refill and overflow.
+- [`docs/guides/guard-rails.md`](guides/guard-rails.md) — guard rails: the 4% rule, Guyton-Klinger's rails and budgets, and reading their margins (Part 4.15).
 - [`docs/guides/ensembles.md`](guides/ensembles.md) — ranges of outcomes instead of one number (Part 4.10); [ADR-006](architecture/ADR-006-ensemble-scenarios.md) has the full design.

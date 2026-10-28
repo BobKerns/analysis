@@ -391,6 +391,8 @@ flowchart LR
 (account_1/2, lot_1/2, series)"]
     ytd["year_to_date.csv
 (from_account, to_account)"]
+    rails["guard_rails.csv
+(select, portfolio, start, end)"]
     persons["persons.csv (id)"]
     aux["aux/ (shared)
 (kind__series.csv)"]
@@ -416,6 +418,9 @@ account or chain name| accounts
     calendar -->|account_1/2 + lot_1/2| values
     calendar -->|account_1/2| chains
     ytd -->|from_account/to_account| accounts
+    rails -->|select, portfolio: tags| accounts
+    rails -->|select: tags| scheduled
+    rails -->|start/end: date_marker| calendar
     accounts -->|series| aux
     accounts -->|series| series
     values -->|series, or a rate series
@@ -473,7 +478,7 @@ What each symbol is made of, by asset class, for the portfolio overview (`sim al
 
 For a date the overview uses the symbol's latest set on or before it, else its earliest. A lot with no rows for its symbol is classed by its account subkind (`cash`, `real_estate`, `vehicle`/`other_asset` as `other`; a `CASH` symbol is cash and a `CD` symbol is `cd`), and otherwise shown as `unclassified`, so a gap is visible. The weights are static per date: the model does not rebalance or let allocations drift with relative price movements, only follow the dated sets you give it, so a lot's class mix at any date is its balance times that date's weights. The file may be omitted.
 
-A lot with no symbol (one that grows at a rate series) is classed by a row whose `symbol` is the lot's `<account>:<lot>` key, e.g. `Asset_IRA_Alice:stable`, used when the lot's symbol (if any) has no rows. A ticker never holds a colon, so the upper-case rule for symbols doesn't apply to a key, and `sim prices fetch`, symbol completion and the symbol listings skip keys. A key naming an account a scenario has, but a lot it doesn't, is reported by `sim check` (the file is shared, so another scenario may have the lot). Renaming the account or the lot rewrites its keys, keeping the old one as well while a scenario the rename doesn't reach still has the old name. A responsive strategy's portfolio (§4.11) must have every asset lot classed, by its symbol, its key or its subkind: an `unclassified` one is a load error naming the row to add.
+A lot with no symbol (one that grows at a rate series) is classed by a row whose `symbol` is the lot's `<account>:<lot>` key, e.g. `Asset_IRA_Alice:stable`, used when the lot's symbol (if any) has no rows. A ticker never holds a colon, so the upper-case rule for symbols doesn't apply to a key, and `sim prices fetch`, symbol completion and the symbol listings skip keys. A key naming an account a scenario has, but a lot it doesn't, is reported by `sim check` (the file is shared, so another scenario may have the lot). Renaming the account or the lot rewrites its keys, keeping the old one as well while a scenario the rename doesn't reach still has the old name. A responsive strategy's portfolio (§4.12) must have every asset lot classed, by its symbol, its key or its subkind: an `unclassified` one is a load error naming the row to add.
 
 #### 4.1c Shared base: `data_repo/itemizations/<name>.csv` (optional)
 
@@ -787,7 +792,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 
 **A chain's role is the folder its file is in** (`registries.CHAIN_ROLES`), and the file name is the chain name. A `source` chain is drawn from: a rule's `from_account`, a calendar transfer's `account_1`, a lot's `refill_chain`, an `rmd` rule's chain. A `destination` chain is paid into: a rule's `to_account`, a calendar transfer's `account_2`, a lot's `overflow_chain`. A step naming another chain names one of the same role. The loader rejects a chain used against its role, a chain file directly under `chains/` or in a folder that names no role, and one name in both folders of one scenario; a leaf chain (one lot) plays either part. No chain is both: money drawn through a chain and money paid through it follow different policies, so the role also says which one a reader follows. Money drawn from a source chain may first refill the lots it reaches, but never passes through their overflow; money paid into a destination chain may overflow on from the lots it reaches, but never passes through their refill chains. `sim chain show --graph` (and the Mermaid source `--mermaid` prints) draws a chain that way, every arrow pointing the way money moves.
 
-**A chain a strategy owns** ([ADR-010](ADR-010-responsive-strategies.md), §4.11). When a strategy owns an interior chain, each draw through it (or sweep into it) first asks the strategy which leaves pay (or receive); its moves post through the same leaf paths a step uses, and whatever it leaves outstanding falls through to the steps above as usual. A step's `maximum` and `percent` bind those steps, not the strategy's moves. A strategy can't own a destination chain with `tax_character` or `basis_of` steps, whose meaning depends on the step order.
+**A chain a strategy owns** ([ADR-010](ADR-010-responsive-strategies.md), §4.12). When a strategy owns an interior chain, each draw through it (or sweep into it) first asks the strategy which leaves pay (or receive); its moves post through the same leaf paths a step uses, and whatever it leaves outstanding falls through to the steps above as usual. A step's `maximum` and `percent` bind those steps, not the strategy's moves. A strategy can't own a destination chain with `tax_character` or `basis_of` steps, whose meaning depends on the step order.
 
 **Withdrawing from a taxable lot.** A draw or sweep leg out of a `taxable` non-cash lot (e.g. in a `brokerage_taxable` account) splits into a `return_of_capital` leg and a gain leg (`engine._post_withdrawal`). Basis is tracked **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)); an account's basis is the sum over its lots (the `account_state` view). The split is pro-rata to the fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount // balance`); it reduces that lot's basis, and its `quantity` when tracked. The gain leg is `stcg` if the lot was acquired a year or less before the sale, else `ltcg`. Money moved into a basis-tracked lot adds to its basis (and shares), except built-in growth, which is total return and leaves basis alone. A realized loss (basis exceeds proceeds) is a negative gain leg, the same convention as a `year_to_date.csv` loss carryforward; the tax accumulator nets and limits it (§2.6). A sweep into a destination chain with a basis step for the lot is not split this way; the chain characterizes it (below). The lot needs an `opening_cost_basis` (a zero balance starts at basis 0); an untracked basis (`NULL`) raises, telling the author to add it to `account_lots.csv`.
 
@@ -880,7 +885,38 @@ Writes directly into `year_to_date` (`UNIQUE (scenario_id, name)`).
 
 `analysis sim ytd list` shows these rows with the scheduled rows' catch-ups. `sim ytd add [<name> <from> <to> <amount>]` appends a row, taking `--from-lot`, `--to-lot`, `--tax-character`, `--year` and `--description` as options and asking for whatever it needs and was not given (a lot only when a blank one would not say which, as for a transfer, §7); a negative amount follows `--` on the command line. `sim ytd edit [<name>]` is guided: options set those fields and write at once, and with none it shows the fields and asks which to change. `sim ytd delete [<name>]` removes a row (`--yes` skips the question). Each goes through a staged edit (§7). As for scheduled rules, editing an inherited row writes an override of the whole row, and deleting an override brings back the inherited row. An inherited row can't be removed (§4.5), so deleting one writes an override with `amount` 0, which posts nothing.
 
-#### 4.11 Per-scenario: `data_repo/scenarios/<name>/strategies.csv` (optional), and `data_repo/strategies/`
+#### 4.11 Per-scenario: `data_repo/scenarios/<name>/guard_rails.csv` (optional)
+
+A guard rail ([#305](https://github.com/BobKerns/analysis/issues/305)) is a line a scenario's spending, or its withdrawals from the portfolio, should stay on one side of: Bengen's 4% rule, Guyton-Klinger's upper and lower rails, a budget. Rails are a **lens on results**: nothing in a run reads them. Reports read them from the data repo when they compare a finished run with them, so the file is left out of `scenario_tree_id` and the dirty check ([ADR-004](ADR-004-reproducibility-and-activation.md) §1), and editing a rail reruns nothing. The loader still checks every rail, so a bad one fails `sim check` and the edit commands (§7). A rail goes into the intent only when a future responsive strategy ([#326](https://github.com/BobKerns/analysis/issues/326)) triggers on it.
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `name` | text | ✓ | `[A-Za-z_][A-Za-z0-9_.-]*`; the key, unique in the scenario's merged rails |
+| `measure` | `spending` \| `withdrawals` | ✓ | what the rail limits (below) |
+| `select` | tag filter | | `spending` only: the expenses counted, by tag (below). Blank counts them all |
+| `portfolio` | tag filter | | the asset accounts that are the portfolio, for `withdrawals` and the percent bases. Blank is the default portfolio |
+| `side` | `above` \| `below` | ✓ | `above`: the threshold is a ceiling, past it when the measure is above it. `below`: a floor |
+| `threshold` | dollars or percent | ✓ | more than zero: a percent (`4%`) for `portfolio` and `initial_portfolio`, dollars a year for the others |
+| `basis` | `nominal` \| `cpi_constant` \| `portfolio` \| `initial_portfolio` | ✓ | `nominal`: that many dollars a year. `cpi_constant`: that many of the scenario start's dollars a year, growing with the run's CPI. `portfolio`: that share of the portfolio's value at the start of each year. `initial_portfolio`: that share of its value the month before the rail starts, growing with CPI from then (the 4% rule) |
+| `sense` | `negative` \| `positive` | | blank is `negative`: past the rail is trouble. `positive`: past it is good news, such as room to spend more (Guyton-Klinger's lower rail). Reports show the two differently |
+| `start`, `end` | month, date or date_marker | | the first and last month the rail covers: `YYYY-MM`, `YYYY-MM-DD`, or relative to a `date_marker` (`NAME`, `NAME+Nm`, `NAME-Ny`, §3.8). Blank: the scenario's start or end |
+| `description` | text | | |
+
+**Measures.** `spending` is the income report's spending (the `spending` column of `sim report income`): every expense except income tax, business expenses and depreciation. With `select`, an expense's tags in a role are its scheduled rule's when the rule has one in that role, else its expense account's, as `sim report expenses --by tag:ROLE` reads them. `withdrawals` is the portfolio's net payout: money leaving a portfolio account for anything outside the portfolio but an income account, less money arriving in one from outside other than the portfolio's own returns (income of subkind `interest`, `dividend` or `capital_gain`). A move between two portfolio accounts is neither, and Social Security or a salary landing in checking pays part of the spending. The **default portfolio** is every asset account but those of subkind `real_estate`, `vehicle` and `other_asset`: cash, investments, retirement, HSA and business accounts. Including cash is what makes withdrawals the gap the investments fill.
+
+**Tag filters.** Space-separated `role:name` tags (§6). Something carrying any of the plain tags is picked (everything, when there are none), less anything carrying a tag written `-role:name`. `role:*` matches any tag in the role. So `portfolio:core` narrows the portfolio to accounts tagged so, and `-exclude:emergency` takes the emergency fund out of the default one. A tag the scenario's expense accounts and scheduled rules (for `select`) or asset accounts (for `portfolio`) don't carry is a load error, as is a `date_marker` no row defines.
+
+**Years.** A rail is evaluated by calendar year. Each month's threshold is a twelfth of the year's: for `portfolio`, of the share of the portfolio's balance at the previous Dec 31 (the scenario's opening, in its first year). So a year the rail covers only part of, its first or last or the scenario's, compares the months it covers with that part of the threshold. Every rail stops after the household's last death (the `primary` persons', or everyone's with a role, §4.9) when each of them has a lifespan: a household that has died spends nothing, which would cross every floor.
+
+**Margins.** A year's margin is `threshold − measure` for a rail `above`, `measure − threshold` for one `below`, in the report's dollars (each month deflated by that month's CPI factor for CPI-constant dollars). So a negative margin is always past the rail, whichever way it faces. The **cumulative margin** is the sum of the margins since the rail began: room banked, or overdrawn. It answers whether a year past the rail is spending room left from earlier years, which the year's margin doesn't. It ignores that money spent past a rail would have kept growing; the **carried** margin grows the cumulative one at the portfolio's own yearly return (modified Dietz, the payout counted mid-year), `C = C_prior × (1 + r) + margin`. Both are guides, not a re-run: spending differently would have changed the path itself.
+
+**Inheritance.** Rows merge down the lineage by `name`, as `scheduled.csv` rows do (§4.5): a child's row with a rail's name replaces the cells its file has. A name may appear only once in one file; a second row is a load error, not a merge.
+
+`sim guard-rail list` shows the merged rails. `sim guard-rail add [<name>]` appends one, asking for every field when given no options, or for only the required ones its options leave out. `sim guard-rail edit [<name>]` is guided: options set those fields and write at once, and with none it shows the fields and asks which to change. `sim guard-rail delete [<name>]` removes one (`--yes` skips the question). Each goes through a staged edit (§7). Editing an inherited rail writes an override of the whole row, and deleting an override brings back the inherited rail. An inherited rail can't be removed (§4.5), so deleting one writes an override whose `end` is the month before the scenario starts, so it covers nothing.
+
+`sim report guard-rails` prints each rail's margins by year, annual and cumulative side by side (`--carried` adds the carried ones, `--rail NAME` one rail's measure and threshold), past cells red for a `negative` rail and blue for a `positive` one, then per rail and form the years past, the worst margin and its year, the margin at the end, and the RMS overshoot (the root mean square of the margins past the rail, years inside counting as zero). `sim explain` lists each run of years past a rail, `sim compare --section guard-rails` each scenario's margins with each variant's change (rails matched by name), and `net_worth.ipynb` charts them.
+
+#### 4.12 Per-scenario: `data_repo/scenarios/<name>/strategies.csv` (optional), and `data_repo/strategies/`
 
 Which responsive strategies the scenario runs ([ADR-010](ADR-010-responsive-strategies.md)). Merged down the lineage by `name`, a later scenario's row replacing the earlier one's whole. The code is a built-in kind (`analysis.sim.strategies`) or a module in the data repo's shared `strategies/` folder (`*.py`; a module whose name starts with `_` is a helper and registers nothing), which is inside the provenance scope and snapshotted into the intent when a data-repo kind is in use.
 
@@ -897,7 +933,7 @@ Which responsive strategies the scenario runs ([ADR-010](ADR-010-responsive-stra
 
 A kind that fails to import, an unknown kind, a chain that doesn't fit, a parameter the kind rejects (a tag no account carries, a target set `targets.csv` lacks), or an unclassified lot in a tagged portfolio (§4.1b) is a load error naming the row. `sim strategy add|edit|delete` edit the file through a staged edit (§7); editing an inherited row writes an override of the whole row, and deleting an inherited one is refused in favor of `--disable`.
 
-#### 4.12 Per-scenario: `data_repo/scenarios/<name>/targets.csv` (optional)
+#### 4.13 Per-scenario: `data_repo/scenarios/<name>/targets.csv` (optional)
 
 Named sets of asset-class target weights a strategy steers by ([ADR-010](ADR-010-responsive-strategies.md) §5). Merged down the lineage by (`target_set`, `as_of`, `asset_class`).
 
@@ -1246,4 +1282,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#315](https://github.com/BobKerns/analysis/issues/315): `lifespan.csv` gains an optional `life_table` naming an aux `life_table__<name>.csv`, read for that person in that scenario instead of `life_table.csv`; the templates ship Japan's (§4.4, §4.9).
 - [#317](https://github.com/BobKerns/analysis/issues/317): the code repository's `templates/aux/` is the lowest `aux/` tier; `filing_status.csv` is the household's, one row per date, checked at load (§4.1d, §4.4).
 - [#324](https://github.com/BobKerns/analysis/issues/324): a scenario built only on mix-in only scenarios, with no dates of its own, is mix-in only too, recorded in `scenario.mixin_only`; `scenario edit` names each scenario it makes one (§4.5).
-- [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies: `<account>:<lot>` keys in `allocations.csv` (§4.1b), a chain a strategy owns (§4.7), new `strategies.csv` and `strategies/` (§4.11) and `targets.csv` (§4.12), and the data repo map (§4.0).
+- [#305](https://github.com/BobKerns/analysis/issues/305): a scenario's optional `guard_rails.csv`, rails reports compare a run with, outside the run (new §4.11, §4.0).
+- [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies: `<account>:<lot>` keys in `allocations.csv` (§4.1b), a chain a strategy owns (§4.7), new `strategies.csv` and `strategies/` (§4.12) and `targets.csv` (§4.13), and the data repo map (§4.0).

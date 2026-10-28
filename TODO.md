@@ -22,7 +22,8 @@ Known gaps (last reviewed 2026-10-28; each has an issue):
   kind/tax character/account/date range; `sim items` covers one account and a date range
   only (#189)
 - charts for plain-run results: net worth, income, expenses, gains, economic income,
-  account balance history and the allocation pie are tables only in the CLI (#327)
+  guard rails, account balance history and the allocation pie are tables only in the
+  CLI (#327)
 - several ensembles against one baseline in one table (`ensemble_table_widget`);
   `sim ensemble compare` takes one variant (#328)
 - sensitivity charts (heatmap, tornado, attribution, correlation, R², one row's delta

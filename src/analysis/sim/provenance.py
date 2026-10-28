@@ -80,7 +80,7 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
         return DataStamps(version="unversioned", dirty=True, tree_id="", dirty_paths=())
     scoped_abs = [str(data_dir / p) for p in _scoped_paths(data_dir, scenario_name)]
     if scoped_abs:  # an exclude alone would mean everything else
-        scoped_abs.append(_NOT_DATA)
+        scoped_abs.extend(_NOT_DATA)
     status = repo.git.status("--porcelain", "--", *scoped_abs)
     dirty_paths = tuple(line[3:] for line in status.splitlines()) if status.strip() else ()
     tree_id = _compute_tree_id(repo, scoped_abs)
@@ -92,10 +92,14 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
     )
 
 
-# A scenario's `.disable` (loader.DISABLE_FILE, #300) says whether to build
-# it, not what it computes: disabling a base must not change its children's
-# tree, nor make them dirty.
-_NOT_DATA = ":(exclude,glob)**/scenarios/*/.disable"
+# Files in a scenario folder that no run reads, so editing one must not
+# change its tree (or its children's), nor make them dirty: `.disable`
+# (loader.DISABLE_FILE, #300) says whether to build a scenario, not what it
+# computes, and `guard_rails.csv` (#305) is read only by reports.
+_NOT_DATA = (
+    ":(exclude,glob)**/scenarios/*/.disable",
+    ":(exclude,glob)**/scenarios/*/guard_rails.csv",
+)
 
 
 def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:

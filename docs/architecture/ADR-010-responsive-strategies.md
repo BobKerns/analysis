@@ -4,7 +4,7 @@
 - **Date:** 2026-10-28
 - **Supersedes:** —
 - **Amended:** see [Amendments](#amendments) at the end.
-- **Related:** [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1b (`allocations.csv`), §4.7 (chains), §4.11–§4.12 (`strategies.csv`, `targets.csv`); [ADR-002](ADR-002-storage-schema.md) (`strategy`, `strategy_source`, `allocation_target`, `strategy_decision`); [ADR-004](ADR-004-reproducibility-and-activation.md) §2 (strategy code is data); issues [#326](https://github.com/BobKerns/analysis/issues/326) (the design, in stages) and [#339](https://github.com/BobKerns/analysis/issues/339) (stage 1a), [#305](https://github.com/BobKerns/analysis/issues/305) (guard rails, which later stages trigger on).
+- **Related:** [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1b (`allocations.csv`), §4.7 (chains), §4.12–§4.13 (`strategies.csv`, `targets.csv`); [ADR-002](ADR-002-storage-schema.md) (`strategy`, `strategy_source`, `allocation_target`, `strategy_decision`); [ADR-004](ADR-004-reproducibility-and-activation.md) §2 (strategy code is data); issues [#326](https://github.com/BobKerns/analysis/issues/326) (the design, in stages) and [#339](https://github.com/BobKerns/analysis/issues/339) (stage 1a), [#305](https://github.com/BobKerns/analysis/issues/305) (guard rails, which later stages trigger on).
 
 ## Context
 
@@ -22,7 +22,7 @@ Those policies are small programs, and their variety is open-ended, so a registr
 
 A strategy is a Python class, a subclass of `strategy_api.Strategy` marked with `@register`. It names its `kind`, declares a frozen dataclass `Params`, and overrides the hooks it uses. Each hook reads a read-only `Context` of the run as of the current month and answers with a `Decision` (moves, a one-line note, and the numbers behind it) or `None`, "no opinion". The engine posts the moves through its own code. A strategy never touches engine state.
 
-`strategies.csv` (ADR-003 §4.11) says which strategies a scenario runs: a name, a kind, the chain it owns, optional `start`/`end` months, `enabled`, and `params_json`.
+`strategies.csv` (ADR-003 §4.12) says which strategies a scenario runs: a name, a kind, the chain it owns, optional `start`/`end` months, `enabled`, and `params_json`.
 
 ### 2. Where the hooks attach
 
@@ -80,7 +80,7 @@ A strategy must be a pure function of its context, parameters and memory: no clo
 
 **The snapshot.** When a scenario's enabled strategies include a data-repo kind, the loader copies every module of `strategies/` into the intent's `strategy_source` (module, sha256, source): helpers are imported by name, so the snapshot is the whole folder. The engine imports from the snapshot, never from the data repo, so `run_scenario(intent, run)` stays self-contained, an ensemble worker needs no data directory, and a run file carries the exact code it ran. Built-in kinds store no source: the code version covers them.
 
-**Checked at load** (ADR-003 §4.11, §4.12): a known kind; a chain that exists, has steps (not an account's own leaf chain), and whose role fits a hook the kind implements; one enabled strategy per chain; `start` no later than `end`; `params_json` a JSON object the kind's `Params` accepts; a destination chain without step `tax_character`/`basis_of`, which depend on the step order a strategy would override (#199); and every asset lot in a strategy's `Tag` portfolio classed by `allocations.csv` (§5). A disabled row is checked too, except for chain ownership.
+**Checked at load** (ADR-003 §4.12, §4.13): a known kind; a chain that exists, has steps (not an account's own leaf chain), and whose role fits a hook the kind implements; one enabled strategy per chain; `start` no later than `end`; `params_json` a JSON object the kind's `Params` accepts; a destination chain without step `tax_character`/`basis_of`, which depend on the step order a strategy would override (#199); and every asset lot in a strategy's `Tag` portfolio classed by `allocations.csv` (§5). A disabled row is checked too, except for chain ownership.
 
 **Stored.** The intent gains `strategy` (one row per enabled strategy, `params_json` in stored units), `strategy_source` and `allocation_target`; all three are snapshot tables, copied into run files. A run file adds `strategy_decision`, one row per hook that answered with a decision (a `None` writes nothing): what it was asked, what its own moves posted (`chosen_cents`), what the chain's steps then covered (`fallback_cents`), its note and detail, and its memory when the call changed it. Every transfer leg a move posted (a withdrawal's basis and gain legs alike) points at that row through `transfer_event.strategy_decision_id`, and keeps its own `reason_kind` (`rule`, `refill`, `overflow`), so income, expense and tax reports see the same flows as before.
 
@@ -97,7 +97,7 @@ A strategy must be a pure function of its context, parameters and memory: no clo
 
 A lot in a strategy's portfolio that ends up `unclassified` is a load error naming the row to add (Bob: "resolve by adding to allocations.csv"), since it would skew every share.
 
-**Targets.** `targets.csv` (ADR-003 §4.12) holds named sets of class weights, each dated by `as_of` like `allocations.csv`'s, so a glide path is more rows. The set in force is the latest on or before the month. A class a set leaves out has target 0%: holding it counts as overweight.
+**Targets.** `targets.csv` (ADR-003 §4.13) holds named sets of class weights, each dated by `as_of` like `allocations.csv`'s, so a glide path is more rows. The set in force is the latest on or before the month. A class a set leaves out has target 0%: holding it counts as overweight.
 
 ### 6. The built-in `rebalance`
 

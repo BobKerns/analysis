@@ -76,7 +76,7 @@ from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
-    ACCOUNT_LOTS_CSV_HEADER, CALENDAR_HEADER, SCENARIO_HEADER,
+    ACCOUNT_LOTS_CSV_HEADER, CALENDAR_HEADER, GUARD_RAILS_CSV_HEADER, SCENARIO_HEADER,
     SCHEDULED_CSV_HEADER,
 )
 
@@ -889,6 +889,31 @@ def load_test_copy(test_data_dir: Path, test_scenarios_dir: Path,
         return load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                              scenarios_dir=test_scenarios_dir, allow_dirty_data=True)
     return _load
+
+
+@pytest.fixture(scope="function")
+def run_test_copy(load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Callable[[], Path]:
+    """Load and run the private retire_alice copy, after a test has edited it;
+    returns the run file."""
+    def _run() -> Path:
+        intent = load_test_copy().intent_path
+        return run_scenario(intent, runs_dir / "test_copy.sqlite3", run_by="TEST",
+                            allow_dirty_data=True, allow_dirty_code=True)
+    return _run
+
+
+@pytest.fixture(scope="function")
+def write_guard_rails(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """Write the private retire_alice copy's guard_rails.csv (#305), replacing
+    the prototype's, from rows given as {column: cell} (others blank)."""
+    def _write(*rows: dict[str, str]) -> Path:
+        unknown = set().union(*rows) - set(GUARD_RAILS_CSV_HEADER) if rows else set()
+        assert not unknown, f"unknown guard_rails.csv columns: {sorted(unknown)}"
+        path = retire_alice_csv("guard_rails.csv")
+        pd.DataFrame([{c: row.get(c, "") for c in GUARD_RAILS_CSV_HEADER} for row in rows],
+                     columns=list(GUARD_RAILS_CSV_HEADER)).to_csv(path, index=False)
+        return path
+    return _write
 
 
 @pytest.fixture(scope="function")

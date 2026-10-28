@@ -44,8 +44,8 @@ data_repo/
             calendar.csv    # CalendarEvents
             lifespan.csv    # per-person age at death
             year_to_date.csv # partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10)
-            strategies.csv  # which strategies run, on which chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.11)
-            targets.csv     # allocation targets ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12)
+            strategies.csv  # which strategies run, on which chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12)
+            targets.csv     # allocation targets ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13)
             chains/
                 source/asset_checking_liquidity.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
                 destination/salary_split.csv
@@ -832,7 +832,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `person_lifespan` | Optional per-person age at death for a scenario, its final month, and how it varies ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
 | `year_to_date` | Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
 | `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
-| `allocation_target` | Named, dated sets of asset-class target weights (from `targets.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12). |
+| `allocation_target` | Named, dated sets of asset-class target weights (from `targets.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13). |
 | `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |

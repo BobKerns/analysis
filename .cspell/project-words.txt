@@ -3,11 +3,13 @@ ABCDX
 addl
 affordances
 aggfunc
+allclose
 AMOLED
 anywidget
 arcsinh
 arctanh
 ascontiguousarray
+atleast
 autocorr
 autofetch
 autofmt
@@ -20,6 +22,7 @@ axvline
 axvspan
 backfillable
 begidx
+bengen
 birthdates
 blockifying
 blockquotes
@@ -55,6 +58,7 @@ dateutil
 ddof
 delenv
 dflt
+dietz
 ecolor
 edgecolor
 elinewidth
@@ -84,6 +88,7 @@ Gompertz
 gpgsign
 gridspec
 gterm
+guyton
 heloc
 hexsha
 HIFO
@@ -101,6 +106,7 @@ keepends
 kendalltau
 kernelspec
 killpg
+klinger
 Kolmogorov
 kstest
 labelbottom
@@ -132,7 +138,9 @@ mtimes
 mult
 multimonth
 munknown
+nanargmin
 nanmax
+nanmean
 nbstripout
 ncol
 networth
@@ -228,6 +236,7 @@ subkinds
 subshell
 subshells
 supercentenarians
+suptitle
 symlog
 tailnet
 tailweight
