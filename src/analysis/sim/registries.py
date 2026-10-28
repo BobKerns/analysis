@@ -49,6 +49,17 @@ YEAR_TO_DATE_CSV_HEADER: tuple[str, ...] = (
     "tax_character", "year", "description",
 )
 
+# Canonical guard_rails.csv column order (#305, ADR-003 §4.11), and the
+# values its enumerated columns take. A rail is read only by reports.
+GUARD_RAILS_CSV_HEADER: tuple[str, ...] = (
+    "name", "measure", "select", "portfolio", "side", "threshold", "basis",
+    "sense", "start", "end", "description",
+)
+GUARD_RAIL_MEASURES: tuple[str, ...] = ("spending", "withdrawals")
+GUARD_RAIL_SIDES: tuple[str, ...] = ("above", "below")
+GUARD_RAIL_BASES: tuple[str, ...] = ("nominal", "cpi_constant", "portfolio", "initial_portfolio")
+GUARD_RAIL_SENSES: tuple[str, ...] = ("negative", "positive")
+
 # Rules that read the `series` column, and what it names for each.
 SERIES_RULE_KINDS: dict[str, str] = {
     "fixed_amount": "inflation series",

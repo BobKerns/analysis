@@ -216,6 +216,7 @@ ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=T
                     "account or chain", plural="accounts and chains")
 RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
 YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
+GUARD_RAIL = NameType(_in_scenario(names.guard_rail_names), "guard rail")
 # A row may also be picked by its number or by text in it, so any value goes.
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
 # A calendar date: a literal one, or relative to a date marker (#281), whose
