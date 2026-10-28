@@ -125,6 +125,11 @@ class BuilderPaths:
         return self.dir / "logs"
 
     @property
+    def working_set(self) -> Path:
+        """The scenarios most recently used (#322, sim/working_set.py)."""
+        return self.dir / "working_set"
+
+    @property
     def runs_dir(self) -> Path:
         return self.state_dir / DEFAULT_RUNS_DIR
 
@@ -665,7 +670,7 @@ _git_dirs: dict[tuple[Path, tuple[Any, Any]], list[Path]] = {}
 def working_set_order(data_dir: Path) -> dict[str, int]:
     """Each working-set scenario's rank, most recently used 0 (#322). The
     current scenario counts as used most recently when the working set
-    lacks it (one current before ``.working_set`` existed)."""
+    lacks it (one current before the working set existed)."""
     from analysis.sim.working_set import read_working_set
 
     names = read_working_set(data_dir)

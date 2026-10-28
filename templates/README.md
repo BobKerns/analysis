@@ -109,7 +109,7 @@ When sourced, `activate-analysis` will:
 
 - Discover the analysis program repo from `$ANALYSIS_DATA_DIR/.analysis`.
 - Prompt for the repo path if missing/invalid, validate it, and persist it.
-- Ensure `.analysis`, `.current_scenario`, `.working_set`, `.analysis_user` and `.retention.yaml` are ignored in the data repo's `.gitignore`.
+- Ensure `.analysis`, `.current_scenario`, `.analysis_user` and `.retention.yaml` are ignored in the data repo's `.gitignore`.
 - Create `.venv` with `uv sync --group dev` if needed, then activate it.
 - Take `ANALYSIS_USER` from the environment or `.analysis_user`; if neither names a
   person in `persons.csv`, list the `primary` persons and ask for an id or display

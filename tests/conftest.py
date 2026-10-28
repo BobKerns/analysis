@@ -160,9 +160,9 @@ def _no_current_scenario_writes(
 def _no_working_set_writes(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Make writing ``.working_set`` (#322) a no-op, for the reason above:
+    """Make writing the working set (#322) a no-op, for the reason above:
     any command naming a scenario, any edit and any notebook pick writes it
-    into the data dir. Tests of the working set opt back in with
+    into the ``state/`` beside the data dir. Tests of the working set opt back in with
     ``@pytest.mark.uses_working_set_write``."""
     if request.node.get_closest_marker("uses_working_set_write"):
         return

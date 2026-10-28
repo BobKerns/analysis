@@ -23,6 +23,13 @@ def _sim(data_dir: Path, *args: str) -> Result:
     return CliRunner().invoke(main, ["sim", *args, "--data-dir", str(data_dir)])
 
 
+def _seed(data_dir: Path) -> Path:
+    """The working set file, its folder made, for a test to write."""
+    path = working_set_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _scenarios(data_dir: Path, *names: str) -> None:
     for name in names:
         (data_dir / "scenarios" / name).mkdir()
@@ -38,7 +45,7 @@ def test_use_moves_scenarios_to_the_top_first_named_topmost(test_data_dir: Path)
 
 def test_an_update_drops_missing_and_disabled_scenarios(test_data_dir: Path) -> None:
     _scenarios(test_data_dir, "a", "b")
-    working_set_path(test_data_dir).write_text("gone\na\nb\nbase\n")
+    _seed(test_data_dir).write_text("gone\na\nb\nbase\n")
     (test_data_dir / "scenarios" / "b" / ".disable").write_text("")
     working_set.use(test_data_dir, "retire_alice", "nope", None)
     assert read_working_set(test_data_dir) == ["retire_alice", "a", "base"]
@@ -62,7 +69,7 @@ def test_a_deleted_scenario_goes(test_data_dir: Path) -> None:
 
 
 def test_a_damaged_file_is_an_empty_working_set(test_data_dir: Path) -> None:
-    working_set_path(test_data_dir).write_bytes(b"base\n\xff\xfe\n")
+    _seed(test_data_dir).write_bytes(b"base\n\xff\xfe\n")
     assert read_working_set(test_data_dir) == []
     working_set.use(test_data_dir, "retire_alice")
     assert read_working_set(test_data_dir) == ["retire_alice"]
@@ -87,7 +94,7 @@ def test_naming_or_defaulting_a_scenario_on_the_cli_is_use(test_data_dir: Path) 
 
 @pytest.mark.uses_current_scenario_write
 def test_switch_is_use_even_when_unchanged(test_data_dir: Path) -> None:
-    working_set_path(test_data_dir).write_text("base\nretire_alice\n")
+    _seed(test_data_dir).write_text("base\nretire_alice\n")
     result = _sim(test_data_dir, "switch", "retire_alice")
     assert result.exit_code == 0, result.output
     assert read_working_set(test_data_dir) == ["retire_alice", "base"]
@@ -95,7 +102,7 @@ def test_switch_is_use_even_when_unchanged(test_data_dir: Path) -> None:
 
 @pytest.mark.uses_current_scenario_write
 def test_an_edit_is_use(test_data_dir: Path) -> None:
-    working_set_path(test_data_dir).write_text("retire_alice\nbase\n")
+    _seed(test_data_dir).write_text("retire_alice\nbase\n")
     result = _sim(test_data_dir, "scenario", "edit", "base", "--description", "edited")
     assert result.exit_code == 0, result.output
     assert read_working_set(test_data_dir) == ["base", "retire_alice"]
@@ -110,7 +117,7 @@ def test_a_new_scenario_is_use_but_its_parent_is_not(test_data_dir: Path) -> Non
 
 @pytest.mark.uses_current_scenario_write
 def test_cli_rename_puts_it_on_top_and_delete_drops_it(test_data_dir: Path) -> None:
-    working_set_path(test_data_dir).write_text("base\nretire_alice\n")
+    _seed(test_data_dir).write_text("base\nretire_alice\n")
     current_scenario_path(test_data_dir).write_text("base\n")
     assert _sim(test_data_dir, "scenario", "rename", "retire_alice", "retire_bill").exit_code == 0
     assert read_working_set(test_data_dir) == ["retire_bill", "base"]
