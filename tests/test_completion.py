@@ -61,6 +61,11 @@ def test_rules_rows_and_persons(data_dir: Path) -> None:
     assert {"alice", "bill"} <= set(names.person_ids(data_dir))
 
 
+def test_guard_rail_names(test_child_scenario: Path, test_data_dir: Path) -> None:
+    assert names.guard_rail_names(test_data_dir, "child") == [
+        "budget", "four_percent", "gk_lower", "gk_upper"]
+
+
 def test_series_names_by_kind(data_dir: Path) -> None:
     rates = names.series_names(data_dir, "retire_alice", "rate")
     inflation = names.series_names(data_dir, "retire_alice", "inflation")
@@ -101,6 +106,11 @@ def test_a_year_to_date_row_completes(data_dir: Path) -> None:
     assert _complete(data_dir, "ytd add --scenario retire_alice x Income_Salary_Alice Asset_Ch") == [
         "Asset_Checking",
     ]
+
+
+def test_a_guard_rail_completes(data_dir: Path) -> None:
+    assert _complete(data_dir, "guard-rail edit --scenario retire_alice gk_") == ["gk_lower", "gk_upper"]
+    assert _complete(data_dir, "report guard-rails --scenario retire_alice --rail bu") == ["budget"]
 
 
 def test_account_completes_in_the_current_scenario(test_data_dir: Path) -> None:

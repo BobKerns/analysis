@@ -310,3 +310,43 @@ def test_runs_with_different_horizons_compare_over_their_shared_months() -> None
     assert summary.loc["b", "final net worth"] == 3.0
     assert all_nan_columns(nw.assign(c=float("nan"))) == ["c"]
     assert all_nan_columns(nw.iloc[:0]) == []
+
+
+@pytest.mark.slow
+def test_sim_compare_guard_rails_match_rails_by_name(
+    compare_runs: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    """Rails are a lens: a variant's changed rail shows at once, no rerun.
+    A rail only the variant has shows without a change column."""
+    (test_data_dir / "scenarios" / "higher_pay" / "guard_rails.csv").write_text(
+        "name,measure,side,threshold,basis,start\n"
+        "budget,spending,above,95000.00,cpi_constant,2031-01\n"
+        "floor,spending,below,50000.00,cpi_constant,2031-01\n",
+        encoding="utf-8",
+    )
+    result = compare_runs("retire_alice", "higher_pay", "--section", "guard-rails")
+
+    assert result.exit_code == 0, result.output
+    budget = _section(result.output, "budget:")
+    assert budget[0].split() == [
+        "year", "retire_alice", "higher_pay", "Δ", "higher_pay", "retire_alice", "cum",
+        "higher_pay", "cum", "Δ", "higher_pay", "cum"]
+    first = budget[1].split()
+    assert first[0] == "2031"
+    # The same spending against a budget $10,000 higher.
+    assert int(first[3].replace(",", "")) == pytest.approx(10_000, abs=1)
+    floor = _section(result.output, "floor:")
+    assert floor[0].split() == ["year", "higher_pay", "higher_pay", "cum"]
+    assert "four_percent:" in result.output  # inherited by both
+
+
+def test_sim_compare_guard_rails_says_when_there_are_none(
+    compare_runs: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    (test_data_dir / "scenarios" / "retire_alice" / "guard_rails.csv").unlink()
+    result = compare_runs("retire_alice", "higher_pay", "--section", "guard-rails")
+    assert result.exit_code == 0, result.output
+    assert "Guard rails: none in these scenarios" in result.output
+    default = compare_runs("retire_alice", "higher_pay")  # every section, rails only if any
+    assert default.exit_code == 0, default.output
+    assert "Guard rail" not in default.output

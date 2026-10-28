@@ -10,6 +10,7 @@ them.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 import pandas as pd
@@ -587,11 +588,19 @@ def _cell(value: float, column: str) -> str:
 
 
 def render_report_table(frame: pd.DataFrame, title: str | None = None, *,
-                        total_row: bool = False):
+                        total_row: bool = False,
+                        cell_style: Callable[[str, float], str | None] | None = None):
     """A ``rich`` table of a report frame: its index first, then its columns,
     money in whole dollars, ``share`` and ``effective_rate`` as percents and ``quantity`` in shares.
-    ``total_row`` bolds the last row (a column sum the caller appended)."""
+    ``total_row`` bolds the last row (a column sum the caller appended).
+    ``cell_style(column, value)`` gives a cell's ``rich`` style, if any."""
     from rich.table import Table
+    from rich.text import Text
+
+    def cell(value: float, column: str) -> str | Text:
+        text = _cell(value, column)
+        style = cell_style(column, value) if cell_style is not None and text else None
+        return Text(text, style=style) if style else text
 
     table = Table(title=title, header_style="bold")
     table.add_column(str(frame.index.name or ""), justify="left", no_wrap=True)
@@ -599,6 +608,6 @@ def render_report_table(frame: pd.DataFrame, title: str | None = None, *,
         table.add_column(str(column), justify="right", no_wrap=True)
     last = len(frame) - 1
     for position, (label, row) in enumerate(frame.iterrows()):
-        table.add_row(str(label), *(_cell(float(row[c]), str(c)) for c in frame.columns),
+        table.add_row(str(label), *(cell(float(row[c]), str(c)) for c in frame.columns),
                       style="bold" if total_row and position == last else None)
     return table

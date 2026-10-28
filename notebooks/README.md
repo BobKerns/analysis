@@ -36,13 +36,15 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | calendar events of every kind, with their variation | `analysis sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `analysis sim ytd list` |
 | itemizations, their totals and what references them | `analysis sim itemization list`, `analysis sim itemization show NAME` |
-| a run's summary: provenance, lots, year-end net worth, negative-balance warnings | `analysis sim explain [SCENARIO \| RUNFILE]` |
+| a run's summary: provenance, lots, year-end net worth, negative-balance warnings, years past a guard rail | `analysis sim explain [SCENARIO \| RUNFILE]` |
 | net worth by year or month, CPI-constant (default) or nominal | `analysis sim networth [SCENARIO] [--monthly] [--dollars cpi_constant\|nominal]` |
 | balance history of an account or lot (`accounts.ipynb`) | `analysis sim account history ACCOUNT [--lot LOT] [--yearly]` |
 | income and expenses by category (`net_worth.ipynb`) | `analysis sim report income`, `analysis sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
 | economic income carried down to the change in net worth, after tax or pre-tax (`net_worth.ipynb`) | `analysis sim report income [--pre-tax]` |
 | realized vs. unrealized gains (`net_worth.ipynb`) | `analysis sim report gains` |
 | federal and state tax with their AGI, deduction and taxable income, and tax reconciliation (`net_worth.ipynb`) | `analysis sim report tax [--reconciliation]` |
+| guard rails: each year's margin and the cumulative one, and a summary (`net_worth.ipynb`) | `analysis sim report guard-rails [--rail NAME] [--carried]` |
+| a scenario's guard rails, as defined | `analysis sim guard-rail list` |
 | every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
 | an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]]` |
 | two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--account NAME [--lot LOT]] [--graph]` |
