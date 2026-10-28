@@ -42,6 +42,7 @@ from analysis.sim.notebook_ui.pickers import (
     TimeRangePicker,
     find_data_dir,
     find_runs_dir,
+    note_picks,
     run_years,
 )
 from analysis.sim.readme import description_view
@@ -593,6 +594,7 @@ def ensemble_widget(*_,
         display(yearly.style.format(_share_format(yearly.columns)))
 
     dropdown.observe(_redraw, names="value")
+    note_picks(resolved_data_dir, dropdown)
     lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
@@ -719,7 +721,8 @@ def ensemble_compare_widget(*_,
     compare it with, when they have a batch; with no ``variant`` none is
     picked."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipes = list_ensemble_recipes(runs_dir, find_data_dir(data_dir), keep=[default, variant])
+    resolved_data_dir = find_data_dir(data_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default, variant])
     seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:
@@ -809,6 +812,7 @@ def ensemble_compare_widget(*_,
 
     baseline_picker.observe(_new_baseline, names="value")
     variant_picker.observe(_redraw, names="value")
+    note_picks(resolved_data_dir, baseline_picker, variant_picker)
     lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
@@ -832,7 +836,8 @@ def ensemble_table_widget(*_,
     dollars, account and reserve with the other ensemble widgets; ``default``
     is the baseline to start on."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipes = list_ensemble_recipes(runs_dir, find_data_dir(data_dir), keep=[default])
+    resolved_data_dir = find_data_dir(data_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default])
     seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:
@@ -899,6 +904,7 @@ def ensemble_table_widget(*_,
 
     baseline_picker.observe(_new_baseline, names="value")
     variant_picker.observe(_redraw, names="value")
+    note_picks(resolved_data_dir, baseline_picker, variant_picker)
     lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)

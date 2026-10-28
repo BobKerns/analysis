@@ -226,10 +226,13 @@ def _titles(body: widgets.VBox) -> list[str]:
 def test_sensitivity_widget_oat_batch(oat_batch: Path, runs_dir: Path,
                                       monkeypatch: pytest.MonkeyPatch) -> None:
     shown = _quiet(monkeypatch)
+    noted: list[tuple[object, ...]] = []
+    monkeypatch.setattr(sw, "note_picks", lambda _data, *pickers: noted.append(pickers))
     box = sw.sensitivity_widget(runs_dir=runs_dir)
     assert isinstance(box, widgets.VBox)
     assert not any(isinstance(item, widgets.Widget) for item in shown)
     recipe, batch = box.children[0].children
+    assert noted == [(recipe,)]  # picking a recipe is use of it (#322)
     assert recipe.value == "retire_alice"
     assert batch.value == oat_batch
     # No response curve for a two-quantile batch.

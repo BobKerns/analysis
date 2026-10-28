@@ -23,7 +23,7 @@ from analysis.frames import named_rows
 
 from analysis.sim.draws_db import build_draws_db, draws_db_path, draws_frames
 from analysis.sim.ensemble import EnsembleError
-from analysis.sim.notebook_ui.pickers import find_data_dir, find_runs_dir
+from analysis.sim.notebook_ui.pickers import find_data_dir, find_runs_dir, note_picks
 from analysis.sim.notebook_ui.sensitivity_widgets import (
     CATEGORICAL, GRID, INK, MUTED, list_batches, list_sensitivity_recipes,
 )
@@ -215,6 +215,7 @@ def draws_widget(*,
     _on_recipe()
     _on_batch()
     recipe.observe(_on_recipe, names="value")
+    note_picks(find_data_dir(data_dir), recipe)
     batch.observe(_on_batch, names="value")
     node.observe(_draw_node, names="value")
     pair.observe(_draw_pair, names="value")

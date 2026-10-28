@@ -157,6 +157,19 @@ def _no_current_scenario_writes(
 
 
 @pytest.fixture(autouse=True)
+def _no_working_set_writes(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Make writing the working set (#322) a no-op, for the reason above:
+    any command naming a scenario, any edit and any notebook pick writes it
+    into the ``state/`` beside the data dir. Tests of the working set opt back in with
+    ``@pytest.mark.uses_working_set_write``."""
+    if request.node.get_closest_marker("uses_working_set_write"):
+        return
+    monkeypatch.setattr("analysis.sim.working_set._write", lambda *args, **kwargs: None)
+
+
+@pytest.fixture(autouse=True)
 def _one_cpu_for_default_jobs(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:

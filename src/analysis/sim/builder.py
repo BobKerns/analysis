@@ -125,6 +125,11 @@ class BuilderPaths:
         return self.dir / "logs"
 
     @property
+    def working_set(self) -> Path:
+        """The scenarios most recently used (#322, sim/working_set.py)."""
+        return self.dir / "working_set"
+
+    @property
     def runs_dir(self) -> Path:
         return self.state_dir / DEFAULT_RUNS_DIR
 
@@ -460,18 +465,19 @@ class _Daemon:
 
     def order(self, queue: list[str]) -> list[str]:
         """Scenarios someone is waiting on, then builds they preempted, then
-        the current scenario, then plain runs before ensembles (quick results
-        first), then by name."""
-        current = read_current_scenario(self.data_dir)
+        the working set's, most recently used first (#322), then plain runs
+        before ensembles (quick results first), then by name."""
         first = [n for n in self.first if n in queue]
         resume = [n for n in self.resume if n in queue]
+        used = working_set_order(self.data_dir)
         runs = self.paths.runs_dir
 
-        def rank(name: str) -> tuple[int, int, int, str]:
+        def rank(name: str) -> tuple[int, int, int, int, str]:
             pos = first.index(name) if name in first else len(first)
             again = resume.index(name) if name in resume else len(resume)
+            recent = used.get(name, len(used))
             ensemble = (runs / name).is_dir()
-            return (pos, again, 0 if name == current else 1 + ensemble, name)
+            return (pos, again, recent, ensemble, name)
 
         return sorted(queue, key=rank)
 
@@ -659,6 +665,19 @@ def run_daemon(data_dir: Path, echo: Callable[[str], None] = print) -> int:
 # that could change the answer has.
 _checked: dict[tuple[Path, str], tuple[int, ...]] = {}
 _git_dirs: dict[tuple[Path, tuple[Any, Any]], list[Path]] = {}
+
+
+def working_set_order(data_dir: Path) -> dict[str, int]:
+    """Each working-set scenario's rank, most recently used 0 (#322). The
+    current scenario counts as used most recently when the working set
+    lacks it (one current before the working set existed)."""
+    from analysis.sim.working_set import read_working_set
+
+    names = read_working_set(data_dir)
+    current = read_current_scenario(data_dir)
+    if current and current not in names:
+        names.insert(0, current)
+    return {name: i for i, name in enumerate(names)}
 
 
 def _signature(paths: BuilderPaths, config: dict[str, Any]) -> tuple[int, ...]:

@@ -219,6 +219,22 @@ def test_queue_puts_the_current_scenario_first(daemon: builder._Daemon) -> None:
     assert daemon.queue[0] == "base"
 
 
+def test_queue_follows_the_working_set_then_runs_before_ensembles(
+    daemon: builder._Daemon,
+) -> None:
+    (daemon.data_dir / ".current_scenario").write_text("base\n")
+    daemon.paths.dir.mkdir(parents=True, exist_ok=True)
+    daemon.paths.working_set.write_text("ens_b\nretire_alice\nbase\n")
+    (daemon.paths.runs_dir / "ens_a").mkdir(parents=True)
+    (daemon.paths.runs_dir / "ens_b").mkdir(parents=True)
+    queue = ["ens_a", "base", "zed", "retire_alice", "ens_b"]
+    # A recently used ensemble before an older plain run; past the working
+    # set, plain runs first, then by name.
+    assert daemon.order(queue) == ["ens_b", "retire_alice", "base", "zed", "ens_a"]
+    daemon.first = ["zed"]
+    assert daemon.order(queue)[0] == "zed"
+
+
 def test_a_failed_build_waits_for_its_inputs_to_change(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
