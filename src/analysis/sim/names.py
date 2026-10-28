@@ -16,6 +16,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from analysis.sim import registries
+from analysis.sim.asset_classes import is_lot_key
 from analysis.sim.lineage import TEMPLATE_AUX_DIR, load_order, scenario_dir, template_names
 
 __all__ = [
@@ -164,11 +165,11 @@ def symbols(data_dir: Path) -> list[str]:
     ``prices/`` files, and every scenario's lots."""
     scenarios = data_dir / "scenarios"
     scenario_dirs = sorted(p for p in scenarios.iterdir() if p.is_dir()) if scenarios.is_dir() else []
-    found = set(_column(
+    found = set(s for s in _column(
         [data_dir / "securities.csv", data_dir / "allocations.csv",
          *(d / "account_lots.csv" for d in scenario_dirs)],
         "symbol",
-    ))
+    ) if not is_lot_key(s))  # allocations.csv account:lot keys aren't symbols (#326)
     prefix = "security_price__"
     price_dirs = [data_dir / "prices", *(d / "prices" for d in scenario_dirs)]
     found.update(s[len(prefix):] for s in _stems(price_dirs, f"{prefix}*.csv"))

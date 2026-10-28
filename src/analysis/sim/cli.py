@@ -10329,9 +10329,24 @@ def _rename_with_growth_rules(
 def _rename_account(edit: StagedEdit, old: str, new: str) -> list[str]:
     _not_reserved(new)
     old, new = old.strip(), new.strip()
-    return _rename_with_growth_rules(
+    def moved(account: str, lot: str) -> tuple[str, str] | None:
+        return (new, lot) if account == old else None
+
+    keep_old = _defined_outside_scope(edit, rename.account_defined(old))
+    changed = _rename_with_growth_rules(
         edit, "account", old, new, defines=rename.account_defined, taken=_account_or_chain_defined,
-        rewrite=rename.rename_account, moved=lambda account, lot: (new, lot) if account == old else None)
+        rewrite=rename.rename_account, moved=moved)
+    return changed + rename.rename_lot_keys(edit.data_dir, moved, keep_old=keep_old)
+
+
+def _defined_outside_scope(edit: StagedEdit, defines: rename.Defines) -> bool:
+    """Whether a scenario a rename in ``edit`` won't reach still defines the
+    name: a shared file's old key must then stay (``rename.rename_lot_keys``).
+    Asked before the rename rewrites the scenarios it does reach."""
+    scenarios = edit.data_dir / "scenarios"
+    affected = set(rename.scope(scenarios, edit.name, defines))
+    return any(defines(scenarios / each) for each in rename.scenario_folders(scenarios)
+               if each not in affected)
 
 
 def _rename_across(
@@ -10501,19 +10516,24 @@ def lot_rename(
             new_lot = _ask_new_name(f"new name for {account}'s lot {lot}")
     account, lot, new_lot = account.strip(), lot.strip(), _check_lot_label(new_lot)
 
+    def moved(owner: str, label: str) -> tuple[str, str] | None:
+        return (account, new_lot) if (owner, label) == (account, lot) else None
+
     def rewrite(scenario_dir: Path, old: str, new: str) -> list[str]:
         lines = [line.strip() for line in _lot_reference_rows(scenario_dir, account, old, own_row=True)]
         _rewrite_lot_references(scenario_dir, account, old, new, own_row=True)
         return lines
 
     with _scenario_edit(data, scenario) as edit:
+        keep_old = _defined_outside_scope(edit, _lot_defined(account, lot))
         changed = _rename_with_growth_rules(
             edit, f"lot of {account}", lot, new_lot,
             defines=lambda name: _lot_defined(account, name), rewrite=rewrite,
             missing=lambda: (f"{account!r} has no lot {lot!r} in account_lots.csv, in {edit.name} "
                              "or the scenarios it builds on"),
-            moved=lambda owner, label: (account, new_lot) if (owner, label) == (account, lot) else None,
+            moved=moved,
         )
+        changed += rename.rename_lot_keys(edit.data_dir, moved, keep_old=keep_old)
     _echo_renamed(f"lot of {account}", lot, new_lot, changed)
 
 

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import pandas as pd
 
+from analysis.sim.asset_classes import is_lot_key
 from analysis.sim.lineage import scenario_dir
 from analysis.sim import registries
 from analysis.sim.dates import parse_month
@@ -182,7 +183,12 @@ def _csv_symbols(path: Path) -> set[str]:
     if not path.exists():
         return set()
     with path.open(newline="", encoding="utf-8") as fh:
-        return {s.upper() for row in csv.DictReader(fh) if (s := (row.get("symbol") or "").strip())}
+        # An allocations.csv ``account:lot`` key classes a lot with no
+        # symbol (#326); it has no price to fetch.
+        return {
+            s.upper() for row in csv.DictReader(fh)
+            if (s := (row.get("symbol") or "").strip()) and not is_lot_key(s)
+        }
 
 
 def known_symbols(data_dir: Path) -> list[str]:

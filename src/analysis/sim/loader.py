@@ -22,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import life_table, registries, units
+from analysis.sim import asset_classes, life_table, registries, strategy_code, strategy_load, units
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, is_marker_name, month_end_iso, parse_day,
     parse_relative_date, place_month, vary_date_iso,
@@ -1137,6 +1137,14 @@ def load_scenario(
     if description is not None:
         scenario_row["description"] = description
     chains = _read_chain_files(data_dir, scenario_name, issues)
+    strategy_rows = _read_lineage_overlay(
+        data_dir, scenarios_dir, scenario_name, "strategies.csv", ("name",), issues,
+    )
+    target_rows = _read_lineage_overlay(
+        data_dir, scenarios_dir, scenario_name, "targets.csv",
+        ("target_set", "as_of", "asset_class"), issues,
+    )
+    strategy_sources = strategy_code.read_sources(data_dir)
 
 
     aux_files = [
@@ -1219,6 +1227,11 @@ def load_scenario(
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
+    strategy_kinds, strategies = _validate_strategies(
+        strategy_rows, target_rows, strategy_sources,
+        accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
+        start=scenario_row.get("start", ""), issues=issues, unused=unused,
+    )
 
     for account, replacing, replaced in account_clashes:
         if any(f"({account})" in issue or f"({account} /" in issue for issue in issues):
@@ -1276,6 +1289,10 @@ def load_scenario(
             ytd_rows=ytd_rows,
             money_resolver=money_resolver,
         )
+        counts.update(strategy_load.write_strategies(
+            con, strategies, kinds=strategy_kinds, sources=strategy_sources,
+            target_rows=target_rows,
+        ))
         _write_manifest(
             con,
             scenario_name=scenario_name,
@@ -1395,6 +1412,8 @@ _MONTH_COLUMNS: dict[str, tuple[str, ...]] = {
     "scheduled.csv": ("start", "end", "base_date"),
     "calendar.csv": ("date", "param_date", "vary_resume"),
     "allocations.csv": ("as_of",),
+    "strategies.csv": ("start", "end"),
+    "targets.csv": ("as_of",),
 }
 """Per-file columns that name a month (#34): ``YYYY-MM`` or ``YYYY-MM-DD``,
 stored as that month's last day. Day-precise columns (``birthdate``, a lot's
@@ -2230,7 +2249,12 @@ def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None
         if not symbol:
             issues.append(f"{where}: missing symbol")
             continue
-        _validate_symbol_case(where, symbol, issues)
+        if asset_classes.is_lot_key(symbol):
+            account, _, lot = symbol.partition(":")
+            if not account or not lot or ":" in lot:
+                issues.append(f"{where}: an <account>:<lot> key needs both names, like Asset_IRA:default")
+        else:
+            _validate_symbol_case(where, symbol, issues)
         if as_of:
             try:
                 date.fromisoformat(as_of)
@@ -4178,6 +4202,92 @@ def _validate_tags(where: str, name: str, raw: str,
 def _chain_label(role: str, name: str) -> str:
     """A chain file as error messages name it: ``chains/<role>/<name>.csv``."""
     return f"chains/{role}/{name}.csv"
+
+
+def _read_lineage_overlay(
+    data_dir: Path, scenarios_dir: Path, scenario_name: str, filename: str,
+    key_columns: tuple[str, ...], issues: list[str],
+) -> list[dict[str, str]]:
+    """An optional per-scenario CSV merged over the lineage by ``key_columns``
+    (a later scenario's row replaces an earlier one's whole), months
+    normalized before the merge so ``2035-01`` and ``2035-01-31`` are one key."""
+    rows: list[dict[str, str]] = []
+    for name in _strict_load_order(scenarios_dir, scenario_name):
+        path = _scenario_dir(scenarios_dir, name) / filename
+        own = _read_csv(path, issues, optional=True, label=_data_label(path, data_dir))
+        _normalize_month_columns(own, filename, issues)
+        # Keys are checked by the file's own validation (a blank as_of is a real key).
+        rows = _merge_scenario_rows(rows, own, key_columns, require_key=False)
+    return rows
+
+
+def _validate_strategies(
+    strategy_rows: list[dict[str, str]],
+    target_rows: list[dict[str, str]],
+    sources: Mapping[str, str],
+    *,
+    accounts: list[dict[str, str]],
+    value_rows: list[dict[str, str]],
+    allocations: list[dict[str, str]],
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
+    start: str,
+    issues: list[str],
+    unused: list[str],
+) -> tuple[strategy_code.StrategyKinds, list[strategy_load.PreparedStrategy]]:
+    """``strategies.csv`` and ``targets.csv`` (#326, ADR-003 §4.11-4.12).
+
+    The data repo's strategy modules are imported for every load, so a broken
+    one is found at once; it fails only the loads of scenarios that have
+    strategies, and is otherwise reported by ``sim check``."""
+    kinds = strategy_code.strategy_kinds(sources)
+    (issues if strategy_rows else unused).extend(kinds.problems)
+    target_sets = strategy_load.validate_targets(list(_located(target_rows, "targets.csv")), issues)
+    tags: dict[str, frozenset[str]] = {}
+    for a in accounts:
+        try:
+            tags[a["name"]] = frozenset(f"{r}:{n}" for r, n in registries.parse_tags(a.get("tags", "")))
+        except ValueError:
+            tags[a["name"]] = frozenset()  # reported by _validate_accounts
+    prepared = strategy_load.prepare_strategies(
+        list(_located(strategy_rows, "strategies.csv")),
+        kinds=kinds, chains=chains, account_names={a["name"] for a in accounts},
+        tags=frozenset().union(*tags.values()), target_sets=target_sets, issues=issues,
+    )
+    by_account = {a["name"]: a for a in accounts}
+    lots = [
+        (m["account_name"], m.get("lot") or registries.DEFAULT_LOT, m.get("symbol") or None,
+         by_account[m["account_name"]].get("kind", ""), by_account[m["account_name"]].get("subkind", ""),
+         tags.get(m["account_name"], frozenset()))
+        for m in value_rows if m.get("account_name") in by_account
+    ]
+    strategy_load.check_portfolio_classes(
+        prepared, kinds=kinds, lots=lots, sets=_allocation_class_sets(allocations),
+        start=start, issues=issues,
+    )
+    known_lots = {(account, lot) for account, lot, *_ in lots}
+    for row in allocations:
+        symbol = row.get("symbol", "")
+        if asset_classes.is_lot_key(symbol):
+            account, _, lot = symbol.partition(":")
+            if account in by_account and (account, lot) not in known_lots:
+                unused.append(f"allocations.csv ({symbol}): {account} has no lot '{lot}' here")
+    return kinds, prepared
+
+
+def _allocation_class_sets(
+    allocations: list[dict[str, str]],
+) -> dict[str, list[tuple[str, dict[str, float]]]]:
+    """allocations.csv as ``asset_classes.class_weights`` takes it: symbol (or
+    ``<account>:<lot>`` key) to its weight sets, oldest first."""
+    sets: dict[str, dict[str, dict[str, float]]] = {}
+    for row in allocations:
+        try:
+            weight = _percent_to_micros(row.get("weight", "")) / 1_000_000
+        except ValueError:
+            continue  # reported by _validate_allocations
+        sets.setdefault(row.get("symbol", ""), {}).setdefault(row.get("as_of", ""), {})[
+            row.get("asset_class", "")] = weight
+    return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
 
 
 def _read_chain_files(

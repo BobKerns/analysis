@@ -1,0 +1,4 @@
+account_name,lot,subkind,symbol,acquired,quantity,series,opening_balance,opening_cost_basis,prior_year_end_balance,minimum_balance,maximum_balance,refill_chain,refill_lot,refill_target,refill_amount,overflow_chain,overflow_lot
+Asset_Checking,,,,,,,5000.00,,,2000.00,,portfolio_draw,,,,,
+Asset_Brokerage_Joint,default,,USSTK,,,,300000.00,200000.00,,,,,,,,,
+Asset_TraditionalIRA_Alice,default,traditional_ira,BONDX,,,,500000.00,,480000.00,,,,,,,,

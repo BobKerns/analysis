@@ -1,0 +1,2 @@
+name,kind,chain,start,end,enabled,params_json,description
+draw_by_allocation,last_leaf,portfolio_draw,,,,,Everything from the chain's last leaf
