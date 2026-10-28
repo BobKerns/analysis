@@ -529,3 +529,177 @@ def test_lot_keys_are_not_symbols(strategy_scenarios: Path, strategy_csv: Callab
     assert "USSTK" in prices.known_symbols(strategy_scenarios)
     assert IRA not in names.symbols(strategy_scenarios)
     assert IRA not in set(symbols.symbol_table(strategy_scenarios)["symbol"])
+
+
+# ---------- the commands ----------
+
+def _cli(data_dir: Path, *args: str, input: str | None = None):  # noqa: A002 -- CliRunner's name
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    return CliRunner().invoke(main, ["sim", *args, "--data-dir", str(data_dir)], input=input,
+                              terminal_width=200)
+
+
+def test_strategy_kinds_lists_parameters_with_their_docs(strategy_scenarios: Path) -> None:
+    result = _cli(strategy_scenarios, "strategy", "kinds")
+    assert result.exit_code == 0, result.output
+    assert "rebalance  (built-in; hooks: draw, place)" in result.output
+    assert "last_leaf  (strategies/last_leaf.py; hooks: draw)" in result.output
+    assert "band       (percent, default 5%)  Drift from target, per class" in result.output
+    assert "portfolio  (tag, required)  Account tag whose asset lots are the portfolio." in result.output
+
+
+def test_strategy_list_marks_inherited_rows(strategy_scenarios: Path) -> None:
+    result = _cli(strategy_scenarios, "strategy", "list", "alice_last_leaf")
+    assert result.exit_code == 0, result.output
+    assert "draw_by_allocation  last_leaf on portfolio_draw" in result.output
+    result = _cli(strategy_scenarios, "strategy", "list", "retire_alice")
+    assert "no strategies in retire_alice" in result.output
+
+
+def _drop_strategies(data_dir: Path, strategy_csv: Callable[[str, str], Path]) -> None:
+    strategy_csv("alice_last_leaf", "strategies.csv").unlink()
+    result = _cli(data_dir, "strategy", "delete", "draw_by_allocation", "--yes", "--scenario", "alice_rebalance")
+    assert result.exit_code == 0, result.output
+
+
+def test_strategy_add_with_options_writes_a_checked_row(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    _drop_strategies(strategy_scenarios, strategy_csv)
+    result = _cli(strategy_scenarios, "strategy", "add", "steer", "--kind", "rebalance",
+                  "--chain", "portfolio_draw", "--param", "portfolio=portfolio:invest",
+                  "--param", "targets=main", "--param", "band=3%", "--start", "2027-01",
+                  "--scenario", "alice_rebalance")
+    assert result.exit_code == 0, result.output
+    text = strategy_csv("alice_rebalance", "strategies.csv").read_text()
+    assert 'steer,rebalance,portfolio_draw,2027-01,,,"{""portfolio"":""portfolio:invest"",""targets"":' in text
+    assert '""band"":""3%""' in text
+
+
+def test_strategy_add_is_guided(strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path]) -> None:
+    _drop_strategies(strategy_scenarios, strategy_csv)
+    # kind, chain, then portfolio, targets, band (default), step (default)
+    result = _cli(strategy_scenarios, "strategy", "add", "steer", "--scenario", "alice_rebalance",
+                  input="rebalance\nportfolio_draw\nportfolio:invest\nmain\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "chains: asset_checking_liquidity, portfolio_draw" in result.output
+    assert ',"{""portfolio"":""portfolio:invest"",""targets"":""main""}",' in (
+        strategy_csv("alice_rebalance", "strategies.csv").read_text())
+
+
+def test_a_bad_strategy_is_refused_with_nothing_written(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    before = strategy_csv("alice_rebalance", "strategies.csv").read_text()
+    result = _cli(strategy_scenarios, "strategy", "edit", "draw_by_allocation", "--param", "targets=nope",
+                  "--scenario", "alice_rebalance")
+    assert result.exit_code != 0
+    assert "no target set 'nope'" in result.output
+    assert strategy_csv("alice_rebalance", "strategies.csv").read_text() == before
+
+
+def test_editing_an_inherited_strategy_writes_an_override(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    child = strategy_csv("alice_last_leaf", "strategies.csv")
+    child.unlink()
+    result = _cli(strategy_scenarios, "strategy", "edit", "draw_by_allocation", "--param", "band=2%",
+                  "--scenario", "alice_last_leaf")
+    assert result.exit_code == 0, result.output
+    assert "overriding alice_rebalance's" in result.output
+    assert '""band"":""2%""' in child.read_text()
+    con = sqlite3.connect(load_test_scenario("alice_last_leaf"))
+    try:
+        (params,) = con.execute("SELECT params_json FROM strategy").fetchone()
+    finally:
+        con.close()
+    assert json.loads(params)["band"] == 20_000
+
+
+def test_deleting_an_inherited_strategy_is_refused(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    strategy_csv("alice_last_leaf", "strategies.csv").unlink()
+    result = _cli(strategy_scenarios, "strategy", "delete", "draw_by_allocation", "--yes",
+                  "--scenario", "alice_last_leaf")
+    assert result.exit_code != 0
+    assert "inherited from alice_rebalance" in result.output and "--disable" in result.output
+
+
+def test_disable_switches_a_strategy_off(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    result = _cli(strategy_scenarios, "strategy", "edit", "draw_by_allocation", "--disable",
+                  "--scenario", "alice_rebalance")
+    assert result.exit_code == 0, result.output
+    assert "(disabled)" in result.output
+    assert ",false," in strategy_csv("alice_rebalance", "strategies.csv").read_text()
+
+
+def test_log_explain_and_drift_read_the_run(
+    strategy_scenarios: Path, run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    run = str(run_strategy_scenario("alice_rebalance"))
+    result = _cli(strategy_scenarios, "strategy", "log", run, "--strategy", "draw_by_allocation")
+    assert result.exit_code == 0, result.output
+    assert "draw_by_allocation" in result.output and f"from {IRA}" in result.output
+    assert "chain steps" in result.output
+    result = _cli(strategy_scenarios, "explain", run)
+    assert "strategies (1;" in result.output
+    assert "draw_by_allocation (rebalance on portfolio_draw):" in result.output
+    result = _cli(strategy_scenarios, "allocation", "--drift", "--runfile", run)
+    assert result.exit_code == 0, result.output
+    assert "drift from target set main, percentage points (accounts tagged portfolio:invest" in result.output
+    assert "bond" in result.output and "stock_us" in result.output and "max_abs" in result.output
+
+
+def test_strategy_check_runs_twice(strategy_scenarios: Path) -> None:
+    result = _cli(strategy_scenarios, "strategy", "check", "alice_last_leaf")
+    assert result.exit_code == 0, result.output
+    assert "the same in both runs" in result.output
+
+
+def test_strategy_check_finds_a_strategy_that_reads_the_clock(
+    strategy_scenarios: Path, strategy_module: Callable[[str, str], Path],
+    strategy_csv: Callable[[str, str], Path],
+) -> None:
+    _odd(strategy_module, strategy_csv,
+         "import time\nreturn Decision([Take(chain.leaves[-1], 100)], note=str(time.perf_counter_ns()))")
+    result = _cli(strategy_scenarios, "strategy", "check", "alice_last_leaf")
+    assert result.exit_code != 0
+    assert "decided differently in" in result.output
+
+
+def test_target_set_list_and_delete(strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path]) -> None:
+    result = _cli(strategy_scenarios, "target", "set", "main", "stock_us=70", "--as-of", "2030-01",
+                  "--scenario", "alice_rebalance")
+    assert result.exit_code != 0
+    assert "targets.csv (main as of 2030-01-31): weights add up to 70%, not 100%" in result.output
+    result = _cli(strategy_scenarios, "target", "set", "main", "stock_us=70%", "bond=30%", "--as-of", "2030-01",
+                  "--scenario", "alice_rebalance")
+    assert result.exit_code == 0, result.output
+    result = _cli(strategy_scenarios, "target", "list", "alice_last_leaf")
+    assert "main: bond 40%, stock_us 60%  [from alice_rebalance]" in result.output
+    assert "main as of 2030-01: bond 30%, stock_us 70%  [from alice_rebalance]" in result.output
+    result = _cli(strategy_scenarios, "target", "delete", "main", "--as-of", "2030-01",
+                  "--scenario", "alice_last_leaf")
+    assert result.exit_code != 0 and "inherited from alice_rebalance" in result.output
+    result = _cli(strategy_scenarios, "target", "delete", "main", "--as-of", "2030-01",
+                  "--scenario", "alice_rebalance")
+    assert result.exit_code == 0, result.output
+    assert "2030" not in strategy_csv("alice_rebalance", "targets.csv").read_text()
+    result = _cli(strategy_scenarios, "target", "delete", "main", "--scenario", "alice_rebalance")
+    assert result.exit_code != 0 and "no target set 'main'" in result.output
+
+
+def test_a_child_target_set_zeroes_classes_it_leaves_out(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    result = _cli(strategy_scenarios, "target", "set", "main", "stock_us=100%", "--scenario", "alice_last_leaf")
+    assert result.exit_code == 0, result.output
+    assert "stock_us 100%, bond 0%" in result.output
+    assert "main,,bond,0%" in strategy_csv("alice_last_leaf", "targets.csv").read_text()

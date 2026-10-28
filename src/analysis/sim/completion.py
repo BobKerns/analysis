@@ -29,8 +29,9 @@ from analysis.sim.loader import read_current_scenario
 __all__ = [
     "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
-    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "SYMBOL", "TAG",
-    "TAG_FILTER", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
+    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "STRATEGY",
+    "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET",
+    "TARGET_SET_OR_NEW", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
 ]
 
 # The params, nearest first, whose value is the scenario a name belongs to.
@@ -216,6 +217,10 @@ ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=T
                     "account or chain", plural="accounts and chains")
 RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
 YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
+STRATEGY = NameType(_in_scenario(names.strategy_names), "strategy")
+TARGET_SET = NameType(_in_scenario(names.target_set_names), "target set")
+TARGET_SET_OR_NEW = NameType(_in_scenario(names.target_set_names), "target set", check=False)
+STRATEGY_KIND = NameType(lambda ctx, data_dir: names.strategy_kind_names(data_dir), "strategy kind")  # noqa: ARG005
 # A row may also be picked by its number or by text in it, so any value goes.
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
 # A calendar date: a literal one, or relative to a date marker (#281), whose

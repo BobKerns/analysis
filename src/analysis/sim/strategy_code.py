@@ -16,6 +16,7 @@ import hashlib
 import importlib
 import importlib.abc
 import importlib.util
+import linecache
 import pkgutil
 import sys
 import traceback
@@ -85,7 +86,13 @@ class _SourceFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             module.__path__ = []
             return
         name = module.__name__.rpartition(".")[2]
-        code = compile(self.sources[name], f"{STRATEGIES_DIR}/{name}.py", "exec")
+        filename = f"{self.package}/{STRATEGIES_DIR}/{name}.py"
+        text = self.sources[name]
+        # Let tracebacks and inspect.getsource (parameter docs in `sim
+        # strategy kinds`) find the text, which has no file of its own.
+        linecache.cache[filename] = (len(text), None, text.splitlines(keepends=True), filename)
+        module.__file__ = filename
+        code = compile(text, filename, "exec")
         exec(code, module.__dict__)  # noqa: S102 -- the household's own strategy code
 
 

@@ -12,6 +12,7 @@ completion's. Nothing here validates a name.
 from __future__ import annotations
 
 import csv
+import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -174,6 +175,31 @@ def symbols(data_dir: Path) -> list[str]:
     price_dirs = [data_dir / "prices", *(d / "prices" for d in scenario_dirs)]
     found.update(s[len(prefix):] for s in _stems(price_dirs, f"{prefix}*.csv"))
     return sorted(found)
+
+
+def strategy_names(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's strategies.csv rows, its own and inherited (#326)."""
+    return _column((d / "strategies.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
+
+
+def target_set_names(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's targets.csv sets, its own and inherited (#326)."""
+    return _column((d / "targets.csv" for d in _lineage_dirs(data_dir, scenario)), "target_set")
+
+
+_KIND_RE = re.compile(r"^\s+kind\s*=\s*[\"']([A-Za-z_]\w*)[\"']", re.MULTILINE)
+
+
+def strategy_kind_names(data_dir: Path) -> list[str]:
+    """The built-in strategy kinds and those the data repo's ``strategies/``
+    modules appear to define (read as text: completion runs no strategy code)."""
+    from analysis.sim import strategies
+
+    folders = [Path(strategies.__file__).parent, data_dir / "strategies"]
+    return sorted({
+        kind for folder in folders if folder.is_dir()
+        for path in folder.glob("*.py") for kind in _KIND_RE.findall(path.read_text(encoding="utf-8"))
+    })
 
 
 def itemization_names(data_dir: Path, scenario: str) -> list[str]:
