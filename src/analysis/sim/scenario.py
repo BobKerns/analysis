@@ -24,6 +24,7 @@ from analysis.sim.lineage import (
     load_order,
     parse_parents,
     is_mixin_only,
+    lineage_order,
     is_template,
     read_parents,
     scenario_dir,
@@ -114,7 +115,8 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef | None,
 
     ``mixins`` are further parents applied after ``parent``'s line, in order
     (ADR-003 §4.5); ``parent_scenario`` records them colon-separated. With
-    no ``parent`` (and no mix-ins), it is a mix-in only scenario (#259).
+    no ``parent`` (and no mix-ins), or only mix-in only ones, it is a mix-in
+    only scenario (#259, #324).
 
     ``ensemble_size`` is written to ``meta_json`` when given; left out, it is
     inherited from the parents (ADR-006 §7), and 0 makes a scenario that is
@@ -224,7 +226,8 @@ class ScenarioSummary:
     """``None`` when the merged ``meta_json.ensemble_size`` is absent or 0:
     the scenario is not an ensemble (ADR-006 §7)."""
     mixin_only: bool = False
-    """No parent, start or end: only for mixing into others (#259)."""
+    """No start or end anywhere in its lineage: only for mixing into others
+    (#259, #324)."""
 
     @property
     def is_ensemble(self) -> bool:
@@ -259,9 +262,9 @@ def scenario_summaries(
     summaries = []
     for name in scenario_list_names(data_dir, scenarios, templates=templates):
         mixin_only = is_mixin_only(scenarios, name)
-        # A mix-in only scenario's own values, not those of the template it is
-        # checked on: mixed in, only its own apply.
-        order = [name] if mixin_only else load_order(scenarios, name)
+        # A mix-in only scenario's own lineage's values, not those of the
+        # template it is checked on: mixed in, only its lineage applies.
+        order = lineage_order(scenarios, name) if mixin_only else load_order(scenarios, name)
         rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in order}
         summaries.append(ScenarioSummary(
             mixin_only=mixin_only,

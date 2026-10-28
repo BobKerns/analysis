@@ -42,6 +42,7 @@ from analysis.sim.lineage import (
     TEMPLATE_AUX_DIR,
     TEMPLATE_SCENARIOS_DIR,
     ScenarioCycleError,
+    is_mixin_only,
     is_template,
     load_order,
     parse_parents,
@@ -1267,6 +1268,7 @@ def load_scenario(
             scenario_row=scenario_row,
             parents=parents,
             lineage_order=load_order_names,
+            mixin_only=is_mixin_only(scenarios_dir, scenario_name),
             scheduled_rows=scheduled_rows,
             chains=chains,
             calendar_rows=calendar_rows,
@@ -4753,6 +4755,7 @@ def _write_intent(
     scenario_row: dict[str, str],
     parents: list[str],
     lineage_order: list[str],
+    mixin_only: bool,
     scheduled_rows: list[dict[str, str]],
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     calendar_rows: list[dict[str, str]],
@@ -5032,14 +5035,14 @@ def _write_intent(
     cur = con.execute(
         "INSERT INTO scenario("
         "name, description, calendar_id, start, \"end\", "
-        "seed, parents_json, load_order_json, created_at, created_by, meta_json"
-        ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "seed, parents_json, load_order_json, mixin_only, created_at, created_by, meta_json"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             scenario_row["name"], scenario_row.get("description") or None,
             calendar_id,
             scenario_row["start"], scenario_row["end"],
             int(scenario_row["seed"]) if scenario_row.get("seed") else None,
-            json.dumps(parents), json.dumps(lineage_order),
+            json.dumps(parents), json.dumps(lineage_order), int(mixin_only),
             now, scenario_row.get("created_by") or "unknown",
             scenario_row.get("meta_json") or "{}",
         ),

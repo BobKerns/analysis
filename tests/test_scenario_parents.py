@@ -4,6 +4,7 @@ asked one at a time, and mix-in only scenarios with no parent."""
 from __future__ import annotations
 
 import csv
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim import scenario as sc
+from analysis.sim.cli import _parents_cell
 from analysis.sim.lineage import MIXIN_BASE, MIXIN_ONLY_DESCRIPTION, is_mixin_only, load_order, read_parents
 from analysis.sim.loader import load_scenario
 from analysis.sim.scenario_guide import walk_parents
@@ -217,3 +219,108 @@ def test_mix_ins_without_a_parent_are_refused(test_data_dir: Path) -> None:
     from analysis.sim.loader import LoadError
     with pytest.raises(LoadError, match="need a parent"):
         sc.create_scenario(test_data_dir, "api", None, mixins=["base"])
+
+
+# ---------- a mix-in built on mix-ins (#324) ----------
+
+def _mixin_on_mixin(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "scenario", "create", "extra", "--no-parent").exit_code == 0
+    result = _sim(test_data_dir, "scenario", "create", "more", "extra")
+    assert result.exit_code == 0, result.output
+    assert "a mix-in only scenario" in result.output
+
+
+def test_a_mix_in_built_on_a_mix_in_is_mix_in_only(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    _mixin_on_mixin(test_data_dir)
+    assert is_mixin_only(test_scenarios_dir, "more")
+    # Checked by itself on the empty template; mixed in, it adds its own line.
+    assert load_order(test_scenarios_dir, "more") == [MIXIN_BASE, "extra", "more"]
+    assert _sim(test_data_dir, "check", "more").exit_code == 0
+    assert _sim(test_data_dir, "scenario", "create", "kid", "retire_alice", "more").exit_code == 0
+    assert load_order(test_scenarios_dir, "kid")[-4:] == ["retire_alice", "extra", "more", "kid"]
+
+
+def test_a_mix_in_built_on_a_mix_in_does_not_run(test_data_dir: Path) -> None:
+    _mixin_on_mixin(test_data_dir)
+    result = _sim(test_data_dir, "run", "more")
+    assert result.exit_code != 0
+    assert "mix-in only" in result.output, result.output
+
+
+def test_a_mix_in_on_a_mix_in_intent_does_not_run_without_the_data_repo(
+        test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:
+    _mixin_on_mixin(test_data_dir)
+    loaded = _sim(test_data_dir, "load", "more", "--intent-dir", str(intent_dir),
+                  "--allow-dirty-data", "--no-run")
+    assert loaded.exit_code == 0, loaded.output
+    result = CliRunner().invoke(
+        main, ["sim", "run", "more", "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+               "--allow-dirty-data"],
+        env={"ANALYSIS_DATA_DIR": None},
+    )
+    assert result.exit_code != 0
+    assert "mix-in only" in result.output, result.output
+
+
+def test_list_shows_a_mix_in_on_a_mix_in_with_its_parents_and_own_values(test_data_dir: Path) -> None:
+    _mixin_on_mixin(test_data_dir)
+    [summary] = [s for s in sc.scenario_summaries(test_data_dir) if s.name == "more"]
+    # Not t_empty's dates and seed, which it is only checked on.
+    assert summary.mixin_only and summary.parents == ["extra"]
+    assert summary.start is None and summary.end is None and summary.seed is None
+    assert _parents_cell(summary) == "extra (mix-in only)"
+    result = _sim(test_data_dir, "scenario", "list", "-v")
+    assert result.exit_code == 0, result.output
+    assert "extra" in result.output and "(mix-" in result.output  # rich cuts the cell to fit
+
+
+def test_a_mix_in_on_a_template_is_not_mix_in_only(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    # A template sits on t_empty's dates, so this one has a span and runs.
+    assert _sim(test_data_dir, "scenario", "create", "extra", "--no-parent").exit_code == 0
+    assert _sim(test_data_dir, "scenario", "create", "kid", "t_great_inflation", "extra").exit_code == 0
+    assert not is_mixin_only(test_scenarios_dir, "kid")
+
+
+def test_one_date_in_the_lineage_is_still_a_load_error(test_data_dir: Path) -> None:
+    _mixin_on_mixin(test_data_dir)
+    result = _sim(test_data_dir, "scenario", "edit", "more", "--start", "2027-01")
+    assert result.exit_code != 0
+    assert "end is blank here and in every scenario it builds on" in result.output, result.output
+
+
+def test_edit_may_make_a_dated_scenario_mix_in_only(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    # Taking a template out from under a mix-in, say, leaving only mix-ins.
+    _mixin_on_mixin(test_data_dir)
+    assert _sim(test_data_dir, "scenario", "create", "kid", "t_empty", "extra").exit_code == 0
+    assert not is_mixin_only(test_scenarios_dir, "kid")
+    result = _sim(test_data_dir, "scenario", "edit", "kid", "--parents", "extra")
+    assert result.exit_code == 0, result.output
+    assert "now mix-in only" in result.output and "kid" in result.output, result.output
+    assert is_mixin_only(test_scenarios_dir, "kid")
+
+
+def test_a_missing_parent_is_not_a_mix_in(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    # A typo in a parent's name is the loader's to report, not a mix-in.
+    _mixin_on_mixin(test_data_dir)
+    assert _sim(test_data_dir, "scenario", "create", "kid", "extra").exit_code == 0
+    csv_path = test_scenarios_dir / "kid" / "scenario.csv"
+    csv_path.write_text(csv_path.read_text().replace("extra", "missing"), encoding="utf-8")
+    assert not is_mixin_only(test_scenarios_dir, "kid")
+
+
+def test_a_pre_schema_50_root_mix_in_intent_still_does_not_run(test_data_dir: Path, intent_dir: Path,
+                                                               runs_dir: Path) -> None:
+    assert _sim(test_data_dir, "scenario", "create", "extra", "--no-parent").exit_code == 0
+    assert _sim(test_data_dir, "load", "extra", "--intent-dir", str(intent_dir),
+                "--allow-dirty-data", "--no-run").exit_code == 0
+    con = sqlite3.connect(intent_dir / "extra.sqlite3")
+    con.execute("ALTER TABLE scenario DROP COLUMN mixin_only")
+    con.commit()
+    con.close()
+    result = CliRunner().invoke(
+        main, ["sim", "run", "extra", "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+               "--allow-dirty-data"],
+        env={"ANALYSIS_DATA_DIR": None},
+    )
+    assert result.exit_code != 0
+    assert "mix-in only" in result.output, result.output
