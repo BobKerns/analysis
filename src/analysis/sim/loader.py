@@ -4235,6 +4235,17 @@ def _read_lineage_overlay(
         path = _scenario_dir(scenarios_dir, name) / filename
         own = _read_csv(path, issues, optional=True, label=_data_label(path, data_dir))
         _normalize_month_columns(own, filename, issues)
+        # Within one file a repeated key would collapse silently in the merge;
+        # across the lineage it is a sanctioned override.
+        seen: dict[tuple[str, ...], str] = {}
+        for where, row in _located(own, filename):
+            key = tuple(row.get(c, "") for c in key_columns)
+            if key in seen:
+                issues.append(
+                    f"{where}: duplicate {', '.join(key_columns)} {'/'.join(key)} (first seen on {seen[key]})"
+                )
+            else:
+                seen[key] = where
         # Keys are checked by the file's own validation (a blank as_of is a real key).
         rows = _merge_scenario_rows(rows, own, key_columns, require_key=False)
     return rows

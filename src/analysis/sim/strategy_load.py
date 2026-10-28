@@ -144,6 +144,25 @@ def convert_params(
     return out, problems
 
 
+def _marked_steps(
+    chain: str, chains: Mapping[str, tuple[str, list[dict[str, str]]]], seen: set[str] | None = None,
+) -> str | None:
+    """The first chain at or under ``chain`` with a step carrying a
+    ``tax_character`` or ``basis_of``, or None."""
+    seen = seen if seen is not None else set()
+    if chain in seen or chain not in chains:
+        return None
+    seen.add(chain)
+    steps = chains[chain][1]
+    if any(step.get("tax_character") or step.get("basis_of") for step in steps):
+        return chain
+    for step in steps:
+        found = _marked_steps(step.get("account_name", ""), chains, seen)
+        if found:
+            return found
+    return None
+
+
 def prepare_strategies(
     located: Sequence[tuple[str, Mapping[str, str]]], *,
     kinds: StrategyKinds,
@@ -192,14 +211,14 @@ def prepare_strategies(
                     f"kind '{kind}' has no {hook} hook, which a {role} chain needs "
                     f"(it implements {', '.join(sorted(cls.hooks))})"
                 )
-            if role == "destination" and any(
-                (step.get("tax_character") or step.get("basis_of"))
-                for step in chains[chain][1]
-            ):
+            marked = _marked_steps(chain, chains) if role == "destination" else None
+            if marked:
                 # A step's character and basis recovery depend on the step
-                # order the strategy would override (#199).
+                # order the strategy would override (#199), nested chains'
+                # steps too, since a strategy puts straight into a leaf.
+                where = "" if marked == chain else f" (through chain '{marked}')"
                 problems.append(
-                    f"chain '{chain}' has steps with a tax_character or basis_of; "
+                    f"chain '{chain}' has steps with a tax_character or basis_of{where}; "
                     "a strategy can't place into such a chain"
                 )
         start, end = row.get("start") or None, row.get("end") or None

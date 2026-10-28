@@ -237,7 +237,11 @@ class StrategyRuntime:
         leaves = set(chain.leaves)
         moves: list[tuple[int, int]] = []
         total = 0
-        for move in decision.moves:
+        try:
+            given = list(decision.moves)
+        except TypeError as e:
+            raise StrategyError(f"{what}: Decision.moves must be a list of {move_type.__name__}: {e}") from e
+        for move in given:
             if not isinstance(move, move_type):
                 raise StrategyError(f"{what}: a {hook} answers with {move_type.__name__}, not {move!r}")
             if move.lot not in leaves:

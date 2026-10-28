@@ -287,6 +287,40 @@ def test_two_strategies_cannot_own_one_chain(
     assert "chain 'portfolio_draw' is already owned by strategy 'draw_by_allocation'" in errors
 
 
+def test_a_repeated_key_in_one_file_fails_the_load(
+    strategy_scenarios: Path, intent_dir: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    """Within one file the overlay merge would keep only the last row."""
+    path = strategy_csv("alice_rebalance", "strategies.csv")
+    lines = path.read_text().splitlines()
+    path.write_text("\n".join([*lines, lines[1]]) + "\n")
+    strategy_csv("alice_rebalance", "targets.csv").write_text(
+        "target_set,as_of,asset_class,weight\nmain,,stock_us,60%\nmain,,bond,40%\nmain,,bond,30%\n"
+    )
+    errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
+    assert "duplicate name draw_by_allocation" in errors
+    assert "duplicate target_set, as_of, asset_class main//bond" in errors
+
+
+def test_a_destination_chain_with_a_nested_tax_step_is_refused(
+    strategy_scenarios: Path, intent_dir: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    """A strategy puts straight into a leaf, so it would skip the character a
+    nested chain's step gives the money."""
+    destination = strategy_csv("alice_rebalance", "chains") / "destination"
+    destination.mkdir()
+    header = "account_name,lot,maximum,percent,series,cadence,tax_character,basis_of\n"
+    (destination / "inner.csv").write_text(header + "Asset_Brokerage_Joint,default,,,,,ltcg,\n")
+    (destination / "portfolio_place.csv").write_text(
+        header + "inner,,,,,,,\nAsset_TraditionalIRA_Alice,default,,,,,,\n"
+    )
+    path = strategy_csv("alice_rebalance", "strategies.csv")
+    path.write_text(path.read_text() + 'place_by_allocation,rebalance,portfolio_place,,,,'
+                    '"{""portfolio"":""portfolio:invest"",""targets"":""main""}",\n')
+    errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
+    assert "chain 'portfolio_place' has steps with a tax_character or basis_of (through chain 'inner')" in errors
+
+
 def test_a_disabled_strategy_is_checked_but_not_written(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
     load_test_scenario: Callable[[str], Path],
@@ -435,6 +469,7 @@ def _odd(strategy_module: Callable[[str, str], Path], strategy_csv: Callable[[st
 @pytest.mark.parametrize(("body", "message"), [
     ("raise ValueError('nope')", "ValueError: nope"),
     ("return 5", "returned int, not a Decision"),
+    ("return Decision(None)", "Decision.moves must be a list of Take"),
     ("return Decision([Put(chain.leaves[0], need)])", "a draw answers with Take"),
     ("return Decision([Take(LotRef('Asset_Checking', 'default'), need)])", "is not a leaf of chain"),
     ("return Decision([Take(chain.leaves[0], need + 1)])", "more than the"),
