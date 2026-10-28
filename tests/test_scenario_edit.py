@@ -247,10 +247,11 @@ def test_edit_refuses_a_cycle_through_a_descendant(test_data_dir: Path, test_chi
 
 def test_edit_refuses_what_breaks_a_descendant(test_data_dir: Path, test_child_scenario: Path,
                                                test_grandchild_scenario: Path) -> None:
-    # A root scenario must have its own start and end; child inherits them.
+    # child inherits its dates; with no parent, grandchild would have none
+    # anywhere and quietly become mix-in only (#324).
     result = _sim(test_data_dir, "scenario", "edit", "child", "--parents", "")
-    assert result.exit_code != 0 and "nothing was written" in result.output, result.output
-    assert "start is blank here and in every scenario it builds on" in result.output
+    assert result.exit_code != 0, result.output
+    assert "lineage of grandchild, making it mix-in only" in result.output, result.output
     assert read_parents(test_child_scenario) == ["retire_alice"]
 
 

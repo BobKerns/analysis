@@ -19,7 +19,6 @@ template whole. :func:`scenario_dir` is the one place that decides.
 from __future__ import annotations
 
 import csv
-from collections.abc import Sequence
 from pathlib import Path
 
 
@@ -110,23 +109,22 @@ def read_parents(scenario_dir: Path) -> list[str]:
 
 
 def is_mixin_only(scenarios_dir: Path, name: str) -> bool:
-    """Whether ``name`` is a mix-in only scenario (#259, ADR-003 §4.5): one
-    of the data repo's with no parent and no start or end of its own. Mixed
-    in after a scenario, its own dates would move that scenario's span, so it
-    has none, and it can't run by itself; loaded by itself (to check it), it
-    sits on ``MIXIN_BASE``."""
-    if is_template(scenarios_dir, name):
+    """Whether ``name`` is a mix-in only scenario (#259, #324, ADR-003 §4.5):
+    one of the data repo's whose lineage has no dates at all -- no template
+    (each sits on ``t_empty``'s dates) and no scenario setting ``start`` or
+    ``end``. Mixed in after a scenario, its dates would move that scenario's
+    span, so it has none, and it can't run by itself; loaded by itself (to
+    check it), it sits on ``MIXIN_BASE``. Its parents, if any, are mix-ins
+    too."""
+    if not _first_row(Path(scenarios_dir) / name):
         return False
-    row = _first_row(Path(scenarios_dir) / name)
-    return bool(row) and not parse_parents(row.get("parent_scenario")) \
-        and not row.get("start", "").strip() and not row.get("end", "").strip()
-
-
-def is_mixin_only_order(parents: Sequence[str], order: Sequence[str]) -> bool:
-    """Whether a scenario's recorded parents and load order are a mix-in
-    only scenario's: no parents, yet loaded on ``MIXIN_BASE`` (an ordinary
-    root's order is just itself). For an intent read without the data repo."""
-    return not parents and len(order) > 1 and order[0] == MIXIN_BASE
+    for n in lineage_order(scenarios_dir, name):
+        if is_template(scenarios_dir, n):
+            return False
+        row = _first_row(scenario_dir(scenarios_dir, n))
+        if row.get("start", "").strip() or row.get("end", "").strip():
+            return False
+    return True
 
 
 def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False) -> list[str]:
@@ -144,6 +142,17 @@ def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False)
     loader can report it. With ``strict``, a cycle raises
     :class:`ScenarioCycleError`; otherwise the link closing it is ignored.
     """
+    order = lineage_order(scenarios_dir, scenario_name, strict=strict)
+    if is_mixin_only(scenarios_dir, scenario_name):
+        base = lineage_order(scenarios_dir, MIXIN_BASE, strict=strict)
+        return [*(n for n in base if n not in order), *order]
+    return order
+
+
+def lineage_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False) -> list[str]:
+    """:func:`load_order` without ``MIXIN_BASE`` under a mix-in only
+    scenario: just the scenarios its ``parent_scenario`` links reach, root
+    first, which is all a mix-in contributes when mixed in."""
     memo: dict[str, list[str]] = {}
 
     def visit(name: str, path: tuple[str, ...]) -> list[str]:
@@ -163,7 +172,4 @@ def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False)
         memo[name] = order
         return order
 
-    order = visit(scenario_name, ())
-    if is_mixin_only(scenarios_dir, scenario_name):
-        return [*(n for n in visit(MIXIN_BASE, ()) if n not in order), *order]
-    return order
+    return visit(scenario_name, ())

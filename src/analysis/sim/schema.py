@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 49
+SCHEMA_VERSION = 50
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -321,6 +321,9 @@ CREATE TABLE scenario (
     -- inherited without the data repo.
     parents_json      TEXT NOT NULL DEFAULT '[]',
     load_order_json   TEXT NOT NULL DEFAULT '[]',
+    -- 1 for a mix-in only scenario (ADR-003 §4.5), loaded on t_empty's
+    -- span only to check it, so `sim run` refuses it without the data repo.
+    mixin_only        INTEGER NOT NULL DEFAULT 0 CHECK (mixin_only IN (0, 1)),
     created_at        TEXT NOT NULL,
     created_by        TEXT NOT NULL,
     meta_json         TEXT NOT NULL DEFAULT '{}'

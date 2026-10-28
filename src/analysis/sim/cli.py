@@ -130,9 +130,9 @@ from analysis.sim.dates import (
 )
 from analysis.sim.lineage import (
     MIXIN_BASE,
+    ScenarioCycleError,
     default_description,
     is_mixin_only,
-    is_mixin_only_order,
     load_order,
     parse_parents,
     read_parents,
@@ -622,27 +622,22 @@ def run(
 
 def _refuse_mixin_only_run(name: str, users: Sequence[str]) -> NoReturn:
     raise click.ClickException(
-        f"{name} is a mix-in only scenario (no parent, start or end), so it doesn't "
+        f"{name} is a mix-in only scenario (no start or end anywhere in its lineage), so it doesn't "
         f"run by itself; run {', '.join(users) if users else 'a scenario that mixes it in'}, "
         "or give it --start and --end (`sim scenario edit`)")
 
 
 def _intent_is_mixin_only(intent_path: Path) -> bool:
-    """Whether the intent was loaded from a mix-in only scenario, by the
-    parents and load order it recorded (``lineage.is_mixin_only_order``)."""
+    """Whether the intent was loaded from a mix-in only scenario, as the
+    loader recorded (``scenario.mixin_only``)."""
     con = connect_sim_file(intent_path)
     try:
-        row = con.execute("SELECT parents_json, load_order_json FROM scenario").fetchone()
+        row = con.execute("SELECT mixin_only FROM scenario").fetchone()
     except sqlite3.Error:
         return False
     finally:
         con.close()
-    if row is None:
-        return False
-    try:
-        return is_mixin_only_order(json.loads(row[0] or "[]"), json.loads(row[1] or "[]"))
-    except json.JSONDecodeError:
-        return False
+    return bool(row and row[0])
 
 
 def _prune_state(data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:
@@ -10020,8 +10015,8 @@ def scenario_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     """List the data repo's scenarios.
 
     Plain output is just the names, one per line, for scripts. --verbose adds
-    parents (or "(mix-in only)" for a scenario with no parent or dates, which
-    `sim all` doesn't run), start and end months, seed, ensemble size, and
+    parents (marked "(mix-in only)" for a scenario with no dates anywhere in
+    its lineage, which `sim all` doesn't run), start and end months, seed, ensemble size, and
     description, and marks the current scenario with *, and build "no" for a disabled one
     (`sim scenario disable`). A value in [brackets] is inherited
     from an ancestor; a blank size means the scenario is not an ensemble.
@@ -10087,12 +10082,21 @@ def _list_scenarios(
     for s in summaries:
         table.add_row(
             "*" if s.name == current else "",
-            s.name, "(mix-in only)" if s.mixin_only else " + ".join(s.parents),
+            s.name, _parents_cell(s),
             date_cell(s.start), date_cell(s.end),
             value_cell(s.seed), value_cell(s.ensemble_size),
             escape(s.description), "no" if s.name in disabled else "",
         )
     Console().print(table)
+
+
+def _parents_cell(s: sc.ScenarioSummary) -> str:
+    """``scenario list -v``'s parents: a mix-in only one's are marked, and
+    one with none is just the mark."""
+    parents = " + ".join(s.parents)
+    if not s.mixin_only:
+        return parents
+    return f"{parents} (mix-in only)" if parents else "(mix-in only)"
 
 
 def _inherits_line(data: Path, parents: Sequence[str]) -> str:
@@ -10116,7 +10120,11 @@ def _create_new_scenario(
             edit.data_dir, name, parent, description=description, mixins=mixins,
             ensemble_size=ensemble_size,
         )
-    return _inherits_line(data, parents)
+    line = _inherits_line(data, parents)
+    if parents and is_mixin_only(data / "scenarios", name):
+        # Built only on mix-ins, it is one too (#324): easy to miss.
+        line += " (a mix-in only scenario: nothing it builds on has a start or end)"
+    return line
 
 
 @scenario_group_command.command("create")
@@ -10831,6 +10839,7 @@ def _apply_scenario_edit(
         raise click.UsageError("nothing to change: give at least one option (see --help)")
 
     readme: bool | str | None = None
+    runnable = [n for n in sc.list_scenario_names(data) if not is_mixin_only(data / "scenarios", n)]
     # Validates this scenario and every scenario built on it before writing.
     with _scenario_edit(data, name) as edit:
         folder = edit.scenario_dir
@@ -10839,6 +10848,8 @@ def _apply_scenario_edit(
             changes = sc.edit_scenario_row(folder, values, meta)
         except LoadError as exc:
             raise click.ClickException("; ".join(exc.issues)) from None
+        _refuse_new_mixin_only(edit.data_dir / "scenarios", runnable,
+                               keep=name if values.get("parent_scenario") == "" else None)
         new_row = sc._scenario_row(folder)
         builds_on = parse_parents(new_row.get("parent_scenario"))
         # A blank description reads as the default, as `--description ''` sets it.
@@ -10863,6 +10874,23 @@ def _apply_scenario_edit(
     elif readme is False:
         click.echo(f"WARN: {data / 'scenarios' / name / 'README.md'} is what listings and notebooks show, "
                    "and it has been edited by hand; update it to match", err=True)
+
+
+def _refuse_new_mixin_only(scenarios_dir: Path, runnable: Sequence[str], *, keep: str | None) -> None:
+    """Refuse an edit that leaves no dates anywhere in a ``runnable``
+    scenario's lineage: it would quietly become mix-in only (#324) and stop
+    running. Only ``keep``, a scenario explicitly given no parents, may (#259).
+    A cycle is left for the load to report."""
+    try:
+        for n in runnable:
+            load_order(scenarios_dir, n, strict=True)
+    except ScenarioCycleError:
+        return
+    if lost := [n for n in runnable if n != keep and is_mixin_only(scenarios_dir, n)]:
+        raise click.ClickException(
+            f"this would leave no start or end anywhere in the lineage of {', '.join(lost)}, "
+            f"making {'it' if len(lost) == 1 else 'them'} mix-in only; give it a --start and "
+            "--end, or build it on a dated scenario")
 
 
 def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
