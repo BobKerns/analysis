@@ -390,6 +390,8 @@ flowchart LR
 (account_1/2, lot_1/2, series)"]
     ytd["year_to_date.csv
 (from_account, to_account)"]
+    rails["guard_rails.csv
+(select, portfolio, start, end)"]
     persons["persons.csv (id)"]
     aux["aux/ (shared)
 (kind__series.csv)"]
@@ -409,6 +411,9 @@ account or chain name| accounts
     calendar -->|account_1/2 + lot_1/2| values
     calendar -->|account_1/2| chains
     ytd -->|from_account/to_account| accounts
+    rails -->|select, portfolio: tags| accounts
+    rails -->|select: tags| scheduled
+    rails -->|start/end: date_marker| calendar
     accounts -->|series| aux
     accounts -->|series| series
     values -->|series, or a rate series
@@ -869,6 +874,37 @@ Writes directly into `year_to_date` (`UNIQUE (scenario_id, name)`).
 
 `analysis sim ytd list` shows these rows with the scheduled rows' catch-ups. `sim ytd add [<name> <from> <to> <amount>]` appends a row, taking `--from-lot`, `--to-lot`, `--tax-character`, `--year` and `--description` as options and asking for whatever it needs and was not given (a lot only when a blank one would not say which, as for a transfer, §7); a negative amount follows `--` on the command line. `sim ytd edit [<name>]` is guided: options set those fields and write at once, and with none it shows the fields and asks which to change. `sim ytd delete [<name>]` removes a row (`--yes` skips the question). Each goes through a staged edit (§7). As for scheduled rules, editing an inherited row writes an override of the whole row, and deleting an override brings back the inherited row. An inherited row can't be removed (§4.5), so deleting one writes an override with `amount` 0, which posts nothing.
 
+#### 4.11 Per-scenario: `data_repo/scenarios/<name>/guard_rails.csv` (optional)
+
+A guard rail ([#305](https://github.com/BobKerns/analysis/issues/305)) is a line a scenario's spending, or its withdrawals from the portfolio, should stay on one side of: Bengen's 4% rule, Guyton-Klinger's upper and lower rails, a budget. Rails are a **lens on results**: nothing in a run reads them. Reports read them from the data repo when they compare a finished run with them, so the file is left out of `scenario_tree_id` and the dirty check ([ADR-004](ADR-004-reproducibility-and-activation.md) §1), and editing a rail reruns nothing. The loader still checks every rail, so a bad one fails `sim check` and the edit commands (§7). A rail goes into the intent only when a future responsive strategy ([#326](https://github.com/BobKerns/analysis/issues/326)) triggers on it.
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `name` | text | ✓ | `[A-Za-z_][A-Za-z0-9_.-]*`; the key, unique in the scenario's merged rails |
+| `measure` | `spending` \| `withdrawals` | ✓ | what the rail limits (below) |
+| `select` | tag filter | | `spending` only: the expenses counted, by tag (below). Blank counts them all |
+| `portfolio` | tag filter | | the asset accounts that are the portfolio, for `withdrawals` and the percent bases. Blank is the default portfolio |
+| `side` | `above` \| `below` | ✓ | `above`: the threshold is a ceiling, past it when the measure is above it. `below`: a floor |
+| `threshold` | dollars or percent | ✓ | more than zero: a percent (`4%`) for `portfolio` and `initial_portfolio`, dollars a year for the others |
+| `basis` | `nominal` \| `cpi_constant` \| `portfolio` \| `initial_portfolio` | ✓ | `nominal`: that many dollars a year. `cpi_constant`: that many of the scenario start's dollars a year, growing with the run's CPI. `portfolio`: that share of the portfolio's value at the start of each year. `initial_portfolio`: that share of its value the month before the rail starts, growing with CPI from then (the 4% rule) |
+| `sense` | `negative` \| `positive` | | blank is `negative`: past the rail is trouble. `positive`: past it is good news, such as room to spend more (Guyton-Klinger's lower rail). Reports show the two differently |
+| `start`, `end` | month, date or date_marker | | the first and last month the rail covers: `YYYY-MM`, `YYYY-MM-DD`, or relative to a `date_marker` (`NAME`, `NAME+Nm`, `NAME-Ny`, §3.8). Blank: the scenario's start or end |
+| `description` | text | | |
+
+**Measures.** `spending` is the income report's spending (the `spending` column of `sim report income`): every expense except income tax, business expenses and depreciation. With `select`, an expense's tags in a role are its scheduled rule's when the rule has one in that role, else its expense account's, as `sim report expenses --by tag:ROLE` reads them. `withdrawals` is the portfolio's net payout: money leaving a portfolio account for anything outside the portfolio but an income account, less money arriving in one from outside other than the portfolio's own returns (income of subkind `interest`, `dividend` or `capital_gain`). A move between two portfolio accounts is neither, and Social Security or a salary landing in checking pays part of the spending. The **default portfolio** is every asset account but those of subkind `real_estate`, `vehicle` and `other_asset`: cash, investments, retirement, HSA and business accounts. Including cash is what makes withdrawals the gap the investments fill.
+
+**Tag filters.** Space-separated `role:name` tags (§6). Something carrying any of the plain tags is picked (everything, when there are none), less anything carrying a tag written `-role:name`. `role:*` matches any tag in the role. So `portfolio:core` narrows the portfolio to accounts tagged so, and `-exclude:emergency` takes the emergency fund out of the default one. A tag the scenario's expense accounts and scheduled rules (for `select`) or asset accounts (for `portfolio`) don't carry is a load error, as is a `date_marker` no row defines.
+
+**Years.** A rail is evaluated by calendar year. Each month's threshold is a twelfth of the year's: for `portfolio`, of the share of the portfolio's balance at the previous Dec 31 (the scenario's opening, in its first year). So a year the rail covers only part of, its first or last or the scenario's, compares the months it covers with that part of the threshold. Every rail stops after the household's last death (the `primary` persons', or everyone's with a role, §4.9) when each of them has a lifespan: a household that has died spends nothing, which would cross every floor.
+
+**Margins.** A year's margin is `threshold − measure` for a rail `above`, `measure − threshold` for one `below`, in the report's dollars (each month deflated by that month's CPI factor for CPI-constant dollars). So a negative margin is always past the rail, whichever way it faces. The **cumulative margin** is the sum of the margins since the rail began: room banked, or overdrawn. It answers whether a year past the rail is spending room left from earlier years, which the year's margin doesn't. It ignores that money spent past a rail would have kept growing; the **carried** margin grows the cumulative one at the portfolio's own yearly return (modified Dietz, the payout counted mid-year), `C = C_prior × (1 + r) + margin`. Both are guides, not a re-run: spending differently would have changed the path itself.
+
+**Inheritance.** Rows merge down the lineage by `name`, as `scheduled.csv` rows do (§4.5): a child's row with a rail's name replaces the cells its file has.
+
+`sim guard-rail list` shows the merged rails. `sim guard-rail add [<name>]` appends one, asking for every field when given no options, or for only the required ones its options leave out. `sim guard-rail edit [<name>]` is guided: options set those fields and write at once, and with none it shows the fields and asks which to change. `sim guard-rail delete [<name>]` removes one (`--yes` skips the question). Each goes through a staged edit (§7). Editing an inherited rail writes an override of the whole row, and deleting an override brings back the inherited rail. An inherited rail can't be removed (§4.5), so deleting one writes an override whose `end` is the month before the scenario starts, so it covers nothing.
+
+`sim report guard-rails` prints each rail's margins by year, annual and cumulative side by side (`--carried` adds the carried ones, `--rail NAME` one rail's measure and threshold), past cells red for a `negative` rail and blue for a `positive` one, then per rail and form the years past, the worst margin and its year, the margin at the end, and the RMS overshoot (the root mean square of the margins past the rail, years inside counting as zero). `sim explain` lists each run of years past a rail, `sim compare --section guard-rails` each scenario's margins with each variant's change (rails matched by name), and `net_worth.ipynb` charts them.
+
 ### 5. Default priorities
 
 When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule kind's band:
@@ -1205,4 +1241,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#315](https://github.com/BobKerns/analysis/issues/315): `lifespan.csv` gains an optional `life_table` naming an aux `life_table__<name>.csv`, read for that person in that scenario instead of `life_table.csv`; the templates ship Japan's (§4.4, §4.9).
 - [#317](https://github.com/BobKerns/analysis/issues/317): the code repository's `templates/aux/` is the lowest `aux/` tier; `filing_status.csv` is the household's, one row per date, checked at load (§4.1d, §4.4).
 - [#324](https://github.com/BobKerns/analysis/issues/324): a scenario built only on mix-in only scenarios, with no dates of its own, is mix-in only too, recorded in `scenario.mixin_only`; `scenario edit` names each scenario it makes one (§4.5).
+- [#305](https://github.com/BobKerns/analysis/issues/305): a scenario's optional `guard_rails.csv`, rails reports compare a run with, outside the run (new §4.11, §4.0).
 - [#292](https://github.com/BobKerns/analysis/issues/292) ([ADR-009](ADR-009-pooled-ensembles.md)): a scenario whose own `meta_json` has a `pool` key is a pool, which nothing loads; deleting a pool's component is refused (§4.5).

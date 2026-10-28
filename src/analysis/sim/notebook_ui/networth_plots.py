@@ -328,3 +328,85 @@ def economic_income_widget(rc: RunConnection,
     observe_while_shown(after_tax, _redraw)
     _redraw()
     return widgets.VBox([controls_row(dollar_mode, after_tax, time_range), chart_out, table_out])
+
+
+def guard_rails_widget(rc: RunConnection,
+                       dollar_mode: DollarModePicker | None = None,
+                       time_range: TimeRangePicker | None = None,
+                       **_) -> widgets.VBox:
+    """Where the run stands against its scenario's guard rails (#305), as
+    ``sim report guard-rails`` shows it: per measure, the year's measure
+    against each rail, then each rail's cumulative margin (with the margin
+    carried at the portfolio's return, dotted); the margins by year, red past
+    a rail to stay inside and blue past a positive one; and a summary.
+
+    Rails are read from the scenario's guard_rails.csv when shown, so an
+    edited rail shows on the next draw without a re-run. Margins accumulate
+    over the whole run; the years picked only limit what is drawn."""
+    from IPython.display import Image
+
+    from analysis.sim import guard_rails
+    from analysis.sim.ensemble_plots import figure_bytes
+    from analysis.sim.guard_rail_charts import CARRIED_CAVEAT, guard_rail_figure
+
+    dollar_mode = dollar_mode or DollarModePicker(DollarMode.CPI_CONSTANT)
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
+    carried = widgets.Checkbox(value=True, description="Carried at return",
+                               indent=False, layout=widgets.Layout(width="auto"))
+    chart_out = widgets.Output()
+    table_out = widgets.Output()
+    try:
+        rails = guard_rails.run_rails(rc, rc.scenario.scenarios_dir)
+    except guard_rails.GuardRailError as exc:
+        with chart_out:
+            print(f"The guard rails of {rc.name} don't load; `sim check {rc.name}` lists:")
+            for issue in exc.issues:
+                print(f"  {issue}")
+        return widgets.VBox([chart_out])
+    if not rails:
+        with chart_out:
+            print(f"No guard rails in {rc.name}; `sim guard-rail add` adds one.")
+        return widgets.VBox([chart_out])
+
+    def _redraw(*_):
+        mode = dollar_mode.value
+        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        results = guard_rails.evaluate_run(rc, rails, mode)
+        shown = [r for r in results if r.applies]
+        low, high = time_range.value
+        with chart_out:
+            clear_output(wait=True)
+            fig = guard_rail_figure(results, f"Guard rails ({rc.label})", unit=unit,
+                                    carried=carried.value, years=(low, high),
+                                    deaths=rc.deaths())
+            display(Image(data=figure_bytes(fig), format="png"))
+        senses = {}
+        for r in shown:
+            for suffix in ("", guard_rails.CUMULATIVE_SUFFIX, guard_rails.CARRIED_SUFFIX):
+                senses[r.rail.name + suffix] = r.rail.sense
+
+        def past_color(value: float, column: str) -> str:
+            if pd.isna(value) or value >= 0 or column not in senses:
+                return ""
+            return "color: #d03b3b" if senses[column] == "negative" else "color: #2a78d6"
+
+        with table_out:
+            clear_output(wait=True)
+            if not shown:
+                print("No guard rail covers this run's years.")
+                return
+            margins = time_range.clip(guard_rails.margins_frame(shown, carried=carried.value))
+            display(margins.style.format("${:,.0f}", na_rep="")
+                    .apply(lambda col: [past_color(v, str(col.name)) for v in col]))
+            display(guard_rails.summary_frame(shown).style.format(
+                {"worst": "${:,.0f}", "end": "${:,.0f}", "rms_over": "${:,.0f}"}))
+            display(StyledMarkdown(
+                "A margin is the room left before a rail; negative is past it (red past a "
+                "rail to stay inside, blue past a positive one). " + CARRIED_CAVEAT))
+
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
+    carried.observe(_redraw, names="value")
+    _redraw()
+    return widgets.VBox([controls_row(dollar_mode, time_range, carried), chart_out, table_out])

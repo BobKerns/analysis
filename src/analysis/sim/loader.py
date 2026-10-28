@@ -22,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import life_table, registries, units
+from analysis.sim import guard_rails, life_table, registries, units
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, is_marker_name, month_end_iso, parse_day,
     parse_relative_date, place_month, vary_date_iso,
@@ -1237,6 +1237,8 @@ def load_scenario(
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
+    _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
+                          calendar_rows, issues)
 
     for account, replacing, replaced in account_clashes:
         if any(f"({account})" in issue or f"({account} /" in issue for issue in issues):
@@ -3204,6 +3206,21 @@ def _validate_business(
                     f"{where}: tax_character {row.get('tax_character')} isn't for a chain "
                     f"step; pay the {registries.BUSINESS_SUBKIND} account directly"
                 )
+
+
+def _validate_guard_rails(
+    scenarios_dir: Path, scenario_name: str, accounts: list[dict[str, str]],
+    scheduled_rows: list[dict[str, str]], calendar_rows: list[dict[str, str]],
+    issues: list[str],
+) -> None:
+    """guard_rails.csv (#305). Only reports read the rails, and nothing of them
+    goes into the intent, but a bad one fails the load like any other row, so
+    `sim check` and every edit command catch it."""
+    rows, problems = guard_rails.read_rows(scenarios_dir, scenario_name)
+    rails, more = guard_rails.parse_rows(rows)
+    issues.extend(problems + more)
+    issues.extend(guard_rails.check_references(
+        rails, guard_rails.references_from_rows(accounts, scheduled_rows, calendar_rows)))
 
 
 def _validate_year_to_date(

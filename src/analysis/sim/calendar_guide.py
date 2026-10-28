@@ -55,6 +55,8 @@ class GuideContext:
     row_names: Sequence[str] = ()
     # date_marker rows, which a date may be written relative to (#281)
     markers: Sequence[str] = ()
+    # role:name tags in use, for a tag filter (a guard rail's, #305)
+    tags: Sequence[str] = ()
     # The scenario's other calendar rows (when editing, all but the row being
     # edited), as answers, by command: what a row must not duplicate.
     other_rows: Mapping[str, Sequence[Answers]] = field(default_factory=dict)
@@ -98,6 +100,9 @@ class Field:
     # The default offered when it depends on the answers so far (a rule
     # kind's usual tax character, say); ``default`` when it gives None.
     suggest: Callable[[GuideContext, Answers], str | None] | None = None
+    # The type when it depends on the answers so far (a guard rail's
+    # threshold: a percent or dollars, by its basis); ``type`` otherwise.
+    type_of: Callable[[Answers], FieldType] | None = None
 
     @property
     def name(self) -> str:
@@ -593,6 +598,8 @@ def kind_named(command: str) -> KindSpec:
 
 def value_type(spec: KindSpec, field_: Field, answers: Answers) -> FieldType:
     """``field_``'s type, with "value" resolved to what the row is varying."""
+    if field_.type_of is not None:
+        return field_.type_of(answers)
     if field_.type != "value":
         return field_.type
     if answers.get("vary_target") == "date":

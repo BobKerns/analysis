@@ -34,9 +34,9 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, completion, lot_guide, names, prices, readme,
-    registries, rename, reports, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols,
-    units, working_set, ytd_guide,
+    allocation, calendar_guide, chain_edit, chain_map, completion, guard_rail_guide, guard_rails,
+    lot_guide, names, prices, readme, registries, rename, reports, scenario_guide, scheduled_guide,
+    sensitivity, setup_listings, symbols, units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -2773,6 +2773,36 @@ def explain(
         _echo_basis_step_ups(con)
     finally:
         con.close()
+    _echo_guard_rail_episodes(runfile, data_dir)
+
+
+def _echo_guard_rail_episodes(runfile: Path, data_dir: Path | None) -> None:
+    """Each stretch of years the run spent past one of its scenario's guard
+    rails (#305), annual and cumulative, in CPI-constant dollars. The rails
+    are read from the data repo, so a run file read without one, or whose
+    scenario is gone, says nothing of them."""
+    try:
+        scenarios_dir = _resolve_data_dir(data_dir) / "scenarios"
+    except click.ClickException:
+        return
+    with RunConnection(runfile) as rc:
+        try:
+            rails = guard_rails.run_rails(rc, scenarios_dir)
+        except guard_rails.GuardRailError as exc:
+            click.echo(f"guard rails: not read, {len(exc.issues)} issue(s); `sim check` lists them")
+            return
+        except LoadError:
+            return
+        if not rails:
+            return
+        mode = DollarMode.CPI_CONSTANT if rc.cpi_index().notna().all() else DollarMode.NOMINAL
+        lines = guard_rails.episode_lines(guard_rails.evaluate_run(rc, rails, mode))
+    if not lines:
+        click.echo(f"guard rails: never past any of {len(rails)}")
+        return
+    click.echo(f"guard rails past, {_DOLLAR_LABELS[mode]}:")
+    for line in lines:
+        click.echo(f"  {line}")
 
 
 def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
@@ -2918,7 +2948,7 @@ def _echo_after_tax_networth(runfile: Path, period: str, mode: DollarMode) -> No
     )
 
 
-COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "account")
+COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "guard-rails", "account")
 """``sim compare``'s sections, in the order it prints them (#188)."""
 
 _COMPARE_MAX_GRAPHED = 4
@@ -3000,7 +3030,8 @@ def compare_command(
     does: whether the runs are comparable, what the scenarios define
     differently, net worth at each year end with each variant's difference,
     where each variant breaks even (net worth after tax unless --pre-tax),
-    and with --account, that account's balance.
+    each scenario's guard rail margins (#305) when any has rails, and with
+    --account, that account's balance.
 
     BASELINE left out is the current scenario; with no VARIANTS, one is
     asked for. A scenario with no accounts is a valid compare point."""
@@ -3114,6 +3145,10 @@ def compare_command(
             click.echo(f"\nBreak-even vs {baseline}: the month after which a variant stays ahead")
             _echo_frame(summary.map(_cell))
 
+        if "guard-rails" in shown:
+            _echo_guard_rail_comparison(connections, ref.scenarios_dir, baseline, variants,
+                                        mode, asked="guard-rails" in sections)
+
         balances = None
         if account is not None and ("account" in shown or graphed):
             balances = compare.balance_by_month(connections, scenarios, account, lot, mode)
@@ -3142,6 +3177,37 @@ def compare_command(
                 figure = comparison_figure(
                     nw, baseline, list(variants), f"Net worth, {mode_label}", deaths=deaths)
             _draw_figure(figure, graph_file, "compare-")
+
+
+def _echo_guard_rail_comparison(
+    connections: Mapping[str, RunConnection], scenarios_dir: Path, baseline: str,
+    variants: Sequence[str], mode: DollarMode, *, asked: bool,
+) -> None:
+    """``sim compare``'s guard-rails section (#305): per rail, each scenario's
+    margins by year and each variant's change, annual then cumulative. Each
+    scenario's own rails, matched by name. Said to be empty only when
+    ``asked`` for: by default, scenarios without rails leave no trace."""
+    results: dict[str, list[guard_rails.RailResult]] = {}
+    for name, rc in connections.items():
+        try:
+            rails = guard_rails.run_rails(rc, scenarios_dir)
+        except guard_rails.GuardRailError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(
+                f"the guard rails of {name!r} don't load ({len(exc.issues)} issue(s))") from None
+        results[name] = guard_rails.evaluate_run(rc, rails, mode) if rails else []
+    frames = guard_rails.comparison_frames(results, baseline, variants)
+    if not frames:
+        if asked:
+            click.echo("\nGuard rails: none in these scenarios")
+        return
+    label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    click.echo(f"\nGuard rail margins ({label}): negative is past the rail; cum is the years "
+               "so far summed")
+    for rail, frame in frames.items():
+        click.echo(f"\n{rail}:")
+        _echo_frame(frame.map(_cell))
 
 
 @sim_group_command.command("switch")
@@ -7792,6 +7858,159 @@ def report_tax_command(
                   described, mode)
 
 
+# ---------- guard rails (#305) ----------
+
+# How a margin past a rail prints: red past a rail the household means to
+# stay inside, blue past a positive one (room to spend more).
+_PAST_STYLES = {"negative": "red", "positive": "blue"}
+
+
+def _guard_rails_of_run(rc: RunConnection, data_dir: Path | None) -> list[guard_rails.GuardRail]:
+    """The rails of the run's scenario, read from the data repo now: rails
+    are a lens on a run, not part of it, so even ``--runfile`` reads them."""
+    scenarios_dir = _resolve_data_dir(data_dir) / "scenarios"
+    try:
+        return guard_rails.run_rails(rc, scenarios_dir)
+    except guard_rails.GuardRailError as exc:
+        for issue in exc.issues:
+            click.echo(f"  error: {issue}", err=True)
+        raise click.ClickException(
+            f"the guard rails of {rc.name!r} don't load ({len(exc.issues)} issue(s))"
+        ) from None
+
+
+def _margin_style(results: Sequence[guard_rails.RailResult]) -> Callable[[str, float], str | None]:
+    """Each margin column's style for a value past its rail."""
+    senses: dict[str, str] = {}
+    for r in results:
+        for suffix in ("", guard_rails.CUMULATIVE_SUFFIX, guard_rails.CARRIED_SUFFIX):
+            senses[r.rail.name + suffix] = r.rail.sense
+
+    def style(column: str, value: float) -> str | None:
+        sense = senses.get(column)
+        return _PAST_STYLES[sense] if sense is not None and value < 0 else None
+    return style
+
+
+def _echo_rails(results: Sequence[guard_rails.RailResult]) -> None:
+    width = max(len(r.rail.name) for r in results)
+    def month(text: str) -> str:  # a month end as its month; a date_marker as written
+        return text if not text or parse_relative_date(text) is not None else text[:7]
+
+    for r in results:
+        start, end = month(r.rail.start), month(r.rail.end)
+        window = (f", {start} to {end}" if start and end else f", from {start}" if start
+                  else f", until {end}" if end else "")
+        click.echo(f"  {r.rail.name:<{width}}  {r.rail.describe()}{window}"
+                   + ("  [positive]" if r.rail.positive else ""))
+
+
+def _render_rail_summary(summary: pd.DataFrame):
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(header_style="bold")
+    for column, justify in (("rail", "left"), ("form", "left"), ("years past", "right"),
+                            ("worst", "right"), ("in", "right"), ("at end", "right"),
+                            ("RMS past", "right")):
+        table.add_column(column, justify=justify, no_wrap=True)
+
+    def money(value: float) -> str:
+        return f"-${-value:,.0f}" if round(value) < 0 else f"${value:,.0f}"
+
+    for row in named_rows(summary):
+        style = _PAST_STYLES[str(row.sense)]
+        table.add_row(
+            str(row.rail), str(row.form), f"{row.years_past} of {row.years}",
+            Text(money(float(row.worst)), style=style if float(row.worst) < 0 else ""),
+            str(row.worst_year),
+            Text(money(float(row.end)), style=style if float(row.end) < 0 else ""),
+            money(float(row.rms_over)),
+        )
+    return table
+
+
+@report_group_command.command("guard-rails")
+@click.option("--rail", "rail_names", type=completion.GUARD_RAIL, multiple=True,
+              help="Only this rail; repeat for more. One rail alone also shows its "
+                   "measure and threshold.")
+@click.option("--carried", is_flag=True,
+              help="Add each rail's cumulative margin carried at the portfolio's return.")
+@_report_options
+def report_guard_rails_command(
+    rail_names: tuple[str, ...], carried: bool, dollars: str,
+    runfile: Path | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show where a run stands against its scenario's guard rails, year by year.
+
+    A margin is the room left before a rail: threshold - measure for a rail
+    above (a ceiling), measure - threshold for one below (a floor). So a
+    negative margin is always past the rail, printed red for a rail to stay
+    inside and blue for a positive one, where past it is room to spend more.
+
+    Each rail has two columns: the year's margin, and its cumulative margin
+    (`cum`), the years since the rail began summed: room banked, or
+    overdrawn. --carried adds the cumulative margin grown at the portfolio's
+    return, which is what an overdraft costs once the money not left
+    invested doesn't grow (and is still only a guide: a different path
+    would have had different returns).
+
+    A summary follows: per rail and form, the years past it, the worst
+    margin and its year, the margin at the end, and the RMS overshoot (the
+    root mean square of how far past, years inside counting as zero).
+
+    Rails are read from the scenario's guard_rails.csv now, not from the
+    run, so a run file needs the data repo too.
+    """
+    mode = DollarMode(dollars)
+    with _report_run(scenario, data_dir, runfile) as (rc, described):
+        rails = _guard_rails_of_run(rc, data_dir)
+        if rail_names:
+            known = {rail.name: rail for rail in rails}
+            if missing := [n for n in rail_names if n not in known]:
+                raise click.ClickException(
+                    f"no guard rail {', '.join(map(repr, missing))} in {rc.name!r}"
+                    + (f"; it has {', '.join(sorted(known))}" if known else ""))
+            rails = [known[n] for n in dict.fromkeys(rail_names)]
+        if not rails:
+            click.echo(f"no guard rails in {rc.name!r} ({described}); "
+                       "`sim guard-rail add` adds one")
+            return
+        if mode == DollarMode.CPI_CONSTANT and rc.cpi_index().isna().all():
+            raise click.ClickException(
+                f"{described} has no 'cpi' inflation index, so no CPI-constant dollars; "
+                "pass --dollars nominal")
+        results = guard_rails.evaluate_run(rc, rails, mode)
+    shown = [r for r in results if r.applies]
+    for r in results:
+        if not r.applies:
+            click.echo(f"  {r.rail.name} covers none of this run's years")
+    if not shown:
+        return
+    style = _margin_style(shown)
+    if len(rail_names) == 1:
+        r = shown[0]
+        frame = guard_rails.rail_frame(r)
+        if not carried:
+            frame = frame.drop(columns="carried")
+        senses = {"margin": r.rail.sense, "cumulative": r.rail.sense, "carried": r.rail.sense}
+
+        def one_style(column: str, value: float) -> str | None:
+            sense = senses.get(column)
+            return _PAST_STYLES[sense] if sense is not None and value < 0 else None
+
+        click.echo(f"guard rail {r.rail.name}, {_DOLLAR_LABELS[mode]} ({described})")
+        _echo_rails([r])
+        _print_unclipped(reports.render_report_table(frame, cell_style=one_style))
+    else:
+        click.echo(f"guard rail margins, {_DOLLAR_LABELS[mode]} ({described})")
+        _echo_rails(shown)
+        frame = guard_rails.margins_frame(shown, carried=carried)
+        _print_unclipped(reports.render_report_table(frame, cell_style=style))
+    click.echo("")
+    _print_unclipped(_render_rail_summary(guard_rails.summary_frame(shown)))
+
+
 @account_group_command.group(name="tag")
 def account_tag_group() -> None:
     """Add or remove tags on an account."""
@@ -12378,9 +12597,10 @@ def _read_ytd_rows(path: Path) -> list[dict[str, str]]:
     ]
 
 
-def _widen_ytd_header(staged: Path, scenario_dir: Path) -> None:
-    """Give a staged year_to_date.csv every column, so a row can be written
-    by name: the loader takes a header that leaves optional columns out.
+def _widen_header(staged: Path, scenario_dir: Path, filename: str, header: tuple[str, ...]) -> None:
+    """Give a staged CSV keyed by ``name`` every column of ``header``, so a
+    row can be written by name: the loader takes a header that leaves
+    optional columns out.
 
     A column a scenario's file leaves out is inherited, row by row, so each
     existing row gets the value it inherits there (from the real
@@ -12388,10 +12608,10 @@ def _widen_ytd_header(staged: Path, scenario_dir: Path) -> None:
     if not staged.exists() or staged.stat().st_size == 0:
         return
     frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
-    missing = [c for c in registries.YEAR_TO_DATE_CSV_HEADER if c not in frame.columns]
+    missing = [c for c in header if c not in frame.columns]
     if not missing:
         return
-    merged = _overlay_rows(scenario_dir, "year_to_date.csv")
+    merged = _overlay_rows(scenario_dir, filename)
     for column in missing:
         frame[column] = [
             found.row.get(column, "") if (found := merged.get(str(name).strip())) else ""
@@ -12400,12 +12620,16 @@ def _widen_ytd_header(staged: Path, scenario_dir: Path) -> None:
     frame.to_csv(staged, index=False)
 
 
-class _PickedYtd(NamedTuple):
+def _widen_ytd_header(staged: Path, scenario_dir: Path) -> None:
+    _widen_header(staged, scenario_dir, "year_to_date.csv", registries.YEAR_TO_DATE_CSV_HEADER)
+
+
+class _PickedRow(NamedTuple):
     found: _Overlaid  # the row as the load order leaves it
     own: dict[str, str] | None  # its row in this scenario's own file, as read then
 
 
-def _pick_ytd(scenario_dir: Path, scenario_name: str, name: str) -> _PickedYtd:
+def _pick_ytd(scenario_dir: Path, scenario_name: str, name: str) -> _PickedRow:
     found = _overlay_rows(scenario_dir, "year_to_date.csv").get(name.strip())
     if found is None:
         raise click.ClickException(
@@ -12415,11 +12639,11 @@ def _pick_ytd(scenario_dir: Path, scenario_name: str, name: str) -> _PickedYtd:
     own = None
     if found.index is not None:
         own = _read_ytd_rows(scenario_dir / "year_to_date.csv")[found.index]
-    return _PickedYtd(found, own)
+    return _PickedRow(found, own)
 
 
 def _write_ytd(
-    data_dir: Path, scenario_name: str, path: Path, picked: _PickedYtd, row: dict[str, str] | None,
+    data_dir: Path, scenario_name: str, path: Path, picked: _PickedRow, row: dict[str, str] | None,
 ) -> None:
     """Write ``row`` over the scenario's own row -- or append it as an
     override when the row is inherited; ``None`` removes the own row -- as
@@ -12688,6 +12912,401 @@ def ytd_delete(name: str | None, yes: bool, scenario: str | None, data_dir: Path
         return
     _write_ytd(data_dir_p, scenario_name, path, picked, {**current, "amount": "0.00"})
     click.echo(f"wrote an override zeroing year-to-date row '{row_name}' to {path}")
+
+
+# ---------- guard-rail list|add|edit|delete: guard_rails.csv (#305) ----------
+
+
+@sim_group_command.group(name="guard-rail")
+def guard_rail_group_command() -> None:
+    """See and change the scenario's guard rails (ADR-003 §4.11).
+
+    A guard rail is a line the scenario's spending, or its withdrawals from
+    the portfolio, should stay on one side of: the 4% rule, Guyton-Klinger's
+    rails, a budget. Rails are a lens on a run's results, not an input to
+    it, so changing one reruns nothing; `sim report guard-rails` shows where
+    the latest run stands.
+    """
+
+
+@guard_rail_group_command.command("list")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def guard_rail_list(scenario: str | None, data_dir: Path | None) -> None:
+    """List the scenario's guard rails, its own and inherited."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    rows, issues = guard_rails.read_rows(ref.scenarios_dir, ref.name)
+    rails, more = guard_rails.parse_rows(rows)
+    for issue in [*issues, *more]:
+        click.echo(f"  error: {issue}", err=True)
+    if not rails:
+        click.echo(f"no guard rails in {ref.name}")
+        return
+    table = Table(title=f"guard rails ({ref.name})", header_style="bold")
+    for column in ("Name", "Rail", "Sense", "Start", "End", "Description", "Defined in"):
+        table.add_column(column)
+    for rail in rails:
+        table.add_row(*(escape(cell) for cell in (
+            rail.name, rail.describe(), rail.sense, rail.start[:7] if rail.start[:1].isdigit()
+            else rail.start, rail.end[:7] if rail.end[:1].isdigit() else rail.end,
+            rail.description, rail.defined_in,
+        )))
+    _print_wide(table)
+
+
+def _check_tag_filter(text: str) -> str:
+    try:
+        guard_rails.TagFilter.parse(text)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    return text.strip()
+
+
+def _check_percent_threshold(text: str) -> int:
+    try:
+        return units.percent_to_micros(text.strip())
+    except ValueError as exc:
+        raise click.ClickException(f"{exc}; this basis is a percent of the portfolio") from None
+
+
+def _check_dollar_threshold(text: str) -> int:
+    if text.strip().endswith("%"):
+        raise click.ClickException(
+            f"threshold {text.strip()!r} is a percent: only basis portfolio or initial_portfolio "
+            "takes one; the others take dollars a year")
+    try:
+        return units.dollars_to_cents(text.strip())
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+
+
+# By field type; a threshold's is "percent" or "dollars" by its basis.
+_GUARD_RAIL_CHECKERS: dict[str, Callable[[str], object]] = {
+    "tag_filter": _check_tag_filter,
+    "percent": _check_percent_threshold,
+    "dollars": _check_dollar_threshold,
+    "date": _validate_calendar_date,
+}
+
+
+def _check_guard_rail_options(given: dict[str, str], answers: calendar_guide.Answers) -> None:
+    """Each option given checked as its field's type, which may depend on
+    the rail's other fields (``answers``, with the options in)."""
+    for field_ in guard_rail_guide.ROW.fields:
+        value = given.get(field_.param)
+        type_ = calendar_guide.value_type(guard_rail_guide.ROW, field_, answers)
+        if value and (checker := _GUARD_RAIL_CHECKERS.get(type_)) is not None:
+            checker(value)
+
+_GUARD_RAIL_OPTION_TYPES: dict[str, click.ParamType] = {
+    "measure": click.Choice(registries.GUARD_RAIL_MEASURES),
+    "side": click.Choice(registries.GUARD_RAIL_SIDES),
+    "basis": click.Choice(registries.GUARD_RAIL_BASES),
+    "sense": click.Choice(registries.GUARD_RAIL_SENSES),
+    "select": completion.TAG_FILTER,
+    "portfolio": completion.TAG_FILTER,
+    "start": completion.CALENDAR_DATE,
+    "end": completion.CALENDAR_DATE,
+}
+
+
+def _guard_rail_guide() -> calendar_guide.Guide:
+    return calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(
+            text, choices=choices, default=default,
+        ),
+        checkers=_GUARD_RAIL_CHECKERS,
+    )
+
+
+def _guard_rail_context(data_dir: Path, scenario: str) -> calendar_guide.GuideContext:
+    """The scenario's tags and date markers, as completions."""
+    return calendar_guide.GuideContext(
+        markers=names.date_marker_names(data_dir, scenario),
+        tags=names.tag_tokens(data_dir, scenario),
+    )
+
+
+def _guard_rail_row(params: dict[str, object], current: dict[str, str],
+                    context: calendar_guide.GuideContext) -> dict[str, str]:
+    """``current`` with ``params``' answers; a field that no longer applies
+    (``select`` once the measure is withdrawals) is blank."""
+    answers = {column: str(params.get(column, "") or "").strip()
+               for column in guard_rail_guide.ROW_COLUMNS}
+    row = dict(current)
+    for field_ in guard_rail_guide.ROW.fields:
+        row[field_.param] = answers[field_.param] if field_.applies(context, answers) else ""
+    if row["threshold"] and not row["threshold"].endswith("%"):
+        row["threshold"] = _money_cell(row["threshold"])
+    return row
+
+
+def _check_guard_rail_row(row: dict[str, str]) -> None:
+    """What the loader would refuse of one rail on its own, said before
+    anything is staged."""
+    _rail, problems = guard_rails.parse_cells(row)
+    if problems:
+        raise click.ClickException("; ".join(problems))
+
+
+def _read_guard_rail_rows(path: Path) -> list[dict[str, str]]:
+    """A scenario's own guard_rails.csv rows, every column present."""
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    return [{column: str(row.get(column, "")) for column in registries.GUARD_RAILS_CSV_HEADER}
+            for row in frame.to_dict("records")]
+
+
+def _pick_guard_rail(scenario_dir: Path, scenario_name: str, name: str) -> _PickedRow:
+    found = _overlay_rows(scenario_dir, guard_rails.GUARD_RAILS_FILE).get(name.strip())
+    if found is None:
+        raise click.ClickException(f"no guard rail {name!r} in scenario {scenario_name!r}")
+    own = None
+    if found.index is not None:
+        own = _read_guard_rail_rows(scenario_dir / guard_rails.GUARD_RAILS_FILE)[found.index]
+    return _PickedRow(found, own)
+
+
+def _write_guard_rail(data_dir: Path, scenario_name: str, path: Path, picked: _PickedRow | None,
+                      row: dict[str, str] | None) -> None:
+    """Write ``row`` over the scenario's own rail, or append it (a new rail,
+    or an override of an inherited one); ``None`` removes the own row. One
+    staged edit, kept only if every affected scenario still loads."""
+    header = registries.GUARD_RAILS_CSV_HEADER
+    index = picked.found.index if picked is not None else None
+    with _scenario_edit(data_dir, scenario_name) as edit:
+        staged = edit.path(path)
+        if index is not None:
+            existing = _read_guard_rail_rows(staged)
+            if picked is not None and (index >= len(existing) or existing[index] != picked.own):
+                raise click.ClickException(
+                    f"{path} changed while this rail was being edited. Nothing was written; start again."
+                )
+        _widen_header(staged, path.parent, path.name, header)
+        if index is None:
+            if row is not None:
+                _append_csv_row(staged, header, row)
+            return
+        if row is None:
+            frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
+            frame.drop(index=frame.index[index]).to_csv(staged, index=False)
+        else:
+            _append_csv_row(staged, header, row, replace=index)
+
+
+def _guard_rail_options[F: Callable[..., object]](f: F) -> F:
+    """One option per field of ``guard_rail_guide.ROW``. Each defaults to
+    ``None`` (not given); ``""`` clears a field."""
+    for field_ in reversed(guard_rail_guide.ROW.fields):
+        if field_.option is not None:
+            f = click.option(
+                field_.option, field_.param, default=None, help=field_.help or field_.label,
+                type=_GUARD_RAIL_OPTION_TYPES.get(field_.param),
+            )(f)
+    return f
+
+
+def _rail_summary(row: dict[str, str]) -> str:
+    rail, _problems = guard_rails.parse_cells(row)
+    return rail.describe() if rail is not None else ""
+
+
+@guard_rail_group_command.command("add")
+@click.argument("name", required=False)
+@_guard_rail_options
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.pass_context
+def guard_rail_add(
+    ctx: click.Context, name: str | None, scenario: str | None, data_dir: Path | None,
+    **values: str | None,
+) -> None:
+    """Add a guard rail to <scenario>/guard_rails.csv.
+
+    With no options, every field is asked for, then shown to write or
+    change. With options, only what they leave out and a rail needs
+    (measure, side, basis, threshold) is asked for, e.g. the 4% rule:
+    `sim guard-rail add four_percent --measure withdrawals --side above
+    --basis initial_portfolio --threshold 4%`.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / guard_rails.GUARD_RAILS_FILE
+    context = _guard_rail_context(data_dir_p, scenario_name)
+    taken = set(names.guard_rail_names(data_dir_p, scenario_name))
+    name = (name or "").strip()
+    if not name:
+        while (name := _ask_new_name("name of the new rail")) in taken:
+            click.echo(f"  another rail is already named {name!r}")
+    if name in taken:
+        raise click.ClickException(
+            f"guard rail {name!r} already exists; `sim guard-rail edit {name}` changes it")
+    given = {param: value.strip() for param, value in values.items() if value is not None}
+    answers = guard_rail_guide.answers_of(given)
+    _check_guard_rail_options(given, answers)
+    empty = {column: "" for column in registries.GUARD_RAILS_CSV_HEADER}
+
+    def submit(params: dict[str, object]) -> None:
+        row = _guard_rail_row(params, {**empty, "name": name}, context)
+        _check_guard_rail_row(row)
+        _write_guard_rail(data_dir_p, scenario_name, path, None, row)
+        click.echo(f"appended guard rail '{name}' ({_rail_summary(row)}) to {path}")
+
+    guide = _guard_rail_guide()
+    if given:
+        for field_ in guard_rail_guide.ROW.fields:
+            if (field_.applies(context, answers) and field_.is_required(answers)
+                    and not answers[field_.param]):
+                answers[field_.param] = guide.ask_field(guard_rail_guide.ROW, field_, context, answers)
+        submit(dict(answers))
+        return
+    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
+    click.echo(f"Adding guard rail '{name}'")
+    for param in list(answers):
+        del answers[param]  # every field is asked, optional ones too
+    guide.complete(guard_rail_guide.ROW, context, answers)
+    if not guide.review(guard_rail_guide.ROW, context, {**answers}, submit,
+                        scenario=None if scenario is None else scenario_name):
+        ctx.exit(1)
+
+
+@guard_rail_group_command.command("edit")
+@click.argument("name", required=False, type=completion.GUARD_RAIL)
+@_guard_rail_options
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.pass_context
+def guard_rail_edit(
+    ctx: click.Context, name: str | None, scenario: str | None, data_dir: Path | None,
+    **values: str | None,
+) -> None:
+    """Change a guard rail.
+
+    Options set those fields and write at once ("" clears one). With none,
+    the rail's fields are shown; name one to change it, as often as needed,
+    and write when done.
+
+    A rail the scenario inherits is changed by an override: the whole row,
+    edited, appended to this scenario's guard_rails.csv; the parent keeps
+    its own.
+
+    Without NAME, it is asked for.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / guard_rails.GUARD_RAILS_FILE
+    if name is None:
+        name = _ask_name("guard rail", names.guard_rail_names(data_dir_p, scenario_name),
+                         prompt="rail to edit")
+    picked = _pick_guard_rail(scenario_dir, scenario_name, name)
+    chosen = picked.found
+    current = {column: chosen.row.get(column, "") for column in registries.GUARD_RAILS_CSV_HEADER}
+    context = _guard_rail_context(data_dir_p, scenario_name)
+    rail = current["name"]
+
+    def submit(params: dict[str, object]) -> None:
+        row = _guard_rail_row(params, current, context)
+        _check_guard_rail_row(row)
+        if all(row[c].strip() == current[c].strip() for c in registries.GUARD_RAILS_CSV_HEADER):
+            click.echo("no change; nothing was written")
+            return
+        _write_guard_rail(data_dir_p, scenario_name, path, picked, row)
+        if chosen.index is None:
+            click.echo(f"wrote an override of guard rail '{rail}' "
+                       f"(inherited from {chosen.inherited_from!r}) to {path}")
+        else:
+            click.echo(f"updated guard rail '{rail}' in {path}")
+
+    answers = guard_rail_guide.answers_of(current)
+    given = {param: value.strip() for param, value in values.items() if value is not None}
+    if given:
+        _check_guard_rail_options(given, {**answers, **given})
+        submit({**answers, **given})
+        return
+    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
+    click.echo(f"Editing guard rail '{rail}'")
+    if chosen.index is None:
+        click.echo(f"  It comes from scenario {chosen.inherited_from!r}: writing puts an override "
+                   "of the whole rail in this scenario.")
+    guide = _guard_rail_guide()
+    guide.complete(guard_rail_guide.ROW, context, answers)
+    if not guide.review(guard_rail_guide.ROW, context, answers, submit, show_command=False):
+        ctx.exit(1)
+
+
+@guard_rail_group_command.command("delete")
+@click.argument("name", required=False, type=completion.GUARD_RAIL)
+@click.option("--yes", is_flag=True, help="Don't ask first.")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def guard_rail_delete(name: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete a guard rail.
+
+    A rail of this scenario's own is removed. Deleting this scenario's
+    override of an inherited rail brings back the inherited one.
+
+    A rail the scenario inherits can't be removed from here, since an
+    overlay can't remove a row (ADR-003 §4.5). Instead it is ended: an
+    override whose end is the month before the scenario starts, so it
+    covers none of its years.
+
+    Without NAME, it is asked for.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / guard_rails.GUARD_RAILS_FILE
+    if name is None:
+        name = _ask_name("guard rail", names.guard_rail_names(data_dir_p, scenario_name),
+                         prompt="rail to delete")
+    picked = _pick_guard_rail(scenario_dir, scenario_name, name)
+    chosen = picked.found
+    rail = chosen.row["name"]
+
+    if chosen.index is not None:
+        if chosen.inherited_from is not None:
+            prompt = (f"delete this scenario's override of '{rail}', so the rail from "
+                      f"{chosen.inherited_from!r} applies again?")
+        else:
+            prompt = f"delete guard rail '{rail}'?"
+        if not yes and not click.confirm(prompt, default=False):
+            click.echo("aborted")
+            return
+        _write_guard_rail(data_dir_p, scenario_name, path, picked, None)
+        if chosen.inherited_from is not None:
+            click.echo(f"deleted this scenario's override of guard rail '{rail}' from {path}; "
+                       f"it is inherited from {chosen.inherited_from!r} again")
+        else:
+            click.echo(f"deleted guard rail '{rail}' from {path}")
+        return
+
+    with _intent_db(data_dir_p, scenario_name) as (con, _name):
+        start = con.execute("SELECT start FROM scenario").fetchone()[0]
+    end = _month_before(start)
+    current = {column: chosen.row.get(column, "") for column in registries.GUARD_RAILS_CSV_HEADER}
+    if is_month_or_date(current["end"]) and month_end_iso(current["end"]) < start:
+        click.echo(f"guard rail '{rail}' already ends before the scenario starts; nothing was written")
+        return
+    click.echo(
+        f"guard rail '{rail}' comes from scenario {chosen.inherited_from!r}, and "
+        f"{scenario_name!r} can't remove what it inherits. It can end it instead: an "
+        f"override with end {end}, the month before the scenario starts, so it covers nothing."
+    )
+    if not yes and not click.confirm("write that override?", default=False):
+        click.echo("aborted")
+        return
+    _write_guard_rail(data_dir_p, scenario_name, path, picked, {**current, "end": end})
+    click.echo(f"wrote an override ending guard rail '{rail}' in {end} to {path}")
 
 
 @sim_group_command.group(name="itemization")
