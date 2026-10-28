@@ -11,7 +11,9 @@ Savings -> Brokerage (USSTK) -> IRA (BONDX), targets 60/40) and
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -486,6 +488,40 @@ def test_a_misbehaving_strategy_fails_the_run(
     assert "strategy 'draw_by_allocation' (odd) draw in " in str(info.value)
 
 
+def test_module_state_does_not_carry_into_the_next_run(
+    strategy_module: Callable[[str, str], Path], strategy_csv: Callable[[str, str], Path],
+    run_strategy_scenario: Callable[[str], Path], runs_dir: Path,
+) -> None:
+    """Each run imports its own copy of the strategy modules, so a module-level
+    counter starts over, as it would in another ensemble worker."""
+    strategy_module("odd", _STRATEGY.replace("@register", "_CALLS = [0]\n\n@register").format(body=(
+        "        _CALLS[0] += 1\n"
+        "        return Decision([Take(chain.leaves[-1], 100)], note=str(_CALLS[0]))"
+    )))
+    _rewrite_strategy(strategy_csv, "alice_last_leaf", kind="odd")
+    first = _decisions(run_strategy_scenario("alice_last_leaf"))
+    (runs_dir / "alice_last_leaf.sqlite3").rename(runs_dir / "first.sqlite3")
+    assert first[0][5] == "1"
+    assert _decisions(run_strategy_scenario("alice_last_leaf")) == first
+    # The runs' copies are unloaded once they finish.
+    assert not [m for m in sys.modules if re.fullmatch(r"_strategies_[0-9a-f]{12}_\d+(\..*)?", m)]
+
+
+def test_memory_changed_while_answering_none_is_logged_with_the_next_decision(
+    strategy_module: Callable[[str, str], Path], strategy_csv: Callable[[str, str], Path],
+    run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    _odd(strategy_module, strategy_csv,
+         "if 'quiet' not in ctx.memory:\n"
+         "    ctx.memory['quiet'] = 1\n"
+         "    return None\n"
+         "return Decision([Take(chain.leaves[-1], 100)])")
+    rows = _decisions(run_strategy_scenario("alice_last_leaf"))
+    assert len(rows) >= 2
+    assert json.loads(rows[0][7]) == {"quiet": 1}
+    assert rows[1][7] is None
+
+
 def test_a_partial_take_falls_back_to_the_chain(
     strategy_module: Callable[[str, str], Path], strategy_csv: Callable[[str, str], Path],
     run_strategy_scenario: Callable[[str], Path],
@@ -705,6 +741,19 @@ def test_strategy_check_finds_a_strategy_that_reads_the_clock(
 ) -> None:
     _odd(strategy_module, strategy_csv,
          "import time\nreturn Decision([Take(chain.leaves[-1], 100)], note=str(time.perf_counter_ns()))")
+    result = _cli(strategy_scenarios, "strategy", "check", "alice_last_leaf")
+    assert result.exit_code != 0
+    assert "decided differently in" in result.output
+
+
+def test_strategy_check_finds_a_strategy_that_depends_on_hash_order(
+    strategy_scenarios: Path, strategy_module: Callable[[str, str], Path],
+    strategy_csv: Callable[[str, str], Path],
+) -> None:
+    """Set order of strings changes with the process's hash seed, so only runs
+    in separate processes show it."""
+    _odd(strategy_module, strategy_csv,
+         "return Decision([Take(chain.leaves[-1], 100)], note=','.join(set('abcdefgh')))")
     result = _cli(strategy_scenarios, "strategy", "check", "alice_last_leaf")
     assert result.exit_code != 0
     assert "decided differently in" in result.output

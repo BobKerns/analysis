@@ -81,6 +81,7 @@ def run_scenario(
         allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
         run_args=run_args, engine_options=engine_options, reserved=reserved,
     )
+    strategy_runtime: StrategyRuntime | None = None
     try:
         scenario = con.execute(
             'SELECT start, "end" FROM scenario'
@@ -224,12 +225,13 @@ def run_scenario(
             if cost_bases.get(lot_id) is None:
                 cost_bases[lot_id] = balances.get(lot_id, 0)
         roth = refill_ctx.roth
-        refill_ctx.strategies = StrategyRuntime(
+        strategy_runtime = StrategyRuntime(
             con, balances=balances, cost_bases=cost_bases,
             minimum_of=chain_graph.minimum_of, leaf_lot=chain_graph.leaf_lot,
             members=chain_graph.members,
             roth_qualified=lambda lot, on: _roth_qualified(roth[lot], on) if lot in roth else None,
-        ) or None
+        )
+        refill_ctx.strategies = strategy_runtime or None
 
         irmaa = IrmaaContext(
             aux, inflation_factor_cache, start_year=_parse_date(start_s).year,
@@ -613,6 +615,8 @@ def run_scenario(
         finalize_run(con, status="failed", failure_reason=f"{type(e).__name__}: {e}")
         raise
     finally:
+        if strategy_runtime is not None:
+            strategy_runtime.close()
         con.close()
     return Path(run_path)
 

@@ -5,15 +5,18 @@ Data-repo modules are imported from their source text, not their files: the
 loader snapshots that text into the intent (``strategy_source``) and the
 engine imports from the snapshot, so a run is self-contained and an ensemble
 worker needs no data directory. The modules form a synthetic package named
-after a hash of all their sources, so two versions of the same module (two
-scenarios loaded in one process, a test and a notebook) never share state,
-and relative imports between them (``from ._helpers import x``) work.
+after a hash of all their sources, and relative imports between them
+(``from ._helpers import x``) work. Checking a load imports that package
+once and keeps it; each run imports its own fresh copy (``fresh=True``) and
+unloads it when done, so module-level state (a cache, a counter) never
+carries from one run, or ensemble member, to the next.
 """
 
 from __future__ import annotations
 
 import hashlib
 import importlib
+import itertools
 import importlib.abc
 import importlib.util
 import linecache
@@ -37,6 +40,8 @@ STRATEGIES_DIR = "strategies"
 """The data repo folder of strategy modules (ADR-003 §4.0)."""
 
 _BUILTIN_PACKAGE = "analysis.sim.strategies"
+
+_fresh_ids = itertools.count(1)
 
 
 def read_sources(data_dir: Path) -> dict[str, str]:
@@ -86,7 +91,9 @@ class _SourceFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             module.__path__ = []
             return
         name = module.__name__.rpartition(".")[2]
-        filename = f"{self.package}/{STRATEGIES_DIR}/{name}.py"
+        # Named by the sources' hash, not a fresh copy's name: every copy of
+        # the same text shares one linecache entry.
+        filename = f"{package_name(self.sources)}/{STRATEGIES_DIR}/{name}.py"
         text = self.sources[name]
         # Let tracebacks and inspect.getsource (parameter docs in `sim
         # strategy kinds`) find the text, which has no file of its own.
@@ -96,9 +103,12 @@ class _SourceFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         exec(code, module.__dict__)  # noqa: S102 -- the household's own strategy code
 
 
-def _import_package(sources: Mapping[str, str]) -> tuple[str, list[str]]:
-    """Import every module of ``sources``; the package name and any failures."""
+def _import_package(sources: Mapping[str, str], *, fresh: bool = False) -> tuple[str, list[str]]:
+    """Import every module of ``sources``; the package name and any failures.
+    ``fresh`` imports a copy of its own, under a name no other call uses."""
     package = package_name(sources)
+    if fresh:
+        package = f"{package}_{next(_fresh_ids)}"
     if not any(
         isinstance(f, _SourceFinder) and f.package == package for f in sys.meta_path
     ):
@@ -149,14 +159,17 @@ def builtin_kinds() -> dict[str, type[Strategy]]:
 class StrategyKinds:
     """Every kind a scenario can name, and where each came from."""
 
-    def __init__(self, sources: Mapping[str, str]) -> None:
+    def __init__(self, sources: Mapping[str, str], *, fresh: bool = False) -> None:
         self.sources = dict(sources)
+        self.package: str | None = None
         self.problems: list[str] = []
         self.kinds: dict[str, type[Strategy]] = dict(builtin_kinds())
         self.origin: dict[str, str] = dict.fromkeys(self.kinds, "built-in")
         if not self.sources:
             return
-        package, self.problems = _import_package(self.sources)
+        package, self.problems = _import_package(self.sources, fresh=fresh)
+        if fresh:
+            self.package = package
         for module, cls in _kinds_in(package):
             where = f"{STRATEGIES_DIR}/{module}.py"
             if cls.kind in self.kinds:
@@ -168,6 +181,19 @@ class StrategyKinds:
                 continue
             self.kinds[cls.kind] = cls
             self.origin[cls.kind] = where
+
+    def unload(self) -> None:
+        """Forget a fresh package's modules (their classes live on in the
+        strategies made from them). Nothing for a shared one."""
+        if self.package is None:
+            return
+        prefix = self.package + "."
+        for name in [n for n in sys.modules if n == self.package or n.startswith(prefix)]:
+            del sys.modules[name]
+        sys.meta_path[:] = [
+            f for f in sys.meta_path if not (isinstance(f, _SourceFinder) and f.package == self.package)
+        ]
+        self.package = None
 
     def get(self, kind: str) -> type[Strategy]:
         try:

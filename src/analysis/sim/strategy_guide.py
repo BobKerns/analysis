@@ -20,7 +20,7 @@ from typing import Any
 import pandas as pd
 
 from analysis.sim import registries, units
-from analysis.sim.asset_classes import class_weights, weights_at
+from analysis.sim.asset_classes import WeightSets, class_weights, weight_sets, weights_at
 from analysis.sim.strategy_api import Strategy, param_units
 
 __all__ = [
@@ -163,12 +163,8 @@ def summary(row: Mapping[str, str]) -> str:
 
 def target_sets(rows: Sequence[Mapping[str, str]]) -> dict[str, list[tuple[str, dict[str, str]]]]:
     """targets.csv rows by set, each set's dated weights oldest first."""
-    sets: dict[str, dict[str, dict[str, str]]] = {}
-    for row in rows:
-        sets.setdefault(row["target_set"], {}).setdefault(row.get("as_of", ""), {})[row["asset_class"]] = (
-            row["weight"]
-        )
-    return {name: sorted(by_date.items()) for name, by_date in sorted(sets.items())}
+    sets = weight_sets((row["target_set"], row.get("as_of", ""), row["asset_class"], row["weight"]) for row in rows)
+    return dict(sorted(sets.items()))
 
 
 # ---------- reading a run ----------
@@ -197,13 +193,12 @@ def decision_log(
     return frame[["month", "strategy", "hook", "asked", "chosen", "fallback", "note"]]
 
 
-def _sets(con: sqlite3.Connection, table: str, key: str) -> dict[str, list[tuple[str, dict[str, float]]]]:
-    by_key: dict[str, dict[str, dict[str, float]]] = {}
-    for name, as_of, asset_class, weight in con.execute(
-        f"SELECT {key}, as_of, asset_class, weight_micros FROM {table}"  # noqa: S608 -- fixed names
-    ):
-        by_key.setdefault(name, {}).setdefault(as_of, {})[asset_class] = weight / 1_000_000
-    return {name: sorted(by_date.items()) for name, by_date in by_key.items()}
+def _sets(con: sqlite3.Connection, table: str, key: str) -> WeightSets:
+    return weight_sets(
+        (name, as_of, asset_class, weight / 1_000_000) for name, as_of, asset_class, weight in con.execute(
+            f"SELECT {key}, as_of, asset_class, weight_micros FROM {table}"  # noqa: S608 -- fixed names
+        )
+    )
 
 
 def drift_by_year(

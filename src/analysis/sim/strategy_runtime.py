@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import date
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
-from analysis.sim.asset_classes import class_weights, weights_at
+from analysis.sim.asset_classes import class_weights, weight_sets, weights_at
 from analysis.sim.strategy_api import (
     ChainView, Context, Decision, LotRef, LotView, Put, StepView, Strategy, StrategyError, Take,
 )
@@ -51,6 +51,31 @@ class _LotInfo(NamedTuple):
     owner: str | None
     tags: frozenset[str]
     symbol: str | None
+
+
+class _Lots(Mapping[LotRef, LotView]):
+    """``Context.lots`` for one call: each lot's view is made the first time
+    it is read, so a strategy pays only for the lots it looks at."""
+
+    def __init__(self, refs: Mapping[LotRef, int], make: Callable[[int], LotView]) -> None:
+        self._refs = refs
+        self._make = make
+        self._views: dict[LotRef, LotView] = {}
+
+    def __getitem__(self, ref: LotRef) -> LotView:
+        view = self._views.get(ref)
+        if view is None:
+            view = self._views[ref] = self._make(self._refs[ref])
+        return view
+
+    def __iter__(self) -> Iterator[LotRef]:
+        return iter(self._refs)
+
+    def __len__(self) -> int:
+        return len(self._refs)
+
+    def __contains__(self, ref: object) -> bool:
+        return ref in self._refs
 
 
 class StrategyRuntime:
@@ -101,24 +126,29 @@ class StrategyRuntime:
                 frozenset(tags.get(account_id, ())), symbol or None,
             )
             self.lot_id[ref] = lot_id
-        sets: dict[str, dict[str, dict[str, float]]] = {}
-        for symbol, as_of, asset_class, weight in con.execute(
-            "SELECT symbol, as_of, asset_class, weight_micros FROM security_allocation"
-        ):
-            sets.setdefault(symbol, {}).setdefault(as_of, {})[asset_class] = weight / 1_000_000
-        self._sets = {s: sorted(by_date.items()) for s, by_date in sets.items()}
-        targets: dict[str, dict[str, dict[str, float]]] = {}
-        for target_set, as_of, asset_class, weight in con.execute(
-            "SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target"
-        ):
-            targets.setdefault(target_set, {}).setdefault(as_of, {})[asset_class] = weight / 1_000_000
-        self._targets = {t: sorted(by_date.items()) for t, by_date in targets.items()}
+        self._sets = weight_sets(
+            (symbol, as_of, asset_class, weight / 1_000_000) for symbol, as_of, asset_class, weight
+            in con.execute("SELECT symbol, as_of, asset_class, weight_micros FROM security_allocation")
+        )
+        self._targets = weight_sets(
+            (name, as_of, asset_class, weight / 1_000_000) for name, as_of, asset_class, weight
+            in con.execute("SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")
+        )
         self._weights_cache: dict[tuple[int, str], dict[str, float]] = {}
-        self._memory_changed = False
+        self._roth_cache: dict[tuple[int, date], bool | None] = {}
+        self._chain_views: dict[int, ChainView] = {}
+        # The asset and liability lots a strategy sees, in id order.
+        self._visible = {
+            info.ref: lot_id for lot_id, info in self.lots.items() if info.kind in ("asset", "liability")
+        }
+        # Each strategy's memory as last written to a decision row.
+        self._recorded_memory: dict[int, str] = {}
 
         sources = dict(con.execute("SELECT module, source FROM strategy_source").fetchall())
-        kinds = StrategyKinds(sources)
+        # A copy of the modules for this run alone: no state from another run.
+        self._kinds = kinds = StrategyKinds(sources, fresh=True)
         if kinds.problems:
+            kinds.unload()
             raise StrategyError("; ".join(kinds.problems))
         for sid, name, kind, chain_id, start, end, params_json in rows:
             cls = kinds.get(kind)
@@ -126,6 +156,13 @@ class StrategyRuntime:
             role = self.chain_role.get(chain_id) or ""
             self.owned[chain_id] = Owned(sid, name, kind, cls(name, params), chain_id, role, start, end)
             self.memory[sid] = {}
+            self._recorded_memory[sid] = "{}"
+
+    def close(self) -> None:
+        """Unload this run's copy of the strategy modules."""
+        kinds = getattr(self, "_kinds", None)
+        if kinds is not None:
+            kinds.unload()
 
     def __bool__(self) -> bool:
         return bool(self.owned)
@@ -161,27 +198,41 @@ class StrategyRuntime:
             raise StrategyError(f"no target set {target_set!r}")
         return weights_at(sets, month_s)
 
+    def _roth(self, lot_id: int, month: date) -> bool | None:
+        key = (lot_id, month)
+        if key not in self._roth_cache:
+            self._roth_cache[key] = self._roth_qualified(lot_id, month)
+        return self._roth_cache[key]
+
     def context(self, owned: Owned, month: date) -> Context:
         month_s = month.isoformat()
-        views: dict[LotRef, LotView] = {}
-        for lot_id, info in self.lots.items():
-            if info.kind not in ("asset", "liability"):
-                continue
-            views[info.ref] = LotView(
+
+        def view(lot_id: int) -> LotView:
+            # Balances as they stand while the strategy is being asked.
+            info = self.lots[lot_id]
+            return LotView(
                 ref=info.ref, kind=info.kind, subkind=info.subkind, lot_subkind=info.lot_subkind,
                 tax_treatment=info.tax_treatment, owner=info.owner, tags=info.tags,
                 symbol=info.symbol, balance=self._balances.get(lot_id, 0),
                 cost_basis=self._cost_bases.get(lot_id), minimum=self._minimum_of.get(lot_id, 0),
-                roth_qualified=self._roth_qualified(lot_id, month),
+                roth_qualified=self._roth(lot_id, month),
             )
+
         return Context(
-            month=month, lots=MappingProxyType(views),
+            month=month, lots=_Lots(self._visible, view),
             weights=lambda ref: MappingProxyType(self._weights(self.lot_id[ref], month_s)),
             targets=lambda name: self._target(name, month_s),
             memory=self.memory[owned.id],
         )
 
     def chain_view(self, chain_id: int) -> ChainView:
+        """``chain_id`` as a strategy sees it; fixed for the run, so made once."""
+        cached = self._chain_views.get(chain_id)
+        if cached is None:
+            cached = self._chain_views[chain_id] = self._make_chain_view(chain_id)
+        return cached
+
+    def _make_chain_view(self, chain_id: int) -> ChainView:
         steps: list[StepView] = []
         for step in self._members.get(chain_id, []):
             source_id, maximum, percent = step[0], step[1], step[2]
@@ -219,16 +270,14 @@ class StrategyRuntime:
         what = f"strategy {owned.name!r} ({owned.kind}) {hook} in {month.isoformat()}"
         chain = self.chain_view(chain_id)
         ctx = self.context(owned, month)
-        before = json.dumps(self.memory[owned.id], sort_keys=True)
         try:
             decision = getattr(owned.strategy, hook)(ctx, chain, amount)
         except Exception as e:
             raise StrategyError(f"{what}: {type(e).__name__}: {e}") from e
         try:
-            after = json.dumps(self.memory[owned.id], sort_keys=True)
+            json.dumps(self.memory[owned.id], sort_keys=True)
         except (TypeError, ValueError) as e:
             raise StrategyError(f"{what}: memory must hold JSON values: {e}") from e
-        self._memory_changed = after != before
         if decision is None:
             return None
         if not isinstance(decision, Decision):
@@ -262,13 +311,18 @@ class StrategyRuntime:
         self, con: sqlite3.Connection, owned: Owned, hook: str, *, step_id: int, chain_id: int,
         asked: int, decision: Decision,
     ) -> int:
-        """Insert the decision row (amounts filled in by :meth:`finish`)."""
+        """Insert the decision row (amounts filled in by :meth:`finish`). Its
+        memory is written when it differs from the last row's, so changes made
+        while answering None show on the next decision."""
+        memory = json.dumps(self.memory[owned.id], sort_keys=True)
+        changed = memory != self._recorded_memory[owned.id]
+        self._recorded_memory[owned.id] = memory
         cur = con.execute(
             "INSERT INTO strategy_decision(step_id, strategy_id, hook, chain_id, asked_cents, "
             "chosen_cents, fallback_cents, note, detail_json, memory_json) "
             "VALUES (?,?,?,?,?,0,0,?,?,?)",
             (step_id, owned.id, hook, chain_id, asked, decision.note, decision.detail_json(),
-             json.dumps(self.memory[owned.id], sort_keys=True) if self._memory_changed else None),
+             memory if changed else None),
         )
         assert cur.lastrowid is not None
         return cur.lastrowid

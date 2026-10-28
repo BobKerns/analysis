@@ -14,6 +14,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Se
 from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
+import subprocess
 import tempfile
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
@@ -2372,9 +2373,7 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
     """The run's strategies (#326): each one's kind and chain, how many
     decisions it made, and how much it moved against what it was asked.
     Says nothing for a run with none, or one from before them."""
-    if con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'strategy_decision'"
-    ).fetchone() is None:
+    if not _has_table(con, "strategy_decision"):
         return
     rows = con.execute(
         "SELECT s.name, s.kind, c.name, COUNT(d.id), COALESCE(SUM(d.asked_cents), 0), "
@@ -13906,7 +13905,11 @@ def strategy_check_command(scenario: str | None, data_dir: Path | None) -> None:
     """Load the scenario and run it twice, comparing every strategy
     decision: a strategy must decide the same way every time (no clock,
     files, network or unseeded randomness), or runs can't be reproduced
-    (ADR-004). Reports the first difference."""
+    (ADR-004). Reports the first difference.
+
+    Each run is its own Python process with its own string-hash seed, as an
+    ensemble worker or the next `sim run` would be, so a strategy that
+    depends on set order or hash() is caught too."""
     data = _resolve_data_dir(data_dir)
     name = _resolve_scenario(data, scenario).name
     with tempfile.TemporaryDirectory() as td:
@@ -13918,9 +13921,9 @@ def strategy_check_command(scenario: str | None, data_dir: Path | None) -> None:
             raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
         _echo_load_warnings(result, unused=True)
         decisions = []
-        for i in range(2):
-            run = run_scenario(result.intent_path, Path(td) / f"check{i}.sqlite3", run_by="check",
-                               allow_dirty_data=True, allow_dirty_code=True)
+        for i, hash_seed in enumerate(("1", "2")):
+            run = Path(td) / f"check{i}.sqlite3"
+            _run_in_fresh_process(result.intent_path, run, hash_seed)
             con = connect_sim_file(run)
             try:
                 decisions.append(con.execute(
@@ -13938,6 +13941,25 @@ def strategy_check_command(scenario: str | None, data_dir: Path | None) -> None:
     if len(first) != len(second):
         raise click.ClickException(f"the runs made {len(first)} and {len(second)} decisions")
     click.echo(f"ok: {len(first)} decision{'' if len(first) == 1 else 's'}, the same in both runs")
+
+
+_CHECK_RUN = (
+    "import sys; from pathlib import Path; from analysis.sim.engine import run_scenario; "
+    "run_scenario(Path(sys.argv[1]), Path(sys.argv[2]), run_by='check', "
+    "allow_dirty_data=True, allow_dirty_code=True)"
+)
+
+
+def _run_in_fresh_process(intent_path: Path, run_path: Path, hash_seed: str) -> None:
+    """Run the intent in a new interpreter with ``PYTHONHASHSEED=hash_seed``;
+    a failed run is reported with the end of its traceback."""
+    done = subprocess.run(
+        [sys.executable, "-c", _CHECK_RUN, str(intent_path), str(run_path)],
+        env={**os.environ, "PYTHONHASHSEED": hash_seed}, capture_output=True, text=True, check=False,
+    )
+    if done.returncode:
+        tail = "\n".join(done.stderr.strip().splitlines()[-5:])
+        raise click.ClickException(f"the run failed:\n{tail}")
 
 
 @sim_group_command.group(name="target")

@@ -740,7 +740,7 @@ CREATE TABLE strategy_decision (
     fallback_cents INTEGER NOT NULL,
     note           TEXT NOT NULL DEFAULT '',
     detail_json    TEXT NOT NULL DEFAULT '{}',
-    -- The strategy's memory after the call, only when the call changed it.
+    -- The strategy's memory after the call, only when it differs from its last row's.
     memory_json    TEXT
 );
 CREATE INDEX idx_decision_step ON strategy_decision(step_id);

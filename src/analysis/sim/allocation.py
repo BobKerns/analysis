@@ -16,7 +16,7 @@ from typing import Literal
 import pandas as pd
 
 from analysis.sim import registries
-from analysis.sim.asset_classes import UNCLASSIFIED, class_weights, is_lot_key, lot_key
+from analysis.sim.asset_classes import UNCLASSIFIED, class_weights, is_lot_key, lot_key, weight_sets
 from analysis.sim.connection import Connection
 from analysis.frames import named_rows
 from analysis.sim.holdings import lots_frame
@@ -37,11 +37,10 @@ GroupingOrNone = Literal["account", "owner", "subkind", "tax_treatment", "securi
 
 def _weight_sets(source: Connection) -> dict[str, list[tuple[str, dict[str, float]]]]:
     """Symbol to its weight sets, oldest first: ``(as_of, {asset_class: weight})``."""
-    frame = source.items("security_allocation")
-    sets: dict[str, dict[str, dict[str, float]]] = {}
-    for row in named_rows(frame):
-        sets.setdefault(row.symbol, {}).setdefault(row.as_of, {})[row.asset_class] = row.weight_micros / 1_000_000
-    return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
+    return weight_sets(
+        (row.symbol, row.as_of, row.asset_class, row.weight_micros / 1_000_000)
+        for row in named_rows(source.items("security_allocation"))
+    )
 
 
 def _reference_date(source: Connection, as_of: str) -> str:
@@ -60,12 +59,13 @@ def lot_classes(source: Connection, month: str | None = None) -> pd.DataFrame:
     owners = source.items("account").set_index("name")["owner"]
     lots = lots.assign(owner=lots["account"].map(owners).fillna(_JOINT))
     sets = _weight_sets(source)
+    dates = {as_of: _reference_date(source, as_of) for as_of in set(lots["as_of"])}
     rows = []
     for lot in named_rows(lots):
         symbol = lot.symbol if isinstance(lot.symbol, str) and lot.symbol else None
         weights = class_weights(
             symbol=symbol, account=lot.account, lot=lot.lot, subkind=lot.subkind,
-            sets=sets, date=_reference_date(source, lot.as_of),
+            sets=sets, date=dates[lot.as_of],
         )
         for asset_class, weight in weights.items():
             rows.append({

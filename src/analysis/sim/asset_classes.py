@@ -7,13 +7,27 @@ function, so the two can't disagree.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from analysis.sim import registries
 
-__all__ = ["UNCLASSIFIED", "class_weights", "is_lot_key", "lot_key", "weights_at"]
+__all__ = ["UNCLASSIFIED", "WeightSets", "class_weights", "is_lot_key", "lot_key", "weight_sets", "weights_at"]
 
 UNCLASSIFIED = "unclassified"
+
+type WeightSets = dict[str, list[tuple[str, dict[str, float]]]]
+"""A key (a symbol, ``<account>:<lot>`` or target set) to its dated weight
+sets, oldest first: ``(as_of, {asset_class: weight})``."""
+
+
+def weight_sets[V](rows: Iterable[tuple[str, str, str, V]]) -> dict[str, list[tuple[str, dict[str, V]]]]:
+    """``(key, as_of, asset_class, weight)`` rows grouped as :data:`WeightSets`
+    (weights as fractions there; micros or text for the loader and editors):
+    every reader of allocations and targets builds them here."""
+    by_key: dict[str, dict[str, dict[str, V]]] = {}
+    for key, as_of, asset_class, weight in rows:
+        by_key.setdefault(key, {}).setdefault(as_of, {})[asset_class] = weight
+    return {key: sorted(by_date.items()) for key, by_date in by_key.items()}
 
 
 def weights_at(sets: Sequence[tuple[str, Mapping[str, float]]], date: str) -> Mapping[str, float]:

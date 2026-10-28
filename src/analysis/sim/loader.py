@@ -2142,7 +2142,7 @@ def _allocation_weight_sets(
 ) -> dict[str, list[tuple[str, dict[str, int]]]]:
     """Symbol to its allocation sets, oldest first: ``(as_of, {asset_class: weight
     micros})``. Rows ``_validate_allocations`` rejects are left to its issues."""
-    sets: dict[str, dict[str, dict[str, int]]] = {}
+    rows = []
     for row in allocations:
         symbol, asset_class = row.get("symbol", ""), row.get("asset_class", "")
         if not symbol or asset_class not in registries.ASSET_CLASSES:
@@ -2151,8 +2151,8 @@ def _allocation_weight_sets(
             weight = _percent_to_micros(row.get("weight", ""))
         except ValueError:
             continue
-        sets.setdefault(symbol, {}).setdefault(row.get("as_of", ""), {})[asset_class] = weight
-    return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
+        rows.append((symbol, row.get("as_of", ""), asset_class, weight))
+    return asset_classes.weight_sets(rows)
 
 
 def _allocation_blend(
@@ -4309,15 +4309,14 @@ def _allocation_class_sets(
 ) -> dict[str, list[tuple[str, dict[str, float]]]]:
     """allocations.csv as ``asset_classes.class_weights`` takes it: symbol (or
     ``<account>:<lot>`` key) to its weight sets, oldest first."""
-    sets: dict[str, dict[str, dict[str, float]]] = {}
+    rows = []
     for row in allocations:
         try:
             weight = _percent_to_micros(row.get("weight", "")) / 1_000_000
         except ValueError:
             continue  # reported by _validate_allocations
-        sets.setdefault(row.get("symbol", ""), {}).setdefault(row.get("as_of", ""), {})[
-            row.get("asset_class", "")] = weight
-    return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
+        rows.append((row.get("symbol", ""), row.get("as_of", ""), row.get("asset_class", ""), weight))
+    return asset_classes.weight_sets(rows)
 
 
 def _read_chain_files(
