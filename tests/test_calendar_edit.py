@@ -290,12 +290,119 @@ def test_writing_an_inherited_row_unchanged_writes_no_override(
 def test_an_override_of_an_unnamed_row_must_keep_its_key(
     test_data_dir: Path, child_calendar: Callable[[], pd.DataFrame],
 ) -> None:
-    result = _edit_child(test_data_dir, "healthcare", answers=["amount", "1500.00", ""])
+    # Write, decline to name the row in its parent, then cancel.
+    result = _edit_child(test_data_dir, "healthcare", answers=["amount", "1500.00", "", "", "cancel"])
 
     assert result.exit_code != 0
     assert "has no name, so an override is matched to it by its amount" in result.output
-    assert "sim calendar edit --scenario retire_alice" in result.output
+    assert "sim calendar edit 3 --scenario retire_alice --name NAME" in result.output
     assert child_calendar().empty
+
+
+def test_edit_offers_to_name_an_unnamed_row_where_it_is_defined(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame],
+    child_calendar: Callable[[], pd.DataFrame],
+) -> None:
+    """#356: moving Bill's retirement in a child names the parent's row first."""
+    parent = calendar_rows()
+
+    result = _edit_child(
+        test_data_dir, "salary_bill", answers=["date", "2032-12-31", "", "bill_retires"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "name it in 'retire_alice'" in result.output
+    after = calendar_rows()
+    assert after.loc[4, "name"] == "bill_retires"
+    pd.testing.assert_frame_equal(after.drop(columns="name"), parent.drop(columns="name"))
+    override = child_calendar()
+    assert len(override) == 1
+    assert override.loc[0, ["name", "date", "scheduled_name"]].tolist() == [
+        "bill_retires", "2032-12-31", "salary_bill",
+    ]
+    check = CliRunner().invoke(main, ["sim", "check", "child", "--data-dir", str(test_data_dir)])
+    assert check.exit_code == 0, check.output
+
+
+def test_edit_offers_a_name_for_an_unnamed_fixed_row_at_the_review(
+    calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    result = calendar_edit("salary_bill", answers=["name", "bill_retires", ""])
+
+    assert result.exit_code == 0, result.output
+    assert "not a field here" not in result.output
+    assert calendar_rows().loc[4, "name"] == "bill_retires"
+
+
+def _edit_with_options(test_data_dir: Path, scenario: str, *args: str) -> Result:
+    return CliRunner().invoke(
+        main,
+        ["sim", "calendar", "edit", *args, "--data-dir", str(test_data_dir), "--scenario", scenario],
+    )
+
+
+def test_options_change_a_row_without_asking(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    before = calendar_rows()
+
+    result = _edit_with_options(
+        test_data_dir, "retire_alice", "salary_bill", "--date", "2032-12-31", "--name", "bill_retires",
+    )
+
+    assert result.exit_code == 0, result.output
+    after = calendar_rows()
+    assert after.loc[4, ["date", "name"]].tolist() == ["2032-12-31", "bill_retires"]
+    changed = after.ne(before)
+    assert changed.sum().sum() == 2
+
+
+def test_options_name_the_row_in_the_parent_then_move_it_in_the_child(
+    test_data_dir: Path, child_calendar: Callable[[], pd.DataFrame],
+) -> None:
+    refused = _edit_with_options(test_data_dir, "child", "salary_bill", "--date", "2032-12-31")
+    assert refused.exit_code != 0
+    assert "sim calendar edit 5 --scenario retire_alice --name NAME" in refused.output
+    assert child_calendar().empty
+
+    named = _edit_with_options(test_data_dir, "retire_alice", "5", "--name", "bill_retires")
+    assert named.exit_code == 0, named.output
+    moved = _edit_with_options(test_data_dir, "child", "bill_retires", "--date", "2032-12-31")
+
+    assert moved.exit_code == 0, moved.output
+    assert child_calendar().loc[0, ["name", "date"]].tolist() == ["bill_retires", "2032-12-31"]
+
+
+def test_an_empty_option_clears_a_field(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    assert _edit_with_options(test_data_dir, "retire_alice", "3", "--description", "COBRA").exit_code == 0
+    assert calendar_rows().loc[2, "description"] == "COBRA"
+
+    result = _edit_with_options(test_data_dir, "retire_alice", "3", "--description", "")
+
+    assert result.exit_code == 0, result.output
+    assert calendar_rows().loc[2, "description"] == ""
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (("salary_bill", "--amount", "5"), "a retire-scheduled row doesn't read --amount"),
+    (("3", "--vary-mode", "1200"), "--vary-mode doesn't apply to this row as changed"),
+    (("--date", "2032-12"), "with options, give ROW"),
+    (("retire_scheduled", "--date", "2032-12"), "matches 2 rows"),
+    (("1", "--vary-ramp-months", "x"), "--vary-ramp-months must be a whole number"),
+])
+def test_options_refuse_what_the_row_does_not_take(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame],
+    args: tuple[str, ...], message: str,
+) -> None:
+    before = calendar_rows()
+
+    result = _edit_with_options(test_data_dir, "retire_alice", *args)
+
+    assert result.exit_code != 0
+    assert message in result.output
+    pd.testing.assert_frame_equal(calendar_rows(), before)
 
 
 def test_an_override_of_a_named_row_may_change_its_key(
