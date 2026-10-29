@@ -3,3 +3,6 @@ data/
 out/
 state/
 node_modules/
+# Eval cases: a prompt or grader text after YAML front matter, not documents.
+plugins/*/evals/
+plugins/*/evals-neutral/

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: active-fdcax
+expected_outcome: |
+  Active equity tear sheet on FDCAX: manager and tenure, returns vs benchmark after fees over several periods, turnover and capital-gains distributions, index alternative cost comparison, analytical bottom line on the fee question, overview/概要/glossary.

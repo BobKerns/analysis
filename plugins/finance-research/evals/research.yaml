@@ -1,0 +1,5 @@
+# Settings these eval cases expect: render the plugin with this file before
+# running them (docs/guides/finance-research.md). The cases in
+# ../evals-neutral run against the neutral plugin instead.
+languages: [en, ja]
+tax_state: CA
