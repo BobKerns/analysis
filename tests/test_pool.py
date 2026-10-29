@@ -325,6 +325,8 @@ def test_a_pool_reuses_components_that_are_up_to_date(
     assert "component e_a: unchanged" in again.output and "component e_b: unchanged" in again.output
     code = freshness.code_tree()
     assert freshness.unchanged_run(test_data_dir, runs, pool_scenarios, code) is not None
+    # A component `sim all` just rebuilt (None) isn't checked again: the pool is stale.
+    assert freshness.unchanged_run(test_data_dir, runs, pool_scenarios, code, known={"e_a": None}) is None
     # Its own definition is part of what it was built from.
     write_scenario_meta(pool_scenarios, {"pool": {"components": {"e_a": "50%", "e_b": "50%"}}})
     commit_test_data()
@@ -526,9 +528,12 @@ def test_draws_say_when_a_pool_component_holds_only_the_base_case(
 
 
 @pytest.mark.slow
-def test_sim_ensemble_guard_rails_shows_a_pools_own_rails(
-    pool_batch: Path, test_data_dir: Path, pool_scenarios: str,
+def test_ensemble_guard_rails_show_a_pools_own_rails(
+    pool_batch: Path, test_data_dir: Path, pool_scenarios: str, state_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from analysis.sim.notebook_ui import ensemble_widgets
+
     data = ("--data-dir", str(test_data_dir))
     own = _sim("guard-rail", "add", "pool_budget", "--measure", "spending", "--side", "above",
                "--basis", "cpi_constant", "--threshold", "90000", "--scenario", pool_scenarios, *data)
@@ -538,3 +543,11 @@ def test_sim_ensemble_guard_rails_shows_a_pools_own_rails(
     assert "4 member(s); guard rails" in result.output
     # The pool's own rail and the ones it inherits from its base component.
     assert "pool_budget (" in result.output and "four_percent (" in result.output
+
+    shown: list[object] = []
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    ensemble_widgets.ensemble_guard_rails_widget(
+        data_dir=test_data_dir, runs_dir=state_dir / "runs", default=pool_scenarios)
+    texts = [str(getattr(item, "data", "")) for item in shown]
+    assert any(t.startswith("**pool_budget**") for t in texts)
+    assert any(t.startswith("**four_percent**") for t in texts)

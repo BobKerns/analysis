@@ -1442,8 +1442,9 @@ def _write_pool(
         meta["ensemble_size"] = size
     if reserve is not None:
         meta["reserve"] = reserve
-    row = {"name": name, "description": description, "start": "", "end": "", "seed": "",
-           "parent_scenario": "", "created_by": created_by or sc.current_user(),
+    # A pool's row has no dates, seed or parents (ADR-009 §1).
+    row = {**dict.fromkeys(registries.SCENARIO_HEADER, ""), "name": name, "description": description,
+           "created_by": created_by or sc.current_user(),
            "meta_json": json.dumps(meta, separators=(",", ":"))}
     existed = folder.is_dir()
     old_csv = (folder / "scenario.csv").read_bytes() if (folder / "scenario.csv").is_file() else None
@@ -1505,12 +1506,12 @@ def ensemble_pool_create(
     if name is None:
         name = _ask_new_name("name for the new pool")
     name = name.strip()
-    if not registries.SCENARIO_NAME_RE.match(name):
-        raise click.ClickException(
-            f"invalid scenario name: {name!r} (lowercase letters, digits, '_' and '-', "
-            "starting with a letter or digit)")
-    if (data / "scenarios" / name).exists():
-        raise click.ClickException(f"scenario already exists: {data / 'scenarios' / name}")
+    from analysis.sim.rename import check_new_scenario
+
+    try:
+        check_new_scenario(data / "scenarios", name)
+    except (ValueError, FileExistsError) as exc:
+        raise click.ClickException(str(exc)) from None
     if not components:
         components = _ask_pool_components(data, None)
     if ensemble_size is not None and ensemble_size <= 0:
@@ -2771,7 +2772,7 @@ def all_scenarios(
     Reports failures per scenario and keeps going; does not stop or fail the
     command itself.
     """
-    from analysis.sim.freshness import code_tree, unchanged_run
+    from analysis.sim.freshness import Unchanged, code_tree, unchanged_run
 
     resolved = _resolve_data_dir(data_dir)
     try:
@@ -2797,9 +2798,14 @@ def all_scenarios(
     # rerun them (ADR-009).
     built: set[str] = set()
     failed: set[str] = set()
+    # What each settled one's freshness check found (None once rebuilt or
+    # failed), so a pool's own check doesn't repeat it.
+    known: dict[str, Unchanged | None] = {}
     for name in names:
         click.echo(f"=== {name} ===")
-        unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code)
+        unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code,
+                                                     known=known)
+        known[name] = unchanged
         if unchanged is not None:
             skipped.append(name)
             built.add(name)

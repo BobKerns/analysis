@@ -346,9 +346,9 @@ def pool_size(data_dir: Path, pool: Pool) -> int:
 
     if pool.size is not None:
         return pool.size
-    sizes = [size.value for c in pool.components
-             if (size := ensemble_settings(data_dir, c)[1]) is not None]
-    return min(sizes) if sizes else 0
+    # The listing's rule (scenario._pool_settings), so the two never differ.
+    size = ensemble_settings(data_dir, pool.name)[1]
+    return size.value if size is not None else 0
 
 
 def assign_members(weights: Sequence[int], size: int, base: int) -> list[int]:

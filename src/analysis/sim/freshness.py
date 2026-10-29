@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,16 +105,18 @@ class Unchanged:
 
 def unchanged_run(
     data_dir: Path, runs_dir: Path, scenario: str, code: CodeTree,
+    *, known: Mapping[str, Unchanged | None] | None = None,
 ) -> Unchanged | None:
     """``scenario``'s latest run if rerunning it couldn't change it: it
     finished, and the code trees, Python version and data tree are what it
-    ran with, all clean then and now. Otherwise None."""
+    ran with, all clean then and now. Otherwise None. ``known`` is a pool's
+    components' answers, already found (see :func:`unchanged_pool`)."""
     if code.repo is None or code.trees is None:
         return None
     from analysis.sim.lineage import is_pool
 
     if is_pool(Path(data_dir) / "scenarios", scenario):
-        return unchanged_pool(data_dir, runs_dir, scenario, code)
+        return unchanged_pool(data_dir, runs_dir, scenario, code, known=known)
     from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
 
     try:
@@ -156,11 +159,13 @@ def unchanged_run(
 
 def unchanged_pool(
     data_dir: Path, runs_dir: Path, pool_name: str, code: CodeTree,
+    *, known: Mapping[str, Unchanged | None] | None = None,
 ) -> Unchanged | None:
     """ADR-009: a pool's latest batch if building it again couldn't change
     it: the pool's definition and data tree are what it was built with, and
     each component's latest batch is still the one it took members from and
-    is itself unchanged. Otherwise None."""
+    is itself unchanged. Otherwise None. A component in ``known`` (`sim
+    all` has just checked it, or built it: None) isn't checked again."""
     from analysis.sim.pool import PoolError, pool_record, pool_size, read_pool
 
     batch = latest_ensemble_batch(Path(runs_dir) / pool_name, mode="monte_carlo", wait=False)
@@ -182,7 +187,8 @@ def unchanged_pool(
         return None
     took = {source["component"]: source["batch"] for source in record.get("sources", [])}
     for component in pool.components:
-        fresh = unchanged_run(data_dir, runs_dir, component, code)
+        fresh = (known[component] if known is not None and component in known
+                 else unchanged_run(data_dir, runs_dir, component, code))
         if fresh is None or fresh.path.name != took.get(component):
             return None
     return Unchanged(batch)

@@ -513,7 +513,9 @@ def _rename_self(old: str, new: str) -> Callable[[dict[str, str]], None]:
     return edit
 
 
-def _check_new_scenario(scenarios: Path, new: str) -> Path:
+def check_new_scenario(scenarios: Path, new: str) -> Path:
+    """The folder for new scenario ``new``: a valid name, not yet taken.
+    Raises ``ValueError`` or ``FileExistsError``."""
     if not registries.SCENARIO_NAME_RE.match(new):
         raise ValueError(
             f"invalid scenario name: {new!r} (lowercase letters, digits, '_' and '-', "
@@ -540,7 +542,7 @@ def copy_scenario(data_dir: Path, old: str, new: str, *, created_by: str | None 
     if old not in scenario_folders(scenarios) and not is_template(scenarios, old):
         raise FileNotFoundError(f"scenario not found: {scenarios / old}")
     old_dir = _folder_of(scenarios, old)
-    new_dir = _check_new_scenario(scenarios, new)
+    new_dir = check_new_scenario(scenarios, new)
     shutil.copytree(old_dir, new_dir)
     # Links in the copy are worked out from where the original sits, so one
     # into its own folder now points into the copy's.
@@ -599,7 +601,7 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
 
     scenarios = data_dir / "scenarios"
     old_dir = scenarios / old
-    new_dir = _check_new_scenario(scenarios, new)
+    new_dir = check_new_scenario(scenarios, new)
     # Only a folder's own name: a path or '..' could reach outside scenarios/.
     if old not in scenario_folders(scenarios):
         raise FileNotFoundError(f"scenario not found: {old_dir}")
