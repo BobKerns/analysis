@@ -5,6 +5,7 @@ import click
 from analysis.amazon.cli import amazon_group_command
 from analysis.historical.cli import historical_charts_command, historical_command
 from analysis.jupyter.cli import jupyter_command
+from analysis.research_plugin import research_plugin_command
 from analysis.sim.cli import sim_group_command
 
 
@@ -18,6 +19,7 @@ main.add_command(sim_group_command)
 main.add_command(jupyter_command)
 main.add_command(historical_command)
 main.add_command(historical_charts_command)
+main.add_command(research_plugin_command)
 
 
 if __name__ == "__main__":

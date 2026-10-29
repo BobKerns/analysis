@@ -112,8 +112,8 @@ changes to the simulator or its loader:
 
 ```sh
 .venv/bin/python -m pytest -q -n auto -m "not slow"  # tests, less the slow ones
-.venv/bin/python -m ruff check src tests          # lint
-.venv/bin/ty check                                # types (ty; src and tests, per pyproject.toml)
+.venv/bin/python -m ruff check src tests plugins  # lint
+.venv/bin/ty check                                # types (ty; src, tests, plugins: pyproject.toml)
 npm run spell                                     # spelling (cspell)
 npm run markdownlint                              # markdown (markdownlint)
 .venv/bin/analysis sim check --all                # simulator changes: real scenarios still load

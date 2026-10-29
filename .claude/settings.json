@@ -1,0 +1,7 @@
+{
+  "extraKnownMarketplaces": {
+    "analysis": {
+      "source": {"source": "directory", "path": "."}
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "analysis",
+  "description": "Opt-in Claude Code plugins for this repository.",
+  "owner": {"name": "BobKerns", "url": "https://github.com/BobKerns"},
+  "plugins": [
+    {
+      "name": "finance-research",
+      "source": "./plugins/finance-research",
+      "description": "Tear sheets on funds, ETFs and companies from free public sources (neutral defaults: English, no tax state)."
+    }
+  ]
+}

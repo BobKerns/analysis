@@ -966,8 +966,12 @@ To check it:
 #### Asking an AI to fill it in
 
 An AI assistant can look up a fund's published breakdown for you, and a
-price history the fetch can't get. Give it the formats, because the loader
-rejects anything else. To get the weights as a command you can run:
+price history the fetch can't get. With Claude Code, the finance-research
+plugin does the whole job: ask it for a tear sheet on the fund, and its
+Allocations section ends with rows in `allocations.csv`'s format, with
+sources and dates ([the finance research guide](guides/finance-research.md)).
+Otherwise, give the assistant the formats, because the loader rejects
+anything else. To get the weights as a command you can run:
 
 ```text
 Look up the most recent published asset breakdown of the fund ABCDX and

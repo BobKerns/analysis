@@ -22,6 +22,7 @@ dependencies = [
   "anywidget>=0.11.0",
   "playwright>=1.64.0",
   "pyyaml>=6.0.3",
+  "jinja2>=3.1.6",
 ]
 
 [project.scripts]
@@ -77,8 +78,12 @@ target-version = "py314"
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["I001", "F541"]
 
+[tool.ruff.lint.per-file-ignores]
+# The plugin's scripts are dense one-file tools Claude runs; long lines kept.
+"plugins/**" = ["E501"]
+
 [tool.ty.environment]
 python-version = "3.14"
 
 [tool.ty.src]
-include = ["src", "tests"]
+include = ["src", "tests", "plugins"]

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: corpdev-intuit-toast
+expected_outcome: |
+  A corp dev target profile of Toast written from Intuit's point of view, with sourced financials (including R&D intensity and capital structure), valuation vs. peers, a strategic fit analysis specific to Intuit, and concrete integration and diligence considerations labelled as analysis.

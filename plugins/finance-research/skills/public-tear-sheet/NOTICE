@@ -1,0 +1,9 @@
+public-tear-sheet
+
+Derived from the tear-sheet skill, Copyright 2026-present Kensho
+Technologies, LLC, licensed under the Apache License, Version 2.0 (LICENSE
+in this folder). Changed in this repository: it works from free public
+sources instead of a paid data connector, adds the overview, translated
+overview and glossary tabs and the private-company template, and takes its
+household settings from the finance-research plugin's rendering
+(docs/guides/finance-research.md).

@@ -148,7 +148,7 @@ jobs:
 
       - name: Lint
         if: steps.changes.outputs.needed == 'true'
-        run: uv run --no-sync ruff check src tests
+        run: uv run --no-sync ruff check src tests plugins
 
       - name: Types
         # Run even when lint fails, so one run reports both.

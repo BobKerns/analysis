@@ -1,0 +1,4 @@
+# A translated-overview overlay: its files are copied into each skill's
+# references/ when research.yaml lists this language.
+name: Japanese
+tab: 概要 (Japanese overview)

@@ -1,0 +1,11 @@
+{# cspell:ignore endfor #}
+## Defaults for this installation
+- **Tabs:** {{ tabs | join(", ") }}.
+{% for lang in translations %}
+- **{{ lang.name }}:** only the overview is translated, following `references/overview-{{ lang.code }}.md`. Numbers stay as written in English ($38.0B), never converted.
+{% else %}
+- **Translated overviews:** none.
+{% endfor %}
+{% if optional_tabs %}
+- If the user asks for {{ optional_tabs }} on a particular sheet, leave that tab out.
+{% endif %}
