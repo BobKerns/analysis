@@ -24,6 +24,11 @@ The two measures:
 The portfolio is every asset account but real estate, vehicles and other
 assets, unless ``portfolio``'s tags say otherwise. The yearly arithmetic is
 ``measures``'s.
+
+An ensemble's members are evaluated the same way, from what the series store
+keeps of each (``RunPieces``: its transfer totals, asset balances, accounts,
+date_markers and household's end), then summarized across members: the
+share past each rail, the share ever past it, the RMS overshoot (ADR-006 §8).
 """
 
 from __future__ import annotations
@@ -42,16 +47,20 @@ import pandas as pd
 from analysis.frames import index_years
 from analysis.sim import measures, registries, units
 from analysis.sim.dates import month_end_iso, parse_relative_date, place_month
-from analysis.sim.lineage import load_order
+from analysis.sim.lineage import reading_order
 from analysis.sim.lineage import scenario_dir as _scenario_dir
 from analysis.sim.types import DollarMode
 
 if TYPE_CHECKING:
     from analysis.sim.connection import RunConnection
+    from analysis.sim.series_db import EnsembleSeries
 
 __all__ = [
     "GUARD_RAILS_FILE", "GuardRail", "GuardRailError", "RailResult", "References",
-    "TagFilter", "check_references", "comparison_frames", "episode_lines", "evaluate_run",
+    "EnsembleRailResult", "RunPieces", "TagFilter", "check_references", "comparison_frames",
+    "ensemble_comparison_frames", "ensemble_rail_frame", "ensemble_rails", "ensemble_results",
+    "ensemble_summary_frame",
+    "episode_lines", "evaluate_ensemble", "evaluate_run", "run_pieces",
     "margins_frame", "parse_cells", "parse_rows",
     "rail_frame", "read_rows", "references_from_rows", "references_from_run",
     "run_rails", "scenario_rails", "summary_frame",
@@ -185,10 +194,12 @@ class _Row:
 def read_rows(scenarios_dir: Path, scenario_name: str) -> tuple[list[_Row], list[str]]:
     """The scenario's rails as rows, merged down its load order by ``name``
     the way the loader merges ``scheduled.csv``: a later scenario's row
-    replaces the cells its file has. Also the issues of reading them."""
+    replaces the cells its file has. A pool's are its base component's,
+    under its own (``lineage.reading_order``). Also the issues of reading
+    them."""
     issues: list[str] = []
     merged: dict[str, _Row] = {}
-    for name in load_order(scenarios_dir, scenario_name):
+    for name in reading_order(scenarios_dir, scenario_name):
         path = _scenario_dir(scenarios_dir, name) / GUARD_RAILS_FILE
         if not path.exists():
             continue
@@ -390,11 +401,23 @@ def scenario_rails(
     return rails
 
 
+def run_scenario_name(rc: RunConnection) -> str:
+    """Whose rails a run is judged by: its scenario's, except a pool
+    member's (ADR-009), whose run is a component's but whose rails are
+    the pool's."""
+    from analysis.sim.pool import pool_record
+
+    batch = Path(rc.run_path).parent
+    if pool_record(batch) is not None:
+        return batch.parent.name
+    return str(rc.items("scenario")["name"].iloc[0])
+
+
 def run_rails(rc: RunConnection, scenarios_dir: Path) -> list[GuardRail]:
-    """The rails of the run's scenario, read from the data repo now (they
-    are a lens, not part of the run) and checked against the run."""
-    name = str(rc.items("scenario")["name"].iloc[0])
-    return scenario_rails(scenarios_dir, name, references_from_run(rc))
+    """The rails of the run's scenario (:func:`run_scenario_name`), read
+    from the data repo now (they are a lens, not part of the run) and
+    checked against the run."""
+    return scenario_rails(scenarios_dir, run_scenario_name(rc), references_from_run(rc))
 
 
 # ---------- a run's monthly series ----------
@@ -407,17 +430,20 @@ class _RunInputs:
     months: pd.DatetimeIndex
     axis: measures.YearAxis
     index: np.ndarray  # the run's cumulative CPI index (micros) by month
-    expenses: pd.DataFrame  # spending events: month, amount (dollars), tags
-    transfers: pd.DataFrame  # every transfer: month, amount, sides' names/kinds/subkinds
+    expenses: pd.DataFrame  # spending events: pos, amount (dollars), tags
+    transfers: pd.DataFrame  # every transfer: pos, amount, sides' names/kinds/subkinds
     balances: pd.DataFrame  # month x account, nominal dollars
     accounts: pd.DataFrame  # name -> kind, subkind, tags (frozenset)
     markers: dict[str, date]
     last_month: pd.Timestamp  # the household's last death, or the run's end
 
     def month_ends(self, events: pd.DataFrame) -> np.ndarray:
-        """Each month's total of ``events``' amounts, over the run's months."""
-        monthly = events.groupby("month")["amount"].sum()
-        return monthly.reindex(self.months, fill_value=0.0).to_numpy(dtype=float)
+        """Each month's total of ``events``' amounts, over the run's months
+        (``pos``, an event's month's place among them; -1 outside them)."""
+        pos = events["pos"].to_numpy()
+        inside = pos >= 0
+        return np.bincount(pos[inside], weights=events["amount"].to_numpy(dtype=float)[inside],
+                           minlength=len(self.months))
 
 
 def _effective_tags(rule_tags: frozenset[str], account_tags: frozenset[str]) -> frozenset[str]:
@@ -436,67 +462,79 @@ def _timestamp(value: str | date) -> pd.Timestamp:
     return stamp
 
 
-def _household_end(rc: RunConnection) -> pd.Timestamp | None:
-    """The household's last death, when every member of it has a lifespan
-    (the month a ``joint`` rule stops at, ``engine._rule_lifespans``)."""
-    persons = rc.items("person")
-    household = list(persons.loc[persons["role"] == "primary", "id"])
-    if not household:
-        household = list(persons.loc[persons["role"].notna(), "id"])
-    lifespans = rc.items("person_lifespan").set_index("person")["final_month"]
-    if not household or not all(p in lifespans.index for p in household):
-        return None
-    return _timestamp(max(str(lifespans[p]) for p in household))
+@dataclass(frozen=True)
+class RunPieces:
+    """The raw pieces of one run that every rail reads: from a run file
+    (``run_pieces``) or an ensemble member in the series store
+    (``EnsembleSeries.rail_pieces``), so the two evaluate alike."""
+
+    months: pd.DatetimeIndex
+    index: np.ndarray  # the cumulative CPI index (micros) by month
+    flows: pd.DataFrame  # RunConnection.monthly_flows: month, from_name, to_name, rule_tags, cents
+    balances: pd.DataFrame  # month x asset account, nominal dollars (0 where none)
+    accounts: pd.DataFrame  # name -> kind, subkind, tags (space-separated)
+    markers: dict[str, date]
+    household_end: date | None
+
+
+def run_pieces(rc: RunConnection) -> RunPieces:
+    nw = rc.net_worth_frame()
+    months = pd.DatetimeIndex(nw.index)
+    accounts = rc.items("account").set_index("name")[["kind", "subkind", "tags"]]
+    assets = list(accounts.index[accounts["kind"] == "asset"])
+    return RunPieces(
+        months=months,
+        index=nw["cumulative_index_micros"].astype(float).to_numpy(),
+        flows=rc.monthly_flows(),
+        balances=rc.balance_pivot().reindex(index=months, columns=assets).fillna(0.0),
+        accounts=accounts,
+        markers=rc.date_markers(),
+        household_end=rc.household_end(),
+    )
+
+
+def _inputs(pieces: RunPieces) -> _RunInputs:
+    from analysis.sim.connection import EXPENSE_SUBKIND_TO_CATEGORY, NON_CASH_EXPENSE_ACCOUNTS
+
+    months = pieces.months
+    accounts = pieces.accounts.copy()
+    accounts["tag_set"] = accounts["tags"].map(_tag_set)
+    kind, subkind = accounts["kind"], accounts["subkind"]
+    flows = pieces.flows
+    place = pd.Series(np.arange(len(months)), index=months)
+    pos = place.reindex(pd.DatetimeIndex(flows["month"])).fillna(-1).to_numpy(dtype=np.int64)
+    transfers = pd.DataFrame({
+        "pos": pos, "amount": flows["cents"].to_numpy(dtype=float) / 100,
+        "from_name": flows["from_name"], "from_kind": flows["from_name"].map(kind),
+        "from_subkind": flows["from_name"].map(subkind),
+        "to_name": flows["to_name"], "to_kind": flows["to_name"].map(kind),
+    })
+    to_subkind = flows["to_name"].map(subkind)
+    category = to_subkind.map(EXPENSE_SUBKIND_TO_CATEGORY)
+    spent = ((transfers["to_kind"] == "expense") & ~category.isin(["taxes", "business"])
+             & ~transfers["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS))
+    empty: frozenset[str] = frozenset()
+    account_tags = dict(zip(accounts.index, accounts["tag_set"], strict=True))
+    tags_of: dict[tuple[str, str], frozenset[str]] = {}
+    for key in zip(flows.loc[spent, "rule_tags"], flows.loc[spent, "to_name"], strict=True):
+        if key not in tags_of:
+            tags_of[key] = _effective_tags(_tag_set(key[0]), account_tags.get(key[1], empty))
+    expenses = transfers.loc[spent, ["pos", "amount"]].copy()
+    expenses["tags"] = [tags_of[key] for key in zip(flows.loc[spent, "rule_tags"],
+                                                    flows.loc[spent, "to_name"], strict=True)]
+    end = months.max() if len(months) else pd.Timestamp.max
+    death = None if pieces.household_end is None else _timestamp(pieces.household_end)
+    return _RunInputs(
+        months=months, axis=measures.year_axis(np.asarray(index_years(pd.Series(0.0, index=months)))),
+        index=pieces.index, expenses=expenses, transfers=transfers,
+        balances=pieces.balances, accounts=accounts[["kind", "subkind", "tag_set"]],
+        markers=pieces.markers,
+        last_month=min(end, death) if death is not None else end,
+    )
 
 
 def _run_inputs(rc: RunConnection) -> _RunInputs:
-    from analysis.sim.connection import (
-        EXPENSE_SUBKIND_TO_CATEGORY, NON_CASH_EXPENSE_ACCOUNTS, event_month,
-    )
-
-    nw = rc.net_worth_frame()
-    months = pd.DatetimeIndex(nw.index)
-    axis = measures.year_axis(np.asarray(index_years(nw)))
-    accounts = rc.items("account").set_index("name")
-    accounts["tag_set"] = accounts["tags"].map(_tag_set)
-    rules = rc.items("scheduled").set_index("id")["tags"].map(_tag_set)
-
-    transfers = rc.items("transfer_event").copy()
-    transfers["month"] = event_month(transfers)
-    transfers["amount"] = transfers["amount"] / 100
-
-    expenses = transfers[transfers["to_kind"] == "expense"]
-    category = expenses["to_subkind"].map(EXPENSE_SUBKIND_TO_CATEGORY)
-    expenses = expenses[~category.isin(["taxes", "business"])
-                        & ~expenses["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS)].copy()
-    empty: frozenset[str] = frozenset()
-    expenses["tags"] = [
-        _effective_tags(
-            rules.get(int(rid), empty) if kind in ("rule", "ytd_rule") and pd.notna(rid) else empty,
-            accounts["tag_set"].get(name, empty),
-        )
-        for kind, rid, name in zip(expenses["reason_kind"], expenses["reason_id"],
-                                   expenses["to_name"], strict=True)
-    ]
-    markers = {
-        str(name): date.fromisoformat(str(when)[:10])
-        for name, kind, when in zip(*(rc.items("calendar_event")[c] for c in ("name", "kind", "date")),
-                                    strict=True)
-        if kind == "date_marker" and name
-    }
-    end = months.max() if len(months) else pd.Timestamp.max
-    death = _household_end(rc)
-    return _RunInputs(
-        months=months, axis=axis,
-        index=nw["cumulative_index_micros"].astype(float).to_numpy(),
-        expenses=expenses[["month", "amount", "tags"]],
-        transfers=transfers[["month", "amount", "from_name", "from_kind", "from_subkind",
-                             "to_name", "to_kind"]],
-        balances=rc.balance_pivot().reindex(months).fillna(0.0),
-        accounts=accounts[["kind", "subkind", "tag_set"]],
-        markers=markers,
-        last_month=min(end, death) if death is not None else end,
-    )
+    return _inputs(run_pieces(rc))
 
 
 def _portfolio(inputs: _RunInputs, rail: GuardRail) -> list[str]:
@@ -580,16 +618,28 @@ def evaluate_run(
     rc: RunConnection, rails: Sequence[GuardRail], mode: DollarMode = DollarMode.CPI_CONSTANT,
 ) -> list[RailResult]:
     """Each rail on the run, in ``mode`` dollars."""
-    inputs = _run_inputs(rc)
+    return _evaluate(_run_inputs(rc), rails, mode)
+
+
+def _evaluate(inputs: _RunInputs, rails: Sequence[GuardRail], mode: DollarMode) -> list[RailResult]:
     factor = (1_000_000 / inputs.index if mode == DollarMode.CPI_CONSTANT
               else np.ones(len(inputs.months)))
     results: list[RailResult] = []
+    # Rails often share a portfolio (the default one) or a selection.
+    portfolios: dict[tuple[str, ...], tuple[np.ndarray, np.ndarray]] = {}
     for rail in rails:
-        portfolio = _portfolio(inputs, rail)
-        values = inputs.balances.reindex(columns=portfolio, fill_value=0.0).sum(axis=1).to_numpy()
-        withdrawn = _withdrawals(inputs, portfolio)
+        portfolio = tuple(_portfolio(inputs, rail))
+        if portfolio not in portfolios:
+            portfolios[portfolio] = (
+                inputs.balances.reindex(columns=list(portfolio), fill_value=0.0).sum(axis=1).to_numpy(),
+                _withdrawals(inputs, portfolio))
+        values, withdrawn = portfolios[portfolio]
         if rail.measure == "spending":
-            picked = inputs.expenses[[rail.select.keeps(tags) for tags in inputs.expenses["tags"]]]
+            keeps: dict[frozenset[str], bool] = {}
+            for tags in inputs.expenses["tags"]:
+                if tags not in keeps:
+                    keeps[tags] = rail.select.keeps(tags)
+            picked = inputs.expenses[[keeps[tags] for tags in inputs.expenses["tags"]]]
             measure = inputs.month_ends(picked)
         else:
             measure = withdrawn
@@ -601,6 +651,170 @@ def evaluate_run(
         )
         results.append(RailResult(rail, years))
     return results
+
+
+@dataclass(frozen=True)
+class EnsembleRailResult:
+    """One rail evaluated on every member of an ensemble: ``years``'s arrays
+    have a row per member (``stems``, ``member_indexes``), NaN in a year
+    the rail doesn't cover in that member (after its household's last
+    death, say)."""
+
+    rail: GuardRail
+    stems: list[str]
+    member_indexes: list[int | None]
+    years: measures.RailYears
+
+    @property
+    def applies(self) -> bool:
+        return bool(np.isfinite(self.years.margin).any())
+
+    def member(self, stem: str) -> RailResult | None:
+        """One member's result, as ``evaluate_run`` gives it."""
+        if stem not in self.stems:
+            return None
+        row = self.stems.index(stem)
+        y = self.years
+        return RailResult(self.rail, measures.RailYears(
+            y.years, *(getattr(y, f)[row:row + 1] for f in
+                       ("measure", "threshold", "margin", "cumulative", "carried"))))
+
+
+_YEAR_FIELDS = ("measure", "threshold", "margin", "cumulative", "carried")
+
+
+def evaluate_ensemble(
+    members: Iterable[tuple[str, int | None, RunPieces]], rails: Sequence[GuardRail],
+    mode: DollarMode = DollarMode.CPI_CONSTANT,
+) -> list[EnsembleRailResult]:
+    """Each rail on every member (``EnsembleSeries.rail_pieces``), in
+    ``mode`` dollars. A member whose run lacks a date_marker a rail is
+    bounded by has no years for that rail; a tag it lacks matches nothing
+    there (a pool's members come from different components)."""
+    stems: list[str] = []
+    indexes: list[int | None] = []
+    per_rail: list[list[RailResult | None]] = [[] for _ in rails]
+    for stem, member_index, pieces in members:
+        inputs = _inputs(pieces)
+        stems.append(stem)
+        indexes.append(member_index)
+        try:
+            found: list[RailResult | None] = list(_evaluate(inputs, rails, mode))
+        except GuardRailError:  # a date_marker this member lacks: find which rail
+            found = []
+            for rail in rails:
+                try:
+                    found += _evaluate(inputs, [rail], mode)
+                except GuardRailError:
+                    found.append(None)
+        for i, result in enumerate(found):
+            per_rail[i].append(result)
+    out: list[EnsembleRailResult] = []
+    for rail, results in zip(rails, per_rail, strict=True):
+        years = sorted({int(y) for r in results if r is not None for y in r.years.years})
+        stacked = {f: np.full((len(results), len(years)), np.nan) for f in _YEAR_FIELDS}
+        column = {year: i for i, year in enumerate(years)}
+        for row, r in enumerate(results):
+            if r is None:
+                continue
+            at = [column[int(y)] for y in r.years.years]
+            for f in _YEAR_FIELDS:
+                stacked[f][row, at] = getattr(r.years, f)[0]
+        out.append(EnsembleRailResult(
+            rail, stems, indexes, measures.RailYears(np.array(years, dtype=int), **stacked)))
+    return out
+
+
+def ensemble_results(
+    store: EnsembleSeries, rails: Sequence[GuardRail], mode: DollarMode = DollarMode.CPI_CONSTANT,
+) -> list[EnsembleRailResult]:
+    """``evaluate_ensemble`` over the store's members, held by the store, so
+    a redraw or another report on the same batch costs nothing."""
+    pieces = store.memo(("guard_rail_pieces",), lambda: list(store.rail_pieces()))
+    return store.memo(("guard_rails", tuple(rails), mode),
+                      lambda: evaluate_ensemble(pieces, rails, mode))
+
+
+def ensemble_rails(scenarios_dir: Path, recipe: str) -> list[GuardRail]:
+    """An ensemble's rails: its recipe's, read once for the whole batch and
+    not checked against one member's run, since a pool's members come from
+    different components (``sim check`` has checked them against the
+    scenario). A tag a member lacks matches nothing there."""
+    return scenario_rails(scenarios_dir, recipe)
+
+
+ENSEMBLE_FORMS = (("annual", "margin"), ("cumulative", "cumulative"))
+
+
+def _ever_share(margin: np.ndarray) -> np.ndarray:
+    """Per year, the share of members past the rail in some year so far,
+    among those the rail has covered so far."""
+    covered = np.logical_or.accumulate(~np.isnan(margin), axis=1).sum(axis=0)
+    ever = measures.ever_past(margin).sum(axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(covered > 0, ever / np.maximum(covered, 1), np.nan)
+
+
+def ensemble_rail_frame(result: EnsembleRailResult) -> pd.DataFrame:
+    """One rail by year across members, for each form (``annual``, then
+    ``cumulative`` with a `` cum`` suffix): ``past``, the share of members
+    past it that year; ``ever_past``, the share past it in some year so
+    far; ``rms_over``, the root mean square of how far past, members inside
+    counting as zero. Shares are of the members the rail covers."""
+    columns: dict[str, np.ndarray] = {}
+    for form, field_ in ENSEMBLE_FORMS:
+        margin = getattr(result.years, field_)
+        suffix = "" if form == "annual" else CUMULATIVE_SUFFIX
+        columns["past" + suffix] = measures.share_past(margin)
+        columns["ever_past" + suffix] = _ever_share(margin)
+        columns["rms_over" + suffix] = np.asarray(measures.rms_overshoot(margin, axis=0))
+    frame = pd.DataFrame(columns, index=pd.Index(result.years.years, name="year"))
+    return frame.dropna(how="all")
+
+
+def ensemble_summary_frame(results: Sequence[EnsembleRailResult]) -> pd.DataFrame:
+    """Per rail and form, over the whole run: ``members``; ``past``, the
+    share of member-years past it; ``ever_past``, the share of members past
+    it in some year; ``past_at_end``, the share past it in each member's
+    last covered year (for the cumulative form, the members who end the plan
+    overdrawn); ``rms_over`` over every member-year, inside counting as
+    zero."""
+    rows: list[dict[str, object]] = []
+    for r in results:
+        if not r.applies:
+            continue
+        for form, field_ in ENSEMBLE_FORMS:
+            margin = getattr(r.years, field_)
+            covered = ~np.isnan(margin)
+            members = covered.any(axis=1)
+            last = np.array([row[c][-1] if c.any() else np.nan
+                             for row, c in zip(margin, covered, strict=True)])
+            rows.append({
+                "rail": r.rail.name, "form": form, "sense": r.rail.sense,
+                "members": int(members.sum()),
+                "past": float(measures.past(margin).sum() / covered.sum()),
+                "ever_past": float(measures.past(margin).any(axis=1).sum() / members.sum()),
+                "past_at_end": float(measures.past(last[members]).mean()),
+                "rms_over": float(measures.rms_overshoot(margin)),
+            })
+    return pd.DataFrame(rows, columns=["rail", "form", "sense", "members", "past", "ever_past",
+                                       "past_at_end", "rms_over"])
+
+
+def ensemble_comparison_frames(
+    baseline: Sequence[EnsembleRailResult], variant: Sequence[EnsembleRailResult],
+) -> dict[str, pd.DataFrame]:
+    """Each rail both ensembles have, matched by name: by year, the
+    variant's change in each ``ensemble_rail_frame`` column (variant less
+    baseline, ``Δ`` prefixed)."""
+    base = {r.rail.name: r for r in baseline if r.applies}
+    frames: dict[str, pd.DataFrame] = {}
+    for r in variant:
+        if not r.applies or r.rail.name not in base:
+            continue
+        delta = ensemble_rail_frame(r) - ensemble_rail_frame(base[r.rail.name])
+        frames[r.rail.name] = delta.add_prefix("Δ").dropna(how="all")
+    return frames
 
 
 # ---------- frames for reports ----------

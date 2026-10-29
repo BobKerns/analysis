@@ -203,7 +203,7 @@ sim ensemble sensitivity <recipe> [--batch B] [--mode sensitivity|monte_carlo]
                                   [--attribute NAME [--by category|flow_account|holding_account]]
 ```
 
-`--sensitivity` on a scenario with no unresolved `vary_*` rows is an error ("nothing to perturb"), not a silent single run. `--sensitivity` together with `--ensemble-size` is also an error, because an OAT batch's size is always `1 + k × m`, where `k` counts the swept factors (§2) as well as the rows.
+`--sensitivity` on a scenario with no unresolved `vary_*` rows is an error ("nothing to perturb"), not a silent single run. Neither runs on a pool ([ADR-009](ADR-009-pooled-ensembles.md) §7): `--sensitivity` and `sim ensemble sensitivity` on a pool's batch are refused, pointing at its components, since a row only one component draws would be confounded with which world a member is in. `--sensitivity` together with `--ensemble-size` is also an error, because an OAT batch's size is always `1 + k × m`, where `k` counts the swept factors (§2) as well as the rows.
 
 ### 8. Parallel members
 
@@ -263,3 +263,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#221](https://github.com/BobKerns/analysis/issues/221): a varying lifespan is swept as `lifespan:<person>`, centered on its authored age (§2).
 - [#222](https://github.com/BobKerns/analysis/issues/222): a `life_table` lifespan's parameters row gives its 1st to 99th percentile ages and its set-forward (§2).
 - [#281](https://github.com/BobKerns/analysis/issues/281): a `date_marker` is swept as one parameter, moving the rows dated from it (§2).
+- [#292](https://github.com/BobKerns/analysis/issues/292) ([ADR-009](ADR-009-pooled-ensembles.md)): sensitivity is refused on a pool, run on its components instead (§7).

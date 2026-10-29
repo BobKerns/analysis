@@ -10,7 +10,7 @@ import secrets
 import shlex
 import shutil
 import sys
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Set
+from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence, Set
 from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
@@ -66,6 +66,7 @@ from analysis.sim.strategy_api import Strategy
 from analysis.sim.series_db import (
     EnsembleSeries,
     MemberSeries,
+    build_series_db,
     member_series,
     open_series,
     pair_members,
@@ -96,6 +97,7 @@ from analysis.sim.loader import (
     ScenarioRef,
     batch_mode,
     DISABLE_FILE,
+    KEEP_SCENARIO_ENV,
     calendar_row_key,
     current_scenario_path,
     is_ensemble_batch,
@@ -134,6 +136,7 @@ from analysis.sim.lineage import (
     MIXIN_BASE,
     default_description,
     is_mixin_only,
+    is_pool,
     load_order,
     parse_parents,
     read_parents,
@@ -243,6 +246,17 @@ def load(
     resolved = _resolve_data_dir(data_dir)
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved)
     ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
+    if is_pool(resolved / "scenarios", ref.name):
+        # ADR-009: nothing to load; with the run, the pool is built.
+        if not run_after_load:
+            _check_scenario(resolved, ref.name, unused=False)
+            click.echo(f"{ref.name} is a pool: it has nothing to load; `sim run {ref.name}` "
+                       "builds it from its components")
+            return
+        ctx.invoke(run, scenario_name=ref.name, data_dir=data_dir, intent_dir=intent_dir,
+                   runs_dir=runs_dir, run_by=run_by, allow_dirty_data=allow_dirty_data,
+                   allow_dirty_code=allow_dirty_code)
+        return
     with _build_lock(resolved_intent_dir, ref.name):
         _load_locked(
             ctx, ref.name, resolved, resolved_intent_dir, data_dir=data_dir,
@@ -368,7 +382,17 @@ def check(
 def _check_scenario(data_dir: Path, name: str, *, unused: bool) -> None:
     """Load one scenario into a throwaway intent file, printing its issues and
     warnings (with ``unused``, the unused ones too); a failed load raises
-    ClickException."""
+    ClickException. A pool (ADR-009) loads nothing: its definition and
+    components are checked instead."""
+    if is_pool(data_dir / "scenarios", name):
+        from analysis.sim.pool import pool_issues
+
+        if issues := pool_issues(data_dir, name):
+            for issue in issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(f"{len(issues)} issue(s)")
+        click.echo("ok")
+        return
     with tempfile.TemporaryDirectory() as td:
         try:
             result = load_scenario(
@@ -445,6 +469,8 @@ def _make_current(data_dir: Path, name: str) -> None:
     if os.environ.get(BUILDER_CHILD_ENV):
         return  # a background build (#300) never moves the user's current scenario
     working_set.use(data_dir, name)  # first in the builder's order (#322)
+    if os.environ.get(KEEP_SCENARIO_ENV):
+        return  # a lookup for the user, which mustn't move their scenario (#350)
     previous = read_current_scenario(data_dir)
     if previous == name:
         return
@@ -536,6 +562,10 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
     help="With --sensitivity: quantiles each row is perturbed to "
          "(default 0.1,0.9; e.g. 0.1,0.25,0.4,0.6,0.75,0.9 for a response curve).",
 )
+@click.option(
+    "--rebuild", is_flag=True, default=False,
+    help="A pool (ADR-009): rerun every component, even those whose latest run is current.",
+)
 @_builds
 def run(
     scenario_name: str | None,
@@ -550,6 +580,7 @@ def run(
     only: str | None,
     quantiles_text: str | None,
     jobs: int,
+    rebuild: bool = False,
 ) -> None:
     """Load <scenario> fresh from the data repo, then run it and write a new run file.
 
@@ -567,6 +598,10 @@ def run(
     (ADR-007). A scenario with varying rows that is not an ensemble runs its
     base case, each varying row at its central value.
 
+    A pool (ADR-009) reruns each component whose latest run is out of date
+    (every one with --rebuild), reuses the rest, and then makes its own
+    batch from theirs; nothing is simulated for the pool itself.
+
     Afterwards, old run files and batches are pruned by the data repo's
     ``.retention.yaml``, created with default rules if missing (ADR-004 §10).
     """
@@ -583,42 +618,79 @@ def run(
             _refuse_mixin_only_run(scenario_name, sc.dependents(resolved_data_dir / "scenarios", scenario_name))
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
-    intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
-    try:
-        with _build_lock(resolved_intent_dir, scenario_name):
-            if resolved_data_dir is not None:
-                try:
-                    _echo_load_warnings(load_scenario(
-                        resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
-                        allow_dirty_data=allow_dirty_data,
-                    ))
-                except LoadError as exc:
-                    for issue in exc.issues:
-                        click.echo(f"  error: {issue}", err=True)
-                    raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
-                except DataDirtyRefused as exc:
-                    click.echo(str(exc), err=True)
-                    raise click.ClickException("data dirty; refusing to load") from None
-            elif not intent_path.exists():
-                raise click.ClickException(
-                    f"intent file not found: {intent_path}\n"
-                    f"  run: analysis sim load {scenario_name}"
-                )
-            elif _intent_is_mixin_only(intent_path):
-                # Without the data repo, the intent a `sim check` left says so.
-                _refuse_mixin_only_run(scenario_name, [])
-            resolved_by = run_by or os.environ.get("USER") or "unknown"
-            _run_loaded(
-                scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
-                run_by=resolved_by, allow_dirty_data=allow_dirty_data,
-                allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
-                sensitivity=sensitivity, quantiles=quantiles, only=only_names, jobs=jobs,
+    is_a_pool = resolved_data_dir is not None and is_pool(resolved_data_dir / "scenarios", scenario_name)
+    if rebuild and not is_a_pool:
+        raise click.UsageError(f"--rebuild is for a pool, and {scenario_name} isn't one")
+    if is_a_pool:
+        assert resolved_data_dir is not None
+        if sensitivity:
+            raise click.UsageError(
+                f"{scenario_name} is a pool: run a sensitivity batch on each of its components "
+                "instead, since a row that only one component has would be confounded with "
+                "which component a member came from (ADR-009)")
+        try:
+            _run_pool(
+                scenario_name, resolved_data_dir, resolved_intent_dir, resolved_runs_dir,
+                run_by=run_by or os.environ.get("USER") or "unknown",
+                allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+                ensemble_size=ensemble_size, jobs=jobs, rebuild=rebuild,
             )
+        finally:
+            _prune_state(resolved_data_dir, resolved_intent_dir, resolved_runs_dir)
+        return
+    try:
+        _load_and_run(
+            scenario_name, resolved_data_dir, resolved_intent_dir, resolved_runs_dir,
+            run_by=run_by, allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+            ensemble_size=ensemble_size, sensitivity=sensitivity, quantiles=quantiles,
+            only=only_names, jobs=jobs,
+        )
     finally:
         # A failed run leaves its run file too, so it still gets housekeeping;
         # as its scenario's newest attempt, it is never pruned itself.
         if resolved_data_dir is not None:
             _prune_state(resolved_data_dir, resolved_intent_dir, resolved_runs_dir)
+
+
+def _load_and_run(
+    scenario_name: str, resolved_data_dir: Path | None, resolved_intent_dir: Path,
+    resolved_runs_dir: Path, *, run_by: str | None, allow_dirty_data: bool,
+    allow_dirty_code: bool, ensemble_size: int | None, sensitivity: bool = False,
+    quantiles: tuple[float, ...] = registries.DEFAULT_SENSITIVITY_QUANTILES,
+    only: list[str] | None = None, jobs: int = 1,
+) -> None:
+    """``sim run``'s work for one scenario under its build lock: load it
+    from the data repo when there is one, then run it."""
+    intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
+    with _build_lock(resolved_intent_dir, scenario_name):
+        if resolved_data_dir is not None:
+            try:
+                _echo_load_warnings(load_scenario(
+                    resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
+                    allow_dirty_data=allow_dirty_data,
+                ))
+            except LoadError as exc:
+                for issue in exc.issues:
+                    click.echo(f"  error: {issue}", err=True)
+                raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+            except DataDirtyRefused as exc:
+                click.echo(str(exc), err=True)
+                raise click.ClickException("data dirty; refusing to load") from None
+        elif not intent_path.exists():
+            raise click.ClickException(
+                f"intent file not found: {intent_path}\n"
+                f"  run: analysis sim load {scenario_name}"
+            )
+        elif _intent_is_mixin_only(intent_path):
+            # Without the data repo, the intent a `sim check` left says so.
+            _refuse_mixin_only_run(scenario_name, [])
+        resolved_by = run_by or os.environ.get("USER") or "unknown"
+        _run_loaded(
+            scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
+            run_by=resolved_by, allow_dirty_data=allow_dirty_data,
+            allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
+            sensitivity=sensitivity, quantiles=quantiles, only=only, jobs=jobs,
+        )
 
 
 def _refuse_mixin_only_run(name: str, users: Sequence[str]) -> NoReturn:
@@ -850,6 +922,124 @@ def _run_ensemble(
     _build_draws_db(member_runs_dir, member_intent_dir)
     _write_series_db(member_runs_dir, series, member_count - len(failures))
     _report_batch(f"ensemble {scenario_name} ({batch})", member_count, failures)
+
+
+def _run_pool(
+    pool_name: str, data_dir: Path, intent_dir: Path, runs_dir: Path, *, run_by: str,
+    allow_dirty_data: bool, allow_dirty_code: bool, ensemble_size: int | None, jobs: int,
+    rebuild: bool = False, built: Collection[str] = (), failed: Collection[str] = (),
+) -> None:
+    """ADR-009: bring each of the pool's components up to date, then make
+    the pool's batch from their latest batches. A component in ``built``
+    (run, or found unchanged, by the same `sim all`) is taken as it is; one
+    in ``failed`` (failed there) fails the pool without running again."""
+    from analysis.sim import pool as pl
+    from analysis.sim.freshness import code_tree, unchanged_run
+    from analysis.sim.provenance import data_stamps
+
+    issues = pl.pool_issues(data_dir, pool_name)
+    if issues:
+        for issue in issues:
+            click.echo(f"  error: {issue}", err=True)
+        raise click.ClickException(f"{len(issues)} issue(s)")
+    pool = pl.read_pool(data_dir / "scenarios", pool_name)
+    size = ensemble_size if ensemble_size is not None else pl.pool_size(data_dir, pool)
+    if size <= 0:
+        raise click.ClickException(f"{pool_name}: --ensemble-size must be a positive integer")
+    if broken := [c for c in pool.components if c in failed]:
+        raise click.ClickException(
+            f"{pool_name}: component {', '.join(broken)} failed earlier in this run")
+    code = code_tree()
+    for component in pool.components:
+        if component in built:
+            continue
+        fresh = None if rebuild else unchanged_run(data_dir, runs_dir, component, code)
+        if fresh is not None:
+            # A fresh single run would only come out single again; the
+            # missing batch is reported below.
+            click.echo(f"component {component}: unchanged since {fresh.path.name}; reused")
+            continue
+        click.echo(f"component {component}: running")
+        _load_and_run(
+            component, data_dir, intent_dir, runs_dir, run_by=run_by,
+            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+            ensemble_size=None, jobs=jobs,
+        )
+    sources = pl.latest_pool_sources(runs_dir, pool)
+    if missing := [c for c, batch in sources.items() if batch is None]:
+        raise click.ClickException(
+            f"{pool_name}: no current ensemble batch for {', '.join(missing)} (a component's "
+            "latest run must be a Monte Carlo batch; one with no varying rows runs as a "
+            "single run)")
+    stamps = data_stamps(data_dir, pool_name)
+    if stamps.dirty and not allow_dirty_data:
+        # The loader's gate (ADR-004 §3), which nothing here calls: the
+        # pool's folder or a component's lineage has uncommitted changes.
+        raise click.ClickException(
+            f"{pool_name}: data dirty; refusing to build the pool (commit the changes, or pass "
+            f"--allow-dirty-data): {', '.join(stamps.dirty_paths)}")
+    with _build_lock(intent_dir, pool_name):
+        batch, intent_batch, runs_batch = _reserve_batch(pool_name, intent_dir, runs_dir)
+        try:
+            failures = pl.build_pool_batch(
+                pool, size, {c: b for c, b in sources.items() if b is not None},
+                runs_batch, intent_batch, intent_dir,
+                data_tree_id=None if stamps.dirty else stamps.tree_id,
+            )
+        except pl.PoolError as exc:
+            shutil.rmtree(runs_batch, ignore_errors=True)
+            shutil.rmtree(intent_batch, ignore_errors=True)
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+        _build_draws_db(runs_batch, intent_batch)
+        if size - len(failures) > 0:
+            try:
+                build_series_db(runs_batch)
+            except (EnsembleError, sqlite3.Error, OSError) as exc:
+                click.echo(f"warning: series store not written ({exc}); the first notebook or "
+                           "'sim ensemble' read builds it", err=True)
+    _report_batch(f"pool {pool_name} ({batch})", size, failures)
+    record = pl.pool_record(runs_batch) or {}
+    click.echo("  " + _pool_line(record))
+
+
+def _pool_summary_lines(batch_dir: Path, cpi_frame: Callable[[], pd.DataFrame]) -> list[str]:
+    """For a pool batch (ADR-009), its members by component and, since the
+    pooled tail mean rests on the members in it, which components the worst
+    5% came from, ranked by each member's lowest CPI-constant net worth over the
+    run (the worst point of a lifetime, not where it ends). ``cpi_frame``
+    gives the members' CPI-constant net worth; nothing for an ordinary batch."""
+    from analysis.sim.pool import member_components, pool_record
+
+    record = pool_record(batch_dir)
+    components = member_components(batch_dir)
+    if record is None or components is None:
+        return []
+    lines = [_pool_line(record)]
+    lows = cpi_frame().min().dropna()
+    if lows.empty:
+        return lines
+    worst = lows.sort_values(kind="stable").index[:max(1, math.ceil(0.05 * len(lows) - 1e-9))]
+    counts: dict[str, int] = {}
+    for stem in worst:
+        component = components.get(int(str(stem).removeprefix("member_")), "?")
+        counts[component] = counts.get(component, 0) + 1
+    lines.append(f"worst 5% ({len(worst)}) by lowest CPI-constant net worth: "
+                 + ", ".join(f"{n} {c}" for c, n in sorted(counts.items(), key=lambda kv: -kv[1])))
+    return lines
+
+
+def _pool_line(record: Mapping[str, Any]) -> str:
+    """A pool batch's one-line description: each component's member count and
+    weight, and the seed they share (ADR-009 §6)."""
+    from analysis.sim.pool import shared_seed
+
+    sources = record.get("sources", [])
+    seed = shared_seed(record)
+    parts = ", ".join(f"{s['component']} {s['members']} ({s['weight']})" for s in sources)
+    return (f"pool of {len(sources)}, "
+            f"{'seed ' + str(seed) if seed is not None else 'seeds differ (no pairing)'}: {parts}")
 
 
 def _run_sensitivity(
@@ -1211,6 +1401,259 @@ def ensemble_create(
     )
 
 
+@ensemble_group_command.group(name="pool")
+def ensemble_pool_group() -> None:
+    """Pooled ensembles: one result set drawn from several ensembles (ADR-009)."""
+
+
+def _pool_components(given: Sequence[str]) -> dict[str, str | None]:
+    """``COMPONENT[=PCT]`` arguments as component -> weight text (``None`` when
+    left out); all or none must carry a weight."""
+    out: dict[str, str | None] = {}
+    for item in given:
+        name, eq, weight = item.partition("=")
+        name = name.strip()
+        if not name:
+            raise click.BadParameter(f"{item!r}: name a component", param_hint="COMPONENT")
+        if name in out:
+            raise click.BadParameter(f"{name} is named twice", param_hint="COMPONENT")
+        out[name] = weight.strip() if eq else None
+    weighted = [w is not None for w in out.values()]
+    if any(weighted) and not all(weighted):
+        raise click.BadParameter("give every component a weight (NAME=40%), or none for equal shares",
+                                 param_hint="COMPONENT")
+    return out
+
+
+def _write_pool(
+    data: Path, name: str, components: Mapping[str, str | None], *, base: str | None,
+    size: int | None, description: str, reserve: object = None, created_by: str | None = None,
+) -> None:
+    """Write pool ``name``'s scenario.csv (and a README.md when it has none),
+    then check it; a pool that doesn't check out is put back as it was."""
+    from analysis.sim import pool as pl
+
+    folder = data / "scenarios" / name
+    spec: dict[str, Any] = {
+        "components": (dict(components) if any(w is not None for w in components.values())
+                       else list(components)),
+    }
+    if base is not None:
+        spec["base"] = base
+    meta: dict[str, Any] = {pl.POOL_KEY: spec}
+    if size is not None:
+        meta["ensemble_size"] = size
+    if reserve is not None:
+        meta["reserve"] = reserve
+    # A pool's row has no dates, seed or parents (ADR-009 §1).
+    row = {**dict.fromkeys(registries.SCENARIO_HEADER, ""), "name": name, "description": description,
+           "created_by": created_by or sc.current_user(),
+           "meta_json": json.dumps(meta, separators=(",", ":"))}
+    existed = folder.is_dir()
+    old_csv = (folder / "scenario.csv").read_bytes() if (folder / "scenario.csv").is_file() else None
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / "scenario.csv").open("w", newline="", encoding="utf-8") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=list(row))
+        writer.writeheader()
+        writer.writerow(row)
+    if issues := pl.pool_issues(data, name):
+        if old_csv is not None:
+            (folder / "scenario.csv").write_bytes(old_csv)
+        elif not existed:
+            shutil.rmtree(folder)
+        for issue in issues:
+            click.echo(f"  error: {issue}", err=True)
+        raise click.ClickException(f"{len(issues)} issue(s); nothing written")
+    if not (folder / "README.md").exists():
+        (folder / "README.md").write_text(_pool_readme(name, description, components), encoding="utf-8")
+    else:
+        pl.refresh_readme_pools_line(folder, components)
+
+
+def _pool_readme(name: str, description: str, components: Mapping[str, str | None]) -> str:
+    from analysis.sim.pool import readme_pools_line
+
+    return f"# {name}\n\n{description}\n\n{readme_pools_line(components)}\n\n{sc.README_PURPOSE}"
+
+
+@ensemble_pool_group.command("create")
+@click.argument("name", required=False)
+@click.argument("components", nargs=-1, type=completion.POOL_COMPONENT)
+@click.option("--size", "ensemble_size", type=int, default=None,
+              help="Member count (meta_json ensemble_size). Default: the smallest component's. "
+                   "Every component needs at least this many members.")
+@click.option("--base", default=None, type=completion.ENSEMBLE,
+              help="The component whose member 0 is the pool's base case. Default: the first.")
+@click.option("--description", default=None, help="Default: 'Pooled from <components>'.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def ensemble_pool_create(
+    name: str | None, components: tuple[str, ...], ensemble_size: int | None,
+    base: str | None, description: str | None, data_dir: Path | None,
+) -> None:
+    """Create pool NAME drawing its members from the COMPONENT ensembles, and
+    make it current (ADR-009).
+
+    Each COMPONENT is an ensemble, with its share of the members as
+    NAME=PCT (``e_crisis=30%``); with no weights the shares are equal. The
+    weights must add up to 100%. Pool member j is member j of one component,
+    so every component needs at least the pool's size; components that share
+    a seed then pair member by member with their common parent. `sim run
+    NAME` runs any component that is out of date and builds the pool.
+
+    Without NAME or COMPONENTs, they are asked for.
+    """
+    from analysis.sim import pool as pl
+
+    data = _resolve_data_dir(data_dir)
+    if name is None:
+        name = _ask_new_name("name for the new pool")
+    name = name.strip()
+    from analysis.sim.rename import check_new_scenario
+
+    try:
+        check_new_scenario(data / "scenarios", name)
+    except (ValueError, FileExistsError) as exc:
+        raise click.ClickException(str(exc)) from None
+    if not components:
+        components = _ask_pool_components(data, None)
+    if ensemble_size is not None and ensemble_size <= 0:
+        raise click.ClickException(f"--size must be a positive integer (got {ensemble_size})")
+    parsed = _pool_components(components)
+    _write_pool(data, name, parsed, base=base, size=ensemble_size,
+                description=description or pl.default_description(list(parsed)))
+    _make_current(data, name)
+    from analysis.sim.pool import pool_size, read_pool
+
+    pool = read_pool(data / "scenarios", name)
+    click.echo(f"created pool {data / 'scenarios' / name}")
+    click.echo("  components: " + ", ".join(f"{c} {pool.weight_text(c)}" for c in pool.components))
+    click.echo(f"  base: {pool.base}")
+    click.echo(f"  ensemble_size: {pool_size(data, pool)}"
+               + ("" if pool.size is not None else " (the smallest component's)"))
+    _suggest_readme(data / "scenarios" / name)
+    click.echo(f"  next: sim run {name}")
+
+
+def _ask_pool_components(data: Path, current: str | None) -> tuple[str, ...]:
+    """A pool's components asked for, as ``NAME[=PCT]`` words."""
+    from analysis.sim.pool import is_pool
+
+    choices = [n for n in _ensemble_names(data) if not is_pool(data / "scenarios", n)]
+    click.echo(f"ensembles: {', '.join(choices) or '(none)'}")
+    while not (answer := _prompt_with_completion(
+            "components (NAME or NAME=PCT, space-separated)", choices=choices,
+            default=current).split()):
+        pass
+    return tuple(answer)
+
+
+@ensemble_pool_group.command("edit")
+@click.argument("name", required=False, type=completion.POOL)
+@click.argument("components", nargs=-1, type=completion.POOL_COMPONENT)
+@click.option("--size", default=None, help="Member count; '' takes the smallest component's.")
+@click.option("--base", default=None, type=completion.ENSEMBLE,
+              help="The component whose member 0 is the base case; '' takes the first.")
+@click.option("--reserve", default=None,
+              help="The reports' reserve, in CPI-constant dollars; '' takes the base component's.")
+@click.option("--description", default=None,
+              help="The pool's description; '' takes the generated 'Pooled from <components>'.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def ensemble_pool_edit(
+    name: str | None, components: tuple[str, ...], size: str | None, base: str | None,
+    reserve: str | None, description: str | None, data_dir: Path | None,
+) -> None:
+    """Change pool NAME: its COMPONENTs (NAME or NAME=PCT; given, they replace
+    the list), size, base, reserve or description (ADR-009).
+
+    Options and COMPONENTs write at once. With none, it shows the fields and
+    asks which to change. Without NAME, it is asked for."""
+    from analysis.sim import pool as pl
+
+    data = _resolve_data_dir(data_dir)
+    pools = [n for n in list_scenario_names(data) if pl.is_pool(data / "scenarios", n)]
+    if name is None:
+        name = _ask_name("pool", pools)
+    if name not in pools:
+        raise click.ClickException(f"{name} is not a pool (pools: {', '.join(pools) or 'none'})")
+    _make_current(data, name)
+    folder = data / "scenarios" / name
+    guided = not components and all(v is None for v in (size, base, reserve, description))
+    if not guided:
+        _apply_pool_edit(data, name, components, size=size, base=base, reserve=reserve,
+                         description=description)
+        return
+    from analysis.sim import scenario_guide
+
+    choices = [n for n in _ensemble_names(data) if not pl.is_pool(data / "scenarios", n)]
+    spec = scenario_guide.pool_spec(choices)
+    before = scenario_guide.pool_answers(sc._scenario_row(folder))
+    answers = dict(before)
+    _echo_guided_scenario(name, folder / "scenario.csv", defaulted=False)
+
+    def ask_components(current: str | None) -> str:
+        return " ".join(_ask_pool_components(data, current))
+
+    guide = calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(text, choices=choices, default=default),
+        checkers=_SCENARIO_CHECKERS,
+        askers={"components": ask_components},
+    )
+
+    def submit(_params: dict[str, object]) -> None:
+        changed = {field: value for field, value in answers.items() if value != before[field]}
+        if not changed:
+            click.echo("no change; nothing was written")
+            return
+        _apply_pool_edit(
+            data, name, tuple(changed["components"].split()) if "components" in changed else (),
+            size=changed.get("size"), base=changed.get("base"), reserve=changed.get("reserve"),
+            description=changed.get("description"))
+
+    guide.review(spec, calendar_guide.GuideContext(), answers, submit, show_command=False)
+
+
+def _apply_pool_edit(
+    data: Path, name: str, components: tuple[str, ...], *, size: str | None, base: str | None,
+    reserve: str | None, description: str | None,
+) -> None:
+    """Write the given changes to pool ``name`` (``None``: unchanged; ``''``:
+    its default); see ``ensemble_pool_edit``."""
+    from analysis.sim import pool as pl
+
+    folder = data / "scenarios" / name
+    row = sc._scenario_row(folder)
+    meta = json.loads(row.get("meta_json") or "{}")
+    spec = meta.get(pl.POOL_KEY) or {}
+    raw = spec.get("components") or []
+    now = {c: (raw[c] if isinstance(raw, dict) else None) for c in raw}
+    parsed = _pool_components(components) if components else now
+    old_description = row.get("description", "")
+    if description is None:
+        # A generated description follows the components, as on a rename.
+        new_description = (pl.default_description(list(parsed))
+                           if old_description == pl.default_description(list(now)) else old_description)
+    else:
+        new_description = description.strip() or pl.default_description(list(parsed))
+    new_base = spec.get("base") if base is None else (base.strip() or None)
+    if base is None and new_base not in parsed:
+        new_base = None  # its base replaced with the components: the first is the base now
+    new_size = meta.get("ensemble_size") if size is None else _blank_or(size, _member_count, "--size")
+    if reserve is None:
+        new_reserve = meta.get("reserve")
+    else:
+        new_reserve = _blank_or(reserve, _reserve_json, "--reserve")
+    _write_pool(data, name, parsed, base=new_base, size=new_size, description=new_description,
+                reserve=new_reserve, created_by=row.get("created_by") or None)
+    pl.refresh_readme_description(folder, old_description, new_description)
+    pool = pl.read_pool(data / "scenarios", name)
+    click.echo(f"edited pool {name}")
+    click.echo("  components: " + ", ".join(f"{c} {pool.weight_text(c)}" for c in pool.components))
+    click.echo(f"  base: {pool.base}; ensemble_size: {pl.pool_size(data, pool)}"
+               + ("" if pool.size is not None else " (the smallest component's)"))
+
+
 @ensemble_group_command.command("list")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -1449,6 +1892,15 @@ def ensemble_summary(
         + ("" if reserve_dollars is None
            else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)")
     )
+    def lows_frame() -> pd.DataFrame:
+        # Net worth even with --account: an account only some components
+        # have is 0 in the others' members, which would rank them worst.
+        if account is None and cpi_frame is not None:
+            return cpi_frame
+        return _member_frame(store, None, DollarMode.CPI_CONSTANT, None, after_tax=not pre_tax)
+
+    for line in _pool_summary_lines(batch_dir, lows_frame):
+        click.echo(f"  {line}")
     _echo_year_table(table)
     if failed:
         click.echo(f"  {len(failed)} failed member(s), excluded above:")
@@ -1565,6 +2017,7 @@ def ensemble_compare(
         _echo_year_table(year_end_values(
             risk_summary(frame, reserve_dollars, cpi_frames.get(name))
         ))
+    _echo_ensemble_rail_deltas(data_dir, baseline, variant, sides, mode)
     if as_graph or graph_file is not None:
         from analysis.sim.ensemble_plots import ensemble_compare_figure, ensemble_fan_figure
 
@@ -1583,6 +2036,170 @@ def ensemble_compare(
                 deaths=sides[name].base_case_deaths(),
             )
         _draw_figure(figure, graph_file, "ensemble-")
+
+
+def _ensemble_guard_rails(
+    data_dir: Path | None, recipe: str, store: EnsembleSeries, mode: DollarMode,
+    rail_names: Sequence[str] = (), *, required: bool = True,
+) -> list[guard_rails.EnsembleRailResult] | None:
+    """``recipe``'s rails (#305) on the store's members, in ``mode`` dollars.
+    Rails are read from the data repo; without one, ``required`` fails and
+    otherwise there are none to show (None)."""
+    try:
+        scenarios_dir = _resolve_data_dir(data_dir) / "scenarios"
+    except click.ClickException:
+        if required:
+            raise
+        return None
+    try:
+        rails = guard_rails.ensemble_rails(scenarios_dir, recipe)
+    except guard_rails.GuardRailError as exc:
+        for issue in exc.issues:
+            click.echo(f"  error: {issue}", err=True)
+        raise click.ClickException(
+            f"the guard rails of {recipe!r} don't load ({len(exc.issues)} issue(s))") from None
+    except LoadError:
+        if required:
+            raise click.ClickException(f"no scenario {recipe!r} in the data repo") from None
+        return None
+    if rail_names:
+        known = {rail.name: rail for rail in rails}
+        if missing := [n for n in rail_names if n not in known]:
+            raise click.ClickException(
+                f"no guard rail {', '.join(map(repr, missing))} in {recipe!r}"
+                + (f"; it has {', '.join(sorted(known))}" if known else ""))
+        rails = [known[n] for n in dict.fromkeys(rail_names)]
+    if rails and mode == DollarMode.CPI_CONSTANT and store.frame(None, mode).isna().all().any():
+        raise click.ClickException(
+            f"a member of {recipe!r} has no 'cpi' inflation index, so no CPI-constant "
+            "guard rail figures; pass --dollars nominal")
+    return guard_rails.ensemble_results(store, rails, mode) if rails else []
+
+
+def _echo_rail_share_table(frame: pd.DataFrame) -> None:
+    """Shares (``past``, ``ever_past``, their ``Δ``) as percents, the rest
+    as dollars, under one header row, as ``_echo_year_table`` prints."""
+    def cell(column: str, value: float) -> str:
+        if pd.isna(value):
+            return ""
+        if column.lstrip("Δ").startswith(("past", "ever_past")):
+            return f"{value:+.0%}" if column.startswith("Δ") else f"{value:.0%}"
+        return f"{value:+,.0f}" if column.startswith("Δ") else f"{value:,.0f}"
+
+    header = ["year", *frame.columns]
+    rows = [[str(year), *(cell(c, v) for c, v in zip(frame.columns, row, strict=True))]
+            for year, row in frame.iterrows()]
+    widths = [max(len(c) for c in column) for column in zip(header, *rows, strict=True)]
+    for line in (header, *rows):
+        click.echo("  " + "  ".join(c.rjust(w) for c, w in zip(line, widths, strict=True)))
+
+
+_ENSEMBLE_RAIL_LEGEND = (
+    "past: the share of members past the rail that year; ever_past: past it in some year so far;",
+    "rms_over: the root mean square of how far past, members inside counting as zero;",
+    "cum: the same for the cumulative margin",
+)
+
+
+@ensemble_group_command.command("guard-rails")
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
+@_ENSEMBLE_RUNS_DIR_OPTION
+@_ENSEMBLE_DATA_DIR_OPTION
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to report on; default: the latest.",
+)
+@click.option("--rail", "rail_names", type=completion.GUARD_RAIL, multiple=True,
+              help="Only this rail; repeat for more.")
+@click.option(
+    "--dollars", type=click.Choice([m.value for m in DollarMode]),
+    default=DollarMode.CPI_CONSTANT.value, show_default=True,
+    help="Dollars the RMS overshoot is reported in.",
+)
+@_ENSEMBLE_GRAPH_OPTION
+@_ENSEMBLE_GRAPH_FILE_OPTION
+def ensemble_guard_rails(
+    scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    rail_names: tuple[str, ...], dollars: str, as_graph: bool, graph_file: Path | None,
+) -> None:
+    """How an ensemble's members stand against its guard rails (#305).
+
+    Per rail and year, annual and cumulative (`cum`): the share of members
+    past it that year, the share past it in some year so far, and the RMS
+    overshoot, the root mean square of how far past the members are, those
+    inside counting as zero (so it mixes how often with how far: read it
+    beside the share). Then per rail and form, over the whole run: the share
+    of member-years past, the share of members ever past, the share past in
+    their last year (for the cumulative form, the members who end the plan
+    overdrawn) and the RMS over every member-year.
+
+    The rails are the recipe's guard_rails.csv as it is now, read from the
+    data repo: editing one reruns nothing. --graph draws the shares and RMS.
+
+    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    _check_graph_options(as_graph, graph_file)
+    resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+    _note_use(data_dir, scenario_name)
+    mode = DollarMode(dollars)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    store = _open_series(batch_dir)
+    results = _ensemble_guard_rails(data_dir, scenario_name, store, mode, rail_names)
+    if not results:
+        click.echo(f"no guard rails in {scenario_name!r}; `sim guard-rail add` adds one")
+        return
+    click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); "
+               f"guard rails, {_DOLLAR_LABELS[mode]}")
+    for line in _ENSEMBLE_RAIL_LEGEND:
+        click.echo(f"  {line}")
+    shown = [r for r in results if r.applies]
+    for r in results:
+        if not r.applies:
+            click.echo(f"  {r.rail.name} covers none of these members' years")
+    for r in shown:
+        click.echo(f"\n{r.rail.name} ({r.rail.sense}): {r.rail.describe()}")
+        _echo_rail_share_table(guard_rails.ensemble_rail_frame(r))
+    if not shown:
+        return
+    summary = guard_rails.ensemble_summary_frame(shown)
+    click.echo("\nOver the whole run:")
+    width = max(len(str(v)) for v in summary["rail"])
+    click.echo(f"  {'rail':<{width}}  {'form':<10}  {'members':>7}  {'member-years past':>17}"
+               f"  {'ever past':>9}  {'past at end':>11}  {'RMS past':>10}")
+    for row in named_rows(summary):
+        click.echo(f"  {row.rail:<{width}}  {row.form:<10}  {row.members:>7}  "
+                   f"{float(row.past):>17.0%}  {float(row.ever_past):>9.0%}  "
+                   f"{float(row.past_at_end):>11.0%}  {float(row.rms_over):>10,.0f}")
+    if as_graph or graph_file is not None:
+        from analysis.sim.guard_rail_charts import ensemble_guard_rail_figure
+
+        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        _draw_figure(ensemble_guard_rail_figure(
+            shown, f"Guard rails ({scenario_name})", unit=unit,
+            deaths=store.base_case_deaths()), graph_file, "ensemble-")
+
+
+def _echo_ensemble_rail_deltas(
+    data_dir: Path | None, baseline: str, variant: str,
+    sides: Mapping[str, EnsembleSeries], mode: DollarMode,
+) -> None:
+    """``sim ensemble compare``'s guard rails (#305): per rail both recipes
+    have, matched by name, the variant's change in each share and RMS.
+    Nothing without a data repo, or when neither recipe has rails."""
+    found = {name: _ensemble_guard_rails(data_dir, name, sides[name], mode, required=False)
+             for name in (baseline, variant)}
+    if not any(found.values()):
+        return
+    frames = guard_rails.ensemble_comparison_frames(found[baseline] or [], found[variant] or [])
+    if not frames:
+        click.echo("guard rails: none in both recipes")
+        return
+    click.echo(f"guard rails, {variant} − {baseline} ({_DOLLAR_LABELS[mode]}): Δ of each share "
+               "of members past and of the RMS overshoot")
+    for rail, frame in frames.items():
+        click.echo(f"{rail}:")
+        _echo_rail_share_table(frame)
 
 
 @ensemble_group_command.command("sensitivity")
@@ -1661,6 +2278,15 @@ def ensemble_sensitivity(
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
         raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+    from analysis.sim.pool import pool_record
+
+    if (record := pool_record(batch_dir)) is not None:
+        components = ", ".join(s["component"] for s in record.get("sources", []))
+        raise click.ClickException(
+            f"{scenario_name} is a pool: ask this of each component ({components}) instead. "
+            "A row only one component has would be correlated with outcomes over that "
+            "component's members alone, confounded with which component a member came from "
+            "(ADR-009)")
     dollar_mode = DollarMode(dollars)
     try:
         requested_years = (
@@ -1738,7 +2364,7 @@ def ensemble_draws(
     the database existed gets one gathered from what its member files hold.
 
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
-    from analysis.sim.draws_db import build_draws_db, draws_db_path, open_draws_db
+    from analysis.sim.draws_db import build_draws_db, draws_db_current, draws_db_path, open_draws_db
 
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
@@ -1750,7 +2376,7 @@ def ensemble_draws(
     if batch_dir is None or not batch_dir.is_dir():
         raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
     path = draws_db_path(batch_dir)
-    if rebuild or not path.is_file():
+    if rebuild or not draws_db_current(batch_dir):
         resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
         try:
             build_draws_db(batch_dir, resolved_intent_dir / scenario_name / batch_dir.name)
@@ -1765,7 +2391,8 @@ def ensemble_draws(
         if csv_file is not None:
             frame = pd.read_sql_query("SELECT * FROM draws_wide_display", con)
             frame.to_csv(csv_file, index=False)
-            click.echo(f"wrote {len(frame)} member(s) x {len(frame.columns) - 1} node(s) to {csv_file}")
+            nodes = len(frame.columns) - len({"member_index", "component"} & set(frame.columns))
+            click.echo(f"wrote {len(frame)} member(s) x {nodes} node(s) to {csv_file}")
 
 
 def _draw_cell(unit: str, value: Any, *, spread: bool = False) -> str:
@@ -1791,10 +2418,41 @@ def _echo_draws_summary(con: sqlite3.Connection, path: Path) -> None:
     click.echo(f"{batch['ensemble_name']} ({batch['batch']}): {batch['mode']}, "
                f"{members[0]} member(s), {members[1] or 0} succeeded{seed}")
     click.echo(f"  draws database: {path}")
-    checks = {r["node"]: r for r in con.execute("SELECT * FROM draw_check_display")}
-    nodes = con.execute("SELECT * FROM node_display ORDER BY node_kind = 'factor', name").fetchall()
-    if not nodes:
+    # A pool's components each draw from their own distributions (ADR-009),
+    # so each is checked on its own, under its name.
+    components = [c for (c,) in con.execute(
+        "SELECT component FROM member GROUP BY component ORDER BY min(member_index)")]
+    if not con.execute("SELECT 1 FROM node LIMIT 1").fetchone():
         click.echo("  no varying rows")
+    for component in components:
+        if len(components) > 1:
+            count = con.execute("SELECT count(*) FROM member WHERE component = ?",
+                                (component,)).fetchone()[0]
+            click.echo(f"\n  component {component} ({count} member(s)):")
+        _echo_component_draws(con, component, indent=2 + 2 * (len(components) > 1),
+                              pooled=len(components) > 1)
+    scales = con.execute(
+        "SELECT tree_root, count(*), min(scale), avg(scale), max(scale) FROM tail_scale "
+        "WHERE year IS NULL GROUP BY tree_root ORDER BY tree_root").fetchall()
+    if scales:
+        click.echo("\n  t-copula scales S per member:")
+        _echo_table(["tree", "members", "min", "mean", "max"], [
+            [root, str(count), f"{low:.2f}", f"{mean:.2f}", f"{high:.2f}"]
+            for root, count, low, mean, high in scales
+        ])
+
+
+def _echo_component_draws(
+    con: sqlite3.Connection, component: str, *, indent: int, pooled: bool = False,
+) -> None:
+    """One component's node checks and correlated pairs."""
+    pad = " " * indent
+    checks = {r["node"]: r for r in con.execute(
+        "SELECT * FROM draw_check_display WHERE component = ?", (component,))}
+    nodes = con.execute(
+        "SELECT * FROM node_display WHERE component = ? ORDER BY node_kind = 'factor', name",
+        (component,)).fetchall()
+    if not nodes:
         return
     click.echo("")
     if checks:
@@ -1811,58 +2469,63 @@ def _echo_draws_summary(con: sqlite3.Connection, path: Path) -> None:
                 "—" if c is None or c["ks_u_p"] is None else f"{c['ks_u_p']:.2f}",
             ])
         _echo_table(["node", "distribution", "n", "median", "drawn", "sd", "drawn",
-                     "KS p(u)"], rows, left=2)
+                     "KS p(u)"], rows, left=indent)
     else:
         # A sensitivity batch draws nothing; its members sit at set quantiles.
+        # A Monte Carlo batch has nothing to check when no drawn member
+        # succeeded: a pool component whose only member is the base case, a
+        # one-member ensemble, or one whose drawn members all failed.
+        if con.execute("SELECT mode FROM batch").fetchone()[0] == "monte_carlo":
+            click.echo(f"{pad} only the base case (member 0) came from {component}; nothing drawn to check"
+                       if pooled else
+                       f"{pad} no drawn member succeeded (member 0 is the base case); nothing to check")
         _echo_table(["node", "distribution", "median"], [
             [n["name"], n["distribution"] or n["node_kind"], _draw_cell(n["unit"], n["median"])]
             for n in nodes
-        ], left=2)
+        ], left=indent)
     # Every pair in a tree is in node_pair; a parent and child's own rho
     # is what was authored, so those show, and any other pair whose
     # implied rho falls outside what the batch achieved.
     pairs = con.execute(
-        "SELECT * FROM node_pair WHERE kind = 'link' OR implied_rho < achieved_low "
-        "OR implied_rho > achieved_high ORDER BY kind = 'implied', a, b").fetchall()
-    implied = con.execute("SELECT count(*) FROM node_pair WHERE kind = 'implied'").fetchone()[0]
+        "SELECT * FROM node_pair WHERE component = ? AND (kind = 'link' OR implied_rho < achieved_low "
+        "OR implied_rho > achieved_high) ORDER BY kind = 'implied', a, b", (component,)).fetchall()
+    implied = con.execute("SELECT count(*) FROM node_pair WHERE component = ? AND kind = 'implied'",
+                          (component,)).fetchone()[0]
     if pairs:
-        click.echo("\n  correlated pairs (rho; achieved from the scores' Kendall tau):")
+        click.echo(f"\n{pad} correlated pairs (rho; achieved from the scores' Kendall tau):")
         _echo_table(["a", "b", "kind", "implied", "achieved", "95% interval"], [
             [p["a"], p["b"], p["kind"], f"{p['implied_rho']:+.2f}",
              "—" if p["achieved_rho"] is None else f"{p['achieved_rho']:+.2f}",
              "—" if p["achieved_low"] is None
              else f"{p['achieved_low']:+.2f} to {p['achieved_high']:+.2f}"]
             for p in pairs
-        ], left=3)
+        ], left=indent + 1)
     if implied:
-        click.echo(f"  ({implied} implied pair(s) in all, in node_pair; shown only when outside "
+        click.echo(f"{pad}({implied} implied pair(s) in all, in node_pair; shown only when outside "
                    "their interval)")
-    scales = con.execute(
-        "SELECT tree_root, count(*), min(scale), avg(scale), max(scale) FROM tail_scale "
-        "WHERE year IS NULL GROUP BY tree_root ORDER BY tree_root").fetchall()
-    if scales:
-        click.echo("\n  t-copula scales S per member:")
-        _echo_table(["tree", "members", "min", "mean", "max"], [
-            [root, str(count), f"{low:.2f}", f"{mean:.2f}", f"{high:.2f}"]
-            for root, count, low, mean, high in scales
-        ])
 
 
 def _echo_node_draws(con: sqlite3.Connection, node: str) -> None:
-    found = con.execute("SELECT * FROM node_display WHERE name = ?", (node,)).fetchone()
-    if found is None:
-        known = [name for (name,) in con.execute("SELECT name FROM node ORDER BY name")]
+    found = con.execute("SELECT * FROM node_display WHERE name = ? ORDER BY component",
+                        (node,)).fetchall()
+    if not found:
+        known = [name for (name,) in con.execute("SELECT DISTINCT name FROM node ORDER BY name")]
         raise click.UsageError(f"--node: {node!r} isn't drawn in this batch; it draws {', '.join(known)}")
-    unit = found["unit"]
-    click.echo(f"{node}: {found['distribution'] or found['node_kind']}"
-               + (f", correlated with {found['correlate_with']} at rho {found['rho']:+g}"
-                  if found["correlate_with"] else ""))
-    _echo_table(["member", "value", "u", "z", "noise", "quantile"], [
-        [f"{r['member_index']}{' (base)' if r['is_base'] else ''}", _draw_cell(unit, r["value"]),
-         *("—" if r[c] is None else f"{r[c]:.4f}" for c in ("u", "z", "noise", "quantile"))]
-        for r in con.execute(
-            "SELECT * FROM draw_display WHERE node = ? ORDER BY member_index", (node,))
-    ])
+    pooled = con.execute("SELECT count(DISTINCT component) FROM member").fetchone()[0] > 1
+    for n in found:
+        unit = n["unit"]
+        where = f" ({n['component']})" if pooled else ""
+        click.echo(f"{node}{where}: "
+                   f"{n['distribution'] or n['node_kind']}"
+                   + (f", correlated with {n['correlate_with']} at rho {n['rho']:+g}"
+                      if n["correlate_with"] else ""))
+        _echo_table(["member", "value", "u", "z", "noise", "quantile"], [
+            [f"{r['member_index']}{' (base)' if r['is_base'] else ''}", _draw_cell(unit, r["value"]),
+             *("—" if r[c] is None else f"{r[c]:.4f}" for c in ("u", "z", "noise", "quantile"))]
+            for r in con.execute(
+                "SELECT * FROM draw_display WHERE node = ? AND component = ? ORDER BY member_index",
+                (node, n["component"]))
+        ])
 
 
 def _report_years(batch_dir: Path, available: list[int], requested: list[int] | None) -> list[int]:
@@ -2112,7 +2775,7 @@ def all_scenarios(
     Reports failures per scenario and keeps going; does not stop or fail the
     command itself.
     """
-    from analysis.sim.freshness import code_tree, unchanged_run
+    from analysis.sim.freshness import Unchanged, code_tree, unchanged_run
 
     resolved = _resolve_data_dir(data_dir)
     try:
@@ -2132,12 +2795,36 @@ def all_scenarios(
     if mixins := [name for name in names if is_mixin_only(resolved / "scenarios", name)]:
         names = [name for name in names if name not in mixins]
         click.echo(f"mix-in only, not run: {', '.join(mixins)}")
+    # Pools last (ADR-009): they take their members from the others' batches.
+    names.sort(key=lambda name: is_pool(resolved / "scenarios", name))
+    # Components settled earlier in this run, so a pool needn't check or
+    # rerun them (ADR-009).
+    built: set[str] = set()
+    failed: set[str] = set()
+    # What each settled one's freshness check found (None once rebuilt or
+    # failed), so a pool's own check doesn't repeat it.
+    known: dict[str, Unchanged | None] = {}
     for name in names:
         click.echo(f"=== {name} ===")
-        unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code)
+        unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code,
+                                                     known=known)
+        known[name] = unchanged
         if unchanged is not None:
             skipped.append(name)
+            built.add(name)
             click.echo(f"  unchanged since {unchanged.path.name}; skipped (--force reruns it)")
+            continue
+        if is_pool(resolved / "scenarios", name):
+            try:
+                _run_pool(
+                    name, resolved, _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved),
+                    resolved_runs_dir, run_by=run_by or os.environ.get("USER") or "unknown",
+                    allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+                    ensemble_size=None, jobs=_available_cpus(), built=built, failed=failed,
+                )
+            except click.ClickException as exc:
+                failures.append((name, exc.format_message()))
+                click.echo(f"  error: {exc.format_message()}", err=True)
             continue
         try:
             ctx.invoke(
@@ -2151,7 +2838,9 @@ def all_scenarios(
                 run_by=run_by,
                 run_after_load=True,
             )
+            built.add(name)
         except click.ClickException as exc:
+            failed.add(name)
             failures.append((name, exc.format_message()))
             click.echo(f"  error: {exc.format_message()}", err=True)
 
@@ -10402,7 +11091,10 @@ def _list_scenarios(
             "*" if s.name == current else "",
             s.name, _parents_cell(s),
             date_cell(s.start), date_cell(s.end),
-            value_cell(s.seed), value_cell(s.ensemble_size),
+            # A pool whose components drew with different seeds has none
+            # to show, and pairs with nothing (ADR-009 §4).
+            "mixed" if s.pool and s.seed is None else value_cell(s.seed),
+            value_cell(s.ensemble_size),
             escape(s.description), "no" if s.name in disabled else "",
         )
     Console().print(table)
@@ -10411,6 +11103,8 @@ def _list_scenarios(
 def _parents_cell(s: sc.ScenarioSummary) -> str:
     """``scenario list -v``'s parents: a mix-in only one's are marked, and
     one with none is just the mark."""
+    if s.pool is not None:
+        return f"pool of {', '.join(s.pool)}" if s.pool else "(pool: see sim check)"
     parents = " + ".join(s.parents)
     if not s.mixin_only:
         return parents
@@ -10846,8 +11540,9 @@ def lot_rename(
 
 def _parent_choices(data: Path) -> list[str]:
     """What a scenario can build on: the data repo's scenarios and the
-    templates it doesn't replace."""
-    return names.scenario_names(data)
+    templates it doesn't replace, less pools, which nothing builds on
+    (ADR-009)."""
+    return [n for n in names.scenario_names(data) if not is_pool(data / "scenarios", n)]
 
 
 def _walk_parents(data: Path, current: Sequence[str], *, itself: str | None = None) -> list[str]:
@@ -11035,7 +11730,7 @@ def ensemble_copy(old: str | None, new: str | None, data_dir: Path | None) -> No
 
 # ---------- editing and deleting a scenario (#190) ----------
 
-def _blank_or(value: str, parse: Callable[[str], object], option: str) -> object | None:
+def _blank_or[T](value: str, parse: Callable[[str], T], option: str) -> T | None:
     """``value`` parsed, or ``None`` for a blank one: that option's field inherits."""
     if not value.strip():
         return None
@@ -11087,6 +11782,9 @@ def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, *
     name = name.strip()
     if name not in names:
         raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
+    if is_pool(data / "scenarios", name):
+        # A pool has none of these fields; its own are its components'.
+        raise click.ClickException(f"{name} is a pool (ADR-009); `sim ensemble pool edit {name}` edits it")
     # Named or picked at the prompt, it becomes current, even if nothing changes.
     _resolve_scenario(data, name)
     if new_seed or any(value is not None for value in fields.values()):
@@ -11288,6 +11986,12 @@ def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what
         raise click.ClickException(
             f"{name} is the parent or a mix-in of {', '.join(users)}; delete those, or build them "
             f"on something else (`sim scenario edit <scenario> --parents ...`), first")
+    from analysis.sim.pool import pools_naming
+
+    if pools := pools_naming(scenarios, name):
+        raise click.ClickException(
+            f"{name} is a component of pool(s) {', '.join(pools)}; delete those, or take it out "
+            f"(`sim ensemble pool edit <pool> ...`), first")
     folder = scenarios / name
     click.echo(f"{folder}: {sum(1 for p in folder.rglob('*') if p.is_file())} file(s)")
     if not yes and not click.confirm(f"delete scenario {name}?", default=False):
@@ -11315,7 +12019,7 @@ def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 def scenario_delete(name: str | None, yes: bool, data_dir: Path | None) -> None:
     """Delete scenario NAME's folder. Refused while another scenario names
-    it as its parent or a mix-in. Clears the current scenario if it is NAME;
+    it as its parent or a mix-in, or a pool as a component. Clears the current scenario if it is NAME;
     runs already made of it are kept. Same as `sim ensemble delete`.
 
     Without NAME, it is asked for."""

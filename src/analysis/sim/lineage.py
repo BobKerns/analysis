@@ -19,6 +19,7 @@ template whole. :func:`scenario_dir` is the one place that decides.
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 
@@ -31,6 +32,8 @@ TEMPLATE_AUX_DIR = TEMPLATE_SCENARIOS_DIR.parent / "aux"
 MIXIN_BASE = "t_empty"
 # What ``scenario create --no-parent`` describes its scenario as.
 MIXIN_ONLY_DESCRIPTION = "A mix-in: it builds on no other scenario."
+# The ``scenario.meta_json`` key that makes a scenario a pool (ADR-009).
+POOL_KEY = "pool"
 
 
 def is_template_name(name: str) -> bool:
@@ -108,6 +111,23 @@ def read_parents(scenario_dir: Path) -> list[str]:
     return parse_parents(_first_row(scenario_dir).get("parent_scenario"))
 
 
+def read_meta(scenario_dir: Path) -> dict[str, object]:
+    """``scenario_dir/scenario.csv``'s own ``meta_json``, or {} when it is
+    missing or isn't a JSON object (the loader reports that)."""
+    try:
+        meta = json.loads(_first_row(scenario_dir).get("meta_json") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def is_pool(scenarios_dir: Path, name: str) -> bool:
+    """Whether ``name`` is a pooled ensemble (ADR-009): its own
+    ``meta_json`` has a ``pool`` key. A pool has no lineage; it draws its
+    members from other ensembles' batches, so nothing loads it."""
+    return POOL_KEY in read_meta(scenario_dir(scenarios_dir, name))
+
+
 def is_mixin_only(scenarios_dir: Path, name: str) -> bool:
     """Whether ``name`` is a mix-in only scenario (#259, #324, ADR-003 §4.5):
     one of the data repo's whose lineage has no dates at all -- no template
@@ -116,6 +136,9 @@ def is_mixin_only(scenarios_dir: Path, name: str) -> bool:
     span, so it has none, and it can't run by itself; loaded by itself (to
     check it), it sits on ``MIXIN_BASE``. Its parents, if any, are mix-ins
     too."""
+    # A pool has no dates of its own either; its components have them.
+    if is_pool(scenarios_dir, name):
+        return False
     # Only a whole, acyclic lineage shows there are no dates: a missing
     # parent or a cycle is the loader's to report, not a mix-in.
     try:
@@ -151,6 +174,45 @@ def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False)
         base = lineage_order(scenarios_dir, MIXIN_BASE, strict=strict)
         return [*(n for n in base if n not in order), *order]
     return order
+
+
+def pool_base(scenarios_dir: Path, name: str) -> str | None:
+    """A pool's base component as its ``meta_json`` names it (the first
+    component unless ``base`` says otherwise), unchecked; ``None`` for a
+    scenario that isn't a pool, or names no component."""
+    spec = read_meta(scenario_dir(scenarios_dir, name)).get(POOL_KEY)
+    if not isinstance(spec, dict):
+        return None
+    base = spec.get("base")
+    if isinstance(base, str) and base:
+        return base
+    components = spec.get("components")
+    first = next(iter(components), None) if isinstance(components, (dict, list)) else None
+    return first if isinstance(first, str) else None
+
+
+def pool_components(scenarios_dir: Path, name: str) -> list[str]:
+    """A pool's components as its ``meta_json`` lists them, unchecked; []
+    for a scenario that isn't a pool."""
+    spec = read_meta(scenario_dir(scenarios_dir, name)).get(POOL_KEY)
+    components = spec.get("components") if isinstance(spec, dict) else None
+    if not isinstance(components, (dict, list)):
+        return []
+    return [c for c in components if isinstance(c, str)]
+
+
+def reading_order(scenarios_dir: Path, scenario_name: str) -> list[str]:
+    """:func:`load_order`, except for a pool (ADR-009 §6): its base
+    component's load order, then the pool. What a report reads from the
+    data repo rather than the run (guard rails, the names to complete) a
+    pool inherits from its base component, as it does the reserve, and
+    may override in its own folder."""
+    base = pool_base(scenarios_dir, scenario_name)
+    if base is None or base == scenario_name or not scenario_dir(scenarios_dir, base).is_dir():
+        return load_order(scenarios_dir, scenario_name)
+    if is_pool(scenarios_dir, base):  # a pool of pools is refused; read just the pool
+        return [scenario_name]
+    return [*(n for n in load_order(scenarios_dir, base) if n != scenario_name), scenario_name]
 
 
 def lineage_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False) -> list[str]:
