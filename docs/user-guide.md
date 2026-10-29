@@ -130,6 +130,9 @@ argument or `--scenario`) makes it current, and the command says so
 `sim ensemble create` do for the new scenario. When you leave it out, the command
 first prints `Using scenario <name>`; with no current scenario (a fresh data
 repo, or after deleting it) the command asks you to name one.
+To look at a scenario without making it current (in a script, or for an AI
+assistant answering questions for you), set `ANALYSIS_KEEP_SCENARIO=1`:
+commands then use the scenario they name and leave your current one as it is.
 `sim switch` prints your current scenario, and `sim switch <name>` makes
 `<name>` current, printing the one it replaces. The shell
 prompt that `activate-analysis` sets shows it, as

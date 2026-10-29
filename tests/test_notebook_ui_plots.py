@@ -11,10 +11,11 @@ import numpy as np
 
 matplotlib.use("Agg")
 
+from analysis.sim.accounts import accounts_dataframe
 from analysis.sim.types import DollarMode
 from analysis.sim.notebook_ui.accounts_plots import render_balance_history_figure
 from analysis.sim.connection import RunConnection, open_run
-from analysis.sim.notebook_ui.accounts_plots import account_history_widget
+from analysis.sim.notebook_ui.accounts_plots import account_history_widget, show_account_setup
 from analysis.sim.notebook_ui.pickers import AccountPicker, TimeRangePicker, run_years
 from analysis.sim.notebook_ui.networth_plots import (
     economic_income_widget,
@@ -103,6 +104,31 @@ def test_economic_income_widget_says_an_empty_run_has_no_net_worth(
     economic_income_widget(empty)
     # Outside a kernel an Output widget's prints reach stdout.
     assert "No net worth in this run" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("widget", "what"), [
+    (income_widget, "income"), (expenses_widget, "expenses"), (gains_widget, "gains"),
+])
+def test_bar_chart_widgets_say_an_empty_run_has_nothing_to_chart(
+    empty_scenario_runs: tuple[RunConnection, RunConnection], capsys: pytest.CaptureFixture[str],
+    widget, what: str,
+) -> None:
+    _, empty = empty_scenario_runs
+    widget(empty)
+    # Outside a kernel an Output widget's prints reach stdout.
+    assert f"No {what} to chart in this run" in capsys.readouterr().out
+
+
+def test_accounts_dataframe_and_setup_handle_a_scenario_with_no_accounts(
+    empty_scenario_runs: tuple[RunConnection, RunConnection],
+) -> None:
+    full, empty = empty_scenario_runs
+    accounts = accounts_dataframe(empty.scenario)
+    assert accounts.empty
+    # Same shape as a scenario with accounts, so callers can pick columns.
+    assert list(accounts.columns) == list(accounts_dataframe(full.scenario).columns)
+    assert accounts.index.name == "name"
+    show_account_setup(empty.scenario)
 
 
 def test_account_history_widget_defaults_to_kind(retire_alice_run_file: Path,
