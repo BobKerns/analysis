@@ -14,7 +14,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
-from analysis.sim import cli as cli_module
+from analysis.sim import cli as cli_module, scenario
 from analysis.sim.cli import (
     _CALENDAR_REPLACE_ROW,
     _read_calendar_rows,
@@ -561,3 +561,79 @@ def test_edit_refuses_to_clear_a_field_when_that_would_copy_another_row(
     assert result.exit_code == 1
     assert "left blank, that would duplicate another row" in result.output
     pd.testing.assert_frame_equal(calendar_rows(), before)
+
+
+@pytest.fixture
+def sibling_with_bonus(test_data_dir: Path, test_child_scenario: Path) -> Path:
+    """A ``sib`` scenario beside ``child``, both built on retire_alice, with
+    its own one-off transfer named ``bonus``."""
+    sib = scenario.create_scenario(test_data_dir, "sib", "retire_alice")
+    rows = _read_calendar_rows(test_child_scenario.parent / "retire_alice" / "calendar.csv")
+    transfer = next(row for row in rows if row["kind"] == "one_off_transfer")
+    _write_rows(sib / "calendar.csv", [{**transfer, "date": "2031-06-30", "name": "bonus"}])
+    return sib
+
+
+def _write_rows(path: Path, rows: list[dict[str, str]]) -> None:
+    pd.DataFrame(rows, columns=list(CALENDAR_HEADER)).to_csv(path, index=False)
+
+
+def test_naming_in_the_parent_refuses_a_name_a_sibling_already_uses(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame],
+    child_calendar: Callable[[], pd.DataFrame], sibling_with_bonus: Path,
+) -> None:
+    """A sibling's own ``bonus`` would override the parent row named so."""
+    result = _edit_child(
+        test_data_dir, "salary_bill", answers=["date", "2032-12-31", "", "bonus", "bill_retires"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "already named 'bonus' in sib" in result.output
+    assert calendar_rows().loc[4, "name"] == "bill_retires"
+    assert child_calendar().loc[0, "name"] == "bill_retires"
+
+
+def test_options_refuse_a_name_used_below_or_above_the_scenario(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame], sibling_with_bonus: Path,
+) -> None:
+    before = calendar_rows()
+
+    below = _edit_with_options(test_data_dir, "retire_alice", "5", "--name", "bonus")
+    above = _edit_with_options(test_data_dir, "retire_alice", "5", "--name", "cpi_factor")
+
+    assert below.exit_code != 0 and "already named 'bonus' in sib" in below.output
+    assert above.exit_code != 0 and "already named 'cpi_factor'" in above.output
+    pd.testing.assert_frame_equal(calendar_rows(), before)
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (("50", "--description", "changed"), "there is no row 50"),
+    (("3", "--date", ""), "--date: an answer is required"),
+    (("3", "--scheduled-name", "no_such_rule"), "--scheduled-name: not one of"),
+])
+def test_options_are_checked_as_the_guide_checks_answers(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame],
+    args: tuple[str, ...], message: str,
+) -> None:
+    before = calendar_rows()
+
+    result = _edit_with_options(test_data_dir, "retire_alice", *args)
+
+    assert result.exit_code != 0
+    assert message in result.output
+    assert "(YYYY-MM or YYYY-MM-DD):" not in result.output  # nothing was asked
+    pd.testing.assert_frame_equal(calendar_rows(), before)
+
+
+def test_a_templates_unnamed_row_is_not_offered_a_name(
+    test_data_dir: Path, child_calendar: Callable[[], pd.DataFrame],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_module, "_is_template", lambda _dir, name: name == "retire_alice")
+
+    result = _edit_child(test_data_dir, "salary_bill", answers=["date", "2032-12-31", "", "cancel"])
+
+    assert result.exit_code != 0
+    assert "A template isn't edited from here" in result.output
+    assert "name it in" not in result.output
+    assert child_calendar().empty

@@ -757,6 +757,14 @@ class Guide:
         others = ctx.other_rows.get(spec.command, ())
         return any(self._key(spec, ctx, other) == key for other in others)
 
+    def problem(
+        self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers, answer: str,
+    ) -> str | None:
+        """Why ``answer`` won't do for ``field_``, as asking it would say; None
+        when it will. For an answer given other than by asking (an option)."""
+        choices = list(field_.choices(ctx, answers)) if field_.choices else []
+        return self._problem(spec, field_, ctx, answers, answer, choices)
+
     def _problem(
         self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers,
         answer: str, choices: list[str],

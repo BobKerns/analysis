@@ -4116,49 +4116,67 @@ class _UnnamedRowKeyChange(click.ClickException):
     """An override of an inherited, unnamed calendar row that changes a key
     column, which the load would read as a second event (#356). ``origin`` is
     the scenario to name the row in, after which the override can match it by
-    name."""
+    name; None when that can't be done here (a template)."""
 
-    def __init__(self, message: str, *, origin: str) -> None:
+    def __init__(self, message: str, *, origin: str | None) -> None:
         super().__init__(message)
         self.origin = origin
 
 
-def _defining_calendar_row(
-    scenarios_dir: Path, origin: str, chosen: Mapping[str, str],
-) -> tuple[int, int] | None:
-    """Where scenario ``origin`` has the unnamed row ``chosen`` (as merged):
-    its number as `sim calendar edit` lists it there, and its data row
-    (0-based) in ``origin``'s own calendar.csv. None when it isn't an
-    unnamed row of that file."""
-    entries, _notes = _calendar_entries(_folder_of(scenarios_dir, origin), origin, "edit")
+def _unnamed_row_index(rows: list[dict[str, str]], chosen: Mapping[str, str]) -> int | None:
+    """The data row (0-based) of ``rows``, a scenario's own calendar.csv rows,
+    that is the unnamed row ``chosen``: the one row without a name that has
+    its key. None unless there is exactly one."""
     key = calendar_row_key(dict(chosen))
-    for number, entry in enumerate(entries, start=1):
-        if entry.index is not None and not entry.row["name"] and calendar_row_key(entry.row) == key:
-            return number, entry.index
-    return None
+    found = [
+        index for index, row in enumerate(rows)
+        if not row["name"].strip() and calendar_row_key(row) == key
+    ]
+    return found[0] if len(found) == 1 else None
+
+
+def _calendar_name_clash(scenarios_dir: Path, scenario: str, name: str) -> str | None:
+    """Where ``name``, given to a row of ``scenario``, would meet another
+    calendar row of that name: in ``scenario``'s load order, or in any
+    scenario built on it, where a row of that name would override this one
+    (#356). None when it is free."""
+    if not name:
+        return None
+    affected = [
+        scenario,
+        *(each for each in rename.scenario_folders(scenarios_dir)
+          if each != scenario and scenario in load_order(scenarios_dir, each)),
+    ]
+    found = rename.clashes(scenarios_dir, affected, rename.calendar_row_defined(name))
+    if not found:
+        return None
+    return f"a calendar row is already named {name!r} in {rename.describe_clashes(found)}"
 
 
 def _name_defining_calendar_row(
     data_dir: Path, origin: str, chosen: Mapping[str, str], name: str,
-) -> None:
+) -> Path:
     """Give the unnamed row ``chosen`` the name ``name`` in ``origin``, the
     scenario whose calendar.csv has it, as a staged edit that every scenario
-    built on ``origin`` must still load with (#356)."""
-    found = _defining_calendar_row(data_dir / "scenarios", origin, chosen)
-    if found is None:
-        raise click.ClickException(
-            f"scenario {origin!r} no longer has this row unnamed; start again. Nothing was written."
-        )
-    _number, index = found
-    path = _folder_of(data_dir / "scenarios", origin) / "calendar.csv"
+    built on ``origin`` must still load with (#356). Returns the file."""
+    scenarios_dir = data_dir / "scenarios"
+    if (clash := _calendar_name_clash(scenarios_dir, origin, name)) is not None:
+        raise click.ClickException(f"{clash}. Nothing was written.")
+    path = _folder_of(scenarios_dir, origin) / "calendar.csv"
     with _scenario_edit(data_dir, origin, remember=False) as edit:
         staged = edit.path(path)
+        # Found in the staged copy: the file may have changed since the row was picked.
+        index = _unnamed_row_index(_read_calendar_rows(staged), chosen)
+        if index is None:
+            raise click.ClickException(
+                f"{path} no longer has this row without a name; start again. Nothing was written."
+            )
         frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
         if "name" not in frame.columns:
             frame["name"] = ""
         frame.loc[index, "name"] = name
         frame.to_csv(staged, index=False)
-    click.echo(f"named the row {name!r} in {path}")
+    return path
 
 
 def _write_calendar_override(
@@ -4184,14 +4202,26 @@ def _write_calendar_override(
             column for column in registries.CALENDAR_KEY_COLUMNS
             if calendar_row_key({**chosen, column: row.get(column, "")}) != calendar_row_key(chosen)
         ]
-        found = _defining_calendar_row(path.parent.parent, origin, chosen)
-        pick = str(found[0]) if found is not None else "ROW"
+        matched = (
+            f"this row comes from {{}} {origin!r} and has no name, so an override is "
+            f"matched to it by its {', '.join(changed) or 'key fields'}, which this edit "
+            "changes: it would add a second event instead."
+        )
+        if _is_template(path.parent.parent, origin):
+            raise _UnnamedRowKeyChange(
+                matched.format("template")
+                + " A template isn't edited from here, so its row can't be named. Nothing was written.",
+                origin=None,
+            )
+        # Own rows are listed first, numbered as in the file.
+        index = _unnamed_row_index(
+            _read_calendar_rows(_folder_of(path.parent.parent, origin) / "calendar.csv"), chosen,
+        )
+        pick = str(index + 1) if index is not None else "ROW"
         raise _UnnamedRowKeyChange(
-            f"this row comes from scenario {origin!r} and has no name, so an override "
-            f"is matched to it by its {', '.join(changed) or 'key fields'}, which this "
-            f"edit changes: it would add a second event instead. Give the row a name "
-            f"in {origin!r} first (`sim calendar edit {pick} --scenario {origin} "
-            "--name NAME`), then edit it here. Nothing was written.",
+            matched.format("scenario")
+            + f" Give the row a name in {origin!r} first (`sim calendar edit {pick} "
+            f"--scenario {origin} --name NAME`), then edit it here. Nothing was written.",
             origin=origin,
         )
     for other_index, other in enumerate(_read_calendar_rows(staged)):
@@ -5213,6 +5243,8 @@ def _select_calendar_row(
         text = (wanted or "").strip()
         if text.isdigit() and 1 <= int(text) <= len(rows):
             return int(text) - 1
+        if text.isdigit():  # a number is a row number here, never text to match
+            raise click.UsageError(f"there is no row {text}: the rows are numbered 1 to {len(rows)}")
         named = [index for index, row in enumerate(rows) if text and row["name"] == text]
         matches = named or [index for index in candidates if text and text.lower() in labels[index].lower()]
         if len(matches) == 1:
@@ -5309,8 +5341,14 @@ def _calendar_edit_given(
     """Apply options ``given`` to ``answers``, the row's fields, as the guide
     would: a field the row's kind doesn't read, or one that doesn't apply to
     the row as changed, is refused rather than dropped; one that no longer
-    applies (a bound the new distribution doesn't take) is dropped."""
+    applies (a bound the new distribution doesn't take) is dropped. Each
+    given value is checked as the guide checks an answer, a blank required
+    one included, so the kind's command never has a question to ask."""
     flag_of = {param: flag for flag, (param, _help) in _CALENDAR_EDIT_FLAGS.items()}
+
+    def flag(field_: calendar_guide.Field) -> str:
+        return "--name" if field_.param in ("row_name", "name") else flag_of[field_.param]
+
     params = {f.param for f in spec.fields}
     changes: dict[str, str] = {}
     unread: list[str] = []
@@ -5338,29 +5376,34 @@ def _calendar_edit_given(
         if field_.applies(context, answers):
             continue
         if changes.get(field_.param):
-            flag = "--name" if field_.param in ("row_name", "name") else flag_of[field_.param]
-            raise click.UsageError(f"{flag} doesn't apply to this row as changed")
+            raise click.UsageError(f"{flag(field_)} doesn't apply to this row as changed")
         answers.pop(field_.param, None)
+    guide = _calendar_guide()
+    for field_ in spec.fields:
+        if field_.param in changes and field_.param in answers:
+            problem = guide.problem(spec, field_, context, answers, answers[field_.param])
+            if problem is not None:
+                raise click.UsageError(f"{flag(field_)}: {problem}")
 
 
-def _ask_defining_name(
-    origin: str, context: calendar_guide.GuideContext, suggested: str,
-) -> str:
+def _ask_defining_name(scenarios_dir: Path, origin: str, suggested: str) -> str:
     """A name for an unnamed row, to write in ``origin``, the scenario that
-    defines it (#356); blank for none."""
+    defines it (#356); blank for none. A name any row in ``origin``'s
+    lineage, or in a scenario built on it, already has is asked again."""
     click.echo(
         f"  The row has no name in {origin!r}, so this scenario can only override it by "
         "its date and other key fields, which this edit changes. Named there, it is "
         "overridden by name instead."
     )
-    taken = {*context.row_names, *context.taken_names}
     while True:
         name = _prompt_with_completion(
             f"name it in {origin!r} (blank to go back)", default=suggested,
         ).strip()
-        if name not in taken:
+        problem = rename.name_problem("calendar row", name) if name else None
+        problem = problem or _calendar_name_clash(scenarios_dir, origin, name)
+        if problem is None:
             return name
-        click.echo(f"  another row is already named {name!r}")
+        click.echo(f"  {problem}")
 
 
 @calendar_group_command.command("edit")
@@ -5423,6 +5466,11 @@ def calendar_edit(
     context = _guide_context(data_dir_p, scenario_name, rows=rows, editing=index)
 
     def write(params: dict[str, object]) -> None:
+        new_name = str(params.get("row_name") or params.get("name") or "").strip()
+        if new_name != rows[index]["name"].strip() and (
+            clash := _calendar_name_clash(data_dir_p / "scenarios", scenario_name, new_name)
+        ):
+            raise click.ClickException(f"{clash}. Nothing was written.")
         if chosen.index is None:
             key, value = _CALENDAR_OVERRIDE_ROW, (rows[index], chosen.inherited_from)
         else:
@@ -5443,24 +5491,40 @@ def calendar_edit(
         write(calendar_guide.command_params(spec, answers))
         return
 
+    named: list[str] = []  # where the row was named on the way, if it was
+
     def submit(params: dict[str, object]) -> None:
         try:
             write(params)
         except _UnnamedRowKeyChange as refused:
             # Offer to name the row where it is defined, then override it by
             # that name (#356).
-            name = _ask_defining_name(refused.origin, context, str(params.get("row_name", "")))
+            if refused.origin is None:
+                raise
+            origin = refused.origin
+            name = _ask_defining_name(data_dir_p / "scenarios", origin, str(params.get("row_name", "")))
             if not name:
                 raise
-            _name_defining_calendar_row(data_dir_p, refused.origin, rows[index], name)
+            written = _name_defining_calendar_row(data_dir_p, origin, rows[index], name)
+            named.append(f"the row keeps its new name {name!r} in {written}")
+            click.echo(f"named the row {name!r} in {written}")
             rows[index] = {**rows[index], "name": name}
             answers["row_name"] = name
-            write({**params, "row_name": name})
+            try:
+                write({**params, "row_name": name})
+            except click.ClickException as error:
+                # The name is written; only the override here is not.
+                raise click.ClickException(
+                    f"{error.format_message()} (The row is named {name!r} in {origin!r}; "
+                    "only this scenario's override was not written.)"
+                ) from None
 
     click.echo(f"Editing row {index + 1}: {_calendar_row_label(rows[index])}  {notes[index]}".rstrip())
     guide = _calendar_guide()
     guide.complete(spec, context, answers)
     if not guide.review(spec, context, answers, submit, show_command=False):
+        for note in named:
+            click.echo(f"  ({note})")
         ctx.exit(1)
 
 
