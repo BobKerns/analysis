@@ -1445,12 +1445,14 @@ def _write_pool(
         raise click.ClickException(f"{len(issues)} issue(s); nothing written")
     if not (folder / "README.md").exists():
         (folder / "README.md").write_text(_pool_readme(name, description, components), encoding="utf-8")
+    else:
+        pl.refresh_readme_pools_line(folder, components)
 
 
 def _pool_readme(name: str, description: str, components: Mapping[str, str | None]) -> str:
-    shares = ", ".join(f"`{c}` {w or 'equal share'}" for c, w in components.items())
-    return (f"# {name}\n\n{description}\n\nPools: {shares} (ADR-009).\n\n"
-            f"{sc.README_PURPOSE}")
+    from analysis.sim.pool import readme_pools_line
+
+    return f"# {name}\n\n{description}\n\n{readme_pools_line(components)}\n\n{sc.README_PURPOSE}"
 
 
 @ensemble_pool_group.command("create")
@@ -1533,7 +1535,8 @@ def _ask_pool_components(data: Path, current: str | None) -> tuple[str, ...]:
               help="The component whose member 0 is the base case; '' takes the first.")
 @click.option("--reserve", default=None,
               help="The reports' reserve, in CPI-constant dollars; '' takes the base component's.")
-@click.option("--description", default=None, help="The pool's description.")
+@click.option("--description", default=None,
+              help="The pool's description; '' takes the generated 'Pooled from <components>'.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 def ensemble_pool_edit(
@@ -1573,15 +1576,30 @@ def ensemble_pool_edit(
             "size ('-' for the smallest component's)",
             default=str(meta["ensemble_size"]) if "ensemble_size" in meta else "-").strip()
         size = "" if size == "-" else size
+        reserve = _prompt_with_completion(
+            "reserve, CPI-constant dollars ('-' for the base component's)",
+            default=str(meta["reserve"]) if "reserve" in meta else "-").strip()
+        reserve = "" if reserve == "-" else reserve
+        generated = row.get("description", "") == pl.default_description(list(now))
+        description = _prompt_with_completion(
+            "description ('-' for the generated one)",
+            default="-" if generated or not row.get("description") else row["description"]).strip()
+        description = "" if description == "-" else description
     parsed = _pool_components(components) if components else now
+    old_description = row.get("description", "")
+    if description is None:
+        # A generated description follows the components, as on a rename.
+        new_description = (pl.default_description(list(parsed))
+                           if old_description == pl.default_description(list(now)) else old_description)
+    else:
+        new_description = description.strip() or pl.default_description(list(parsed))
     new_base = spec.get("base") if base is None else (base.strip() or None)
     new_size = meta.get("ensemble_size") if size is None else _blank_or(size, _member_count, "--size")
     if reserve is None:
         new_reserve = meta.get("reserve")
     else:
         new_reserve = _blank_or(reserve, _reserve_json, "--reserve")
-    _write_pool(data, name, parsed, base=new_base, size=new_size,
-                description=row.get("description", "") if description is None else description.strip(),
+    _write_pool(data, name, parsed, base=new_base, size=new_size, description=new_description,
                 reserve=new_reserve, created_by=row.get("created_by") or None)
     pool = pl.read_pool(data / "scenarios", name)
     click.echo(f"edited pool {name}")

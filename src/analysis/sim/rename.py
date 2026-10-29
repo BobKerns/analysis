@@ -522,11 +522,12 @@ def copy_scenario(data_dir: Path, old: str, new: str, *, created_by: str | None 
 
 
 def _repoint_pool(
-    old: str, new: str, described: list[tuple[str, str]],
+    old: str, new: str, described: list[tuple[str, str]], new_components: list[dict[str, str | None]],
 ) -> Callable[[dict[str, str]], None]:
     """A pool's components follow a rename (ADR-009), as a child's parents
     do; a made-up description that follows is added to ``described`` as
-    (before, after), for the README to follow too."""
+    (before, after), and the new components (name -> weight) to
+    ``new_components``, for the README to follow too."""
     from analysis.sim import pool
 
     def edit(row: dict[str, str]) -> None:
@@ -542,6 +543,8 @@ def _repoint_pool(
             return
         before = list(spec["components"])
         meta[pool.POOL_KEY] = renamed
+        components = renamed["components"]
+        new_components.append({c: (components[c] if isinstance(components, dict) else None) for c in components})
         row["meta_json"] = json.dumps(meta, separators=(",", ":"))
         if (row.get("description") or "").strip() == pool.default_description(before):
             row["description"] = pool.default_description(list(renamed["components"]))
@@ -553,6 +556,8 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
     """Rename scenario ``old`` to ``new`` in data repo ``data_dir`` (a staged
     copy, in the CLI). Returns what changed, as paths relative to
     ``data_dir``, named as they are after the rename."""
+    from analysis.sim import pool
+
     scenarios = data_dir / "scenarios"
     old_dir = scenarios / old
     new_dir = _check_new_scenario(scenarios, new)
@@ -581,11 +586,16 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
         changed.append(f"scenarios/{new}/scenario.csv")
     for each in scenario_folders(scenarios):
         described: list[tuple[str, str]] = []
-        for edit in (_repoint_parents(old, new), _repoint_pool(old, new, described)):
+        new_components: list[dict[str, str | None]] = []
+        for edit in (_repoint_parents(old, new), _repoint_pool(old, new, described, new_components)):
             if _rewrite_scenario_csv(scenarios / each / "scenario.csv", edit):
                 if f"scenarios/{each}/scenario.csv" not in changed:
                     changed.append(f"scenarios/{each}/scenario.csv")
         readme = scenarios / each / "README.md"
+        for components in new_components:
+            if pool.refresh_readme_pools_line(scenarios / each, components) \
+                    and f"scenarios/{each}/README.md" not in changed:
+                changed.append(f"scenarios/{each}/README.md")
         for before, after_text in described:
             if readme.is_file():
                 text = readme.read_text(encoding="utf-8")

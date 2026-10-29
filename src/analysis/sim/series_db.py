@@ -253,6 +253,8 @@ def _member_files(batch_dir: Path) -> dict[str, tuple[int, int]]:
 def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
     """Write ``batch_dir``'s store from ``members`` (its succeeded ones),
     replacing any there. Returns its path."""
+    from analysis.sim.pool import member_components, pool_record
+
     path = series_db_path(batch_dir)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.unlink(missing_ok=True)
@@ -262,9 +264,17 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
         con.executemany("INSERT INTO member_file VALUES (?, ?, ?)",
                         [(stem, *stat) for stem, stat in _member_files(batch_dir).items()])
         subject_ids: dict[tuple[str, str, str], int] = {}
-        meta_json = "{}"
+        # The batch's meta is its first member's, but a pool's is its base
+        # component's (ADR-009 §6), from that component's first member.
+        meta_json: str | None = None
+        base_meta: str | None = None
+        record = pool_record(batch_dir)
+        origin = member_components(batch_dir) or {}
+        base = record.get("base") if record is not None else None
         for member_id, member in enumerate(sorted(members, key=lambda m: m.stem), start=1):
-            meta_json = member.meta_json if member_id == 1 else meta_json
+            meta_json = member.meta_json if meta_json is None else meta_json
+            if base_meta is None and base is not None and origin.get(member.member_index) == base:
+                base_meta = member.meta_json
             con.execute(
                 "INSERT INTO member VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (member_id, member.stem, member.member_index, member.seed,
@@ -281,7 +291,7 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
                             (subject_ids[key], member_id, _pack(values)))
         con.execute("INSERT INTO batch VALUES (1, ?, ?, ?, ?)",
                     (FORMAT_VERSION, _code_hash(), datetime.now(UTC).isoformat(),
-                     _pool_meta(batch_dir, meta_json)))
+                     _pool_meta(batch_dir, base_meta or meta_json or "{}")))
         con.commit()
     finally:
         con.close()

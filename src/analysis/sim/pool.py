@@ -36,7 +36,7 @@ from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 __all__ = [
     "POOL_KEY", "Pool", "PoolError", "read_pool", "pool_issues", "pool_size", "assign_members",
     "build_pool_batch", "pool_record", "member_components", "pools_naming", "is_pool",
-    "default_description", "renamed_spec",
+    "default_description", "renamed_spec", "readme_pools_line", "refresh_readme_pools_line",
 ]
 
 # 100% in the micros `units.percent_to_micros` returns.
@@ -238,10 +238,12 @@ def pool_issues(data_dir: Path, name: str) -> list[str]:
         except ValueError as exc:
             issues.append(f"{name}: component {component}: {exc}")
             continue
-        _seed, size = ensemble_settings(data_dir, component)
+        seed, size = ensemble_settings(data_dir, component)
         if size is None:
             issues.append(f"{name}: component {component} is not an ensemble (its ensemble_size is 0)")
             continue
+        if seed is None:
+            issues.append(f"{name}: component {component} has no seed, so its members can't be drawn")
         sizes[component] = size.value
         start, end = scenario_span(data_dir, component)
         spans[component] = (start.month if start else None, end.month if end else None)
@@ -258,6 +260,45 @@ def pool_issues(data_dir: Path, name: str) -> list[str]:
     return issues + _rail_issues(data_dir, name)
 
 
+def _by_name(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Lineage rows (root first) with each named row's last version only,
+    as the loader merges them, so a tag an override dropped isn't known.
+    Unnamed rows (unnamed calendar rows) are kept; no rail names them."""
+    named: dict[str, dict[str, str]] = {}
+    unnamed = []
+    for row in rows:
+        if key := (row.get("name") or "").strip():
+            named.pop(key, None)
+            named[key] = row
+        else:
+            unnamed.append(row)
+    return [*unnamed, *named.values()]
+
+
+def readme_pools_line(components: Mapping[str, str | None]) -> str:
+    """The README line naming a pool's components and shares."""
+    shares = ", ".join(f"`{c}` {w or 'equal share'}" for c, w in components.items())
+    return f"{README_POOLS_PREFIX}{shares} (ADR-009)."
+
+
+README_POOLS_PREFIX = "Pools: "
+
+
+def refresh_readme_pools_line(folder: Path, components: Mapping[str, str | None]) -> bool:
+    """Rewrite the ``Pools:`` line of the pool's README.md to name
+    ``components``; whether it changed."""
+    readme = Path(folder) / "README.md"
+    if not readme.is_file():
+        return False
+    text = readme.read_text(encoding="utf-8")
+    line = readme_pools_line(components)
+    lines = [line if each.startswith(README_POOLS_PREFIX) else each for each in text.split("\n")]
+    if "\n".join(lines) == text:
+        return False
+    readme.write_text("\n".join(lines), encoding="utf-8")
+    return True
+
+
 def _rail_issues(data_dir: Path, name: str) -> list[str]:
     """The pool's guard rails (its own over its base component's), parsed,
     and what they name checked against the base component's lineage: the
@@ -269,7 +310,7 @@ def _rail_issues(data_dir: Path, name: str) -> list[str]:
     issues += more
     if rails:
         refs = guard_rails.references_from_rows(*(
-            names.lineage_rows(Path(data_dir), name, f)
+            _by_name(names.lineage_rows(Path(data_dir), name, f))
             for f in ("accounts.csv", "scheduled.csv", "calendar.csv")))
         issues += guard_rails.check_references(rails, refs)
     return issues
@@ -368,10 +409,12 @@ def build_pool_batch(
             _link(source_intent, intent_batch / stem)
         source_run = sources[component] / stem
         if source_run.is_file():
+            # A member that failed mid-run leaves its run file too (status
+            # failed); it's linked like any other, but still a failure.
             _link(source_run, runs_batch / stem)
-        elif j in errors[component]:
+        if j in errors[component]:
             failures.append((j, intent_batch / stem, errors[component][j]))
-        else:
+        elif not source_run.is_file():
             failures.append((j, intent_batch / stem, f"{component} has no run file for member {j}"))
     record: dict[str, Any] = {
         **pool.definition(), "built_size": size,

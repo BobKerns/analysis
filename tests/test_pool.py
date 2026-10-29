@@ -151,6 +151,55 @@ def test_pool_edit_replaces_components_and_sets_size_and_base(
     assert _meta(test_data_dir, pool_scenarios) == {"pool": {"components": ["e_a", "e_b"]}}
 
 
+def test_pool_edit_with_no_options_asks_for_every_field(test_data_dir: Path, pool_scenarios: str) -> None:
+    # components, base and size kept; a reserve; '-' for the generated description
+    answers = "\n\n\n50000\n-\n"
+    result = CliRunner().invoke(main, ["sim", "ensemble", "pool", "edit", pool_scenarios,
+                                       "--data-dir", str(test_data_dir)], input=answers)
+    assert result.exit_code == 0, result.output
+    assert "reserve" in result.output and "description" in result.output
+    assert _meta(test_data_dir, pool_scenarios) == {
+        "pool": {"components": {"e_a": "25%", "e_b": "75%"}, "base": "e_a"}, "reserve": 50000}
+
+
+def test_a_blank_pool_description_restores_the_generated_one(test_data_dir: Path, pool_scenarios: str) -> None:
+    data = ("--data-dir", str(test_data_dir))
+    assert _sim("ensemble", "pool", "edit", pool_scenarios, "--description", "mine", *data).exit_code == 0
+    assert _sim("ensemble", "pool", "edit", pool_scenarios, "--description", "", *data).exit_code == 0
+    with (test_data_dir / "scenarios" / pool_scenarios / "scenario.csv").open(newline="", encoding="utf-8") as fh:
+        assert next(csv.DictReader(fh))["description"] == "Pooled from e_a + e_b"
+
+
+def test_the_readme_names_the_pools_components_after_an_edit(test_data_dir: Path, pool_scenarios: str) -> None:
+    result = _sim("ensemble", "pool", "edit", pool_scenarios, "e_a", "e_b", "--data-dir", str(test_data_dir))
+    assert result.exit_code == 0, result.output
+    readme = (test_data_dir / "scenarios" / pool_scenarios / "README.md").read_text(encoding="utf-8")
+    assert "Pools: `e_a` equal share, `e_b` equal share (ADR-009).\n" in readme
+
+
+def test_a_component_with_no_seed_is_refused(
+    test_data_dir: Path, pool_scenarios: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A lineage that never reaches a seed (the base template sets one, so
+    # the test data's always do): its members couldn't be drawn.
+    from analysis.sim import scenario
+
+    real = scenario.ensemble_settings
+
+    def unseeded(data_dir: Path, name: str):  # noqa: ANN202
+        seed, size = real(data_dir, name)
+        return (None, size) if name == "e_a" else (seed, size)
+
+    monkeypatch.setattr(scenario, "ensemble_settings", unseeded)
+    found = pl.pool_issues(test_data_dir, pool_scenarios)
+    assert any("component e_a has no seed" in i for i in found), found
+
+
+def test_a_rail_tag_only_an_overridden_row_had_is_unknown() -> None:
+    rows = [{"name": "Food", "tags": "need:food"}, {"name": "", "x": "1"}, {"name": "Food", "tags": ""}]
+    assert pl._by_name(rows) == [{"name": "", "x": "1"}, {"name": "Food", "tags": ""}]
+
+
 def test_pool_edit_that_breaks_the_pool_writes_nothing(test_data_dir: Path, pool_scenarios: str) -> None:
     before = _meta(test_data_dir, pool_scenarios)
     result = _sim("ensemble", "pool", "edit", pool_scenarios, "e_a=50%", "e_b=40%",
@@ -165,6 +214,7 @@ def test_renaming_a_component_renames_it_in_the_pool(test_data_dir: Path, pool_s
     assert _meta(test_data_dir, pool_scenarios)["pool"]["components"] == {"e_a": "25%", "e_child": "75%"}
     readme = (test_data_dir / "scenarios" / pool_scenarios / "README.md").read_text(encoding="utf-8")
     assert "Pooled from e_a + e_child\n" in readme
+    assert "Pools: `e_a` 25%, `e_child` 75% (ADR-009).\n" in readme
     assert pl.pool_issues(test_data_dir, pool_scenarios) == []
 
 
@@ -197,6 +247,54 @@ def pool_batch(test_data_dir: Path, pool_scenarios: str, state_dir: Path) -> Pat
     batch = latest_ensemble_batch(state_dir / "runs" / pool_scenarios)
     assert batch is not None
     return batch
+
+
+def test_a_component_member_that_failed_mid_run_is_a_pool_failure(
+    test_data_dir: Path, pool_scenarios: str, tmp_path: Path,
+) -> None:
+    from analysis.sim.ensemble import read_batch_manifest, write_batch_manifest
+
+    pool = pl.read_pool(test_data_dir / "scenarios", pool_scenarios)
+    sources = {}
+    for component in pool.components:
+        batch = tmp_path / "runs" / component / "b"
+        batch.mkdir(parents=True)
+        for j in range(4):
+            (batch / f"member_{j:04d}.sqlite3").write_bytes(b"")
+        failed = [(1, batch / "member_0001.sqlite3", "boom")] if component == "e_b" else []
+        write_batch_manifest(batch, member_count=4, failures=failed)
+        sources[component] = batch
+    runs_batch, intent_batch = tmp_path / "runs" / "mix" / "b", tmp_path / "intent" / "mix" / "b"
+    runs_batch.mkdir(parents=True)
+    intent_batch.mkdir(parents=True)
+    failures = pl.build_pool_batch(pool, 4, sources, runs_batch, intent_batch, tmp_path / "intent")
+    # member 1 is e_b's (e_a 25%: member 0 only), and failed there
+    assert failures == [(1, intent_batch / "member_0001.sqlite3", "boom")]
+    assert (runs_batch / "member_0001.sqlite3").is_file()
+    assert [f["index"] for f in (read_batch_manifest(runs_batch) or {})["failures"]] == [1]
+
+
+def test_a_pools_meta_is_its_base_components_when_member_0_failed(tmp_path: Path) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from analysis.sim.ensemble import write_batch_manifest
+    from analysis.sim.series_db import MemberSeries, series_db_path, write_series_db
+
+    batch = tmp_path / "runs" / "mix" / "b"
+    batch.mkdir(parents=True)
+    write_batch_manifest(batch, member_count=3, failures=[(0, batch / "member_0000.sqlite3", "boom")],
+                         pool={"base": "e_a", "member_components": ["e_a", "e_b", "e_a"]})
+    months = pd.date_range("2027-01-31", periods=1, freq="ME")
+
+    def member(j: int, reserve: int) -> MemberSeries:
+        return MemberSeries(f"member_{j:04d}", j, 7, months, np.ones(1), np.ones(1), [],
+                            json.dumps({"reserve": reserve}))
+
+    # member 1 is e_b's and comes first; member 2 is the base component's
+    write_series_db(batch, [member(1, 2), member(2, 1)])
+    with sqlite3.connect(series_db_path(batch)) as con:
+        assert json.loads(con.execute("SELECT meta_json FROM batch").fetchone()[0]) == {"reserve": 1}
 
 
 @pytest.mark.slow
