@@ -88,7 +88,7 @@ The draws database (ADR-006 §6) is kept per component. `member` gains `componen
 - Positive: a mixture of worlds costs no simulation beyond the components themselves; every report, chart and notebook works on it unchanged; it pairs with its components' parent; trying other weights takes seconds.
 - Negative: every component needs at least the pool's member count, so components that exist only to feed a pool cost their count times the pool's size in simulation; a pool's members can't be reweighted (importance sampling) without weighted statistics in every report.
 - Limits:
-  - **One episode per member.** Each component carries its own trouble, so no pool member has two episodes in one lifetime, though history often has two or more in 30 years (`docs/guides/ensembles.md`); the pool's deepest tail is probably optimistic. A component built from two templates, the second dated from the first, adds a compound world without code ([#340](https://github.com/BobKerns/analysis/issues/340)).
+  - **One component, one world.** A member has only the episodes its component carries, and history often has two or more in 30 years (`docs/guides/ensembles.md`), so a pool of single-episode components has a probably optimistic deepest tail. A component built from two templates, the second dated from the first, adds a compound world without code: `t_crisis_then_spike` ([#340](https://github.com/BobKerns/analysis/issues/340)) is one.
   - **A pool of plans assumes the plan is fixed in advance.** Weighting alternative plans answers "what's my risk if I don't yet know which plan I'll follow", but only when the choice doesn't depend on how the future goes; a choice that responds to the path is a responsive strategy ([#326](https://github.com/BobKerns/analysis/issues/326)), not a mixture. To choose between plans, compare them; a pool hides the choice.
   - No pools of pools, and no sensitivity batch as a component.
 
@@ -100,3 +100,5 @@ The draws database (ADR-006 §6) is kept per component. `member` gains `componen
 ## Amendments
 
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [#340](https://github.com/BobKerns/analysis/issues/340): a compound episode template exists, so pool members can meet two episodes (Consequences, Limits).
