@@ -62,10 +62,12 @@ dietz
 ecolor
 edgecolor
 elinewidth
+ename
 endidx
 errorbar
 errstate
 esac
+evalue
 executemany
 executescript
 execv
@@ -98,6 +100,7 @@ IHDR
 iinfo
 imshow
 inspectable
+iopub
 IRMAA
 isin
 iterm
@@ -141,6 +144,7 @@ munknown
 nanargmin
 nanmax
 nanmean
+nbrun
 nbstripout
 ncol
 networth
@@ -163,6 +167,7 @@ pathoplexus
 pcon
 pdftotext
 Pewsey
+pipefail
 plottable
 polyfit
 polyval
@@ -219,6 +224,7 @@ shellcheck
 Shiller
 sidefx
 signum
+SIGPIPE
 Simons
 Smirnov
 Sobol
