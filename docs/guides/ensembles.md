@@ -966,8 +966,8 @@ reads after that are quick. Nothing needs rerunning.
 ## Pooling several kinds of trouble
 
 Each episode template (`t_great_inflation`, `t_financial_crisis`,
-`t_pandemic_spike`) makes its own ensemble, so you can see what that one
-kind of trouble does. A **pool** answers the next question: across all
+`t_pandemic_spike`, and `t_crisis_then_spike`, which has two) makes its
+own ensemble, so you can see what that kind of trouble does. A **pool** answers the next question: across all
 those worlds, each as likely as you think it is, how bad are the bad
 futures? It takes some members from each ensemble, in proportion to its
 weight, and reports them as one ensemble. Nothing is simulated again.
@@ -996,7 +996,7 @@ few. `sim run trouble --rebuild` reruns every component as well.
 the same file, linked, not copied. The components share `e0`'s seed, so
 member 7 of each drew the same market, lifespans and yearly shocks; only
 the episode differs. Taking member 7 from every component would count
-that one future three times, and the pool would look surer than it is.
+that one future once per component, and the pool would look surer than it is.
 Taking each index once keeps every future distinct, and keeps the pool
 paired with `e0`: `sim ensemble compare e0 trouble` shows what the
 trouble did in each future, and `P(ahead)`. The price is that every
@@ -1042,12 +1042,14 @@ decades, so some members of each component see no episode before the
 run ends (about 12% of them on the prototype, ending in 2060). A
 member's chance of its episode is its component's weight times that.
 
-**One episode per member.** Each component carries one kind of
-trouble, so no pool member meets two in one lifetime. History often has
-two or more in 30 years (1929–1958 held a crisis and three spikes), so
-the pool's worst futures are probably not bad enough. A component built
-on two templates, the second dated from the first, adds such a world:
-`t_crisis_then_spike` is one, a crisis and then a price spike. On the
+**Two episodes in one lifetime.** A component built on one episode
+template gives its members one kind of trouble each, but history often
+has two or more in 30 years (1929–1958 held a crisis and three spikes).
+A pool of single-episode components alone probably understates the
+worst futures. A
+component built on two templates, the second dated from the first, adds
+such a world: `t_crisis_then_spike`, a crisis and then a price spike, so
+in the example pool above 10% of members meet two. On the
 prototype (`retire_alice` run to 2060, 240 members, CPI-constant net
 worth at the end), it ends about where the crisis alone does (median
 $1,464k against $1,477k, `cvar05` $814k against $817k), and ahead of
