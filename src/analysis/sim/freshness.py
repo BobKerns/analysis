@@ -88,6 +88,13 @@ def _latest(runs_dir: Path, scenario: str) -> tuple[Path, list[Path]] | None:
     return None
 
 
+def latest_result(runs_dir: Path, scenario: str) -> Path | None:
+    """The scenario's newest result, a run file or a Monte Carlo batch: the
+    one `sim all` judges for freshness."""
+    latest = _latest(Path(runs_dir), scenario)
+    return latest[0] if latest else None
+
+
 @dataclass(frozen=True)
 class Unchanged:
     """The run that's still current, and why a rerun would be the same."""

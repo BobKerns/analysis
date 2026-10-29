@@ -42,6 +42,47 @@ def spec(scenarios: Sequence[str]) -> KindSpec:
     )
 
 
+def pool_spec(ensembles: Sequence[str]) -> KindSpec:
+    """The fields of ``sim ensemble pool edit`` (ADR-009); ``ensembles``
+    complete the components."""
+    return KindSpec(
+        "edit", "a pool's definition", words=("sim", "ensemble", "pool"),
+        fields=(
+            Field("components", "components (NAME or NAME=PCT, space-separated)",
+                  help="Weights add up to 100%; none gives equal shares.",
+                  choices=lambda ctx, answers: list(ensembles)),  # noqa: ARG005
+            Field("base", "base component (its member 0 is the pool's)", option="--base",
+                  required=False, help="Blank takes the first component.",
+                  choices=lambda ctx, answers: answers.get("components", "").split()),  # noqa: ARG005
+            Field("size", "member count", type="count", option="--size", required=False,
+                  help="Blank takes the smallest component's."),
+            Field("reserve", "reserve in CPI-constant dollars", type="money", option="--reserve",
+                  required=False, help="Blank takes the base component's."),
+            Field("description", "description", option="--description", required=False,
+                  help="Blank restores the generated 'Pooled from <components>'."),
+        ),
+    )
+
+
+def pool_answers(row: dict[str, str]) -> Answers:
+    """A pool's ``scenario.csv`` row as answers to :func:`pool_spec`'s fields."""
+    try:
+        meta = json.loads(row.get("meta_json") or "{}")
+    except json.JSONDecodeError:
+        meta = {}
+    spec = meta.get("pool") if isinstance(meta, dict) else None
+    spec = spec if isinstance(spec, dict) else {}
+    raw = spec.get("components") or []
+    components = " ".join(f"{c}={raw[c]}" if isinstance(raw, dict) else str(c) for c in raw)
+    return {
+        "components": components,
+        "base": str(spec.get("base") or ""),
+        "size": "" if meta.get("ensemble_size") is None else str(meta["ensemble_size"]),
+        "reserve": "" if meta.get("reserve") is None else str(meta["reserve"]),
+        "description": row.get("description", ""),
+    }
+
+
 def answers_of(row: dict[str, str]) -> Answers:
     """A ``scenario.csv`` row as answers to ``spec``'s fields."""
     try:

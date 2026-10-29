@@ -1396,6 +1396,66 @@ def pool_scenarios(test_data_dir: Path) -> str:
     return "mix"
 
 
+@pytest.fixture
+def write_scenario_meta(test_data_dir: Path) -> Callable[..., None]:
+    """Rewrite scenario ``name``'s scenario.csv in the private data copy:
+    its ``meta_json`` to ``meta`` (a dict), and any other cells given."""
+    import csv
+
+    def write(name: str, meta: dict, **row: str) -> None:
+        path = test_data_dir / "scenarios" / name / "scenario.csv"
+        with path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            header, rows = list(reader.fieldnames or []), list(reader)
+        rows[0].update(meta_json=json.dumps(meta), **row)
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header)
+            writer.writeheader()
+            writer.writerows(rows)
+    return write
+
+
+@pytest.fixture
+def pool_batch(test_data_dir: Path, pool_scenarios: str, state_dir: Path) -> Path:
+    """``pool_scenarios``'s ``mix`` run (both components run first), returning
+    its batch dir."""
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.sim.loader import latest_ensemble_batch
+
+    result = CliRunner().invoke(
+        main, ["sim", "run", pool_scenarios, "--data-dir", str(test_data_dir), "--allow-dirty-data"])
+    assert result.exit_code == 0, result.output
+    assert "component e_a: running" in result.output
+    assert "pool of 2, seed 7: e_a 1 (25%), e_b 3 (75%)" in result.output, result.output
+    batch = latest_ensemble_batch(state_dir / "runs" / pool_scenarios)
+    assert batch is not None
+    return batch
+
+
+@pytest.fixture
+def fake_batch(tmp_path: Path) -> Callable[..., Path]:
+    """Make ``runs/<scenario>/b`` under ``tmp_path``: ``members`` empty member
+    files and a batch manifest (``member_count`` defaults to ``members``;
+    ``failures`` maps index to error; ``pool`` is a pool record), for code
+    that reads only a batch's names and manifest. Returns the folder."""
+    from analysis.sim.ensemble import write_batch_manifest
+
+    def make(scenario: str, *, members: int = 0, member_count: int | None = None,
+             failures: dict[int, str] | None = None, pool: dict | None = None) -> Path:
+        batch = tmp_path / "runs" / scenario / "b"
+        batch.mkdir(parents=True)
+        for j in range(members):
+            (batch / f"member_{j:04d}.sqlite3").write_bytes(b"")
+        write_batch_manifest(
+            batch, member_count=members if member_count is None else member_count,
+            failures=[(i, batch / f"member_{i:04d}.sqlite3", e) for i, e in (failures or {}).items()],
+            pool=pool)
+        return batch
+    return make
+
+
 @pytest.fixture(scope="function")
 def two_lot_ensemble_runs_dir(
     set_brokerage_lots: Callable[[list[dict[str, str]]], None],

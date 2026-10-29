@@ -191,6 +191,16 @@ def pool_base(scenarios_dir: Path, name: str) -> str | None:
     return first if isinstance(first, str) else None
 
 
+def pool_components(scenarios_dir: Path, name: str) -> list[str]:
+    """A pool's components as its ``meta_json`` lists them, unchecked; []
+    for a scenario that isn't a pool."""
+    spec = read_meta(scenario_dir(scenarios_dir, name)).get(POOL_KEY)
+    components = spec.get("components") if isinstance(spec, dict) else None
+    if not isinstance(components, (dict, list)):
+        return []
+    return [c for c in components if isinstance(c, str)]
+
+
 def reading_order(scenarios_dir: Path, scenario_name: str) -> list[str]:
     """:func:`load_order`, except for a pool (ADR-009 §6): its base
     component's load order, then the pool. What a report reads from the

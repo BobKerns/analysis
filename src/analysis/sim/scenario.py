@@ -300,13 +300,15 @@ def _pool_summary(data_dir: Path, scenarios: Path, name: str) -> ScenarioSummary
     except PoolError:
         return ScenarioSummary(name=name, parents=[], description=description, pool=())
     seed, size = ensemble_settings(data_dir, name)
-    spans = {scenario_span(data_dir, c) for c in pool.components
-             if scenario_dir(scenarios, c).is_dir() and not is_pool(scenarios, c)}
+    # The months, not who set them: one component may set a month another inherits.
+    spans = {(s.month if s else None, e.month if e else None) for s, e in (
+        scenario_span(data_dir, c) for c in pool.components
+        if scenario_dir(scenarios, c).is_dir() and not is_pool(scenarios, c))}
     start, end = spans.pop() if len(spans) == 1 else (None, None)
     return ScenarioSummary(
         name=name, parents=[], description=description,
-        start=start and ScenarioDate(start.month, inherited=True),
-        end=end and ScenarioDate(end.month, inherited=True),
+        start=ScenarioDate(start, inherited=True) if start else None,
+        end=ScenarioDate(end, inherited=True) if end else None,
         seed=seed, ensemble_size=size,
         pool=tuple(f"{c} {pool.weight_text(c)}" for c in pool.components),
     )

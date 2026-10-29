@@ -15,24 +15,11 @@ from click.testing import CliRunner, Result
 from analysis.cli import main
 from analysis.sim import pool as pl
 from analysis.sim.draws_db import component_frames, components, draws_frames
-from analysis.sim.loader import LoadError, latest_ensemble_batch, load_scenario
+from analysis.sim.loader import LoadError, load_scenario
 
 
 def _sim(*args: str) -> Result:
     return CliRunner().invoke(main, ["sim", *args])
-
-
-def _write_meta(data: Path, name: str, meta: dict, **row: str) -> None:
-    """Rewrite scenario ``name``'s scenario.csv meta_json (and any ``row`` cells)."""
-    path = data / "scenarios" / name / "scenario.csv"
-    with path.open(newline="", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        header, rows = list(reader.fieldnames or []), list(reader)
-    rows[0].update(meta_json=json.dumps(meta), **row)
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=header)
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _meta(data: Path, name: str) -> dict:
@@ -92,22 +79,27 @@ def test_pool_create_writes_a_pool_that_reads_back(test_data_dir: Path, pool_sce
 ])
 def test_pool_issues_name_what_is_wrong(
     test_data_dir: Path, pool_scenarios: str, spec: dict, issue: str,
+    write_scenario_meta: Callable[..., None],
 ) -> None:
-    _write_meta(test_data_dir, pool_scenarios, {"pool": spec})
+    write_scenario_meta(pool_scenarios, {"pool": spec})
     found = pl.pool_issues(test_data_dir, pool_scenarios)
     assert any(issue in i for i in found), found
 
 
-def test_a_pool_takes_no_parent_dates_or_seed(test_data_dir: Path, pool_scenarios: str) -> None:
-    _write_meta(test_data_dir, pool_scenarios, _meta(test_data_dir, pool_scenarios),
+def test_a_pool_takes_no_parent_dates_or_seed(
+    test_data_dir: Path, pool_scenarios: str, write_scenario_meta: Callable[..., None],
+) -> None:
+    write_scenario_meta(pool_scenarios, _meta(test_data_dir, pool_scenarios),
                 parent_scenario="retire_alice", seed="3")
     found = pl.pool_issues(test_data_dir, pool_scenarios)
     assert any("no parent_scenario" in i for i in found), found
     assert any("takes its seed" in i for i in found), found
 
 
-def test_a_pool_bigger_than_a_component_is_refused(test_data_dir: Path, pool_scenarios: str) -> None:
-    _write_meta(test_data_dir, pool_scenarios, {**_meta(test_data_dir, pool_scenarios), "ensemble_size": 5})
+def test_a_pool_bigger_than_a_component_is_refused(
+    test_data_dir: Path, pool_scenarios: str, write_scenario_meta: Callable[..., None],
+) -> None:
+    write_scenario_meta(pool_scenarios, {**_meta(test_data_dir, pool_scenarios), "ensemble_size": 5})
     assert any("e_a" in i and "4" in i for i in pl.pool_issues(test_data_dir, pool_scenarios))
 
 
@@ -127,10 +119,12 @@ def test_nothing_loads_a_pool_or_builds_on_one(
         load_scenario(test_data_dir, "on_pool", intent_dir=intent_dir, allow_dirty_data=True)
 
 
-def test_sim_check_checks_a_pool(test_data_dir: Path, pool_scenarios: str) -> None:
+def test_sim_check_checks_a_pool(
+    test_data_dir: Path, pool_scenarios: str, write_scenario_meta: Callable[..., None],
+) -> None:
     ok = _sim("check", pool_scenarios, "--data-dir", str(test_data_dir))
     assert ok.exit_code == 0, ok.output
-    _write_meta(test_data_dir, pool_scenarios, {"pool": {"components": ["e_a"]}})
+    write_scenario_meta(pool_scenarios, {"pool": {"components": ["e_a"]}})
     bad = _sim("check", pool_scenarios, "--data-dir", str(test_data_dir))
     assert bad.exit_code != 0 and "at least two components" in bad.output
 
@@ -151,15 +145,17 @@ def test_pool_edit_replaces_components_and_sets_size_and_base(
     assert _meta(test_data_dir, pool_scenarios) == {"pool": {"components": ["e_a", "e_b"]}}
 
 
-def test_pool_edit_with_no_options_asks_for_every_field(test_data_dir: Path, pool_scenarios: str) -> None:
-    # components, base and size kept; a reserve; '-' for the generated description
-    answers = "\n\n\n50000\n-\n"
+def test_pool_edit_with_no_options_shows_the_fields_and_asks_which_to_change(
+    test_data_dir: Path, pool_scenarios: str,
+) -> None:
+    answers = "reserve\n50000\nwrite\n"
     result = CliRunner().invoke(main, ["sim", "ensemble", "pool", "edit", pool_scenarios,
                                        "--data-dir", str(test_data_dir)], input=answers)
     assert result.exit_code == 0, result.output
-    assert "reserve" in result.output and "description" in result.output
+    assert "components" in result.output and "Pooled from e_a + e_b" in result.output
+    # Only the field named changes: the base stays unset (the first component).
     assert _meta(test_data_dir, pool_scenarios) == {
-        "pool": {"components": {"e_a": "25%", "e_b": "75%"}, "base": "e_a"}, "reserve": 50000}
+        "pool": {"components": {"e_a": "25%", "e_b": "75%"}}, "reserve": 50000}
 
 
 def test_a_blank_pool_description_restores_the_generated_one(test_data_dir: Path, pool_scenarios: str) -> None:
@@ -237,54 +233,32 @@ def test_scenario_edit_points_a_pool_at_pool_edit(test_data_dir: Path, pool_scen
 
 # ---------- building ----------
 
-@pytest.fixture
-def pool_batch(test_data_dir: Path, pool_scenarios: str, state_dir: Path) -> Path:
-    """``mix`` run (both components run first), returning its batch dir."""
-    result = _sim("run", pool_scenarios, "--data-dir", str(test_data_dir), "--allow-dirty-data")
-    assert result.exit_code == 0, result.output
-    assert "component e_a: running" in result.output
-    assert "pool of 2, seed 7: e_a 1 (25%), e_b 3 (75%)" in result.output, result.output
-    batch = latest_ensemble_batch(state_dir / "runs" / pool_scenarios)
-    assert batch is not None
-    return batch
-
-
 def test_a_component_member_that_failed_mid_run_is_a_pool_failure(
-    test_data_dir: Path, pool_scenarios: str, tmp_path: Path,
+    test_data_dir: Path, pool_scenarios: str, fake_batch: Callable[..., Path],
 ) -> None:
-    from analysis.sim.ensemble import read_batch_manifest, write_batch_manifest
+    from analysis.sim.ensemble import read_batch_manifest
 
     pool = pl.read_pool(test_data_dir / "scenarios", pool_scenarios)
-    sources = {}
-    for component in pool.components:
-        batch = tmp_path / "runs" / component / "b"
-        batch.mkdir(parents=True)
-        for j in range(4):
-            (batch / f"member_{j:04d}.sqlite3").write_bytes(b"")
-        failed = [(1, batch / "member_0001.sqlite3", "boom")] if component == "e_b" else []
-        write_batch_manifest(batch, member_count=4, failures=failed)
-        sources[component] = batch
-    runs_batch, intent_batch = tmp_path / "runs" / "mix" / "b", tmp_path / "intent" / "mix" / "b"
-    runs_batch.mkdir(parents=True)
+    sources = {c: fake_batch(c, members=4, failures={1: "boom"} if c == "e_b" else {})
+               for c in pool.components}
+    runs_batch = fake_batch("mix")
+    intent_batch = runs_batch.parents[2] / "intent" / "mix" / "b"
     intent_batch.mkdir(parents=True)
-    failures = pl.build_pool_batch(pool, 4, sources, runs_batch, intent_batch, tmp_path / "intent")
+    failures = pl.build_pool_batch(pool, 4, sources, runs_batch, intent_batch, intent_batch.parents[1])
     # member 1 is e_b's (e_a 25%: member 0 only), and failed there
     assert failures == [(1, intent_batch / "member_0001.sqlite3", "boom")]
     assert (runs_batch / "member_0001.sqlite3").is_file()
     assert [f["index"] for f in (read_batch_manifest(runs_batch) or {})["failures"]] == [1]
 
 
-def test_a_pools_meta_is_its_base_components_when_member_0_failed(tmp_path: Path) -> None:
+def test_a_pools_meta_is_its_base_components_when_member_0_failed(fake_batch: Callable[..., Path]) -> None:
     import numpy as np
     import pandas as pd
 
-    from analysis.sim.ensemble import write_batch_manifest
     from analysis.sim.series_db import MemberSeries, series_db_path, write_series_db
 
-    batch = tmp_path / "runs" / "mix" / "b"
-    batch.mkdir(parents=True)
-    write_batch_manifest(batch, member_count=3, failures=[(0, batch / "member_0000.sqlite3", "boom")],
-                         pool={"base": "e_a", "member_components": ["e_a", "e_b", "e_a"]})
+    batch = fake_batch("mix", member_count=3, failures={0: "boom"},
+                       pool={"base": "e_a", "member_components": ["e_a", "e_b", "e_a"]})
     months = pd.date_range("2027-01-31", periods=1, freq="ME")
 
     def member(j: int, reserve: int) -> MemberSeries:
@@ -326,7 +300,7 @@ def test_a_pool_reports_and_pairs_with_its_components_parent(
     summary = _sim("ensemble", "summary", pool_scenarios, "--data-dir", str(test_data_dir))
     assert summary.exit_code == 0, summary.output
     assert "pool of 2, seed 7: e_a 1 (25%), e_b 3 (75%)" in summary.output
-    assert "worst 5% (1) by lowest CPI-constant value:" in summary.output
+    assert "worst 5% (1) by lowest CPI-constant net worth:" in summary.output
     compare = _sim("ensemble", "compare", "e_a", pool_scenarios, "--data-dir", str(test_data_dir))
     assert compare.exit_code == 0, compare.output
     assert "paired: 4 future(s)" in compare.output
@@ -336,6 +310,7 @@ def test_a_pool_reports_and_pairs_with_its_components_parent(
 def test_a_pool_reuses_components_that_are_up_to_date(
     test_data_dir: Path, pool_scenarios: str, state_dir: Path,
     commit_test_data: Callable[[], Path], stamp_runs: Callable[[Path], None],
+    write_scenario_meta: Callable[..., None],
 ) -> None:
     from analysis.sim import freshness
 
@@ -351,7 +326,7 @@ def test_a_pool_reuses_components_that_are_up_to_date(
     code = freshness.code_tree()
     assert freshness.unchanged_run(test_data_dir, runs, pool_scenarios, code) is not None
     # Its own definition is part of what it was built from.
-    _write_meta(test_data_dir, pool_scenarios, {"pool": {"components": {"e_a": "50%", "e_b": "50%"}}})
+    write_scenario_meta(pool_scenarios, {"pool": {"components": {"e_a": "50%", "e_b": "50%"}}})
     commit_test_data()
     assert freshness.unchanged_run(test_data_dir, runs, pool_scenarios, code) is None
     rebuilt = _sim("run", pool_scenarios, "--rebuild", *args)
@@ -414,3 +389,71 @@ def test_a_pools_report_judges_its_member_0_by_the_pools_rails(
     report = _sim("report", "guard-rails", "--scenario", pool_scenarios, *data)
     assert report.exit_code == 0, report.output
     assert "wd_cap" in report.output and "(mix, run member_0000.sqlite3)" in report.output
+
+
+def test_a_pools_rails_must_name_what_every_component_has(test_data_dir: Path, pool_scenarios: str) -> None:
+    # Each member is judged against its own component's run, so a marker only
+    # the base component defines would fail on the other's members.
+    data = ("--data-dir", str(test_data_dir))
+    marker = _sim("calendar", "add", "date-marker", "late", "2031-06", "--scenario", "e_b", *data)
+    assert marker.exit_code == 0, marker.output
+    based = _sim("ensemble", "pool", "edit", pool_scenarios, "--base", "e_b", *data)
+    assert based.exit_code == 0, based.output
+    added = _sim("guard-rail", "add", "late_cap", *_FOUR_PERCENT, "--start", "late",
+                 "--scenario", pool_scenarios, *data)
+    assert added.exit_code != 0
+    assert "for component e_a" in added.output and "'late'" in added.output
+    assert "for component e_b" not in added.output
+
+
+# ---------- freshness and provenance ----------
+
+def test_a_pools_data_scope_covers_its_components(
+    test_data_dir: Path, pool_scenarios: str, commit_test_data: Callable[[], Path],
+) -> None:
+    from analysis.sim.provenance import data_stamps
+
+    commit_test_data()
+    before = data_stamps(test_data_dir, pool_scenarios)
+    assert not before.dirty
+    marker = _sim("calendar", "add", "date-marker", "late", "2031-06", "--scenario", "e_b",
+                  "--data-dir", str(test_data_dir))
+    assert marker.exit_code == 0, marker.output
+    # A dirty component makes the pool dirty, so the builder waits on it ...
+    assert data_stamps(test_data_dir, pool_scenarios).dirty
+    commit_test_data()
+    after = data_stamps(test_data_dir, pool_scenarios)
+    # ... and once committed, the pool's tree has moved, so it is built again.
+    assert not after.dirty and after.tree_id != before.tree_id
+
+
+@pytest.mark.slow
+def test_a_batch_behind_a_newer_single_run_is_never_pooled(
+    pool_batch: Path, test_data_dir: Path, pool_scenarios: str,
+) -> None:
+    data = ("--data-dir", str(test_data_dir), "--allow-dirty-data")
+    # Without its varying row, e_a runs as a single run; its older batch is stale.
+    deleted = _sim("calendar", "delete", "checking_rate_vary", "--scenario", "e_a", "--yes",
+                   *data[:2])
+    assert deleted.exit_code == 0, deleted.output
+    result = _sim("run", pool_scenarios, *data)
+    assert result.exit_code != 0
+    assert "no current ensemble batch for e_a" in result.output
+
+
+@pytest.mark.slow
+def test_sim_all_fails_a_pool_over_a_failed_component_without_running_it_again(
+    test_data_dir: Path, pool_scenarios: str,
+) -> None:
+    # A row naming no account fails e_a's load, and e_b's, which builds on it.
+    calendar = test_data_dir / "scenarios" / "e_a" / "calendar.csv"
+    with calendar.open(newline="", encoding="utf-8") as fh:
+        header = list(csv.DictReader(fh).fieldnames or [])
+    with calendar.open("a", newline="", encoding="utf-8") as fh:
+        csv.DictWriter(fh, fieldnames=header).writerow(
+            {"date": "2028-01-31", "kind": "one_off_transfer", "account_1": "No_Such_Account",
+             "account_2": "Asset_Checking", "amount": "1.00"})
+    result = _sim("all", "--data-dir", str(test_data_dir), "--allow-dirty-data")
+    assert result.exit_code == 0, result.output
+    assert "mix: component e_a, e_b failed earlier in this run" in result.output
+    assert "component e_a: running" not in result.output

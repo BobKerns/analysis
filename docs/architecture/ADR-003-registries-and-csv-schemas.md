@@ -893,7 +893,7 @@ Writes directly into `year_to_date` (`UNIQUE (scenario_id, name)`).
 
 A guard rail ([#305](https://github.com/BobKerns/analysis/issues/305)) is a line a scenario's spending, or its withdrawals from the portfolio, should stay on one side of: Bengen's 4% rule, Guyton-Klinger's upper and lower rails, a budget. Rails are a **lens on results**: nothing in a run reads them. Reports read them from the data repo when they compare a finished run with them, so the file is left out of `scenario_tree_id` and the dirty check ([ADR-004](ADR-004-reproducibility-and-activation.md) §1), and editing a rail reruns nothing. The loader still checks every rail, so a bad one fails `sim check` and the edit commands (§7). A rail goes into the intent only when a future responsive strategy ([#326](https://github.com/BobKerns/analysis/issues/326)) triggers on it.
 
-A pool (§4.5, [ADR-009](ADR-009-pooled-ensembles.md) §6) reads its base component's rails, then its own file, and its check checks them against the names its base component's lineage defines.
+A pool (§4.5, [ADR-009](ADR-009-pooled-ensembles.md) §6) reads its base component's rails, then its own file, and its check checks them against the names every component's lineage defines (each member is judged against its own component's run).
 
 | column | type | required | notes |
 | --- | --- | --- | --- |

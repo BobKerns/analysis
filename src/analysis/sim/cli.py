@@ -924,11 +924,12 @@ def _run_ensemble(
 def _run_pool(
     pool_name: str, data_dir: Path, intent_dir: Path, runs_dir: Path, *, run_by: str,
     allow_dirty_data: bool, allow_dirty_code: bool, ensemble_size: int | None, jobs: int,
-    rebuild: bool = False, built: Collection[str] = (),
+    rebuild: bool = False, built: Collection[str] = (), failed: Collection[str] = (),
 ) -> None:
     """ADR-009: bring each of the pool's components up to date, then make
     the pool's batch from their latest batches. A component in ``built``
-    (just run by the same `sim all`) is taken as it is."""
+    (run, or found unchanged, by the same `sim all`) is taken as it is; one
+    in ``failed`` (failed there) fails the pool without running again."""
     from analysis.sim import pool as pl
     from analysis.sim.freshness import code_tree, unchanged_run
     from analysis.sim.provenance import data_stamps
@@ -942,12 +943,17 @@ def _run_pool(
     size = ensemble_size if ensemble_size is not None else pl.pool_size(data_dir, pool)
     if size <= 0:
         raise click.ClickException(f"{pool_name}: --ensemble-size must be a positive integer")
+    if broken := [c for c in pool.components if c in failed]:
+        raise click.ClickException(
+            f"{pool_name}: component {', '.join(broken)} failed earlier in this run")
     code = code_tree()
     for component in pool.components:
         if component in built:
             continue
         fresh = None if rebuild else unchanged_run(data_dir, runs_dir, component, code)
         if fresh is not None:
+            # A fresh single run would only come out single again; the
+            # missing batch is reported below.
             click.echo(f"component {component}: unchanged since {fresh.path.name}; reused")
             continue
         click.echo(f"component {component}: running")
@@ -958,7 +964,10 @@ def _run_pool(
         )
     sources = pl.latest_pool_sources(runs_dir, pool)
     if missing := [c for c, batch in sources.items() if batch is None]:
-        raise click.ClickException(f"{pool_name}: no ensemble batch for {', '.join(missing)}")
+        raise click.ClickException(
+            f"{pool_name}: no current ensemble batch for {', '.join(missing)} (a component's "
+            "latest run must be a Monte Carlo batch; one with no varying rows runs as a "
+            "single run)")
     stamps = data_stamps(data_dir, pool_name)
     with _build_lock(intent_dir, pool_name):
         batch, intent_batch, runs_batch = _reserve_batch(pool_name, intent_dir, runs_dir)
@@ -989,9 +998,9 @@ def _run_pool(
 def _pool_summary_lines(batch_dir: Path, cpi_frame: Callable[[], pd.DataFrame]) -> list[str]:
     """For a pool batch (ADR-009), its members by component and, since the
     pooled tail mean rests on the members in it, which components the worst
-    5% came from, ranked by each member's lowest CPI-constant value over the
+    5% came from, ranked by each member's lowest CPI-constant net worth over the
     run (the worst point of a lifetime, not where it ends). ``cpi_frame``
-    gives the members' CPI-constant frame; nothing for an ordinary batch."""
+    gives the members' CPI-constant net worth; nothing for an ordinary batch."""
     from analysis.sim.pool import member_components, pool_record
 
     record = pool_record(batch_dir)
@@ -1007,7 +1016,7 @@ def _pool_summary_lines(batch_dir: Path, cpi_frame: Callable[[], pd.DataFrame]) 
     for stem in worst:
         component = components.get(int(str(stem).removeprefix("member_")), "?")
         counts[component] = counts.get(component, 0) + 1
-    lines.append(f"worst 5% ({len(worst)}) by lowest CPI-constant value: "
+    lines.append(f"worst 5% ({len(worst)}) by lowest CPI-constant net worth: "
                  + ", ".join(f"{n} {c}" for c, n in sorted(counts.items(), key=lambda kv: -kv[1])))
     return lines
 
@@ -1548,9 +1557,8 @@ def ensemble_pool_edit(
     """Change pool NAME: its COMPONENTs (NAME or NAME=PCT; given, they replace
     the list), size, base, reserve or description (ADR-009).
 
-    Options and COMPONENTs write at once. With none, each is asked for in
-    turn, showing what it is now; a blank answer keeps it. Without NAME, it
-    is asked for."""
+    Options and COMPONENTs write at once. With none, it shows the fields and
+    asks which to change. Without NAME, it is asked for."""
     from analysis.sim import pool as pl
 
     data = _resolve_data_dir(data_dir)
@@ -1561,32 +1569,55 @@ def ensemble_pool_edit(
         raise click.ClickException(f"{name} is not a pool (pools: {', '.join(pools) or 'none'})")
     _make_current(data, name)
     folder = data / "scenarios" / name
-    meta = json.loads(sc._scenario_row(folder).get("meta_json") or "{}")
+    guided = not components and all(v is None for v in (size, base, reserve, description))
+    if not guided:
+        _apply_pool_edit(data, name, components, size=size, base=base, reserve=reserve,
+                         description=description)
+        return
+    from analysis.sim import scenario_guide
+
+    choices = [n for n in _ensemble_names(data) if not pl.is_pool(data / "scenarios", n)]
+    spec = scenario_guide.pool_spec(choices)
+    before = scenario_guide.pool_answers(sc._scenario_row(folder))
+    answers = dict(before)
+    _echo_guided_scenario(name, folder / "scenario.csv", defaulted=False)
+
+    def ask_components(current: str | None) -> str:
+        return " ".join(_ask_pool_components(data, current))
+
+    guide = calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(text, choices=choices, default=default),
+        checkers=_SCENARIO_CHECKERS,
+        askers={"components": ask_components},
+    )
+
+    def submit(_params: dict[str, object]) -> None:
+        changed = {field: value for field, value in answers.items() if value != before[field]}
+        if not changed:
+            click.echo("no change; nothing was written")
+            return
+        _apply_pool_edit(
+            data, name, tuple(changed["components"].split()) if "components" in changed else (),
+            size=changed.get("size"), base=changed.get("base"), reserve=changed.get("reserve"),
+            description=changed.get("description"))
+
+    guide.review(spec, calendar_guide.GuideContext(), answers, submit, show_command=False)
+
+
+def _apply_pool_edit(
+    data: Path, name: str, components: tuple[str, ...], *, size: str | None, base: str | None,
+    reserve: str | None, description: str | None,
+) -> None:
+    """Write the given changes to pool ``name`` (``None``: unchanged; ``''``:
+    its default); see ``ensemble_pool_edit``."""
+    from analysis.sim import pool as pl
+
+    folder = data / "scenarios" / name
+    row = sc._scenario_row(folder)
+    meta = json.loads(row.get("meta_json") or "{}")
     spec = meta.get(pl.POOL_KEY) or {}
     raw = spec.get("components") or []
     now = {c: (raw[c] if isinstance(raw, dict) else None) for c in raw}
-    row = sc._scenario_row(folder)
-    guided = not components and all(v is None for v in (size, base, reserve, description))
-    if guided:
-        shown = " ".join(c if w is None else f"{c}={w}" for c, w in now.items())
-        components = _ask_pool_components(data, shown)
-        chosen = list(_pool_components(components))
-        base = _prompt_with_completion(
-            "base component", choices=chosen,
-            default=spec.get("base") if spec.get("base") in chosen else chosen[0]).strip()
-        size = _prompt_with_completion(
-            "size ('-' for the smallest component's)",
-            default=str(meta["ensemble_size"]) if "ensemble_size" in meta else "-").strip()
-        size = "" if size == "-" else size
-        reserve = _prompt_with_completion(
-            "reserve, CPI-constant dollars ('-' for the base component's)",
-            default=str(meta["reserve"]) if "reserve" in meta else "-").strip()
-        reserve = "" if reserve == "-" else reserve
-        generated = row.get("description", "") == pl.default_description(list(now))
-        description = _prompt_with_completion(
-            "description ('-' for the generated one)",
-            default="-" if generated or not row.get("description") else row["description"]).strip()
-        description = "" if description == "-" else description
     parsed = _pool_components(components) if components else now
     old_description = row.get("description", "")
     if description is None:
@@ -1849,8 +1880,11 @@ def ensemble_summary(
            else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)")
     )
     def lows_frame() -> pd.DataFrame:
-        return cpi_frame if cpi_frame is not None else _member_frame(
-            store, account, DollarMode.CPI_CONSTANT, lot, after_tax=after_tax)
+        # Net worth even with --account: an account only some components
+        # have is 0 in the others' members, which would rank them worst.
+        if account is None and cpi_frame is not None:
+            return cpi_frame
+        return _member_frame(store, None, DollarMode.CPI_CONSTANT, None, after_tax=not pre_tax)
 
     for line in _pool_summary_lines(batch_dir, lows_frame):
         click.echo(f"  {line}")
@@ -2257,6 +2291,9 @@ def _echo_component_draws(con: sqlite3.Connection, component: str, *, indent: in
                      "KS p(u)"], rows, left=indent)
     else:
         # A sensitivity batch draws nothing; its members sit at set quantiles.
+        # So does a pool component whose only member is the base case.
+        if con.execute("SELECT mode FROM batch").fetchone()[0] == "monte_carlo":
+            click.echo(f"{pad} only the base case (member 0) came from {component}; nothing drawn to check")
         _echo_table(["node", "distribution", "median"], [
             [n["name"], n["distribution"] or n["node_kind"], _draw_cell(n["unit"], n["median"])]
             for n in nodes
@@ -2575,12 +2612,16 @@ def all_scenarios(
         click.echo(f"mix-in only, not run: {', '.join(mixins)}")
     # Pools last (ADR-009): they take their members from the others' batches.
     names.sort(key=lambda name: is_pool(resolved / "scenarios", name))
+    # Components settled earlier in this run, so a pool needn't check or
+    # rerun them (ADR-009).
     built: set[str] = set()
+    failed: set[str] = set()
     for name in names:
         click.echo(f"=== {name} ===")
         unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code)
         if unchanged is not None:
             skipped.append(name)
+            built.add(name)
             click.echo(f"  unchanged since {unchanged.path.name}; skipped (--force reruns it)")
             continue
         if is_pool(resolved / "scenarios", name):
@@ -2589,7 +2630,7 @@ def all_scenarios(
                     name, resolved, _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved),
                     resolved_runs_dir, run_by=run_by or os.environ.get("USER") or "unknown",
                     allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
-                    ensemble_size=None, jobs=_available_cpus(), built=built,
+                    ensemble_size=None, jobs=_available_cpus(), built=built, failed=failed,
                 )
             except click.ClickException as exc:
                 failures.append((name, exc.format_message()))
@@ -2609,6 +2650,7 @@ def all_scenarios(
             )
             built.add(name)
         except click.ClickException as exc:
+            failed.add(name)
             failures.append((name, exc.format_message()))
             click.echo(f"  error: {exc.format_message()}", err=True)
 

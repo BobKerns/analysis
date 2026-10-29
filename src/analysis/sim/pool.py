@@ -31,7 +31,7 @@ from analysis.sim.lineage import (
     read_parents,
     scenario_dir,
 )
-from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
+from analysis.sim.loader import BATCH_MANIFEST_FILENAME
 
 __all__ = [
     "POOL_KEY", "Pool", "PoolError", "read_pool", "pool_issues", "pool_size", "assign_members",
@@ -257,7 +257,7 @@ def pool_issues(data_dir: Path, name: str) -> list[str]:
             f"{'has' if len(small) == 1 else 'have'} ({', '.join(str(sizes[c]) for c in small)}); "
             "pool member j is member j of one component, so every component needs at least "
             "the pool's size")
-    return issues + _rail_issues(data_dir, name)
+    return issues + _rail_issues(data_dir, name, list(sizes))
 
 
 def _by_name(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -299,20 +299,23 @@ def refresh_readme_pools_line(folder: Path, components: Mapping[str, str | None]
     return True
 
 
-def _rail_issues(data_dir: Path, name: str) -> list[str]:
+def _rail_issues(data_dir: Path, name: str, components: Sequence[str]) -> list[str]:
     """The pool's guard rails (its own over its base component's), parsed,
-    and what they name checked against the base component's lineage: the
-    one the reports judge by its member 0 (ADR-009 §6)."""
+    and what they name checked against every component's lineage (ADR-009
+    §6): each member is judged against its own run, which has only its
+    component's accounts, tags and calendar rows, so a name one component
+    lacks would fail on its members."""
     from analysis.sim import guard_rails, names
 
     rows, issues = guard_rails.read_rows(Path(data_dir) / "scenarios", name)
     rails, more = guard_rails.parse_rows(rows)
     issues += more
-    if rails:
+    for component in components if rails else ():
         refs = guard_rails.references_from_rows(*(
-            _by_name(names.lineage_rows(Path(data_dir), name, f))
+            _by_name(names.lineage_rows(Path(data_dir), component, f))
             for f in ("accounts.csv", "scheduled.csv", "calendar.csv")))
-        issues += guard_rails.check_references(rails, refs)
+        issues += [f"{name}: for component {component}: {issue}"
+                   for issue in guard_rails.check_references(rails, refs)]
     return issues
 
 
@@ -476,6 +479,10 @@ def pools_naming(scenarios_dir: Path, name: str) -> list[str]:
 
 
 def latest_pool_sources(runs_dir: Path, pool: Pool) -> dict[str, Path | None]:
-    """Each component's latest Monte Carlo batch, ``None`` where it has none."""
-    return {c: latest_ensemble_batch(Path(runs_dir) / c, mode="monte_carlo", wait=False)
-            for c in pool.components}
+    """Each component's latest result where that is a Monte Carlo batch,
+    else ``None``: an older batch behind a newer single run (its varying
+    rows since removed) is stale, and is never pooled."""
+    from analysis.sim.freshness import latest_result
+
+    latest = {c: latest_result(Path(runs_dir), c) for c in pool.components}
+    return {c: path if path is not None and path.is_dir() else None for c, path in latest.items()}

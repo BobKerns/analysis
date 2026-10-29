@@ -85,7 +85,7 @@ class StagedEdit:
     other top-level entries are symlinks to the real ones (read-only use)."""
     name: str
     """The preflighted scenario (the edited one, or a new scenario's parent)."""
-    _con: sqlite3.Connection
+    _con: sqlite3.Connection | None
     warnings: list[str] = field(default_factory=list)
     """Load warnings from the validating loads, for the caller to show."""
     written: list[Path] = field(default_factory=list)
@@ -94,7 +94,13 @@ class StagedEdit:
     @property
     def con(self) -> sqlite3.Connection:
         """The preflighted scenario's intent DB as it was *before* this edit,
-        for duplicate and reference checks."""
+        for duplicate and reference checks. A pool has none (ADR-009), so
+        an edit that needs one is refused, naming what to edit instead."""
+        if self._con is None:
+            issue = (f"{self.name} is a pool (ADR-009): it has no accounts, chains or rows of its "
+                     "own; edit one of its components, or the pool itself with "
+                     "'sim ensemble pool edit'")
+            raise EditRejected([issue], scenario=self.name, own=[issue])
         return self._con
 
     @property
@@ -324,16 +330,16 @@ def staged_edit(
         raise EditRejected([template_refusal(name)], scenario=name, own=[template_refusal(name)])
     with ExitStack() as stack:
         intent_dir = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+        con: sqlite3.Connection | None = None
         if is_pool(real / SCENARIOS, name):
             # A pool has no intent (ADR-009): its definition is checked
-            # instead, and the edit sees an empty database.
+            # instead, and an edit that reads the intent is refused.
             if found := _load_issues(real, name)[0]:
                 raise ScenarioAlreadyBroken(name, found)
-            con = sqlite3.connect(":memory:")
         else:
             con = _preflight(real, name, intent_dir)
-        con.row_factory = sqlite3.Row
-        stack.callback(con.close)
+            con.row_factory = sqlite3.Row
+            stack.callback(con.close)
 
         stage = Path(stack.enter_context(tempfile.TemporaryDirectory())) / real.name
         stage.mkdir()
