@@ -136,3 +136,8 @@ Add `--case <glob>` to run one case.
 
 `claude -p "<request>" --plugin-dir out/finance-research/finance-research`
 runs a skill without an install, as `sim symbol research` (#344) will.
+
+Nothing here holds a key or calls the API itself: every run uses Claude
+Code's own login. Signed in with a claude.ai account, runs count against
+the plan's usage limits; with `ANTHROPIC_API_KEY` set, Claude Code bills
+that key per token instead, and a run's ~150k tokens cost real money.
