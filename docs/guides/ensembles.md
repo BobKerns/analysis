@@ -963,6 +963,89 @@ code that reads it changed) gets it built the first time it's read: the
 notebook shows a progress bar, `sim ensemble` says it's building it, and
 reads after that are quick. Nothing needs rerunning.
 
+## Pooling several kinds of trouble
+
+Each episode template (`t_great_inflation`, `t_financial_crisis`,
+`t_pandemic_spike`) makes its own ensemble, so you can see what that one
+kind of trouble does. A **pool** answers the next question: across all
+those worlds, each as likely as you think it is, how bad are the bad
+futures? It takes some members from each ensemble, in proportion to its
+weight, and reports them as one ensemble. Nothing is simulated again.
+
+```sh
+sim ensemble create e0 retire_alice t_inflation_ensemble t_market_ensemble
+sim ensemble create e_great_inflation e0 t_great_inflation
+sim ensemble create e_financial_crisis e0 t_financial_crisis
+sim ensemble create e_pandemic_spike e0 t_pandemic_spike
+sim ensemble pool create trouble e_great_inflation=15% e_financial_crisis=30% e_pandemic_spike=55%
+sim run trouble                  # runs any component that is out of date, then builds the pool
+sim ensemble summary trouble
+sim ensemble compare e0 trouble  # pairs future by future with e0
+```
+
+Leave the weights off for equal shares. `sim ensemble pool edit trouble`
+changes the components, weights, size, the reserve, or which component's
+member 0 is the pool's base case (the first, unless `--base` names
+another); with no options it asks for each in turn. A new run with other
+weights takes seconds, since the members are already on disk, so try a
+few. `sim run trouble --rebuild` reruns every component as well.
+
+**How it picks members.** Pool member 7 is member 7 of one component:
+the same file, linked, not copied. The components share `e0`'s seed, so
+member 7 of each drew the same market, lifespans and yearly shocks; only
+the episode differs. Taking member 7 from every component would count
+that one future three times, and the pool would look surer than it is.
+Taking each index once keeps every future distinct, and keeps the pool
+paired with `e0`: `sim ensemble compare e0 trouble` shows what the
+trouble did in each future, and `P(ahead)`. The price is that every
+component needs at least as many members as the pool. Compared with one
+of its own components, the members that came from it are the same file
+on both sides, so they differ by exactly 0 and don't count as ahead.
+
+**The weights matter most.** A weight is the chance of that world, given
+that you're in one of the pool's. On the prototype, equal weights gave a
+pooled `cvar05` of $216k at the end of 2060, and 15% / 30% / 55%,
+near history's shares, gave $506k: the worst futures nearly all come
+from the Great Inflation component, so its weight sets the pooled tail.
+The pooled tail is not the average of the components' tails, since the
+worst futures of the worst world all land in it. Counting onsets since
+1914 (the episode tables are in `historical-calibration.md`):
+
+| Kind | Episodes | Per century |
+| --- | --- | --: |
+| Short price spike (2 to 4 years) | 1916–1919, 1941–1942, 1946–1947, 1950–1951, 2021–2022 | about 4.5 |
+| Crisis, then years of near-zero rates | 1929 to the 1940s, 2008–2015 | about 1.8 |
+| Great Inflation-style run | 1966–1982 | about 0.9 |
+
+By count that's roughly 60% spike, 25% crisis and 15% inflation. Two
+caveats: four of the five spikes were wartime, and a single Great
+Inflation in a century says little about its rate.
+
+**Two probabilities, not one.** Each episode's start is spread over
+decades, so some members of each component see no episode before the
+run ends (about 12% of them on the prototype, ending in 2060). A
+member's chance of its episode is its component's weight times that.
+
+**One episode per member.** Each component carries one kind of
+trouble, so no pool member meets two in one lifetime. History often has
+two or more in 30 years (1929–1958 held a crisis and three spikes), so
+the pool's worst futures are probably not bad enough. A component built
+on two templates, the second dated from the first, adds such a world.
+
+**Reading the summary.** Under its header the summary lists the
+pool's members by component, and which components the worst 5% came
+from, ranked by each member's lowest point over the run in today's
+dollars, the worst moment of a lifetime rather than the end. The pooled
+tail means rest on those few members: if one component supplies only a
+handful, run more members.
+
+A pool's draws are checked per component (`sim ensemble draws trouble`,
+and the Component dropdown in `sensitivity.ipynb`'s Draws section), and
+sensitivity runs on the components, not the pool. Pooling different
+*plans* answers "what's my risk if I don't know which plan I'll follow",
+and only when the choice doesn't depend on how the future goes; to
+choose between plans, compare them.
+
 ## Which varying rows matter, and when? (sensitivity)
 
 Before you run a big Monte Carlo, it's worth asking which of your

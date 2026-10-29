@@ -18,7 +18,9 @@ from pathlib import Path
 
 from analysis.sim import registries
 from analysis.sim.asset_classes import is_lot_key
-from analysis.sim.lineage import TEMPLATE_AUX_DIR, load_order, scenario_dir, template_names
+from analysis.sim.lineage import (
+    TEMPLATE_AUX_DIR, is_pool, load_order, pool_components, reading_order, scenario_dir, template_names,
+)
 
 __all__ = [
     "account_names",
@@ -46,10 +48,24 @@ def _rows(path: Path) -> Iterator[dict[str, str]]:
         return
 
 
-def _lineage_dirs(data_dir: Path, scenario: str) -> list[Path]:
-    """The scenario's folder and every one it inherits from, root first."""
+def _reading_dirs(data_dir: Path, scenario: str) -> list[Path]:
+    """The scenario's folder and every one it inherits from, root first; a
+    pool's base component's, then the pool's own (``reading_order``): where
+    its guard rails come from."""
     scenarios = data_dir / "scenarios"
-    return [scenario_dir(scenarios, name) for name in load_order(scenarios, scenario)]
+    return [scenario_dir(scenarios, name) for name in reading_order(scenarios, scenario)]
+
+
+def _lineage_dirs(data_dir: Path, scenario: str) -> list[Path]:
+    """:func:`_reading_dirs`, and for a pool every other component's lineage
+    after them (ADR-009 §6): a pool's members hold any component's
+    accounts, lots and tags, so the names to complete are all of theirs."""
+    scenarios = data_dir / "scenarios"
+    order = reading_order(scenarios, scenario)
+    for component in pool_components(scenarios, scenario):
+        if component != scenario and not is_pool(scenarios, component):
+            order += [n for n in load_order(scenarios, component) if n not in order]
+    return [scenario_dir(scenarios, name) for name in order]
 
 
 def _column(paths: Iterable[Path], column: str) -> list[str]:
@@ -62,6 +78,12 @@ def _stems(folders: Iterable[Path], pattern: str = "*.csv") -> set[str]:
         path.stem for folder in folders if folder.is_dir()
         for path in folder.glob(pattern) if not path.stem.startswith("_")
     }
+
+
+def lineage_rows(data_dir: Path, scenario: str, filename: str) -> list[dict[str, str]]:
+    """Every row of ``filename`` in the scenario's folders, root first,
+    unmerged: what's named anywhere in its lineage."""
+    return [row for d in _reading_dirs(data_dir, scenario) for row in _rows(d / filename)]
 
 
 def scenario_names(data_dir: Path) -> list[str]:
@@ -116,7 +138,7 @@ def ytd_names(data_dir: Path, scenario: str) -> list[str]:
 
 def guard_rail_names(data_dir: Path, scenario: str) -> list[str]:
     """The names of the scenario's guard rails (#305), its own and inherited."""
-    return _column((d / "guard_rails.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
+    return _column((d / "guard_rails.csv" for d in _reading_dirs(data_dir, scenario)), "name")
 
 
 def calendar_row_names(data_dir: Path, scenario: str) -> list[str]:

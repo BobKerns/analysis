@@ -309,6 +309,8 @@ def _member_files(batch_dir: Path) -> dict[str, tuple[int, int]]:
 def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
     """Write ``batch_dir``'s store from ``members`` (its succeeded ones),
     replacing any there. Returns its path."""
+    from analysis.sim.pool import member_components, pool_record
+
     path = series_db_path(batch_dir)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.unlink(missing_ok=True)
@@ -318,10 +320,18 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
         con.executemany("INSERT INTO member_file VALUES (?, ?, ?)",
                         [(stem, *stat) for stem, stat in _member_files(batch_dir).items()])
         subject_ids: dict[tuple[str, str, str], int] = {}
+        # The batch's meta is its first member's, but a pool's is its base
+        # component's (ADR-009 §6), from that component's first member.
+        meta_json: str | None = None
+        base_meta: str | None = None
+        record = pool_record(batch_dir)
+        origin = member_components(batch_dir) or {}
+        base = record.get("base") if record is not None else None
         flow_ids: dict[tuple[str, str, str], int] = {}
-        meta_json = "{}"
         for member_id, member in enumerate(sorted(members, key=lambda m: m.stem), start=1):
-            meta_json = member.meta_json if member_id == 1 else meta_json
+            meta_json = member.meta_json if meta_json is None else meta_json
+            if base_meta is None and base is not None and origin.get(member.member_index) == base:
+                base_meta = member.meta_json
             con.execute(
                 "INSERT INTO member VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (member_id, member.stem, member.member_index, member.seed,
@@ -346,12 +356,25 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
                 con.execute("INSERT INTO series VALUES (?, ?, ?)",
                             (subject_ids[key], member_id, _pack(values)))
         con.execute("INSERT INTO batch VALUES (1, ?, ?, ?, ?)",
-                    (FORMAT_VERSION, _code_hash(), datetime.now(UTC).isoformat(), meta_json))
+                    (FORMAT_VERSION, _code_hash(), datetime.now(UTC).isoformat(),
+                     _pool_meta(batch_dir, base_meta or meta_json or "{}")))
         con.commit()
     finally:
         con.close()
     os.replace(tmp, path)
     return path
+
+
+def _pool_meta(batch_dir: Path, meta_json: str) -> str:
+    """The meta a batch's reports read: its first member's, but for a pool
+    (ADR-009) with the pool's own ``reserve`` in place of its base
+    component's, when the pool sets one."""
+    from analysis.sim.pool import pool_record
+
+    record = pool_record(batch_dir)
+    if record is None or "reserve" not in record:
+        return meta_json
+    return json.dumps({**json.loads(meta_json or "{}"), "reserve": record["reserve"]})
 
 
 def build_series_db(batch_dir: Path, on_member: Callable[[], None] | None = None) -> Path:
@@ -446,6 +469,10 @@ class EnsembleSeries:
             }
         self._frames: dict[tuple[Any, ...], pd.DataFrame] = {}
         self._memo: dict[tuple[Any, ...], Any] = {}
+        from analysis.sim.pool import pool_record
+
+        # ADR-009: a pool's components may hold different accounts.
+        self.is_pool = pool_record(self.batch_dir) is not None
 
     def memo[T](self, key: tuple[Any, ...], build: Callable[[], T]) -> T:
         """``build()``, held under ``key`` like the frames, so asking again
@@ -531,6 +558,11 @@ class EnsembleSeries:
         columns: dict[str, pd.Series] = {}
         for member_id, member in self._members.items():
             if member_id not in nominal:
+                if self.is_pool and nominal:
+                    # A pool member whose component lacks the account holds
+                    # none of it, rather than dropping out of the pooled
+                    # statistics (ADR-009 §7), as a scenario compare does (#174).
+                    columns[member.stem] = pd.Series(0.0, index=member.months)
                 continue
             values = pd.Series(nominal[member_id], index=member.months)
             columns[member.stem] = self._convert(subject, account_kind, member, values, mode)

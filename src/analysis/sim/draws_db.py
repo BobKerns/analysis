@@ -8,14 +8,17 @@ correlation inputs, so ``build_draws_db`` gathers them into
 
 - ``batch``: the ensemble, mode, master seed, versions;
 - ``member``: every member, ``is_base`` marking member 0 (the deterministic
-  base, ADR-006 §9), its derived seed and status;
-- ``node``: each varying row, lifespan and latent factor: its distribution
+  base, ADR-006 §9), its derived seed and status, and its ``component``:
+  the ensemble it was drawn from, the batch's own except in a pool (ADR-009);
+- ``node``: each component's varying rows, lifespans and latent factors
+  (keyed by component and name, since two components may draw one name
+  differently): its distribution
   and parameters, its correlation parent, rho, tree root and nu, and the
   distribution's own moments;
 - ``node_pair``: each pair sharing a tree, its implied and achieved rho;
 - ``draw``: per member and node, the noise, score, ``u`` and value;
 - ``tail_scale``, ``path_shock``: the t-copula scales and process shocks;
-- ``draw_check``: per node, drawn statistics beside the distribution's own,
+- ``draw_check``: per component and node, drawn statistics beside the distribution's own,
   and a Kolmogorov-Smirnov test of ``u`` against uniform (Monte Carlo only).
 
 Values are stored in the simulator's own units (cents, micros, day
@@ -101,11 +104,14 @@ CREATE TABLE member (
     -- succeeded | failed | running | failed_to_resolve | missing | unknown
     status          TEXT NOT NULL,
     -- the member file the draws came from: its run file, else its intent.
-    source_file     TEXT
+    source_file     TEXT,
+    -- the ensemble it was drawn from: the batch's own, or a pool's component (ADR-009)
+    component       TEXT NOT NULL
 );
 
 CREATE TABLE node (
-    name            TEXT PRIMARY KEY,
+    component       TEXT NOT NULL,
+    name            TEXT NOT NULL,
     node_kind       TEXT NOT NULL,      -- row | lifespan | factor
     calendar_kind   TEXT,               -- a row's calendar kind
     affects         TEXT,               -- the series, transfer or person it moves
@@ -140,10 +146,12 @@ CREATE TABLE node (
     dist_sd         REAL,
     skewness        REAL,
     excess_kurtosis REAL,
-    description     TEXT
+    description     TEXT,
+    PRIMARY KEY (component, name)
 );
 
 CREATE TABLE node_pair (
+    component       TEXT NOT NULL,
     a               TEXT NOT NULL,
     b               TEXT NOT NULL,
     kind            TEXT NOT NULL,      -- link (parent and child) | implied
@@ -155,12 +163,12 @@ CREATE TABLE node_pair (
     achieved_low    REAL,
     achieved_high   REAL,
     n               INTEGER,
-    PRIMARY KEY (a, b)
+    PRIMARY KEY (component, a, b)
 );
 
 CREATE TABLE draw (
     member_index    INTEGER NOT NULL REFERENCES member(member_index),
-    node            TEXT NOT NULL REFERENCES node(name),
+    node            TEXT NOT NULL,      -- node.name, of the member's component
     value           REAL NOT NULL,      -- in node.unit
     quantile        REAL,               -- an OAT override
     z               REAL,               -- tree score (after any t scale)
@@ -190,7 +198,8 @@ CREATE TABLE path_shock (
 );
 
 CREATE TABLE draw_check (
-    node            TEXT PRIMARY KEY REFERENCES node(name),
+    component       TEXT NOT NULL,
+    node            TEXT NOT NULL,
     n               INTEGER NOT NULL,   -- drawn members (member 0 excluded)
     expected_mean   REAL,
     drawn_mean      REAL,
@@ -204,7 +213,8 @@ CREATE TABLE draw_check (
     -- Kolmogorov-Smirnov distance of the members' u from uniform, and its
     -- p-value (asymptotic); NULL when no member records a u.
     ks_u            REAL,
-    ks_u_p          REAL
+    ks_u_p          REAL,
+    PRIMARY KEY (component, node)
 );
 """
 
@@ -234,7 +244,7 @@ _DISPLAY_UNIT = (
 
 _STATIC_VIEWS = f"""
 CREATE VIEW node_display AS
-SELECT name, node_kind, calendar_kind, affects, target, {_DISPLAY_UNIT} AS unit, distribution,
+SELECT component, name, node_kind, calendar_kind, affects, target, {_DISPLAY_UNIT} AS unit, distribution,
     {_position('low')} AS low, {_position('high')} AS high, {_position('median')} AS median,
     {_spread('sd')} AS sd, {_position('mode')} AS mode, skew, tailweight, outcomes,
     ramp_months, process, persistence, {_spread('shock_sd')} AS shock_sd,
@@ -245,12 +255,13 @@ SELECT name, node_kind, calendar_kind, affects, target, {_DISPLAY_UNIT} AS unit,
 FROM node;
 
 CREATE VIEW draw_display AS
-SELECT d.member_index, m.is_base, d.node, {_DISPLAY_UNIT} AS unit,
+SELECT d.member_index, m.is_base, m.component, d.node, {_DISPLAY_UNIT} AS unit,
     {_position('d.value')} AS value, d.quantile, d.z, d.noise, d.u
-FROM draw d JOIN node n ON n.name = d.node JOIN member m USING (member_index);
+FROM draw d JOIN member m USING (member_index)
+    JOIN node n ON n.name = d.node AND n.component = m.component;
 
 CREATE VIEW draw_check_display AS
-SELECT c.node, {_DISPLAY_UNIT} AS unit, c.n,
+SELECT c.component, c.node, {_DISPLAY_UNIT} AS unit, c.n,
     {_position('c.expected_mean')} AS expected_mean, {_position('c.drawn_mean')} AS drawn_mean,
     {_spread('c.expected_sd')} AS expected_sd, {_spread('c.drawn_sd')} AS drawn_sd,
     {_position('c.expected_p05')} AS expected_p05, {_position('c.drawn_p05')} AS drawn_p05,
@@ -259,10 +270,10 @@ SELECT c.node, {_DISPLAY_UNIT} AS unit, c.n,
     {_position('c.expected_p75')} AS expected_p75, {_position('c.drawn_p75')} AS drawn_p75,
     {_position('c.expected_p95')} AS expected_p95, {_position('c.drawn_p95')} AS drawn_p95,
     c.ks_u, c.ks_u_p
-FROM draw_check c JOIN node n ON n.name = c.node;
+FROM draw_check c JOIN node n ON n.name = c.node AND n.component = c.component;
 
 CREATE VIEW path_shock_display AS
-SELECT p.member_index, m.is_base, p.node, p.year, p.noise, p.score, p.scale, p.shock,
+SELECT p.member_index, m.is_base, m.component, p.node, p.year, p.noise, p.score, p.scale, p.shock,
     p.rate / 10000.0 AS rate_percent
 FROM path_shock p JOIN member m USING (member_index);
 """
@@ -282,8 +293,9 @@ def _wide_views(nodes: list[tuple[str, str]]) -> str:
             for node, _unit in nodes
         )
         return (
-            f"CREATE VIEW {name} AS\nSELECT d.member_index{columns}\n"
-            "FROM draw d JOIN node n ON n.name = d.node JOIN member m USING (member_index)\n"
+            f"CREATE VIEW {name} AS\nSELECT d.member_index, m.component{columns}\n"
+            "FROM draw d JOIN member m USING (member_index)\n"
+            "    JOIN node n ON n.name = d.node AND n.component = m.component\n"
             "WHERE m.is_base = 0 GROUP BY d.member_index;\n"
         )
     return view("draws_wide", "d.value") + view("draws_wide_display", _position("d.value", "n.unit"))
@@ -603,31 +615,43 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     replacing any earlier one, and return its path. ``intent_batch_dir``
     (``state/intent/<ensemble>/<batch>``) supplies the draws of a member
     whose run file is missing; leave it out to read run files only."""
+    from analysis.sim.pool import member_components, pool_record, shared_seed
+
     batch_dir = Path(batch_dir)
     manifest = read_batch_manifest(batch_dir) or {}
     members = _member_files(batch_dir, intent_batch_dir, manifest.get("member_count"))
     if not members:
         raise EnsembleError(f"{batch_dir}: no members to gather draws from")
+    # A pool's members come from several ensembles (ADR-009), each with its
+    # own nodes, so nodes, checks and pairs are kept per component.
+    pool = pool_record(batch_dir)
+    origin = member_components(batch_dir) or {}
+    own_name = batch_dir.parent.name
+    component_of = {m.index: origin.get(m.index, own_name) for m in members}
 
     member_rows: list[dict[str, Any]] = []
     draw_rows: list[dict[str, Any]] = []
     scale_rows: list[dict[str, Any]] = []
     shock_rows: list[dict[str, Any]] = []
-    nodes: list[dict[str, Any]] = []
-    dists: dict[str, Distribution | LifeTableAge] = {}
-    links: dict[str, Link] = {}
     # A batch whose every member failed to resolve has only its manifest:
     # it still lists them, with no nodes or draws.
     batch: dict[str, Any] = {
         "ensemble_name": batch_dir.parent.name, "batch": batch_dir.name,
         "mode": manifest.get("mode", "monte_carlo"), "member_count": manifest.get("member_count", len(members)),
     }
-    # Nodes are described from member 0 where it exists, else the first file.
-    describe_from = next((m for m in members if m.index == 0 and m.path), None) or next(
-        (m for m in members if m.path), None)
+    # Each component's nodes are described from member 0 where it is the
+    # component's, else from the component's first file.
+    describe_from: dict[str, _Member] = {}
+    for m in sorted(members, key=lambda m: m.index):
+        if m.path is not None:
+            describe_from.setdefault(component_of[m.index], m)
+    component_nodes: dict[str, list[dict[str, Any]]] = {}
+    component_dists: dict[str, dict[str, Distribution | LifeTableAge]] = {}
+    component_links: dict[str, dict[str, Link]] = {}
     for m in members:
+        component = component_of[m.index]
         record: dict[str, Any] = {"member_index": m.index, "is_base": int(m.index == 0),
-                                  "status": m.status,
+                                  "status": m.status, "component": component,
                                   "source_file": None if m.path is None else m.path.name}
         if m.path is None:
             member_rows.append(record)
@@ -662,13 +686,14 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
                     for n, y, e, z, s, k, r in con.execute(
                         "SELECT node, year, noise, score, scale, shock, rate FROM ensemble_path_shock")
                 ]
-            if m is describe_from:
-                nodes, dists = _node_records(con, draws)
-                links = correlation_links(con)
+            if describe_from.get(component) is m:
+                component_nodes[component], component_dists[component] = _node_records(con, draws)
+                component_links[component] = correlation_links(con)
+            if m is min(describe_from.values(), key=lambda d: d.index):
                 seed = con.execute("SELECT seed FROM scenario").fetchone()
                 mode = manifest.get("mode") or (found[4] if found else "monte_carlo")
                 batch = {
-                    "ensemble_name": found[0] if found else batch_dir.parent.name,
+                    "ensemble_name": found[0] if found else own_name,
                     "batch": batch_dir.name,
                     "mode": mode,
                     # An OAT batch draws nothing (ADR-007 §5), so no seed applies.
@@ -677,30 +702,47 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
                     "recipe_tree_id": found[3] if found else None,
                     **_versions(con),
                 }
+                if pool is not None:
+                    # A pool has no recipe of its own; its seed is the
+                    # components' shared one, if they share one.
+                    batch.update(ensemble_name=own_name, master_seed=shared_seed(pool),
+                                 recipe_tree_id=None)
         finally:
             con.close()
         member_rows.append(record)
-    for node in nodes:
-        base = next((d["value"] for d in draw_rows
-                     if d["member_index"] == 0 and d["node"] == node["name"]), None)
-        node["base_value"] = base
+    frame = pd.DataFrame(draw_rows)
+    if not frame.empty:
+        frame["component"] = frame["member_index"].map(component_of)
+    mc = batch["mode"] == "monte_carlo"
+    nodes: list[dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
+    pairs: list[dict[str, Any]] = []
+    kept: set[tuple[str, str]] = set()
+    for component, own_nodes in component_nodes.items():
+        mine = frame[frame["component"] == component] if not frame.empty else frame
+        base_draws = {} if mine.empty else dict(
+            mine.loc[mine["member_index"] == 0, ["node", "value"]].itertuples(index=False, name=None))
+        for node in own_nodes:
+            nodes.append({**node, "component": component, "base_value": base_draws.get(node["name"])})
+        targets = {n["name"]: n["target"] for n in own_nodes}
+        kept |= {(component, name) for name in targets}
+        drawn = mine[mine["member_index"] != 0] if not mine.empty else mine
+        scores = None
+        if mc and not drawn.empty:
+            values = drawn.pivot(index="member_index", columns="node", values="value")
+            us = drawn.pivot(index="member_index", columns="node", values="u")
+            nus = {n["name"]: n["nu"] for n in own_nodes if n.get("nu") is not None}
+            checks += [{**c, "component": component} for c in _check_rows(
+                values[[c for c in values.columns if c in targets]], us,
+                component_dists[component], targets, nus)]
+            scores = drawn.pivot(index="member_index", columns="node", values="z").astype(float)
+        links = component_links[component]
+        tree = sorted(tree_members(links) & set(targets))
+        pairs += [{**p, "component": component} for p in _pairs(links, tree, scores)]
     batch.update(schema_version=SCHEMA_VERSION,
                  built_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
-
-    frame = pd.DataFrame(draw_rows)
-    drawn = frame[frame["member_index"] != 0] if not frame.empty else frame
-    targets = {n["name"]: n["target"] for n in nodes}
-    mc = batch["mode"] == "monte_carlo"
-    checks: list[dict[str, Any]] = []
-    scores = None
-    if mc and not drawn.empty:
-        values = drawn.pivot(index="member_index", columns="node", values="value")
-        us = drawn.pivot(index="member_index", columns="node", values="u")
-        nus = {n["name"]: n["nu"] for n in nodes if n.get("nu") is not None}
-        checks = _check_rows(values[[c for c in values.columns if c in targets]], us, dists, targets, nus)
-        scores = drawn.pivot(index="member_index", columns="node", values="z").astype(float)
-    tree = sorted(tree_members(links) & set(targets))
-    pairs = _pairs(links, tree, scores)
+    # One wide column per node name, whichever components draw it.
+    wide = list({n["name"]: (n["name"], n["unit"]) for n in nodes}.values())
 
     path = draws_db_path(batch_dir)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -709,12 +751,13 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     try:
         con.executescript(DRAWS_DDL)
         con.executescript(_STATIC_VIEWS)
-        con.executescript(_wide_views([(n["name"], n["unit"]) for n in nodes]))
+        con.executescript(_wide_views(wide))
         _insert(con, "batch", [{"id": 1, **batch}])
         _insert(con, "member", member_rows)
         _insert(con, "node", nodes)
         _insert(con, "node_pair", pairs)
-        _insert(con, "draw", [d for d in draw_rows if d["node"] in targets])
+        _insert(con, "draw", [d for d in draw_rows
+                              if (component_of[d["member_index"]], d["node"]) in kept])
         _insert(con, "tail_scale", scale_rows)
         _insert(con, "path_shock", shock_rows)
         _insert(con, "draw_check", checks)
@@ -769,3 +812,40 @@ def draws_frames(batch_dir: Path, *, display: bool = True) -> dict[str, pd.DataF
             name: pd.read_sql_query(f"SELECT * FROM {views[name] if display and name in views else name}", con)
             for name in names
         }
+
+
+def draws_db_current(batch_dir: Path) -> bool:
+    """Whether a batch's draws database exists in the current layout; one
+    built before pools (ADR-009) has no ``member.component`` and is gathered
+    again."""
+    path = draws_db_path(batch_dir)
+    if not path.is_file():
+        return False
+    try:
+        with open_draws_db(batch_dir) as con:
+            return "component" in _columns(con, "member")
+    except sqlite3.Error:
+        return False
+
+
+def components(frames: dict[str, pd.DataFrame]) -> list[str]:
+    """The ensembles a batch's members were drawn from: one, except in a
+    pool (ADR-009), in the order their first members appear."""
+    return list(dict.fromkeys(frames["member"].sort_values("member_index")["component"]))
+
+
+def component_frames(frames: dict[str, pd.DataFrame], component: str) -> dict[str, pd.DataFrame]:
+    """``draws_frames`` narrowed to one component's members and nodes, so a
+    pool's components can be checked one at a time against their own
+    distributions."""
+    members = set(frames["member"].loc[frames["member"]["component"] == component, "member_index"])
+    narrowed = {}
+    for name, frame in frames.items():
+        if "component" in frame.columns:
+            frame = frame[frame["component"] == component]
+        elif "member_index" in frame.columns:
+            frame = frame[frame["member_index"].isin(members)]
+        narrowed[name] = frame.reset_index(drop=True)
+    wide = narrowed["draws_wide"]
+    narrowed["draws_wide"] = wide.dropna(axis=1, how="all")
+    return narrowed

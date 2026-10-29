@@ -306,3 +306,23 @@ def test_a_date_marker_is_a_node_that_affects_the_rows_dated_from_it(
     node = _query(db, "SELECT node_kind, calendar_kind, unit, affects FROM node "
                       "WHERE name = 'ep_start'")
     assert node == [("row", "date_marker", "day_ordinal", "ep_off")]
+
+
+def test_a_draws_database_from_before_pools_is_gathered_again(mc_batch: Path) -> None:
+    """One built before ADR-009 has no member.component: `ensemble draws`
+    rebuilds it rather than failing on the per-component queries."""
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.sim.draws_db import draws_db_current
+
+    path = draws_db_path(mc_batch)
+    path.unlink(missing_ok=True)
+    with sqlite3.connect(path) as con:
+        con.execute("CREATE TABLE member (member_index INTEGER PRIMARY KEY)")
+    assert not draws_db_current(mc_batch)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(mc_batch.parent.parent)])
+    assert result.exit_code == 0, result.output
+    assert draws_db_current(mc_batch)
+    assert "component" not in result.output  # one component: no per-component headings

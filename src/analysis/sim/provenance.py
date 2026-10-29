@@ -23,7 +23,7 @@ from pathlib import Path
 
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
-from analysis.sim.lineage import load_order
+from analysis.sim.lineage import is_pool, load_order, pool_components
 
 
 class DataDirtyRefused(RuntimeError):
@@ -126,8 +126,21 @@ def _scenario_lineage(data_dir: Path, scenario_name: str) -> list[str]:
     ``data_dirty`` false. Tolerant of a malformed scenario.csv: provenance
     must not be the thing that reports one -- the loader validates it
     properly and will raise.
+
+    A pool (ADR-009) loads nothing, but its batch is made of its components'
+    members, so its scope is its own folder and each component's lineage:
+    an edit to a component changes the pool's tree, and a dirty component
+    makes the pool dirty.
     """
-    return load_order(data_dir / "scenarios", scenario_name)
+    scenarios = data_dir / "scenarios"
+    if not is_pool(scenarios, scenario_name):
+        return load_order(scenarios, scenario_name)
+    names = [scenario_name]
+    for component in pool_components(scenarios, scenario_name):
+        if component == scenario_name or is_pool(scenarios, component):
+            continue  # a pool of pools is refused at the pool's check
+        names += [n for n in load_order(scenarios, component) if n not in names]
+    return names
 
 
 def _compute_tree_id(repo: Repo, scoped_abs: list[str]) -> str:
