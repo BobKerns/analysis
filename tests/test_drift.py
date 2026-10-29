@@ -67,7 +67,7 @@ def test_class_dollars_add_up_to_the_asset_lots(run_strategy_scenario: Callable[
         con.close()
 
 
-def test_a_dated_allocation_reclasses_from_its_month(
+def test_a_dated_allocation_applies_from_its_month(
     strategy_scenarios: Path, run_strategy_scenario: Callable[[str], Path],
 ) -> None:
     """USSTK becomes half bonds from 2030: the stretch of months on each side
@@ -87,7 +87,7 @@ def test_a_dated_allocation_reclasses_from_its_month(
     assert frame.loc["2030-01-31", "stock_us"] == pytest.approx(brokerage["2030-01-31"] / 2)
 
 
-def test_choose_takes_the_strategys_targets_portfolio_and_band(
+def test_choose_defaults_to_the_strategy_targets_portfolio_and_band(
     run_strategy_scenario: Callable[[str], Path],
 ) -> None:
     con = _con(run_strategy_scenario("alice_rebalance"))

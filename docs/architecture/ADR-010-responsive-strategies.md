@@ -125,12 +125,22 @@ Greedy slicing is easy to explain ("each slice came from whatever helped most"),
 | `sim target list\|set\|delete` | `targets.csv`; `set` takes `CLASS=PERCENT` like `sim symbol add`, and sets a class the scenario inherits but leaves out to 0% |
 | `sim allocation --drift` | Each year-end of a run: the portfolio's share in each class less its target, in percentage points, and the largest. `--targets` and `--portfolio` default to the run's strategy's |
 | `sim explain` | Adds each strategy's decision count and what it moved, against what it was asked |
+| `sim ensemble drift [RECIPE]` | Per year end across members: percentiles and the largest of each member's largest drift (or `--asset-class`'s, signed), and with a band the share of members past it then and at some month so far. `--targets` and `--portfolio` default as above; `--graph` draws the spread over every month |
+| `sim compare --section strategies` | Each scenario's strategies and what they moved, then each run's largest drift by year end against one target set (a strategy's in any run, the baseline's first), so a strategy on and off sit side by side. Shown by default when any run has strategies or targets; the `differences` section then also lists differing strategies and target weights |
+
+**Drift** (`sim/drift.py`) is a class's share less its target, in percentage points; above zero is overweight. A month with nothing held has no drift. Class dollars come from each asset lot's balance split by `class_weights` (§5), the same function the strategies' context uses, worked out once per stretch of months between two `allocations.csv` `as_of` dates. A drift view defaults to a strategy's `targets` and `portfolio`, and shades that strategy's `band` (its parameter, else its kind's default).
+
+**Notebooks.** `accounts.ipynb` draws one run's drift, a line per class with the band and a tick for each month a strategy decided; `scenario_compare.ipynb` overlays the compared runs' drift (a panel per class and one of the largest) over what each scenario's strategies did; `ensemble.ipynb` draws the spread of drift across members (`drift_charts.py`, widget-free, so the CLI draws the same figures).
+
+**Ensembles.** The series store keeps each member's month-end dollars per asset class, for every asset lot and for each account tag's asset lots (a strategy's portfolio is a tag), and the batch's target sets and strategies with their bands ([ADR-006](ADR-006-ensemble-scenarios.md) §8, format 3). Drift against any set is worked out at read time, as guard rails are, so a store needs no rebuild to show another target set.
+
+**On vs off.** A strategy's effect is a comparison: a child scenario switches it off (`sim strategy edit NAME --disable` writes the override row), and `sim compare` or `scenario_compare.ipynb` set the two runs side by side, the net worth and break-even sections saying what it costs or gains.
 
 Each edit goes through a staged edit, so a strategy the loader would reject is never written.
 
 ### 8. Later stages, and #305
 
-Stage 1b adds a drift chart to the notebooks and class shares to the ensemble series store. Stage 2 adds spending (`year_start`, `scale` on rows targeted by tag, baselines recorded so reports can compare spending against the budgeted baseline) and `vary_*` on strategy parameters. Stage 3 adds triggers and `year_end` actions with their own `reason_kind`.
+Stage 2 adds spending (`year_start`, `scale` on rows targeted by tag, baselines recorded so reports can compare spending against the budgeted baseline) and `vary_*` on strategy parameters. Stage 3 adds triggers and `year_end` actions with their own `reason_kind`.
 
 Issue #305 owns guard rails, their measures (`sim/measures.py`) and their post-hoc evaluation; guard rails stay out of `scenario_tree_id`. A later stage adds a `trigger` column to `strategies.csv` naming a rail and its margin (`<rail>:annual` or `<rail>:cumulative`). Only a triggered rail enters the intent and is evaluated in the engine, through the same causal measures #305's reports use, with breach rows linked to the decisions that answered them. A rebalancing `draw` moves money from portfolio lots to checking, so #305's "net withdrawals from a tagged portfolio" counts it correctly.
 
@@ -159,3 +169,5 @@ Issue #305 owns guard rails, their measures (`sim/measures.py`) and their post-h
 ## Amendments
 
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [#359](https://github.com/BobKerns/analysis/issues/359): allocation drift charts for a run, across an ensemble (the series store keeps class dollars per member) and for runs side by side; `sim ensemble drift`, `sim compare --section strategies` (§7, §8).
