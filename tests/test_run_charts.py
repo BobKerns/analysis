@@ -178,3 +178,55 @@ def test_drift_figure_draws_a_line_per_class() -> None:
                          index=pd.Index(["2030-12-31", "2031-12-31"], name="month"))
     ax = allocation_drift_figure(frame, "Drift").axes[0]
     assert [line.get_label() for line in ax.get_lines()][:2] == ["bond", "stock_us"]
+
+
+# ---------- review of #363 ----------
+
+
+@pytest.mark.parametrize("command", [
+    ["report", "tax"],                                   # the prototype has no tax rule
+    ["report", "income", "--by", "tag:no_such_role"],    # nothing tagged in that role
+])
+def test_graph_file_is_written_when_there_is_nothing_to_show(
+    retire_alice_run_file: Path, tmp_path: Path, command: list[str],
+) -> None:
+    """A script that asked for the file finds one, saying there's nothing to chart."""
+    chart = tmp_path / "chart.svg"
+    result = _invoke(*command, "--graph-file", str(chart), run_file=retire_alice_run_file)
+    assert result.exit_code == 0, result.output
+    assert "No " in chart.read_text() and "to chart." in chart.read_text()
+
+
+def test_income_figure_draws_every_year_the_table_shows(report_run: RunConnection) -> None:
+    """A year without a change in net worth (before the run's first step)
+    keeps its bars on top, and both panels share the years."""
+    frame = reports.flows_by_year(report_run, "income", mode=DollarMode.CPI_CONSTANT)
+    frame.loc[frame.index[0], reports.NET_WORTH_CHANGE] = float("nan")
+    top, bottom = run_charts.income_figure(frame, "Income").axes
+    years = [str(y) for y in frame.index]
+    from matplotlib.container import BarContainer
+
+    bars = [c for c in top.containers if isinstance(c, BarContainer)]
+    assert len(bars[0].patches) == len(years)  # a bar for every year
+    assert [t.get_text() for t in bottom.get_xticklabels()] == years
+
+
+def test_tax_figure_shows_a_negative_effective_rate() -> None:
+    frame = pd.DataFrame({"fed_tax": [-500.0, 4000.0], "effective_rate": [-0.05, 0.1]},
+                         index=[2030, 2031])
+    _bars, rate = run_charts.tax_figure(frame, "Tax").axes
+    assert rate.get_ylim()[0] < -0.05
+
+
+def test_groups_get_the_same_colors_in_every_chart() -> None:
+    from analysis.sim.plotting import group_colors
+
+    names = [f"Asset_{i}" for i in range(12)]
+    assert run_charts._group_colors(names) == group_colors(12)
+    assert len(set(group_colors(12))) == 12  # tab20 past the cycle's ten, no repeats
+
+
+def test_without_empty_groups_keeps_what_it_is_told_to() -> None:
+    frame = pd.DataFrame({"salary": [1.0, 2.0], "business": [0.0, 0.004],
+                          "total": [0.0, 0.0]}, index=[2030, 2031])
+    assert list(reports.without_empty_groups(frame, keep={"total"}).columns) == ["salary", "total"]

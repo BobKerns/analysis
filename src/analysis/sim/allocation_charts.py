@@ -6,12 +6,11 @@ pyplot, as in ``compare_charts``: a CLI chart must not pick a GUI backend."""
 
 from __future__ import annotations
 
-import matplotlib
 import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 
-from analysis.sim.plotting import FRAME_ALPHA, dollar_formatter
+from analysis.sim.plotting import FRAME_ALPHA, dollar_formatter, group_colors
 
 MAX_ABS = "max_abs"
 """``drift_by_year``'s column of the largest drift of any class, not a class itself."""
@@ -57,14 +56,11 @@ def allocation_split_figure(table: pd.DataFrame, title: str = "") -> Figure:
         fig.text(0.5, 0.5, "No holdings to chart.", ha="center", va="center")
         return fig
     ax = fig.subplots()
-    cycle = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
-    if len(groups) > len(cycle):
-        cmap = matplotlib.colormaps["tab20"]
-        cycle = [matplotlib.colors.to_hex(cmap(i)) for i in range(20)]
+    colors = group_colors(len(groups))
     names = [str(n) for n in body.index]
     left = pd.Series(0.0, index=body.index)
     for i, group in enumerate(groups):
-        ax.barh(names, body[group], left=left, label=str(group), color=cycle[i % len(cycle)])
+        ax.barh(names, body[group], left=left, label=str(group), color=colors[i])
         left = left + body[group]
     for y, (total, percent) in enumerate(zip(body["Total"], body["percent"], strict=True)):
         ax.annotate(f" {percent:.0f}%", (total, y), va="center", fontsize="small")

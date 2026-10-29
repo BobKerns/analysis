@@ -10,13 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
-import matplotlib
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import PercentFormatter
 
-from analysis.sim.plotting import FRAME_ALPHA, dollar_formatter, include_zero, mark_deaths
+from analysis.sim.plotting import FRAME_ALPHA, dollar_formatter, group_colors, include_zero, mark_deaths
 from analysis.sim.reports import (
     CASH_FLOW, CASH_INCOME, ECONOMIC_INCOME, NET_WORTH_CHANGE, NET_WORTH_COLUMNS,
 )
@@ -25,7 +24,7 @@ from analysis.sim.types import Death, ValuePlotMode
 __all__ = [
     "CATEGORY_COLORS", "account_history_figure", "balance_history_figure", "draw_economic_income",
     "draw_flows", "economic_income_figure", "flow_groups", "flows_figure", "gains_figure",
-    "income_figure", "net_worth_figure", "one_year_figure", "tax_figure",
+    "income_figure", "net_worth_figure", "nothing_figure", "one_year_figure", "tax_figure",
     "tax_reconciliation_figure", "trim_to_last_nonzero",
 ]
 
@@ -56,17 +55,18 @@ def _group_colors(columns: Sequence[str]) -> list[str]:
     (tab20 past its ten colors, so a long list of accounts doesn't repeat)."""
     if all(c in CATEGORY_COLORS for c in columns):
         return [CATEGORY_COLORS[c] for c in columns]
-    if len(columns) <= 10:
-        cycle = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
-    else:
-        cmap = matplotlib.colormaps["tab20"]
-        cycle = [matplotlib.colors.to_hex(cmap(i)) for i in range(20)]
-    return [cycle[i % len(cycle)] for i in range(len(columns))]
+    return group_colors(len(columns))
 
 
 def _nothing(fig: Figure, what: str) -> Figure:
     fig.text(0.5, 0.5, f"No {what} to chart.", ha="center", va="center")
     return fig
+
+
+def nothing_figure(what: str) -> Figure:
+    """A chart saying there's no ``what`` to chart: what --graph-file writes
+    when a report has nothing to show, so the file it asked for exists."""
+    return _nothing(Figure(figsize=_FIGSIZE), what)
 
 
 # ---------- net worth ----------
@@ -211,7 +211,11 @@ def income_figure(frame: pd.DataFrame, title: str, *, legend_title: str = "categ
         return flows_figure(frame, title, legend_title=legend_title, deaths=deaths)
     fig = Figure(figsize=(11, 9))
     top, bottom = fig.subplots(2, 1, sharex=True)
-    draw_flows(top, frame.loc[story.index], title, legend_title=legend_title, deaths=deaths)
+    # Every year the table prints, in both panels: a year without a change in
+    # net worth (one before the run's first step) has its bars on top and
+    # nothing below, rather than going missing from the chart.
+    draw_flows(top, frame, title, legend_title=legend_title, deaths=deaths)
+    story = story.reindex(frame.index)
     top.set_xlabel("")
     draw_economic_income(bottom, story, "Economic income to the change in net worth",
                          deaths=deaths)
@@ -270,7 +274,10 @@ def tax_figure(frame: pd.DataFrame, title: str, *, deaths: Sequence[Death] = ())
         (line,) = rate.plot(range(len(frame)), frame["effective_rate"], color="black",
                             marker="o", linewidth=2, label="effective rate")
         rate.yaxis.set_major_formatter(PercentFormatter(1.0, decimals=0))
-        rate.set_ylim(bottom=0, top=max(float(frame["effective_rate"].max()) * 1.15, 0.01))
+        # From zero, unless refundable credits made a year's rate negative.
+        rates = frame["effective_rate"]
+        rate.set_ylim(bottom=min(0.0, float(rates.min()) * 1.15),
+                      top=max(float(rates.max()) * 1.15, 0.01))
         rate.set_ylabel("effective rate")
         handles, names = [*handles, line], [*names, "effective rate"]
     mark_deaths(ax, deaths, years=list(frame.index))

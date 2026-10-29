@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+import matplotlib
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.dates import date2num
@@ -22,6 +23,18 @@ FRAME_ALPHA = 0.8
 def dollar_formatter() -> FuncFormatter:
     """A matplotlib tick formatter rendering values as ``$1,234``."""
     return FuncFormatter(lambda v, _: f"${v:,.0f}")
+
+
+def group_colors(count: int) -> list[str]:
+    """Colors for ``count`` groups that have no fixed color (accounts, tags):
+    matplotlib's cycle, or tab20 when there are more groups than it has, so a
+    long list doesn't repeat. One rule, so a group list gets the same colors
+    in every chart that draws it."""
+    cycle = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
+    if count > len(cycle):
+        cmap = matplotlib.colormaps["tab20"]
+        cycle = [matplotlib.colors.to_hex(cmap(i)) for i in range(20)]
+    return [cycle[i % len(cycle)] for i in range(count)]
 
 
 def include_zero(ax: Axes, *, margin: float = 0.05) -> None:

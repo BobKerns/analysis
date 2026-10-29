@@ -15,13 +15,12 @@ from typing import TYPE_CHECKING
 
 import ipywidgets as widgets
 import pandas as pd
-from IPython.display import Image, clear_output, display
+from IPython.display import clear_output, display
 
 from analysis.sim import compare
 from analysis.sim.compare import breakeven_month
 from analysis.sim.compare_charts import comparison_figure
 from analysis.sim.connection import RunConnection
-from analysis.sim.ensemble_plots import figure_bytes
 from analysis.sim.notebook_ui.pickers import (
     _TOGGLE_LAYOUT,
     AccountPicker,
@@ -39,7 +38,7 @@ from analysis.sim.notebook_ui.pickers import (
 )
 from analysis.sim.plotting import FRAME_ALPHA, include_zero, mark_deaths
 from analysis.sim.types import AccountKind, Death, DollarMode, ValuePlotMode
-from analysis.sim.notebook_ui.styled import StyledMarkdown
+from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
 if TYPE_CHECKING:
     from analysis.sim.guard_rails import RailResult
@@ -123,7 +122,7 @@ def plot_net_worth_and_delta(
         colors=container.colors,
         deaths=compare.scenario_deaths(container.connections, container.scenarios),
     )
-    display(Image(data=figure_bytes(figure), format="png"))
+    show_figure(figure)
 
 
 def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
@@ -439,7 +438,7 @@ def guard_rails_compare_widget(
                 results, baseline, variants, "Guard rails", unit=unit,
                 colors=container.colors, years=(low, high),
                 deaths=compare.scenario_deaths(container.connections, container.scenarios))
-            display(Image(data=figure_bytes(fig), format="png"))
+            show_figure(fig)
             senses = _rail_senses(results, container.scenarios)
             for rail, frame in frames.items():
                 frame = time_range.clip(frame)

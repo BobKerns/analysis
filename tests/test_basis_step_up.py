@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -275,32 +275,36 @@ def test_an_ensemble_chart_marks_member_0s_deaths() -> None:
 def test_the_net_worth_notebook_charts_mark_the_deaths(
     write_lifespans: Callable[..., None], fund_asset_savings: Callable[..., None],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import reports, run_charts
+    """Each widget's own figure marks both deaths (#327): the figures are
+    caught as the widgets show them, so a widget that stopped passing its
+    run's deaths would fail here."""
+    from analysis.sim import reports
     from analysis.sim.notebook_ui import networth_plots
+    from analysis.sim.types import DollarMode
 
     fund_asset_savings("500000.00")
     write_lifespans(ALICE_DIES, BILL_DIES)
     run = run_scenario(load_test_copy().intent_path, runs_dir / "charts.sqlite3", run_by="T",
                        allow_dirty_data=True, allow_dirty_code=True)
+    drawn: dict[str, list[Any]] = {}
     with RunConnection(run) as rc:
         for widget in (networth_plots.net_worth_widget, networth_plots.income_widget,
                        networth_plots.expenses_widget, networth_plots.gains_widget,
                        networth_plots.economic_income_widget, networth_plots.tax_widget):
+            shown: list[Any] = []
+            monkeypatch.setattr(networth_plots, "show_figure", shown.append)
             widget(rc)
-        # The widgets draw these (#327); each marks both deaths.
-        deaths = rc.deaths()
-        income = reports.flows_by_year(rc, "income")
-        figures = [
-            run_charts.net_worth_figure(rc.net_worth_frame()[["nominal"]], "t", deaths=deaths),
-            run_charts.flows_figure(income, "t", deaths=deaths),
-            run_charts.flows_figure(reports.flows_by_year(rc, "expenses"), "t", deaths=deaths),
-            run_charts.gains_figure(reports.gains_by_year(rc), "t", deaths=deaths),
-            run_charts.economic_income_figure(income, "t", deaths=deaths),
-        ]
+            drawn[widget.__name__] = shown
+        # The prototype has no tax rule, so the tax widget says so instead.
+        if reports.tax_by_year(rc, DollarMode.NOMINAL).empty:
+            assert not drawn.pop("tax_widget")
     # An error inside a widget's Output is printed, not raised.
     assert "Traceback" not in "".join(capsys.readouterr())
-    assert all(len(_death_lines(fig.axes[0])) == 2 for fig in figures)
+    for name, figures in drawn.items():
+        assert figures, f"{name} drew nothing"
+        assert all(len(_death_lines(fig.axes[0])) == 2 for fig in figures), name
 
 
 def test_a_joint_lot_steps_up_half_however_many_survive(

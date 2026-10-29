@@ -10,7 +10,7 @@ them.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Literal
 
 import pandas as pd
@@ -230,6 +230,16 @@ def _group_order(side: FlowSide, by: str, totals: pd.Series) -> list[str]:
     tagged = totals.drop(UNTAGGED, errors="ignore")
     order = sorted(tagged.index, key=lambda g: (-totals[g], g))
     return [*order, *([UNTAGGED] if UNTAGGED in totals.index else [])]
+
+
+def without_empty_groups(frame: pd.DataFrame, keep: Collection[str] = ()) -> pd.DataFrame:
+    """``frame`` less each column with nothing in any year (no business, no
+    inheritance), which only widens a table; a column in ``keep`` stays
+    whatever it holds. `sim report income|expenses` and the notebooks' flow
+    tables drop the same columns through this, so they show the same groups."""
+    empty = [c for c in frame.columns
+             if c not in keep and frame[c].fillna(0).round(2).eq(0).all()]
+    return frame.drop(columns=empty)
 
 
 def flows_by_year(

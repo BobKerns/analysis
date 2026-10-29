@@ -82,11 +82,10 @@ def _flows(rc: RunConnection, side: reports.FlowSide, mode: DollarMode,
            time_range: TimeRangePicker) -> pd.DataFrame:
     """``sim report income|expenses``' groups by category and their total,
     less a category with nothing in any year, as the report leaves it out."""
-    frame = reports.flows_by_year(rc, side, mode=mode).rename(
-        columns={reports.ECONOMIC_INCOME: "total"})
-    groups = run_charts.flow_groups(frame)
-    empty = [c for c in groups if frame[c].fillna(0).round(2).eq(0).all()]
-    return time_range.clip(frame[[c for c in groups if c not in empty] + ["total"]])
+    frame = reports.without_empty_groups(
+        reports.flows_by_year(rc, side, mode=mode).rename(columns={reports.ECONOMIC_INCOME: "total"}),
+        keep={"total"})
+    return time_range.clip(frame[[*run_charts.flow_groups(frame), "total"]])
 
 
 def _flow_widget(rc: RunConnection, side: reports.FlowSide, dollar_mode: DollarModePicker,
@@ -260,13 +259,18 @@ def tax_widget(rc: RunConnection,
 
     def _redraw(*_):
         mode = dollar_mode.value
-        frame = time_range.clip(reports.tax_by_year(rc, mode))
+        whole = reports.tax_by_year(rc, mode)
+        frame = time_range.clip(whole)
         for out in (chart_out, table_out):
             with out:
                 clear_output(wait=True)
         if frame.empty:
             with chart_out:
-                print(f"No tax was computed in this run ({rc.label}).")
+                # Only the whole run says whether any tax was computed.
+                if whole.empty:
+                    print(f"No tax was computed in this run ({rc.label}).")
+                else:
+                    print(f"No tax in the years picked ({rc.label}).")
             return
         with chart_out:
             show_figure(run_charts.tax_figure(
