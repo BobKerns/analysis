@@ -273,9 +273,9 @@ def test_an_episode_mixed_into_base_moves_with_its_drawn_start(
 def test_the_compound_episode_puts_the_spike_after_the_crisis(
     template_data_dir: Path, tmp_path: Path, derive_template_scenario, member_index: int,
 ) -> None:
-    """#340: t_crisis_then_spike starts the crash from 2031 to 2045, and the
-    price spike 1 to 10 years after the near-zero rates end, so the two
-    episodes never overlap."""
+    """#340: t_crisis_then_spike starts the crash where t_financial_crisis
+    does (2031 to 2064), and the price spike 1 to 10 years after the
+    near-zero rates end, so the two episodes never overlap."""
     derive_template_scenario("with_two", "base:t_crisis_then_spike")
     recipe = load_scenario(template_data_dir, "with_two", intent_dir=tmp_path / "intent",
                            compute_stamps=False, allow_dirty_data=True).intent_path
@@ -285,7 +285,7 @@ def test_the_compound_episode_puts_the_spike_after_the_crisis(
     crisis_start = date.fromisoformat(markers["financial_crisis_start"])
     crisis_end = date.fromisoformat(markers["financial_crisis_end"])
     spike_start = date.fromisoformat(markers["pandemic_spike_start"])
-    assert date(2031, 1, 1) <= crisis_start <= date(2045, 12, 31)
+    assert date(2031, 1, 1) <= crisis_start <= date(2064, 12, 31)
     assert place_month(crisis_end, 12) <= spike_start <= place_month(crisis_end, 120)
     crisis_dates = {when for name, _, when in rows if name.startswith("financial_crisis_")}
     spike_dates = {when for name, _, when in rows if name.startswith("pandemic_spike_")}

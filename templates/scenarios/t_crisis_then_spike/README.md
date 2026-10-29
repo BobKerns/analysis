@@ -8,10 +8,12 @@ Builds on `t_financial_crisis` and `t_pandemic_spike`.
 
 A mix-in for a scenario on the templates (`base:t_crisis_then_spike`, or with an ensemble), and a component for a pool of the episodes (see [Pooling several kinds of trouble](../../../docs/guides/ensembles.md#pooling-several-kinds-of-trouble)). Each single episode template carries one kind of trouble, but history often has two in 30 years: 1929–1958 held a crisis and three spikes, and 1996–2025 held 2008 and 2021. This one adds that world. Its rows are `t_financial_crisis`'s and `t_pandemic_spike`'s; it changes only when they happen.
 
-- `financial_crisis_start` is uniform from 2031 to 2045, not `t_financial_crisis`'s 2031 to 2064, so the spike after it lands before about 2060 in nearly every member (on a 200-member check, all but 2%). Its median, the base case, is mid-2038. The crisis comes earlier on average than in `t_financial_crisis`. This window assumes a scenario ending around 2060: for one ending much later, widen it, and for one ending much earlier, narrow it, by overriding `financial_crisis_start` by name.
-- `financial_crisis_end` is, as in `t_financial_crisis`, 5 to 10 years after the start, most likely 7.
+- `financial_crisis_start` and `financial_crisis_end` are `t_financial_crisis`'s: the start uniform from 2031 to 2064, like every episode's, and the end 5 to 10 years after it, most likely 7.
 - `pandemic_spike_start` is uniform from 1 to 10 years after `financial_crisis_end`, so the two episodes never overlap. 2008's near-zero rates ended in 2015, and the next spike began in 2021. In the 1930s and 1940s the spikes came during and just after the low-rate years, which this template leaves out, since overlapping rows would cut one episode into the other.
 - `pandemic_spike_end` is, as in `t_pandemic_spike`, 2 to 4 years after its start.
+- The base case, member 0, has its crisis from early 2048 to spring 2055 and its spike from late 2060.
+
+The scenario's end is a window on these dates. Where it cuts an episode off, that member simply runs without it: a scenario ending in 2060 sees both episodes in a bit over half the members (136 of 240 on the prototype), a crisis alone in most of the rest, and neither in about one in eleven. That is the window selecting which futures it can show, not a wrong weight, and a scenario ending in 2070 sees both far more often. To ask about two episodes inside a particular span, override `financial_crisis_start` by name with that span.
 
 Place either episode by overriding its markers by name.
 

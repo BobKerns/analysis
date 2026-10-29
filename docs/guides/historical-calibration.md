@@ -832,11 +832,9 @@ series has no history for the period.
   late 2047. That's a default to drop in. To look at an episode in a
   particular period, override the start marker by name in the scenario,
   with a fixed date or a narrower range; every row of the episode moves
-  with it. `t_crisis_then_spike` is the exception: its crisis starts from
-  2031 to 2045 (base case mid-2038), so the spike, 1 to 10 years after the
-  crisis's near-zero rates end, lands before 2060 in all but about 2% of
-  members. That window assumes a scenario ending around 2060; for one
-  ending much earlier or later, override `financial_crisis_start`.
+  with it. The cut-off is the scenario's window on the episode's dates,
+  not a mistake in its chances: the members it drops are the ones whose
+  episode comes after the period the scenario asks about.
 - **What a member runs.** A persistent series starts its episode path
   from the rate in effect and climbs at its persistence
   (`vary_process_start` `current`). A series with no persistence (stocks,
@@ -855,9 +853,9 @@ series has no history for the period.
   latest row, so one episode cuts into the other. `t_crisis_then_spike`
   does this for a crisis and a spike: it mixes in both and overrides
   `pandemic_spike_start` to fall 1 to 10 years after
-  `financial_crisis_end`, and `financial_crisis_start` to fall from 2031
-  to 2045, so the spike still lands before about 2060 in nearly every
-  member. History often has two episodes in 30 years (1929–1958, and
+  `financial_crisis_end`. Its crisis starts from 2031 to 2064 like the
+  others', so a scenario ending in 2060 sees the spike in a bit over half
+  its members; one ending later sees it more often. History often has two episodes in 30 years (1929–1958, and
   1996–2025 with 2008 and 2021). To compare kinds of trouble, compare
   `base:t_great_inflation` with `base:t_financial_crisis`.
 - **Within a year.** Rates are yearly, so a crash inside one year (2020's

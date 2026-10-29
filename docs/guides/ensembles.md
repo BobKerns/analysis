@@ -1058,23 +1058,26 @@ Trying other weights takes seconds, so check them on your own data.
 decades, so some members of each component see no episode before the
 run ends (about 12% of them on the prototype, ending in 2060). A
 member's chance of its episode is its component's weight times that.
-`t_crisis_then_spike` is placed earlier (below): every member reaches
-its crisis by 2060, and about 2% miss the spike.
+For `t_crisis_then_spike`, whose spike comes years after its crisis, a
+2060 end cuts off the spike in 43% of members (104 of 240) and both
+episodes in 9%. That's the scenario's window selecting the futures it
+can show, not a wrong weight: a later end shows more of them, and
+overriding `financial_crisis_start` places them in the span you're
+asking about.
 
 **Two episodes in one lifetime.** A component built on one episode
 template gives its members one kind of trouble each, but history often
 has two or more in 30 years (1929–1958 held a crisis and three spikes).
 A component built on two templates, the second dated from the first,
 adds such a world: `t_crisis_then_spike`, a crisis and then a price
-spike, so in the example pool above 10% of members meet two. It starts
-the crisis from 2031 to 2045, not 2064, so the spike still lands before
-about 2060; for a scenario ending much later or earlier, override
-`financial_crisis_start` by name.
+spike, so in the example pool above 10% of members meet two, where the
+run is long enough to show both.
 
 On the prototype, a spike after a crisis costs a little less than a
-spike alone. Against a crisis-only component placed the same way (2031
-to 2045), it ends a median of $79k lower member by member (mean $91k,
-70% of members worse; a spike alone against `e0`: $114k and $151k). The
+spike alone. Member by member against `e_financial_crisis` (the same
+crisis dates), the 136 members whose spike starts by 2060 end a median
+of $55k lower (mean $72k, 65% of them worse); a spike alone costs $114k
+(mean $151k) against `e0`. The
 crisis on its own leaves this household ahead of `e0`, since its
 recovery more than repays the crash for a household that doesn't sell,
 so a crisis then a spike still ends near `e0`, not below it. A deeper
