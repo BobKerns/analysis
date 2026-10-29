@@ -1168,6 +1168,50 @@ they are (the RMS overshoot), and `sim ensemble compare` shows how a variant
 changes them. [The guard rails guide](guides/guard-rails.md) explains the
 usual rails, how to write them and how to read the results.
 
+### 4.16 Draw from whatever is overweight (responsive strategies)
+
+A chain draws its steps in the order you wrote them, whatever your
+portfolio looks like. A **strategy** decides instead, from the month's
+balances. The built-in `rebalance` keeps a portfolio near a target
+allocation with the money that moves anyway: when stocks have run up, the
+next refill of checking comes from stocks; after a crash, from bonds.
+
+1. Tag the accounts that make up the portfolio
+   (`sim account tag add Asset_Brokerage_Joint portfolio:invest`, and the
+   same for each). Every lot in them needs an asset class: a symbol with
+   `allocations.csv` rows (Part 4.11), or, for a lot with no symbol, a row
+   whose symbol is `<account>:<lot>`, such as `Asset_IRA_Alice:stable`.
+2. Say what you're aiming for:
+   `sim target set main stock_us=60% bond=40%`. Add `--as-of 2035-01` for
+   a set that starts later, so a glide path is more sets.
+3. Give the strategy the chain checking refills from:
+   `sim strategy add` asks for the kind (`rebalance`), the chain, and its
+   parameters: `portfolio` (the tag), `targets` (the set), `band` (how far
+   a class may drift before it matters, 5% unless you say) and `step`.
+
+While every class is within the band, the chain's own order decides, so
+your usual tax-driven order still applies most of the time. Past the band,
+each slice of a draw comes from whichever lot brings the mix closest to the
+targets; whatever the strategy doesn't pay, the chain's steps do.
+
+`sim strategy log` shows each decision with a note such as
+`bond 53.6% vs 40.0% target (band 5%): took $961 from Asset_TraditionalIRA_Alice:default`,
+`sim allocation --drift` shows how far the portfolio strayed at each
+year-end, and `sim explain` totals what each strategy moved. To see what
+the strategy is worth, compare a scenario built on this one with
+`sim strategy edit NAME --disable` (Part 5).
+
+The same strategy can own a destination chain: an overflow then goes to
+whatever is underweight.
+
+You can write your own in Python, in your data repo's `strategies/` folder.
+`sim strategy kinds` lists what's available, with each parameter, and
+`sim strategy check` runs a scenario twice to make sure your strategy
+decides the same way each time. The code is copied into each run, so a run
+always shows exactly what decided it. The design, and the API a strategy is
+written against, are in
+[ADR-010](architecture/ADR-010-responsive-strategies.md).
+
 ## 5. Looking at your results
 
 A **run** is what happens when the simulator plays a scenario forward, month

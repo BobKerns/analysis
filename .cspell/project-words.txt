@@ -26,6 +26,7 @@ bengen
 birthdates
 blockifying
 blockquotes
+BONDX
 cachedir
 calevt
 capitalizable
@@ -281,6 +282,7 @@ unshape
 unspsc
 upserts
 usefixtures
+USSTK
 vaccts
 vmax
 vmin

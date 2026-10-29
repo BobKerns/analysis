@@ -177,7 +177,7 @@ _NAMING_PARAMS = {
     "lot", "from_lot", "to_lot", "basis_of_lot", "source_lot", "refill_lot", "overflow_lot",
     "refill_chain", "overflow_chain", "scheduled_name", "row", "person", "owner",
     "series", "source_series", "symbol", "symbols", "tag_token", "tag_tokens",
-    "vary_correlate_with", "correlate_with",
+    "vary_correlate_with", "correlate_with", "strategy", "strategy_name", "target_set",
 }
 # ... except where the command makes a new one (by the command's function,
 # as `sim accounts` repeats `sim account`).
