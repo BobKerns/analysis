@@ -338,7 +338,9 @@ def claude_command(symbol: str, plugin_dir: Path, work_dir: Path, claude: str = 
     scripts = skill_scripts(plugin_dir)
     allowed = [
         "Skill", "WebSearch", "WebFetch", "Read", "Glob", "Grep",
-        _path_rule("Edit", work_dir), _path_rule("Write", work_dir),
+        # An Edit rule covers Write as well; Claude Code ignores a Write(path)
+        # rule and warns on stderr, which a failed run would report as its reason.
+        _path_rule("Edit", work_dir),
         *(f"Bash(python3 {script.as_posix()} *)" for script in scripts),
     ]
     return [

@@ -254,10 +254,11 @@ def test_a_run_renders_the_plugin_runs_claude_and_imports(test_data_dir: Path, f
     assert args[args.index("--permission-mode") + 1] == "dontAsk"
     allowed = args[args.index("--allowedTools") + 1:args.index("--output-format")]
     bash = [a for a in allowed if a.startswith("Bash")]
-    scripts = plugin / "skills" / "fund-tear-sheet" / "scripts"
+    # Resolved, as the rules are: on macOS the temporary folder is behind a symlink.
+    scripts = plugin.resolve() / "skills" / "fund-tear-sheet" / "scripts"
     assert bash and all(a.startswith(f"Bash(python3 {scripts}") and a.endswith(".py *)") for a in bash)
     edits = [a for a in allowed if a.startswith(("Edit", "Write"))]
-    assert len(edits) == 2 and all(a.endswith("/work/**)") and "(//" in a for a in edits)
+    assert len(edits) == 1 and edits[0].startswith("Edit(//") and edits[0].endswith("/work/**)")
     assert str(scripts) in args[1]  # the prompt says where the scripts are
     assert symbols.latest_set(test_data_dir, "ABCDX") is not None
 
