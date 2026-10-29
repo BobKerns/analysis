@@ -35,3 +35,7 @@ Episodes, each a mix-in building on `t_inflation_series` and `t_market_series`:
 - **`t_great_inflation`** (this one): a dysfunction: inflation runs for years (1966–1982)
 - [`t_financial_crisis`](../t_financial_crisis/README.md): a fiscal shock: a crash, then years of near-zero rates (2008–2019)
 - [`t_pandemic_spike`](../t_pandemic_spike/README.md): an external shock: a short price spike, then rate hikes (2021–2023)
+
+And one that puts two of them in one lifetime:
+
+- [`t_crisis_then_spike`](../t_crisis_then_spike/README.md): a crisis, then a spike 1 to 10 years after its near-zero rates end (2008–2023)

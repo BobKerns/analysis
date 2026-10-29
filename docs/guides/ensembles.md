@@ -966,8 +966,8 @@ reads after that are quick. Nothing needs rerunning.
 ## Pooling several kinds of trouble
 
 Each episode template (`t_great_inflation`, `t_financial_crisis`,
-`t_pandemic_spike`) makes its own ensemble, so you can see what that one
-kind of trouble does. A **pool** answers the next question: across all
+`t_pandemic_spike`, and `t_crisis_then_spike`, which has two) makes its
+own ensemble, so you can see what that kind of trouble does. A **pool** answers the next question: across all
 those worlds, each as likely as you think it is, how bad are the bad
 futures? It takes some members from each ensemble, in proportion to its
 weight, and reports them as one ensemble. Nothing is simulated again.
@@ -977,7 +977,9 @@ sim ensemble create e0 retire_alice t_inflation_ensemble t_market_ensemble
 sim ensemble create e_great_inflation e0 t_great_inflation
 sim ensemble create e_financial_crisis e0 t_financial_crisis
 sim ensemble create e_pandemic_spike e0 t_pandemic_spike
-sim ensemble pool create trouble e_great_inflation=15% e_financial_crisis=30% e_pandemic_spike=55%
+sim ensemble create e_crisis_then_spike e0 t_crisis_then_spike
+sim ensemble pool create trouble e_great_inflation=15% e_financial_crisis=20% \
+    e_crisis_then_spike=10% e_pandemic_spike=55%
 sim run trouble                  # runs any component that is out of date, then builds the pool
 sim ensemble summary trouble
 sim ensemble compare e0 trouble  # pairs future by future with e0
@@ -994,7 +996,7 @@ few. `sim run trouble --rebuild` reruns every component as well.
 the same file, linked, not copied. The components share `e0`'s seed, so
 member 7 of each drew the same market, lifespans and yearly shocks; only
 the episode differs. Taking member 7 from every component would count
-that one future three times, and the pool would look surer than it is.
+that one future once per component, and the pool would look surer than it is.
 Taking each index once keeps every future distinct, and keeps the pool
 paired with `e0`: `sim ensemble compare e0 trouble` shows what the
 trouble did in each future, and `P(ahead)`. The price is that every
@@ -1003,13 +1005,10 @@ of its own components, the members that came from it are the same file
 on both sides, so they differ by exactly 0 and don't count as ahead.
 
 **The weights matter most.** A weight is the chance of that world, given
-that you're in one of the pool's. On the prototype, equal weights gave a
-pooled `cvar05` of $216k at the end of 2060, and 15% / 30% / 55%,
-near history's shares, gave $506k: the worst futures nearly all come
-from the Great Inflation component, so its weight sets the pooled tail.
-The pooled tail is not the average of the components' tails, since the
-worst futures of the worst world all land in it. Counting onsets since
-1914 (the episode tables are in `historical-calibration.md`):
+that you're in one of the pool's. The pooled tail is not the average of
+the components' tails, since the worst futures of the worst world all
+land in it. Counting onsets since 1914 (the episode tables are in
+`historical-calibration.md`):
 
 | Kind | Episodes | Per century |
 | --- | --- | --: |
@@ -1017,20 +1016,73 @@ worst futures of the worst world all land in it. Counting onsets since
 | Crisis, then years of near-zero rates | 1929 to the 1940s, 2008–2015 | about 1.8 |
 | Great Inflation-style run | 1966–1982 | about 0.9 |
 
-By count that's roughly 60% spike, 25% crisis and 15% inflation. Two
-caveats: four of the five spikes were wartime, and a single Great
-Inflation in a century says little about its rate.
+By count that's roughly 60% spike, 25% crisis and 15% Great Inflation,
+the suggested weights for a pool of the three. Two caveats: four of the
+five spikes were wartime, so a peacetime century may see fewer; and a
+single Great Inflation in a century fits a rate anywhere from about once
+in 4,000 years to five times a century (a 95% range), so its 15% is the
+least certain weight. Try it at 5% and 30% too. The pool itself defaults
+to equal shares; these are only a suggestion.
+
+**With the compound component.** Every `t_crisis_then_spike` member has
+both a crisis and a spike, so to keep each kind's share of the episodes
+at its count, its share comes out of both: 15% Great Inflation, 20%
+crisis, 10% crisis then spike and 55% spike, as in the example above.
+That's 30% of members with a crisis, 65% with a spike and 15% with a
+Great Inflation: of the 110 episodes per 100 members, 27%, 59% and 14%.
+The compound is a third of the crisis worlds. If spikes came at random,
+about 4.5 a century, one would start in the 9 years from 1 to 10 years
+after a crisis's near-zero rates end about 33% of the time
+(1 − e^(−0.045 × 9)). The record is 1 of 2: 2021 came six years after
+2008's low rates ended in 2015, while 1941's spike came during the
+1930s' low rates, a pattern the template leaves out.
+
+**What they did on the prototype.** `retire_alice` run to 2060, 240
+members, CPI-constant net worth at the end of 2060:
+
+| Weights | Components | median | `cvar05` | worst 5% (12) from |
+| --- | --- | --: | --: | --- |
+| equal | inflation / crisis / spike | $1,387k | $286k | 10 inflation, 2 spike |
+| 15% / 30% / 55% | inflation / crisis / spike | $1,322k | $434k | 8 spike, 4 inflation |
+| 15% / 25% / 60% | inflation / crisis / spike | $1,276k | $415k | 8 spike, 4 inflation |
+| 15% / 20% / 10% / 55% | inflation / crisis / both / spike | $1,303k | $427k | 8 spike, 4 inflation |
+
+At equal weights the Great Inflation component supplies nearly all the
+tail. At history's weights the spike does, by sheer numbers, though each
+Great Inflation member is far worse (that component's own `cvar05` is
+$50k, the spike's $533k). Moving five points between crisis and spike
+moves `cvar05` by about $20k, within the noise of a 12-member tail.
+Trying other weights takes seconds, so check them on your own data.
 
 **Two probabilities, not one.** Each episode's start is spread over
 decades, so some members of each component see no episode before the
 run ends (about 12% of them on the prototype, ending in 2060). A
 member's chance of its episode is its component's weight times that.
+For `t_crisis_then_spike`, whose spike comes years after its crisis, a
+2060 end cuts off the spike in 43% of members (104 of 240) and both
+episodes in 9%. That's the scenario's window selecting the futures it
+can show, not a wrong weight: a later end shows more of them, and
+overriding `financial_crisis_start` places them in the span you're
+asking about.
 
-**One episode per member.** Each component carries one kind of
-trouble, so no pool member meets two in one lifetime. History often has
-two or more in 30 years (1929–1958 held a crisis and three spikes), so
-the pool's worst futures are probably not bad enough. A component built
-on two templates, the second dated from the first, adds such a world.
+**Two episodes in one lifetime.** A component built on one episode
+template gives its members one kind of trouble each, but history often
+has two or more in 30 years (1929–1958 held a crisis and three spikes).
+A component built on two templates, the second dated from the first,
+adds such a world: `t_crisis_then_spike`, a crisis and then a price
+spike, so in the example pool above 10% of members meet two, where the
+run is long enough to show both.
+
+On the prototype, a spike after a crisis costs a little less than a
+spike alone. Member by member against `e_financial_crisis` (the same
+crisis dates), the 136 members whose spike starts by 2060 end a median
+of $55k lower (mean $72k, 65% of them worse); a spike alone costs $114k
+(mean $151k) against `e0`. The
+crisis on its own leaves this household ahead of `e0`, since its
+recovery more than repays the crash for a household that doesn't sell,
+so a crisis then a spike still ends near `e0`, not below it. A deeper
+second episode would need a crisis that doesn't recover so fast, as
+1929's didn't.
 
 **Reading the summary.** Under its header the summary lists the
 pool's members by component, and which components the worst 5% came
