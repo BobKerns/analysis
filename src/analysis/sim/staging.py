@@ -28,12 +28,11 @@ from pathlib import Path
 
 from analysis.sim.loader import (
     LoadError,
-    LoadResult,
     _scenario_lineage_names,
     load_scenario,
     resolve_scenario_name,
 )
-from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, is_template
+from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, is_pool, is_template
 from analysis.sim.schema import connect_sim_file
 
 SCENARIOS = "scenarios"
@@ -86,7 +85,7 @@ class StagedEdit:
     other top-level entries are symlinks to the real ones (read-only use)."""
     name: str
     """The preflighted scenario (the edited one, or a new scenario's parent)."""
-    _con: sqlite3.Connection
+    _con: sqlite3.Connection | None
     warnings: list[str] = field(default_factory=list)
     """Load warnings from the validating loads, for the caller to show."""
     written: list[Path] = field(default_factory=list)
@@ -95,7 +94,13 @@ class StagedEdit:
     @property
     def con(self) -> sqlite3.Connection:
         """The preflighted scenario's intent DB as it was *before* this edit,
-        for duplicate and reference checks."""
+        for duplicate and reference checks. A pool has none (ADR-009), so
+        an edit that needs one is refused, naming what to edit instead."""
+        if self._con is None:
+            issue = (f"{self.name} is a pool (ADR-009): it has no accounts, chains or rows of its "
+                     "own; edit one of its components, or the pool itself with "
+                     "'sim ensemble pool edit'")
+            raise EditRejected([issue], scenario=self.name, own=[issue])
         return self._con
 
     @property
@@ -114,8 +119,14 @@ class StagedEdit:
         return staged
 
 
-def _load_issues(data_dir: Path, name: str) -> tuple[list[str], LoadResult | None]:
-    """Load ``name`` into a throwaway intent DB; its issues, or its result."""
+def _load_issues(data_dir: Path, name: str) -> tuple[list[str], list[str]]:
+    """Load ``name`` into a throwaway intent DB; its issues (none when it
+    loads) and its warnings. A pool has nothing to load: its definition and
+    components are checked instead (ADR-009)."""
+    if is_pool(data_dir / SCENARIOS, name):
+        from analysis.sim.pool import pool_issues
+
+        return pool_issues(data_dir, name), []
     with tempfile.TemporaryDirectory() as td:
         try:
             result = load_scenario(
@@ -123,10 +134,10 @@ def _load_issues(data_dir: Path, name: str) -> tuple[list[str], LoadResult | Non
                 compute_stamps=False, allow_dirty_data=True,
             )
         except LoadError as exc:
-            return list(exc.issues), None
+            return list(exc.issues) or [str(exc)], []
         except Exception as exc:  # noqa: BLE001 -- any loader crash is a failed validation
-            return [f"loader failed: {type(exc).__name__}: {exc}"], None
-    return [], result
+            return [f"loader failed: {type(exc).__name__}: {exc}"], []
+    return [], list(result.warnings)
 
 
 def _stage(real: Path, stage: Path) -> None:
@@ -185,11 +196,25 @@ def _check_unchanged(real: Path, baseline: dict[Path, str], paths: list[Path]) -
 
 def _affected_scenarios(stage: Path, touched: set[str]) -> list[str]:
     """Touched scenarios that still exist, plus every scenario inheriting from
-    one, as a parent or a mix-in."""
+    one, as a parent or a mix-in, and every pool with a component that is
+    or inherits from one (ADR-009)."""
     scenarios_dir = stage / SCENARIOS
+
+    def depends_on(name: str) -> list[str]:
+        if not is_pool(scenarios_dir, name):
+            return _scenario_lineage_names(scenarios_dir, name)
+        from analysis.sim.pool import PoolError, read_pool
+
+        try:
+            components = read_pool(scenarios_dir, name).components
+        except PoolError:
+            return [name]
+        return [name, *(n for c in components if (scenarios_dir / c).is_dir()
+                        for n in _scenario_lineage_names(scenarios_dir, c))]
+
     return sorted(
         d.name for d in scenarios_dir.iterdir()
-        if d.is_dir() and touched.intersection(_scenario_lineage_names(scenarios_dir, d.name))
+        if d.is_dir() and touched.intersection(depends_on(d.name))
     )
 
 
@@ -261,6 +286,22 @@ def _commit(real: Path, stage: Path, changed: list[Path], removed: list[Path]) -
     return [real / rel for rel in (*changed, *removed)]
 
 
+def _preflight(real: Path, name: str, intent_dir: Path) -> sqlite3.Connection:
+    """Load ``name`` as it stands: its intent DB, or :class:`ScenarioAlreadyBroken`."""
+    try:
+        pre = load_scenario(
+            real, name, intent_dir=intent_dir,
+            compute_stamps=False, allow_dirty_data=True,
+        )
+    except LoadError as exc:
+        raise ScenarioAlreadyBroken(name, list(exc.issues)) from None
+    except Exception as exc:  # noqa: BLE001 -- a crash is a failed load too
+        raise ScenarioAlreadyBroken(
+            name, [f"loader failed: {type(exc).__name__}: {exc}"]
+        ) from exc
+    return connect_sim_file(pre.intent_path)
+
+
 @contextmanager
 def staged_edit(
     data_dir: Path | str, scenario: str | None, *, template_parent: bool = False,
@@ -289,20 +330,16 @@ def staged_edit(
         raise EditRejected([template_refusal(name)], scenario=name, own=[template_refusal(name)])
     with ExitStack() as stack:
         intent_dir = Path(stack.enter_context(tempfile.TemporaryDirectory()))
-        try:
-            pre = load_scenario(
-                real, name, intent_dir=intent_dir,
-                compute_stamps=False, allow_dirty_data=True,
-            )
-        except LoadError as exc:
-            raise ScenarioAlreadyBroken(name, list(exc.issues)) from None
-        except Exception as exc:  # noqa: BLE001 -- a crash is a failed load too
-            raise ScenarioAlreadyBroken(
-                name, [f"loader failed: {type(exc).__name__}: {exc}"]
-            ) from exc
-        con = connect_sim_file(pre.intent_path)
-        con.row_factory = sqlite3.Row
-        stack.callback(con.close)
+        con: sqlite3.Connection | None = None
+        if is_pool(real / SCENARIOS, name):
+            # A pool has no intent (ADR-009): its definition is checked
+            # instead, and an edit that reads the intent is refused.
+            if found := _load_issues(real, name)[0]:
+                raise ScenarioAlreadyBroken(name, found)
+        else:
+            con = _preflight(real, name, intent_dir)
+            con.row_factory = sqlite3.Row
+            stack.callback(con.close)
 
         stage = Path(stack.enter_context(tempfile.TemporaryDirectory())) / real.name
         stage.mkdir()
@@ -332,15 +369,15 @@ def staged_edit(
         own: list[str] = []
         dependents: dict[str, list[str]] = {}
         for affected in _affected_scenarios(stage, touched or {name}):
-            found, result = _load_issues(stage, affected)
+            found, warnings = _load_issues(stage, affected)
             label = "" if affected == name else f"scenario {affected}: "
-            if result is not None:
-                edit.warnings.extend(f"{label}{w}" for w in result.warnings)
+            if not found:
+                edit.warnings.extend(f"{label}{w}" for w in warnings)
                 continue
             # Only a scenario that loaded before this edit can be broken by
             # it; one that was already failing is reported, not blamed.
             existed = (real / SCENARIOS / affected).is_dir()
-            if affected != name and existed and _load_issues(real, affected)[1] is None:
+            if affected != name and existed and _load_issues(real, affected)[0]:
                 edit.warnings.append(
                     f"scenario {affected} already failed to load before this edit; "
                     f"run 'sim check {affected}'"

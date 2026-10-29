@@ -51,9 +51,11 @@ def test_draws_widget_on_a_monte_carlo_batch(
     monkeypatch.setattr(dw, "note_picks", lambda _data, *pickers: noted.append(pickers))
     box = dw.draws_widget(runs_dir=runs_dir)
     assert isinstance(box, widgets.VBox)
-    recipe, batch = box.children[0].children
+    recipe, batch, component = box.children[0].children
     assert noted == [(recipe,)]  # picking a recipe is use of it (#322)
     assert (recipe.value, batch.value) == ("retire_alice", mc_batch)
+    # One component, the batch's own: the picker is for pools only (ADR-009).
+    assert component.value == "retire_alice" and component.layout.display == "none"
     assert any(isinstance(item, pd.DataFrame) and "ks_u_p" in item.columns for item in shown)
     node, pair = box.children[2], box.children[4]
     node.value = "gift"

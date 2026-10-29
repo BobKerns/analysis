@@ -27,19 +27,6 @@ def _commit(repo: git.Repo, files: dict[str, str], message: str) -> None:
 
 
 @pytest.fixture
-def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
-    """A stand-in code repo on main, so the main check doesn't depend on
-    this checkout's branch or uncommitted changes."""
-    repo = git.Repo.init(tmp_path / "code", b="main")
-    with repo.config_writer() as cw:
-        cw.set_value("commit", "gpgsign", "false")
-    _commit(repo, {"src/engine.py": "v1\n", "templates/t.csv": "", "pyproject.toml": "",
-                   "uv.lock": "", "docs/guide.md": "one\n"}, "init")
-    monkeypatch.setattr(freshness, "code_tree", lambda: freshness.code_tree_of(repo))
-    return repo
-
-
-@pytest.fixture
 def builder_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANALYSIS_BUILDER", raising=False)
 

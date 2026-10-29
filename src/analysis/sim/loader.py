@@ -45,6 +45,7 @@ from analysis.sim.lineage import (
     TEMPLATE_SCENARIOS_DIR,
     ScenarioCycleError,
     is_mixin_only,
+    is_pool,
     is_template,
     load_order,
     parse_parents,
@@ -68,7 +69,7 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
     "BATCH_MANIFEST_FILENAME",
-    "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
+    "CURRENT_SCENARIO_FILE", "KEEP_SCENARIO_ENV", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
     "LoadError", "LoadResult", "DataDirtyRefused", "PendingRun", "ScenarioRef",
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
@@ -78,6 +79,9 @@ __all__ = [
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
+# Set (non-empty), a command naming a scenario uses it without making it
+# current (#350): for an agent or script looking things up for the user.
+KEEP_SCENARIO_ENV = "ANALYSIS_KEEP_SCENARIO"
 # In a scenario's folder: the scenario isn't built unless named (#300), as
 # for a mix-in or a base that only exists to be built on. Not inherited, and
 # left out of every data tree (provenance), so it changes no scenario's data.
@@ -810,6 +814,22 @@ def _merge_scenario_rows(
     return [merged[key] for key in order]
 
 
+def _refuse_pools(scenarios_dir: Path, scenario_name: str) -> None:
+    """ADR-009: a pool has no intent of its own, and can't be built on."""
+    if is_pool(scenarios_dir, scenario_name):
+        raise LoadError([
+            f"{scenario_name} is a pool (ADR-009): it has nothing to load, since its members "
+            f"come from its components' runs; `sim run {scenario_name}` builds it"
+        ])
+    pools = [name for name in _strict_load_order(scenarios_dir, scenario_name)
+             if name != scenario_name and is_pool(scenarios_dir, name)]
+    if pools:
+        raise LoadError([
+            f"{scenario_name} builds on {', '.join(pools)}, a pool (ADR-009); a pool can't be "
+            "a parent or a mix-in, since it has no rows to inherit"
+        ])
+
+
 def _strict_load_order(scenarios_dir: Path, scenario_name: str) -> list[str]:
     """``lineage.load_order``, with a cycle reported as a ``LoadError``."""
     try:
@@ -1091,6 +1111,7 @@ def load_scenario(
     scenario_dir = _scenario_dir(scenarios_dir, scenario_name)
     if not scenario_dir.is_dir():
         raise LoadError([f"scenario folder not found: {scenario_dir}"])
+    _refuse_pools(scenarios_dir, scenario_name)
     if intent_dir is None:
         if intent_path is None:
             intent_dir = data_dir / "intent"

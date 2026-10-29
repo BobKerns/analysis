@@ -1,7 +1,8 @@
 #!/bin/sh
 # One-time repo setup: a C toolchain, uv, pinned Python, git hooks, deps,
-# notebook filter, Node.js and the lint tools, the link to the data repo, and
-# background scenario builds (sim builder install; not under CI or an agent).
+# notebook filter, Node.js and the lint tools, the link to the data repo,
+# background scenario builds (sim builder install; not under CI or an agent),
+# and an offer to install the finance-research Claude plugin.
 # Safe to re-run; every step is idempotent.
 set -eu
 
@@ -264,6 +265,34 @@ elif [ -L data/shared ]; then
     echo "Turning on background scenario builds..."
     .venv/bin/sim builder install --data-dir data/shared/sim || \
         echo "  (not turned on; see the message above)" >&2
+fi
+
+# The finance-research Claude plugin (#345): opt in, default no, and only
+# asked at a terminal with Claude Code installed; never under CI or an
+# agent. Once installed, a re-run renders it again from the data repo's
+# research.yaml, so a changed setting takes effect without asking.
+if [ "${CI-}" ] || [ "${CLAUDECODE-}" ] || [ "${CLAUDE_CODE_REMOTE-}" ] \
+        || [ "${AI_AGENT-}" ] || ! command -v claude >/dev/null 2>&1; then
+    :
+elif claude plugin list 2>/dev/null | grep -q 'finance-research@finance-research-local'; then
+    echo "Updating the finance-research Claude plugin..."
+    .venv/bin/analysis research-plugin install --data-dir data/shared/sim || \
+        echo "  (not updated; see the message above)" >&2
+elif [ -t 0 ]; then
+    echo "The finance-research Claude plugin writes tear sheets on funds and"
+    echo "companies from public sources. Each run browses the web for several"
+    echo "minutes and uses around 150k tokens (docs/guides/finance-research.md)."
+    printf 'Install it for Claude Code? [y/N] '
+    read -r answer || answer=""
+    case $answer in
+        [Yy]*)
+            .venv/bin/analysis research-plugin install --data-dir data/shared/sim || \
+                echo "  (not installed; see the message above)" >&2
+            ;;
+        *)
+            echo "  Skipped; install it later with: .venv/bin/analysis research-plugin install"
+            ;;
+    esac
 fi
 
 echo "Setup complete."

@@ -65,6 +65,16 @@ agent (`CI`, `CLAUDECODE`, `CLAUDE_CODE_REMOTE` or `AI_AGENT` set) or with
 `sim builder uninstall` off. `sim builder status` says what it's doing,
 and `sim builder log` what it did in the last hour (`-v` adds build output).
 
+Finally, if Claude Code (`claude`) is on your `PATH`, it offers to install the
+finance-research Claude plugin, which writes tear sheets on funds and
+companies from public sources. The answer defaults to no, and it isn't asked
+under CI or an agent. Each run of the plugin browses the web for several
+minutes and uses around 150k tokens. Its settings (overview languages, tax
+state) come from the data repo's `research.yaml`, and setup says which it
+used; once installed, a re-run of setup updates it. Install or remove it by
+hand with `.venv/bin/analysis research-plugin install` or `uninstall`; see
+[the finance research guide](guides/finance-research.md).
+
 ## What the script does, step by step (for reference or manual setup)
 
 1. Install a C toolchain: on Ubuntu, Debian or WSL,
@@ -124,6 +134,10 @@ and `sim builder log` what it did in the last hour (`-v` adds build output).
 10. Turn on background scenario builds, for a linked data repo:
     ```sh
     .venv/bin/sim builder install --data-dir data/shared/sim
+    ```
+11. Optionally, install the finance-research Claude plugin:
+    ```sh
+    .venv/bin/analysis research-plugin install --data-dir data/shared/sim
     ```
 
 ## Drawing chain flowcharts in the terminal

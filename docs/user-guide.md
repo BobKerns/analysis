@@ -130,6 +130,9 @@ argument or `--scenario`) makes it current, and the command says so
 `sim ensemble create` do for the new scenario. When you leave it out, the command
 first prints `Using scenario <name>`; with no current scenario (a fresh data
 repo, or after deleting it) the command asks you to name one.
+To look at a scenario without making it current (in a script, or for an AI
+assistant answering questions for you), set `ANALYSIS_KEEP_SCENARIO=1`:
+commands then use the scenario they name and leave your current one as it is.
 `sim switch` prints your current scenario, and `sim switch <name>` makes
 `<name>` current, printing the one it replaces. The shell
 prompt that `activate-analysis` sets shows it, as
@@ -963,8 +966,12 @@ To check it:
 #### Asking an AI to fill it in
 
 An AI assistant can look up a fund's published breakdown for you, and a
-price history the fetch can't get. Give it the formats, because the loader
-rejects anything else. To get the weights as a command you can run:
+price history the fetch can't get. With Claude Code, the finance-research
+plugin does the whole job: ask it for a tear sheet on the fund, and its
+Allocations section ends with rows in `allocations.csv`'s format, with
+sources and dates ([the finance research guide](guides/finance-research.md)).
+Otherwise, give the assistant the formats, because the loader rejects
+anything else. To get the weights as a command you can run:
 
 ```text
 Look up the most recent published asset breakdown of the fund ABCDX and

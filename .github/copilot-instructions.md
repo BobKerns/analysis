@@ -42,6 +42,7 @@ they are kept in sync with the code.
 | [`docs/architecture/ADR-006-ensemble-scenarios.md`](../docs/architecture/ADR-006-ensemble-scenarios.md) | Ensembles: parameter variation, Monte Carlo runs |
 | [`docs/architecture/ADR-007-sensitivity-analysis.md`](../docs/architecture/ADR-007-sensitivity-analysis.md) | Sensitivity analysis over ensemble parameters |
 | [`docs/architecture/ADR-008-correlated-parameters.md`](../docs/architecture/ADR-008-correlated-parameters.md) | Correlated parameters in ensembles |
+| [`docs/architecture/ADR-009-pooled-ensembles.md`](../docs/architecture/ADR-009-pooled-ensembles.md) | Pooled ensembles: one result set from several |
 | [`docs/architecture/ADR-010-responsive-strategies.md`](../docs/architecture/ADR-010-responsive-strategies.md) | Responsive strategies: code that decides a chain's draws and placements |
 
 ADR-005 through ADR-008 each have a companion `ADR-00N-implementation-plan.md`
@@ -111,8 +112,8 @@ changes to the simulator or its loader:
 
 ```sh
 .venv/bin/python -m pytest -q -n auto -m "not slow"  # tests, less the slow ones
-.venv/bin/python -m ruff check src tests          # lint
-.venv/bin/ty check                                # types (ty; src and tests, per pyproject.toml)
+.venv/bin/python -m ruff check src tests plugins  # lint
+.venv/bin/ty check                                # types (ty; src, tests, plugins: pyproject.toml)
 npm run spell                                     # spelling (cspell)
 npm run markdownlint                              # markdown (markdownlint)
 .venv/bin/analysis sim check --all                # simulator changes: real scenarios still load

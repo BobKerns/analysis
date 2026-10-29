@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: investor-private-databricks
+expected_outcome: |
+  An investor-oriented tear sheet on private Databricks: sourced and dated status, valuation and funding history, company revenue claims kept as stated, and a market read-through mapping what it sells against and what it buys from public companies (with tickers and implications), plus catalysts, risks and sources.
