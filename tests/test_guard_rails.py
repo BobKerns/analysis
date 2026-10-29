@@ -94,10 +94,10 @@ def _inputs(transfers: list[tuple[str, str, str, str, str, float]]) -> gr._RunIn
     months = pd.DatetimeIndex(["2031-01-31"])
     frame = pd.DataFrame(transfers, columns=["from_name", "from_kind", "from_subkind",
                                              "to_name", "to_kind", "amount"])
-    frame["month"] = months[0]
+    frame["pos"] = 0
     return gr._RunInputs(
         months=months, axis=measures.year_axis(np.array([2031])), index=np.array([1e6]),
-        expenses=pd.DataFrame(columns=["month", "amount", "tags"]), transfers=frame,
+        expenses=pd.DataFrame(columns=["pos", "amount", "tags"]), transfers=frame,
         balances=pd.DataFrame(index=months), accounts=pd.DataFrame(columns=["kind", "subkind", "tag_set"]),
         markers={}, last_month=months[0],
     )

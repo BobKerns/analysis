@@ -1,6 +1,8 @@
-"""Guard rails on one run (#305) as a plain matplotlib figure: per measure,
+"""Guard rails (#305) as plain matplotlib figures. On one run: per measure,
 the yearly measure against each rail's threshold above, each rail's
-cumulative margin below. ``net_worth.ipynb`` shows it. No pyplot, as in
+cumulative margin below (``net_worth.ipynb``). On an ensemble: each rail's
+share of members past it and their RMS overshoot, annual and cumulative
+(``ensemble.ipynb``, ``sim ensemble guard-rails --graph``). No pyplot, as in
 ``compare_charts``: a CLI chart must not pick a GUI backend."""
 
 from __future__ import annotations
@@ -11,13 +13,14 @@ import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, PercentFormatter
 
-from analysis.sim.guard_rails import RailResult, rail_frame
+from analysis.sim.guard_rails import EnsembleRailResult, RailResult, ensemble_rail_frame, rail_frame
 from analysis.sim.plotting import FRAME_ALPHA, include_zero, mark_deaths
 from analysis.sim.types import Death
 
-__all__ = ["CARRIED_CAVEAT", "guard_rail_figure", "rail_colors"]
+__all__ = ["CARRIED_CAVEAT", "ENSEMBLE_CAVEAT", "ensemble_guard_rail_figure", "guard_rail_figure",
+           "rail_colors"]
 
 # A rail's color follows its sense: warm for a rail to stay inside, cool for
 # a positive one, each in a fixed order (checked for color-blind separation;
@@ -35,7 +38,16 @@ CARRIED_CAVEAT = (
 )
 
 
-def rail_colors(results: Sequence[RailResult]) -> dict[str, str]:
+ENSEMBLE_CAVEAT = (
+    "Past is the share of members past a rail that year; ever past, the share past it in "
+    "some year so far (dotted). RMS overshoot is the root mean square of how far past the "
+    "members are, those inside counting as zero, so it mixes how often with how far: read "
+    "it beside the share. The cumulative form sums each member's margins, so it ignores "
+    "what an early overdraft would have earned; it is a guide, not a re-run."
+)
+
+
+def rail_colors(results: Sequence[RailResult | EnsembleRailResult]) -> dict[str, str]:
     """Each rail's color, by its place among the rails of its sense."""
     colors: dict[str, str] = {}
     counts = {"negative": 0, "positive": 0}
@@ -139,6 +151,58 @@ def guard_rail_figure(
             ax.legend(framealpha=FRAME_ALPHA, fontsize="small")
         top.set_ylabel(f"per year ({unit})")
         bottom.set_ylabel(f"cumulative ({unit})")
+        step = max(1, len(span) // 12)
+        bottom.set_xticks(x[::step], [str(y) for y in span[::step]], rotation=90)
+    return fig
+
+
+def ensemble_guard_rail_figure(
+    results: Sequence[EnsembleRailResult], title: str, *, unit: str = "CPI-constant",
+    years: tuple[int, int] | None = None, deaths: Sequence[Death] = (),
+) -> Figure:
+    """Each rail across an ensemble's members, annual (left) and cumulative
+    (right): the share of members past it each year, with the share ever
+    past it so far dotted, above their RMS overshoot. A positive rail is
+    dashed. ``years`` limits the axis to that span (first, last); the
+    shares still look back to each rail's start. ``deaths`` (member 0's, as
+    the fan chart marks them) are drawn as on every chart."""
+    shown = [r for r in results if r.applies]
+    colors = rail_colors(shown)
+    fig = Figure(figsize=(14, 9), layout="constrained")
+    if not shown:
+        fig.text(0.5, 0.5, "No guard rail covers these members' years.", ha="center")
+        return fig
+    axes = fig.subplots(2, 2, sharex=True, squeeze=False)
+    fig.suptitle(f"{title}: members past each rail, annual (left) and cumulative (right)")
+    frames = {r.rail.name: ensemble_rail_frame(r) for r in shown}
+    span = sorted(set().union(*(f.index for f in frames.values())))
+    if years is not None:
+        span = [y for y in span if years[0] <= y <= years[1]]
+    x = np.arange(len(span))
+    for column, (form, suffix) in enumerate((("Annual", ""), ("Cumulative", " cum"))):
+        top, bottom = axes[0, column], axes[1, column]
+        for r in shown:
+            frame = frames[r.rail.name].reindex(span)
+            color, style = colors[r.rail.name], "--" if r.rail.positive else "-"
+            label = r.rail.name + (" (positive)" if r.rail.positive else "")
+            top.plot(x, frame["past" + suffix], color=color, linestyle=style, linewidth=2,
+                     marker="o", markersize=4, label=label)
+            top.plot(x, frame["ever_past" + suffix], color=color, linestyle=":", linewidth=1.5,
+                     label="_ever")
+            bottom.plot(x, frame["rms_over" + suffix], color=color, linestyle=style, linewidth=2,
+                        marker="o", markersize=4, label=label)
+        # One key for every rail's dotted line, not one per rail.
+        top.plot([], [], color="grey", linestyle=":", linewidth=1.5, label="ever past, so far")
+        top.set_title(f"{form}: share of members past the rail")
+        top.set_ylim(-0.02, 1.02)
+        top.yaxis.set_major_formatter(PercentFormatter(1.0))
+        top.grid(True, axis="y", alpha=0.3)
+        bottom.set_title(f"{form}: RMS overshoot ({unit} dollars, inside counts as zero)")
+        _thousands(bottom)
+        include_zero(bottom)
+        for ax in (top, bottom):
+            mark_deaths(ax, deaths, years=span)
+            ax.legend(framealpha=FRAME_ALPHA, fontsize="small")
         step = max(1, len(span) // 12)
         bottom.set_xticks(x[::step], [str(y) for y in span[::step]], rotation=90)
     return fig

@@ -48,7 +48,8 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | every event, filtered by reason/tax/account/date | none yet (#189) |
 | an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot, and its fan chart | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]] [--graph]` |
 | two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--account NAME [--lot LOT]] [--graph]` |
-| two ensembles compared on risk: percentile, paired and tail-mean deltas | `analysis sim ensemble compare <baseline> <variant> [--account NAME [--lot LOT]] [--graph]` |
+| an ensemble's members against its guard rails: share past, ever past, RMS overshoot (`ensemble.ipynb`) | `analysis sim ensemble guard-rails <recipe> [--rail NAME] [--graph]` |
+| two ensembles compared on risk: percentile, paired and tail-mean deltas, and each guard rail's change | `analysis sim ensemble compare <baseline> <variant> [--account NAME [--lot LOT]] [--graph]` |
 | a baseline ensemble against several others in one table (`ensemble.ipynb`) | none yet (#328) |
 | which varying rows matter, and when (`sensitivity.ipynb`) | `analysis sim ensemble sensitivity <recipe>`; tables only, no charts yet (#329) |
 | an ensemble batch's draws against their distributions and correlations (`sensitivity.ipynb`) | `analysis sim ensemble draws <recipe> [--node NODE] [--csv FILE]`; no charts yet (#330) |

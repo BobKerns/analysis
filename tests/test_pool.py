@@ -523,3 +523,18 @@ def test_draws_say_when_a_pool_component_holds_only_the_base_case(
     own = _sim("ensemble", "draws", "e_a", "--data-dir", str(test_data_dir))
     assert own.exit_code == 0, own.output
     assert "base case" not in own.output
+
+
+@pytest.mark.slow
+def test_sim_ensemble_guard_rails_shows_a_pools_own_rails(
+    pool_batch: Path, test_data_dir: Path, pool_scenarios: str,
+) -> None:
+    data = ("--data-dir", str(test_data_dir))
+    own = _sim("guard-rail", "add", "pool_budget", "--measure", "spending", "--side", "above",
+               "--basis", "cpi_constant", "--threshold", "90000", "--scenario", pool_scenarios, *data)
+    assert own.exit_code == 0, own.output
+    result = _sim("ensemble", "guard-rails", pool_scenarios, *data)
+    assert result.exit_code == 0, result.output
+    assert "4 member(s); guard rails" in result.output
+    # The pool's own rail and the ones it inherits from its base component.
+    assert "pool_budget (" in result.output and "four_percent (" in result.output
