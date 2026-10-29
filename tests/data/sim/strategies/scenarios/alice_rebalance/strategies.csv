@@ -1,0 +1,2 @@
+name,kind,chain,start,end,enabled,params_json,description
+draw_by_allocation,rebalance,portfolio_draw,,,,"{""portfolio"":""portfolio:invest"",""targets"":""main""}",Refill checking from whatever is overweight

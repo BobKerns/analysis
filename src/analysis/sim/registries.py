@@ -255,6 +255,12 @@ from bonds).
 """
 
 ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "weight")
+
+# Per-scenario strategies.csv and targets.csv (#326, ADR-003 §4.12, §4.13).
+STRATEGIES_CSV_HEADER: tuple[str, ...] = (
+    "name", "kind", "chain", "start", "end", "enabled", "params_json", "description",
+)
+TARGETS_CSV_HEADER: tuple[str, ...] = ("target_set", "as_of", "asset_class", "weight")
 CASH_SYMBOL = "CASH"
 # Symbols that mean an asset class without any allocations.csv row: `CASH` on cash lots,
 # `CD` on certificates of deposit (no ticker; a CD is reinvested at maturity, so it

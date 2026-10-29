@@ -16,16 +16,16 @@ from typing import Literal
 import pandas as pd
 
 from analysis.sim import registries
+from analysis.sim.asset_classes import UNCLASSIFIED, class_weights, is_lot_key, lot_key, weight_sets
 from analysis.sim.connection import Connection
 from analysis.frames import named_rows
 from analysis.sim.holdings import lots_frame
 
 __all__ = [
-    "GROUPINGS", "UNCLASSIFIED", "asset_classes_present", "lot_classes", "portfolio_allocation",
-    "render_allocation_table",
+    "GROUPINGS", "UNCLASSIFIED", "asset_classes_present", "class_weights", "is_lot_key", "lot_classes",
+    "lot_key", "portfolio_allocation", "render_allocation_table",
 ]
 
-UNCLASSIFIED = "unclassified"
 type Grouping = Literal["account", "owner", "subkind", "tax_treatment", "security"]
 GROUPINGS: tuple[Grouping, ...] = Grouping.__value__.__args__
 _NO_SYMBOL = "(no symbol)"
@@ -37,31 +37,16 @@ GroupingOrNone = Literal["account", "owner", "subkind", "tax_treatment", "securi
 
 def _weight_sets(source: Connection) -> dict[str, list[tuple[str, dict[str, float]]]]:
     """Symbol to its weight sets, oldest first: ``(as_of, {asset_class: weight})``."""
-    frame = source.items("security_allocation")
-    sets: dict[str, dict[str, dict[str, float]]] = {}
-    for row in named_rows(frame):
-        sets.setdefault(row.symbol, {}).setdefault(row.as_of, {})[row.asset_class] = row.weight_micros / 1_000_000
-    return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
+    return weight_sets(
+        (row.symbol, row.as_of, row.asset_class, row.weight_micros / 1_000_000)
+        for row in named_rows(source.items("security_allocation"))
+    )
 
 
 def _reference_date(source: Connection, as_of: str) -> str:
     if as_of != "opening":
         return as_of
     return str(source.items("scenario")["start"].iloc[0])
-
-
-def _weights_at(sets: list[tuple[str, dict[str, float]]], date: str) -> dict[str, float]:
-    chosen = sets[0][1]
-    for as_of, weights in sets:
-        if as_of <= date:
-            chosen = weights
-    return chosen
-
-
-def _default_class(symbol: object, subkind: str) -> str:
-    if isinstance(symbol, str) and symbol in registries.SYMBOL_ASSET_CLASS:
-        return registries.SYMBOL_ASSET_CLASS[symbol]
-    return registries.SUBKIND_ASSET_CLASS.get(subkind, UNCLASSIFIED)
 
 
 def lot_classes(source: Connection, month: str | None = None) -> pd.DataFrame:
@@ -74,14 +59,14 @@ def lot_classes(source: Connection, month: str | None = None) -> pd.DataFrame:
     owners = source.items("account").set_index("name")["owner"]
     lots = lots.assign(owner=lots["account"].map(owners).fillna(_JOINT))
     sets = _weight_sets(source)
+    dates = {as_of: _reference_date(source, as_of) for as_of in set(lots["as_of"])}
     rows = []
     for lot in named_rows(lots):
         symbol = lot.symbol if isinstance(lot.symbol, str) and lot.symbol else None
-        described = sets.get(symbol) if symbol else None
-        if described:
-            weights = _weights_at(described, _reference_date(source, lot.as_of))
-        else:
-            weights = {_default_class(symbol, lot.subkind): 1.0}
+        weights = class_weights(
+            symbol=symbol, account=lot.account, lot=lot.lot, subkind=lot.subkind,
+            sets=sets, date=dates[lot.as_of],
+        )
         for asset_class, weight in weights.items():
             rows.append({
                 "account": lot.account, "lot": lot.lot, "symbol": symbol,
