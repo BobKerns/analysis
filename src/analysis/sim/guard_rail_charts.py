@@ -1,13 +1,15 @@
 """Guard rails (#305) as plain matplotlib figures. On one run: per measure,
 the yearly measure against each rail's threshold above, each rail's
-cumulative margin below (``net_worth.ipynb``). On an ensemble: each rail's
+cumulative margin below (``net_worth.ipynb``). Across scenarios: each
+rail's annual and cumulative margins, a line per scenario
+(``scenario_compare.ipynb``). On an ensemble: each rail's
 share of members past it and their RMS overshoot, annual and cumulative
 (``ensemble.ipynb``, ``sim ensemble guard-rails --graph``). No pyplot, as in
 ``compare_charts``: a CLI chart must not pick a GUI backend."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -19,8 +21,8 @@ from analysis.sim.guard_rails import EnsembleRailResult, RailResult, ensemble_ra
 from analysis.sim.plotting import FRAME_ALPHA, include_zero, mark_deaths
 from analysis.sim.types import Death
 
-__all__ = ["CARRIED_CAVEAT", "ENSEMBLE_CAVEAT", "ensemble_guard_rail_figure", "guard_rail_figure",
-           "rail_colors"]
+__all__ = ["CARRIED_CAVEAT", "ENSEMBLE_CAVEAT", "ensemble_guard_rail_figure",
+           "guard_rail_comparison_figure", "guard_rail_figure", "rail_colors"]
 
 # A rail's color follows its sense: warm for a rail to stay inside, cool for
 # a positive one, each in a fixed order (checked for color-blind separation;
@@ -153,6 +155,68 @@ def guard_rail_figure(
         bottom.set_ylabel(f"cumulative ({unit})")
         step = max(1, len(span) // 12)
         bottom.set_xticks(x[::step], [str(y) for y in span[::step]], rotation=90)
+    return fig
+
+
+def guard_rail_comparison_figure(
+    results: Mapping[str, Sequence[RailResult]], baseline: str, variants: Sequence[str],
+    title: str, *, unit: str = "CPI-constant", colors: Mapping[str, str] | None = None,
+    years: tuple[int, int] | None = None, deaths: Sequence[Death] = (),
+) -> Figure:
+    """A row per rail any scenario has (matched by name), annual margin
+    (left) and cumulative (right): a line per scenario that has the rail,
+    the baseline solid and the variants dashed, as ``comparison_figure``
+    draws them. Below zero is past the rail, tinted warm for a rail to stay
+    inside and cool, hatched, for a positive one. ``years`` limits the axis
+    to that span (first, last); the margins still sum from each rail's
+    start."""
+    names = [baseline, *variants]
+    by_name = {name: {r.rail.name: r for r in results.get(name, ()) if r.applies}
+               for name in names}
+    rails = list(dict.fromkeys(rail for found in by_name.values() for rail in found))
+    colors = colors or {name: f"C{i}" for i, name in enumerate(names)}
+    fig = Figure(figsize=(14, 3.4 * max(len(rails), 1) + 1), layout="constrained")
+    if not rails:
+        fig.text(0.5, 0.5, "No guard rail covers these runs' years.", ha="center")
+        return fig
+    axes = fig.subplots(len(rails), 2, sharex=True, squeeze=False)
+    fig.suptitle(f"{title}: margins, annual (left) and cumulative (right), {unit} dollars; "
+                 "below zero is past the rail")
+    frames = {(name, rail): rail_frame(found[rail])
+              for name, found in by_name.items() for rail in found}
+    span = sorted(set().union(*(f.index for f in frames.values())))
+    if years is not None:
+        span = [y for y in span if years[0] <= y <= years[1]]
+    x = np.arange(len(span))
+    for row, rail in enumerate(rails):
+        sample = next(by_name[name][rail] for name in names if rail in by_name[name])
+        positive = sample.rail.positive
+        tint = _POSITIVE_COLORS[0] if positive else _NEGATIVE_COLORS[1]
+        for column, (form, field_) in enumerate((("annual", "margin"),
+                                                 ("cumulative", "cumulative"))):
+            ax = axes[row, column]
+            for name in names:
+                if (name, rail) not in frames:
+                    continue
+                values = frames[name, rail][field_].reindex(span)
+                ax.plot(x, values, color=colors[name], marker="o", markersize=3,
+                        linestyle="-" if name == baseline else "--",
+                        linewidth=2 if name == baseline else 1.5, label=name)
+            ax.axhline(0, color="grey", linewidth=0.8)
+            _thousands(ax)
+            include_zero(ax)
+            low, _high = ax.get_ylim()
+            if low < 0:
+                ax.axhspan(low, 0, color=tint, alpha=0.08, hatch="//" if positive else None,
+                           linewidth=0)
+                ax.set_ylim(bottom=low)
+            ax.set_title(f"{rail} ({sample.rail.sense}): {form} margin")
+            mark_deaths(ax, deaths, years=span)
+            ax.legend(framealpha=FRAME_ALPHA, fontsize="small")
+        axes[row, 0].set_ylabel(f"margin ({unit})")
+    step = max(1, len(span) // 12)
+    for ax in axes[-1]:
+        ax.set_xticks(x[::step], [str(y) for y in span[::step]], rotation=90)
     return fig
 
 

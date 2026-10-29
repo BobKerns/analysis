@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from analysis.frames import index_years
+from analysis.frames import by_year_and_label, index_years
 from analysis.sim import measures, registries, units
 from analysis.sim.dates import month_end_iso, parse_relative_date, place_month
 from analysis.sim.lineage import reading_order
@@ -58,7 +58,8 @@ if TYPE_CHECKING:
 __all__ = [
     "GUARD_RAILS_FILE", "GuardRail", "GuardRailError", "RailResult", "References",
     "EnsembleRailResult", "RunPieces", "TagFilter", "check_references", "comparison_frames",
-    "ensemble_comparison_frames", "ensemble_rail_frame", "ensemble_rails", "ensemble_results",
+    "comparison_summary_frame", "ensemble_comparison_frames", "ensemble_comparison_table",
+    "ensemble_rail_frame", "ensemble_rails", "ensemble_results", "ensemble_summary_comparison",
     "ensemble_summary_frame",
     "episode_lines", "evaluate_ensemble", "evaluate_run", "run_pieces",
     "margins_frame", "parse_cells", "parse_rows",
@@ -817,6 +818,61 @@ def ensemble_comparison_frames(
     return frames
 
 
+def ensemble_comparison_table(
+    results: Mapping[str, Sequence[EnsembleRailResult]], baseline: str, variants: Sequence[str],
+) -> dict[str, pd.DataFrame]:
+    """``ensemble_comparison_frames`` for several variants at once: per rail
+    the baseline has, one table indexed by (year, recipe), each variant's
+    change against the baseline, the variants in the order given within each
+    year. A variant without the rail has no rows; a rail no variant shares
+    has no table."""
+    order: list[str] = []
+    per_rail: dict[str, dict[str, pd.DataFrame]] = {}
+    for variant in variants:
+        frames = ensemble_comparison_frames(results.get(baseline, ()), results.get(variant, ()))
+        for rail, frame in frames.items():
+            if rail not in per_rail:
+                order.append(rail)
+                per_rail[rail] = {}
+            per_rail[rail][variant] = frame
+    tables: dict[str, pd.DataFrame] = {}
+    base_order = [r.rail.name for r in results.get(baseline, ())]
+    for rail in sorted(order, key=base_order.index):
+        tables[rail] = by_year_and_label(per_rail[rail])
+    return tables
+
+
+_SUMMARY_DELTAS = ("past", "ever_past", "past_at_end", "rms_over")
+
+
+def ensemble_summary_comparison(
+    results: Mapping[str, Sequence[EnsembleRailResult]], baseline: str, variants: Sequence[str],
+) -> pd.DataFrame:
+    """``ensemble_summary_frame`` for the baseline and each variant, one row
+    per (rail, form, recipe), the baseline first within each rail and form,
+    and for a variant the change in each share and the RMS against the
+    baseline's same rail (``Δpast`` ...; blank for the baseline, or when the
+    baseline lacks the rail). Rails in the order the recipes name them."""
+    names = [baseline, *variants]
+    frames = {name: ensemble_summary_frame(results.get(name, ())) for name in names}
+    rows = pd.concat([frame.assign(recipe=name) for name, frame in frames.items()],
+                     ignore_index=True)
+    columns = ["rail", "form", "recipe", "sense", "members", *_SUMMARY_DELTAS]
+    if rows.empty:
+        return pd.DataFrame(columns=[*columns, *("Δ" + c for c in _SUMMARY_DELTAS)])
+    reference = frames[baseline][["rail", "form", *_SUMMARY_DELTAS]].rename(
+        columns={c: "_base_" + c for c in _SUMMARY_DELTAS})
+    rows = rows.merge(reference, on=["rail", "form"], how="left")
+    for column in _SUMMARY_DELTAS:
+        rows["Δ" + column] = (rows[column] - rows["_base_" + column]).where(
+            rows["recipe"] != baseline)
+    rails = list(dict.fromkeys(rows["rail"]))
+    rows["_rail"] = rows["rail"].map(rails.index)
+    rows["_recipe"] = rows["recipe"].map(names.index)
+    rows = rows.sort_values(["_rail", "form", "_recipe"], kind="stable")
+    return rows[[*columns, *("Δ" + c for c in _SUMMARY_DELTAS)]].reset_index(drop=True)
+
+
 # ---------- frames for reports ----------
 
 CUMULATIVE_SUFFIX = " cum"
@@ -871,6 +927,25 @@ def summary_frame(results: Sequence[RailResult]) -> pd.DataFrame:
             })
     return pd.DataFrame(rows, columns=["rail", "form", "sense", "years", "years_past",
                                        "worst", "worst_year", "end", "rms_over"])
+
+
+def comparison_summary_frame(
+    results: Mapping[str, Sequence[RailResult]], scenarios: Sequence[str],
+) -> pd.DataFrame:
+    """``summary_frame`` for each of ``scenarios``, one row per (rail, form,
+    scenario), the scenarios in the order given within each rail and form.
+    A scenario without the rail has no row."""
+    frames = [summary_frame(results.get(name, ())).assign(scenario=name) for name in scenarios]
+    rows = pd.concat(frames, ignore_index=True)
+    columns = ["rail", "form", "scenario", "sense", "years", "years_past", "worst",
+               "worst_year", "end", "rms_over"]
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+    rails = list(dict.fromkeys(rows["rail"]))
+    rows["_rail"] = rows["rail"].map(rails.index)
+    rows["_scenario"] = rows["scenario"].map(list(scenarios).index)
+    rows = rows.sort_values(["_rail", "form", "_scenario"], kind="stable")
+    return rows[columns].reset_index(drop=True)
 
 
 def rail_episodes(result: RailResult) -> dict[str, list[measures.Episode]]:

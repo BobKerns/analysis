@@ -268,3 +268,66 @@ def test_account_balance_diffs_show_accounts_an_empty_scenario_lacks_as_zero(
             dollar_mode=dollar_mode,
         )
         dollar_mode.value = DollarMode.CPI_CONSTANT  # redraws; the empty run has no CPI rows
+
+
+def test_guard_rails_compare_widget_shows_each_rail_by_scenario(
+    retire_alice_run: RunConnection, variant_a_run: RunConnection, monkeypatch,
+) -> None:
+    """variant_a inherits retire_alice's rails: per rail a table of both
+    scenarios' margins and a Δ, then the summary, redrawn on each control."""
+    shown: list = []
+    monkeypatch.setattr(cp, "display", lambda *args, **kwargs: shown.extend(args))
+    container = MultiScenarioConnections(
+        connections={"retire_alice": retire_alice_run, "variant_a": variant_a_run},
+        baseline="retire_alice", variants=["variant_a"],
+        colors={"retire_alice": "C0", "variant_a": "C1"},
+    )
+    time_range = TimeRangePicker()
+    widget = cp.guard_rails_compare_widget(container, time_range=time_range)
+    controls, _output = widget.children
+    dollar_mode, picked = controls.children
+    assert picked is time_range and dollar_mode.value == DollarMode.CPI_CONSTANT
+    tables = [item.data for item in shown if hasattr(item, "data") and hasattr(item.data, "columns")]
+    assert list(tables[0].columns) == ["retire_alice", "variant_a", "Δ variant_a",
+                                       "retire_alice cum", "variant_a cum", "Δ variant_a cum"]
+    assert (tables[0]["Δ variant_a"].abs() < 0.01).all()
+    assert tables[-1]["scenario"].tolist()[:2] == ["retire_alice", "variant_a"]
+
+    from analysis.sim import guard_rails
+    evaluated: list[str] = []
+    real_evaluate = guard_rails.evaluate_run
+    monkeypatch.setattr(guard_rails, "evaluate_run",
+                        lambda rc, *args: evaluated.append(rc) or real_evaluate(rc, *args))
+    shown.clear()
+    time_range.value = (2035, 2036)
+    tables = [item.data for item in shown if hasattr(item, "data") and hasattr(item.data, "columns")]
+    assert list(tables[0].index) == [2035, 2036]
+    assert not evaluated  # the years only clip what was found
+    shown.clear()
+    dollar_mode.value = DollarMode.NOMINAL  # must not raise
+    assert shown
+    assert len(evaluated) == 2  # new dollars: each scenario's rails afresh
+
+
+def test_guard_rails_compare_takes_each_rails_sense_as_the_chart_does() -> None:
+    """Rails match by name; when a variant redefines one with the other
+    sense, the tables color by the baseline's, as the chart tints."""
+    from types import SimpleNamespace
+
+    def result(name: str, sense: str, applies: bool = True) -> SimpleNamespace:
+        return SimpleNamespace(rail=SimpleNamespace(name=name, sense=sense), applies=applies)
+
+    results = {
+        "base": [result("four_percent", "negative"), result("floor", "negative", applies=False)],
+        "variant": [result("four_percent", "positive"), result("floor", "positive"),
+                    result("own", "positive")],
+    }
+    assert cp._rail_senses(results, ["base", "variant"]) == {  # ty: ignore[invalid-argument-type]: stand-in results
+        "four_percent": "negative", "floor": "positive", "own": "positive"}
+
+
+def test_guard_rails_compare_past_color_leaves_deltas_plain() -> None:
+    assert cp._past_color(-1.0, "four_percent", "negative") == "color: #d03b3b"
+    assert cp._past_color(-1.0, "gk_lower cum", "positive") == "color: #2a78d6"
+    assert cp._past_color(-1.0, "Δ variant", "negative") == ""
+    assert cp._past_color(1.0, "four_percent", "negative") == ""

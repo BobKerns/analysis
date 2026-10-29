@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,7 @@ import pytest
 
 from analysis.sim import guard_rails as gr
 from analysis.sim.connection import RunConnection
-from analysis.sim.guard_rail_charts import guard_rail_figure, rail_colors
+from analysis.sim.guard_rail_charts import guard_rail_comparison_figure, guard_rail_figure, rail_colors
 
 
 def test_a_column_per_measure_with_each_rails_lines(
@@ -77,3 +78,41 @@ def test_the_ensemble_figure_has_shares_over_rms_annual_and_cumulative(
     assert lines["gk_lower (positive)"].get_linestyle() == "--"
     assert len(np.asarray(lines["four_percent"].get_xdata())) == 5
     assert rms_cum.get_ylim()[0] <= 0
+
+
+def test_the_comparison_has_a_row_per_rail_and_a_line_per_scenario(
+    retire_alice_run: RunConnection, scenarios_dir: Path,
+) -> None:
+    results = gr.evaluate_run(retire_alice_run, gr.run_rails(retire_alice_run, scenarios_dir))
+    fig = guard_rail_comparison_figure(
+        {"base": results, "variant": results[:1]}, "base", ["variant"], "compare",
+        colors={"base": "C0", "variant": "C1"}, years=(2031, 2036))
+    names = [r.rail.name for r in results if r.applies]
+    assert len(fig.axes) == 2 * len(names)
+    annual, cumulative = fig.axes[0], fig.axes[1]
+    assert annual.get_title() == f"{names[0]} ({results[0].rail.sense}): annual margin"
+    assert cumulative.get_title().endswith("cumulative margin")
+    lines = {line.get_label(): line for line in annual.get_lines()}
+    assert lines["base"].get_linestyle() == "-" and lines["variant"].get_linestyle() == "--"
+    # A rail only the baseline has: no variant line.
+    assert "variant" not in [line.get_label() for line in fig.axes[2].get_lines()]
+    years = [int(label.get_text()) for label in fig.axes[-1].get_xticklabels()]
+    assert years[0] == 2031 and years[-1] <= 2036
+
+    empty = guard_rail_comparison_figure({"base": []}, "base", [], "none")
+    assert not empty.axes
+
+
+def test_the_comparison_figure_keeps_each_rails_row_readable(
+    retire_alice_run: RunConnection, scenarios_dir: Path,
+) -> None:
+    """No cap on the height: each rail keeps its row however many there are."""
+    results = [r for r in gr.evaluate_run(retire_alice_run, gr.run_rails(retire_alice_run, scenarios_dir))
+               if r.applies]
+    one = guard_rail_comparison_figure({"base": results[:1]}, "base", [], "one")
+    # The same rails under several names stand in for a scenario with many.
+    many = [dataclasses.replace(r, rail=dataclasses.replace(r.rail, name=f"{r.rail.name}_{i}"))
+            for i in range(12) for r in results[:1]]
+    fig = guard_rail_comparison_figure({"base": many}, "base", [], "many")
+    per_row = (fig.get_size_inches()[1] - 1) / 12
+    assert per_row == pytest.approx(one.get_size_inches()[1] - 1)
