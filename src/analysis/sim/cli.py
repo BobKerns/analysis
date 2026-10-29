@@ -11442,8 +11442,7 @@ def symbol_research_command(
     click.echo(f"Bundle: {bundle}")
 
     try:
-        languages = research.language_tabs(research_plugin.available_languages().items())
-        page = research.write_page(bundle, symbol, languages)
+        page = research.write_page(bundle, symbol, research_plugin.available_languages())
         if open_page:
             click.launch(str(page))
         else:

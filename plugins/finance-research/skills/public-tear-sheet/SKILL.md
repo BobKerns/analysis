@@ -9,9 +9,9 @@ Build a company tear sheet from public sources, and show where every number came
 
 <!-- defaults:start (rendered from defaults/public-tear-sheet.md.j2; edit the template, then run: analysis research-plugin render --neutral) -->
 ## Defaults for this installation
-- **Tabs:** Overview, Tear sheet, Detail, Glossary.
-- **Translated overviews:** none.
-- If the user asks for no overview or no glossary on a particular sheet, leave that tab out.
+- **Tabs:** Overview, Tear sheet, Price chart, Detail, Glossary.
+- **Translated tabs:** none.
+- If the user asks for no overview, no price chart or no glossary on a particular sheet, leave that tab out.
 <!-- defaults:end -->
 
 If a paid financial-data connector *is* connected and enabled in the session (S&P Capital IQ / Kensho, FactSet, etc.), prefer the skill built for it. This skill is for when there is none.
@@ -37,16 +37,23 @@ Then read the one reference file for the chosen audience, and `references/source
 
 Deliver as a Claude doc through the docs connector, which is editable, commentable, and exports to Word or PDF. Follow the connector's own instructions: create the doc *before* researching, with title, byline (as-of date · user), and one `pending` block per section from the reference file. Create it with the tabs in the defaults, in that order:
 - **Overview**: plain-language on-ramp (`references/overview.md`).
-- **Translated overviews**, if the defaults list any, right after Overview.
 - **Tear sheet**: the budgeted page from the reference file.
+- **Price chart**: the share price over time (`references/price-chart.md`); a private company has none.
 - **Detail**: the depth that doesn't fit on one page.
 - **Glossary**: every financial term the doc uses (`references/glossary-seed.md`).
+- **Translated tabs**, if the defaults list a language: a copy of each tab above in that language, nested as the defaults say.
 
-Plant a pending block on each tab at birth. Fill the Tear sheet and Detail first. Write the overview tabs and Glossary last, from the finished tear sheet, so every number matches.
+Plant a pending block on each tab at birth. Fill the Tear sheet, Price chart and Detail first. Write the Overview and Glossary last, from the finished tear sheet, so every number matches; then the translated tabs from the finished English ones.
 
 Then open it so the person watches it fill. Research each section and fill it as one call, in reading order. Draw charts last.
 
-If the docs connector isn't available, write the same structure to a Markdown file, with the other tabs as sibling files linked from the tear sheet's sources line: `<name>-detail.md`, `<name>-overview.md`, `<name>-overview-<lang>.md` for each translated overview, `<name>-glossary.md`. If the user explicitly asked for Word, load the docx skill and produce a .docx. Never let format choice delay the research.
+**Links between tabs** (the "as of" line under the title, a "detail: …" pointer, a Glossary pointer, the language links below) are tab links: the docs connector's link to that tab (a mention of the tab), never a file name. A link to `<name>-glossary.md` in a doc opens a raw file instead of the tab.
+
+**Language links.** When the defaults list a translated language, the first line of each tab links to the same tab in every other language, labelled `<language label>: <that tab's name>` (the names are in the defaults; back to English it's "English: Detail"), so a reader switching language stays on the same tab.
+
+**Write every tab as Markdown**, never as plain text, and read each tab back once it's filled: a literal `**`, `*` or `##` on the page means it went in as text, so replace that block as Markdown.
+
+If the docs connector isn't available, write one Markdown file per tab: `<name>-overview.md`, `-tear-sheet.md`, `-price.md` (with the chart's data in `<name>-prices.csv`), `-detail.md`, `-glossary.md`, and for each translated language the same names with `-<lang>` before `.md` (`<name>-tear-sheet-ja.md`). Links between tabs are then relative links to those files. If the user explicitly asked for Word, load the docx skill and produce a .docx. Never let format choice delay the research.
 
 ## Step 3 — Gather, section by section
 
@@ -106,13 +113,15 @@ If a check fails, recompute from raw components. If it still disagrees, show "n/
 - **Management and ownership are allowed here** (unlike the S&P skill), because the proxy and IR pages are primary sources. Cite them. If the 5% holder table can't be retrieved, write that as an open question with the link instead of filling it from memory.
 - **Not advice.** End with a one-line note that this is a research summary, not investment advice, alongside the sources list.
 
-### Overviews and Glossary
-After the tear sheet and Detail are final, read `references/overview.md` and `references/glossary-seed.md`, and the reference file of each translated overview listed in the defaults.
-- **Overview:** five plain questions, each answered with the real number, a "how to read it" note, and where to find it on the tear sheet.
-- **Each translated overview:** rewritten from the English Overview, with the same numbers unconverted and English terms in parentheses.
-- **Glossary:** every bolded or financial term used on the Overview and Tear sheet, each with a "Here:" line showing this company's actual figure.
+- **Say what it is, not what it isn't.** Open with what the company does. Don't open a tab, a section or a glossary line by contrasting it with another kind of security; the reader knows what they asked about.
 
-Before finishing, check that every number in the overviews appears identically on the tear sheet, and that no date, qualifier or attribution was lost in simplifying or translating (see "Simplify without drifting" in `references/overview.md`). When the user later comments "add X to the glossary" on any word, add the entry in the same format.
+### Overview, Glossary and translations
+After the tear sheet, Price chart and Detail are final, read `references/overview.md` and `references/glossary-seed.md`.
+- **Overview:** five plain questions, each answered with the real number, a "how to read it" note, and where to find it on the tear sheet.
+- **Glossary:** every bolded or financial term used on the Overview and Tear sheet, each with a "Here" line showing this company's actual figure.
+- **Translated tabs:** for each language in the defaults, read its `references/translate-<lang>.md` and write a copy of every English tab in that language, from the finished English tab, with the same numbers unconverted and English terms in parentheses.
+
+Before finishing, check that every number in the overviews and translated tabs appears identically on the tear sheet, and that no date, qualifier or attribution was lost in simplifying or translating (see "Simplify without drifting" in `references/overview.md`). When the user later comments "add X to the glossary" on any word, add the entry in the same format, and to each translated glossary.
 
 ## Step 6 — Hand off
 

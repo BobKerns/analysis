@@ -1017,8 +1017,10 @@ sim symbol research ABCDX
    `research/` is outside what a run's provenance covers, so a bundle never
    makes the data dirty; commit the bundles as the record of where a set of
    weights came from, or list `research/` in `.gitignore`.
-3. It opens `report.html`: the Overview, any translated overview, the Tear
-   sheet, Detail and Glossary as tabs. `--no-open` prints its path instead.
+3. It opens `report.html`: the Overview, Tear sheet, Price chart, Detail
+   and Glossary as tabs, and a language switch when the tabs are also in
+   another language (switching keeps the tab you're on). Links between tabs
+   switch tabs. `--no-open` prints its path instead.
 4. It shows the proposed weights beside the fund's current set, with the
    method behind them (issuer-reported, look-through, computed from
    holdings), the as-of month and any warnings, and asks before writing them

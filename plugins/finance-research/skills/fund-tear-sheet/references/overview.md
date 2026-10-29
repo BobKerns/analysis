@@ -5,7 +5,7 @@ The Overview is an on-ramp for a reader who isn't familiar with funds or investi
 
 Write it last, from the finished tear sheet, so every number matches exactly. "Matches" means the same value; adding a unit the table header carries is fine, rounding differently or recomputing is not.
 
-**Length:** 450–700 words. A translated overview listed under "Defaults for this installation" follows its own reference file for length and style.
+**Length:** 450–700 words. A translated overview follows its language's `translate-<lang>.md` for length and style.
 
 ## Structure (English Overview tab)
 Open with a 2–3 sentence summary: what kind of fund this is, in everyday words ("a basket of the 100 largest non-financial companies on the Nasdaq exchange, bought and sold like a single stock"). Then five questions; for each give a plain answer with the real number(s), **How to read it:** (what it measures, what's ordinary vs unusual for this kind of fund), and **On the tear sheet:** (where to find it).
@@ -31,4 +31,4 @@ Plain language is where facts quietly change. Check each overview sentence again
 Write as a knowledgeable friend explaining over coffee, not a textbook. Concrete dollar examples ("per $10,000") help more than percentages alone. Short sentences, concrete comparisons, no condescension. Assume an intelligent adult who is new to the vocabulary, not new to thinking. Never give advice on whether to buy, sell, switch or hold.
 
 ## Markdown fallback
-Write `<ticker>-overview.md` beside the tear sheet, and `<ticker>-overview-<lang>.md` for each translated overview.
+Write `<ticker>-overview.md` beside the tear sheet, and `<ticker>-overview-<lang>.md` for each translated language.

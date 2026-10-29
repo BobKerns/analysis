@@ -98,19 +98,73 @@ def test_bundle_dir_never_reuses_a_days_folder(tmp_path: Path) -> None:
 # --- the page ---------------------------------------------------------------
 
 
+JA = {"ja": {"name": "Japanese", "label": "日本語",
+             "tabs": {"overview": "概要", "tear-sheet": "ティアシート", "detail": "詳細"}}}
+
+
 def test_tabs_follow_the_reading_order(research_bundles: Path) -> None:
-    tabs = research.bundle_tabs(research_bundles / "abcdx", "ABCDX", {"ja": "概要"})
-    assert [t.label for t in tabs] == ["Overview", "概要", "Tear sheet", "Detail", "Glossary"]
+    tabs = research.bundle_tabs(research_bundles / "abcdx", "ABCDX", JA)
+    assert [(t.lang, t.label) for t in tabs] == [
+        ("en", "Overview"), ("en", "Tear sheet"), ("en", "Price chart"), ("en", "Detail"), ("en", "Glossary"),
+        ("ja", "概要"), ("ja", "ティアシート"),
+    ]
+    assert [t.chart is not None for t in tabs if t.key == "price"] == [True]
+
+
+def test_unknown_language_is_labelled_by_its_code(research_bundles: Path) -> None:
+    tabs = research.bundle_tabs(research_bundles / "abcdx", "ABCDX")
+    assert [t.label for t in tabs if t.lang == "ja"] == ["Overview (ja)", "Tear sheet (ja)"]
+
+
+def test_prices_without_text_still_get_a_chart_tab(tmp_path: Path) -> None:
+    (tmp_path / "ABCDX-tear-sheet.md").write_text("# Tear sheet\n", encoding="utf-8")
+    (tmp_path / "ABCDX-prices.csv").write_text("date,close\n2025-01-31,10\n2025-02-28,11\n", encoding="utf-8")
+    tabs = research.bundle_tabs(tmp_path, "ABCDX")
+    assert [(t.label, t.path) for t in tabs][1] == ("Price chart", None)
+    assert "<polyline" in research.render_page(tabs, title="ABCDX")
 
 
 def test_page_is_one_self_contained_file_with_every_tab(research_bundles: Path, tmp_path: Path) -> None:
-    tabs = research.bundle_tabs(research_bundles / "abcdx", "ABCDX", {"ja": "概要"})
-    page = research.render_page(tabs, title="ABCDX <research>")
+    tabs = research.bundle_tabs(research_bundles / "abcdx", "ABCDX", JA)
+    page = research.render_page(tabs, title="ABCDX <research>", language_labels={"ja": "日本語"})
     assert "ABCDX &lt;research&gt;" in page
-    assert page.count('type="radio"') == 5
+    assert page.count('name="lang"') == 2 and page.count('name="tab"') == 5
+    assert '<label for="lang1">日本語</label>' in page
     assert "株式約60%" in page
     assert "<table>" in page  # Markdown tables render
+    assert "<polyline" in page  # the price chart
     assert "<script" not in page and "http" not in page.split("<body>")[0]
+
+
+def test_switching_language_keeps_the_tab(research_bundles: Path) -> None:
+    # Language and tab are separate radio groups: each (language, tab) panel
+    # shows only when both are picked.
+    page = research.render_page(research.bundle_tabs(research_bundles / "abcdx", "ABCDX", JA), title="ABCDX")
+    assert "#lang1:checked ~ #tab1:checked ~ #p1-1 { display: block; }" in page
+    # Japanese has no Detail: its panel shows the English one, saying so.
+    detail = page.split('<section id="p1-3">')[1].split("</section>")[0]
+    assert "showing English" in detail and "fact sheet" in detail
+
+
+def test_links_between_tabs_switch_tabs(research_bundles: Path) -> None:
+    page = research.render_page(research.bundle_tabs(research_bundles / "abcdx", "ABCDX", JA), title="ABCDX")
+    english = page.split('<section id="p0-1">')[1].split("</section>")[0]
+    assert '<label class="tablink" for="tab4">Glossary</label>' in english
+    assert '<label class="tablink" for="tab3">Detail</label>' in english
+    # The same tab in the other language switches only the language.
+    assert '<label class="tablink" for="lang1">日本語: ティアシート</label>' in english
+    assert '<a href="https://example.com/abcdx.pdf">Fact sheet</a>' in english
+    japanese = page.split('<section id="p1-1">')[1].split("</section>")[0]
+    assert '<label class="tablink" for="lang0">English: Tear sheet</label>' in japanese
+    assert ".md" not in english + japanese
+
+
+def test_price_chart_survives_bad_rows(tmp_path: Path) -> None:
+    prices = tmp_path / "X-prices.csv"
+    prices.write_text("date,close\n2025-01-31,10\n2025-02-28,n/a\n", encoding="utf-8")
+    assert "too few rows" in research.price_chart_svg(prices)
+    prices.write_text("date,close\n2025-01-31,10\n2025-02-28,10\n", encoding="utf-8")
+    assert "<polyline" in research.price_chart_svg(prices)  # a flat line still draws
 
 
 # --- the command, from a bundle ----------------------------------------------
@@ -241,7 +295,7 @@ def test_research_folder_is_outside_the_provenance_scope(test_data_dir: Path, re
 def test_a_run_renders_the_plugin_runs_claude_and_imports(test_data_dir: Path, fake_claude: Path) -> None:
     result = _sim(test_data_dir, "ABCDX", "--yes", "--no-open")
     assert result.exit_code == 0, result.output
-    assert "Plugin: finance-research (overview languages English" in result.output
+    assert "Plugin: finance-research (tab languages English" in result.output
     assert "WebSearch ABCDX fact sheet" in result.output
     assert "$1.25" in result.output
     args = fake_claude.read_text(encoding="utf-8").splitlines()
