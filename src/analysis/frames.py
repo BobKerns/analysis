@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import pandas as pd
@@ -39,3 +39,11 @@ def index_years(data: pd.DataFrame | pd.Series) -> pd.Index:
 def index_months(data: pd.DataFrame | pd.Series) -> pd.Index:
     """The month (1-12) of each entry of ``data``'s ``DatetimeIndex``."""
     return datetime_index(data).month  # ty: ignore[unresolved-attribute]
+
+
+def by_year_and_label(tables: Mapping[str, pd.DataFrame], label: str = "recipe") -> pd.DataFrame:
+    """Year-indexed ``tables``, one per ``label`` (a recipe, say), as one
+    table indexed by (year, label), the labels in the order given within
+    each year."""
+    combined = pd.concat(dict(tables), names=[label, "year"])
+    return combined.swaplevel().sort_index(level="year", sort_remaining=False, kind="stable")

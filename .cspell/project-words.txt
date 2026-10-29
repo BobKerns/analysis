@@ -19,6 +19,7 @@ autofmt
 autopct
 autoreload
 autouse
+axhspan
 axhline
 axhspan
 axisbelow
@@ -377,4 +378,5 @@ zpln
 Δdeferred
 Δever
 Δnet
+Δpast
 Δvariant
