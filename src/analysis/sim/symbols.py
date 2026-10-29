@@ -26,7 +26,10 @@ from analysis.sim.prices import price_files
 from analysis.sim.dates import month_end_iso
 from analysis.sim.loader import _validate_allocations, _validate_securities
 
-__all__ = ["SymbolAdded", "add_symbol", "has_weights", "latest_set", "parse_weights", "security_name", "symbol_table"]
+__all__ = [
+    "SymbolAdded", "add_symbol", "has_weights", "latest_set", "normalize_symbol", "parse_weights",
+    "security_name", "symbol_table",
+]
 
 SECURITIES = "securities.csv"
 ALLOCATIONS = "allocations.csv"
@@ -183,6 +186,16 @@ def parse_weights(specs: list[str]) -> dict[str, str]:
     return weights
 
 
+def normalize_symbol(symbol: str) -> str:
+    """``symbol`` as written to the files: upper case, like the tickers it
+    names. Raises ``ValueError`` for one that can't be part of a filename,
+    as ``prices/security_price__<SYMBOL>.csv`` and ``research/<SYMBOL>/`` are."""
+    symbol = symbol.strip().upper()
+    if not symbol or any(ch.isspace() for ch in symbol) or "/" in symbol or "\\" in symbol or symbol in (".", ".."):
+        raise ValueError(f"symbol {symbol!r} must be one word, with no spaces or '/'")
+    return symbol
+
+
 @dataclass
 class SymbolAdded:
     symbol: str
@@ -228,10 +241,7 @@ def add_symbol(
     not load (a duplicate name, a set that doesn't add up to 100%, a second set
     for the same ``as_of``). With ``replace``, a set already written for the
     same ``as_of`` is replaced instead of refused."""
-    symbol = symbol.strip().upper()
-    if not symbol or any(ch.isspace() for ch in symbol) or "/" in symbol:
-        # It becomes part of a filename, prices/security_price__<SYMBOL>.csv.
-        raise ValueError(f"symbol {symbol!r} must be one word, with no spaces or '/'")
+    symbol = normalize_symbol(symbol)
     if as_of and not weights:
         raise ValueError("--as-of dates a set of weights; give the weights too")
     writes: list[tuple[Path, list[str], list[dict[str, str]]]] = []
@@ -266,7 +276,11 @@ def add_symbol(
             if not replace:
                 dated = f" as of {when}" if when else " with a blank as_of"
                 raise ValueError(f"{symbol} already has weights{dated} in {ALLOCATIONS}; edit that file to change them")
-            rows = [r for r in old if not same_set(r)] + new
+            # In place of the old set, so the file's diff reads as an edit.
+            at = next(i for i, r in enumerate(old) if same_set(r))
+            kept = [r for r in old if not same_set(r)]
+            before = sum(1 for r in old[:at] if not same_set(r))
+            rows = kept[:before] + new + kept[before:]
         issues = []
         # The loader's checks read as_of in its stored month-end form.
         _validate_allocations(

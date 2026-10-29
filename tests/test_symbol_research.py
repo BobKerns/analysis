@@ -46,9 +46,21 @@ def test_read_allocation_takes_the_sim_rows_and_the_json_notes(research_bundles:
 
 
 def test_read_allocation_refuses_an_unclassified_fund_with_its_warnings(research_bundles: Path) -> None:
-    with pytest.raises(research.ResearchError, match=r"unclassified \(20.0% unclassified\)") as caught:
+    with pytest.raises(research.ResearchError, match=r"left 20.0% of ABCDX unclassified") as caught:
         research.read_allocation(research_bundles / "unclassified", "ABCDX")
     assert "20% of holdings have no asset type" in str(caught.value)
+
+
+def test_read_allocation_gives_the_skills_reason_when_it_wrote_no_rows(tmp_path: Path) -> None:
+    (tmp_path / "ABCDX-allocation.json").write_text(
+        '{"allocation_pct": {"stock_us": 101.0, "unclassified": 0},'
+        ' "sim_export": "not written: weights exceed 100%",'
+        ' "warnings": ["inputs exceed 100% by 1.0000 points"]}', encoding="utf-8")
+    match = r"no allocations rows for ABCDX \(not written: weights exceed"
+    with pytest.raises(research.ResearchError, match=match) as caught:
+        research.read_allocation(tmp_path, "ABCDX")
+    assert "unclassified" not in str(caught.value)
+    assert "exceed 100% by 1.0000 points" in str(caught.value)
 
 
 def test_read_allocation_is_none_without_an_export(tmp_path: Path, research_bundles: Path) -> None:
@@ -62,6 +74,7 @@ def test_read_allocation_is_none_without_an_export(tmp_path: Path, research_bund
     (["ABCDX,2026-09,stock_us,60%", "ABCDX,2026-08,bond,40%"], "several as_of months"),
     (["OTHER,2026-09,stock_us,100%"], "symbol 'OTHER', expected ABCDX"),
     (["ABCDX,2026-09,stock_us,100"], "weight"),
+    (["ABCDX,2026-09,stock_us,110%", "ABCDX,2026-09,cash,-10%"], "110% is not between 0% and 100%"),
 ])
 def test_read_allocation_checks_the_rows(tmp_path: Path, rows: list[str], message: str) -> None:
     (tmp_path / "ABCDX-allocations-sim.csv").write_text(
@@ -154,6 +167,24 @@ def test_a_second_set_for_the_same_month_needs_replace_with_yes(
     assert symbols.security_name(test_data_dir, "ABCDX") == "Old"  # an existing name stays
 
 
+def test_name_for_a_symbol_already_named_is_reported_ignored(test_data_dir: Path, research_bundles: Path) -> None:
+    symbols.add_symbol(test_data_dir, "ABCDX", name="Old")
+    result = _sim(test_data_dir, "ABCDX", "--from-bundle", str(research_bundles / "abcdx"),
+                  "--name", "New", "--yes", "--no-open")
+    assert result.exit_code == 0, result.output
+    assert "--name ignored: ABCDX is already named 'Old'" in result.output
+    assert symbols.security_name(test_data_dir, "ABCDX") == "Old"
+
+
+@pytest.mark.parametrize("symbol", ["..", "A/B", "A B"])
+def test_a_symbol_that_cant_be_a_folder_name_is_refused(test_data_dir: Path, research_bundles: Path,
+                                                        symbol: str) -> None:
+    result = _sim(test_data_dir, symbol, "--from-bundle", str(research_bundles / "abcdx"), "--yes", "--no-open")
+    assert result.exit_code == 2
+    assert "must be one word" in result.output
+    assert not (test_data_dir / "research").exists()
+
+
 def test_asked_replace_shows_both_sets(test_data_dir: Path, research_bundles: Path) -> None:
     symbols.add_symbol(test_data_dir, "ABCDX", name="Old", weights={"stock_us": "100%"}, as_of="2026-09")
     result = _sim(test_data_dir, "ABCDX", "--from-bundle", str(research_bundles / "abcdx"), "--no-open",
@@ -218,7 +249,16 @@ def test_a_run_renders_the_plugin_runs_claude_and_imports(test_data_dir: Path, f
     plugin = Path(args[args.index("--plugin-dir") + 1])
     assert plugin.name == "finance-research"
     assert not plugin.exists()  # rendered into a temporary folder
-    assert "Bash(python3:*)" in args and "--dangerously-skip-permissions" not in args
+    assert "--dangerously-skip-permissions" not in args
+    assert {"--restricted", "--strict-mcp-config"} <= set(args)
+    assert args[args.index("--permission-mode") + 1] == "dontAsk"
+    allowed = args[args.index("--allowedTools") + 1:args.index("--output-format")]
+    bash = [a for a in allowed if a.startswith("Bash")]
+    scripts = plugin / "skills" / "fund-tear-sheet" / "scripts"
+    assert bash and all(a.startswith(f"Bash(python3 {scripts}") and a.endswith(".py *)") for a in bash)
+    edits = [a for a in allowed if a.startswith(("Edit", "Write"))]
+    assert len(edits) == 2 and all(a.endswith("/work/**)") and "(//" in a for a in edits)
+    assert str(scripts) in args[1]  # the prompt says where the scripts are
     assert symbols.latest_set(test_data_dir, "ABCDX") is not None
 
 
@@ -265,6 +305,25 @@ def test_run_skill_stops_at_the_timeout(
     assert outcome.seconds < 10
 
 
+def test_the_timeout_stops_what_claude_started_too(
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE_CHILD", "1")
+    work = tmp_path / "work"
+    work.mkdir()
+    outcome = research.run_skill("ABCDX", work, tmp_path, timeout_minutes=0.01, progress=lambda _: None)
+    assert "stopped after" in outcome.message
+    assert outcome.seconds < 10
+
+
+def test_a_bundle_folder_with_no_files_is_a_clear_error(test_data_dir: Path, tmp_path: Path) -> None:
+    (tmp_path / "download" / "abcdx").mkdir(parents=True)
+    result = _sim(test_data_dir, "ABCDX", "--from-bundle", str(tmp_path / "download"), "--yes", "--no-open")
+    assert result.exit_code == 1, result.output
+    assert "has no Markdown, JSON or CSV files" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_without_claude_on_path_it_says_so(test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
                                            tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
@@ -284,3 +343,12 @@ def test_add_symbol_replace_swaps_only_that_months_set(test_data_dir: Path) -> N
     symbols.add_symbol(test_data_dir, "ABCDX", weights={"bond": "100%"}, as_of="2026-09", replace=True)
     rows = [(r["as_of"], r["asset_class"]) for r in _allocations(test_data_dir) if r["symbol"] == "ABCDX"]
     assert rows == [("2026-08", "stock_us"), ("2026-09", "bond")]
+
+
+def test_add_symbol_replace_keeps_the_set_where_it_was(test_data_dir: Path) -> None:
+    symbols.add_symbol(test_data_dir, "ABCDX", weights={"stock_us": "100%"}, as_of="2026-09")
+    symbols.add_symbol(test_data_dir, "EFGHX", weights={"bond": "100%"})
+    symbols.add_symbol(test_data_dir, "ABCDX", weights={"bond": "40%", "cash": "60%"}, as_of="2026-09",
+                       replace=True)
+    rows = [(r["symbol"], r["asset_class"]) for r in _allocations(test_data_dir)]
+    assert rows == [("ABCDX", "bond"), ("ABCDX", "cash"), ("EFGHX", "bond")]

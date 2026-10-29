@@ -1028,8 +1028,10 @@ sim symbol research ABCDX
 If the fund already has a set for the same month, answering yes replaces
 it. `--yes` writes without asking, but refuses to replace a set unless you
 add `--replace`. `--as-of 2026-10` dates the set by another month. If the
-research couldn't classify part of the fund, nothing is written; the
-command prints the skill's warnings and keeps the bundle.
+research left part of the fund unclassified, or wrote no rows for another
+reason (its weights added up to more than 100%, say), nothing is written;
+the command prints the reason and the skill's warnings, and keeps the
+bundle.
 
 A bundle made elsewhere, such as a tear sheet made in claude.ai and
 downloaded, or an earlier run, is imported without a run:

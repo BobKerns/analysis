@@ -11011,9 +11011,10 @@ def symbol_research_command(
     data = _resolve_data_dir(data_dir)
     if symbol is None:
         symbol = click.prompt("symbol (ticker)").strip()
-    symbol = symbol.strip().upper()
-    if not symbol or any(ch.isspace() for ch in symbol) or "/" in symbol:
-        raise click.UsageError(f"symbol {symbol!r} must be one word, with no spaces or '/'")
+    try:
+        symbol = symbols.normalize_symbol(symbol)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from None
     if as_of:
         try:
             as_of = month_end_iso(as_of)[:7]
@@ -11025,7 +11026,10 @@ def symbol_research_command(
             bundle = from_bundle.resolve()
         else:
             bundle = research.bundle_dir(data, symbol)
-            research.keep_bundle(from_bundle, bundle)
+            try:
+                research.keep_bundle(from_bundle, bundle)
+            except research.ResearchError as exc:
+                raise click.ClickException(f"{exc}; is it the folder holding the tear sheet's files?") from None
     else:
         bundle = _run_research(data, symbol, plugin_dir, timeout_minutes)
     click.echo(f"Bundle: {bundle}")
@@ -11090,7 +11094,11 @@ def _confirm_and_write_research(
     name: str | None, replace: bool, yes: bool,
 ) -> None:
     """Show the proposed weights beside the current ones, ask, and write them."""
-    new_symbol = symbols.security_name(data, symbol) is None
+    existing_name = symbols.security_name(data, symbol)
+    new_symbol = existing_name is None
+    if name and not new_symbol:
+        click.echo(f"--name ignored: {symbol} is already named {existing_name!r} in securities.csv; "
+                   "edit that file to rename it.")
     if new_symbol and not name:
         title = research.tear_sheet_title(bundle, symbol)
         if yes:

@@ -1754,7 +1754,8 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, research_bundle
     """A stand-in ``claude`` first on PATH for `sim symbol research`: it copies
     the bundle named by ``$FAKE_CLAUDE_BUNDLE`` (default ``abcdx``) into its
     working folder and prints ``stream-json`` events. ``$FAKE_CLAUDE_FAIL``
-    makes it report an error; ``$FAKE_CLAUDE_SLEEP`` delays it. Each call's
+    makes it report an error; ``$FAKE_CLAUDE_SLEEP`` delays it;
+    ``$FAKE_CLAUDE_CHILD`` leaves a child holding its stdout. Each call's
     arguments go to the returned file, one per line."""
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir()
@@ -1764,6 +1765,9 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, research_bundle
 import json, os, shutil, sys, time
 from pathlib import Path
 Path({str(calls)!r}).write_text("\\n".join(sys.argv[1:]) + "\\n", encoding="utf-8")
+if os.environ.get("FAKE_CLAUDE_CHILD"):
+    import subprocess
+    subprocess.Popen(["sleep", "30"])  # inherits stdout, so it holds the pipe open
 time.sleep(float(os.environ.get("FAKE_CLAUDE_SLEEP", "0")))
 name = os.environ.get("FAKE_CLAUDE_BUNDLE", "abcdx")
 if name:

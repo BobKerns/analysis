@@ -141,11 +141,18 @@ runs a skill without an install.
 `sim symbol research ABCDX` does this for a fund and takes it from there
 ([user guide §4.11](../user-guide.md#411-add-a-stock-or-fund)). It renders
 the plugin afresh from `research.yaml` into a temporary folder (or uses
-`--plugin-dir`), runs the fund skill with only the tools it needs allowed
-(web search and fetch, file reads and writes in its own folder, and
-`python3` for the skill's scripts), and stops it after `--timeout` minutes
-(20 by default). It prints a line per step, and the cost when Claude Code
-reports one.
+`--plugin-dir`), runs the fund skill in a temporary folder, and stops it
+after `--timeout` minutes (20 by default), along with anything it started.
+It prints a line per step, and the cost when Claude Code reports one.
+
+The run reads web pages nobody vetted, so a page with instructions hidden
+in it must not be able to act on your computer. The run is confined:
+Claude Code's `--restricted` mode (your own settings, which may allow more,
+are ignored, and file tools stay in the run's folder), no MCP servers, and
+`dontAsk`, which refuses anything not on the allow list instead of
+prompting. The list allows web search and fetch, reading the run's folder
+and the plugin, writing only in the run's folder, and running only the
+skill's own scripts, by their path in the plugin.
 
 Nothing here holds a key or calls the API itself: every run uses Claude
 Code's own login. Signed in with a claude.ai account, runs count against

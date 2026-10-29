@@ -19,7 +19,9 @@ from __future__ import annotations
 import csv
 import html
 import json
+import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -37,12 +39,10 @@ RESEARCH_DIR = "research"
 REPORT_PAGE = "report.html"
 SKILL = "fund-tear-sheet"
 DEFAULT_TIMEOUT_MINUTES = 20
-# What the skill needs, and nothing more: `claude -p` can't ask for approval.
-# Its scripts run as `python3 scripts/...` inside the plugin.
-ALLOWED_TOOLS = (
-    "Skill", "WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Grep",
-    "Bash(python3:*)", "Bash(python:*)",
-)
+# The tools the skill needs. The run reads untrusted web pages, so a page
+# carrying a prompt injection must not reach a shell or files outside the
+# run: see claude_command for how each is scoped.
+TOOLS = ("Skill", "WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Grep", "Bash")
 # The skill's working files sit in fund-work/ beside the tabs; a bundle keeps
 # only what a reader or the importer needs.
 _KEPT_SUFFIXES = (".md", ".json", ".csv")
@@ -104,12 +104,15 @@ def read_allocation(bundle: Path, symbol: str) -> Allocation | None:
         if not doc:
             return None
         unclassified = (doc.get("allocation_pct") or {}).get("unclassified")
-        why = f" ({unclassified}% unclassified)" if unclassified else ""
         detail = "".join(f"\n  - {w}" for w in warnings)
-        raise ResearchError(
-            f"the research left part of {symbol} unclassified{why}, so there are no weights to write"
-            + (f":{detail}" if detail else "")
-        )
+        if isinstance(unclassified, (int, float)) and unclassified > 0:
+            why = f"the research left {unclassified}% of {symbol} unclassified"
+        else:
+            # The skill records why it wrote no rows, e.g. weights over 100%.
+            why = f"the research wrote no allocations rows for {symbol}"
+            if reason := str(doc.get("sim_export") or ""):
+                why += f" ({reason})"
+        raise ResearchError(f"{why}, so there are no weights to write" + (f":{detail}" if detail else ""))
     with path.open(newline="", encoding="utf-8") as fh:
         rows = [r for r in csv.DictReader(fh) if any((v or "").strip() for v in r.values())]
     if not rows:
@@ -133,6 +136,8 @@ def read_allocation(bundle: Path, symbol: str) -> Allocation | None:
             micros = units.percent_to_micros((row.get("weight") or "").strip())
         except ValueError as exc:
             raise ResearchError(f"{where}: weight {exc}") from None
+        if not 0 <= micros <= 1_000_000:  # the rate parser takes any sign and size
+            raise ResearchError(f"{where}: weight {units.micros_to_percent(micros)} is not between 0% and 100%")
         weights[cls] = units.micros_to_percent(micros)
         total += micros
         months.add((row.get("as_of") or "").strip())
@@ -287,8 +292,8 @@ def render_page(tabs: list[Tab], *, title: str, subtitle: str = "") -> str:
 def write_page(bundle: Path, symbol: str, languages: dict[str, str] | None = None) -> Path:
     tabs = bundle_tabs(bundle, symbol, languages)
     page = bundle / REPORT_PAGE
-    subtitle = f"Research bundle {bundle.name}" if bundle.name else ""
-    page.write_text(render_page(tabs, title=f"{symbol} research", subtitle=subtitle), encoding="utf-8")
+    page.write_text(render_page(tabs, title=f"{symbol} research", subtitle=f"Research bundle {bundle.name}"),
+                    encoding="utf-8")
     return page
 
 
@@ -296,21 +301,55 @@ def write_page(bundle: Path, symbol: str, languages: dict[str, str] | None = Non
 # Running the skill
 
 
-def prompt_for(symbol: str) -> str:
+def skill_scripts(plugin_dir: Path) -> list[Path]:
+    """The fund skill's helper scripts: the only commands a run may execute."""
+    return sorted((plugin_dir / "skills" / SKILL / "scripts").resolve().glob("*.py"))
+
+
+def prompt_for(symbol: str, scripts: list[Path]) -> str:
+    where = f" Its scripts are in {scripts[0].parent}; run each by that absolute path with python3." if scripts else ""
     return (
         f"Fund tear sheet on {symbol}. There is no docs connector: write the Markdown files "
-        "and the allocation export into the current folder, as the skill describes. "
+        "and the allocation export into the current folder, as the skill describes."
+        f"{where} No other shell commands are allowed. "
         "Don't ask questions; make reasonable choices and note them."
     )
 
 
-def claude_command(symbol: str, plugin_dir: Path, claude: str = "claude") -> list[str]:
+def _path_rule(tool: str, folder: Path) -> str:
+    # Permission rules take an absolute path as //path.
+    return f"{tool}(/{folder.resolve().as_posix()}/**)"
+
+
+def claude_command(symbol: str, plugin_dir: Path, work_dir: Path, claude: str = "claude") -> list[str]:
+    """The headless run, confined so that a prompt injection in a fetched page
+    can't run commands or touch files outside the run:
+
+    - ``--restricted`` ignores the user's and project's settings (their allow
+      rules could be broader), confines the file tools to the working folder
+      and ``--add-dir``, and drops Bash and WebFetch unless ``--tools`` names
+      them; ``--strict-mcp-config`` loads no MCP servers.
+    - ``--permission-mode dontAsk`` refuses anything not allowed below,
+      instead of waiting on a prompt nobody can answer.
+    - Bash may run only the skill's own scripts, by absolute path; writes are
+      allowed only in the working folder, so a run can't plant a script to
+      run either. The plugin folder is readable, for the skill's references.
+    """
+    scripts = skill_scripts(plugin_dir)
+    allowed = [
+        "Skill", "WebSearch", "WebFetch", "Read", "Glob", "Grep",
+        _path_rule("Edit", work_dir), _path_rule("Write", work_dir),
+        *(f"Bash(python3 {script.as_posix()} *)" for script in scripts),
+    ]
     return [
-        claude, "-p", prompt_for(symbol),
+        claude, "-p", prompt_for(symbol, scripts),
         "--plugin-dir", str(plugin_dir),
+        "--add-dir", str(plugin_dir.resolve()),
+        "--restricted", "--strict-mcp-config",
+        "--tools", *TOOLS,
+        "--permission-mode", "dontAsk",
+        "--allowedTools", *allowed,
         "--output-format", "stream-json", "--verbose",
-        "--permission-mode", "acceptEdits",
-        "--allowedTools", *ALLOWED_TOOLS,
     ]
 
 
@@ -352,20 +391,29 @@ def run_skill(
     executable = shutil.which(claude)
     if executable is None:
         raise ResearchError(f"{claude!r} isn't on PATH; install Claude Code (docs/guides/finance-research.md)")
-    command = claude_command(symbol, plugin_dir, executable)
+    command = claude_command(symbol, plugin_dir, work_dir, executable)
     start = time.monotonic()
     # stderr goes to a file: a pipe nobody reads until the end could fill and
     # stall the run.
     errors = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+    # Its own process group, so stopping it stops whatever it started too: a
+    # child still holding stdout would keep the read loop below waiting.
     proc = subprocess.Popen(
         command, cwd=work_dir, stdout=subprocess.PIPE, stderr=errors,
         stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+        start_new_session=True,
     )
     timed_out = threading.Event()
 
+    def kill() -> None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
     def stop() -> None:
         timed_out.set()
-        proc.kill()
+        kill()
 
     timer = threading.Timer(timeout_minutes * 60, stop)
     timer.daemon = True
@@ -387,11 +435,14 @@ def run_skill(
                 progress(f"  [{elapsed // 60:2d}:{elapsed % 60:02d}] {text}")
         proc.wait()
     except BaseException:
-        proc.kill()
+        kill()
         proc.wait()
         raise
     finally:
         timer.cancel()
+        # Nothing it started outlives the run.
+        if proc.poll() is not None:
+            kill()
         errors.seek(0)
         stderr = errors.read().strip()
         errors.close()
