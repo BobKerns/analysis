@@ -35,7 +35,7 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, completion, guard_rail_guide, guard_rails,
+    allocation, calendar_guide, chain_edit, chain_map, completion, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
     sensitivity, setup_listings, strategy_code, strategy_guide, symbols, units, working_set, ytd_guide,
 )
@@ -2177,6 +2177,74 @@ def ensemble_guard_rails(
         unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
         _draw_figure(ensemble_guard_rail_figure(
             shown, f"Guard rails ({scenario_name})", unit=unit,
+            deaths=store.base_case_deaths()), graph_file, "ensemble-")
+
+
+@ensemble_group_command.command("drift")
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
+@_ENSEMBLE_RUNS_DIR_OPTION
+@_ENSEMBLE_DATA_DIR_OPTION
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to report on; default: the latest.",
+)
+@click.option("--targets", "target_set", type=completion.TARGET_SET, default=None,
+              help="The target set to measure drift from (default: a strategy's, or the only one).")
+@click.option("--portfolio", type=completion.TAG, default=None,
+              help="Only asset accounts with this tag (default: the strategy's portfolio, "
+                   "else every asset lot).")
+@click.option("--asset-class", "asset_class", type=click.Choice(registries.ASSET_CLASSES), default=None,
+              help="One class's drift (share less target, signed) instead of the largest either way.")
+@_ENSEMBLE_GRAPH_OPTION
+@_ENSEMBLE_GRAPH_FILE_OPTION
+def ensemble_drift(
+    scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    target_set: str | None, portfolio: str | None, asset_class: str | None, as_graph: bool,
+    graph_file: Path | None,
+) -> None:
+    """How far an ensemble's portfolios stray from a target set (#359).
+
+    Per year end, across members: the median, 75th and 95th percentiles and
+    the largest of each member's largest drift either way (a class's share
+    less its target, in percentage points), and, where a strategy steers to
+    the set with a band, the share of members past the band then and the
+    share past it at some month so far. --asset-class follows one class
+    instead (signed: above zero is overweight). --graph draws the spread
+    over every month.
+
+    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    _check_graph_options(as_graph, graph_file)
+    resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+    _note_use(data_dir, scenario_name)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    store = _open_series(batch_dir)
+    try:
+        target_set, portfolio, band = drift.pick(store.watches(), sorted(store.target_sets()),
+                                                 target_set, portfolio)
+        members = store.drift_frame(target_set, portfolio, asset_class or drift.MAX_ABS)
+    except (ValueError, EnsembleError) as exc:
+        raise click.ClickException(f"{scenario_name}: {exc}") from None
+    whose = f"accounts tagged {portfolio}" if portfolio else "every asset lot"
+    what = f"{asset_class} share less target" if asset_class else "largest drift either way"
+    click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); drift from "
+               f"target set {target_set} ({whose}), {what}, percentage points"
+               + (f"; band ±{band:g}" if band is not None else ""))
+    table = drift.ensemble_drift_table(members, band=None if asset_class else band)
+    if table.empty:
+        click.echo("(no months in the members)")
+        return
+    shares = [c for c in ("past_band", "ever_past") if c in table.columns]
+    click.echo(table.to_string(formatters={
+        **{c: (lambda v: f"{v:+.1f}") for c in table.columns if c not in shares},
+        **{c: (lambda v: f"{v:.0%}") for c in shares},
+    }))
+    if as_graph or graph_file is not None:
+        from analysis.sim.drift_charts import drift_fan_figure
+
+        _draw_figure(drift_fan_figure(
+            members, f"Drift from {target_set}: {what} ({scenario_name})", band=band,
             deaths=store.base_case_deaths()), graph_file, "ensemble-")
 
 
@@ -7893,28 +7961,11 @@ def _allocation_drift(
     path = _resolve_run_target(scenario, runfile, data_dir, None)
     con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
     try:
-        if not _has_table(con, "allocation_target"):
-            raise click.ClickException(f"{path.name} is from before allocation targets; run it again")
-        if target_set is None or portfolio is None:
-            used = {
-                (p.get("targets"), p.get("portfolio"))
-                for (raw,) in con.execute("SELECT params_json FROM strategy")
-                if isinstance(p := json.loads(raw), dict) and p.get("targets")
-            }
-            sets = [t for (t,) in con.execute("SELECT DISTINCT target_set FROM allocation_target")]
-            if target_set is None:
-                choices = sorted({t for t, _p in used}) or sets
-                if len(choices) != 1:
-                    raise click.ClickException(
-                        "say which target set with --targets: "
-                        + (", ".join(sorted(sets)) if sets else "the run has none (sim target set)"))
-                target_set = choices[0]
-            if portfolio is None:
-                portfolio = next((p for t, p in sorted(used, key=str) if t == target_set and p), None)
         try:
-            frame = strategy_guide.drift_by_year(con, target_set, portfolio=portfolio)
-        except KeyError as exc:
-            raise click.ClickException(exc.args[0]) from None
+            target_set, portfolio, _band = drift.choose(con, target_set, portfolio)
+        except ValueError as exc:
+            raise click.ClickException(f"{path.name}: {exc} (--targets)") from None
+        frame = strategy_guide.drift_by_year(con, target_set, portfolio=portfolio)
     finally:
         con.close()
     whose = f"accounts tagged {portfolio}" if portfolio else "every asset lot"
@@ -14737,9 +14788,7 @@ def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, d
     click.echo(f"deleted strategy {strategy_name} from {scenario_name}")
 
 
-def _has_table(con: sqlite3.Connection, table: str) -> bool:
-    return con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
+_has_table = drift.has_table
 
 
 @strategy_group_command.command("log")
