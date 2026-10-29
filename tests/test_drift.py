@@ -194,3 +194,54 @@ def test_the_ensemble_drift_widget_draws_a_batch(
     measure.value = "bond"
     printed = capsys.readouterr().out
     assert printed.count("Image object") == 2, printed
+
+
+def test_sim_compare_puts_a_strategy_on_and_off_side_by_side(strategy_scenarios: Path) -> None:
+    def sim(*args: str):
+        return CliRunner().invoke(main, ["sim", *args, "--data-dir", str(strategy_scenarios)],
+                                  terminal_width=200)
+
+    for name in ("alice_rebalance", "alice_rebalance_off"):
+        result = sim("run", name, "--allow-dirty-data", "--allow-dirty-code")
+        assert result.exit_code == 0, result.output
+    result = sim("compare", "alice_rebalance", "alice_rebalance_off",
+                 "--section", "differences", "--section", "strategies")
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "Strategies that differ" in out and "draw_by_allocation" in out
+    assert "Target weights that differ (percent):\n  none" in out
+    assert "Strategies over the run" in out
+    assert "alice_rebalance  draw_by_allocation  rebalance  portfolio_draw" in out
+    assert "draw_by_allocation  kind" in out  # the off run doesn't run it: a difference
+    assert ("Largest drift from target set main at year end (accounts tagged portfolio:invest), "
+            "percentage points; band ±5:") in out
+    # The strategy keeps its run's drift no larger than the run without it.
+    lines = out.split("percentage points; band ±5:\n", 1)[1].splitlines()
+    rows = [line.split() for line in lines[1:] if line.strip()[:2] == "20"]
+    assert rows and all(float(on) <= float(off) + 1e-9 for _m, on, off in rows[-3:])
+
+
+def test_the_strategy_compare_widget_overlays_the_runs(
+    run_strategy_scenario: Callable[[str], Path], runs_dir: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from analysis.sim.connection import RunConnection
+    from analysis.sim.notebook_ui.compare_plots import rules_and_events_widget, strategy_compare_widget
+    from analysis.sim.notebook_ui.pickers import MultiScenarioConnections
+
+    on = run_strategy_scenario("alice_rebalance")
+    (runs_dir / "on.sqlite3").write_bytes(on.read_bytes())
+    off = run_strategy_scenario("alice_rebalance_off")
+    connections = {"alice_rebalance": RunConnection(runs_dir / "on.sqlite3"), "alice_rebalance_off": RunConnection(off)}
+    try:
+        container = MultiScenarioConnections(connections, "alice_rebalance", ["alice_rebalance_off"], {})
+        strategy_compare_widget(container)
+        printed = capsys.readouterr().out
+        assert printed.count("Image object") == 1, printed
+        assert printed.count("Styler object") == 2, printed  # drift by year end, then what the strategies did
+        rules_and_events_widget(container, connections, container.scenarios, container.variants,
+                                baseline="alice_rebalance")
+        # The strategy the off run doesn't run is a difference.
+        assert "draw_by_allocation" in capsys.readouterr().out
+    finally:
+        for rc in connections.values():
+            rc.close()

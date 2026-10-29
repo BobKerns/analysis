@@ -3291,7 +3291,7 @@ def _echo_after_tax_networth(runfile: Path, period: str, mode: DollarMode) -> No
     )
 
 
-COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "guard-rails", "account")
+COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "account")
 """``sim compare``'s sections, in the order it prints them (#188)."""
 
 _COMPARE_MAX_GRAPHED = 4
@@ -3373,8 +3373,11 @@ def compare_command(
     does: whether the runs are comparable, what the scenarios define
     differently, net worth at each year end with each variant's difference,
     where each variant breaks even (net worth after tax unless --pre-tax),
-    each scenario's guard rail margins (#305) when any has rails, and with
-    --account, that account's balance.
+    each scenario's guard rail margins (#305) when any has rails, each
+    scenario's strategies and its largest allocation drift by year end
+    (#359) when any has strategies or targets (a strategy on vs off: compare
+    with a child where `sim strategy edit NAME --disable` switches it off),
+    and with --account, that account's balance.
 
     BASELINE left out is the current scenario; with no VARIANTS, one is
     asked for. A scenario with no accounts is a valid compare point."""
@@ -3465,6 +3468,7 @@ def compare_command(
                 click.echo("  none")
             else:
                 _echo_frame(ytd.map(_cell))
+            _echo_strategy_differences(connections, scenarios, baseline)
 
         graphed = as_graph or graph_file is not None
         nw = pd.DataFrame()
@@ -3491,6 +3495,8 @@ def compare_command(
         if "guard-rails" in shown:
             _echo_guard_rail_comparison(connections, ref.scenarios_dir, baseline, variants,
                                         mode, asked="guard-rails" in sections)
+        if "strategies" in shown:
+            _echo_strategy_comparison(connections, scenarios, asked="strategies" in sections)
 
         balances = None
         if account is not None and ("account" in shown or graphed):
@@ -3520,6 +3526,68 @@ def compare_command(
                 figure = comparison_figure(
                     nw, baseline, list(variants), f"Net worth, {mode_label}", deaths=deaths)
             _draw_figure(figure, graph_file, "compare-")
+
+
+def _echo_strategy_differences(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], baseline: str,
+) -> None:
+    """The differences section's strategies and target weights (#359), left
+    out when no run has either."""
+    from analysis.sim import compare
+
+    if not compare.uses_strategies(connections):
+        return
+    strategies = compare.strategy_differences(connections, scenarios, baseline)
+    click.echo("\nStrategies that differ (— where a scenario doesn't run it):")
+    if strategies.empty:
+        click.echo("  none")
+    else:
+        _echo_frame(strategies.map(_cell))
+    targets = compare.target_differences(connections, scenarios, baseline)
+    click.echo("\nTarget weights that differ (percent):")
+    if targets.empty:
+        click.echo("  none")
+    else:
+        _echo_frame(targets.map(lambda v: _cell(v if pd.isna(v) else f"{v:g}%")))
+
+
+def _echo_strategy_comparison(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], *, asked: bool,
+) -> None:
+    """``sim compare``'s strategies section (#359): each scenario's
+    strategies and what they moved, then each run's largest allocation drift
+    by year end against the same target set, so a strategy on and off sit
+    side by side. Said to be empty only when ``asked`` for."""
+    from analysis.sim import compare
+
+    if not compare.uses_strategies(connections):
+        if asked:
+            click.echo("\nStrategies: none in these runs")
+        return
+    activity = compare.strategy_activity(connections, scenarios)
+    click.echo("\nStrategies over the run (dollars asked of their chains, moved by the strategy, "
+               "left to the chain's steps):")
+    if activity.empty:
+        click.echo("  none run")
+    else:
+        money = ["asked", "moved", "steps"]
+        _echo_frame(activity.astype(object).map(_cell).assign(
+            **{c: activity[c].map(lambda v: f"${v:,.0f}") for c in money}))
+    try:
+        target_set, portfolio, band = compare.drift_targets(connections, scenarios)
+    except ValueError as exc:
+        click.echo(f"\nNo drift comparison: {exc}")
+        return
+    by_scenario = compare.drift_by_scenario(connections, scenarios, target_set, portfolio)
+    if not by_scenario:
+        return
+    whose = f"accounts tagged {portfolio}" if portfolio else "every asset lot"
+    click.echo(f"\nLargest drift from target set {target_set} at year end ({whose}), percentage points"
+               + (f"; band ±{band:g}" if band is not None else "") + ":")
+    table = pd.DataFrame({name: drift.year_end_rows(frame)[drift.MAX_ABS]
+                          for name, frame in by_scenario.items()})
+    table.index.name = "month"
+    _echo_frame(table.map(lambda v: _cell(v if pd.isna(v) else f"{v:.1f}")))
 
 
 def _echo_guard_rail_comparison(
