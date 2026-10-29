@@ -209,6 +209,8 @@ def income_figure(frame: pd.DataFrame, title: str, *, legend_title: str = "categ
     story = _story(frame)
     if story.empty:
         return flows_figure(frame, title, legend_title=legend_title, deaths=deaths)
+    if not flow_groups(frame):  # no income at all, only the story to tell
+        return economic_income_figure(frame, title, deaths=deaths)
     fig = Figure(figsize=(11, 9))
     top, bottom = fig.subplots(2, 1, sharex=True)
     # Every year the table prints, in both panels: a year without a change in

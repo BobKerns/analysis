@@ -109,7 +109,7 @@ def account_balance_history_widget(
         pivot, selected = _pivot(mode)
         with out:
             clear_output(wait=True)
-            mode_title = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+            mode_title = DollarMode(mode).label
             values_title = "monthly change" if values == ValuePlotMode.MONTHLY else "total"
             kind_title = KIND_LABELS[_kind()]
             fig = balance_history_figure(

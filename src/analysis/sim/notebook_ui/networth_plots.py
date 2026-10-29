@@ -22,10 +22,6 @@ from analysis.sim.types import DollarMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
 
-def _mode_label(mode: DollarMode) -> str:
-    return "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-
-
 def net_worth_widget(rc: RunConnection,
                     *, member: int = 0,
                     time_range: TimeRangePicker | None = None,
@@ -83,7 +79,8 @@ def _flows(rc: RunConnection, side: reports.FlowSide, mode: DollarMode,
     """``sim report income|expenses``' groups by category and their total,
     less a category with nothing in any year, as the report leaves it out."""
     frame = reports.without_empty_groups(
-        reports.flows_by_year(rc, side, mode=mode).rename(columns={reports.ECONOMIC_INCOME: "total"}),
+        reports.flows_by_year(rc, side, mode=mode, story=False)
+        .rename(columns={reports.ECONOMIC_INCOME: "total"}),
         keep={"total"})
     return time_range.clip(frame[[*run_charts.flow_groups(frame), "total"]])
 
@@ -111,7 +108,7 @@ def _flow_widget(rc: RunConnection, side: reports.FlowSide, dollar_mode: DollarM
             if _nothing_to_chart(yearly, side, rc):
                 return
             show_figure(run_charts.flows_figure(
-                yearly, f"Annual {side} by category ({_mode_label(mode)}) ({rc.label})",
+                yearly, f"Annual {side} by category ({DollarMode(mode).label}) ({rc.label})",
                 deaths=rc.deaths()))
 
     observe_while_shown(dollar_mode, _redraw)
@@ -173,7 +170,7 @@ def gains_widget(rc: RunConnection,
             if _nothing_to_chart(gains_yearly, "gains", rc):
                 return
             show_figure(run_charts.gains_figure(
-                gains_yearly, f"Realized vs. unrealized gains ({_mode_label(mode)}) ({rc.label})",
+                gains_yearly, f"Realized vs. unrealized gains ({DollarMode(mode).label}) ({rc.label})",
                 deaths=rc.deaths()))
 
     observe_while_shown(dollar_mode, _redraw)
@@ -228,7 +225,7 @@ def economic_income_widget(rc: RunConnection,
             clear_output(wait=True)
             show_figure(run_charts.economic_income_figure(
                 story, f"Economic income and net worth change "
-                       f"({'after tax' if taxed else 'pre-tax'}, {_mode_label(mode)}) ({rc.label})",
+                       f"({'after tax' if taxed else 'pre-tax'}, {DollarMode(mode).label}) ({rc.label})",
                 deaths=rc.deaths()))
 
         with table_out:
@@ -274,7 +271,7 @@ def tax_widget(rc: RunConnection,
             return
         with chart_out:
             show_figure(run_charts.tax_figure(
-                frame, f"Tax ({_mode_label(mode)}) ({rc.label})", deaths=rc.deaths()))
+                frame, f"Tax ({DollarMode(mode).label}) ({rc.label})", deaths=rc.deaths()))
         with table_out:
             formats = {c: {"effective_rate": "{:.1%}", "irmaa_tier": "{:.0f}"}.get(c, "${:,.0f}")
                        for c in frame.columns}
@@ -343,7 +340,7 @@ def guard_rails_widget(rc: RunConnection,
                 clear_output()
             return
         mode = dollar_mode.value
-        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        unit = DollarMode(mode).label
         results = guard_rails.evaluate_run(rc, rails, mode)
         shown = [r for r in results if r.applies]
         low, high = time_range.value

@@ -116,7 +116,7 @@ def plot_net_worth_and_delta(
     baseline, as ``sim compare --graph`` draws it. ``delta`` is
     ``variant_delta(nw, container)``, which the chart recomputes."""
     del delta
-    mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+    mode_label = DollarMode(mode).label
     figure = comparison_figure(
         nw, container.baseline, container.variants, f"Net worth, {mode_label}",
         colors=container.colors,
@@ -374,7 +374,7 @@ def breakeven_widget(
             )
             if nw.empty:  # two empty scenarios have no months (#174)
                 return
-            mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+            mode_label = DollarMode(mode).label
             display(StyledMarkdown(
                 f"`{baseline}` final net worth ({mode_label}): "
                 f"**${nw[baseline].iloc[-1]:,.0f}**"
@@ -493,7 +493,7 @@ def guard_rails_compare_widget(
 
     def _redraw(*_):
         mode = dollar_mode.value
-        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        unit = DollarMode(mode).label
         baseline, variants = container.baseline, list(container.variants)
         with output:
             clear_output(wait=True)

@@ -245,6 +245,7 @@ def without_empty_groups(frame: pd.DataFrame, keep: Collection[str] = ()) -> pd.
 def flows_by_year(
     rc: RunConnection, side: FlowSide, *, by: str = "category",
     mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False, after_tax: bool = True,
+    story: bool = True,
 ) -> pd.DataFrame:
     """Year x group income (or expense) totals in dollars, plus a ``total`` column
     and, for income, ``cash_income``: the part of the total that was paid
@@ -268,7 +269,9 @@ def flows_by_year(
     Income that tells the whole story (not just the tagged part) names its
     total ``economic_income`` and follows it, before the cash columns, with
     :func:`net_worth_change_by_year`'s columns down to ``Δnet_worth``,
-    after tax unless ``after_tax=False``.
+    after tax unless ``after_tax=False``; ``story=False`` leaves those out,
+    for a caller that shows only the groups (the slow part is the after-tax
+    net worth they need).
     """
     events = _flow_events(rc, side)
     events["group"] = _groups(rc, events, side, by)
@@ -304,8 +307,9 @@ def flows_by_year(
         # The whole story (#249): the total is economic income, carried on
         # down to the change in net worth.
         yearly = yearly.rename(columns={"total": ECONOMIC_INCOME})
-        yearly = yearly.join(net_worth_change_by_year(
-            rc, yearly[ECONOMIC_INCOME], mode=mode, after_tax=after_tax))
+        if story:
+            yearly = yearly.join(net_worth_change_by_year(
+                rc, yearly[ECONOMIC_INCOME], mode=mode, after_tax=after_tax))
     return yearly.join(cash_totals)
 
 

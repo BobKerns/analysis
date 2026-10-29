@@ -529,7 +529,7 @@ def ensemble_widget(*_,
         after_tax = controls.after_tax
         subject = _subject(account, lot, after_tax)
         mode = dollar_picker.value
-        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        mode_label = DollarMode(mode).label
         reserve = _reserve(reserve_field, store, account)
         # Each member's own series is converted before aggregating, not
         # the aggregate after the fact: a member's CPI-constant series
@@ -672,7 +672,7 @@ def ensemble_guard_rails_widget(*_,
             return
         batch_dir, store, failed_count = opened
         mode = dollar_picker.value
-        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        unit = DollarMode(mode).label
         loading.note(f"Evaluating {recipe}'s guard rails")
         shown = [r for r in guard_rails.ensemble_results(store, rails, mode) if r.applies]
         low, high = time_range.value
@@ -851,7 +851,7 @@ class _Sides:
         self.after_tax = controls.after_tax
         self.subject = _subject(self.account, lot, self.after_tax)
         self.mode = controls.dollar_picker.value
-        self.mode_label = "CPI-constant" if self.mode == DollarMode.CPI_CONSTANT else "nominal"
+        self.mode_label = DollarMode(self.mode).label
         self.reserve = _reserve(reserve_field, self.stores[baseline], self.account)
         self.frames: dict[str, pd.DataFrame] = {}
         for name, store in self.stores.items():
@@ -1231,7 +1231,7 @@ def ensemble_guard_rails_table_widget(*_,
                                    "or pass `data_dir=`."))
             return
         mode = dollar_picker.value
-        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        unit = DollarMode(mode).label
         results: dict[str, list[guard_rails.EnsembleRailResult]] = {}
         sizes: dict[str, int] = {}
         for name in (baseline, *others):

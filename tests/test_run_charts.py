@@ -230,3 +230,56 @@ def test_without_empty_groups_keeps_what_it_is_told_to() -> None:
     frame = pd.DataFrame({"salary": [1.0, 2.0], "business": [0.0, 0.004],
                           "total": [0.0, 0.0]}, index=[2030, 2031])
     assert list(reports.without_empty_groups(frame, keep={"total"}).columns) == ["salary", "total"]
+
+
+# ---------- review of #363, second round ----------
+
+
+def test_income_figure_with_no_income_draws_the_story_alone(report_run: RunConnection) -> None:
+    """Every group zero (no income events, but a net worth): no crash."""
+    frame = reports.flows_by_year(report_run, "income")
+    for group in run_charts.flow_groups(frame):
+        frame[group] = 0.0
+    frame = reports.without_empty_groups(frame, keep={"total", reports.ECONOMIC_INCOME,
+                                                      reports.NET_WORTH_CHANGE})
+    assert not run_charts.flow_groups(frame)
+    fig = run_charts.income_figure(frame, "Income")
+    assert len(fig.axes) == 1
+
+
+def test_flows_without_the_story_leave_out_net_worth(report_run: RunConnection) -> None:
+    frame = reports.flows_by_year(report_run, "income", story=False)
+    assert reports.NET_WORTH_CHANGE not in frame.columns
+    assert reports.ECONOMIC_INCOME in frame.columns
+
+
+def test_a_plain_report_does_not_read_the_deaths(
+    report_run_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a chart marks deaths, so a table alone needn't read them."""
+    def refuse(self: RunConnection) -> list:
+        raise AssertionError("deaths read without a chart")
+
+    monkeypatch.setattr(RunConnection, "deaths", refuse)
+    for command in (["report", "gains"], ["report", "tax"], ["report", "income"],
+                    ["account", "history", BROKERAGE, "--yearly"]):
+        result = _invoke(*command, run_file=report_run_file)
+        assert result.exit_code == 0, (command, result.output)
+
+
+def test_pre_tax_net_worth_without_a_chart_opens_no_run_connection(
+    report_run_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import cli as cli_module
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a RunConnection was opened")
+
+    monkeypatch.setattr(cli_module, "RunConnection", refuse)
+    result = _invoke("networth", "--pre-tax", run_file=report_run_file)
+    assert result.exit_code == 0, result.output
+
+
+def test_dollar_modes_name_themselves_one_way() -> None:
+    assert DollarMode.CPI_CONSTANT.label == "CPI-constant"
+    assert DollarMode("nominal").label == "nominal"
