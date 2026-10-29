@@ -818,8 +818,10 @@ def strategy_scenarios(test_data_dir: Path, test_scenarios_dir: Path, test_data:
     ``alice_rebalance`` builds on retire_alice with a 60/40 target, a
     ``portfolio:invest`` tag and the built-in ``rebalance`` strategy owning
     checking's refill chain; ``alice_last_leaf`` swaps in the data-repo kind
-    ``last_leaf`` from ``strategies/``. Brings its own allocations.csv
-    (USSTK, BONDX). Returns the data directory."""
+    ``last_leaf`` from ``strategies/``; ``alice_rebalance_off`` switches the
+    strategy off (an ``enabled`` false override), for comparing the two
+    (#359). Brings its own allocations.csv (USSTK, BONDX). Returns the data
+    directory."""
     source = test_data / "sim" / "strategies"
     for folder in (source / "scenarios").iterdir():
         shutil.copytree(folder, test_scenarios_dir / folder.name)
@@ -856,6 +858,24 @@ def run_strategy_scenario(
         return run_scenario(loaded.intent_path, runs_dir / f"{name}.sqlite3", run_by="TEST",
                             allow_dirty_data=True, allow_dirty_code=True)
     return _run
+
+
+@pytest.fixture(scope="function")
+def strategy_ensemble_batch(strategy_scenarios: Path, intent_dir: Path, runs_dir: Path) -> Path:
+    """A 3-member Monte Carlo batch of ``alice_rebalance`` (retire_alice's
+    varied rows, seed 5) under ``runs_dir/alice_rebalance/``, its rebalancing
+    strategy steering every member (#359). Returns the batch dir."""
+    recipe = load_scenario(strategy_scenarios, "alice_rebalance", intent_dir=intent_dir / "recipe",
+                           allow_dirty_data=True, compute_stamps=False).intent_path
+    batch_dir = runs_dir / "alice_rebalance" / "2026-01-01T000000Z"
+    for i in range(3):
+        member_intent = resolve_member(
+            recipe, intent_dir / f"alice_rebalance_member_{i}.sqlite3",
+            seed=5, member_index=i, member_count=3, recipe_tree_id="deadbeef",
+        )
+        run_scenario(member_intent, batch_dir / f"member_{i:04d}.sqlite3", run_by="test",
+                     allow_dirty_data=True, allow_dirty_code=True)
+    return batch_dir
 
 
 @pytest.fixture(scope="function")

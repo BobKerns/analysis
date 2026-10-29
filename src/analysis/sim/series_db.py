@@ -15,12 +15,16 @@ results beside the members, in ``<batch>/series.sqlite3``:
   (#305) read besides the series: the household's last death, the
   date_markers, and the accounts' kinds, subkinds and tags;
 - ``subject``: net worth, after-tax net worth, each account, each asset or
-  liability lot;
+  liability lot, and the dollars in each asset class (#359), for every
+  asset lot and for each account tag's (a strategy's portfolio);
 - ``series``: per subject and member, the nominal dollars by month;
 - ``flow_key`` and ``flow``: per member, each month's transfers summed by
   from account, to account and rule tags (``RunConnection.monthly_flows``),
   from which any rail's spending or withdrawals is rebuilt at read time, so
-  rails stay a lens on ensembles too.
+  rails stay a lens on ensembles too;
+- ``allocation_target`` and ``watch``: the batch's target sets, and the
+  strategies steering to them with their bands, from which allocation drift
+  is worked out at read time, as guard rails are.
 
 CPI-constant figures other than pre-tax net worth are converted at read time,
 by each member's own index and with the functions ``RunConnection`` uses, so
@@ -51,9 +55,12 @@ import numpy as np
 import pandas as pd
 
 from analysis.frames import index_years
+from analysis.sim import drift as allocation_drift
 from analysis.sim import units
+from analysis.sim.asset_classes import weight_sets
 from analysis.sim.connection import RunConnection, account_balance_cpi, to_cpi_constant
 from analysis.sim.schema import connect_sim_file
+from analysis.sim.drift import Watch
 from analysis.sim.types import Death, DollarMode
 
 if TYPE_CHECKING:
@@ -62,12 +69,15 @@ if TYPE_CHECKING:
 SERIES_DB_FILENAME = "series.sqlite3"
 # Bump when the stored layout changes. A change to how a series is derived
 # needs no bump: the store records a hash of the modules that derive them.
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 NET_WORTH = "net_worth"
 AFTER_TAX = "after_tax"
 ACCOUNT = "account"
 LOT = "lot"
+# An asset class's dollars: account is the portfolio tag ('' for every asset
+# lot), lot the asset class.
+CLASS = "class"
 
 _DDL = """
 CREATE TABLE batch (
@@ -123,6 +133,19 @@ CREATE TABLE flow (
     cents      BLOB NOT NULL,
     PRIMARY KEY (flow_id, member_id)
 ) WITHOUT ROWID;
+CREATE TABLE allocation_target (
+    target_set     TEXT NOT NULL,
+    as_of          TEXT NOT NULL,
+    asset_class    TEXT NOT NULL,
+    weight_micros  INTEGER NOT NULL,
+    PRIMARY KEY (target_set, as_of, asset_class)
+);
+CREATE TABLE watch (
+    strategy    TEXT PRIMARY KEY,
+    target_set  TEXT NOT NULL,
+    portfolio   TEXT,
+    band        REAL
+);
 """
 
 
@@ -133,10 +156,11 @@ def series_db_path(batch_dir: Path) -> Path:
 def _code_hash() -> str:
     """The format and the source of the modules that derive the series: a
     store written by different code is rebuilt, not trusted."""
+    import analysis.sim.asset_classes as asset_classes
     import analysis.sim.connection as connection
 
     digest = hashlib.sha256(str(FORMAT_VERSION).encode())
-    for module_file in (connection.__file__, __file__):
+    for module_file in (connection.__file__, __file__, allocation_drift.__file__, asset_classes.__file__):
         digest.update(Path(module_file).read_bytes())
     return digest.hexdigest()
 
@@ -204,6 +228,9 @@ class MemberSeries:
     accounts: dict[str, tuple[str, str, str]] = field(default_factory=dict)
     # (from, to, rule tags) -> cents on ``months``
     flows: dict[tuple[str, str, str], np.ndarray] = field(default_factory=dict)
+    # allocation_target rows, and the strategies steering to them (#359)
+    targets: list[tuple[str, str, str, int]] = field(default_factory=list)
+    watches: list[Watch] = field(default_factory=list)
 
 
 def member_series(run_path: Path) -> MemberSeries:
@@ -239,6 +266,7 @@ def member_series(run_path: Path) -> MemberSeries:
         out.subjects[(AFTER_TAX, "", "")] = (
             None, _floats(con.after_tax_net_worth_frame()["nominal"].reindex(months)))
         _add_balances(out, con._con, months)
+        _add_classes(out, con._con, months)
         return out
     finally:
         con.close()
@@ -280,6 +308,20 @@ def _add_balances(out: MemberSeries, con: sqlite3.Connection, months: pd.Datetim
         # An income account's balance is a credit, shown as inflow.
         shown = -total if kind == "income" else total
         out.subjects[(ACCOUNT, name, "")] = (kind, np.where(present, shown, _MISSING))
+
+
+def _add_classes(out: MemberSeries, con: sqlite3.Connection, months: pd.DatetimeIndex) -> None:
+    """Each portfolio's cents per asset class by month (``drift.class_dollars``),
+    and the run's target sets and the strategies steering to them."""
+    if allocation_drift.has_table(con, "allocation_target"):
+        out.targets = [tuple(row) for row in con.execute(
+            "SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")]
+        out.watches = allocation_drift.watches(con)
+    iso = months.strftime("%Y-%m-%d")
+    for portfolio, frame in allocation_drift.class_dollars(con).items():
+        cents = np.rint(frame.reindex(iso).fillna(0.0).to_numpy(dtype=float) * 100).astype(np.int64)
+        for j, asset_class in enumerate(frame.columns):
+            out.subjects[(CLASS, portfolio, asset_class)] = ("asset", cents[:, j])
 
 
 def _add_flows(out: MemberSeries, flows: pd.DataFrame, months: pd.DatetimeIndex) -> None:
@@ -328,8 +370,16 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
         origin = member_components(batch_dir) or {}
         base = record.get("base") if record is not None else None
         flow_ids: dict[tuple[str, str, str], int] = {}
+        targets_written = False
         for member_id, member in enumerate(sorted(members, key=lambda m: m.stem), start=1):
             meta_json = member.meta_json if meta_json is None else meta_json
+            if not targets_written:
+                # Targets and strategies aren't varied, so every member has the
+                # first one's.
+                con.executemany("INSERT INTO allocation_target VALUES (?, ?, ?, ?)", member.targets)
+                con.executemany("INSERT INTO watch VALUES (?, ?, ?, ?)",
+                                [(w.strategy, w.target_set, w.portfolio, w.band) for w in member.watches])
+                targets_written = True
             if base_meta is None and base is not None and origin.get(member.member_index) == base:
                 base_meta = member.meta_json
             con.execute(
@@ -525,6 +575,69 @@ class EnsembleSeries:
 
     def years(self) -> list[int]:
         return sorted({int(year) for m in self._members.values() for year in index_years(m.cpi_index)})
+
+    # ---------- allocation drift (#359) ----------
+
+    def target_sets(self) -> dict[str, list[tuple[str, dict[str, float]]]]:
+        """The batch's target sets, as ``drift.target_sets`` reads a run's."""
+        def build() -> dict[str, list[tuple[str, dict[str, float]]]]:
+            with self._connect() as con:
+                return weight_sets(
+                    (name, as_of, asset_class, weight / 1_000_000) for name, as_of, asset_class, weight
+                    in con.execute("SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target"))
+        return self.memo(("target_sets",), build)
+
+    def watches(self) -> list[Watch]:
+        """The batch's strategies that steer to a target set."""
+        def build() -> list[Watch]:
+            with self._connect() as con:
+                return [Watch(*row) for row in con.execute(
+                    "SELECT strategy, target_set, portfolio, band FROM watch ORDER BY strategy")]
+        return self.memo(("watches",), build)
+
+    def portfolios(self) -> list[str]:
+        """The account tags whose asset classes the store holds ('' first: every asset lot)."""
+        return sorted({account for kind, account, _lot in self._subjects if kind == CLASS})
+
+    def class_dollars(self, portfolio: str = "") -> dict[str, pd.DataFrame]:
+        """Each member's nominal dollars per asset class, by ISO month, for
+        ``portfolio`` (an account tag; '' every asset lot)."""
+        def build() -> dict[str, pd.DataFrame]:
+            classes = [lot for kind, account, lot in self._subjects if kind == CLASS and account == portfolio]
+            values = {c: self._nominal((CLASS, portfolio, c)) for c in classes}
+            out = {}
+            for member_id, member in self._members.items():
+                index = pd.Index(member.months.strftime("%Y-%m-%d"), name="month")
+                out[member.stem] = pd.DataFrame(
+                    {c: values[c][member_id] for c in classes if member_id in values[c]},
+                    index=index).fillna(0.0)
+            return out
+        return self.memo(("class_dollars", portfolio), build)
+
+    def drift(self, target_set: str, portfolio: str | None = None) -> dict[str, pd.DataFrame]:
+        """Each member's ``drift.drift`` against ``target_set``."""
+        from analysis.sim.ensemble import EnsembleError
+
+        sets = self.target_sets()
+        if target_set not in sets:
+            raise EnsembleError(
+                f"no target set {target_set!r} in this batch (known: {', '.join(sorted(sets)) or 'none'})")
+        key = portfolio or ""
+        if key and key not in self.portfolios():
+            raise EnsembleError(f"no asset account tagged {key!r} in this batch")
+        return self.memo(("drift", target_set, key), lambda: {
+            stem: allocation_drift.drift(frame, sets[target_set]) for stem, frame in self.class_dollars(key).items()})
+
+    def drift_frame(self, target_set: str, portfolio: str | None = None,
+                    column: str = allocation_drift.MAX_ABS) -> pd.DataFrame:
+        """One column of every member's drift (``max_abs`` by default): a
+        column per member, by month (a ``DatetimeIndex``, as ``frame`` has)."""
+        frames = self.drift(target_set, portfolio)
+        columns = {stem: (frame[column] if column in frame.columns else pd.Series(0.0, index=frame.index))
+                   for stem, frame in frames.items()}
+        out = pd.DataFrame(columns)
+        out.index = pd.DatetimeIndex(pd.to_datetime(out.index))
+        return out
 
     def _nominal(self, key: tuple[str, str, str]) -> dict[int, np.ndarray]:
         subject = self._subjects.get(key)

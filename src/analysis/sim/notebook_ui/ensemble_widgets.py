@@ -15,7 +15,7 @@ import pandas as pd
 from IPython.display import Image, clear_output, display
 
 from analysis.frames import by_year_and_label
-from analysis.sim import units
+from analysis.sim import registries, units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
@@ -61,7 +61,7 @@ __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
     "ensemble_table_widget", "ensemble_guard_rails_widget", "ensemble_guard_rails_table_widget",
-    "NET_WORTH", "EnsembleControls", "recipe_accounts",
+    "ensemble_drift_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
     "RecipeSeeds", "LoadingIndicator",
 ]
 
@@ -708,6 +708,127 @@ def ensemble_guard_rails_widget(*_,
     return widgets.VBox([
         dropdown,
         widgets.HBox([dollar_picker, time_range],
+                     layout=widgets.Layout(flex_flow="row wrap", align_items="center")),
+        loading, out,
+    ])
+
+
+LARGEST = "largest either way"
+
+
+def ensemble_drift_widget(*_,
+                          data_dir: Path | str | None = None,
+                          state_dir: Path | None = None,
+                          runs_dir: Path | str | None = None,
+                          controls: EnsembleControls | None = None,
+                          default: str | None = None,
+                          **__,
+                          ) -> widgets.VBox:
+    """How far an ensemble's portfolios stray from a target set (#359), as
+    ``sim ensemble drift`` tabulates it: the spread across members of the
+    largest drift either way (or one class's, signed) month by month, the
+    strategy's band shaded, then by year end the percentiles and the share
+    of members past the band. **Targets** and **Portfolio** start at the
+    recipe's strategy's own. ``controls`` shares the years shown."""
+    from analysis.sim import drift
+    from analysis.sim.drift_charts import drift_fan_figure
+
+    resolved_data_dir = find_data_dir(data_dir)
+    runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default])
+    dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
+    if _default(recipes, default) is not None:
+        dropdown.value = default
+    controls = controls or EnsembleControls(runs_dir=runs_dir)
+    time_range = controls.time_range
+    targets = widgets.Dropdown(description="Targets:")
+    portfolio = widgets.Dropdown(description="Portfolio:")
+    measure = widgets.Dropdown(options=[LARGEST], description="Drift:")
+    loading = LoadingIndicator()
+    out = widgets.Output()
+    # The recipe whose targets and portfolios the pickers list, so picking a
+    # new recipe resets them while picking a target set doesn't.
+    listed: list[str | None] = [None]
+    updating = [False]  # while the pickers are refilled for a new recipe
+    every = "(every asset lot)"
+
+    def _redraw(*_: object) -> None:
+        if updating[0]:
+            return
+        with out:
+            if not dropdown.value:
+                clear_output()
+                return
+            try:
+                _draw(dropdown.value)
+            finally:
+                loading.finish()
+
+    def _draw(recipe: str) -> None:
+        opened = _open_recipe(runs_dir, recipe, loading)
+        if opened is None:
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**No Monte Carlo batch for {recipe}.**"))
+            return
+        batch_dir, store, failed_count = opened
+        sets = sorted(store.target_sets())
+        if not sets:
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**No target sets in {recipe}**; `sim target set` adds one."))
+            return
+        if listed[0] != recipe:
+            listed[0] = recipe
+            try:
+                chosen, tag, _band = drift.pick(store.watches(), sets)
+            except ValueError:
+                chosen, tag = sets[0], None
+            updating[0] = True
+            try:
+                targets.options, targets.value = sets, chosen
+                portfolio.options = [every, *(p for p in store.portfolios() if p)]
+                portfolio.value = tag or every
+            finally:
+                updating[0] = False
+        tag = None if portfolio.value == every else portfolio.value
+        # The classes this portfolio holds, keeping the one picked if it's still there.
+        held = {c for f in store.class_dollars(tag or "").values() for c in f.columns}
+        offered = [LARGEST, *(c for c in registries.ASSET_CLASSES if c in held)]
+        if list(measure.options) != offered:
+            updating[0] = True
+            try:
+                kept = measure.value if measure.value in offered else LARGEST
+                measure.options = offered
+                measure.value = kept
+            finally:
+                updating[0] = False
+        _set, _tag, band = drift.pick(store.watches(), sets, targets.value, tag)
+        column = drift.MAX_ABS if measure.value == LARGEST else measure.value
+        loading.note(f"Working out {recipe}'s drift")
+        members = store.drift_frame(targets.value, tag, column)
+        low, high = time_range.value
+        whose = f"accounts tagged {tag}" if tag else "every asset lot"
+        what = "largest drift either way" if column == drift.MAX_ABS else f"{column} share less target"
+        clear_output(wait=True)
+        display(StyledMarkdown(
+            f"{recipe}: {len(store)} member(s)" + (f", {failed_count} failed" if failed_count else "")
+            + f"; drift from {targets.value} ({whose}), percentage points (batch {batch_dir.name})"))
+        display(_png(drift_fan_figure(members, f"Drift from {targets.value}: {what} ({recipe})",
+                                      band=band, years=(low, high), deaths=store.base_case_deaths())))
+        table = drift.ensemble_drift_table(members, band=band if column == drift.MAX_ABS else None)
+        if not table.empty:
+            table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
+            shares = [c for c in ("past_band", "ever_past") if c in table.columns]
+            display(table.style.format({**{c: "{:+.1f}" for c in table.columns if c not in shares},
+                                        **dict.fromkeys(shares, "{:.0%}")}))
+
+    dropdown.observe(_redraw, names="value")
+    note_picks(resolved_data_dir, dropdown)
+    for picker in (targets, portfolio, measure, time_range):
+        picker.observe(_redraw, names="value")
+    when_cell_is_done(_redraw)
+    return widgets.VBox([
+        dropdown,
+        widgets.HBox([targets, portfolio, measure, time_range],
                      layout=widgets.Layout(flex_flow="row wrap", align_items="center")),
         loading, out,
     ])

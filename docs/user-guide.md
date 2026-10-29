@@ -1251,9 +1251,26 @@ targets; whatever the strategy doesn't pay, the chain's steps do.
 `sim strategy log` shows each decision with a note such as
 `bond 53.6% vs 40.0% target (band 5%): took $961 from Asset_TraditionalIRA_Alice:default`,
 `sim allocation --drift` shows how far the portfolio strayed at each
-year-end, and `sim explain` totals what each strategy moved. To see what
-the strategy is worth, compare a scenario built on this one with
-`sim strategy edit NAME --disable` (Part 5).
+year-end, and `sim explain` totals what each strategy moved. In the
+notebooks, `accounts.ipynb` charts the drift month by month, with the
+band shaded and a tick for each month the strategy stepped in.
+
+To see what the strategy is worth, make a scenario built on this one and
+switch the strategy off there:
+
+```sh
+sim scenario create alice_no_rebalance alice_rebalance
+sim strategy edit draw_by_allocation --disable --scenario alice_no_rebalance
+sim run alice_rebalance && sim run alice_no_rebalance
+sim compare alice_rebalance alice_no_rebalance
+```
+
+`sim compare` then adds a strategies section: what the strategy moved,
+and each run's largest drift by year end, side by side, while the net
+worth and break-even sections say what it cost or gained.
+`scenario_compare.ipynb` draws the two runs' drift together. For an
+ensemble, `sim ensemble drift` (and the drift chart in `ensemble.ipynb`)
+shows how far the members stray and how many end up past the band.
 
 The same strategy can own a destination chain: an overflow then goes to
 whatever is underweight.

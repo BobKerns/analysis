@@ -238,9 +238,81 @@ def rules_and_events_widget(container: MultiScenarioConnections,
             display_warning("**All scenarios have identical calendar events.**")
         else:
             display(events.set_index(["scenario", "date"]))
+        _show_strategy_differences(connections, scenarios, baseline)
 
     if container.ok:
         _redraw()
+
+
+def _show_strategy_differences(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], baseline: str,
+) -> None:
+    """Strategies and target weights that differ (#359); nothing when no run has either."""
+    if not compare.uses_strategies(connections):
+        return
+    strategies = compare.strategy_differences(connections, scenarios, baseline)
+    if strategies.empty:
+        display(StyledMarkdown("_All scenarios run the same strategies._"))
+    else:
+        display(StyledMarkdown("**Strategies** (— where a scenario doesn't run it)"))
+        display(strategies.fillna("—"))
+    targets = compare.target_differences(connections, scenarios, baseline)
+    if not targets.empty:
+        display(StyledMarkdown("**Target weights** (percent)"))
+        display(targets.fillna("—"))
+
+
+def strategy_compare_widget(
+    container: MultiScenarioConnections,
+    time_range: TimeRangePicker | None = None,
+    **_,
+) -> widgets.VBox:
+    """A strategy on vs off, or two strategies (#359), as ``sim compare
+    --section strategies`` shows them: each run's allocation drift against
+    the same target set, a panel per asset class and one of the largest
+    drift either way, a line per scenario; then what each scenario's
+    strategies did over the run. Targets and portfolio are a strategy's in
+    any of the runs (the baseline's first)."""
+    from analysis.sim.drift import MAX_ABS, year_end_rows
+    from analysis.sim.drift_charts import drift_compare_figure
+
+    time_range = _time_range(time_range, container)
+    output = widgets.Output()
+    connections, scenarios = container.connections, container.scenarios
+
+    def _redraw(*_):
+        with output:
+            clear_output(wait=True)
+            if not compare.uses_strategies(connections):
+                display(StyledMarkdown("_No strategies or target sets in these runs._"))
+                return
+            try:
+                target_set, portfolio, band = compare.drift_targets(connections, scenarios)
+            except ValueError as exc:
+                display_warning(f"**No drift comparison:** {exc}")
+                return
+            frames = compare.drift_by_scenario(connections, scenarios, target_set, portfolio)
+            whose = f"accounts tagged {portfolio}" if portfolio else "every asset lot"
+            low, high = time_range.value
+            fig = drift_compare_figure(
+                frames, f"Drift from {target_set} ({whose}), percentage points", band=band,
+                years=(low, high), deaths=compare.scenario_deaths(connections, scenarios))
+            display(Image(data=figure_bytes(fig), format="png"))
+            table = pd.DataFrame({name: year_end_rows(frame)[MAX_ABS] for name, frame in frames.items()})
+            table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
+            display(StyledMarkdown("**Largest drift either way at year end**, percentage points"
+                                   + (f" (band ±{band:g})" if band is not None else "")))
+            display(table.style.format("{:.1f}", na_rep="—"))
+            activity = compare.strategy_activity(connections, scenarios)
+            if not activity.empty:
+                display(StyledMarkdown("**Strategies over the run**: dollars asked of their chains, "
+                                       "moved by the strategy, and left to the chain's steps"))
+                display(activity.style.format({"asked": "${:,.0f}", "moved": "${:,.0f}", "steps": "${:,.0f}"}))
+
+    observe_while_shown(time_range, _redraw)
+    if container.ok:
+        _redraw()
+    return widgets.VBox([controls_row(time_range), output])
 
 
 def net_worth_compare_widget(

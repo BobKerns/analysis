@@ -19,8 +19,8 @@ from typing import Any
 
 import pandas as pd
 
-from analysis.sim import registries, units
-from analysis.sim.asset_classes import WeightSets, class_weights, weight_sets, weights_at
+from analysis.sim import drift, registries, units
+from analysis.sim.asset_classes import weight_sets
 from analysis.sim.strategy_api import Strategy, param_units
 
 __all__ = [
@@ -193,61 +193,14 @@ def decision_log(
     return frame[["month", "strategy", "hook", "asked", "chosen", "fallback", "note"]]
 
 
-def _sets(con: sqlite3.Connection, table: str, key: str) -> WeightSets:
-    return weight_sets(
-        (name, as_of, asset_class, weight / 1_000_000) for name, as_of, asset_class, weight in con.execute(
-            f"SELECT {key}, as_of, asset_class, weight_micros FROM {table}"  # noqa: S608 -- fixed names
-        )
-    )
-
-
 def drift_by_year(
     con: sqlite3.Connection, target_set: str, *, portfolio: str | None = None,
 ) -> pd.DataFrame:
     """Each year-end of a run (and its last month): the portfolio's share in
-    each asset class the targets name, less the target, in percentage points;
-    and ``max_abs``, the largest. ``portfolio`` is an account tag; without
-    it, every asset lot counts. Index: month."""
-    sets = _sets(con, "allocation_target", "target_set")
-    if target_set not in sets:
-        known = ", ".join(sorted(sets)) or "none"
-        raise KeyError(f"no target set {target_set!r} in the run (known: {known})")
-    symbols = _sets(con, "security_allocation", "symbol")
-    lots = con.execute(
-        "SELECT m.id, a.id, a.name, m.lot, m.symbol, a.subkind FROM account_lot m "
-        "JOIN account a ON a.id = m.account_id WHERE a.kind = 'asset'"
-    ).fetchall()
-    if portfolio:
-        tagged = {account_id for (account_id,) in con.execute(
-            "SELECT at.account_id FROM account_tag at JOIN tag t ON t.id = at.tag_id "
-            "WHERE t.role || ':' || t.name = ?", (portfolio,))}
-        lots = [lot for lot in lots if lot[1] in tagged]
-    months = [m for (m,) in con.execute("SELECT month FROM simulation_step ORDER BY step_index")]
-    chosen = [m for m in months if m[5:7] == "12"]
-    if months and (not chosen or chosen[-1] != months[-1]):
-        chosen.append(months[-1])
-    rows = []
-    for month in chosen:
-        balance = dict(con.execute(
-            "SELECT ls.lot_id, ls.balance FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
-            "WHERE s.month = ?", (month,)).fetchall())
-        dollars: dict[str, float] = {}
-        for lot_id, _account_id, account, lot, symbol, subkind in lots:
-            weights = class_weights(symbol=symbol or None, account=account, lot=lot, subkind=subkind,
-                                    sets=symbols, date=month)
-            for asset_class, w in weights.items():
-                dollars[asset_class] = dollars.get(asset_class, 0.0) + balance.get(lot_id, 0) * w
-        total = sum(dollars.values())
-        targets = weights_at(sets[target_set], month)
-        row: dict[str, Any] = {"month": month}
-        for asset_class in [c for c in (*registries.ASSET_CLASSES,) if c in targets or dollars.get(c)]:
-            share = dollars.get(asset_class, 0.0) / total if total else 0.0
-            row[asset_class] = round((share - targets.get(asset_class, 0.0)) * 100, 1)
-        rows.append(row)
-    frame = pd.DataFrame(rows).set_index("month").fillna(0.0) if rows else pd.DataFrame()
-    if not frame.empty:
-        frame["max_abs"] = frame.abs().max(axis=1)
-    return frame
+    each asset class, less the target, in percentage points; and
+    ``max_abs``, the largest. ``portfolio`` is an account tag; without it,
+    every asset lot counts. Index: month."""
+    return drift.year_end_rows(drift.drift_by_month(con, target_set, portfolio=portfolio))
 
 
 def lineage_targets(scenarios_dir: Path, scenario: str) -> list[tuple[dict[str, str], str]]:
