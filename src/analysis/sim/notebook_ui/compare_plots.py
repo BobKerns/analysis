@@ -9,6 +9,7 @@ see :func:`analysis.sim.notebook_ui.pickers.multi_scenario_picker`).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
 
 import ipywidgets as widgets
@@ -383,6 +384,10 @@ def guard_rails_compare_widget(
     dollar_mode = dollar_mode or DollarModePicker(DollarMode.CPI_CONSTANT)
     time_range = _time_range(time_range, container)
     output = widgets.Output()
+    # Evaluated rails by (run file, rails, dollars): the rails are re-read at
+    # each draw, so an edit shows, but a time-range change only re-clips.
+    evaluated: dict[tuple[Path, tuple[guard_rails.GuardRail, ...], DollarMode],
+                    list[guard_rails.RailResult]] = {}
 
     def _results(mode: DollarMode) -> dict[str, list[guard_rails.RailResult]] | None:
         """Each scenario's rails evaluated, or None, said why."""
@@ -390,11 +395,12 @@ def guard_rails_compare_widget(
         for name, rc in container.connections.items():
             try:
                 scenarios_dir = rc.scenario.scenarios_dir
-                rails = guard_rails.run_rails(rc, scenarios_dir)
             except RuntimeError:  # a run file opened without its data repo
                 display_warning(f"{name} was opened without its scenario, so its guard rails "
                                 "can't be read.")
                 return None
+            try:
+                rails = guard_rails.run_rails(rc, scenarios_dir)
             except guard_rails.GuardRailError as exc:
                 display(StyledMarkdown(f"**The guard rails of {name} don't load**; "
                                        f"`sim check {name}` lists:\n\n"
@@ -404,7 +410,10 @@ def guard_rails_compare_widget(
                 display_warning(f"No 'cpi' inflation index in the run of {name}, so no "
                                 "CPI-constant margins; pick nominal dollars.")
                 return None
-            results[name] = guard_rails.evaluate_run(rc, rails, mode) if rails else []
+            key = (rc.run_path, tuple(rails), mode)
+            if key not in evaluated:
+                evaluated[key] = guard_rails.evaluate_run(rc, rails, mode) if rails else []
+            results[name] = evaluated[key]
         return results
 
     def _redraw(*_):
@@ -427,7 +436,12 @@ def guard_rails_compare_widget(
                 colors=container.colors, years=(low, high),
                 deaths=compare.scenario_deaths(container.connections, container.scenarios))
             display(Image(data=figure_bytes(fig), format="png"))
-            senses = {r.rail.name: r.rail.sense for found in results.values() for r in found}
+            # A rail's sense is the baseline's, as the chart tints it; a rail
+            # only variants have takes the first variant's that has it.
+            senses: dict[str, str] = {}
+            for name in container.scenarios:
+                for r in results.get(name, ()):
+                    senses.setdefault(r.rail.name, r.rail.sense)
             for rail, frame in frames.items():
                 frame = time_range.clip(frame)
                 display(StyledMarkdown(f"**{rail}** ({senses[rail]})"))

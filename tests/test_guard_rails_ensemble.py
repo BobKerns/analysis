@@ -239,3 +239,16 @@ def test_the_ensemble_guard_rails_table_widget_compares_recipes_by_year(
     time_range.value = (2035, 2036)
     tables = [item.data for item in shown if hasattr(item, "data") and hasattr(item.data, "columns")]
     assert sorted(set(tables[0].index.get_level_values("year"))) == [2035, 2036]
+
+    # A recipe without rails: said so, and its store is never opened.
+    from analysis.sim.registries import GUARD_RAILS_CSV_HEADER
+    (test_data_dir / "scenarios" / "same" / "guard_rails.csv").write_text(
+        ",".join(GUARD_RAILS_CSV_HEADER) + "\n")
+    opened: list[str] = []
+    real_open = ensemble_widgets._open_recipe
+    monkeypatch.setattr(ensemble_widgets, "_open_recipe",
+                        lambda runs, name, loading: opened.append(name) or real_open(runs, name, loading))
+    shown.clear()
+    time_range.value = (2035, 2037)
+    assert opened == ["retire_alice"]
+    assert any("No guard rails in `same`" in str(getattr(item, "data", "")) for item in shown)

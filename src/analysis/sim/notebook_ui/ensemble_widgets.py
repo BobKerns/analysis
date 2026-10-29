@@ -5,7 +5,7 @@ breakpoints."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from matplotlib.figure import Figure
 import pandas as pd
 from IPython.display import Image, clear_output, display
 
+from analysis.frames import by_year_and_label
 from analysis.sim import units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
@@ -776,7 +777,7 @@ class _Sides:
 
     def tails(self, clip: Callable[[pd.DataFrame], pd.DataFrame]) -> pd.DataFrame:
         """Each recipe's tail means and reserve shares, by year end."""
-        return _by_year_and_recipe({
+        return by_year_and_label({
             name: year_end_values(clip(risk_summary(frame, self.reserve,
                                                     self.cpi_frames.get(name))))
             for name, frame in self.frames.items()
@@ -789,13 +790,6 @@ class _Sides:
             return None
         return StyledMarkdown(
             f"_No {_described(self.subject)} in {', '.join(f'`{n}`' for n in missing)}._")
-
-
-def _by_year_and_recipe(tables: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    """Year-indexed ``tables``, one per recipe, as one table indexed by
-    (year, recipe), the recipes in the order given within each year."""
-    combined = pd.concat(dict(tables), names=["recipe", "year"])
-    return combined.swaplevel().sort_index(level="year", sort_remaining=False, kind="stable")
 
 
 def _offer(dropdown: widgets.Dropdown | widgets.SelectMultiple, options: Sequence[str]) -> None:
@@ -1001,7 +995,7 @@ def ensemble_table_widget(*_,
             outputs.append(note)
         compared = [name for name in others if name in sides.frames]
         if baseline in sides.frames and compared:
-            deltas = _by_year_and_recipe({
+            deltas = by_year_and_label({
                 name: sides.deltas(baseline, name, time_range.clip) for name in compared})
             outputs.append(StyledMarkdown(f"### Against {baseline}, by year end"))
             outputs.append(deltas.style.format(_share_format(deltas.columns)))
@@ -1122,16 +1116,23 @@ def ensemble_guard_rails_table_widget(*_,
                                        f"`sim check {name}` lists:\n\n"
                                        + "\n".join(f"- {issue}" for issue in exc.issues)))
                 return
+            if not rails:  # nothing to evaluate: don't open (or build) its store
+                results[name] = []
+                continue
             opened = _open_recipe(runs_dir, name, loading)
-            assert opened is not None  # listed recipes all have a batch
+            if opened is None:  # its batch went away since the recipes were listed
+                clear_output(wait=True)
+                display(StyledMarkdown(f"**No Monte Carlo batch for {name}.**"))
+                return
             store = opened[1]
             sizes[name] = len(store)
             loading.note(f"Evaluating {name}'s guard rails")
-            results[name] = guard_rails.ensemble_results(store, rails, mode) if rails else []
+            results[name] = guard_rails.ensemble_results(store, rails, mode)
         tables = guard_rails.ensemble_comparison_table(results, baseline, others)
         clear_output(wait=True)
+        members = f" ({sizes[baseline]} members)" if baseline in sizes else ""
         display(StyledMarkdown(
-            f"**Guard rails**, {unit} dollars; baseline `{baseline}` ({sizes[baseline]} members)"))
+            f"**Guard rails**, {unit} dollars; baseline `{baseline}`{members}"))
         lacking = [name for name in (baseline, *others) if not results[name]]
         if lacking:
             display(StyledMarkdown(

@@ -175,7 +175,7 @@ def guard_rail_comparison_figure(
                for name in names}
     rails = list(dict.fromkeys(rail for found in by_name.values() for rail in found))
     colors = colors or {name: f"C{i}" for i, name in enumerate(names)}
-    fig = Figure(figsize=(14, min(3.4 * max(len(rails), 1) + 1, 24)), layout="constrained")
+    fig = Figure(figsize=(14, 3.4 * max(len(rails), 1) + 1), layout="constrained")
     if not rails:
         fig.text(0.5, 0.5, "No guard rail covers these runs' years.", ha="center")
         return fig

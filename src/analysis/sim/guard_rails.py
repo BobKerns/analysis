@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from analysis.frames import index_years
+from analysis.frames import by_year_and_label, index_years
 from analysis.sim import measures, registries, units
 from analysis.sim.dates import month_end_iso, parse_relative_date, place_month
 from analysis.sim.lineage import reading_order
@@ -838,9 +838,7 @@ def ensemble_comparison_table(
     tables: dict[str, pd.DataFrame] = {}
     base_order = [r.rail.name for r in results.get(baseline, ())]
     for rail in sorted(order, key=base_order.index):
-        combined = pd.concat(per_rail[rail], names=["recipe", "year"])
-        tables[rail] = combined.swaplevel().sort_index(
-            level="year", sort_remaining=False, kind="stable")
+        tables[rail] = by_year_and_label(per_rail[rail])
     return tables
 
 
