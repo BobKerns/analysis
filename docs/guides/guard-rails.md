@@ -177,7 +177,8 @@ recipe's rails as they are now (editing one reruns nothing), and then, for
 each rail, year and form, annual and cumulative:
 
 - **past**: the share of members past the rail that year;
-- **ever past**: the share that have been past it in some year so far;
+- **ever past**: the share that have been past it in some year so far, of
+  every member it has covered so far, those whose household has ended too;
 - **RMS overshoot**: the root mean square of how far past the members are,
   those inside counting as zero.
 
