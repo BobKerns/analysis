@@ -311,7 +311,7 @@ def test_edit_offers_to_name_an_unnamed_row_where_it_is_defined(
     )
 
     assert result.exit_code == 0, result.output
-    assert "name it in 'retire_alice'" in result.output
+    assert "Name it in 'retire_alice' now" in result.output
     after = calendar_rows()
     assert after.loc[4, "name"] == "bill_retires"
     pd.testing.assert_frame_equal(after.drop(columns="name"), parent.drop(columns="name"))
@@ -635,5 +635,5 @@ def test_a_templates_unnamed_row_is_not_offered_a_name(
 
     assert result.exit_code != 0
     assert "A template isn't edited from here" in result.output
-    assert "name it in" not in result.output
+    assert "Name it in" not in result.output
     assert child_calendar().empty

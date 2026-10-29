@@ -5226,6 +5226,19 @@ def _echo_guided_scenario(name: str, path: Path, *, defaulted: bool) -> None:
     click.echo(f"  {path}")
 
 
+def _match_calendar_rows(
+    rows: list[dict[str, str]], labels: list[str], candidates: list[int], text: str,
+) -> list[int]:
+    """Which of ``candidates`` ``text`` picks out: the row of that number,
+    else the one row of that name, else those whose label contains it."""
+    if text.isdigit() and 1 <= int(text) <= len(rows):
+        return [int(text) - 1]
+    named = [index for index, row in enumerate(rows) if text and row["name"] == text]
+    if len(named) == 1:
+        return named
+    return [index for index in candidates if text.lower() in labels[index].lower()]
+
+
 def _select_calendar_row(
     rows: list[dict[str, str]], wanted: str | None, notes: list[str] | None = None,
     *, ask: bool = True,
@@ -5234,19 +5247,16 @@ def _select_calendar_row(
     asks (again) while that leaves more or fewer than one. ``notes``, one
     per row, are added to the rows' labels. With ``ask`` off (a command
     given its changes as options), a ``wanted`` that doesn't pick out one
-    row is an error instead."""
+    row is an error instead, and so is a number that isn't a row's."""
     labels = [_calendar_row_label(row) for row in rows]
     if notes is not None:
         labels = [f"{label}  {note}" if note else label for label, note in zip(labels, notes, strict=True)]
     candidates = list(range(len(rows)))
     if not ask:
         text = (wanted or "").strip()
-        if text.isdigit() and 1 <= int(text) <= len(rows):
-            return int(text) - 1
-        if text.isdigit():  # a number is a row number here, never text to match
+        if text.isdigit() and not 1 <= int(text) <= len(rows):
             raise click.UsageError(f"there is no row {text}: the rows are numbered 1 to {len(rows)}")
-        named = [index for index, row in enumerate(rows) if text and row["name"] == text]
-        matches = named or [index for index in candidates if text and text.lower() in labels[index].lower()]
+        matches = _match_calendar_rows(rows, labels, candidates, text) if text else []
         if len(matches) == 1:
             return matches[0]
         listing = "".join(f"\n  {index + 1:>3}  {labels[index]}" for index in matches or candidates)
@@ -5264,12 +5274,7 @@ def _select_calendar_row(
                 choices=[*names, *(str(index + 1) for index in candidates)],
             )
         text, wanted = wanted.strip(), None
-        if text.isdigit() and 1 <= int(text) <= len(rows):
-            return int(text) - 1
-        named = [index for index, row in enumerate(rows) if text and row["name"] == text]
-        if len(named) == 1:
-            return named[0]
-        matches = [index for index in candidates if text.lower() in labels[index].lower()]
+        matches = _match_calendar_rows(rows, labels, candidates, text)
         if len(matches) == 1:
             return matches[0]
         if matches:
@@ -5386,24 +5391,30 @@ def _calendar_edit_given(
                 raise click.UsageError(f"{flag(field_)}: {problem}")
 
 
-def _ask_defining_name(scenarios_dir: Path, origin: str, suggested: str) -> str:
+def _ask_defining_name(
+    spec: calendar_guide.KindSpec, context: calendar_guide.GuideContext,
+    answers: dict[str, str], scenarios_dir: Path, origin: str,
+) -> str:
     """A name for an unnamed row, to write in ``origin``, the scenario that
-    defines it (#356); blank for none. A name any row in ``origin``'s
-    lineage, or in a scenario built on it, already has is asked again."""
+    defines it (#356); blank for none. Asked as the row's own name field is,
+    and asked again for a name any row in ``origin``'s lineage, or in a
+    scenario built on it, already has."""
     click.echo(
         f"  The row has no name in {origin!r}, so this scenario can only override it by "
-        "its date and other key fields, which this edit changes. Named there, it is "
-        "overridden by name instead."
+        "its date and other key fields, which this edit changes. Name it in "
+        f"{origin!r} now, and this scenario overrides it by that name instead; "
+        "leave the name blank to go back."
     )
+    field_ = next(f for f in spec.fields if f.param == "row_name")
+    guide = _calendar_guide()
+    current = answers.get("row_name") or None
     while True:
-        name = _prompt_with_completion(
-            f"name it in {origin!r} (blank to go back)", default=suggested,
-        ).strip()
-        problem = rename.name_problem("calendar row", name) if name else None
-        problem = problem or _calendar_name_clash(scenarios_dir, origin, name)
-        if problem is None:
+        name = guide.ask_field(spec, field_, context, answers, current=current)
+        clash = _calendar_name_clash(scenarios_dir, origin, name)
+        if clash is None:
             return name
-        click.echo(f"  {problem}")
+        click.echo(f"  {clash}")
+        current = None
 
 
 @calendar_group_command.command("edit")
@@ -5502,7 +5513,7 @@ def calendar_edit(
             if refused.origin is None:
                 raise
             origin = refused.origin
-            name = _ask_defining_name(data_dir_p / "scenarios", origin, str(params.get("row_name", "")))
+            name = _ask_defining_name(spec, context, answers, data_dir_p / "scenarios", origin)
             if not name:
                 raise
             written = _name_defining_calendar_row(data_dir_p, origin, rows[index], name)
