@@ -1,0 +1,11 @@
+{
+  "ticker": "ABCDX",
+  "as_of": "2026-09-30",
+  "method": "reported",
+  "sources": ["https://example.com/abcdx-fact-sheet"],
+  "allocation_pct": {"stock_us": 58.12, "stock_intl": 1.88, "stock": 0, "bond": 39.5, "cd": 0, "cash": 0.5, "real_estate": 0, "other": 0, "unclassified": 0},
+  "total_pct": 100.0,
+  "region_pct": {"United States": 96.9, "Other": 3.1},
+  "warnings": ["inputs carry several as-of dates; allocation dated 2026-09-30"],
+  "sim_export": "ABCDX-allocations-sim.csv"
+}

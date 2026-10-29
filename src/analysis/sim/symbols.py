@@ -26,7 +26,7 @@ from analysis.sim.prices import price_files
 from analysis.sim.dates import month_end_iso
 from analysis.sim.loader import _validate_allocations, _validate_securities
 
-__all__ = ["SymbolAdded", "add_symbol", "parse_weights", "symbol_table"]
+__all__ = ["SymbolAdded", "add_symbol", "has_weights", "latest_set", "parse_weights", "security_name", "symbol_table"]
 
 SECURITIES = "securities.csv"
 ALLOCATIONS = "allocations.csv"
@@ -89,6 +89,28 @@ def _latest_weights(rows: list[dict[str, str]]) -> dict[str, tuple[str, list[tup
         as_of = max(by_date, key=_month_key)
         latest[symbol] = (as_of, by_date[as_of], len(by_date))
     return latest
+
+
+def latest_set(data_dir: Path, symbol: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """``symbol``'s latest set of weights in ``allocations.csv`` as
+    ``(as_of, [(asset_class, weight)])``, or None when it has none."""
+    rows = [r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol") == symbol]
+    found = _latest_weights(rows).get(symbol)
+    return (found[0], found[1]) if found else None
+
+
+def has_weights(data_dir: Path, symbol: str, as_of: str) -> bool:
+    """Whether ``allocations.csv`` already has a set for ``symbol`` as of ``as_of``."""
+    key = _month_key(as_of)
+    return any(
+        r.get("symbol") == symbol and _month_key(r.get("as_of", "")) == key
+        for r in _read(data_dir / ALLOCATIONS)[1]
+    )
+
+
+def security_name(data_dir: Path, symbol: str) -> str | None:
+    """``symbol``'s name in ``securities.csv``, or None when it isn't there."""
+    return next((r.get("name", "") for r in _read(data_dir / SECURITIES)[1] if r.get("symbol") == symbol), None)
 
 
 def _scenario_prices(scenarios_dir: Path) -> dict[str, list[str]]:
@@ -198,12 +220,14 @@ def _appended(
 def add_symbol(
     data_dir: Path, symbol: str, *, name: str | None = None,
     weights: Mapping[str, str] | None = None, as_of: str | None = None,
+    replace: bool = False,
 ) -> SymbolAdded:
     """Name ``symbol`` in ``securities.csv`` and give it one set of weights in
     ``allocations.csv``. Either may be left out; neither file is touched for
     what isn't given. Raises ``ValueError``, writing nothing, when a row would
     not load (a duplicate name, a set that doesn't add up to 100%, a second set
-    for the same ``as_of``)."""
+    for the same ``as_of``). With ``replace``, a set already written for the
+    same ``as_of`` is replaced instead of refused."""
     symbol = symbol.strip().upper()
     if not symbol or any(ch.isspace() for ch in symbol) or "/" in symbol:
         # It becomes part of a filename, prices/security_price__<SYMBOL>.csv.
@@ -234,9 +258,15 @@ def add_symbol(
                 raise ValueError(f"--as-of {as_of!r} is not a YYYY-MM month") from None
         new = [{"symbol": symbol, "as_of": when, "asset_class": cls, "weight": w} for cls, w in weights.items()]
         header, old, rows = _appended(path, _ALLOCATION_COLUMNS, new)
-        if any(r.get("symbol") == symbol and _month_key(r.get("as_of", "")) == _month_key(when) for r in old):
-            dated = f" as of {when}" if when else " with a blank as_of"
-            raise ValueError(f"{symbol} already has weights{dated} in {ALLOCATIONS}; edit that file to change them")
+
+        def same_set(r: dict[str, str]) -> bool:
+            return r.get("symbol") == symbol and _month_key(r.get("as_of", "")) == _month_key(when)
+
+        if any(same_set(r) for r in old):
+            if not replace:
+                dated = f" as of {when}" if when else " with a blank as_of"
+                raise ValueError(f"{symbol} already has weights{dated} in {ALLOCATIONS}; edit that file to change them")
+            rows = [r for r in old if not same_set(r)] + new
         issues = []
         # The loader's checks read as_of in its stored month-end form.
         _validate_allocations(
