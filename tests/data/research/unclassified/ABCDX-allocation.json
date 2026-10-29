@@ -1,0 +1,9 @@
+{
+  "ticker": "ABCDX",
+  "as_of": "2026-09-30",
+  "method": "holdings-computed",
+  "sources": [],
+  "allocation_pct": {"stock_us": 50.0, "bond": 30.0, "unclassified": 20.0},
+  "total_pct": 100.0,
+  "warnings": ["20% of holdings have no asset type"]
+}

@@ -112,9 +112,10 @@ License 2.0 (its `LICENSE` file); the rest is under this repo's MIT license.
   reads your scenarios or accounts.
 - **Writes:** a Claude doc, or Markdown files in the folder Claude Code is
   working in when the docs connector isn't available. A fund's
-  `<TICKER>-allocations-sim.csv` holds rows in `allocations.csv`'s format;
-  copying them into the data repo, or running the `sim symbol add` they
-  describe, is up to you.
+  `<TICKER>-allocations-sim.csv` holds rows in `allocations.csv`'s format.
+  `sim symbol research` (below) asks before writing them to the data repo;
+  from an interactive session, copying them, or running the
+  `sim symbol add` they describe, is up to you.
 
 ## Evals
 
@@ -135,7 +136,23 @@ Add `--case <glob>` to run one case.
 ## Headless runs
 
 `claude -p "<request>" --plugin-dir out/finance-research/finance-research`
-runs a skill without an install, as `sim symbol research` (#344) will.
+runs a skill without an install.
+
+`sim symbol research ABCDX` does this for a fund and takes it from there
+([user guide §4.11](../user-guide.md#411-add-a-stock-or-fund)). It renders
+the plugin afresh from `research.yaml` into a temporary folder (or uses
+`--plugin-dir`), runs the fund skill in a temporary folder, and stops it
+after `--timeout` minutes (20 by default), along with anything it started.
+It prints a line per step, and the cost when Claude Code reports one.
+
+The run reads web pages nobody vetted, so a page with instructions hidden
+in it must not be able to act on your computer. The run is confined:
+Claude Code's `--restricted` mode (your own settings, which may allow more,
+are ignored, and file tools stay in the run's folder), no MCP servers, and
+`dontAsk`, which refuses anything not on the allow list instead of
+prompting. The list allows web search and fetch, reading the run's folder
+and the plugin, writing only in the run's folder, and running only the
+skill's own scripts, by their path in the plugin.
 
 Nothing here holds a key or calls the API itself: every run uses Claude
 Code's own login. Signed in with a claude.ai account, runs count against

@@ -970,6 +970,7 @@ price history the fetch can't get. With Claude Code, the finance-research
 plugin does the whole job: ask it for a tear sheet on the fund, and its
 Allocations section ends with rows in `allocations.csv`'s format, with
 sources and dates ([the finance research guide](guides/finance-research.md)).
+`sim symbol research` runs it for you (below).
 Otherwise, give the assistant the formats, because the loader rejects
 anything else. To get the weights as a command you can run:
 
@@ -995,6 +996,52 @@ in dollars with no `$` sign."
 Check the answer against the fund's own fact sheet before you save it. An
 AI's figures can be out of date or simply wrong, and nothing in the
 simulator can tell.
+
+#### Research a fund with `sim symbol research`
+
+With Claude Code and the finance-research plugin's files in this repo, one
+command researches a fund, records its weights and shows you the tear sheet:
+
+```sh
+sim symbol research ABCDX
+```
+
+1. It runs the plugin's `fund-tear-sheet` skill without a chat, configured
+   by the data repo's `research.yaml` ([the finance research
+   guide](guides/finance-research.md)). A run takes several minutes and
+   about 150k tokens on Claude Code's own login: your claude.ai plan's usage
+   limits, or real money per token if `ANTHROPIC_API_KEY` is set.
+2. It keeps what the skill wrote, a *bundle*, in the data repo under
+   `research/ABCDX/<today>/`: the tabs as Markdown, the allocation export
+   and a `report.html` page. A second run the same day gets its own folder.
+   `research/` is outside what a run's provenance covers, so a bundle never
+   makes the data dirty; commit the bundles as the record of where a set of
+   weights came from, or list `research/` in `.gitignore`.
+3. It opens `report.html`: the Overview, any translated overview, the Tear
+   sheet, Detail and Glossary as tabs. `--no-open` prints its path instead.
+4. It shows the proposed weights beside the fund's current set, with the
+   method behind them (issuer-reported, look-through, computed from
+   holdings), the as-of month and any warnings, and asks before writing them
+   to `allocations.csv`. For a symbol not yet in `securities.csv` it also
+   asks for a name, offering the tear sheet's title.
+
+If the fund already has a set for the same month, answering yes replaces
+it. `--yes` writes without asking, but refuses to replace a set unless you
+add `--replace`. `--as-of 2026-10` dates the set by another month. If the
+research left part of the fund unclassified, or wrote no rows for another
+reason (its weights added up to more than 100%, say), nothing is written;
+the command prints the reason and the skill's warnings, and keeps the
+bundle.
+
+A bundle made elsewhere, such as a tear sheet made in claude.ai and
+downloaded, or an earlier run, is imported without a run:
+
+```sh
+sim symbol research ABCDX --from-bundle ~/Downloads/abcdx-tear-sheet
+```
+
+The command only handles funds. For a single stock, `sim symbol add ABCDX
+--weight stock_us=100%` (or `stock_intl`) is all it needs.
 
 ### 4.12 Make a new investment, or a Roth conversion
 

@@ -58,9 +58,11 @@ own data, that setup belongs in a fixture instead.
 from __future__ import annotations
 from collections.abc import Callable, Generator
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
+import sys
 import warnings
 
 import git
@@ -1737,3 +1739,49 @@ def without_template_aux(tmp_path_factory: pytest.TempPathFactory, monkeypatch: 
     test that deletes one of the private copy's aux tables sees it missing
     instead of the template's copy filling in."""
     monkeypatch.setattr("analysis.sim.loader.TEMPLATE_AUX_DIR", tmp_path_factory.mktemp("no_template_aux"))
+
+
+@pytest.fixture(scope="session")
+def research_bundles(repo_root: Path) -> Path:
+    """Fund research bundles as the finance-research plugin writes them (#344),
+    read-only: ``abcdx/`` (every tab, an allocation export, a ``fund-work/``
+    folder) and ``unclassified/`` (JSON only: part of the fund unclassified)."""
+    return repo_root / "tests" / "data" / "research"
+
+
+@pytest.fixture
+def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, research_bundles: Path) -> Path:
+    """A stand-in ``claude`` first on PATH for `sim symbol research`: it copies
+    the bundle named by ``$FAKE_CLAUDE_BUNDLE`` (default ``abcdx``) into its
+    working folder and prints ``stream-json`` events. ``$FAKE_CLAUDE_FAIL``
+    makes it report an error; ``$FAKE_CLAUDE_SLEEP`` delays it;
+    ``$FAKE_CLAUDE_CHILD`` leaves a child holding its stdout. Each call's
+    arguments go to the returned file, one per line."""
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "claude-args.txt"
+    script = bin_dir / "claude"
+    script.write_text(f"""#!{sys.executable}
+import json, os, shutil, sys, time
+from pathlib import Path
+Path({str(calls)!r}).write_text("\\n".join(sys.argv[1:]) + "\\n", encoding="utf-8")
+if os.environ.get("FAKE_CLAUDE_CHILD"):
+    import subprocess
+    subprocess.Popen(["sleep", "30"])  # inherits stdout, so it holds the pipe open
+time.sleep(float(os.environ.get("FAKE_CLAUDE_SLEEP", "0")))
+name = os.environ.get("FAKE_CLAUDE_BUNDLE", "abcdx")
+if name:
+    shutil.copytree(Path({str(research_bundles)!r}) / name, Path.cwd(), dirs_exist_ok=True)
+def emit(event):
+    print(json.dumps(event), flush=True)
+emit({{"type": "system", "subtype": "init"}})
+emit({{"type": "assistant", "message": {{"content": [
+    {{"type": "tool_use", "name": "WebSearch", "input": {{"query": "ABCDX fact sheet"}}}},
+    {{"type": "text", "text": "Found it."}}]}}}})
+fail = os.environ.get("FAKE_CLAUDE_FAIL")
+emit({{"type": "result", "subtype": "error" if fail else "success", "is_error": bool(fail),
+       "result": fail or "Wrote the tear sheet.", "total_cost_usd": 1.25}})
+""", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return calls

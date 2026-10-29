@@ -1,0 +1,5 @@
+symbol,as_of,asset_class,weight
+ABCDX,2026-09,stock_us,58.1234%
+ABCDX,2026-09,stock_intl,1.8766%
+ABCDX,2026-09,bond,39.5%
+ABCDX,2026-09,cash,0.5%
