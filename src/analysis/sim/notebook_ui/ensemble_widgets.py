@@ -5,7 +5,7 @@ breakpoints."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from matplotlib.figure import Figure
 import pandas as pd
 from IPython.display import Image, clear_output, display
 
+from analysis.frames import by_year_and_label
 from analysis.sim import units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
@@ -59,7 +60,8 @@ from analysis.sim.notebook_ui.styled import StyledMarkdown
 __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
-    "ensemble_table_widget", "ensemble_guard_rails_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
+    "ensemble_table_widget", "ensemble_guard_rails_widget", "ensemble_guard_rails_table_widget",
+    "NET_WORTH", "EnsembleControls", "recipe_accounts",
     "RecipeSeeds", "LoadingIndicator",
 ]
 
@@ -775,7 +777,7 @@ class _Sides:
 
     def tails(self, clip: Callable[[pd.DataFrame], pd.DataFrame]) -> pd.DataFrame:
         """Each recipe's tail means and reserve shares, by year end."""
-        return _by_year_and_recipe({
+        return by_year_and_label({
             name: year_end_values(clip(risk_summary(frame, self.reserve,
                                                     self.cpi_frames.get(name))))
             for name, frame in self.frames.items()
@@ -788,13 +790,6 @@ class _Sides:
             return None
         return StyledMarkdown(
             f"_No {_described(self.subject)} in {', '.join(f'`{n}`' for n in missing)}._")
-
-
-def _by_year_and_recipe(tables: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    """Year-indexed ``tables``, one per recipe, as one table indexed by
-    (year, recipe), the recipes in the order given within each year."""
-    combined = pd.concat(dict(tables), names=["recipe", "year"])
-    return combined.swaplevel().sort_index(level="year", sort_remaining=False, kind="stable")
 
 
 def _offer(dropdown: widgets.Dropdown | widgets.SelectMultiple, options: Sequence[str]) -> None:
@@ -1000,7 +995,7 @@ def ensemble_table_widget(*_,
             outputs.append(note)
         compared = [name for name in others if name in sides.frames]
         if baseline in sides.frames and compared:
-            deltas = _by_year_and_recipe({
+            deltas = by_year_and_label({
                 name: sides.deltas(baseline, name, time_range.clip) for name in compared})
             outputs.append(StyledMarkdown(f"### Against {baseline}, by year end"))
             outputs.append(deltas.style.format(_share_format(deltas.columns)))
@@ -1020,4 +1015,167 @@ def ensemble_table_widget(*_,
     when_cell_is_done(_redraw)
     return widgets.VBox([
         widgets.HBox([baseline_picker, variant_picker]), controls.row(lot_picker), loading, out,
+    ])
+
+
+def _rail_share_format(columns: Any) -> dict[Any, str | Callable[..., Any] | None]:
+    """Shares (``past``, ``ever_past``, ``past_at_end`` and their ``Δ``) as
+    percents, the RMS as dollars, a change signed."""
+    formats: dict[Any, str | Callable[..., Any] | None] = {}
+    for column in columns:
+        name = str(column)
+        delta = name.startswith("Δ")
+        if name.lstrip("Δ").startswith(("past", "ever_past")):
+            formats[column] = "{:+.0%}" if delta else "{:.0%}"
+        elif name.lstrip("Δ").startswith("rms_over"):
+            formats[column] = "{:+,.0f}" if delta else "${:,.0f}"
+    return formats
+
+
+def ensemble_guard_rails_table_widget(*_,
+                                      data_dir: Path | str | None = None,
+                                      state_dir: Path | None = None,
+                                      runs_dir: Path | str | None = None,
+                                      controls: EnsembleControls | None = None,
+                                      default: str | None = None,
+                                      **__,
+                                      ) -> widgets.VBox:
+    """A baseline recipe's guard rails against any number of recipes that
+    pair with it (#305), as ``ensemble_table_widget`` sets out net worth: per
+    rail both have (matched by name), a table indexed by (year, recipe) of
+    each recipe's change in the share of members past it, the share ever
+    past it so far and their RMS overshoot, annual and cumulative; then each
+    recipe's whole-run summary beside its change against the baseline.
+    ``controls`` shares the dollars and the years shown with the other
+    ensemble widgets; ``default`` is the baseline to start on. Each recipe's
+    own rails are read at each draw, so an edited rail shows without a rerun."""
+    from analysis.sim import guard_rails
+    from analysis.sim.guard_rail_charts import ENSEMBLE_CAVEAT
+
+    resolved_data_dir = find_data_dir(data_dir)
+    runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default])
+    seeds = RecipeSeeds(runs_dir, recipes)
+    baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
+    if _default(recipes, default) is not None:
+        baseline_picker.value = default
+    variant_picker = widgets.SelectMultiple(
+        options=seeds.paired_with(baseline_picker.value), description="Compare:",
+        rows=min(max(len(recipes), 2), 8),
+    )
+    controls = controls or EnsembleControls(runs_dir=runs_dir, dollar_mode=DollarMode.CPI_CONSTANT)
+    dollar_picker, time_range = controls.dollar_picker, controls.time_range
+    loading = LoadingIndicator()
+    out = widgets.Output()
+    holding = False
+
+    def _new_baseline(*_: object) -> None:
+        nonlocal holding
+        holding = True
+        try:
+            _offer(variant_picker, seeds.paired_with(baseline_picker.value))
+        finally:
+            holding = False
+        _redraw()
+
+    def _redraw(*_: object) -> None:
+        if holding:
+            return
+        with out:
+            baseline, others = baseline_picker.value, list(variant_picker.value)
+            if not baseline or not others:
+                clear_output()
+                display(StyledMarkdown(
+                    "_Pick a baseline and the recipes to compare it with._"
+                    if variant_picker.options or not baseline
+                    else f"_No other recipe pairs with `{baseline}`: none shares its seed._"))
+                return
+            try:
+                _draw(baseline, others)
+            finally:
+                loading.finish()
+
+    # Evaluated rails and member counts by (batch, rails, dollars), as
+    # guard_rails_compare_widget keeps them: the rails are re-read at each
+    # draw, so an edit shows, but a change of years only re-clips.
+    evaluated: dict[tuple[Path | None, tuple[guard_rails.GuardRail, ...], DollarMode],
+                    tuple[list[guard_rails.EnsembleRailResult], int]] = {}
+
+    def _draw(baseline: str, others: list[str]) -> None:
+        scenarios_dir = resolved_data_dir / "scenarios"
+        if not scenarios_dir.is_dir():
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**Guard rails are read from the data repo, and there is "
+                                   f"none at {resolved_data_dir}.** Source `activate-analysis` "
+                                   "or pass `data_dir=`."))
+            return
+        mode = dollar_picker.value
+        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        results: dict[str, list[guard_rails.EnsembleRailResult]] = {}
+        sizes: dict[str, int] = {}
+        for name in (baseline, *others):
+            try:
+                rails = guard_rails.ensemble_rails(scenarios_dir, name)
+            except guard_rails.GuardRailError as exc:
+                clear_output(wait=True)
+                display(StyledMarkdown(f"**The guard rails of {name} don't load**; "
+                                       f"`sim check {name}` lists:\n\n"
+                                       + "\n".join(f"- {issue}" for issue in exc.issues)))
+                return
+            if not rails:  # nothing to evaluate: don't open (or build) its store
+                results[name] = []
+                continue
+            batch_dir = latest_ensemble_batch(runs_dir / name, mode="monte_carlo")
+            key = (batch_dir, tuple(rails), mode)
+            if batch_dir is None or key not in evaluated:
+                opened = _open_recipe(runs_dir, name, loading)
+                if opened is None:  # its batch went away since the recipes were listed
+                    clear_output(wait=True)
+                    display(StyledMarkdown(f"**No Monte Carlo batch for {name}.**"))
+                    return
+                store = opened[1]
+                loading.note(f"Evaluating {name}'s guard rails")
+                key = (opened[0], tuple(rails), mode)
+                evaluated[key] = (guard_rails.ensemble_results(store, rails, mode), len(store))
+            results[name], sizes[name] = evaluated[key]
+        tables = guard_rails.ensemble_comparison_table(results, baseline, others)
+        clear_output(wait=True)
+        members = f" ({sizes[baseline]} members)" if baseline in sizes else ""
+        display(StyledMarkdown(
+            f"**Guard rails**, {unit} dollars; baseline `{baseline}`{members}"))
+        lacking = [name for name in (baseline, *others) if not results[name]]
+        if lacking:
+            display(StyledMarkdown(
+                f"_No guard rails in {', '.join(f'`{n}`' for n in lacking)}._"))
+        if not tables:
+            display(StyledMarkdown(f"_No guard rail is in both `{baseline}` and a recipe "
+                                   "compared with it._"))
+            return
+        senses = {r.rail.name: r.rail.sense for r in results[baseline]}
+        display(StyledMarkdown(f"### Against {baseline}, by year"))
+        for rail, table in tables.items():
+            years = table.index.get_level_values("year")
+            low, high = time_range.value
+            table = table[(years >= low) & (years <= high)]
+            display(StyledMarkdown(f"**{rail}** ({senses[rail]}): Δ is the recipe less "
+                                   f"`{baseline}`"))
+            display(table.style.format(_rail_share_format(table.columns), na_rep=""))
+        summary = guard_rails.ensemble_summary_comparison(results, baseline, others)
+        display(StyledMarkdown("### Over the whole run, by recipe"))
+        display(summary.style.format(_rail_share_format(summary.columns), na_rep=""))
+        display(StyledMarkdown(
+            "For a rail to stay inside, a negative Δpast is fewer members past it; for a "
+            "positive rail, fewer members with room to spend more. " + ENSEMBLE_CAVEAT))
+
+    baseline_picker.observe(_new_baseline, names="value")
+    variant_picker.observe(_redraw, names="value")
+    note_picks(resolved_data_dir, baseline_picker, variant_picker)
+    for picker in (dollar_picker, time_range):
+        picker.observe(_redraw, names="value")
+    when_cell_is_done(_redraw)
+    return widgets.VBox([
+        widgets.HBox([baseline_picker, variant_picker]),
+        widgets.HBox([dollar_picker, time_range],
+                     layout=widgets.Layout(flex_flow="row wrap", align_items="center")),
+        loading, out,
     ])
