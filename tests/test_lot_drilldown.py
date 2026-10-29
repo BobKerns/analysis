@@ -147,13 +147,13 @@ def test_balance_history_plots_the_picked_lots(two_lot_run: RunConnection,
 
     from analysis.sim.notebook_ui import accounts_plots
 
-    shown: list[object] = []
-    monkeypatch.setattr(accounts_plots, "display", lambda *args, **kwargs: shown.extend(args))
+    shown: list[Figure] = []
+    monkeypatch.setattr(accounts_plots, "show_figure", shown.append)
     widget = accounts_plots.account_history_widget(two_lot_run, "asset", "Balances")
     picker = widget.children[1]
     picker.account_picker.value = (BROKERAGE,)
     picker.lot_picker.picker.value = ("a", "b")
-    figure = [item for item in shown if isinstance(item, Figure)][-1]
+    figure = shown[-1]
     assert [line.get_label() for line in figure.axes[0].lines] == [
         f"{BROKERAGE}/a", f"{BROKERAGE}/b", "Total",
     ]

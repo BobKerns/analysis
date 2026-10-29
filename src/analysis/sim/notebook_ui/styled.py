@@ -14,11 +14,15 @@ from __future__ import annotations
 import re
 from functools import cache
 from importlib.resources import files
+from typing import TYPE_CHECKING
 
 from IPython.display import Markdown
 from markdown_it import MarkdownIt
 
-__all__ = ["StyledMarkdown", "styled_html"]
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+
+__all__ = ["StyledMarkdown", "show_figure", "styled_html"]
 
 
 @cache
@@ -51,3 +55,13 @@ class StyledMarkdown(Markdown):
 
     def _repr_html_(self) -> str:
         return styled_html(_renderer().render(self.data or ""))
+
+
+def show_figure(fig: Figure) -> None:
+    """Display a plain matplotlib ``Figure`` (one of the shared chart modules',
+    drawn without pyplot) as a PNG, as matplotlib-inline would show it."""
+    from IPython.display import Image, display
+
+    from analysis.sim.ensemble_plots import figure_bytes
+
+    display(Image(data=figure_bytes(fig), format="png"))

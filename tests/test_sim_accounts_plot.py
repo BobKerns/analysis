@@ -1,17 +1,17 @@
-"""Tests for analysis.sim.accounts_plot."""
+"""Tests for the balance-history chart in analysis.sim.run_charts."""
 
 from __future__ import annotations
 
 import matplotlib
 import numpy as np
 
-from analysis.sim.notebook_ui.accounts_plots import trim_to_last_nonzero
+from analysis.sim.run_charts import trim_to_last_nonzero
 
 matplotlib.use("Agg")
 
 import pandas as pd
 
-from analysis.sim.notebook_ui.accounts_plots import render_balance_history_figure
+from analysis.sim.run_charts import balance_history_figure
 from analysis.sim.types import ValuePlotMode
 
 
@@ -53,24 +53,24 @@ def test_trim_to_last_nonzero_only_considers_selected_columns() -> None:
     assert list(trimmed.index) == list(idx[:2])
 
 
-def test_render_balance_history_figure_total_plots_raw_balance() -> None:
+def test_balance_history_figure_total_plots_raw_balance() -> None:
     idx = pd.date_range("2026-01-31", periods=4, freq="ME")
     df = pd.DataFrame({"A": [100.0, 150.0, 130.0, 130.0]}, index=idx)
 
-    fig = render_balance_history_figure(df, ["A"], "title")
+    fig = balance_history_figure(df, ["A"], "title")
 
     assert fig is not None
     line = fig.axes[0].lines[0]
     assert np.asarray(line.get_ydata()).tolist() == [100.0, 150.0, 130.0, 130.0]
 
 
-def test_render_balance_history_figure_monthly_plots_month_over_month_change() -> None:
+def test_balance_history_figure_monthly_plots_month_over_month_change() -> None:
     """First month has no prior value to diff against -- the visible line
     effectively starts one month later."""
     idx = pd.date_range("2026-01-31", periods=4, freq="ME")
     df = pd.DataFrame({"A": [100.0, 150.0, 130.0, 130.0]}, index=idx)
 
-    fig = render_balance_history_figure(df, ["A"], "title", value_mode=ValuePlotMode.MONTHLY)
+    fig = balance_history_figure(df, ["A"], "title", value_mode=ValuePlotMode.MONTHLY)
 
     assert fig is not None
     line = fig.axes[0].lines[0]

@@ -3,7 +3,6 @@ by account, owner, subkind or tax treatment, with a month for a run (ADR-003 §4
 
 from __future__ import annotations
 
-import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import display
 from ipywidgets import widgets
@@ -11,10 +10,11 @@ from ipywidgets import widgets
 from analysis.sim.allocation import (
     _NO_SPLIT, Grouping, UNCLASSIFIED, asset_classes_present, lot_classes, portfolio_allocation,
 )
+from analysis.sim.allocation_charts import allocation_figure
 from analysis.sim.connection import Connection
 from analysis.sim.notebook_ui.holdings_widgets import _label, _month_dropdown
 from analysis.sim.notebook_ui.pickers import AssetClassPicker, GroupingPicker
-from analysis.sim.notebook_ui.styled import StyledMarkdown
+from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
 __all__ = ["allocation_view", "portfolio_allocation_widget"]
 
@@ -38,19 +38,6 @@ def allocation_view(
 def _styled(table: pd.DataFrame):
     money = [c for c in table.columns if c != "percent"]
     return table.style.format({**dict.fromkeys(money, "${:,.2f}"), "percent": "{:.1f}%"})
-
-
-def _pie(table: pd.DataFrame) -> None:
-    body = table.drop(index="Total")
-    body = body[body["percent"] > 0]
-    if body.empty:
-        return
-    fig, ax = plt.subplots(figsize=(4.5, 4.5))
-    ax.pie(body["percent"], labels=body.index, autopct="%1.0f%%", startangle=90, counterclock=False)
-    ax.axis("equal")
-    plt.show()
-    display(fig, clear=True)
-    plt.close(fig)
 
 
 def portfolio_allocation_widget(
@@ -77,8 +64,10 @@ def portfolio_allocation_widget(
         with out:
             display(StyledMarkdown(heading))
             display(_styled(table))
+        pie.clear_output(wait=True)
         with pie:
-            _pie(table)
+            # A pie of the classes; split, a bar per class by the split (#327).
+            show_figure(allocation_figure(table))
 
     for control in (split_picker, month_picker, include):
         if control is not None:

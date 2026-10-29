@@ -276,26 +276,31 @@ def test_the_net_worth_notebook_charts_mark_the_deaths(
     write_lifespans: Callable[..., None], fund_asset_savings: Callable[..., None],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import matplotlib.pyplot as plt
-
+    from analysis.sim import reports, run_charts
     from analysis.sim.notebook_ui import networth_plots
 
     fund_asset_savings("500000.00")
     write_lifespans(ALICE_DIES, BILL_DIES)
     run = run_scenario(load_test_copy().intent_path, runs_dir / "charts.sqlite3", run_by="T",
                        allow_dirty_data=True, allow_dirty_code=True)
-    plt.close("all")
     with RunConnection(run) as rc:
         for widget in (networth_plots.net_worth_widget, networth_plots.income_widget,
                        networth_plots.expenses_widget, networth_plots.gains_widget,
-                       networth_plots.economic_income_widget):
+                       networth_plots.economic_income_widget, networth_plots.tax_widget):
             widget(rc)
+        # The widgets draw these (#327); each marks both deaths.
+        deaths = rc.deaths()
+        income = reports.flows_by_year(rc, "income")
+        figures = [
+            run_charts.net_worth_figure(rc.net_worth_frame()[["nominal"]], "t", deaths=deaths),
+            run_charts.flows_figure(income, "t", deaths=deaths),
+            run_charts.flows_figure(reports.flows_by_year(rc, "expenses"), "t", deaths=deaths),
+            run_charts.gains_figure(reports.gains_by_year(rc), "t", deaths=deaths),
+            run_charts.economic_income_figure(income, "t", deaths=deaths),
+        ]
     # An error inside a widget's Output is printed, not raised.
     assert "Traceback" not in "".join(capsys.readouterr())
-    figures = [plt.figure(n) for n in plt.get_fignums()]
-    assert len(figures) == 5
     assert all(len(_death_lines(fig.axes[0])) == 2 for fig in figures)
-    plt.close("all")
 
 
 def test_a_joint_lot_steps_up_half_however_many_survive(

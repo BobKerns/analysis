@@ -11,19 +11,18 @@ from typing import cast
 
 from IPython.display import clear_output, display
 from ipywidgets import widgets
-import matplotlib.pyplot as plt
 import pandas as pd
 
 from analysis.sim.accounts import CASHFLOW_KINDS, KIND_LABELS, account_summary_by_kind, accounts_dataframe
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.plotting import include_zero, mark_deaths
+from analysis.sim.run_charts import balance_history_figure
 from analysis.sim.types import AccountKind, AccountKindAny, Death, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
     AccountPicker, DollarModePicker, TimeRangePicker, ValuePlotModePicker,
     YAxisPlotModePicker, controls_row, observe_while_shown, run_years,
 )
-from analysis.sim.notebook_ui.styled import StyledMarkdown
+from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
 
 # Income/expense balances are cumulative totals, unlike asset/liability's
@@ -113,7 +112,7 @@ def account_balance_history_widget(
             mode_title = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             values_title = "monthly change" if values == ValuePlotMode.MONTHLY else "total"
             kind_title = KIND_LABELS[_kind()]
-            fig = render_balance_history_figure(
+            fig = balance_history_figure(
                 pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
                 zero_anchor=zero_anchor, value_mode=values, clip=time_range.clip,
                 deaths=deaths,
@@ -121,10 +120,7 @@ def account_balance_history_widget(
             if fig is None:
                 print("(pick one or more accounts)")
                 return
-            # Show the figure itself: plt.show() did not draw it on the first pass
-            # under Jupyter. Closing it keeps the inline backend from showing it again.
-            display(fig)
-            plt.close(fig)
+            show_figure(fig)
 
     picker.observe(_redraw_caveat, names="kind")
     picker.observe(_redraw, names="selection")
@@ -173,77 +169,6 @@ def account_history_widget(
         deaths=rc.deaths(),
     )
 
-
-def trim_to_last_nonzero(
-    balance_pivot: pd.DataFrame, selected: list[str]
-) -> pd.DataFrame:
-    """Trim trailing months where every selected account is zero (or missing).
-
-    Keeps one month past the last non-zero balance -- the month it actually
-    settles to its final zero -- instead of stretching the x-axis out to the
-    scenario's full end for accounts that closed out early.
-    """
-    nonzero = balance_pivot[selected].fillna(0).ne(0).any(axis=1)
-    if not nonzero.any():
-        return balance_pivot
-    last_nonzero_pos = nonzero.to_numpy().nonzero()[0].max()
-    end_pos = min(last_nonzero_pos + 1, len(balance_pivot.index) - 1)
-    return balance_pivot.iloc[: end_pos + 1]
-
-
-def render_balance_history_figure(
-    balance_pivot: pd.DataFrame,
-    selected: list[str],
-    title: str,
-    *,
-    zero_anchor: bool = True,
-    value_mode: ValuePlotMode = ValuePlotMode.TOTAL,
-    clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
-    deaths: Sequence[Death] = (),
-) -> None | plt.Figure:
-    """Build the matplotlib Figure for selected account balance histories, or
-    None if empty.
-
-    ``zero_anchor`` applies the include-zero policy by default; turn it off
-    for a series whose true variation is tiny relative to its magnitude (e.g.
-    a home's value in CPI-constant terms) -- zero-anchoring would otherwise
-    flatten it to an invisible line hugging the top of the axis.
-
-    ``value_mode``: ``ValuePlotMode.TOTAL`` (default) plots the raw balance;
-    ``ValuePlotMode.MONTHLY`` plots the change from the previous month -- the
-    first month has no prior value to diff against, so the visible line
-    effectively starts one month later.
-
-    ``clip`` cuts the rows to plot (``TimeRangePicker.clip``), after the
-    monthly change is taken, so a window's first month keeps its change.
-
-    ``deaths`` are red lines (#255).
-    """
-    if not selected:
-        return None
-
-    balance_pivot = trim_to_last_nonzero(balance_pivot, selected)[selected].copy()
-    if len(selected) > 1:
-        balance_pivot["Total"] = balance_pivot.sum(axis=1)
-    ylabel = "USD"
-    if value_mode == ValuePlotMode.MONTHLY:
-        balance_pivot = balance_pivot.diff()
-        ylabel = "USD / month"
-    if clip is not None:
-        balance_pivot = clip(balance_pivot)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    for name in balance_pivot.columns:
-        ax.plot(balance_pivot.index, balance_pivot[name], label=name)
-    ax.set_title(title)
-    ax.set_ylabel(ylabel)
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"${value:,.0f}"))
-    ax.grid(True, alpha=0.3)
-    mark_deaths(ax, deaths)
-    ax.legend(loc="best", fontsize="small", framealpha=0.5)
-    if zero_anchor:
-        include_zero(ax)
-    fig.autofmt_xdate()
-    return fig
 
 def to_month(date: str) -> str:
     if not date:
