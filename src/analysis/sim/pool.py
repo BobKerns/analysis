@@ -125,10 +125,10 @@ def read_pool(scenarios_dir: Path, name: str) -> Pool:
     components: list[str] = []
     weights: list[int] = []
     if isinstance(raw, list) and all(isinstance(c, str) for c in raw):
-        components = [c.strip() for c in raw]
+        components = list(raw)
     elif isinstance(raw, dict):
         for component, weight in raw.items():
-            components.append(component.strip())
+            components.append(component)
             try:
                 if not isinstance(weight, str):
                     raise ValueError(f"write {weight!r} as a percent string, like \"40%\"")
@@ -147,6 +147,11 @@ def read_pool(scenarios_dir: Path, name: str) -> Pool:
         issues.append(f"{name}: a pool needs at least two components (has {len(components)})")
     if len(set(components)) != len(components):
         issues.append(f"{name}: a component is named twice")
+    # Names are matched as written everywhere (renames, deletes, the data
+    # scope), so one with stray spaces is refused rather than tidied here.
+    for component in components:
+        if component != component.strip() or not component:
+            issues.append(f"{name}: component name {component!r} has spaces around it")
     if name in components:
         issues.append(f"{name}: a pool can't be one of its own components")
     if components and not weights:
@@ -296,6 +301,21 @@ def refresh_readme_pools_line(folder: Path, components: Mapping[str, str | None]
     if "\n".join(lines) == text:
         return False
     readme.write_text("\n".join(lines), encoding="utf-8")
+    return True
+
+
+def refresh_readme_description(folder: Path, old: str, new: str) -> bool:
+    """Swap the pool README.md's description paragraph ``old`` for ``new``
+    while it still reads word for word as written (as ``scenario edit``'s
+    README follows its description); whether it changed."""
+    readme = Path(folder) / "README.md"
+    if old == new or not old.strip() or not readme.is_file():
+        return False
+    blocks = readme.read_text(encoding="utf-8").split("\n\n")
+    if old not in blocks:
+        return False
+    blocks[blocks.index(old)] = new
+    readme.write_text("\n\n".join(blocks), encoding="utf-8")
     return True
 
 

@@ -215,10 +215,13 @@ def draws_widget(*,
         with table_out:
             if frames["draw_check"].empty:
                 mode = frames["batch"]["mode"].iloc[0] if not frames["batch"].empty else ""
-                display(StyledMarkdown(
-                    "_Only the base case (member 0) came from this component, and it draws "
-                    "nothing; its nodes are listed below._" if mode == "monte_carlo"
-                    else "_A one-at-a-time batch draws nothing at random; its nodes are listed below._"))
+                if mode != "monte_carlo":
+                    why = "A one-at-a-time batch draws nothing at random"
+                elif len(component.options) > 1:
+                    why = "Only the base case (member 0) came from this component, and it draws nothing"
+                else:
+                    why = "No drawn member succeeded (member 0 is the base case), so there is nothing to check"
+                display(StyledMarkdown(f"_{why}; its nodes are listed below._"))
                 display(frames["node"].set_index("name"))
             else:
                 display(check_table(frames))

@@ -969,6 +969,12 @@ def _run_pool(
             "latest run must be a Monte Carlo batch; one with no varying rows runs as a "
             "single run)")
     stamps = data_stamps(data_dir, pool_name)
+    if stamps.dirty and not allow_dirty_data:
+        # The loader's gate (ADR-004 §3), which nothing here calls: the
+        # pool's folder or a component's lineage has uncommitted changes.
+        raise click.ClickException(
+            f"{pool_name}: data dirty; refusing to build the pool (commit the changes, or pass "
+            f"--allow-dirty-data): {', '.join(stamps.dirty_paths)}")
     with _build_lock(intent_dir, pool_name):
         batch, intent_batch, runs_batch = _reserve_batch(pool_name, intent_dir, runs_dir)
         try:
@@ -1627,6 +1633,8 @@ def _apply_pool_edit(
     else:
         new_description = description.strip() or pl.default_description(list(parsed))
     new_base = spec.get("base") if base is None else (base.strip() or None)
+    if base is None and new_base not in parsed:
+        new_base = None  # its base replaced with the components: the first is the base now
     new_size = meta.get("ensemble_size") if size is None else _blank_or(size, _member_count, "--size")
     if reserve is None:
         new_reserve = meta.get("reserve")
@@ -1634,6 +1642,7 @@ def _apply_pool_edit(
         new_reserve = _blank_or(reserve, _reserve_json, "--reserve")
     _write_pool(data, name, parsed, base=new_base, size=new_size, description=new_description,
                 reserve=new_reserve, created_by=row.get("created_by") or None)
+    pl.refresh_readme_description(folder, old_description, new_description)
     pool = pl.read_pool(data / "scenarios", name)
     click.echo(f"edited pool {name}")
     click.echo("  components: " + ", ".join(f"{c} {pool.weight_text(c)}" for c in pool.components))
@@ -2251,7 +2260,8 @@ def _echo_draws_summary(con: sqlite3.Connection, path: Path) -> None:
             count = con.execute("SELECT count(*) FROM member WHERE component = ?",
                                 (component,)).fetchone()[0]
             click.echo(f"\n  component {component} ({count} member(s)):")
-        _echo_component_draws(con, component, indent=2 + 2 * (len(components) > 1))
+        _echo_component_draws(con, component, indent=2 + 2 * (len(components) > 1),
+                              pooled=len(components) > 1)
     scales = con.execute(
         "SELECT tree_root, count(*), min(scale), avg(scale), max(scale) FROM tail_scale "
         "WHERE year IS NULL GROUP BY tree_root ORDER BY tree_root").fetchall()
@@ -2263,7 +2273,9 @@ def _echo_draws_summary(con: sqlite3.Connection, path: Path) -> None:
         ])
 
 
-def _echo_component_draws(con: sqlite3.Connection, component: str, *, indent: int) -> None:
+def _echo_component_draws(
+    con: sqlite3.Connection, component: str, *, indent: int, pooled: bool = False,
+) -> None:
     """One component's node checks and correlated pairs."""
     pad = " " * indent
     checks = {r["node"]: r for r in con.execute(
@@ -2291,9 +2303,13 @@ def _echo_component_draws(con: sqlite3.Connection, component: str, *, indent: in
                      "KS p(u)"], rows, left=indent)
     else:
         # A sensitivity batch draws nothing; its members sit at set quantiles.
-        # So does a pool component whose only member is the base case.
+        # A Monte Carlo batch has nothing to check when no drawn member
+        # succeeded: a pool component whose only member is the base case, a
+        # one-member ensemble, or one whose drawn members all failed.
         if con.execute("SELECT mode FROM batch").fetchone()[0] == "monte_carlo":
-            click.echo(f"{pad} only the base case (member 0) came from {component}; nothing drawn to check")
+            click.echo(f"{pad} only the base case (member 0) came from {component}; nothing drawn to check"
+                       if pooled else
+                       f"{pad} no drawn member succeeded (member 0 is the base case); nothing to check")
         _echo_table(["node", "distribution", "median"], [
             [n["name"], n["distribution"] or n["node_kind"], _draw_cell(n["unit"], n["median"])]
             for n in nodes

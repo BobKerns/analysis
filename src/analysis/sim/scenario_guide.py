@@ -53,7 +53,8 @@ def pool_spec(ensembles: Sequence[str]) -> KindSpec:
                   choices=lambda ctx, answers: list(ensembles)),  # noqa: ARG005
             Field("base", "base component (its member 0 is the pool's)", option="--base",
                   required=False, help="Blank takes the first component.",
-                  choices=lambda ctx, answers: answers.get("components", "").split()),  # noqa: ARG005
+                  choices=lambda ctx, answers: [  # noqa: ARG005
+                      word.partition("=")[0] for word in answers.get("components", "").split()]),
             Field("size", "member count", type="count", option="--size", required=False,
                   help="Blank takes the smallest component's."),
             Field("reserve", "reserve in CPI-constant dollars", type="money", option="--reserve",

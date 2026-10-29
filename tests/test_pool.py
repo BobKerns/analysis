@@ -457,3 +457,69 @@ def test_sim_all_fails_a_pool_over_a_failed_component_without_running_it_again(
     assert result.exit_code == 0, result.output
     assert "mix: component e_a, e_b failed earlier in this run" in result.output
     assert "component e_a: running" not in result.output
+
+
+@pytest.mark.slow
+def test_a_pool_is_not_built_from_dirty_data(
+    test_data_dir: Path, pool_scenarios: str, state_dir: Path,
+    commit_test_data: Callable[[], Path], stamp_runs: Callable[[Path], None],
+) -> None:
+    commit_test_data()
+    args = ("--data-dir", str(test_data_dir), "--allow-dirty-code")
+    first = _sim("run", pool_scenarios, *args)
+    assert first.exit_code == 0, first.output
+    stamp_runs(state_dir / "runs")
+    # Both components are fresh, so nothing loads; the pool's gate is its own.
+    with (test_data_dir / "scenarios" / pool_scenarios / "README.md").open("a", encoding="utf-8") as fh:
+        fh.write("\nMore notes.\n")
+    again = _sim("run", pool_scenarios, *args)
+    assert again.exit_code != 0
+    assert "data dirty; refusing to build the pool" in again.output
+    assert "README.md" in again.output
+
+
+def test_a_pools_names_to_complete_are_every_components(test_data_dir: Path, pool_scenarios: str) -> None:
+    from analysis.sim import names
+
+    # gift is e_b's row; the base is e_a.
+    assert "gift" in names.calendar_row_names(test_data_dir, pool_scenarios)
+
+
+def test_replacing_a_pools_base_component_resets_its_base(test_data_dir: Path, pool_scenarios: str) -> None:
+    data = ("--data-dir", str(test_data_dir))
+    assert _sim("ensemble", "create", "e_c", "e_a", *data).exit_code == 0
+    based = _sim("ensemble", "pool", "edit", pool_scenarios, "--base", "e_a", *data)
+    assert based.exit_code == 0, based.output
+    result = _sim("ensemble", "pool", "edit", pool_scenarios, "e_b", "e_c", *data)
+    assert result.exit_code == 0, result.output
+    assert _meta(test_data_dir, pool_scenarios)["pool"] == {"components": ["e_b", "e_c"]}
+    # The generated description follows the components, in the README too.
+    readme = (test_data_dir / "scenarios" / pool_scenarios / "README.md").read_text(encoding="utf-8")
+    assert "\n\nPooled from e_b + e_c\n\n" in readme and "e_a + e_b" not in readme
+
+
+def test_the_guided_base_choices_are_component_names() -> None:
+    from analysis.sim import calendar_guide, scenario_guide
+
+    field = scenario_guide.pool_spec(["e_a", "e_b"]).field_named("base")
+    assert field is not None and field.choices is not None
+    assert field.choices(calendar_guide.GuideContext(), {"components": "e_a=25% e_b=75%"}) == ["e_a", "e_b"]
+
+
+def test_a_component_name_with_spaces_around_it_is_refused(
+    test_data_dir: Path, pool_scenarios: str, write_scenario_meta: Callable[..., None],
+) -> None:
+    write_scenario_meta(pool_scenarios, {"pool": {"components": {" e_a": "50%", "e_b": "50%"}}})
+    assert any("' e_a' has spaces around it" in i for i in pl.pool_issues(test_data_dir, pool_scenarios))
+
+
+@pytest.mark.slow
+def test_draws_say_when_a_pool_component_holds_only_the_base_case(
+    pool_batch: Path, test_data_dir: Path, pool_scenarios: str,
+) -> None:
+    pooled = _sim("ensemble", "draws", pool_scenarios, "--data-dir", str(test_data_dir))
+    assert pooled.exit_code == 0, pooled.output
+    assert "only the base case (member 0) came from e_a" in pooled.output
+    own = _sim("ensemble", "draws", "e_a", "--data-dir", str(test_data_dir))
+    assert own.exit_code == 0, own.output
+    assert "base case" not in own.output
