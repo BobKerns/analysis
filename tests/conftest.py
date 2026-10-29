@@ -811,6 +811,52 @@ def business_scenarios(test_scenarios_dir: Path, test_data: Path) -> Path:
 
 
 @pytest.fixture(scope="function")
+def strategy_scenarios(test_data_dir: Path, test_scenarios_dir: Path, test_data: Path) -> Path:
+    """Alice and Bill's rebalancing scenarios (#326) in the private data copy:
+    ``alice_rebalance`` builds on retire_alice with a 60/40 target, a
+    ``portfolio:invest`` tag and the built-in ``rebalance`` strategy owning
+    checking's refill chain; ``alice_last_leaf`` swaps in the data-repo kind
+    ``last_leaf`` from ``strategies/``. Brings its own allocations.csv
+    (USSTK, BONDX). Returns the data directory."""
+    source = test_data / "sim" / "strategies"
+    for folder in (source / "scenarios").iterdir():
+        shutil.copytree(folder, test_scenarios_dir / folder.name)
+    shutil.copytree(source / "strategies", test_data_dir / "strategies")
+    shutil.copyfile(source / "allocations.csv", test_data_dir / "allocations.csv")
+    return test_data_dir
+
+
+@pytest.fixture(scope="function")
+def strategy_csv(strategy_scenarios: Path) -> Callable[[str, str], Path]:
+    """Path of one of a strategy scenario's files, ``(scenario, filename)``,
+    for tests that edit it before loading."""
+    return lambda scenario, name: strategy_scenarios / "scenarios" / scenario / name
+
+
+@pytest.fixture(scope="function")
+def strategy_module(strategy_scenarios: Path) -> Callable[[str, str], Path]:
+    """Write a module into the private copy's ``strategies/`` folder."""
+    def _write(name: str, text: str) -> Path:
+        path = strategy_scenarios / "strategies" / f"{name}.py"
+        path.write_text(text)
+        return path
+    return _write
+
+
+@pytest.fixture(scope="function")
+def run_strategy_scenario(
+    strategy_scenarios: Path, intent_dir: Path, runs_dir: Path,
+) -> Callable[[str], Path]:
+    """Load and run a strategy scenario (after a test's edits); its run file."""
+    def _run(name: str) -> Path:
+        loaded = load_scenario(strategy_scenarios, name, intent_dir=intent_dir / name,
+                               allow_dirty_data=True, compute_stamps=False)
+        return run_scenario(loaded.intent_path, runs_dir / f"{name}.sqlite3", run_by="TEST",
+                            allow_dirty_data=True, allow_dirty_code=True)
+    return _run
+
+
+@pytest.fixture(scope="function")
 def load_test_scenario(test_data_dir: Path, intent_dir: Path) -> Callable[[str], Path]:
     """Load any scenario of the private data copy (after a test has added or
     edited it); returns its intent file."""

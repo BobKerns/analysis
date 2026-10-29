@@ -14,6 +14,7 @@ from collections.abc import Callable, Collection, Generator, Iterable, Mapping, 
 from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
+import subprocess
 import tempfile
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
@@ -36,7 +37,7 @@ from analysis.expenses.baseline import (
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, scenario_guide, scheduled_guide,
-    sensitivity, setup_listings, symbols, units, working_set, ytd_guide,
+    sensitivity, setup_listings, strategy_code, strategy_guide, symbols, units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -61,6 +62,7 @@ from analysis.sim.distributions import (
     rewrite_outcomes,
 )
 from analysis.sim.engine import describe_negative_balance_event, run_scenario
+from analysis.sim.strategy_api import Strategy
 from analysis.sim.series_db import (
     EnsembleSeries,
     MemberSeries,
@@ -2789,6 +2791,7 @@ def explain(
         click.echo("")
         _echo_negative_balance_warnings(con)
         _echo_basis_step_ups(con)
+        _echo_strategies(con)
     finally:
         con.close()
     _echo_guard_rail_episodes(runfile, data_dir)
@@ -2821,6 +2824,28 @@ def _echo_guard_rail_episodes(runfile: Path, data_dir: Path | None) -> None:
     click.echo(f"guard rails past, {_DOLLAR_LABELS[mode]}:")
     for line in lines:
         click.echo(f"  {line}")
+
+
+def _echo_strategies(con: sqlite3.Connection) -> None:
+    """The run's strategies (#326): each one's kind and chain, how many
+    decisions it made, and how much it moved against what it was asked.
+    Says nothing for a run with none, or one from before them."""
+    if not _has_table(con, "strategy_decision"):
+        return
+    rows = con.execute(
+        "SELECT s.name, s.kind, c.name, COUNT(d.id), COALESCE(SUM(d.asked_cents), 0), "
+        "       COALESCE(SUM(d.chosen_cents), 0), COALESCE(SUM(d.fallback_cents), 0) "
+        "FROM strategy s JOIN chain c ON c.id = s.chain_id "
+        "LEFT JOIN strategy_decision d ON d.strategy_id = s.id GROUP BY s.id ORDER BY s.name"
+    ).fetchall()
+    if not rows:
+        return
+    click.echo(f"strategies ({len(rows)}; `sim strategy log` lists the decisions):")
+    for name, kind, chain, count, asked, chosen, fallback in rows:
+        click.echo(
+            f"  {name} ({kind} on {chain}): {count} decision{'' if count == 1 else 's'}, "
+            f"asked ${asked / 100:,.2f}, chose ${chosen / 100:,.2f}, chain steps ${fallback / 100:,.2f}"
+        )
 
 
 def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
@@ -7579,10 +7604,18 @@ def account_holders_command(
               help="Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified.")
 @click.option("--by", "by", type=click.Choice(allocation.GROUPINGS), default=None,
               help="Split each asset class by account, owner, subkind, tax treatment or security (symbol).")
+@click.option("--drift", is_flag=True, default=False,
+              help="Instead, each year-end of the run: the portfolio's share of each asset class "
+                   "less its target, in percentage points.")
+@click.option("--targets", "target_set", type=completion.TARGET_SET, default=None,
+              help="With --drift: the target set (default: the one the scenario's strategy steers by).")
+@click.option("--portfolio", type=completion.TAG, default=None,
+              help="With --drift: the accounts carrying this tag (default: the strategy's portfolio, "
+                   "else every asset lot).")
 @_holdings_options
 def allocation_command(
-    excluded: tuple[str, ...], by: str | None, scenario: str | None, data_dir: Path | None, month: str | None,
-    opening: bool, runfile: Path | None,
+    excluded: tuple[str, ...], by: str | None, drift: bool, target_set: str | None, portfolio: str | None,
+    scenario: str | None, data_dir: Path | None, month: str | None, opening: bool, runfile: Path | None,
 ) -> None:
     """Show the whole portfolio by asset class, from the lots and allocations.csv.
 
@@ -7590,7 +7623,17 @@ def allocation_command(
     with `sim symbol add SYMBOL --weight CLASS=PERCENT ...`. An AI assistant
     can look the weights up from the fund's published breakdown; see the user
     guide, Part 4.11 "Add a stock or fund".
+
+    With --drift, shows how far the run's portfolio strays from its target
+    allocation (targets.csv) at each year-end instead.
     """
+    if drift:
+        if by or excluded or month or opening:
+            raise click.ClickException("--drift can't be combined with --by, --exclude, --month or --opening")
+        _allocation_drift(scenario, data_dir, runfile, target_set, portfolio)
+        return
+    if target_set or portfolio:
+        raise click.ClickException("--targets and --portfolio go with --drift")
     with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
         try:
             frame = allocation.lot_classes(source, month)
@@ -7607,6 +7650,47 @@ def allocation_command(
     if allocation.UNCLASSIFIED in table.index:
         click.echo("unclassified: lots whose symbol has no rows in allocations.csv"
                    " (user guide Part 4.11: Add a stock or fund)", err=True)
+
+
+def _allocation_drift(
+    scenario: str | None, data_dir: Path | None, runfile: Path | None, target_set: str | None,
+    portfolio: str | None,
+) -> None:
+    """``sim allocation --drift``: the target set and portfolio default to
+    those of the run's strategy (when it has just one target set in use)."""
+    path = _resolve_run_target(scenario, runfile, data_dir, None)
+    con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
+    try:
+        if not _has_table(con, "allocation_target"):
+            raise click.ClickException(f"{path.name} is from before allocation targets; run it again")
+        if target_set is None or portfolio is None:
+            used = {
+                (p.get("targets"), p.get("portfolio"))
+                for (raw,) in con.execute("SELECT params_json FROM strategy")
+                if isinstance(p := json.loads(raw), dict) and p.get("targets")
+            }
+            sets = [t for (t,) in con.execute("SELECT DISTINCT target_set FROM allocation_target")]
+            if target_set is None:
+                choices = sorted({t for t, _p in used}) or sets
+                if len(choices) != 1:
+                    raise click.ClickException(
+                        "say which target set with --targets: "
+                        + (", ".join(sorted(sets)) if sets else "the run has none (sim target set)"))
+                target_set = choices[0]
+            if portfolio is None:
+                portfolio = next((p for t, p in sorted(used, key=str) if t == target_set and p), None)
+        try:
+            frame = strategy_guide.drift_by_year(con, target_set, portfolio=portfolio)
+        except KeyError as exc:
+            raise click.ClickException(exc.args[0]) from None
+    finally:
+        con.close()
+    whose = f"accounts tagged {portfolio}" if portfolio else "every asset lot"
+    click.echo(f"drift from target set {target_set}, percentage points ({whose}; {path.name})")
+    if frame.empty:
+        click.echo("(no months in the run)")
+        return
+    click.echo(frame.to_string(float_format=lambda v: f"{v:+.1f}"))
 
 
 def _print_unclipped(rendered) -> None:
@@ -11014,9 +11098,24 @@ def _rename_with_growth_rules(
 def _rename_account(edit: StagedEdit, old: str, new: str) -> list[str]:
     _not_reserved(new)
     old, new = old.strip(), new.strip()
-    return _rename_with_growth_rules(
+    def moved(account: str, lot: str) -> tuple[str, str] | None:
+        return (new, lot) if account == old else None
+
+    keep_old = _defined_outside_scope(edit, rename.account_defined(old))
+    changed = _rename_with_growth_rules(
         edit, "account", old, new, defines=rename.account_defined, taken=_account_or_chain_defined,
-        rewrite=rename.rename_account, moved=lambda account, lot: (new, lot) if account == old else None)
+        rewrite=rename.rename_account, moved=moved)
+    return changed + rename.rename_lot_keys(edit.data_dir, moved, keep_old=keep_old)
+
+
+def _defined_outside_scope(edit: StagedEdit, defines: rename.Defines) -> bool:
+    """Whether a scenario a rename in ``edit`` won't reach still defines the
+    name: a shared file's old key must then stay (``rename.rename_lot_keys``).
+    Asked before the rename rewrites the scenarios it does reach."""
+    scenarios = edit.data_dir / "scenarios"
+    affected = set(rename.scope(scenarios, edit.name, defines))
+    return any(defines(scenarios / each) for each in rename.scenario_folders(scenarios)
+               if each not in affected)
 
 
 def _rename_across(
@@ -11186,19 +11285,24 @@ def lot_rename(
             new_lot = _ask_new_name(f"new name for {account}'s lot {lot}")
     account, lot, new_lot = account.strip(), lot.strip(), _check_lot_label(new_lot)
 
+    def moved(owner: str, label: str) -> tuple[str, str] | None:
+        return (account, new_lot) if (owner, label) == (account, lot) else None
+
     def rewrite(scenario_dir: Path, old: str, new: str) -> list[str]:
         lines = [line.strip() for line in _lot_reference_rows(scenario_dir, account, old, own_row=True)]
         _rewrite_lot_references(scenario_dir, account, old, new, own_row=True)
         return lines
 
     with _scenario_edit(data, scenario) as edit:
+        keep_old = _defined_outside_scope(edit, _lot_defined(account, lot))
         changed = _rename_with_growth_rules(
             edit, f"lot of {account}", lot, new_lot,
             defines=lambda name: _lot_defined(account, name), rewrite=rewrite,
             missing=lambda: (f"{account!r} has no lot {lot!r} in account_lots.csv, in {edit.name} "
                              "or the scenarios it builds on"),
-            moved=lambda owner, label: (account, new_lot) if (owner, label) == (account, lot) else None,
+            moved=moved,
         )
+        changed += rename.rename_lot_keys(edit.data_dir, moved, keep_old=keep_old)
     _echo_renamed(f"lot of {account}", lot, new_lot, changed)
 
 
@@ -13942,3 +14046,510 @@ def builder_log(
             blog.follow(paths.dir, click.echo, verbose=verbose)
         except KeyboardInterrupt:
             pass
+
+
+# ---------- Responsive strategies (#326, ADR-010): sim strategy, sim target ----------
+
+@sim_group_command.group(name="strategy")
+def strategy_group_command() -> None:
+    """Responsive strategies: code that chooses which lots of a chain pay a
+    draw or receive a placement, from the month's balances (ADR-010)."""
+
+
+def _strategy_kinds(data: Path) -> strategy_code.StrategyKinds:
+    kinds = strategy_code.strategy_kinds(strategy_code.read_sources(data))
+    for problem in kinds.problems:
+        click.echo(f"WARN: {problem}", err=True)
+    return kinds
+
+
+@strategy_group_command.command("kinds")
+@click.argument("kind", required=False, type=completion.STRATEGY_KIND)
+@_LISTING_DATA_DIR_OPTION
+def strategy_kinds_command(kind: str | None, data_dir: Path | None) -> None:
+    """List the strategy kinds: the built-ins and the data repo's
+    strategies/ modules, each with what it does and its parameters. With
+    KIND, just that one."""
+    kinds = _strategy_kinds(_resolve_data_dir(data_dir))
+    chosen = [kind] if kind else sorted(kinds.kinds)
+    for i, name in enumerate(chosen):
+        if name not in kinds.kinds:
+            raise click.ClickException(f"no strategy kind {name!r}; kinds: {', '.join(sorted(kinds.kinds))}")
+        cls = kinds.kinds[name]
+        if i:
+            click.echo("")
+        click.echo(f"{name}  ({kinds.origin[name]}; hooks: {', '.join(sorted(cls.hooks))})")
+        for line in strategy_guide.describe_kind(cls).splitlines():
+            click.echo(f"  {line}".rstrip())
+        params = strategy_guide.kind_params(cls)
+        if params:
+            click.echo("  parameters:")
+            width = max(len(p.name) for p in params)
+            for p in params:
+                default = "required" if p.default is None else f"default {p.default}"
+                unit = f"{p.unit}, " if p.unit else ""
+                doc = f"  {p.doc}" if p.doc else ""
+                click.echo(f"    {p.name:<{width}}  ({unit}{default}){doc}")
+
+
+def _strategy_dir(data: Path, scenario: str | None) -> tuple[Path, str]:
+    ref = _resolve_scenario(data, scenario)
+    return _folder_of(ref.scenarios_dir, ref.name), ref.name
+
+
+@strategy_group_command.command("list")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@_LISTING_DATA_DIR_OPTION
+def strategy_list_command(scenario: str | None, data_dir: Path | None) -> None:
+    """List the scenario's strategies: kind, chain, dates, parameters, and
+    the scenario each is inherited from."""
+    folder, name = _strategy_dir(_resolve_data_dir(data_dir), scenario)
+    rows = _overlay_rows(folder, "strategies.csv")
+    if not rows:
+        click.echo(f"no strategies in {name} (`sim strategy add` adds one)")
+        return
+    width = max(len(n) for n in rows)
+    for strategy_name, found in sorted(rows.items()):
+        where = f"  [from {found.inherited_from}]" if found.inherited_from and found.index is None else ""
+        click.echo(f"{strategy_name:<{width}}  {strategy_guide.summary(found.row)}{where}")
+
+
+_STRATEGY_OPTIONS = (
+    click.option("--chain", type=completion.CHAIN, default=None,
+                 help="The chain it owns: a source chain for a draw, a destination chain to place into."),
+    click.option("--param", "param_specs", multiple=True, metavar="NAME=VALUE",
+                 help="A parameter (repeatable), e.g. --param band=5%; NAME= restores its default. "
+                      "`sim strategy kinds KIND` lists them."),
+    click.option("--start", default=None, help="First month it decides (YYYY-MM; '' for the start)."),
+    click.option("--end", default=None, help="Last month it decides (YYYY-MM; '' for the end)."),
+    click.option("--description", default=None, help="What it is for."),
+    click.option("--enable/--disable", "enabled", default=None,
+                 help="A disabled strategy is checked but not run; the chain's steps decide."),
+    click.option("--scenario", type=completion.SCENARIO, default=None,
+                 help="Scenario folder name (default: the current scenario)."),
+    _LISTING_DATA_DIR_OPTION,
+)
+
+
+def _strategy_options(f: Callable[..., None]) -> Callable[..., None]:
+    for option in reversed(_STRATEGY_OPTIONS):
+        f = option(f)
+    return f
+
+
+def _owned_chains(data: Path, scenario: str, cls: type[Strategy]) -> list[str]:
+    """The chains a strategy of kind ``cls`` could own: interior chains of a
+    role it has a hook for."""
+    roles = {"source"} if cls.hooks == {"draw"} else {"destination"} if cls.hooks == {"place"} else {
+        "source", "destination"}
+    with _intent_db(data, scenario) as (con, _name):
+        return [n for (n, role) in con.execute(
+            "SELECT name, role FROM chain WHERE role IS NOT NULL ORDER BY name") if role in roles]
+
+
+def _merge_params(current: str, changes: Mapping[str, Any]) -> str:
+    params = json.loads(current) if current.strip() else {}
+    if not isinstance(params, dict):
+        raise click.ClickException(f"params_json is not a JSON object: {current}")
+    for key, value in changes.items():
+        if value is None:
+            params.pop(key, None)
+        else:
+            params[key] = value
+    return strategy_guide.params_text(params)
+
+
+def _ask_params(cls: type[Strategy], current: Mapping[str, Any]) -> dict[str, Any]:
+    """Each parameter, asked with its doc; Enter keeps the current value (or
+    the default), and '-' drops a value to restore the default."""
+    out: dict[str, Any] = {}
+    for p in strategy_guide.kind_params(cls):
+        if p.doc:
+            click.echo(f"  {p.name}: {p.doc}")
+        shown = strategy_guide.written(p.unit, current[p.name]) if p.name in current else None
+        hint = "required" if p.default is None else f"default {p.default}"
+        while True:
+            answer = _prompt_with_completion(
+                f"{p.name} ({hint}{'; - for the default' if shown and p.default is not None else ''})",
+                default=shown or (None if p.default is None else ""),
+            ).strip()
+            if answer or p.default is not None:
+                break
+        if answer == "-" or (not answer and p.name not in current):
+            out[p.name] = None
+        elif answer:
+            out.update(strategy_guide.parse_param_specs(cls, [f"{p.name}={answer}"]))
+    return out
+
+
+def _write_strategy(
+    data: Path, scenario: str, folder: Path, row: dict[str, str] | None, *, replace: str | None,
+) -> None:
+    """Write ``row`` into the scenario's own strategies.csv (replacing the
+    row named ``replace`` there, if it has one; ``row`` None removes it) as
+    one staged edit: the loader checks the result."""
+    header = registries.STRATEGIES_CSV_HEADER
+    with _scenario_edit(data, scenario) as edit:
+        path = edit.path(folder / "strategies.csv")
+        rows = strategy_guide.read_rows(path, header)
+        kept = [r for r in rows if r["name"] != replace] if replace else rows
+        if row is not None:
+            at = next((i for i, r in enumerate(rows) if replace and r["name"] == replace), len(kept))
+            kept.insert(min(at, len(kept)), row)
+        strategy_guide.write_rows(path, header, kept)
+
+
+@strategy_group_command.command("add")
+@click.argument("name", required=False)
+@click.option("--kind", type=completion.STRATEGY_KIND, default=None,
+              help="What it does (`sim strategy kinds`).")
+@_strategy_options
+def strategy_add_command(
+    name: str | None, kind: str | None, chain: str | None, param_specs: tuple[str, ...],
+    start: str | None, end: str | None, description: str | None, enabled: bool | None,
+    scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Add a strategy to the scenario's strategies.csv. Whatever is left out
+    is asked for: the kind, the chain it owns, and each parameter (with its
+    default). The scenario must still load with it."""
+    data = _resolve_data_dir(data_dir)
+    folder, scenario_name = _strategy_dir(data, scenario)
+    existing = _overlay_rows(folder, "strategies.csv")
+    if name is None:
+        name = _ask_new_name("name for the new strategy")
+    name = name.strip()
+    if name in existing:
+        raise click.ClickException(f"strategy {name!r} already exists (sim strategy edit)")
+    kinds = _strategy_kinds(data)
+    guided = kind is None or chain is None
+    if kind is None:
+        kind = _ask_name("strategy kind", sorted(kinds.kinds), plural="strategy kinds")
+    if kind not in kinds.kinds:
+        raise click.ClickException(f"no strategy kind {kind!r}; kinds: {', '.join(sorted(kinds.kinds))}")
+    cls = kinds.kinds[kind]
+    if chain is None:
+        chain = _ask_name("chain", _owned_chains(data, scenario_name, cls), prompt="chain it owns")
+    try:
+        params = strategy_guide.parse_param_specs(cls, param_specs)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if guided:
+        params.update(_ask_params(cls, {k: v for k, v in params.items() if v is not None}))
+    row = {
+        "name": name, "kind": kind, "chain": chain.strip(), "start": (start or "").strip(),
+        "end": (end or "").strip(), "enabled": "" if enabled in (None, True) else "false",
+        "params_json": _merge_params("", params), "description": (description or "").strip(),
+    }
+    _write_strategy(data, scenario_name, folder, row, replace=None)
+    click.echo(f"added strategy {name}: {strategy_guide.summary(row)}")
+
+
+def _pick_strategy(folder: Path, scenario_name: str, name: str | None, prompt: str) -> _Overlaid:
+    rows = _overlay_rows(folder, "strategies.csv")
+    if name is None:
+        name = _ask_name("strategy", sorted(rows), prompt=prompt, plural="strategies")
+    found = rows.get(name.strip())
+    if found is None:
+        raise click.ClickException(
+            f"no strategy {name!r} in {scenario_name}; strategies: {', '.join(sorted(rows)) or 'none'}")
+    return found
+
+
+@strategy_group_command.command("edit")
+@click.argument("name", required=False, type=completion.STRATEGY)
+@_strategy_options
+def strategy_edit_command(
+    name: str | None, chain: str | None, param_specs: tuple[str, ...], start: str | None,
+    end: str | None, description: str | None, enabled: bool | None, scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Change a strategy. With no options, asks for each field and parameter
+    with its current value as the default; options change just those. An
+    inherited strategy is written into this scenario as a whole-row
+    override. The kind can't change: add a new strategy instead."""
+    data = _resolve_data_dir(data_dir)
+    folder, scenario_name = _strategy_dir(data, scenario)
+    found = _pick_strategy(folder, scenario_name, name, "strategy to edit")
+    row = {c: found.row.get(c, "") for c in registries.STRATEGIES_CSV_HEADER}
+    kinds = _strategy_kinds(data)
+    cls = kinds.kinds.get(row["kind"])
+    if cls is None:
+        raise click.ClickException(f"strategy {row['name']}'s kind {row['kind']!r} isn't defined")
+    guided = all(v is None for v in (chain, start, end, description, enabled)) and not param_specs
+    try:
+        changes = strategy_guide.parse_param_specs(cls, param_specs)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if guided:
+        click.echo(f"{row['name']}: {strategy_guide.summary(row)}")
+        chain = _prompt_with_completion("chain it owns", choices=_owned_chains(data, scenario_name, cls),
+                                        default=row["chain"])
+        start = click.prompt("first month (blank: the start)", default=row["start"], show_default=False)
+        end = click.prompt("last month (blank: the end)", default=row["end"], show_default=False)
+        enabled = click.confirm("enabled", default=row["enabled"].strip().lower() not in ("false", "no", "0"))
+        current = json.loads(row["params_json"]) if row["params_json"].strip() else {}
+        changes = _ask_params(cls, current)
+        description = click.prompt("description", default=row["description"], show_default=False)
+    new = dict(row)
+    for column, value in (("chain", chain), ("start", start), ("end", end), ("description", description)):
+        if value is not None:
+            new[column] = value.strip()
+    if enabled is not None:
+        new["enabled"] = "" if enabled else "false"
+    new["params_json"] = _merge_params(row["params_json"], changes)
+    if new == row:
+        click.echo(f"strategy {row['name']} unchanged")
+        return
+    _write_strategy(data, scenario_name, folder, new, replace=row["name"] if found.index is not None else None)
+    inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
+    click.echo(f"changed strategy {row['name']}{inherited}: {strategy_guide.summary(new)}")
+
+
+@strategy_group_command.command("delete")
+@click.argument("name", required=False, type=completion.STRATEGY)
+@click.option("--yes", is_flag=True, default=False, help="Don't ask to confirm.")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@_LISTING_DATA_DIR_OPTION
+def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete a strategy from the scenario's strategies.csv; the chain's own
+    steps decide again. An inherited one is deleted where it is defined (or
+    switched off here with `sim strategy edit NAME --disable`); deleting
+    this scenario's override of one restores the inherited row."""
+    data = _resolve_data_dir(data_dir)
+    folder, scenario_name = _strategy_dir(data, scenario)
+    found = _pick_strategy(folder, scenario_name, name, "strategy to delete")
+    strategy_name = found.row["name"]
+    if found.index is None:
+        raise click.ClickException(
+            f"strategy {strategy_name} is inherited from {found.inherited_from}: delete it there, or "
+            f"switch it off here with `sim strategy edit {strategy_name} --disable`")
+    if not yes and not click.confirm(f"delete strategy {strategy_name} from {scenario_name}?", default=False):
+        raise click.Abort()
+    _write_strategy(data, scenario_name, folder, None, replace=strategy_name)
+    click.echo(f"deleted strategy {strategy_name} from {scenario_name}")
+
+
+def _has_table(con: sqlite3.Connection, table: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
+
+
+@strategy_group_command.command("log")
+@click.argument("target", type=completion.SCENARIO_OR_RUNFILE, metavar="[SCENARIO | RUNFILE]", required=False)
+@click.option("--strategy", "strategy_name", type=completion.STRATEGY, default=None,
+              help="Only this strategy's decisions.")
+@click.option("--year", type=int, default=None, help="Only this year's decisions.")
+@_run_target_options
+def strategy_log_command(
+    target: str | None, strategy_name: str | None, year: int | None, runfile: Path | None,
+    data_dir: Path | None, runs_dir: Path | None,
+) -> None:
+    """List a run's strategy decisions (the latest run by default): each
+    month a strategy decided, what it was asked, what its own moves paid or
+    placed, what the chain's steps covered after it, and its note."""
+    path = _resolve_run_target(target, runfile, data_dir, runs_dir)
+    con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
+    try:
+        if not _has_table(con, "strategy_decision"):
+            click.echo(f"no strategies in {path.name} (a run from before them)")
+            return
+        frame = strategy_guide.decision_log(con, strategy=strategy_name, year=year)
+    finally:
+        con.close()
+    if frame.empty:
+        click.echo(f"no strategy decisions in {path.name}")
+        return
+    # The note last and left-aligned: it is a sentence, often the widest column.
+    notes = frame.pop("note")
+    for column in ("asked", "chosen", "fallback"):
+        frame[column] = frame[column].map(lambda d: f"${d:,.2f}")
+    lines = frame.rename(columns={"fallback": "chain steps"}).to_string(index=False).splitlines()
+    click.echo(f"{lines[0]}  note")
+    for line, note in zip(lines[1:], notes, strict=True):
+        click.echo(f"{line}  {note}")
+
+
+@strategy_group_command.command("check")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@_LISTING_DATA_DIR_OPTION
+def strategy_check_command(scenario: str | None, data_dir: Path | None) -> None:
+    """Load the scenario and run it twice, comparing every strategy
+    decision: a strategy must decide the same way every time (no clock,
+    files, network or unseeded randomness), or runs can't be reproduced
+    (ADR-004). Reports the first difference.
+
+    Each run is its own Python process with its own string-hash seed, as an
+    ensemble worker or the next `sim run` would be, so a strategy that
+    depends on set order or hash() is caught too."""
+    data = _resolve_data_dir(data_dir)
+    name = _resolve_scenario(data, scenario).name
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            result = load_scenario(data, name, intent_dir=Path(td), compute_stamps=False, allow_dirty_data=True)
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+        _echo_load_warnings(result, unused=True)
+        decisions = []
+        for i, hash_seed in enumerate(("1", "2")):
+            run = Path(td) / f"check{i}.sqlite3"
+            _run_in_fresh_process(result.intent_path, run, hash_seed)
+            con = connect_sim_file(run)
+            try:
+                decisions.append(con.execute(
+                    "SELECT s.month, st.name, d.hook, d.asked_cents, d.chosen_cents, d.fallback_cents, "
+                    "       d.note, d.detail_json, d.memory_json FROM strategy_decision d "
+                    "JOIN simulation_step s ON s.id = d.step_id JOIN strategy st ON st.id = d.strategy_id "
+                    "ORDER BY d.id").fetchall())
+            finally:
+                con.close()
+    first, second = decisions
+    for a, b in zip(first, second, strict=False):
+        if a != b:
+            raise click.ClickException(
+                f"strategy {a[1]} decided differently in {a[0]} on a second run:\n  {a}\n  {b}")
+    if len(first) != len(second):
+        raise click.ClickException(f"the runs made {len(first)} and {len(second)} decisions")
+    click.echo(f"ok: {len(first)} decision{'' if len(first) == 1 else 's'}, the same in both runs")
+
+
+_CHECK_RUN = (
+    "import sys; from pathlib import Path; from analysis.sim.engine import run_scenario; "
+    "run_scenario(Path(sys.argv[1]), Path(sys.argv[2]), run_by='check', "
+    "allow_dirty_data=True, allow_dirty_code=True)"
+)
+
+
+def _run_in_fresh_process(intent_path: Path, run_path: Path, hash_seed: str) -> None:
+    """Run the intent in a new interpreter with ``PYTHONHASHSEED=hash_seed``;
+    a failed run is reported with the end of its traceback."""
+    done = subprocess.run(
+        [sys.executable, "-c", _CHECK_RUN, str(intent_path), str(run_path)],
+        env={**os.environ, "PYTHONHASHSEED": hash_seed}, capture_output=True, text=True, check=False,
+    )
+    if done.returncode:
+        tail = "\n".join(done.stderr.strip().splitlines()[-5:])
+        raise click.ClickException(f"the run failed:\n{tail}")
+
+
+@sim_group_command.group(name="target")
+def target_group_command() -> None:
+    """Allocation targets (targets.csv): asset-class weights a strategy
+    steers a portfolio toward."""
+
+
+@target_group_command.command("list")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@_LISTING_DATA_DIR_OPTION
+def target_list_command(scenario: str | None, data_dir: Path | None) -> None:
+    """List the scenario's target sets, each dated set's weights, and the
+    scenario each is inherited from."""
+    ref = _resolve_scenario(_resolve_data_dir(data_dir), scenario)
+    rows = strategy_guide.lineage_targets(ref.scenarios_dir, ref.name)
+    if not rows:
+        click.echo(f"no target sets in {ref.name} (`sim target set` adds one)")
+        return
+    grouped: dict[tuple[str, str], list[tuple[dict[str, str], str]]] = {}
+    for row, where in rows:
+        grouped.setdefault((row["target_set"], row["as_of"]), []).append((row, where))
+    for (target_set, as_of), group in grouped.items():
+        weights = ", ".join(f"{r['asset_class']} {r['weight']}" for r, _w in group)
+        sources = sorted({w for _r, w in group} - {ref.name})
+        where = f"  [from {', '.join(sources)}]" if sources else ""
+        click.echo(f"{target_set}{' as of ' + as_of[:7] if as_of else ''}: {weights}{where}")
+
+
+def _target_key(as_of: str | None) -> str:
+    if not as_of:
+        return ""
+    try:
+        return month_end_iso(as_of)
+    except ValueError:
+        raise click.ClickException(f"--as-of must be a month, YYYY-MM: {as_of!r}") from None
+
+
+@target_group_command.command("set")
+@click.argument("target_set", required=False, type=completion.TARGET_SET_OR_NEW)
+@click.argument("weight_specs", nargs=-1, metavar="CLASS=PERCENT...")
+@click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
+              help="The month these weights start (default: every date).")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@_LISTING_DATA_DIR_OPTION
+def target_set_command(
+    target_set: str | None, weight_specs: tuple[str, ...], as_of: str | None, scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Set TARGET_SET's weights (as of a month, or for every date) in the
+    scenario's targets.csv, e.g. `sim target set main stock_us=60% bond=40%`.
+    They must add up to 100%. A class the scenario inherits in this set
+    and that isn't given is set to 0%. Whatever is left out is asked for."""
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    folder = _folder_of(ref.scenarios_dir, ref.name)
+    if target_set is None:
+        target_set = _ask_new_name("target set")
+    if not weight_specs:
+        answer = _prompt_with_completion("weights (CLASS=PERCENT ..., e.g. stock_us=60% bond=40%)")
+        weight_specs = tuple(answer.split())
+    try:
+        weights = symbols.parse_weights(list(weight_specs))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    key = _target_key(as_of)
+    inherited = {
+        row["asset_class"] for row, _where in strategy_guide.lineage_targets(ref.scenarios_dir, ref.name)
+        if row["target_set"] == target_set and row["as_of"] == key
+    }
+    weights.update({c: "0%" for c in sorted(inherited - set(weights))})
+    header = registries.TARGETS_CSV_HEADER
+    with _scenario_edit(data, ref.name) as edit:
+        path = edit.path(folder / "targets.csv")
+        rows = [r for r in strategy_guide.read_rows(path, header)
+                if not (r["target_set"] == target_set and _target_key(r["as_of"]) == key)]
+        rows += [{"target_set": target_set, "as_of": key[:7], "asset_class": c, "weight": w}
+                 for c, w in weights.items()]
+        strategy_guide.write_rows(path, header, rows)
+    when = f" as of {key[:7]}" if key else ""
+    click.echo(f"target set {target_set}{when}: {', '.join(f'{c} {w}' for c, w in weights.items())}")
+
+
+@target_group_command.command("delete")
+@click.argument("target_set", required=False, type=completion.TARGET_SET)
+@click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
+              help="Delete just the weights that start this month (default: the whole set).")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@_LISTING_DATA_DIR_OPTION
+def target_delete_command(
+    target_set: str | None, as_of: str | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Delete a target set (or its weights as of one month) from the
+    scenario's own targets.csv. An inherited set is deleted where it is
+    defined. A strategy still naming it stops the scenario loading, so the
+    change is refused."""
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    folder = _folder_of(ref.scenarios_dir, ref.name)
+    header = registries.TARGETS_CSV_HEADER
+    own = strategy_guide.read_rows(folder / "targets.csv", header)
+    if target_set is None:
+        target_set = _ask_name("target set", sorted({r["target_set"] for r in own}), prompt="target set to delete")
+    key = None if as_of is None else _target_key(as_of)
+
+    def doomed(row: Mapping[str, str]) -> bool:
+        return row["target_set"] == target_set and (key is None or _target_key(row["as_of"]) == key)
+
+    if not any(doomed(r) for r in own):
+        sources = sorted({w for r, w in strategy_guide.lineage_targets(ref.scenarios_dir, ref.name)
+                          if doomed(r)})
+        if sources:
+            raise click.ClickException(
+                f"target set {target_set} is inherited from {', '.join(sources)}: delete it there")
+        raise click.ClickException(f"no target set {target_set!r} in {ref.name}")
+    with _scenario_edit(data, ref.name) as edit:
+        path = edit.path(folder / "targets.csv")
+        strategy_guide.write_rows(path, header, [r for r in strategy_guide.read_rows(path, header) if not doomed(r)])
+    click.echo(f"deleted target set {target_set}{' as of ' + key[:7] if key else ''} from {ref.name}")

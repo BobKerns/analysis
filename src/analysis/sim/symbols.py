@@ -21,6 +21,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.sim import registries, units
+from analysis.sim.asset_classes import is_lot_key
 from analysis.sim.prices import price_files
 from analysis.sim.dates import month_end_iso
 from analysis.sim.loader import _validate_allocations, _validate_securities
@@ -107,7 +108,9 @@ def symbol_table(data_dir: Path) -> pd.DataFrame:
     ``prices``, ``latest_price``, ``latest_date`` (the shared ``prices/`` file),
     ``scenario_prices`` (the scenarios with their own), ``held_by``."""
     names = {row["symbol"]: row.get("name", "") for row in _read(data_dir / SECURITIES)[1] if row.get("symbol")}
-    weights = _latest_weights([r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol")])
+    weights = _latest_weights([  # account:lot keys class a lot, not a symbol (#326)
+        r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol") and not is_lot_key(r["symbol"])
+    ])
     prices = price_files(data_dir / "prices")
     holders = _holders(data_dir / "scenarios")
     overrides = _scenario_prices(data_dir / "scenarios")

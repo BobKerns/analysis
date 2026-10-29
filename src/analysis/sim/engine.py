@@ -36,6 +36,7 @@ from typing import Any, NamedTuple
 from analysis.sim import registries, units
 from analysis.sim.runs import finalize_run, open_run_file
 from analysis.sim.schema import inserted_id
+from analysis.sim.strategy_runtime import StrategyRuntime
 
 __all__ = ["run_scenario", "EngineError"]
 
@@ -80,6 +81,7 @@ def run_scenario(
         allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
         run_args=run_args, engine_options=engine_options, reserved=reserved,
     )
+    strategy_runtime: StrategyRuntime | None = None
     try:
         scenario = con.execute(
             'SELECT start, "end" FROM scenario'
@@ -222,6 +224,14 @@ def run_scenario(
         for lot_id in refill_ctx.roth:
             if cost_bases.get(lot_id) is None:
                 cost_bases[lot_id] = balances.get(lot_id, 0)
+        roth = refill_ctx.roth
+        strategy_runtime = StrategyRuntime(
+            con, balances=balances, cost_bases=cost_bases,
+            minimum_of=chain_graph.minimum_of, leaf_lot=chain_graph.leaf_lot,
+            members=chain_graph.members,
+            roth_qualified=lambda lot, on: _roth_qualified(roth[lot], on) if lot in roth else None,
+        )
+        refill_ctx.strategies = strategy_runtime or None
 
         irmaa = IrmaaContext(
             aux, inflation_factor_cache, start_year=_parse_date(start_s).year,
@@ -605,6 +615,8 @@ def run_scenario(
         finalize_run(con, status="failed", failure_reason=f"{type(e).__name__}: {e}")
         raise
     finally:
+        if strategy_runtime is not None:
+            strategy_runtime.close()
         con.close()
     return Path(run_path)
 
@@ -906,7 +918,7 @@ class RefillContext:
                  "account_tax_treatment", "account_subkind", "account_name",
                  "cost_bases", "quantities", "growth_sources", "acquired",
                  "chain_name", "refilling", "last_refill", "negative_since",
-                 "negative_events", "roth")
+                 "negative_events", "roth", "strategies")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -937,6 +949,8 @@ class RefillContext:
         self.last_refill: dict[int, RefillAttempt] = {}
         self.negative_since: dict[int, bool] = {}
         self.negative_events: list[dict[str, Any]] = []
+        # The run's strategies (#326), when it has any: asked at the chains they own.
+        self.strategies: StrategyRuntime | None = None
 
 
 def _ensure_min_balance(
@@ -2373,6 +2387,38 @@ def _chain_draw(
         )
         return take
     total = 0
+    decision_id = None
+    strategies = refill_ctx.strategies if refill_ctx is not None else None
+    owned = strategies.owner(chain_id, month_s) if strategies is not None else None
+    if owned is not None:
+        assert strategies is not None
+        answer = strategies.decide(owned, "draw", chain_id, amount_needed, _parse_date(month_s))
+        if answer is not None:
+            decision, moves = answer
+            decision_id = strategies.record(
+                con, owned, "draw", step_id=step_id, chain_id=chain_id,
+                asked=amount_needed, decision=decision,
+            )
+            for lot_id, amount in moves:
+                amount = min(amount, amount_needed - total)
+                if amount <= 0:
+                    break
+                mark = _last_event_id(con)
+                total += _chain_draw(
+                    con, balances, account_kinds, account_tax_treatment, account_subkind,
+                    account_name, step_id, month_s, graph,
+                    strategies.leaf_chain_of[lot_id], amount, target_account_id,
+                    refill_ctx=refill_ctx, reason_kind=reason_kind,
+                    reason_id=reason_id, tax_year=tax_year,
+                    aux=aux, chain_base_date=chain_base_date,
+                    inflation_factor_cache=inflation_factor_cache,
+                    _progress=_progress, _fallback=True,
+                )
+                strategies.link_legs(
+                    con, decision_id, mark=mark, from_lot=lot_id, to_lot=target_account_id,
+                )
+    chosen = total
+    # What the strategy left unpaid falls through to the chain's own steps (#326).
     members = graph.members.get(chain_id, [])
     for number, (draw_from_id, step_maximum, step_percent, step_series, step_cadence, *_tax) in (
             enumerate(members, 1)):
@@ -2400,7 +2446,14 @@ def _chain_draw(
             inflation_factor_cache=inflation_factor_cache,
             _progress=_progress, _fallback=fallback,
         )
+    if decision_id is not None:
+        assert strategies is not None
+        strategies.finish(con, decision_id, chosen=chosen, fallback=total - chosen)
     return total
+
+
+def _last_event_id(con) -> int:
+    return con.execute("SELECT COALESCE(MAX(id), 0) FROM transfer_event").fetchone()[0]
 
 
 class _SaleBasis:
@@ -2538,6 +2591,40 @@ def _chain_sweep(
         )
         return put
     total = 0
+    decision_id = None
+    strategies = refill_ctx.strategies if refill_ctx is not None else None
+    owned = (
+        strategies.owner(chain_id, month_s) if strategies is not None and _sale is None else None
+    )
+    if owned is not None:
+        assert strategies is not None
+        answer = strategies.decide(owned, "place", chain_id, amount_available, _parse_date(month_s))
+        if answer is not None:
+            decision, moves = answer
+            decision_id = strategies.record(
+                con, owned, "place", step_id=step_id, chain_id=chain_id,
+                asked=amount_available, decision=decision,
+            )
+            for lot_id, amount in moves:
+                amount = min(amount, amount_available - total)
+                if amount <= 0:
+                    break
+                mark = _last_event_id(con)
+                total += _chain_sweep(
+                    con, balances, account_kinds, account_tax_treatment, account_subkind,
+                    account_name, step_id, month_s, graph,
+                    strategies.leaf_chain_of[lot_id], amount, source_account_id,
+                    aux=aux, chain_base_date=chain_base_date,
+                    inflation_factor_cache=inflation_factor_cache,
+                    source_tax_character=source_tax_character,
+                    source_tax_year=source_tax_year, refill_ctx=refill_ctx,
+                    reason_kind=reason_kind, reason_id=reason_id,
+                    _progress=_progress,
+                )
+                strategies.link_legs(
+                    con, decision_id, mark=mark, from_lot=source_account_id, to_lot=lot_id,
+                )
+    chosen = total
     character = source_tax_character
     # Money out of a basis-tracked lot keeps _post_withdrawal's pro-rata
     # split unless a basis step for that lot says how much is basis; a
@@ -2595,6 +2682,9 @@ def _chain_sweep(
             )
         elif basis_of is not None and placed > 0:
             _add_basis(refill_ctx, account_name, basis_of, placed)
+    if decision_id is not None:
+        assert strategies is not None
+        strategies.finish(con, decision_id, chosen=chosen, fallback=total - chosen)
     return total
 
 

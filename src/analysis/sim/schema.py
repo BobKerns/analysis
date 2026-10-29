@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 50
+SCHEMA_VERSION = 51
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -411,6 +411,40 @@ CREATE TABLE calendar_event_tag (
     PRIMARY KEY (calendar_event_id, tag_id)
 );
 
+-- Responsive strategies (#326, ADR-010). The data repo's strategies/*.py,
+-- verbatim: the engine imports a scenario's strategy code from here, never
+-- from the data repo, so a run file carries the code it ran and an ensemble
+-- worker needs no data directory. Built-in kinds store nothing here.
+CREATE TABLE strategy_source (
+    module  TEXT PRIMARY KEY,
+    sha256  TEXT NOT NULL,
+    source  TEXT NOT NULL
+);
+
+-- The scenario's enabled strategies (strategies.csv, merged over the
+-- lineage). Each owns one interior chain; params_json is already in stored
+-- units (cents, millionths).
+CREATE TABLE strategy (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    kind        TEXT NOT NULL,
+    chain_id    INTEGER NOT NULL UNIQUE REFERENCES chain(id),
+    start       TEXT,
+    "end"       TEXT,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    description TEXT NOT NULL DEFAULT ''
+);
+
+-- Allocation targets (targets.csv). One set of weights per (target_set,
+-- as_of); as_of '' holds at every date; weights of one set sum to 1000000.
+CREATE TABLE allocation_target (
+    target_set    TEXT NOT NULL,
+    as_of         TEXT NOT NULL DEFAULT '',
+    asset_class   TEXT NOT NULL,
+    weight_micros INTEGER NOT NULL,
+    PRIMARY KEY (target_set, as_of, asset_class)
+);
+
 -- Ensemble variation (ADR-006). Present (with real rows) only in a member
 -- intent resolved from an ensemble recipe by `ensemble.resolve_member`;
 -- absent (no rows) in the recipe's own intent and in every ordinary,
@@ -587,7 +621,10 @@ CREATE TABLE transfer_event (
     parent_event_id INTEGER REFERENCES transfer_event(id),
     from_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
     to_lot_id       INTEGER NOT NULL REFERENCES account_lot(id),
-    meta_json       TEXT NOT NULL DEFAULT '{}'
+    meta_json       TEXT NOT NULL DEFAULT '{}',
+    -- The strategy decision that chose this leg's lot (#326); NULL when the
+    -- chain's own steps did.
+    strategy_decision_id INTEGER REFERENCES strategy_decision(id)
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
 CREATE INDEX idx_xfer_from     ON transfer_event(from_account);
@@ -595,6 +632,26 @@ CREATE INDEX idx_xfer_to       ON transfer_event(to_account);
 CREATE INDEX idx_xfer_reason   ON transfer_event(reason_kind, reason_id);
 CREATE INDEX idx_xfer_parent   ON transfer_event(parent_event_id);
 CREATE INDEX idx_xfer_taxchar  ON transfer_event(tax_character);
+CREATE INDEX idx_xfer_decision ON transfer_event(strategy_decision_id);
+
+-- One strategy hook's answer (#326, ADR-010 §4.5): what it was asked, what
+-- its own moves posted, and what the chain's steps then covered. A hook
+-- that answered "no opinion" writes no row.
+CREATE TABLE strategy_decision (
+    id             INTEGER PRIMARY KEY,
+    step_id        INTEGER NOT NULL REFERENCES simulation_step(id),
+    strategy_id    INTEGER NOT NULL REFERENCES strategy(id),
+    hook           TEXT NOT NULL CHECK (hook IN ('draw','place')),
+    chain_id       INTEGER REFERENCES chain(id),
+    asked_cents    INTEGER NOT NULL,
+    chosen_cents   INTEGER NOT NULL,
+    fallback_cents INTEGER NOT NULL,
+    note           TEXT NOT NULL DEFAULT '',
+    detail_json    TEXT NOT NULL DEFAULT '{}',
+    -- The strategy's memory after the call, only when the call changed it.
+    memory_json    TEXT
+);
+CREATE INDEX idx_decision_step ON strategy_decision(step_id);
 
 -- #199: basis a sale could not recover, from a chain step whose
 -- tax_character is return_of_capital. No money moved, so it is not a
@@ -776,6 +833,9 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "account_tag",
     "scheduled_transaction_tag",
     "calendar_event_tag",
+    "strategy_source",
+    "strategy",
+    "allocation_target",
     "ensemble_manifest",
     "ensemble_draw",
     "ensemble_tail_scale",

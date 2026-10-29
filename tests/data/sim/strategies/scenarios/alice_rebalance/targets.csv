@@ -1,0 +1,3 @@
+target_set,as_of,asset_class,weight
+main,,stock_us,60%
+main,,bond,40%

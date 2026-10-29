@@ -38,7 +38,7 @@ __all__ = [
     "ACCOUNT_COLUMNS", "CALENDAR_ROW_COLUMNS", "RESERVED_ACCOUNTS", "SCHEDULED_COLUMNS",
     "SERIES_COLUMNS", "SERIES_KINDS", "account_defined", "calendar_row_defined",
     "clashes", "copy_scenario", "describe_clashes", "generated_growth_rules", "name_problem", "relink_markdown",
-    "rename_account", "rename_calendar_row", "rename_growth_rules", "rename_scenario",
+    "rename_account", "rename_calendar_row", "rename_growth_rules", "rename_lot_keys", "rename_scenario",
     "rename_scheduled", "rename_series", "scenario_folders", "scheduled_defined", "scope",
     "series_mentioned", "shared_series_files", "symbol_series",
 ]
@@ -353,6 +353,45 @@ def rename_series(scenario_dir: Path, old: str, new: str) -> list[str]:
             changed.append(f"{folder}/{path.name} -> {folder}/{target.name}")
     return [*changed, *_rename_in(scenario_dir, SERIES_COLUMNS, old, new),
             *_rename_in_chains(scenario_dir, ("series",), old, new)]
+
+
+# ---------- allocations.csv lot keys ----------
+
+def rename_lot_keys(
+    data_dir: Path, moved: Callable[[str, str], tuple[str, str] | None], *, keep_old: bool,
+) -> list[str]:
+    """Follow a renamed account or lot in ``allocations.csv``'s
+    ``<account>:<lot>`` keys (#326), which class a lot with no symbol.
+    The file is shared by every scenario, so when a scenario outside the
+    rename still has the old account or lot (``keep_old``), the rows are
+    copied under the new key instead of moved. Returns the file, if changed."""
+    path = data_dir / "allocations.csv"
+    if not path.is_file():
+        return []
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        header = list(reader.fieldnames or [])
+        rows = list(reader)
+    out: list[dict[str, str]] = []
+    changed = False
+    for row in rows:
+        key = (row.get("symbol") or "").strip()
+        account, colon, lot = key.rpartition(":")
+        target = moved(account, lot) if colon else None
+        if target is None:
+            out.append(row)
+            continue
+        changed = True
+        if keep_old:
+            out.append(row)
+        out.append({**row, "symbol": f"{target[0]}:{target[1]}"})
+    if not changed:
+        return []
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(out)
+    return ["allocations.csv"]
 
 
 # ---------- scenarios ----------

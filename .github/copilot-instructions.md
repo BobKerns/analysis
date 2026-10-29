@@ -43,6 +43,7 @@ they are kept in sync with the code.
 | [`docs/architecture/ADR-007-sensitivity-analysis.md`](../docs/architecture/ADR-007-sensitivity-analysis.md) | Sensitivity analysis over ensemble parameters |
 | [`docs/architecture/ADR-008-correlated-parameters.md`](../docs/architecture/ADR-008-correlated-parameters.md) | Correlated parameters in ensembles |
 | [`docs/architecture/ADR-009-pooled-ensembles.md`](../docs/architecture/ADR-009-pooled-ensembles.md) | Pooled ensembles: one result set from several |
+| [`docs/architecture/ADR-010-responsive-strategies.md`](../docs/architecture/ADR-010-responsive-strategies.md) | Responsive strategies: code that decides a chain's draws and placements |
 
 ADR-005 through ADR-008 each have a companion `ADR-00N-implementation-plan.md`
 beside them.
