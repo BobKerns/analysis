@@ -119,9 +119,11 @@ HIFO
 htmlcov
 huggingface
 hyperscaler
+icat
 IHDR
 iinfo
 illiquidity
+imgcat
 imshow
 inspectable
 intraday
@@ -179,6 +181,7 @@ networth
 nextstrain
 NOCASE
 noconfirm
+nohup
 nonbusiness
 nonflat
 noninteractive
@@ -335,11 +338,14 @@ usefixtures
 USSTK
 vaccts
 VFIFX
+viewpane
 vmax
 VMFXX
 vmin
+vsplit
 VTWNX
 Webull
+wezterm
 wordcount
 worktree
 worktrees
