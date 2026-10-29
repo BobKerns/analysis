@@ -1217,6 +1217,7 @@ def write_batch_manifest(
     mode: str = "monte_carlo",
     quantiles: tuple[float, ...] | None = None,
     rows: list[str] | None = None,
+    pool: dict[str, Any] | None = None,
 ) -> None:
     """Persist what ``_run_ensemble`` knows that a run file alone can't show:
     how many members were expected, and which ones failed before
@@ -1238,6 +1239,9 @@ def write_batch_manifest(
         # ADR-007 §5: what an OAT batch perturbed, in oat_plan's member order.
         manifest["quantiles"] = list(quantiles or ())
         manifest["rows"] = list(rows or ())
+    if pool is not None:
+        # ADR-009: where a pool batch's members came from.
+        manifest["pool"] = pool
     path.write_text(json.dumps(manifest, indent=2))
 
 

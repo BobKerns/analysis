@@ -1329,6 +1329,134 @@ def ensemble_recipe(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> st
 
 
 @pytest.fixture(scope="function")
+def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
+    """A stand-in code repo on main that run freshness (``freshness.code_tree``)
+    compares runs against, so a test depends neither on this checkout's
+    branch nor on its uncommitted changes."""
+    repo = git.Repo.init(tmp_path / "code", b="main")
+    with repo.config_writer() as cw:
+        cw.set_value("commit", "gpgsign", "false")
+    root = Path(str(repo.working_tree_dir))
+    for name, text in {"src/engine.py": "v1\n", "templates/t.csv": "", "pyproject.toml": "",
+                       "uv.lock": "", "docs/guide.md": "one\n"}.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    repo.git.add(A=True)
+    actor = git.Actor("t", "t@t")
+    repo.index.commit("init", author=actor, committer=actor)
+    from analysis.sim import freshness
+
+    monkeypatch.setattr(freshness, "code_tree", lambda: freshness.code_tree_of(repo))
+    return repo
+
+
+@pytest.fixture(scope="function")
+def stamp_runs(code_repo: git.Repo) -> Callable[[Path], None]:
+    """A function recording ``code_repo``'s HEAD, clean, as the code every
+    run under a runs dir ran, and dating the plain runs earlier, in order,
+    so a rerun is always the newest: runs that are fresh until the code or
+    data moves."""
+    def _stamp(runs_dir: Path) -> None:
+        for n, run_file in enumerate(sorted(runs_dir.glob("*_*.sqlite3"))):
+            run_file.rename(run_file.with_name(
+                f"2000-01-01T{n:06d}Z_{run_file.name.split('_', 1)[1]}"))
+        for run_file in runs_dir.rglob("*.sqlite3"):
+            with sqlite3.connect(run_file) as con:
+                if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'simulation_run'").fetchone():
+                    con.execute("UPDATE simulation_run SET code_version = ?, code_dirty = 0",
+                                (code_repo.head.commit.hexsha,))
+    return _stamp
+
+
+@pytest.fixture(scope="function")
+def pool_scenarios(test_data_dir: Path) -> str:
+    """Pool ``mix`` (ADR-009) in the private data copy, created but not run:
+    ``e_a`` 25% (a four-member ensemble over retire_alice, seed 7, with a
+    varied checking rate) and ``e_b`` 75% (a child of ``e_a`` adding a
+    varied gift, so it shares the seed and pairs with ``e_a``). Returns the
+    pool's name."""
+    data = ("--data-dir", str(test_data_dir))
+    _sim("ensemble", "create", "e_a", "retire_alice", "--size", "4", "--seed", "7", *data)
+    _sim("calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+         "--scenario", "e_a", *data, "--name", "checking_rate_vary", "--vary-target", "amount",
+         "--vary-distribution", "uniform", "--vary-low", "0", "--vary-high", "40")
+    _sim("ensemble", "create", "e_b", "e_a", *data)
+    calendar = test_data_dir / "scenarios" / "e_b" / "calendar.csv"
+    if not calendar.is_file():
+        calendar.write_text(",".join(CALENDAR_HEADER) + "\n", encoding="utf-8")
+    _append_calendar_row_to(
+        calendar,
+        date="2029-06-30", kind="one_off_transfer", name="gift",
+        account_1="Income_Inheritance", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="20000.00", tax_character="none",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="10000.00", vary_high="30000.00",
+    )
+    _sim("ensemble", "pool", "create", "mix", "e_a=25%", "e_b=75%", *data)
+    return "mix"
+
+
+@pytest.fixture
+def write_scenario_meta(test_data_dir: Path) -> Callable[..., None]:
+    """Rewrite scenario ``name``'s scenario.csv in the private data copy:
+    its ``meta_json`` to ``meta`` (a dict), and any other cells given."""
+    import csv
+
+    def write(name: str, meta: dict, **row: str) -> None:
+        path = test_data_dir / "scenarios" / name / "scenario.csv"
+        with path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            header, rows = list(reader.fieldnames or []), list(reader)
+        rows[0].update(meta_json=json.dumps(meta), **row)
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header)
+            writer.writeheader()
+            writer.writerows(rows)
+    return write
+
+
+@pytest.fixture
+def pool_batch(test_data_dir: Path, pool_scenarios: str, state_dir: Path) -> Path:
+    """``pool_scenarios``'s ``mix`` run (both components run first), returning
+    its batch dir."""
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.sim.loader import latest_ensemble_batch
+
+    result = CliRunner().invoke(
+        main, ["sim", "run", pool_scenarios, "--data-dir", str(test_data_dir), "--allow-dirty-data"])
+    assert result.exit_code == 0, result.output
+    assert "component e_a: running" in result.output
+    assert "pool of 2, seed 7: e_a 1 (25%), e_b 3 (75%)" in result.output, result.output
+    batch = latest_ensemble_batch(state_dir / "runs" / pool_scenarios)
+    assert batch is not None
+    return batch
+
+
+@pytest.fixture
+def fake_batch(tmp_path: Path) -> Callable[..., Path]:
+    """Make ``runs/<scenario>/b`` under ``tmp_path``: ``members`` empty member
+    files and a batch manifest (``member_count`` defaults to ``members``;
+    ``failures`` maps index to error; ``pool`` is a pool record), for code
+    that reads only a batch's names and manifest. Returns the folder."""
+    from analysis.sim.ensemble import write_batch_manifest
+
+    def make(scenario: str, *, members: int = 0, member_count: int | None = None,
+             failures: dict[int, str] | None = None, pool: dict | None = None) -> Path:
+        batch = tmp_path / "runs" / scenario / "b"
+        batch.mkdir(parents=True)
+        for j in range(members):
+            (batch / f"member_{j:04d}.sqlite3").write_bytes(b"")
+        write_batch_manifest(
+            batch, member_count=members if member_count is None else member_count,
+            failures=[(i, batch / f"member_{i:04d}.sqlite3", e) for i, e in (failures or {}).items()],
+            pool=pool)
+        return batch
+    return make
+
+
+@pytest.fixture(scope="function")
 def two_lot_ensemble_runs_dir(
     set_brokerage_lots: Callable[[list[dict[str, str]]], None],
     retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
