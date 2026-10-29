@@ -4153,29 +4153,36 @@ def _calendar_name_clash(scenarios_dir: Path, scenario: str, name: str) -> str |
     return f"a calendar row is already named {name!r} in {rename.describe_clashes(found)}"
 
 
+# Under `sim calendar edit`: (origin, row, name), an unnamed inherited row to
+# name in the scenario that defines it, within the staged edit that writes
+# the override then matching it by that name (#356).
+_CALENDAR_NAME_IN_ORIGIN = "analysis.sim.calendar.name_in_origin"
+
+
 def _name_defining_calendar_row(
-    data_dir: Path, origin: str, chosen: Mapping[str, str], name: str,
+    edit: StagedEdit, data_dir: Path, origin: str, chosen: Mapping[str, str], name: str,
 ) -> Path:
     """Give the unnamed row ``chosen`` the name ``name`` in ``origin``, the
-    scenario whose calendar.csv has it, as a staged edit that every scenario
-    built on ``origin`` must still load with (#356). Returns the file."""
+    scenario whose calendar.csv has it, within ``edit``: the override that
+    matches it by that name is written in the same edit, so both land or
+    neither does, and every scenario built on ``origin`` must still load
+    (#356). Returns the file."""
     scenarios_dir = data_dir / "scenarios"
     if (clash := _calendar_name_clash(scenarios_dir, origin, name)) is not None:
         raise click.ClickException(f"{clash}. Nothing was written.")
     path = _folder_of(scenarios_dir, origin) / "calendar.csv"
-    with _scenario_edit(data_dir, origin, remember=False) as edit:
-        staged = edit.path(path)
-        # Found in the staged copy: the file may have changed since the row was picked.
-        index = _unnamed_row_index(_read_calendar_rows(staged), chosen)
-        if index is None:
-            raise click.ClickException(
-                f"{path} no longer has this row without a name; start again. Nothing was written."
-            )
-        frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
-        if "name" not in frame.columns:
-            frame["name"] = ""
-        frame.loc[index, "name"] = name
-        frame.to_csv(staged, index=False)
+    staged = edit.path(path)
+    # Found in the staged copy: the file may have changed since the row was picked.
+    index = _unnamed_row_index(_read_calendar_rows(staged), chosen)
+    if index is None:
+        raise click.ClickException(
+            f"{path} no longer has this row without a name; start again. Nothing was written."
+        )
+    frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
+    if "name" not in frame.columns:
+        frame["name"] = ""
+    frame.loc[index, "name"] = name
+    frame.to_csv(staged, index=False)
     return path
 
 
@@ -4259,12 +4266,19 @@ def _write_calendar_row(
     meta = context.meta if context is not None else {}
     replacing = meta.get(_CALENDAR_REPLACE_ROW)
     overriding = meta.get(_CALENDAR_OVERRIDE_ROW)
+    naming = meta.get(_CALENDAR_NAME_IN_ORIGIN)
     with _scenario_edit(data_dir, scenario_name) as edit:
         staged = edit.path(path)
         if overriding is not None:
             if _write_calendar_override(staged, path, row, *overriding):
-                return "wrote an override:"
-            return "nothing changed; no override written for"
+                outcome = "wrote an override:"
+            else:
+                outcome = "nothing changed; no override written for"
+            if naming is not None:
+                origin, unnamed, name = naming
+                named = _name_defining_calendar_row(edit, data_dir, origin, unnamed, name)
+                outcome = f"named the row {name!r} in {named}, and {outcome}"
+            return outcome
         if replacing is None:
             _append_csv_row(staged, registries.CALENDAR_HEADER, row)
             return "appended"
@@ -5502,8 +5516,6 @@ def calendar_edit(
         write(calendar_guide.command_params(spec, answers))
         return
 
-    named: list[str] = []  # where the row was named on the way, if it was
-
     def submit(params: dict[str, object]) -> None:
         try:
             write(params)
@@ -5516,26 +5528,24 @@ def calendar_edit(
             name = _ask_defining_name(spec, context, answers, data_dir_p / "scenarios", origin)
             if not name:
                 raise
-            written = _name_defining_calendar_row(data_dir_p, origin, rows[index], name)
-            named.append(f"the row keeps its new name {name!r} in {written}")
-            click.echo(f"named the row {name!r} in {written}")
-            rows[index] = {**rows[index], "name": name}
-            answers["row_name"] = name
+            # One staged edit names the row there and writes the override
+            # here, so a refusal of either leaves both files as they were.
+            unnamed = rows[index]
+            ctx.meta[_CALENDAR_NAME_IN_ORIGIN] = (origin, unnamed, name)
+            rows[index] = {**unnamed, "name": name}
             try:
                 write({**params, "row_name": name})
-            except click.ClickException as error:
-                # The name is written; only the override here is not.
-                raise click.ClickException(
-                    f"{error.format_message()} (The row is named {name!r} in {origin!r}; "
-                    "only this scenario's override was not written.)"
-                ) from None
+            except BaseException:
+                rows[index] = unnamed
+                raise
+            finally:
+                del ctx.meta[_CALENDAR_NAME_IN_ORIGIN]
+            answers["row_name"] = name
 
     click.echo(f"Editing row {index + 1}: {_calendar_row_label(rows[index])}  {notes[index]}".rstrip())
     guide = _calendar_guide()
     guide.complete(spec, context, answers)
     if not guide.review(spec, context, answers, submit, show_command=False):
-        for note in named:
-            click.echo(f"  ({note})")
         ctx.exit(1)
 
 

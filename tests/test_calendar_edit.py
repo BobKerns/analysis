@@ -637,3 +637,30 @@ def test_a_templates_unnamed_row_is_not_offered_a_name(
     assert "A template isn't edited from here" in result.output
     assert "Name it in" not in result.output
     assert child_calendar().empty
+
+
+def test_naming_in_the_parent_and_the_override_land_together_or_not_at_all(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame],
+    child_calendar: Callable[[], pd.DataFrame], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The parent's row is named in the same staged edit as the child's
+    override, so a refused override leaves the parent's row unnamed too."""
+    before = calendar_rows()
+    real = cli_module._write_calendar_override
+    calls: list[str] = []
+
+    def refuse_once_named(staged: Path, path: Path, row: dict[str, str], chosen: dict[str, str],
+                          origin: str) -> bool:
+        calls.append(chosen["name"])
+        if not chosen["name"]:  # first: refused for want of a name, as it really is
+            return real(staged, path, row, chosen, origin)
+        raise click.ClickException("the override was refused")
+
+    monkeypatch.setattr(cli_module, "_write_calendar_override", refuse_once_named)
+    result = _edit_child(test_data_dir, "salary_bill",
+                         answers=["date", "2032-12-31", "", "bill_retires", "cancel"])
+
+    assert calls == ["", "bill_retires"]  # it got as far as naming the row
+    assert "the override was refused" in result.output
+    pd.testing.assert_frame_equal(calendar_rows(), before)  # not named either
+    assert child_calendar().empty
