@@ -1095,6 +1095,12 @@ def ensemble_guard_rails_table_widget(*_,
             finally:
                 loading.finish()
 
+    # Evaluated rails and member counts by (batch, rails, dollars), as
+    # guard_rails_compare_widget keeps them: the rails are re-read at each
+    # draw, so an edit shows, but a change of years only re-clips.
+    evaluated: dict[tuple[Path | None, tuple[guard_rails.GuardRail, ...], DollarMode],
+                    tuple[list[guard_rails.EnsembleRailResult], int]] = {}
+
     def _draw(baseline: str, others: list[str]) -> None:
         scenarios_dir = resolved_data_dir / "scenarios"
         if not scenarios_dir.is_dir():
@@ -1119,15 +1125,19 @@ def ensemble_guard_rails_table_widget(*_,
             if not rails:  # nothing to evaluate: don't open (or build) its store
                 results[name] = []
                 continue
-            opened = _open_recipe(runs_dir, name, loading)
-            if opened is None:  # its batch went away since the recipes were listed
-                clear_output(wait=True)
-                display(StyledMarkdown(f"**No Monte Carlo batch for {name}.**"))
-                return
-            store = opened[1]
-            sizes[name] = len(store)
-            loading.note(f"Evaluating {name}'s guard rails")
-            results[name] = guard_rails.ensemble_results(store, rails, mode)
+            batch_dir = latest_ensemble_batch(runs_dir / name, mode="monte_carlo")
+            key = (batch_dir, tuple(rails), mode)
+            if batch_dir is None or key not in evaluated:
+                opened = _open_recipe(runs_dir, name, loading)
+                if opened is None:  # its batch went away since the recipes were listed
+                    clear_output(wait=True)
+                    display(StyledMarkdown(f"**No Monte Carlo batch for {name}.**"))
+                    return
+                store = opened[1]
+                loading.note(f"Evaluating {name}'s guard rails")
+                key = (opened[0], tuple(rails), mode)
+                evaluated[key] = (guard_rails.ensemble_results(store, rails, mode), len(store))
+            results[name], sizes[name] = evaluated[key]
         tables = guard_rails.ensemble_comparison_table(results, baseline, others)
         clear_output(wait=True)
         members = f" ({sizes[baseline]} members)" if baseline in sizes else ""

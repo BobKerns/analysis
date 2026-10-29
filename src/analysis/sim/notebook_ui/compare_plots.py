@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 import ipywidgets as widgets
 import pandas as pd
@@ -39,6 +40,9 @@ from analysis.sim.notebook_ui.pickers import (
 from analysis.sim.plotting import FRAME_ALPHA, include_zero, mark_deaths
 from analysis.sim.types import AccountKind, Death, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
+
+if TYPE_CHECKING:
+    from analysis.sim.guard_rails import RailResult
 
 # ---------- data helpers (pure; unchanged math from the old scenario_compare.py) ----------
 
@@ -436,12 +440,7 @@ def guard_rails_compare_widget(
                 colors=container.colors, years=(low, high),
                 deaths=compare.scenario_deaths(container.connections, container.scenarios))
             display(Image(data=figure_bytes(fig), format="png"))
-            # A rail's sense is the baseline's, as the chart tints it; a rail
-            # only variants have takes the first variant's that has it.
-            senses: dict[str, str] = {}
-            for name in container.scenarios:
-                for r in results.get(name, ()):
-                    senses.setdefault(r.rail.name, r.rail.sense)
+            senses = _rail_senses(results, container.scenarios)
             for rail, frame in frames.items():
                 frame = time_range.clip(frame)
                 display(StyledMarkdown(f"**{rail}** ({senses[rail]})"))
@@ -462,6 +461,21 @@ def guard_rails_compare_widget(
     if container.ok:
         _redraw()
     return widgets.VBox([controls_row(dollar_mode, time_range), output])
+
+
+def _rail_senses(results: Mapping[str, Sequence[RailResult]], names: Sequence[str]) -> dict[str, str]:
+    """Each rail's sense as ``guard_rail_comparison_figure`` takes it, so the
+    tables color what the chart tints: from the first of ``names`` (baseline,
+    then variants) whose rail of that name covers its run's years, else the
+    first that has it at all. Rails are matched by name, and a variant may
+    redefine one with the other sense."""
+    senses: dict[str, str] = {}
+    for covering in (True, False):
+        for name in names:
+            for result in results.get(name, ()):
+                if result.applies or not covering:
+                    senses.setdefault(result.rail.name, result.rail.sense)
+    return senses
 
 
 def _past_color(value: float, column: str, sense: str) -> str:

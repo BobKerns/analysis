@@ -235,10 +235,16 @@ def test_the_ensemble_guard_rails_table_widget_compares_recipes_by_year(
     assert summary["recipe"].tolist()[:2] == ["retire_alice", "same"]
     assert summary["Δpast"].dropna().abs().max() < 1e-9
 
+    from analysis.sim import guard_rails
+    evaluated: list[Any] = []
+    real_results = guard_rails.ensemble_results
+    monkeypatch.setattr(guard_rails, "ensemble_results",
+                        lambda *args: evaluated.append(args) or real_results(*args))
     shown.clear()
     time_range.value = (2035, 2036)
     tables = [item.data for item in shown if hasattr(item, "data") and hasattr(item.data, "columns")]
     assert sorted(set(tables[0].index.get_level_values("year"))) == [2035, 2036]
+    assert not evaluated  # the years only re-clip what was found
 
     # A recipe without rails: said so, and its store is never opened.
     from analysis.sim.registries import GUARD_RAILS_CSV_HEADER
@@ -250,5 +256,12 @@ def test_the_ensemble_guard_rails_table_widget_compares_recipes_by_year(
                         lambda runs, name, loading: opened.append(name) or real_open(runs, name, loading))
     shown.clear()
     time_range.value = (2035, 2037)
-    assert opened == ["retire_alice"]
+    assert opened == []  # retire_alice's rails are unchanged, so found already
     assert any("No guard rails in `same`" in str(getattr(item, "data", "")) for item in shown)
+
+    # A batch gone since the recipes were listed says so.
+    monkeypatch.setattr(ensemble_widgets, "_open_recipe", lambda runs, name, loading: None)
+    shown.clear()
+    controls.dollar_picker.value = (DollarMode.NOMINAL if controls.dollar_picker.value != DollarMode.NOMINAL
+                                    else DollarMode.CPI_CONSTANT)
+    assert any("No Monte Carlo batch for retire_alice" in str(getattr(item, "data", "")) for item in shown)
