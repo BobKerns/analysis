@@ -96,6 +96,7 @@ from analysis.sim.loader import (
     ScenarioRef,
     batch_mode,
     DISABLE_FILE,
+    KEEP_SCENARIO_ENV,
     calendar_row_key,
     current_scenario_path,
     is_ensemble_batch,
@@ -445,6 +446,8 @@ def _make_current(data_dir: Path, name: str) -> None:
     if os.environ.get(BUILDER_CHILD_ENV):
         return  # a background build (#300) never moves the user's current scenario
     working_set.use(data_dir, name)  # first in the builder's order (#322)
+    if os.environ.get(KEEP_SCENARIO_ENV):
+        return  # a lookup for the user, which mustn't move their scenario (#350)
     previous = read_current_scenario(data_dir)
     if previous == name:
         return

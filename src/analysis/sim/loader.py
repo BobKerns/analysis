@@ -68,7 +68,7 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
     "BATCH_MANIFEST_FILENAME",
-    "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
+    "CURRENT_SCENARIO_FILE", "KEEP_SCENARIO_ENV", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
     "LoadError", "LoadResult", "DataDirtyRefused", "PendingRun", "ScenarioRef",
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
@@ -78,6 +78,9 @@ __all__ = [
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
+# Set (non-empty), a command naming a scenario uses it without making it
+# current (#350): for an agent or script looking things up for the user.
+KEEP_SCENARIO_ENV = "ANALYSIS_KEEP_SCENARIO"
 # In a scenario's folder: the scenario isn't built unless named (#300), as
 # for a mix-in or a base that only exists to be built on. Not inherited, and
 # left out of every data tree (provenance), so it changes no scenario's data.
