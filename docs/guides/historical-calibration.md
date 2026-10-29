@@ -322,8 +322,9 @@ sim calendar add set-rate medical_episode_start+5y medical 4.2 --aux-kind inflat
   uncertain as well.
 
 The templates ship three episodes built this way, one per historical
-pattern, and one that chains two of them, each a mix-in on the same base, so `base:t_great_inflation` and
-`base:t_pandemic_spike` share everything else: see [Episodes](#episodes).
+pattern, each a mix-in on the same base, so `base:t_great_inflation` and
+`base:t_pandemic_spike` share everything else, and `t_crisis_then_spike`,
+which chains two of them: see [Episodes](#episodes).
 
 ## Inflation metrics compared
 
@@ -808,7 +809,8 @@ long run](#todays-rate-returning-to-the-long-run)):
 
 Three templates add a stretch of trouble on top of the long-run rates.
 Between them they cover three different ways things go wrong, and each is
-a starting point for others:
+a starting point for others. A fourth, `t_crisis_then_spike`, puts two of
+them in one lifetime:
 
 | Template | Kind | History | Length |
 | --- | --- | --- | --- |
@@ -830,7 +832,11 @@ series has no history for the period.
   late 2047. That's a default to drop in. To look at an episode in a
   particular period, override the start marker by name in the scenario,
   with a fixed date or a narrower range; every row of the episode moves
-  with it.
+  with it. `t_crisis_then_spike` is the exception: its crisis starts from
+  2031 to 2045 (base case mid-2038), so the spike, 1 to 10 years after the
+  crisis's near-zero rates end, lands before 2060 in all but about 2% of
+  members. That window assumes a scenario ending around 2060; for one
+  ending much earlier or later, override `financial_crisis_start`.
 - **What a member runs.** A persistent series starts its episode path
   from the rate in effect and climbs at its persistence
   (`vary_process_start` `current`). A series with no persistence (stocks,

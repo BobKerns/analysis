@@ -37,6 +37,14 @@ def test_the_templates_are_the_ones_the_docs_describe() -> None:
     assert found == sorted(TEMPLATES)
 
 
+@pytest.mark.parametrize("readme", ["README.md", *(f"{name}/README.md" for name in TEMPLATES)])
+def test_every_template_readme_lists_every_template(readme: str) -> None:
+    """Each README carries the whole template tree, so a new template has
+    to be added to all of them."""
+    text = (TEMPLATE_SCENARIOS_DIR / readme).read_text()
+    assert [name for name in TEMPLATES if f"`{name}`" not in text] == []
+
+
 @pytest.mark.parametrize("name", TEMPLATES)
 def test_every_template_loads_in_a_data_repo_without_a_copy(
     template_data_dir: Path, tmp_path: Path, name: str,
