@@ -137,22 +137,28 @@ def load_accounts_view(
     return out
 
 
+_ACCOUNTS_COLUMNS = (
+    "kind", "subkind", "owner", "tax_treatment",
+    "opening_balance", "rate_role", "rate_series", "annual_rate",
+    "opened", "closed", "cost_basis",
+)
+"""``accounts_dataframe``'s columns, in display order (its index is ``name``)."""
+
+
 def accounts_dataframe(sc: ScenarioConnection, *, as_of: str | None = None):
     """Return ``load_accounts_view`` as a pandas DataFrame for notebook display."""
     rows = load_accounts_view(sc, as_of=as_of)
+    if not rows:
+        # No accounts (an empty scenario, or an as_of before any opened):
+        # the same columns with no rows, so callers can still pick columns.
+        return pd.DataFrame(columns=["name", *_ACCOUNTS_COLUMNS]).set_index("name")
     df = pd.DataFrame([r.__dict__ for r in rows]).set_index("name")
     values = _members_by_account(sc)["opening_cost_basis"]
-    if df.empty:
-        return df
     df["annual_rate"] = df["annual_rate_micros"].apply(
         lambda m: None if m is None else round(m / 10_000, 4)
     )
     df['cost_basis'] = values.reindex(df.index) / 100.0
-    return df[
-        ["kind", "subkind", "owner", "tax_treatment",
-        "opening_balance", "rate_role", "rate_series", "annual_rate",
-        "opened", "closed", "cost_basis",
-    ]]
+    return df[list(_ACCOUNTS_COLUMNS)]
 
 
 def render_accounts_table(rows: list[AccountRow], title: str | None = None):
