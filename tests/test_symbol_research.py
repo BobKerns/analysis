@@ -347,8 +347,8 @@ def test_add_symbol_replace_swaps_only_that_months_set(test_data_dir: Path) -> N
 
 def test_add_symbol_replace_keeps_the_set_where_it_was(test_data_dir: Path) -> None:
     symbols.add_symbol(test_data_dir, "ABCDX", weights={"stock_us": "100%"}, as_of="2026-09")
-    symbols.add_symbol(test_data_dir, "EFGHX", weights={"bond": "100%"})
+    symbols.add_symbol(test_data_dir, "OTHER", weights={"bond": "100%"})
     symbols.add_symbol(test_data_dir, "ABCDX", weights={"bond": "40%", "cash": "60%"}, as_of="2026-09",
                        replace=True)
     rows = [(r["symbol"], r["asset_class"]) for r in _allocations(test_data_dir)]
-    assert rows == [("ABCDX", "bond"), ("ABCDX", "cash"), ("EFGHX", "bond")]
+    assert rows == [("ABCDX", "bond"), ("ABCDX", "cash"), ("OTHER", "bond")]
