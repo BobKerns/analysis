@@ -66,7 +66,12 @@ Run it with a data repo activated. It prints `ok`/`FAILED` and the number of
 charts for each notebook, plus each error with the deepest `src/analysis` frame. It
 never writes the `.ipynb`. `2>/dev/null` hides the kernel's TCP warnings.
 `--timeout` (default 120) is per cell; a cell over it fails, naming the cell.
-Keep it short unless a notebook builds something slow (see Gotchas).
+Some cells wait out the whole timeout for no reason (see Gotchas), so keep it
+short (`--timeout 20`) for notebooks that only read finished runs. An ensemble
+is different: a run can take nearly 5 minutes, and a pooled ensemble (an
+ensemble of ensembles) a multiple of that. Build those with `sim run <recipe>`
+*before* running the notebook, so the notebook only opens finished batches. If
+a notebook has to build one itself, pass a timeout longer than the build.
 
 Baseline on `main` (61dc10c) with the smoke data, current scenario
 `retire_alice`. Anything new in this list is yours:
@@ -149,8 +154,8 @@ This takes about 50s for about 2750 tests. The other gates are in
   timestamps show the cell done (`shell.execute_reply`, `iopub.status.idle`) in
   0.2s; nbclient then waits out the rest of the timeout before the next cell.
   The app code isn't waiting (the same calls take 0.1s outside a kernel). So a
-  `--timeout 600` costs 10 minutes on `events`. Use `--timeout 20` unless a
-  cell really computes for longer.
+  `--timeout 600` costs 10 minutes on `events`. So run ensembles from the CLI
+  first, and give the notebooks a short timeout (see "Notebooks" above).
 - **The background builder (`sim builder`) must stay off** for the scratch repo:
   it would queue builds this test never asked for, and opening a run waits for
   a pending build. It works through git hooks that `sim builder install` adds
