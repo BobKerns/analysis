@@ -71,6 +71,42 @@ def test_share_past_ever_past_and_rms_across_members() -> None:
     assert summary.loc["annual", "rms_over"] == pytest.approx(np.sqrt((30**2 + 40**2) / 4))
 
 
+def _synthetic(name: str, margins: list[list[float]]) -> gr.EnsembleRailResult:
+    margin = np.array(margins)
+    years = np.arange(2031, 2031 + margin.shape[1])
+    rail, _ = gr.parse_cells({"name": name, "measure": "spending", "side": "above",
+                              "threshold": "1000.00", "basis": "nominal"})
+    assert rail is not None
+    return gr.EnsembleRailResult(rail, ["m0", "m1"], [0, 1],
+                                 gr.measures.RailYears(years, *[margin] * 5))
+
+
+def test_several_recipes_against_a_baseline_by_year_and_recipe() -> None:
+    """Rows are (year, recipe), the variants in the order given; a rail only
+    one variant shares has only its rows; the summary puts the baseline first
+    with no change, then each recipe's change."""
+    baseline = [_synthetic("a", [[10.0, -30.0], [5.0, 5.0]]), _synthetic("b", [[1.0, 1.0], [1.0, 1.0]])]
+    worse = [_synthetic("a", [[-10.0, -30.0], [-5.0, 5.0]])]
+    same = [_synthetic("a", [[10.0, -30.0], [5.0, 5.0]]), _synthetic("b", [[1.0, -1.0], [1.0, 1.0]])]
+    results = {"base": baseline, "worse": worse, "same": same}
+    tables = gr.ensemble_comparison_table(results, "base", ["worse", "same"])
+    assert list(tables) == ["a", "b"]
+    assert list(tables["a"].index) == [(2031, "worse"), (2031, "same"), (2032, "worse"),
+                                       (2032, "same")]
+    assert tables["a"].loc[(2031, "worse"), "Δpast"] == 1.0
+    assert tables["a"].loc[(2031, "same"), "Δpast"] == 0.0
+    assert list(tables["b"].index) == [(2031, "same"), (2032, "same")]
+
+    summary = gr.ensemble_summary_comparison(results, "base", ["worse", "same"])
+    annual_a = summary[(summary["rail"] == "a") & (summary["form"] == "annual")]
+    assert annual_a["recipe"].tolist() == ["base", "worse", "same"]
+    assert np.isnan(annual_a["Δpast"].iloc[0])
+    assert annual_a["Δpast"].iloc[1] == pytest.approx(0.5)  # 3 of 4 member-years against 1
+    assert annual_a["Δever_past"].iloc[2] == 0.0
+    assert summary["rail"].tolist()[:3] == ["a"] * 3
+    assert set(summary[summary["rail"] == "b"]["recipe"]) == {"base", "same"}
+
+
 @pytest.mark.slow
 def test_sim_ensemble_guard_rails_reports_each_rail(
     mc_batch: Path, test_data_dir: Path, runs_dir: Path, tmp_path: Path,
@@ -163,3 +199,43 @@ def test_the_ensemble_guard_rails_widget_shows_each_rail_and_rereads_them(
     dropdown.value = None
     dropdown.value = "retire_alice"
     assert any("No guard rails in retire_alice" in str(getattr(item, "data", "")) for item in shown)
+
+
+@pytest.mark.slow
+def test_the_ensemble_guard_rails_table_widget_compares_recipes_by_year(
+    mc_batch: Path, test_data_dir: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recipe sharing the baseline's seed against it: every change is zero,
+    one row per (year, recipe), then the whole-run summary by recipe."""
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+
+    shutil.copytree(mc_batch.parent, runs_dir / "same")
+    shutil.copytree(test_data_dir / "scenarios" / "retire_alice", test_data_dir / "scenarios" / "same")
+    shown: list[Any] = []
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    time_range = TimeRangePicker()
+    controls = ensemble_widgets.EnsembleControls(runs_dir=runs_dir, time_range=time_range)
+    box = ensemble_widgets.ensemble_guard_rails_table_widget(
+        data_dir=test_data_dir, runs_dir=runs_dir, controls=controls, default="retire_alice")
+    pickers, row, _loading, _out = box.children
+    baseline, variants = pickers.children
+    assert baseline.value == "retire_alice" and "same" in variants.options
+    assert list(row.children) == [controls.dollar_picker, time_range]
+    assert any("Pick a baseline" in str(getattr(item, "data", "")) for item in shown)
+
+    shown.clear()
+    variants.value = ("same",)
+    tables = [item.data for item in shown if hasattr(item, "data") and hasattr(item.data, "columns")]
+    by_year, summary = tables[0], tables[-1]
+    assert list(by_year.columns) == ["Δpast", "Δever_past", "Δrms_over", "Δpast cum",
+                                     "Δever_past cum", "Δrms_over cum"]
+    assert set(by_year.index.get_level_values("recipe")) == {"same"}
+    assert (by_year.abs().fillna(0) < 1e-9).all().all()
+    assert summary["recipe"].tolist()[:2] == ["retire_alice", "same"]
+    assert summary["Δpast"].dropna().abs().max() < 1e-9
+
+    shown.clear()
+    time_range.value = (2035, 2036)
+    tables = [item.data for item in shown if hasattr(item, "data") and hasattr(item.data, "columns")]
+    assert sorted(set(tables[0].index.get_level_values("year"))) == [2035, 2036]

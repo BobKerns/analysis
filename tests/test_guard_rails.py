@@ -250,3 +250,16 @@ def test_summary_and_margins_frames(prototype_results: dict[str, gr.RailResult])
     assert summary.loc[("gk_lower", "cumulative"), "years_past"] == 0
     episodes = gr.rail_episodes(prototype_results["budget"])
     assert [(e.first, e.last) for e in episodes["annual"]] == [(2031, 2034)]
+
+
+def test_the_comparison_summary_puts_each_scenario_under_each_rail(
+    prototype_results: dict[str, gr.RailResult],
+) -> None:
+    results = list(prototype_results.values())
+    summary = gr.comparison_summary_frame(
+        {"base": results, "variant": results[:1]}, ["base", "variant"])
+    first = summary[summary["rail"] == results[0].rail.name]
+    assert first["scenario"].tolist() == ["base", "variant", "base", "variant"]
+    assert first["form"].tolist() == ["annual", "annual", "cumulative", "cumulative"]
+    assert set(summary[summary["rail"] == results[1].rail.name]["scenario"]) == {"base"}
+    assert gr.comparison_summary_frame({}, ["base"]).empty

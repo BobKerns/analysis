@@ -363,6 +363,101 @@ def year_end_widget(
     return widgets.VBox([controls_row(dollar_mode, after_tax, time_range), output])
 
 
+def guard_rails_compare_widget(
+    container: MultiScenarioConnections,
+    dollar_mode: DollarModePicker | None = None,
+    time_range: TimeRangePicker | None = None,
+    **_
+) -> widgets.VBox:
+    """Each scenario's guard rail margins side by side (#305), as ``sim
+    compare --section guard-rails`` prints them: a chart of every rail's
+    annual and cumulative margin, a line per scenario; per rail, a table of
+    each scenario's margins by year and each variant's change; then each
+    scenario's whole-run summary. Rails are each scenario's own, matched by
+    name, and read when drawn, so an edited rail shows without a re-run.
+    Margins sum over the whole run; the years picked only limit what is
+    shown."""
+    from analysis.sim import guard_rails
+    from analysis.sim.guard_rail_charts import CARRIED_CAVEAT, guard_rail_comparison_figure
+
+    dollar_mode = dollar_mode or DollarModePicker(DollarMode.CPI_CONSTANT)
+    time_range = _time_range(time_range, container)
+    output = widgets.Output()
+
+    def _results(mode: DollarMode) -> dict[str, list[guard_rails.RailResult]] | None:
+        """Each scenario's rails evaluated, or None, said why."""
+        results: dict[str, list[guard_rails.RailResult]] = {}
+        for name, rc in container.connections.items():
+            try:
+                scenarios_dir = rc.scenario.scenarios_dir
+                rails = guard_rails.run_rails(rc, scenarios_dir)
+            except RuntimeError:  # a run file opened without its data repo
+                display_warning(f"{name} was opened without its scenario, so its guard rails "
+                                "can't be read.")
+                return None
+            except guard_rails.GuardRailError as exc:
+                display(StyledMarkdown(f"**The guard rails of {name} don't load**; "
+                                       f"`sim check {name}` lists:\n\n"
+                                       + "\n".join(f"- {issue}" for issue in exc.issues)))
+                return None
+            if rails and mode == DollarMode.CPI_CONSTANT and rc.cpi_index().isna().all():
+                display_warning(f"No 'cpi' inflation index in the run of {name}, so no "
+                                "CPI-constant margins; pick nominal dollars.")
+                return None
+            results[name] = guard_rails.evaluate_run(rc, rails, mode) if rails else []
+        return results
+
+    def _redraw(*_):
+        mode = dollar_mode.value
+        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        baseline, variants = container.baseline, list(container.variants)
+        with output:
+            clear_output(wait=True)
+            results = _results(mode)
+            if results is None:
+                return
+            frames = guard_rails.comparison_frames(results, baseline, variants)
+            if not frames:
+                display(StyledMarkdown(
+                    "_No guard rails in these scenarios; `sim guard-rail add` adds one._"))
+                return
+            low, high = time_range.value
+            fig = guard_rail_comparison_figure(
+                results, baseline, variants, "Guard rails", unit=unit,
+                colors=container.colors, years=(low, high),
+                deaths=compare.scenario_deaths(container.connections, container.scenarios))
+            display(Image(data=figure_bytes(fig), format="png"))
+            senses = {r.rail.name: r.rail.sense for found in results.values() for r in found}
+            for rail, frame in frames.items():
+                frame = time_range.clip(frame)
+                display(StyledMarkdown(f"**{rail}** ({senses[rail]})"))
+                display(frame.style.format("${:,.0f}", na_rep="")
+                        .apply(lambda col, rail=rail: [_past_color(v, str(col.name), senses[rail])
+                                                       for v in col]))
+            display(StyledMarkdown("**Over the whole run**"))
+            display(guard_rails.comparison_summary_frame(results, container.scenarios)
+                    .style.format({"worst": "${:,.0f}", "end": "${:,.0f}",
+                                   "rms_over": "${:,.0f}"}))
+            display(StyledMarkdown(
+                f"{unit} dollars. A margin is the room left before a rail; negative is past it "
+                "(red past a rail to stay inside, blue past a positive one); a Δ column is the "
+                "variant less the baseline, so a positive Δ is more room. " + CARRIED_CAVEAT))
+
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
+    if container.ok:
+        _redraw()
+    return widgets.VBox([controls_row(dollar_mode, time_range), output])
+
+
+def _past_color(value: float, column: str, sense: str) -> str:
+    """A margin cell's color: red past a rail to stay inside, blue past a
+    positive one. A Δ column's sign isn't past or inside, so it stays plain."""
+    if pd.isna(value) or value >= 0 or column.startswith("Δ"):
+        return ""
+    return "color: #d03b3b" if sense == "negative" else "color: #2a78d6"
+
+
 def ss_gross_widget(container: MultiScenarioConnections) -> None:
     """Monthly and cumulative gross Social Security, plus lifetime totals vs. baseline."""
 

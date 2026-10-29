@@ -168,6 +168,14 @@ to stay inside is solid and warm; a positive rail is dashed, cool and
 hatched; the dotted lines are the margins carried at the portfolio's
 return.
 
+To see how a change to the plan moves the rails, `sim compare BASELINE
+VARIANT --section guard-rails` prints each rail's margins in every scenario
+by year, with each variant's change (variant less baseline, so a positive
+change is more room). The `scenario_compare.ipynb` notebook's **Guard
+rails** section shows the same tables, under a chart with a row per rail,
+annual and cumulative margins side by side, a line per scenario, then each
+scenario's summary.
+
 ## Across an ensemble
 
 An ensemble (the [ensembles guide](ensembles.md)) runs the plan through
@@ -205,4 +213,7 @@ member-year. A rail stops at each member's household's last death, so the
 later years' shares count only the members still covered.
 
 `ensemble.ipynb`'s **Guard rails** section shows the same, charts and
-tables, with the notebook's shared dollars and years.
+tables, with the notebook's shared dollars and years. Its **Compare several
+ensembles on guard rails** table sets a baseline against any number of
+recipes that pair with it: per rail, each recipe's change in the shares and
+the RMS year by year, then each recipe's summary beside its change.
