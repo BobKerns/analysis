@@ -22,8 +22,9 @@ from analysis.sim.types import Death, DollarMode
 __all__ = [
     "ABSENT", "META_COLUMNS", "RULE_COMPARE_COLUMNS",
     "account_definition_differences", "all_nan_columns", "balance_by_month", "breakeven_month",
-    "breakeven_summary", "comparability", "event_differences", "net_worth_by_month",
-    "rule_differences", "variant_delta", "year_end_comparison", "year_to_date_differences",
+    "breakeven_summary", "comparability", "drift_by_scenario", "drift_targets", "event_differences",
+    "net_worth_by_month", "rule_differences", "strategy_activity", "strategy_differences",
+    "target_differences", "uses_strategies", "variant_delta", "year_end_comparison", "year_to_date_differences",
 ]
 
 # ---------- are the runs comparable? ----------
@@ -392,3 +393,139 @@ def scenario_deaths(connections: Mapping[str, RunConnection], scenarios: Sequenc
         {death for name in scenarios for death in connections[name].deaths()},
         key=lambda d: (d.month, d.person),
     )
+
+
+# ---------- strategies (#359) ----------
+
+STRATEGY_COMPARE_COLUMNS = ["kind", "chain", "start", "end", "params_json"]
+
+
+def _keyed_differences(
+    frames: Mapping[str, pd.DataFrame], scenarios: Sequence[str], baseline: str,
+    fields: Sequence[str], key: Sequence[str],
+) -> pd.DataFrame:
+    """Rows (key..., field), one column per scenario, where a variant's value
+    differs from the baseline's; a row a scenario lacks is missing there."""
+    index = sorted(set().union(*(frame.index for frame in frames.values())))
+    frames = {name: frame.reindex(index) for name, frame in frames.items()}
+    base = frames[baseline]
+    rows = []
+    for row_key in index:
+        for field in fields:
+            b = base.at[row_key, field]
+            if any(not (pd.isna(b) and pd.isna(v)) and b != v
+                   for name in scenarios if name != baseline
+                   for v in [frames[name].at[row_key, field]]):
+                keys = row_key if isinstance(row_key, tuple) else (row_key,)
+                rows.append({**dict(zip(key, keys, strict=True)), "field": field,
+                             **{name: frames[name].at[row_key, field] for name in scenarios}})
+    names = [*key, "field"]
+    if not rows:
+        return pd.DataFrame(columns=list(scenarios), index=pd.MultiIndex.from_tuples([], names=names))
+    return pd.DataFrame(rows).set_index(names)
+
+
+def _table(rc: RunConnection, sql: str) -> pd.DataFrame:
+    from analysis.sim.drift import has_table
+
+    table = sql.split(" FROM ", 1)[1].split()[0]
+    if not has_table(rc._con, table):
+        return pd.DataFrame()
+    return rc._read_sql(sql)
+
+
+def uses_strategies(connections: Mapping[str, RunConnection]) -> bool:
+    """Whether any run has a strategy or a target set: the strategy
+    comparisons leave no trace otherwise."""
+    from analysis.sim.drift import has_table
+
+    return any(
+        has_table(rc._con, table) and rc._con.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608
+        for rc in connections.values() for table in ("strategy", "allocation_target"))
+
+
+def strategy_differences(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], baseline: str,
+) -> pd.DataFrame:
+    """Strategies as each run had them (only enabled ones run), rows
+    (strategy, field), where a variant differs from the baseline; a strategy
+    a scenario doesn't run is missing there, as one switched off is."""
+    frames = {}
+    for name in scenarios:
+        frame = _table(connections[name], 'SELECT s.name, s.kind, c.name AS chain, s.start, s."end", '
+                       "s.params_json FROM strategy s JOIN chain c ON c.id = s.chain_id")
+        frames[name] = (frame.set_index("name") if not frame.empty
+                        else pd.DataFrame(columns=STRATEGY_COMPARE_COLUMNS))
+    return _keyed_differences(frames, scenarios, baseline, STRATEGY_COMPARE_COLUMNS, ["strategy"])
+
+
+def target_differences(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], baseline: str,
+) -> pd.DataFrame:
+    """Target set weights (percent) that differ, rows (set, as_of, class)."""
+    frames = {}
+    for name in scenarios:
+        frame = _table(connections[name], "SELECT target_set, as_of, asset_class, weight_micros "
+                       "FROM allocation_target")
+        if frame.empty:
+            frames[name] = pd.DataFrame(columns=["weight"])
+            continue
+        frame["weight"] = frame.pop("weight_micros") / 10_000
+        frames[name] = frame.set_index(["target_set", "as_of", "asset_class"])
+    out = _keyed_differences(frames, scenarios, baseline, ["weight"], ["target_set", "as_of", "asset_class"])
+    return out.droplevel("field")
+
+
+def strategy_activity(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str],
+) -> pd.DataFrame:
+    """Each scenario's strategies and what they did over the run: rows
+    (scenario, strategy); kind, chain, decisions, and dollars asked, moved
+    by the strategy and left to the chain's steps."""
+    rows = []
+    for name in scenarios:
+        frame = _table(connections[name], (
+            "SELECT s.name, s.kind, c.name AS chain, COUNT(d.id) AS decisions, "
+            "COALESCE(SUM(d.asked_cents), 0) AS asked, COALESCE(SUM(d.chosen_cents), 0) AS moved, "
+            "COALESCE(SUM(d.fallback_cents), 0) AS steps FROM strategy s JOIN chain c ON c.id = s.chain_id "
+            "LEFT JOIN strategy_decision d ON d.strategy_id = s.id GROUP BY s.id ORDER BY s.name"))
+        for row in named_rows(frame):
+            rows.append({"scenario": name, "strategy": row.name, "kind": row.kind, "chain": row.chain,
+                         "decisions": int(row.decisions), "asked": row.asked / 100,
+                         "moved": row.moved / 100, "steps": row.steps / 100})
+    columns = ["scenario", "strategy", "kind", "chain", "decisions", "asked", "moved", "steps"]
+    return pd.DataFrame(rows, columns=columns).set_index(["scenario", "strategy"])
+
+
+def drift_targets(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str],
+    target_set: str | None = None, portfolio: str | None = None,
+) -> tuple[str, str | None, float | None]:
+    """The target set, portfolio and band to compare the runs' drift on: a
+    strategy's in any of them (the baseline's first), else the one set
+    they all have. ``ValueError`` when nothing settles it."""
+    from analysis.sim import drift
+
+    watched, known = [], set()
+    for name in scenarios:
+        con = connections[name]._con
+        watched += drift.watches(con)
+        if drift.has_table(con, "allocation_target"):
+            known |= set(drift.target_sets(con))
+    return drift.pick(watched, sorted(known), target_set, portfolio)
+
+
+def drift_by_scenario(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], target_set: str,
+    portfolio: str | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Each run's ``drift.drift_by_month`` against ``target_set``; a run
+    without that set is left out."""
+    from analysis.sim import drift
+
+    out = {}
+    for name in scenarios:
+        con = connections[name]._con
+        if drift.has_table(con, "allocation_target") and target_set in drift.target_sets(con):
+            out[name] = drift.drift_by_month(con, target_set, portfolio=portfolio)
+    return out

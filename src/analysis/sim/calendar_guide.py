@@ -103,6 +103,11 @@ class Field:
     # The type when it depends on the answers so far (a guard rail's
     # threshold: a percent or dollars, by its basis); ``type`` otherwise.
     type_of: Callable[[Answers], FieldType] | None = None
+    # Whether ``Guide.complete`` asks this field when it has no answer; None
+    # always asks. A field that applies but isn't asked starts blank, and is
+    # still offered at the review: a fixed row's name, which only a varying
+    # row needs, can be given there (#356).
+    ask: Callable[[GuideContext, Answers], bool] | None = None
 
     @property
     def name(self) -> str:
@@ -211,11 +216,10 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
         Field(
             "row_name", "name for this row", option="--name", unique=True,
             required=lambda answers: answers.get("_vary") == "y",
-            # Asked when the row varies; a name an existing row already has is
-            # kept (and can be changed) either way.
-            applies=lambda ctx, answers: (  # noqa: ARG005
-                answers.get("_vary") == "y" or bool(answers.get("row_name"))
-            ),
+            # Asked only when the row varies, but every row has one to give at
+            # the review: an unnamed row a child scenario changes needs a name
+            # in the scenario that defines it (#356).
+            ask=varying,
             help="A unique name, needed when the row varies; reports and other rows "
                  "refer to the row by it.",
         ),
@@ -753,6 +757,14 @@ class Guide:
         others = ctx.other_rows.get(spec.command, ())
         return any(self._key(spec, ctx, other) == key for other in others)
 
+    def problem(
+        self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers, answer: str,
+    ) -> str | None:
+        """Why ``answer`` won't do for ``field_``, as asking it would say; None
+        when it will. For an answer given other than by asking (an option)."""
+        choices = list(field_.choices(ctx, answers)) if field_.choices else []
+        return self._problem(spec, field_, ctx, answers, answer, choices)
+
     def _problem(
         self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers,
         answer: str, choices: list[str],
@@ -804,6 +816,12 @@ class Guide:
             if arguments_only and not field_.is_argument:
                 continue
             answer = answers.get(field_.param)
+            if field_.ask is not None and not field_.ask(ctx, answers):
+                if answer is None:
+                    answers[field_.param] = ""
+                    continue
+            elif field_.ask is not None and answer == "" and field_.is_required(answers):
+                answer = None  # left blank while it wasn't asked; now it's needed
             if answer and not arguments_only:
                 choices = list(field_.choices(ctx, answers)) if field_.choices else []
                 if self._problem(spec, field_, ctx, answers, answer, choices) is not None:

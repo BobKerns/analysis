@@ -21,6 +21,7 @@ autoreload
 autouse
 axhspan
 axhline
+axhspan
 axisbelow
 axvline
 axvspan

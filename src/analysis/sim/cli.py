@@ -35,7 +35,7 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, completion, guard_rail_guide, guard_rails,
+    allocation, calendar_guide, chain_edit, chain_map, completion, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
     sensitivity, setup_listings, strategy_code, strategy_guide, symbols, units, working_set, ytd_guide,
 )
@@ -2201,6 +2201,73 @@ def ensemble_guard_rails(
             deaths=store.base_case_deaths()), graph_file, "ensemble-")
 
 
+@ensemble_group_command.command("drift")
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
+@_ENSEMBLE_RUNS_DIR_OPTION
+@_ENSEMBLE_DATA_DIR_OPTION
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to report on; default: the latest.",
+)
+@click.option("--targets", "target_set", type=completion.TARGET_SET, default=None,
+              help="The target set to measure drift from (default: a strategy's, or the only one).")
+@click.option("--portfolio", type=completion.TAG, default=None,
+              help="Only asset accounts with this tag (default: the strategy's portfolio, "
+                   "else every asset lot).")
+@click.option("--asset-class", "asset_class", type=click.Choice(registries.ASSET_CLASSES), default=None,
+              help="One class's drift (share less target, signed) instead of the largest either way.")
+@_ENSEMBLE_GRAPH_OPTIONS
+def ensemble_drift(
+    scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    target_set: str | None, portfolio: str | None, asset_class: str | None, as_graph: bool,
+    graph_file: Path | None,
+) -> None:
+    """How far an ensemble's portfolios stray from a target set (#359).
+
+    Per year end, across members: the median, 75th and 95th percentiles and
+    the largest of each member's largest drift either way (a class's share
+    less its target, in percentage points), and, where a strategy steers to
+    the set with a band, the share of members past the band then and the
+    share past it at some month so far. --asset-class follows one class
+    instead (signed: above zero is overweight). --graph draws the spread
+    over every month.
+
+    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    _check_graph_options(as_graph, graph_file)
+    resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+    _note_use(data_dir, scenario_name)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    store = _open_series(batch_dir)
+    try:
+        target_set, portfolio, band = drift.pick(store.watches(), sorted(store.target_sets()),
+                                                 target_set, portfolio)
+        members = store.drift_frame(target_set, portfolio, asset_class or drift.MAX_ABS)
+    except (ValueError, EnsembleError) as exc:
+        raise click.ClickException(f"{scenario_name}: {exc}") from None
+    whose = f"accounts tagged {portfolio}" if portfolio else "every asset lot"
+    what = f"{asset_class} share less target" if asset_class else "largest drift either way"
+    click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); drift from "
+               f"target set {target_set} ({whose}), {what}, percentage points"
+               + (f"; band ±{band:g}" if band is not None else ""))
+    table = drift.ensemble_drift_table(members, band=None if asset_class else band)
+    if table.empty:
+        click.echo("(no months in the members)")
+        return
+    shares = [c for c in ("past_band", "ever_past") if c in table.columns]
+    click.echo(table.to_string(formatters={
+        **{c: (lambda v: f"{v:+.1f}") for c in table.columns if c not in shares},
+        **{c: (lambda v: f"{v:.0%}") for c in shares},
+    }))
+    if as_graph or graph_file is not None:
+        from analysis.sim.drift_charts import drift_fan_figure
+
+        _draw_figure(drift_fan_figure(
+            members, f"Drift from {target_set}: {what} ({scenario_name})", band=band,
+            deaths=store.base_case_deaths()), graph_file, "ensemble-")
+
+
 def _echo_ensemble_rail_deltas(
     data_dir: Path | None, baseline: str, variant: str,
     sides: Mapping[str, EnsembleSeries], mode: DollarMode,
@@ -3278,7 +3345,7 @@ def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode
     )
 
 
-COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "guard-rails", "account")
+COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "account")
 """``sim compare``'s sections, in the order it prints them (#188)."""
 
 _COMPARE_MAX_GRAPHED = 4
@@ -3356,8 +3423,11 @@ def compare_command(
     does: whether the runs are comparable, what the scenarios define
     differently, net worth at each year end with each variant's difference,
     where each variant breaks even (net worth after tax unless --pre-tax),
-    each scenario's guard rail margins (#305) when any has rails, and with
-    --account, that account's balance.
+    each scenario's guard rail margins (#305) when any has rails, each
+    scenario's strategies and its largest allocation drift by year end
+    (#359) when any has strategies or targets (a strategy on vs off: compare
+    with a child where `sim strategy edit NAME --disable` switches it off),
+    and with --account, that account's balance.
 
     BASELINE left out is the current scenario; with no VARIANTS, one is
     asked for. A scenario with no accounts is a valid compare point."""
@@ -3448,6 +3518,7 @@ def compare_command(
                 click.echo("  none")
             else:
                 _echo_frame(ytd.map(_cell))
+            _echo_strategy_differences(connections, scenarios, baseline)
 
         graphed = as_graph or graph_file is not None
         nw = pd.DataFrame()
@@ -3474,6 +3545,8 @@ def compare_command(
         if "guard-rails" in shown:
             _echo_guard_rail_comparison(connections, ref.scenarios_dir, baseline, variants,
                                         mode, asked="guard-rails" in sections)
+        if "strategies" in shown:
+            _echo_strategy_comparison(connections, scenarios, asked="strategies" in sections)
 
         balances = None
         if account is not None and ("account" in shown or graphed):
@@ -3503,6 +3576,68 @@ def compare_command(
                 figure = comparison_figure(
                     nw, baseline, list(variants), f"Net worth, {mode_label}", deaths=deaths)
             _draw_figure(figure, graph_file, "compare-")
+
+
+def _echo_strategy_differences(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], baseline: str,
+) -> None:
+    """The differences section's strategies and target weights (#359), left
+    out when no run has either."""
+    from analysis.sim import compare
+
+    if not compare.uses_strategies(connections):
+        return
+    strategies = compare.strategy_differences(connections, scenarios, baseline)
+    click.echo("\nStrategies that differ (— where a scenario doesn't run it):")
+    if strategies.empty:
+        click.echo("  none")
+    else:
+        _echo_frame(strategies.map(_cell))
+    targets = compare.target_differences(connections, scenarios, baseline)
+    click.echo("\nTarget weights that differ (percent):")
+    if targets.empty:
+        click.echo("  none")
+    else:
+        _echo_frame(targets.map(lambda v: _cell(v if pd.isna(v) else f"{v:g}%")))
+
+
+def _echo_strategy_comparison(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], *, asked: bool,
+) -> None:
+    """``sim compare``'s strategies section (#359): each scenario's
+    strategies and what they moved, then each run's largest allocation drift
+    by year end against the same target set, so a strategy on and off sit
+    side by side. Said to be empty only when ``asked`` for."""
+    from analysis.sim import compare
+
+    if not compare.uses_strategies(connections):
+        if asked:
+            click.echo("\nStrategies: none in these runs")
+        return
+    activity = compare.strategy_activity(connections, scenarios)
+    click.echo("\nStrategies over the run (dollars asked of their chains, moved by the strategy, "
+               "left to the chain's steps):")
+    if activity.empty:
+        click.echo("  none run")
+    else:
+        money = ["asked", "moved", "steps"]
+        _echo_frame(activity.astype(object).map(_cell).assign(
+            **{c: activity[c].map(lambda v: f"${v:,.0f}") for c in money}))
+    try:
+        target_set, portfolio, band = compare.drift_targets(connections, scenarios)
+    except ValueError as exc:
+        click.echo(f"\nNo drift comparison: {exc}")
+        return
+    by_scenario = compare.drift_by_scenario(connections, scenarios, target_set, portfolio)
+    if not by_scenario:
+        return
+    whose = f"accounts tagged {portfolio}" if portfolio else "every asset lot"
+    click.echo(f"\nLargest drift from target set {target_set} at year end ({whose}), percentage points"
+               + (f"; band ±{band:g}" if band is not None else "") + ":")
+    table = pd.DataFrame({name: drift.year_end_rows(frame)[drift.MAX_ABS]
+                          for name, frame in by_scenario.items()})
+    table.index.name = "month"
+    _echo_frame(table.map(lambda v: _cell(v if pd.isna(v) else f"{v:.1f}")))
 
 
 def _echo_guard_rail_comparison(
@@ -4163,6 +4298,80 @@ def _keep_unexpressed(row: dict[str, str], chosen: dict[str, str]) -> dict[str, 
     return row
 
 
+class _UnnamedRowKeyChange(click.ClickException):
+    """An override of an inherited, unnamed calendar row that changes a key
+    column, which the load would read as a second event (#356). ``origin`` is
+    the scenario to name the row in, after which the override can match it by
+    name; None when that can't be done here (a template)."""
+
+    def __init__(self, message: str, *, origin: str | None) -> None:
+        super().__init__(message)
+        self.origin = origin
+
+
+def _unnamed_row_index(rows: list[dict[str, str]], chosen: Mapping[str, str]) -> int | None:
+    """The data row (0-based) of ``rows``, a scenario's own calendar.csv rows,
+    that is the unnamed row ``chosen``: the one row without a name that has
+    its key. None unless there is exactly one."""
+    key = calendar_row_key(dict(chosen))
+    found = [
+        index for index, row in enumerate(rows)
+        if not row["name"].strip() and calendar_row_key(row) == key
+    ]
+    return found[0] if len(found) == 1 else None
+
+
+def _calendar_name_clash(scenarios_dir: Path, scenario: str, name: str) -> str | None:
+    """Where ``name``, given to a row of ``scenario``, would meet another
+    calendar row of that name: in ``scenario``'s load order, or in any
+    scenario built on it, where a row of that name would override this one
+    (#356). None when it is free."""
+    if not name:
+        return None
+    affected = [
+        scenario,
+        *(each for each in rename.scenario_folders(scenarios_dir)
+          if each != scenario and scenario in load_order(scenarios_dir, each)),
+    ]
+    found = rename.clashes(scenarios_dir, affected, rename.calendar_row_defined(name))
+    if not found:
+        return None
+    return f"a calendar row is already named {name!r} in {rename.describe_clashes(found)}"
+
+
+# Under `sim calendar edit`: (origin, row, name), an unnamed inherited row to
+# name in the scenario that defines it, within the staged edit that writes
+# the override then matching it by that name (#356).
+_CALENDAR_NAME_IN_ORIGIN = "analysis.sim.calendar.name_in_origin"
+
+
+def _name_defining_calendar_row(
+    edit: StagedEdit, data_dir: Path, origin: str, chosen: Mapping[str, str], name: str,
+) -> Path:
+    """Give the unnamed row ``chosen`` the name ``name`` in ``origin``, the
+    scenario whose calendar.csv has it, within ``edit``: the override that
+    matches it by that name is written in the same edit, so both land or
+    neither does, and every scenario built on ``origin`` must still load
+    (#356). Returns the file."""
+    scenarios_dir = data_dir / "scenarios"
+    if (clash := _calendar_name_clash(scenarios_dir, origin, name)) is not None:
+        raise click.ClickException(f"{clash}. Nothing was written.")
+    path = _folder_of(scenarios_dir, origin) / "calendar.csv"
+    staged = edit.path(path)
+    # Found in the staged copy: the file may have changed since the row was picked.
+    index = _unnamed_row_index(_read_calendar_rows(staged), chosen)
+    if index is None:
+        raise click.ClickException(
+            f"{path} no longer has this row without a name; start again. Nothing was written."
+        )
+    frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
+    if "name" not in frame.columns:
+        frame["name"] = ""
+    frame.loc[index, "name"] = name
+    frame.to_csv(staged, index=False)
+    return path
+
+
 def _write_calendar_override(
     staged: Path, path: Path, row: dict[str, str], chosen: dict[str, str], origin: str,
 ) -> bool:
@@ -4186,12 +4395,27 @@ def _write_calendar_override(
             column for column in registries.CALENDAR_KEY_COLUMNS
             if calendar_row_key({**chosen, column: row.get(column, "")}) != calendar_row_key(chosen)
         ]
-        raise click.ClickException(
-            f"this row comes from scenario {origin!r} and has no name, so an override "
-            f"is matched to it by its {', '.join(changed) or 'key fields'}, which this "
-            f"edit changes: it would add a second event instead. Give the row a name "
-            f"in {origin!r} first (`sim calendar edit --scenario {origin}`). "
-            "Nothing was written."
+        matched = (
+            f"this row comes from {{}} {origin!r} and has no name, so an override is "
+            f"matched to it by its {', '.join(changed) or 'key fields'}, which this edit "
+            "changes: it would add a second event instead."
+        )
+        if _is_template(path.parent.parent, origin):
+            raise _UnnamedRowKeyChange(
+                matched.format("template")
+                + " A template isn't edited from here, so its row can't be named. Nothing was written.",
+                origin=None,
+            )
+        # Own rows are listed first, numbered as in the file.
+        index = _unnamed_row_index(
+            _read_calendar_rows(_folder_of(path.parent.parent, origin) / "calendar.csv"), chosen,
+        )
+        pick = str(index + 1) if index is not None else "ROW"
+        raise _UnnamedRowKeyChange(
+            matched.format("scenario")
+            + f" Give the row a name in {origin!r} first (`sim calendar edit {pick} "
+            f"--scenario {origin} --name NAME`), then edit it here. Nothing was written.",
+            origin=origin,
         )
     for other_index, other in enumerate(_read_calendar_rows(staged)):
         same_name = name and other["name"].strip() == name
@@ -4228,12 +4452,19 @@ def _write_calendar_row(
     meta = context.meta if context is not None else {}
     replacing = meta.get(_CALENDAR_REPLACE_ROW)
     overriding = meta.get(_CALENDAR_OVERRIDE_ROW)
+    naming = meta.get(_CALENDAR_NAME_IN_ORIGIN)
     with _scenario_edit(data_dir, scenario_name) as edit:
         staged = edit.path(path)
         if overriding is not None:
             if _write_calendar_override(staged, path, row, *overriding):
-                return "wrote an override:"
-            return "nothing changed; no override written for"
+                outcome = "wrote an override:"
+            else:
+                outcome = "nothing changed; no override written for"
+            if naming is not None:
+                origin, unnamed, name = naming
+                named = _name_defining_calendar_row(edit, data_dir, origin, unnamed, name)
+                outcome = f"named the row {name!r} in {named}, and {outcome}"
+            return outcome
         if replacing is None:
             _append_csv_row(staged, registries.CALENDAR_HEADER, row)
             return "appended"
@@ -5195,16 +5426,44 @@ def _echo_guided_scenario(name: str, path: Path, *, defaulted: bool) -> None:
     click.echo(f"  {path}")
 
 
+def _match_calendar_rows(
+    rows: list[dict[str, str]], labels: list[str], candidates: list[int], text: str,
+) -> list[int]:
+    """Which of ``candidates`` ``text`` picks out: the row of that number,
+    else the one row of that name, else those whose label contains it."""
+    if text.isdigit() and 1 <= int(text) <= len(rows):
+        return [int(text) - 1]
+    named = [index for index, row in enumerate(rows) if text and row["name"] == text]
+    if len(named) == 1:
+        return named
+    return [index for index in candidates if text.lower() in labels[index].lower()]
+
+
 def _select_calendar_row(
     rows: list[dict[str, str]], wanted: str | None, notes: list[str] | None = None,
+    *, ask: bool = True,
 ) -> int:
     """Narrow ``rows`` to one, by its number, its name, or text it contains;
     asks (again) while that leaves more or fewer than one. ``notes``, one
-    per row, are added to the rows' labels."""
+    per row, are added to the rows' labels. With ``ask`` off (a command
+    given its changes as options), a ``wanted`` that doesn't pick out one
+    row is an error instead, and so is a number that isn't a row's."""
     labels = [_calendar_row_label(row) for row in rows]
     if notes is not None:
         labels = [f"{label}  {note}" if note else label for label, note in zip(labels, notes, strict=True)]
     candidates = list(range(len(rows)))
+    if not ask:
+        text = (wanted or "").strip()
+        if text.isdigit() and not 1 <= int(text) <= len(rows):
+            raise click.UsageError(f"there is no row {text}: the rows are numbered 1 to {len(rows)}")
+        matches = _match_calendar_rows(rows, labels, candidates, text) if text else []
+        if len(matches) == 1:
+            return matches[0]
+        listing = "".join(f"\n  {index + 1:>3}  {labels[index]}" for index in matches or candidates)
+        raise click.UsageError(
+            f"ROW {text!r} matches {'no row' if not matches else f'{len(matches)} rows'}; "
+            f"give its number or name:{listing}"
+        )
     while True:
         if wanted is None:
             for index in candidates:
@@ -5215,12 +5474,7 @@ def _select_calendar_row(
                 choices=[*names, *(str(index + 1) for index in candidates)],
             )
         text, wanted = wanted.strip(), None
-        if text.isdigit() and 1 <= int(text) <= len(rows):
-            return int(text) - 1
-        named = [index for index, row in enumerate(rows) if text and row["name"] == text]
-        if len(named) == 1:
-            return named[0]
-        matches = [index for index in candidates if text.lower() in labels[index].lower()]
+        matches = _match_calendar_rows(rows, labels, candidates, text)
         if len(matches) == 1:
             return matches[0]
         if matches:
@@ -5262,6 +5516,107 @@ def _check_own_calendar_row(staged: Path, path: Path, index: int, chosen: dict[s
         )
 
 
+def _calendar_edit_flags() -> dict[str, tuple[str, str]]:
+    """``sim calendar edit``'s options: every field of the ``sim calendar
+    add`` kinds, as flag -> (callback parameter, help). A field ``add`` takes
+    as an argument is an option here (``--date``, ``--amount``). ``--name``
+    is a row's name of either sort: an event row's optional one, or a date
+    marker's or latent factor's own."""
+    flags: dict[str, tuple[str, str]] = {}
+    for spec in calendar_guide.KINDS:
+        for field_ in spec.fields:
+            if field_.is_question_only:
+                continue
+            if field_.param in ("row_name", "name"):
+                flags.setdefault("--name", ("row_name", "The row's name; a date marker's or latent factor's own."))
+                continue
+            label = field_.label[:1].upper() + field_.label[1:] + "."
+            help_ = f"{label} {field_.help}" if field_.help else label
+            flags.setdefault(field_.option or f"--{field_.name}", (field_.param, help_))
+    return flags
+
+
+_CALENDAR_EDIT_FLAGS = _calendar_edit_flags()
+
+
+def _calendar_edit_given(
+    spec: calendar_guide.KindSpec, context: calendar_guide.GuideContext,
+    answers: dict[str, str], given: Mapping[str, str],
+) -> None:
+    """Apply options ``given`` to ``answers``, the row's fields, as the guide
+    would: a field the row's kind doesn't read, or one that doesn't apply to
+    the row as changed, is refused rather than dropped; one that no longer
+    applies (a bound the new distribution doesn't take) is dropped. Each
+    given value is checked as the guide checks an answer, a blank required
+    one included, so the kind's command never has a question to ask."""
+    flag_of = {param: flag for flag, (param, _help) in _CALENDAR_EDIT_FLAGS.items()}
+
+    def flag(field_: calendar_guide.Field) -> str:
+        return "--name" if field_.param in ("row_name", "name") else flag_of[field_.param]
+
+    params = {f.param for f in spec.fields}
+    changes: dict[str, str] = {}
+    unread: list[str] = []
+    for param, value in given.items():
+        target = "name" if param == "row_name" and "row_name" not in params else param
+        if target not in params:
+            unread.append(flag_of[param])
+        changes[target] = value
+    if unread:
+        raise click.UsageError(f"a {spec.command} row doesn't read {', '.join(unread)}")
+    for field_ in spec.fields:
+        value = changes.get(field_.param)
+        if value and field_.type == "integer":
+            try:
+                int(value)
+            except ValueError:
+                raise click.UsageError(
+                    f"{flag_of.get(field_.param, field_.param)} must be a whole number (got {value!r})"
+                ) from None
+    answers.update(changes)
+    # The guide's own yes/no questions follow from the fields they steer.
+    answers["_vary"] = "y" if answers.get("vary_distribution") else "n"
+    answers["_correlate"] = "y" if answers.get("vary_correlate_with") else "n"
+    for field_ in spec.fields:
+        if field_.applies(context, answers):
+            continue
+        if changes.get(field_.param):
+            raise click.UsageError(f"{flag(field_)} doesn't apply to this row as changed")
+        answers.pop(field_.param, None)
+    guide = _calendar_guide()
+    for field_ in spec.fields:
+        if field_.param in changes and field_.param in answers:
+            problem = guide.problem(spec, field_, context, answers, answers[field_.param])
+            if problem is not None:
+                raise click.UsageError(f"{flag(field_)}: {problem}")
+
+
+def _ask_defining_name(
+    spec: calendar_guide.KindSpec, context: calendar_guide.GuideContext,
+    answers: dict[str, str], scenarios_dir: Path, origin: str,
+) -> str:
+    """A name for an unnamed row, to write in ``origin``, the scenario that
+    defines it (#356); blank for none. Asked as the row's own name field is,
+    and asked again for a name any row in ``origin``'s lineage, or in a
+    scenario built on it, already has."""
+    click.echo(
+        f"  The row has no name in {origin!r}, so this scenario can only override it by "
+        "its date and other key fields, which this edit changes. Name it in "
+        f"{origin!r} now, and this scenario overrides it by that name instead; "
+        "leave the name blank to go back."
+    )
+    field_ = next(f for f in spec.fields if f.param == "row_name")
+    guide = _calendar_guide()
+    current = answers.get("row_name") or None
+    while True:
+        name = guide.ask_field(spec, field_, context, answers, current=current)
+        clash = _calendar_name_clash(scenarios_dir, origin, name)
+        if clash is None:
+            return name
+        click.echo(f"  {clash}")
+        current = None
+
+
 @calendar_group_command.command("edit")
 @click.argument("row", type=completion.CALENDAR_ROW, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None,
@@ -5272,6 +5627,7 @@ def _check_own_calendar_row(staged: Path, path: Path, index: int, chosen: dict[s
 @click.pass_context
 def calendar_edit(
     ctx: click.Context, row: str | None, scenario: str | None, data_dir: Path | None,
+    **values: str | None,
 ) -> None:
     """Change one row of the scenario's calendar, its own or inherited.
 
@@ -5280,25 +5636,35 @@ def calendar_edit(
     row's fields are then shown: name one to change it, as often as needed,
     and write when done. The row keeps its kind and its place in the file.
 
+    Options set those fields and write at once ("" clears one), with ROW
+    required and no questions asked. An option the row's kind doesn't read
+    is refused. A field `sim calendar add` takes as an argument is an option
+    here: --date, --amount, --series, --rate-percent, ...
+
     A row the scenario inherits is changed here by an override: the whole
     row, edited, appended to this scenario's calendar.csv; the parent keeps
     its own. The override keeps the row's name (`sim calendar rename`
     renames it everywhere), and one of an unnamed row keeps its date, kind,
     rule, accounts, lots, series and amount, which are how the load finds the row it
-    overrides.
+    overrides. To change one of those, name the row in the scenario that
+    defines it first; the guided edit offers to.
 
     A change that would make the row a copy of another row, or reuse another
     row's name, is refused.
     """
+    given = {param: value.strip() for param, value in values.items() if value is not None}
+    if given and row is None:
+        raise click.UsageError("with options, give ROW: its number or name")
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
-    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
+    if not given:
+        _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
     entries, notes = _calendar_entries(scenario_dir, scenario_name, "edit")
     rows = [entry.row for entry in entries]
     # The own rows as the file has them, which the write checks are still there.
     own_rows = _read_calendar_rows(path)
-    index = _select_calendar_row(rows, row, notes)
+    index = _select_calendar_row(rows, row, notes, ask=not given)
     chosen = entries[index]
     converted = _calendar_row_answers(rows[index])
     if converted is None:
@@ -5308,12 +5674,14 @@ def calendar_edit(
             f"cannot edit; change it in {where}"
         )
     spec, answers = converted
-    click.echo(f"Editing row {index + 1}: {_calendar_row_label(rows[index])}  {notes[index]}".rstrip())
     context = _guide_context(data_dir_p, scenario_name, rows=rows, editing=index)
-    guide = _calendar_guide()
-    guide.complete(spec, context, answers)
 
-    def submit(params: dict[str, object]) -> None:
+    def write(params: dict[str, object]) -> None:
+        new_name = str(params.get("row_name") or params.get("name") or "").strip()
+        if new_name != rows[index]["name"].strip() and (
+            clash := _calendar_name_clash(data_dir_p / "scenarios", scenario_name, new_name)
+        ):
+            raise click.ClickException(f"{clash}. Nothing was written.")
         if chosen.index is None:
             key, value = _CALENDAR_OVERRIDE_ROW, (rows[index], chosen.inherited_from)
         else:
@@ -5329,6 +5697,40 @@ def calendar_edit(
         finally:
             del ctx.meta[key]
 
+    if given:
+        _calendar_edit_given(spec, context, answers, given)
+        write(calendar_guide.command_params(spec, answers))
+        return
+
+    def submit(params: dict[str, object]) -> None:
+        try:
+            write(params)
+        except _UnnamedRowKeyChange as refused:
+            # Offer to name the row where it is defined, then override it by
+            # that name (#356).
+            if refused.origin is None:
+                raise
+            origin = refused.origin
+            name = _ask_defining_name(spec, context, answers, data_dir_p / "scenarios", origin)
+            if not name:
+                raise
+            # One staged edit names the row there and writes the override
+            # here, so a refusal of either leaves both files as they were.
+            unnamed = rows[index]
+            ctx.meta[_CALENDAR_NAME_IN_ORIGIN] = (origin, unnamed, name)
+            rows[index] = {**unnamed, "name": name}
+            try:
+                write({**params, "row_name": name})
+            except BaseException:
+                rows[index] = unnamed
+                raise
+            finally:
+                del ctx.meta[_CALENDAR_NAME_IN_ORIGIN]
+            answers["row_name"] = name
+
+    click.echo(f"Editing row {index + 1}: {_calendar_row_label(rows[index])}  {notes[index]}".rstrip())
+    guide = _calendar_guide()
+    guide.complete(spec, context, answers)
     if not guide.review(spec, context, answers, submit, show_command=False):
         ctx.exit(1)
 
@@ -6150,6 +6552,27 @@ def calendar_add_swap_aux_table(
 
 
 # ---------- scheduled ----------
+
+
+def _add_calendar_edit_options() -> None:
+    """Give ``sim calendar edit`` its options (_CALENDAR_EDIT_FLAGS), each
+    completing as the ``calendar add`` parameter it sets does. Done once the
+    ``add`` commands exist; the other types stay plain text here, so that
+    ``""`` can clear a field."""
+    types = {
+        param.name: param.type
+        for command in calendar_add_group_command.commands.values()
+        for param in command.params
+        if isinstance(param.type, completion.NameType)
+    }
+    at = next(i for i, param in enumerate(calendar_edit.params) if param.name == "scenario")
+    calendar_edit.params[at:at] = [
+        click.Option([flag, param], default=None, help=help_, type=types.get(param))
+        for flag, (param, help_) in sorted(_CALENDAR_EDIT_FLAGS.items())
+    ]
+
+
+_add_calendar_edit_options()
 
 
 @sim_group_command.group(name="scheduled")
@@ -7957,28 +8380,11 @@ def _allocation_drift(
     path = _resolve_run_target(scenario, runfile, data_dir, None)
     con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
     try:
-        if not _has_table(con, "allocation_target"):
-            raise click.ClickException(f"{path.name} is from before allocation targets; run it again")
-        if target_set is None or portfolio is None:
-            used = {
-                (p.get("targets"), p.get("portfolio"))
-                for (raw,) in con.execute("SELECT params_json FROM strategy")
-                if isinstance(p := json.loads(raw), dict) and p.get("targets")
-            }
-            sets = [t for (t,) in con.execute("SELECT DISTINCT target_set FROM allocation_target")]
-            if target_set is None:
-                choices = sorted({t for t, _p in used}) or sets
-                if len(choices) != 1:
-                    raise click.ClickException(
-                        "say which target set with --targets: "
-                        + (", ".join(sorted(sets)) if sets else "the run has none (sim target set)"))
-                target_set = choices[0]
-            if portfolio is None:
-                portfolio = next((p for t, p in sorted(used, key=str) if t == target_set and p), None)
         try:
-            frame = strategy_guide.drift_by_year(con, target_set, portfolio=portfolio)
-        except KeyError as exc:
-            raise click.ClickException(exc.args[0]) from None
+            target_set, portfolio, _band = drift.choose(con, target_set, portfolio)
+        except ValueError as exc:
+            raise click.ClickException(f"{path.name}: {exc} (--targets)") from None
+        frame = strategy_guide.drift_by_year(con, target_set, portfolio=portfolio)
     finally:
         con.close()
     whose = f"accounts tagged {portfolio}" if portfolio else "every asset lot"
@@ -14905,9 +15311,7 @@ def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, d
     click.echo(f"deleted strategy {strategy_name} from {scenario_name}")
 
 
-def _has_table(con: sqlite3.Connection, table: str) -> bool:
-    return con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
+_has_table = drift.has_table
 
 
 @strategy_group_command.command("log")
