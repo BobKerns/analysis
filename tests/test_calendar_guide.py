@@ -321,3 +321,33 @@ def test_guide_says_which_scenario_before_asking_anything(
     assert defaulted.output.startswith(
         "Using scenario retire_alice\n  "
     )
+
+
+def test_guide_does_not_ask_a_fixed_row_for_a_name_but_offers_it_at_the_review(
+    calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    """#356: every event row can be named, though only a varying one must be."""
+    result = calendar_add(answers=[
+        "retire-scheduled", "2031-06", "salary_alice", "", "",  # description, tags blank
+        "n", "n",                                                # fixed, uncorrelated
+        "name", "alice_retires", "",                             # name it at the review; write
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("name for this row") == 1  # asked only once picked
+    assert "--name alice_retires" in result.output
+    assert calendar_rows().iloc[-1]["name"] == "alice_retires"
+
+
+def test_guide_asks_for_the_name_left_blank_once_the_row_varies(
+    calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    result = calendar_add(answers=[
+        "retire-scheduled", "2031-06", "salary_alice", "", "",
+        "n", "n",
+        "vary", "y", "alice_retires", "date", "uniform", "2031-01", "2031-12", "n", "",
+    ])
+
+    assert result.exit_code == 0, result.output
+    row = calendar_rows().iloc[-1]
+    assert (row["name"], row["vary_distribution"]) == ("alice_retires", "uniform")

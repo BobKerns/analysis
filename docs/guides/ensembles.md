@@ -107,7 +107,20 @@ command line: `sim calendar edit fund_vary`.
 You then see the row's fields, as in the review at the end of the guided
 mode. Type a field's name to change it, as often as you like, and press
 Enter to write. The row keeps its kind and its place in the file; to turn a
-row into a different kind, add a new one and delete the old.
+row into a different kind, add a new one and delete the old. Every row has a
+`name` field there, even one that doesn't vary, so a row written without a
+name can be given one.
+
+From a script, give the row and the changes as options, and it writes at once
+without asking anything; `""` clears a field:
+
+```sh
+sim calendar edit salary_bill --date 2032-12-31 --name bill_retires
+```
+
+The options are those of `sim calendar add`, with its arguments as options
+too (`--date`, `--amount`, `--series`, `--rate-percent`, ...). One the row's
+kind doesn't read is refused, and so is a ROW that matches more than one row.
 
 Two rows that agree on date, kind, rule, accounts, lots, series and amount
 are the same event to the simulator, so an edit that would make this row a
@@ -119,8 +132,10 @@ Editing it writes the whole edited row into this scenario's `calendar.csv`
 as an override; the parent keeps its own row. The override keeps the row's
 name (`sim calendar rename` renames it everywhere). A row with no name is
 matched to its override by its date, kind, rule, accounts, lots, series
-and amount, so changing one of those is refused: name the row in the scenario
-it comes from first.
+and amount, so changing one of those here would add a second event beside it.
+The edit offers to name the row in the scenario it comes from first; the
+override then matches it by that name. With options, it says the command
+that names it there instead.
 
 `sim calendar delete` picks a row the same way and deletes it once you
 confirm. A row that other rows correlate with is refused until they no

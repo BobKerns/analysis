@@ -1126,8 +1126,14 @@ it inherits, each marked with where it comes from. The loader matches a
 named calendar row to its override by name and an unnamed one by its key
 columns, so the override keeps the row's name (`calendar rename` renames
 it), and one of an unnamed row may not change a key column: that would add
-a second event beside the inherited one, so it is refused. An override that
-changes nothing is not written. `account delete` refuses an inherited
+a second event beside the inherited one, so it is refused. The guided edit
+then offers to name the row in the scenario that defines it, as its own
+staged edit, and writes the override with that name; with options, the
+refusal names the command that does it. Every event row offers `name` at the
+review, though only a varying row is asked for one. Options set fields and
+write at once, as `scheduled edit`'s do: those of the `calendar add` kinds,
+an argument there an option here, and one the row's kind doesn't read is
+refused. An override that changes nothing is not written. `account delete` refuses an inherited
 account: an overlay can't remove a row, and the inherited chains, rules and
 lots would still name it. It deletes a scenario's own override of an
 inherited account, which brings back the inherited row and leaves what uses
@@ -1292,3 +1298,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies: `<account>:<lot>` keys in `allocations.csv` (§4.1b), a chain a strategy owns (§4.7), new `strategies.csv` and `strategies/` (§4.12) and `targets.csv` (§4.13), and the data repo map (§4.0).
 - [#292](https://github.com/BobKerns/analysis/issues/292) ([ADR-009](ADR-009-pooled-ensembles.md)): a scenario whose own `meta_json` has a `pool` key is a pool, which nothing loads; deleting a pool's component is refused (§4.5); a pool's rails are its base component's plus its own (§4.11).
 - [#305](https://github.com/BobKerns/analysis/issues/305): `scenario_compare.ipynb` shows each rail's margins across scenarios (§4.11).
+- [#356](https://github.com/BobKerns/analysis/issues/356): `calendar edit` offers `name` on every event row, offers to name an unnamed inherited row where it is defined before changing its key, and takes its changes as options (§7).
