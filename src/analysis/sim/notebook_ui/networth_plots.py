@@ -77,6 +77,18 @@ def net_worth_widget(rc: RunConnection,
     return widgets.VBox([controls_row(after_tax, time_range), chart_out, table_out])
 
 
+def _nothing_to_chart(chart: pd.DataFrame, what: str, rc: RunConnection) -> bool:
+    """Say so, and return True, when ``chart`` has no rows to draw.
+
+    pandas can't bar-plot an empty frame: an empty scenario (no accounts) or
+    a time range holding none of the run's years leaves one (#348).
+    """
+    if not chart.empty:
+        return False
+    print(f"No {what} to chart in this run ({rc.label}).")
+    return True
+
+
 def income_widget(rc: RunConnection,
                   dollar_mode: DollarModePicker | None = None,
                   time_range: TimeRangePicker | None = None, **_,
@@ -101,8 +113,13 @@ def income_widget(rc: RunConnection,
         income_yearly = time_range.clip(yearly_totals(income_based))
 
         chart = income_yearly
+        with table_out:
+            clear_output(wait=True)
+            display(income_yearly.style.format("${:,.0f}"))
         with chart_out:
             clear_output(wait=True)
+            if _nothing_to_chart(chart, "income", rc):
+                return
             fig, ax = plt.subplots(figsize=(10, 5))
             chart[INCOME_CATEGORIES].plot(
                 kind="bar", stacked=True, ax=ax,
@@ -116,9 +133,6 @@ def income_widget(rc: RunConnection,
             mark_deaths(ax, rc.deaths(), years=chart.index)
             ax.legend(title="category", framealpha=FRAME_ALPHA)
             plt.show()
-        with table_out:
-            clear_output(wait=True)
-            display(income_yearly.style.format("${:,.0f}"))
 
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)
@@ -164,8 +178,13 @@ def expenses_widget(rc: RunConnection,
         expenses_yearly = time_range.clip(yearly_totals(expenses_based))
 
         chart = expenses_yearly
+        with table_out:
+            clear_output(wait=True)
+            display(expenses_yearly.style.format("${:,.0f}"))
         with chart_out:
             clear_output(wait=True)
+            if _nothing_to_chart(chart, "expenses", rc):
+                return
             fig, ax = plt.subplots(figsize=(10, 5))
             chart[EXPENSE_CATEGORIES].plot(
                 kind="bar", stacked=True, ax=ax,
@@ -179,9 +198,6 @@ def expenses_widget(rc: RunConnection,
             mark_deaths(ax, rc.deaths(), years=chart.index)
             ax.legend(title="category", framealpha=0.5)
             plt.show()
-        with table_out:
-            clear_output(wait=True)
-            display(expenses_yearly.style.format("${:,.0f}"))
 
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)
@@ -212,8 +228,13 @@ def gains_widget(rc: RunConnection,
             else gains_nominal
         )
         chart = gains_yearly
+        with table_out:
+            clear_output(wait=True)
+            display(gains_yearly.style.format("${:,.0f}"))
         with chart_out:
             clear_output(wait=True)
+            if _nothing_to_chart(chart, "gains", rc):
+                return
             fig, ax = plt.subplots(figsize=(10, 5))
             years = chart.index.astype(str)
             chart[GAIN_CATEGORIES].plot(
@@ -234,9 +255,6 @@ def gains_widget(rc: RunConnection,
             ax.legend(title="category", framealpha=0.5)
             plt.setp(ax.get_xticklabels(), rotation=90)
             plt.show()
-        with table_out:
-            clear_output(wait=True)
-            display(gains_yearly.style.format("${:,.0f}"))
 
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)
