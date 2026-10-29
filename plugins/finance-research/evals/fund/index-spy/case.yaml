@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: index-spy
+expected_outcome: |
+  Index ETF tear sheet on SPY: S&P 500 methodology, concentration, returns vs index with dates, costs vs cheaper S&P 500 funds, its unit-investment-trust structure, alternatives, overview/概要/glossary.

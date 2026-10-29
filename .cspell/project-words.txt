@@ -73,6 +73,7 @@ ddof
 delenv
 dflt
 dietz
+DODGX
 EBITDA
 ecolor
 edgecolor
@@ -263,10 +264,12 @@ sidefx
 signum
 Simons
 Smirnov
+SNSXX
 Sobol
 Sortino
 sourceable
 SPAXX
+SPLG
 sqls
 SQQQ
 SRRC
@@ -308,6 +311,7 @@ topup
 TQQQ
 Tracxn
 traditionalira
+TRRBX
 truststore
 txns
 unclipped

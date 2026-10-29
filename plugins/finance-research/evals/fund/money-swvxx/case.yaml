@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: money-swvxx
+expected_outcome: |
+  Money market tear sheet on SWVXX, a prime (not government) fund whose name has changed: dated 7-day SEC yield vs T-bills and government funds, holdings mix incl. commercial paper, WAM/WAL, prime-fund liquidity-fee rules, NAV not guaranteed, state-tax treatment of US government income, alternatives, overview/概要/glossary.
