@@ -322,7 +322,7 @@ sim calendar add set-rate medical_episode_start+5y medical 4.2 --aux-kind inflat
   uncertain as well.
 
 The templates ship three episodes built this way, one per historical
-pattern, each a mix-in on the same base, so `base:t_great_inflation` and
+pattern, and one that chains two of them, each a mix-in on the same base, so `base:t_great_inflation` and
 `base:t_pandemic_spike` share everything else: see [Episodes](#episodes).
 
 ## Inflation metrics compared
@@ -522,6 +522,8 @@ flowchart TB
     ms -.-> gi
     ms -.-> fc
     ms -.-> ps
+    fc --> cs(["t_crisis_then_spike"])
+    ps -.-> cs
 ```
 
 `t_empty` at the root is what its name says: no accounts, rules, rates or
@@ -547,7 +549,8 @@ above:
 
 Three **episodes** build on both `_series` layers (the dotted lines are
 mix-ins), so mixing one into a scenario on the templates adds only the
-episode: see [Episodes](#episodes).
+episode, and a fourth puts two of them in one lifetime: see
+[Episodes](#episodes).
 
 **The market factors sit under the inflation factors.** `t_market_factors`
 inherits `t_inflation_factors`, so markets and inflation share one
@@ -812,6 +815,7 @@ a starting point for others:
 | [`t_great_inflation`](../../templates/scenarios/t_great_inflation/README.md) | dysfunction: policy lets inflation run | 1966–1982 | 8 to 17 years, most likely 12 |
 | [`t_financial_crisis`](../../templates/scenarios/t_financial_crisis/README.md) | fiscal shock: a crash, then near-zero rates | 2008–2019 | 5 to 10 years, most likely 7 |
 | [`t_pandemic_spike`](../../templates/scenarios/t_pandemic_spike/README.md) | external shock: a price spike, then rate hikes | 2021–2023 | 2 to 4 years, most likely 3 |
+| [`t_crisis_then_spike`](../../templates/scenarios/t_crisis_then_spike/README.md) | both: a crisis, then a spike 1 to 10 years after its near-zero rates end | 2008–2023 | the two above, with a gap |
 
 Each one's README lists its rates, taken from the
 [historical episodes](#historical-episodes) below, or inferred where a
@@ -842,9 +846,14 @@ series has no history for the period.
   in pairs. Under `base` alone, the series file's rate comes back.
 - **More than one.** Two episodes mixed into one scenario work when their
   markers keep them apart. Where they overlap, each series follows the
-  latest row, so one episode cuts into the other. To compare kinds of
-  trouble, compare `base:t_great_inflation` with
-  `base:t_financial_crisis`.
+  latest row, so one episode cuts into the other. `t_crisis_then_spike`
+  does this for a crisis and a spike: it mixes in both and overrides
+  `pandemic_spike_start` to fall 1 to 10 years after
+  `financial_crisis_end`, and `financial_crisis_start` to fall from 2031
+  to 2045, so the spike still lands before about 2060 in nearly every
+  member. History often has two episodes in 30 years (1929–1958, and
+  1996–2025 with 2008 and 2021). To compare kinds of trouble, compare
+  `base:t_great_inflation` with `base:t_financial_crisis`.
 - **Within a year.** Rates are yearly, so a crash inside one year (2020's
   −34% in a month, recovered by December) doesn't show.
 

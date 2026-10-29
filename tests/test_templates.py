@@ -20,10 +20,11 @@ from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, load_order, scenario_di
 from analysis.sim.loader import list_scenario_names, load_scenario
 
 EPISODES = ["t_great_inflation", "t_financial_crisis", "t_pandemic_spike"]
+COMPOUND_EPISODES = ["t_crisis_then_spike"]
 TEMPLATES = [
     "t_empty", "t_inflation_factors", "t_inflation_series", "t_inflation_ensemble", "t_inflation_current",
     "t_market_factors", "t_market_series", "t_market_ensemble", "t_market_current",
-    *EPISODES,
+    *EPISODES, *COMPOUND_EPISODES,
 ]
 
 
@@ -258,6 +259,30 @@ def test_an_episode_mixed_into_base_moves_with_its_drawn_start(
     returns = {series for name, series, _ in rows if name.endswith("_return")}
     changed = {series for name, series, _ in rows if not name.endswith("_return")}
     assert returns == changed, "every series an episode changes goes back to its long-run path"
+
+
+@pytest.mark.parametrize("member_index", range(8))
+def test_the_compound_episode_puts_the_spike_after_the_crisis(
+    template_data_dir: Path, tmp_path: Path, derive_template_scenario, member_index: int,
+) -> None:
+    """#340: t_crisis_then_spike starts the crash from 2031 to 2045, and the
+    price spike 1 to 10 years after the near-zero rates end, so the two
+    episodes never overlap."""
+    derive_template_scenario("with_two", "base:t_crisis_then_spike")
+    recipe = load_scenario(template_data_dir, "with_two", intent_dir=tmp_path / "intent",
+                           compute_stamps=False, allow_dirty_data=True).intent_path
+    member = resolve_member(recipe, tmp_path / f"member_{member_index:04d}.sqlite3", seed=42,
+                            member_index=member_index, member_count=20, recipe_tree_id="deadbeef")
+    markers, rows = _episode_rows(member)
+    crisis_start = date.fromisoformat(markers["financial_crisis_start"])
+    crisis_end = date.fromisoformat(markers["financial_crisis_end"])
+    spike_start = date.fromisoformat(markers["pandemic_spike_start"])
+    assert date(2031, 1, 1) <= crisis_start <= date(2045, 12, 31)
+    assert place_month(crisis_end, 12) <= spike_start <= place_month(crisis_end, 120)
+    crisis_dates = {when for name, _, when in rows if name.startswith("financial_crisis_")}
+    spike_dates = {when for name, _, when in rows if name.startswith("pandemic_spike_")}
+    assert crisis_dates and spike_dates
+    assert max(crisis_dates) < min(spike_dates), "the spike's rows all come after the crisis's"
 
 
 def test_the_great_inflation_runs_at_its_episode_level_in_member_zero(

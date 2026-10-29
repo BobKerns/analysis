@@ -977,7 +977,9 @@ sim ensemble create e0 retire_alice t_inflation_ensemble t_market_ensemble
 sim ensemble create e_great_inflation e0 t_great_inflation
 sim ensemble create e_financial_crisis e0 t_financial_crisis
 sim ensemble create e_pandemic_spike e0 t_pandemic_spike
-sim ensemble pool create trouble e_great_inflation=15% e_financial_crisis=30% e_pandemic_spike=55%
+sim ensemble create e_crisis_then_spike e0 t_crisis_then_spike
+sim ensemble pool create trouble e_great_inflation=15% e_financial_crisis=15% \
+    e_crisis_then_spike=10% e_pandemic_spike=60%
 sim run trouble                  # runs any component that is out of date, then builds the pool
 sim ensemble summary trouble
 sim ensemble compare e0 trouble  # pairs future by future with e0
@@ -1017,9 +1019,23 @@ worst futures of the worst world all land in it. Counting onsets since
 | Crisis, then years of near-zero rates | 1929 to the 1940s, 2008–2015 | about 1.8 |
 | Great Inflation-style run | 1966–1982 | about 0.9 |
 
-By count that's roughly 60% spike, 25% crisis and 15% inflation. Two
-caveats: four of the five spikes were wartime, and a single Great
-Inflation in a century says little about its rate.
+By count that's roughly 60% spike, 25% crisis and 15% Great Inflation,
+the suggested weights for a pool of the three. Two caveats: four of the
+five spikes were wartime, so a peacetime century may see fewer; and a
+single Great Inflation in a century fits a rate anywhere from about once
+in 4,000 years to five times a century (a 95% range), so its 15% is the
+least certain weight and the one that moves the tail most. Try it at 5%
+and 30% too. The pool itself defaults to equal shares; these are only a
+suggestion.
+
+With `t_crisis_then_spike` in the pool, its share comes out of the
+crisis's, since every member of it has a crisis: 15% Great Inflation,
+15% crisis, 10% crisis then spike, and 60% spike, as in the example
+above. If spikes came at random, about 4.5 a century, one would start
+within 1 to 10 years after a crisis's near-zero rates end about 36% of
+the time. Both crises on record were followed by a spike within about a
+decade (1941, while the 1930s' low rates still held, and 2021, six years
+after 2015's ended), so 40% of the crisis share is a middle reading.
 
 **Two probabilities, not one.** Each episode's start is spread over
 decades, so some members of each component see no episode before the
@@ -1030,7 +1046,8 @@ member's chance of its episode is its component's weight times that.
 trouble, so no pool member meets two in one lifetime. History often has
 two or more in 30 years (1929–1958 held a crisis and three spikes), so
 the pool's worst futures are probably not bad enough. A component built
-on two templates, the second dated from the first, adds such a world.
+on two templates, the second dated from the first, adds such a world:
+`t_crisis_then_spike` is one, a crisis and then a price spike.
 
 **Reading the summary.** Under its header the summary lists the
 pool's members by component, and which components the worst 5% came
