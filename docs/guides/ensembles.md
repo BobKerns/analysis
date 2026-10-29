@@ -1047,7 +1047,16 @@ trouble, so no pool member meets two in one lifetime. History often has
 two or more in 30 years (1929–1958 held a crisis and three spikes), so
 the pool's worst futures are probably not bad enough. A component built
 on two templates, the second dated from the first, adds such a world:
-`t_crisis_then_spike` is one, a crisis and then a price spike.
+`t_crisis_then_spike` is one, a crisis and then a price spike. On the
+prototype (`retire_alice` run to 2060, 240 members, CPI-constant net
+worth at the end), it ends about where the crisis alone does (median
+$1,464k against $1,477k, `cvar05` $814k against $817k), and ahead of
+`e0`: the crisis's recovery more than repays the crash for a household
+that doesn't sell, and the spike then meets a richer household. So it
+barely moves the pooled tail: 15% / 25% / 60% without it gave a
+`cvar05` of $415k, and 15% / 15% / 10% / 60% with it $497k, a gap within
+the noise of a tail of 12 members. A deeper second episode would need a
+crisis that doesn't recover so fast, as 1929's didn't.
 
 **Reading the summary.** Under its header the summary lists the
 pool's members by component, and which components the worst 5% came
