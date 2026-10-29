@@ -95,8 +95,10 @@ hexsha
 HIFO
 htmlcov
 huggingface
+icat
 IHDR
 iinfo
+imgcat
 imshow
 inspectable
 IRMAA
@@ -148,6 +150,7 @@ networth
 nextstrain
 NOCASE
 noconfirm
+nohup
 nonbusiness
 nonflat
 noninteractive
@@ -284,8 +287,11 @@ upserts
 usefixtures
 USSTK
 vaccts
+viewpane
 vmax
 vmin
+vsplit
+wezterm
 worktree
 worktrees
 WRONLY
