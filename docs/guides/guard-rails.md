@@ -167,3 +167,42 @@ top, shaded where past it, and each rail's cumulative margin below. A rail
 to stay inside is solid and warm; a positive rail is dashed, cool and
 hatched; the dotted lines are the margins carried at the portfolio's
 return.
+
+## Across an ensemble
+
+An ensemble (the [ensembles guide](ensembles.md)) runs the plan through
+many futures, so a rail is no longer crossed or not: some members cross it,
+some don't. Each member is measured exactly as a single run is, against the
+recipe's rails as they are now (editing one reruns nothing), and then, for
+each rail, year and form, annual and cumulative:
+
+- **past**: the share of members past the rail that year;
+- **ever past**: the share that have been past it in some year so far, of
+  every member it has covered so far, those whose household has ended too;
+- **RMS overshoot**: the root mean square of how far past the members are,
+  those inside counting as zero.
+
+```sh
+sim ensemble guard-rails RECIPE           # every rail
+sim ensemble guard-rails RECIPE --graph   # shares over RMS, annual beside cumulative
+sim ensemble compare RECIPE VARIANT       # adds each rail's change
+```
+
+A share alone says how often, not how badly; the RMS overshoot says both at
+once, which is why the two are always shown together. Squaring makes one
+member $40,000 past count as much as sixteen members $10,000 past, so a few
+bad futures show up even when the share is small. And because members
+inside count as zero, 20% of members each $10,000 past gives an RMS of
+$4,470. In finance these are the lower partial moments: the share is the
+zeroth, the RMS the square root of the second, the downside deviation
+behind the Sortino ratio.
+
+For the cumulative form, the share past in the last year is the share of
+members that end the plan overdrawn. The summary under the tables gives,
+for each rail and form, the share of member-years past, the share of
+members ever past, that share at the end, and the RMS over every
+member-year. A rail stops at each member's household's last death, so the
+later years' shares count only the members still covered.
+
+`ensemble.ipynb`'s **Guard rails** section shows the same, charts and
+tables, with the notebook's shared dollars and years.

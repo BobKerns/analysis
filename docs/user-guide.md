@@ -1161,9 +1161,12 @@ guard-rails` then shows each year's **margin**, the room left before the
 rail (negative is past it), and the **cumulative margin**, those added up
 since the rail began: room banked, or overdrawn. A `positive` rail is one
 where past it is good news, such as room to spend more. Since rails aren't
-part of the run, changing one needs no new run. [The guard rails
-guide](guides/guard-rails.md) explains the usual rails, how to write them
-and how to read the results.
+part of the run, changing one needs no new run. On an ensemble (Part 4.10),
+`sim ensemble guard-rails` shows, for each rail and year, the share of
+members past it, the share that have been past it so far, and how far past
+they are (the RMS overshoot), and `sim ensemble compare` shows how a variant
+changes them. [The guard rails guide](guides/guard-rails.md) explains the
+usual rails, how to write them and how to read the results.
 
 ### 4.16 Draw from whatever is overweight (responsive strategies)
 
@@ -1295,7 +1298,7 @@ None of them need you to write any code.
 | `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, economic income down to the change in net worth, and where the run stands against its guard rails. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
 | `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range, with a running balance for one account and each refill linked to the debit that triggered it — good for auditing "why did this happen." |
-| `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the 5th–95th percentiles, plus a year-end table of mean/median/SD and the 5th, 20th, ... 95th percentiles. |
+| `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the 5th–95th percentiles, plus a year-end table of mean/median/SD and the 5th, 20th, ... 95th percentiles, and the share of members past each guard rail. |
 
 Open one with `analysis jupyter` (or the **Jupyter** VS Code task, below), or
 in VS Code directly if it runs well enough there for your machine
@@ -1330,6 +1333,7 @@ machine too small for a notebook comfortably.
 | federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation]` |
 | where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried]` |
 | a scenario's guard rails | `sim guard-rail list` |
+| an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--graph]` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.

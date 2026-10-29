@@ -22,6 +22,7 @@ import warnings
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from datetime import date
+from datetime import date as _Date  # a RunConnection has its own `date`
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -912,6 +913,50 @@ class RunConnection(Connection):
         )
         return [Death(str(display), date.fromisoformat(str(month)))
                 for display, month in zip(rows["display"], rows["final_month"], strict=True)]
+
+    def household_end(self) -> _Date | None:
+        """The household's last death, when every member of it has a lifespan
+        (the month a ``joint`` rule stops at, ``engine._rule_lifespans``)."""
+        persons = self.items("person")
+        household = list(persons.loc[persons["role"] == "primary", "id"])
+        if not household:
+            household = list(persons.loc[persons["role"].notna(), "id"])
+        lifespans = self.items("person_lifespan").set_index("person")["final_month"]
+        if not household or not all(p in lifespans.index for p in household):
+            return None
+        return date.fromisoformat(max(str(lifespans[p]) for p in household)[:10])
+
+    def date_markers(self) -> dict[str, _Date]:
+        """Each named ``date_marker`` calendar row's date in this run."""
+        events = self.items("calendar_event")
+        return {
+            str(name): date.fromisoformat(str(when)[:10])
+            for name, kind, when in zip(events["name"], events["kind"], events["date"], strict=True)
+            if kind == "date_marker" and name
+        }
+
+    def monthly_flows(self) -> pd.DataFrame:
+        """Every transfer summed by its own date's month end (``event_month``),
+        its from and to accounts and, for a scheduled rule's expense, the
+        rule's tags (sorted, space-separated; '' otherwise): columns
+        ``month``, ``from_name``, ``to_name``, ``rule_tags``, ``cents``.
+        Enough to rebuild any guard rail's spending or withdrawals (#305), so
+        the series store keeps it for each ensemble member."""
+        events = self.items("transfer_event")
+        rules = self.items("scheduled").set_index("id")["tags"]
+        by_rule = (events["reason_kind"].isin(["rule", "ytd_rule"]) & events["reason_id"].notna()
+                   & (events["to_kind"] == "expense"))
+        tags = {int(rid): " ".join(sorted(str(cell or "").split())) for rid, cell in rules.items()}
+        flows = pd.DataFrame({
+            "month": event_month(events),
+            "from_name": events["from_name"].astype(str),
+            "to_name": events["to_name"].astype(str),
+            "rule_tags": [tags.get(int(rid), "") if rule else ""
+                          for rid, rule in zip(events["reason_id"], by_rule, strict=True)],
+            "cents": events["amount"].astype("int64"),
+        })
+        return (flows.groupby(["month", "from_name", "to_name", "rule_tags"], as_index=False)["cents"]
+                .sum())
 
     def scenario_meta(self) -> dict[str, Any]:
         """The run's merged ``scenario.meta_json`` (ADR-003 §4.5)."""

@@ -11,10 +11,16 @@ results beside the members, in ``<batch>/series.sqlite3``:
 - ``member_file``: every ``member_*.sqlite3`` the store was built from, by
   size and modification time, failed members included;
 - ``member``: each succeeded member's index, seed, months, CPI index,
-  CPI-constant net worth (the engine's own), and deaths;
+  CPI-constant net worth (the engine's own), deaths, and what guard rails
+  (#305) read besides the series: the household's last death, the
+  date_markers, and the accounts' kinds, subkinds and tags;
 - ``subject``: net worth, after-tax net worth, each account, each asset or
   liability lot;
-- ``series``: per subject and member, the nominal dollars by month.
+- ``series``: per subject and member, the nominal dollars by month;
+- ``flow_key`` and ``flow``: per member, each month's transfers summed by
+  from account, to account and rule tags (``RunConnection.monthly_flows``),
+  from which any rail's spending or withdrawals is rebuilt at read time, so
+  rails stay a lens on ensembles too.
 
 CPI-constant figures other than pre-tax net worth are converted at read time,
 by each member's own index and with the functions ``RunConnection`` uses, so
@@ -35,11 +41,11 @@ import json
 import os
 import sqlite3
 import zlib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -50,10 +56,13 @@ from analysis.sim.connection import RunConnection, account_balance_cpi, to_cpi_c
 from analysis.sim.schema import connect_sim_file
 from analysis.sim.types import Death, DollarMode
 
+if TYPE_CHECKING:
+    from analysis.sim.guard_rails import RunPieces
+
 SERIES_DB_FILENAME = "series.sqlite3"
 # Bump when the stored layout changes. A change to how a series is derived
 # needs no bump: the store records a hash of the modules that derive them.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 NET_WORTH = "net_worth"
 AFTER_TAX = "after_tax"
@@ -81,7 +90,10 @@ CREATE TABLE member (
     months         BLOB NOT NULL,
     cpi_index      BLOB NOT NULL,
     net_worth_cpi  BLOB NOT NULL,
-    deaths_json    TEXT NOT NULL
+    deaths_json    TEXT NOT NULL,
+    household_end  TEXT,
+    markers_json   TEXT NOT NULL,
+    accounts_json  TEXT NOT NULL
 );
 -- account and lot are '' where they don't apply, so UNIQUE holds.
 CREATE TABLE subject (
@@ -97,6 +109,19 @@ CREATE TABLE series (
     member_id   INTEGER NOT NULL REFERENCES member(id),
     nominal     BLOB NOT NULL,
     PRIMARY KEY (subject_id, member_id)
+) WITHOUT ROWID;
+CREATE TABLE flow_key (
+    id         INTEGER PRIMARY KEY,
+    from_name  TEXT NOT NULL,
+    to_name    TEXT NOT NULL,
+    rule_tags  TEXT NOT NULL,
+    UNIQUE (from_name, to_name, rule_tags)
+);
+CREATE TABLE flow (
+    flow_id    INTEGER NOT NULL REFERENCES flow_key(id),
+    member_id  INTEGER NOT NULL REFERENCES member(id),
+    cents      BLOB NOT NULL,
+    PRIMARY KEY (flow_id, member_id)
 ) WITHOUT ROWID;
 """
 
@@ -173,6 +198,12 @@ class MemberSeries:
     # (kind, account, lot) -> (account kind, nominal dollars on ``months``,
     # NaN where the subject has no row that month)
     subjects: dict[tuple[str, str, str], tuple[str | None, np.ndarray]] = field(default_factory=dict)
+    household_end: date | None = None
+    markers: dict[str, date] = field(default_factory=dict)
+    # name -> (kind, subkind, tags)
+    accounts: dict[str, tuple[str, str, str]] = field(default_factory=dict)
+    # (from, to, rule tags) -> cents on ``months``
+    flows: dict[tuple[str, str, str], np.ndarray] = field(default_factory=dict)
 
 
 def member_series(run_path: Path) -> MemberSeries:
@@ -193,7 +224,17 @@ def member_series(run_path: Path) -> MemberSeries:
             net_worth_cpi=_floats(nw["cpi_constant"]),
             deaths=con.deaths(),
             meta_json=str(meta["meta_json"].iloc[0] or "{}") if len(meta) else "{}",
+            household_end=con.household_end(),
+            markers=con.date_markers(),
         )
+        accounts = con.items("account")
+        out.accounts = {
+            str(name): (str(kind), str(subkind or ""), str(tags or ""))
+            for name, kind, subkind, tags in zip(
+                accounts["name"], accounts["kind"], accounts["subkind"], accounts["tags"],
+                strict=True)
+        }
+        _add_flows(out, con.monthly_flows(), months)
         out.subjects[(NET_WORTH, "", "")] = (None, nw["nominal_cents"].to_numpy(dtype=np.int64))
         out.subjects[(AFTER_TAX, "", "")] = (
             None, _floats(con.after_tax_net_worth_frame()["nominal"].reindex(months)))
@@ -241,6 +282,21 @@ def _add_balances(out: MemberSeries, con: sqlite3.Connection, months: pd.Datetim
         out.subjects[(ACCOUNT, name, "")] = (kind, np.where(present, shown, _MISSING))
 
 
+def _add_flows(out: MemberSeries, flows: pd.DataFrame, months: pd.DatetimeIndex) -> None:
+    """``flows`` as one cents array on ``months`` per (from, to, rule tags).
+    A month outside ``months`` (a year-to-date catch-up dated before the
+    run) is dropped, as a reindex to the run's months would."""
+    at = pd.Series(np.arange(len(months)), index=months)
+    position = at.reindex(pd.DatetimeIndex(flows["month"])).to_numpy()
+    inside = ~np.isnan(position)
+    flows = flows[inside]
+    position = position[inside].astype(np.int64)
+    for key, rows in flows.groupby(["from_name", "to_name", "rule_tags"]).indices.items():
+        cents = np.zeros(len(months), dtype=np.int64)
+        np.add.at(cents, position[rows], flows["cents"].to_numpy(dtype=np.int64)[rows])
+        out.flows[(str(key[0]), str(key[1]), str(key[2]))] = cents
+
+
 def _member_files(batch_dir: Path) -> dict[str, tuple[int, int]]:
     """Every member run file in ``batch_dir``: stem -> (size, mtime_ns)."""
     files = {}
@@ -262,16 +318,26 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
         con.executemany("INSERT INTO member_file VALUES (?, ?, ?)",
                         [(stem, *stat) for stem, stat in _member_files(batch_dir).items()])
         subject_ids: dict[tuple[str, str, str], int] = {}
+        flow_ids: dict[tuple[str, str, str], int] = {}
         meta_json = "{}"
         for member_id, member in enumerate(sorted(members, key=lambda m: m.stem), start=1):
             meta_json = member.meta_json if member_id == 1 else meta_json
             con.execute(
-                "INSERT INTO member VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO member VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (member_id, member.stem, member.member_index, member.seed,
                  _pack_months(member.months), _pack(member.cpi_index),
                  _pack(member.net_worth_cpi),
-                 json.dumps([[d.person, d.month.isoformat()] for d in member.deaths])),
+                 json.dumps([[d.person, d.month.isoformat()] for d in member.deaths]),
+                 None if member.household_end is None else member.household_end.isoformat(),
+                 json.dumps({name: when.isoformat() for name, when in member.markers.items()}),
+                 json.dumps(member.accounts)),
             )
+            for key, cents in member.flows.items():
+                if key not in flow_ids:
+                    flow_ids[key] = len(flow_ids) + 1
+                    con.execute("INSERT INTO flow_key VALUES (?, ?, ?, ?)", (flow_ids[key], *key))
+                con.execute("INSERT INTO flow VALUES (?, ?, ?)",
+                            (flow_ids[key], member_id, _pack(cents)))
             for key, (account_kind, values) in member.subjects.items():
                 if key not in subject_ids:
                     subject_ids[key] = len(subject_ids) + 1
@@ -345,6 +411,9 @@ class _Member:
     cpi_index: pd.Series
     net_worth_cpi: pd.Series
     deaths: list[Death]
+    household_end: date | None
+    markers: dict[str, date]
+    accounts: dict[str, tuple[str, str, str]]
 
 
 class EnsembleSeries:
@@ -357,14 +426,18 @@ class EnsembleSeries:
         with self._connect() as con:
             self._meta = json.loads(con.execute("SELECT meta_json FROM batch").fetchone()[0])
             self._members: dict[int, _Member] = {}
-            for (member_id, stem, index, seed, months, cpi, nw_cpi, deaths
-                 ) in con.execute("SELECT * FROM member ORDER BY stem"):
+            for (member_id, stem, index, seed, months, cpi, nw_cpi, deaths, household_end,
+                 markers, accounts) in con.execute("SELECT * FROM member ORDER BY stem"):
                 at = _unpack_months(months)
                 self._members[member_id] = _Member(
                     stem, index, seed, at,
                     pd.Series(_unpack(cpi), index=at),
                     pd.Series(_unpack(nw_cpi), index=at),
                     [Death(name, date.fromisoformat(month)) for name, month in json.loads(deaths)],
+                    None if household_end is None else date.fromisoformat(household_end),
+                    {name: date.fromisoformat(when) for name, when in json.loads(markers).items()},
+                    {name: (kind, subkind, tags)
+                     for name, (kind, subkind, tags) in json.loads(accounts).items()},
                 )
             self._subjects = {
                 (kind, account, lot): (subject_id, account_kind)
@@ -372,6 +445,14 @@ class EnsembleSeries:
                 in con.execute("SELECT id, kind, account, lot, account_kind FROM subject ORDER BY id")
             }
         self._frames: dict[tuple[Any, ...], pd.DataFrame] = {}
+        self._memo: dict[tuple[Any, ...], Any] = {}
+
+    def memo[T](self, key: tuple[Any, ...], build: Callable[[], T]) -> T:
+        """``build()``, held under ``key`` like the frames, so asking again
+        costs nothing (what guard rails make of the members, say)."""
+        if key not in self._memo:
+            self._memo[key] = build()
+        return self._memo[key]
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)
@@ -460,6 +541,44 @@ class EnsembleSeries:
                 else f"no lot {lot!r} of account {account!r} in these members")
         self._frames[key] = frame
         return frame
+
+    def rail_pieces(self) -> Iterator[tuple[str, int | None, RunPieces]]:
+        """Each member's stem, index and what its guard rails read (#305),
+        as ``guard_rails.run_pieces`` gives them for a run file."""
+        from analysis.sim.guard_rails import RunPieces
+
+        with self._connect() as con:
+            keys = {flow_id: (from_name, to_name, rule_tags) for flow_id, from_name, to_name, rule_tags
+                    in con.execute("SELECT id, from_name, to_name, rule_tags FROM flow_key")}
+            blobs: dict[int, list[tuple[int, bytes]]] = {}
+            for flow_id, member_id, blob in con.execute("SELECT flow_id, member_id, cents FROM flow"):
+                blobs.setdefault(member_id, []).append((flow_id, blob))
+        assets = sorted({name for m in self._members.values()
+                         for name, (kind, _subkind, _tags) in m.accounts.items() if kind == "asset"})
+        balances = {name: self._nominal((ACCOUNT, name, "")) for name in assets}
+        for member_id, member in self._members.items():
+            months = member.months
+            parts = []
+            for flow_id, blob in blobs.get(member_id, []):
+                cents = np.rint(_unpack(blob) * 100)
+                at = np.flatnonzero(cents)
+                from_name, to_name, rule_tags = keys[flow_id]
+                parts.append(pd.DataFrame({
+                    "month": months[at], "from_name": from_name, "to_name": to_name,
+                    "rule_tags": rule_tags, "cents": cents[at]}))
+            flows = (pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(
+                columns=["month", "from_name", "to_name", "rule_tags", "cents"]))
+            mine = [name for name, (kind, _s, _t) in member.accounts.items() if kind == "asset"]
+            frame = pd.DataFrame(
+                {name: balances[name].get(member_id, np.full(len(months), np.nan)) for name in mine},
+                index=months, columns=mine).fillna(0.0)
+            accounts = pd.DataFrame.from_dict(
+                member.accounts, orient="index", columns=["kind", "subkind", "tags"])
+            yield member.stem, member.member_index, RunPieces(
+                months=months, index=member.cpi_index.to_numpy(dtype=float), flows=flows,
+                balances=frame, accounts=accounts, markers=member.markers,
+                household_end=member.household_end,
+            )
 
     @staticmethod
     def _convert(subject: tuple[str, str, str], account_kind: str | None, member: _Member,
