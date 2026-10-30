@@ -85,6 +85,8 @@ speed = 1.0
 [narration.en.pronounce]
 IRA = "/ˌaɪˌɑːɹˈeɪ/"
 Jupyter = "Jupiter"
+JupyterLab = "Jupiter Lab"
+jupyter = "jupiter"
 
 [narration.ja]
 engine = "kokoro"

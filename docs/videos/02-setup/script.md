@@ -44,7 +44,8 @@ Sleep 21s
 Installing takes one line. Open a terminal, on a Mac, on Linux, or on
 Windows under WSL, and paste this line from the setup guide. It downloads
 the installer and runs it. You don't need to know git, or anything else
-about how the code is kept.
+about how the code is kept. On Windows, set up WSL first: there's a short
+video for that, linked in the description, along with the setup guide.
 
 > Production note: the tape stops short of Enter. A real install downloads
 > the code and takes several minutes, so the next scene says what happens.
@@ -71,6 +72,27 @@ that opens, and paste the line again. It downloads the code, and sets up
 Python and everything the code needs. That part takes a few minutes the
 first time. Last, it makes your data folder, asking who you are. To update
 later, paste the same line again.
+
+## Scene `terminals`: A terminal that shows pictures
+
+```slide
+template = "card"
+heading = "A terminal that shows pictures"
+body = [
+  "Mac: iTerm2 or Ghostty",
+  "Linux: kitty, Ghostty or WezTerm",
+  "Anywhere: VS Code's terminal",
+  "Any other terminal saves the picture as a file",
+]
+speaker = "bill"
+```
+
+Any terminal runs the simulator. A few commands can also draw a chart right
+in the terminal, and for that you want one that shows pictures. On a Mac,
+iTerm2 or Ghostty. On Linux, kitty, Ghostty or WezTerm. Or, anywhere, VS
+Code's own terminal, with images turned on in its settings. In any other
+terminal, the chart is saved as a picture file instead, and the command says
+where. The setup guide keeps the list.
 
 ## Scene `two-folders`: Two folders, and why
 
@@ -164,7 +186,7 @@ spreadsheet program. Persons holds the people in the household. Scenarios
 holds your plans, starting with base. Base is where your household goes:
 its accounts, income, spending, and the rules that move money between them.
 For now it's nearly empty; the next video fills it in. The tax tables and
-other standard assumptions aren't copied here. They're read from the code,
+other standard assumptions aren't copied here. They're {read|red} from the code,
 so they stay current when the code updates.
 
 ## Scene `activate`: Activating your data
@@ -279,7 +301,7 @@ file, the change is new: nothing has recorded it yet. When you run a
 scenario with changes like that, sim run lists them, and offers to save a
 version first. Say yes, the default, and it saves them with a message saying
 what changed, then runs. That's what makes a run repeatable: it records the
-saved version it read, so you, or anyone you share it with, can get the same
+saved version it {read|red}, so you, or anyone you share it with, can get the same
 answer later, and see what changed between two runs. With the installer's
 background builds on, saving a change also reruns, in the background, every
 scenario it affects. And sim commit saves your changes without running.

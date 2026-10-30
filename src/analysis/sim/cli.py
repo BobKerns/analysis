@@ -190,6 +190,23 @@ _commit_option = click.option(
 )
 
 
+def _shown(path: Path) -> str:
+    """``path`` as the user would type it (#374): relative to the working
+    directory when it's inside it, else ``~/...`` under the home folder,
+    else absolute. A full temp or home path makes output wrap and hides
+    the part that matters."""
+    full = Path(path).expanduser().resolve()
+    for base, prefix in ((Path.cwd().resolve(), ""), (Path.home().resolve(), "~/")):
+        try:
+            rel = full.relative_to(base)
+        except ValueError:
+            continue
+        if rel == Path():
+            return "." if not prefix else "~"
+        return prefix + str(rel)
+    return str(full)
+
+
 def _offer_commit(
     data_dir: Path, names: Sequence[str], *, commit: bool, allow_dirty_data: bool, command: str,
 ) -> None:
@@ -814,7 +831,7 @@ def _prune_state(data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:
         click.echo(f"  warning: pruning state stopped: {exc}", err=True)
         return
     if result.created is not None:
-        click.echo(f"created {result.created} with the default retention rules")
+        click.echo(f"created {_shown(result.created)} with the default retention rules")
     if result:
         click.echo(result.summary())
 
@@ -872,7 +889,7 @@ def _run_loaded(
     except DataDirtyRefused as exc:
         click.echo(str(exc), err=True)
         raise click.ClickException("data dirty; refusing to run") from None
-    click.echo(f"run {out}")
+    click.echo(f"run {_shown(out)}")
 
 
 def _batch_options(
@@ -1356,7 +1373,7 @@ def _report_batch(label: str, member_count: int, failures: list[tuple[int, Path,
 
 
 def _suggest_readme(target: Path) -> None:
-    click.echo(f"  next: edit {target / 'README.md'} to say what the scenario is for; "
+    click.echo(f"  next: edit {_shown(target / 'README.md')} to say what the scenario is for; "
                "its title and first paragraph are what listings and notebooks show")
 
 
@@ -1462,7 +1479,7 @@ def ensemble_create(
     target = data_dir_p / "scenarios" / name
 
     _make_current(data_dir_p, name)
-    click.echo(f"created ensemble recipe {target}")
+    click.echo(f"created ensemble recipe {_shown(target)}")
     click.echo(f"  inherits: {_inherits_line(data_dir_p, parents)}")
     for label, own, inherited in (
         ("seed", seed, inherited_seed), ("ensemble_size", ensemble_size, inherited_size),
@@ -1603,7 +1620,7 @@ def ensemble_pool_create(
     from analysis.sim.pool import pool_size, read_pool
 
     pool = read_pool(data / "scenarios", name)
-    click.echo(f"created pool {data / 'scenarios' / name}")
+    click.echo(f"created pool {_shown(data / 'scenarios' / name)}")
     click.echo("  components: " + ", ".join(f"{c} {pool.weight_text(c)}" for c in pool.components))
     click.echo(f"  base: {pool.base}")
     click.echo(f"  ensemble_size: {pool_size(data, pool)}"
@@ -3874,7 +3891,7 @@ def init_command(
     except data_repo.InitError as exc:
         raise click.ClickException(str(exc)) from None
     sim = root / "sim"
-    click.echo(f"created a data repo in {root}; its data dir is {sim}")
+    click.echo(f"created a data repo in {_shown(root)}; its data dir is {_shown(sim)}")
     if failed:
         click.echo(f"  warning: not committed: {failed}", err=True)
     elif not no_commit:
@@ -3883,7 +3900,7 @@ def init_command(
     _check_scenario(sim, data_repo.START_SCENARIO, unused=False)
     if not no_builder and not no_commit and not failed:
         _init_builder(sim)
-    click.echo(f"Next: source {sim / 'activate-analysis'}, then add the rest of the household "
+    click.echo(f"Next: source {_shown(sim / 'activate-analysis')}, then add the rest of the household "
                "with `sim person add` and accounts to the base scenario with `sim account add`.")
 
 
@@ -12231,7 +12248,7 @@ def scenario_create(
         inherits = _create_new_scenario(data_dir_p, name, parents, description=description, ensemble_size=0)
         target = data_dir_p / "scenarios" / name
         _make_current(data_dir_p, name)
-        click.echo(f"created {target}")
+        click.echo(f"created {_shown(target)}")
         click.echo(f"  inherits: {inherits}")
         for filename in ("scenario.csv", *skeletons):
             click.echo(f"  {filename}")
