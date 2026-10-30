@@ -27,6 +27,7 @@ scripts/videos/docker.sh build 00-pilot
 | Path | What it holds |
 | --- | --- |
 | `docs/videos/<nn>-<slug>/script.md` | One video: its scenes, narration beside the commands and slides |
+| `docs/videos/<nn>-<slug>/setup.sh` | Optional: prepares the demo data the video's tapes start from |
 | `docs/videos/<nn>-<slug>/script.<lang>.md` | A translation of that video's narration and slide text |
 | `docs/videos/theme/theme.toml` | The shared look: palette, fonts, terminal colors, voices, timing |
 | `docs/videos/theme/templates/*.html` | Slide templates (Jinja2): `title` opens every video, `card` for breaks and endings |
@@ -101,20 +102,46 @@ A tape is a list of [VHS](https://github.com/charmbracelet/vhs) commands
 file, the theme's terminal settings, and a hidden setup that:
 
 - copies the front matter's `data` folder (the prototype personas' data),
-  or the video's own data repo, to a fresh, committed scratch folder and points `ANALYSIS_DATA_DIR` at it, so
-  every recording starts from the same state;
+  or the video's own data repo, to a fresh, committed scratch folder, after
+  the video's `setup.sh` (if any) has run in it, and points
+  `ANALYSIS_DATA_DIR` at it, so every recording starts from the same state;
 - puts this checkout's `sim`/`analysis` on `PATH`;
 - sets the prompt (`alice@home $`, from the theme).
 
-Set-up the viewer shouldn't see goes between `Hide` and `Show`. After a
-command's `Enter`, put `Wait`: it waits for the prompt to come back, however
-long the command takes (a fixed `Sleep` breaks when a first run is slow).
-Pace the rest with `Sleep` so the picture keeps up with the narration; the
-narration starts `lead` seconds into the scene. A tape must not set
-`Output`.
+Each tape starts from the same state, so a tape can't rely on an earlier
+one: what a scene shows has to exist before it records. That's what
+`setup.sh` is for (below). A little set-up the viewer shouldn't see can also
+go between `Hide` and `Show`. After a command's `Enter`, put `Wait`: it
+waits for the prompt to come back, however long the command takes (a fixed
+`Sleep` breaks when a first run is slow). Pace the rest with `Sleep` so the
+picture keeps up with the narration; the narration starts `lead` seconds
+into the scene. A tape must not set `Output`.
+
+A tape whose output is wider or longer than the terminal (84 columns by 22
+rows) can start with `Set FontSize <n>`, in layout pixels like the theme's
+`font_size`: 24 fits about 126 columns by 33 rows, and 4K keeps it sharp.
+Only `FontSize` can be set this way, and only on the tape's first lines.
 
 The demo data's bytes are part of a tape's cache key, but the CLI's
 behavior isn't, so after a CLI change rebuild with `--rerecord`.
+
+### Setting up the demo
+
+A video that shows more than the prototype data's starting point (a
+scenario already run, an ensemble, an edit) keeps the commands that build it
+in `setup.sh`, beside its script. The builder runs it once, before the first
+tape records, with `bash -euo pipefail`, inside the fresh copy of the demo
+data, with the tapes' environment (`sim` on `PATH`, `ANALYSIS_DATA_DIR`
+set). Whatever it leaves uncommitted is committed after it, under a fixed
+author and date. Every tape then starts from a copy of the result, its
+`state/runs` included, so `sim explain` in one scene doesn't need `sim run`
+recorded in the scene before.
+
+`sim run` refuses uncommitted data, so a setup that changes a scenario and
+then runs it commits in between (`git add -A && git commit -q -m ...`; the
+identity is already set). Setup's output isn't shown; if it fails, the build
+stops with its last lines. Its text is part of every tape's cache key, so
+editing it re-records the video's tapes. `01-intro/setup.sh` is an example.
 
 Notebook scenes (Playwright driving JupyterLab) aren't supported yet; they'll
 be a third visual kind beside `tape` and `slide`.
@@ -129,7 +156,7 @@ which inlines the SVG so the theme's CSS can restyle it.
 | Template | Fields |
 | --- | --- |
 | `title` | `series`, `episode`, `title`, `subtitle`, `cast` (assets to show; default home, Alice, Bill) |
-| `card` | `series`, `heading`, `body`, `speaker` (one asset, optional) |
+| `card` | `series`, `heading`, `body` (text, or a list shown one item per line), `speaker` (one asset, optional) |
 
 A new template extends `base.html`, which supplies the background, the
 ground, the theme's CSS variables (`--bg`, `--accent`, `--font-heading`, ...)
@@ -169,6 +196,25 @@ quick drafts of timing and pictures, no model needed.
 A human recording can replace synthesis later; it would be another engine,
 reading a WAV per scene.
 
+### Pronunciation
+
+When the voice says a word wrong, respell it. The captions keep the word as
+written; only the voice changes, and only the scenes that use it re-voice.
+
+- **Everywhere**: add it to `[narration.<lang>.pronounce]` in `theme.toml`,
+  such as `Jupyter = "Jupiter"`. Whole words, case-sensitive.
+- **In one place**: write `{shown|said}` in the narration, such as
+  `every run {records|ree-cords} it`. Use this for a word whose sound
+  depends on its part of speech (records, live, read), which the voice
+  guesses from context and sometimes gets wrong.
+
+Either kind can give IPA phonemes between slashes instead of a respelling:
+`{records|/ɹᵻkˈɔːɹdz/}`, `IRA = "/ˌaɪˌɑːɹˈeɪ/"`. They go to the voice as
+written. To see how the voice says a word, and borrow its phonemes from a
+sentence it gets right, ask its phonemizer, from `uv run --script` in the
+narration worker's environment:
+`Kokoro(model, voices).tokenizer.phonemize("She records it.", "en-us")`.
+
 ## Languages and captions
 
 `script.md` is the English master. A translation, `script.<lang>.md`, has
@@ -193,7 +239,7 @@ what went into it:
 | --- | --- |
 | Narration | The scene's sentences, the voice settings |
 | Slide | The page its template renders: template, assets, theme, fields |
-| Tape | Its commands, the terminal theme, the demo data; or `--rerecord` |
+| Tape | Its commands, the terminal theme, the demo data, the video's `setup.sh`; or `--rerecord` |
 | Scene clip | Its narration, its visual, the timing |
 
 So editing one sentence re-synthesizes and re-assembles that scene only. The
@@ -257,7 +303,8 @@ Slides and the terminal are laid out at 1920x1080 and rendered at
 `[video] scale` times that: 2, so the videos are 4K (3840x2160). YouTube
 encodes 4K uploads at a much higher bitrate, which keeps terminal text sharp
 even for viewers watching at 1080p. The terminal font is 36 layout pixels,
-about 84 columns by 22 rows; keep a command's output within that.
+about 84 columns by 22 rows; keep a command's output within that, or set a
+smaller font for that tape (see Tapes).
 
 ## Thumbnail, preview and ending
 
@@ -296,5 +343,4 @@ in the tool cache).
   assets, and where the docs link to them.
 - Whether to script the YouTube upload.
 - Target length: 5 to 10 minutes per video, as #373 suggests.
-- Notebook scenes, background music, and pronunciation hints for words the
-  voice gets wrong.
+- Notebook scenes and background music.

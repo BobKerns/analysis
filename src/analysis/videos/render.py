@@ -187,12 +187,36 @@ def _rgb(hex_color: str) -> str:
     return ";".join(str(int(h[i : i + 2], 16)) for i in (0, 2, 4))
 
 
+_TAPE_FONT_SIZE = re.compile(r"^Set\s+FontSize\s+(\d+)\s*$")
+
+
+def _tape_settings(tape: str, theme: Theme) -> tuple[list[str], str]:
+    """Split a tape's own leading ``Set FontSize <n>`` off its commands.
+
+    VHS ignores a setting after the first command, so it has to move up,
+    after the theme's; ``n`` is in layout pixels, scaled like the theme's.
+    """
+    lines = tape.splitlines()
+    settings: list[str] = []
+    while lines and (lines[0].strip() == "" or lines[0].lstrip().startswith("Set ")):
+        line = lines.pop(0).strip()
+        if not line:
+            continue
+        match = _TAPE_FONT_SIZE.match(line)
+        if not match:
+            raise ScriptError(f"a tape can set only FontSize, not {line!r}")
+        settings.append(f"Set FontSize {int(match.group(1)) * theme.scale}")
+    return settings, "\n".join(lines)
+
+
 def full_tape(tape: str, theme: Theme, rc: str, out: Path) -> str:
     """The tape VHS runs: output, theme settings, a hidden setup, then the scene's commands."""
+    own, tape = _tape_settings(tape, theme)
     return "\n".join(
         [
             f'Output "{out}"',
             *theme.vhs_settings(),
+            *own,
             "Hide",
             f'Type "source {rc} && clear"',
             "Enter",
@@ -204,16 +228,30 @@ def full_tape(tape: str, theme: Theme, rc: str, out: Path) -> str:
     )
 
 
+# Every recording runs at this path, not a random temp name: the CLI prints
+# paths (run files), and they should read the same in every recording.
+DEMO_ROOT = Path(tempfile.gettempdir()) / "analysis-video-demo"
+# Fixed identity and dates for the demo data's commits, so its commit hashes
+# (which runs record) are the same on every build.
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "Demo",
+    "GIT_AUTHOR_EMAIL": "demo@example.com",
+    "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+    "GIT_COMMITTER_NAME": "Demo",
+    "GIT_COMMITTER_EMAIL": "demo@example.com",
+    "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+}
+
+
 def _sandbox(data: Path, theme: Theme, root: Path) -> Path:
     """A fresh copy of the demo data, committed (the loader refuses dirty data)."""
     shutil.copytree(data, root / "data")
-    stamp = {"GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"}
-    env = {**os.environ, **stamp}
-    ident = ["-c", "user.name=Demo", "-c", "user.email=demo@example.com", "-c", "commit.gpgsign=false"]
+    env = {**os.environ, **_GIT_ENV}
     git = need("git", "install git")
     run([git, "init", "-q"], cwd=root / "data")
     run([git, "add", "-A"], cwd=root / "data")
-    run([git, *ident, "commit", "-q", "--no-verify", "-m", "demo data"], cwd=root / "data", env=env)
+    run([git, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "demo data"],
+        cwd=root / "data", env=env)
     term = theme.data["terminal"]
     accent = _rgb(theme.data["palette"]["accent"])
     rc = root / ".videorc"
@@ -223,6 +261,7 @@ def _sandbox(data: Path, theme: Theme, root: Path) -> Path:
                 f"cd {root}",
                 f"export ANALYSIS_DATA_DIR={root / 'data'}",
                 f"export PATH={Path(sys.executable).parent}:$PATH",
+                *(f"export {k}={v}" for k, v in _GIT_ENV.items()),
                 "unset PROMPT_COMMAND HISTFILE",
                 f"PS1='\\[\\e[38;2;{accent}m\\]{term['prompt']}\\[\\e[0m\\] $ '",
                 "",
@@ -233,19 +272,51 @@ def _sandbox(data: Path, theme: Theme, root: Path) -> Path:
     return rc
 
 
-def record_tape(tape: str, theme: Theme, data: Path, out: Path) -> None:
-    """Record a terminal scene with VHS, against a fresh copy of the demo data."""
-    vhs = need("vhs", "run `python -m analysis.videos setup` (Linux) or `brew install vhs` (macOS)")
-    need("ttyd", "run `python -m analysis.videos setup` (Linux) or `brew install ttyd` (macOS)")
-    # A fixed path, not a random temp name: the CLI prints paths (run files),
-    # and they should read the same in every recording.
-    root = Path(tempfile.gettempdir()) / "analysis-video-demo"
+def prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> Path:
+    """The state every tape of a video starts from, saved in ``store``.
+
+    A copy of the demo data, committed, then the video's ``setup.sh`` run
+    in it (with the tapes' environment: ``sim`` on PATH,
+    ``ANALYSIS_DATA_DIR`` set) and whatever it left uncommitted committed.
+    Setup builds what the video shows without showing it being built:
+    scenarios, edits, runs. Each tape then starts from a fresh copy.
+    """
+    root = DEMO_ROOT
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)
     try:
         rc = _sandbox(data, theme, root)
+        if setup is not None:
+            bash = need("bash", "install bash")
+            script = f'set -euo pipefail\nsource {rc}\ncd "$ANALYSIS_DATA_DIR"\nset -x\nsource {setup.resolve()}\n'
+            proc = subprocess.run([bash, "-c", script], cwd=root, text=True, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, env={**os.environ, "PATH": tool_path()})
+            if proc.returncode != 0:
+                tail = "\n".join(proc.stdout.splitlines()[-25:])
+                raise ScriptError(f"{setup} failed ({proc.returncode}):\n{tail}")
+            git = need("git", "install git")
+            if run([git, "status", "--porcelain"], cwd=root / "data").stdout.strip():
+                env = {**os.environ, **_GIT_ENV}
+                run([git, "add", "-A"], cwd=root / "data")
+                run([git, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "setup"],
+                    cwd=root / "data", env=env)
+        shutil.rmtree(store, ignore_errors=True)
+        shutil.copytree(root, store, symlinks=True)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    return store
+
+
+def record_tape(tape: str, theme: Theme, prepared: Path, out: Path) -> None:
+    """Record a terminal scene with VHS, from a fresh copy of ``prepare_demo``'s state."""
+    vhs = need("vhs", "run `python -m analysis.videos setup` (Linux) or `brew install vhs` (macOS)")
+    need("ttyd", "run `python -m analysis.videos setup` (Linux) or `brew install ttyd` (macOS)")
+    root = DEMO_ROOT
+    shutil.rmtree(root, ignore_errors=True)
+    shutil.copytree(prepared, root, symlinks=True)
+    try:
         tape_file = root / "scene.tape"
-        tape_file.write_text(full_tape(tape, theme, str(rc), out), encoding="utf-8")
+        tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), out), encoding="utf-8")
         env = {**os.environ, "PATH": tool_path()}
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             env["VHS_NO_SANDBOX"] = "true"  # Chromium refuses to sandbox as root (containers)

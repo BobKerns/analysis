@@ -266,6 +266,75 @@ def test_narration_edit_rebuilds_only_that_scene(videos_root: Path, repo_root: P
     assert "See you next time." in second.captions.read_text()
 
 
+@pytest.fixture
+def demo_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A private DEMO_ROOT: the real one is a fixed path, shared by parallel test workers."""
+    root = tmp_path / "demo-root"
+    monkeypatch.setattr(render, "DEMO_ROOT", root)
+    return root
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_prepare_demo_runs_setup_and_commits_what_it_leaves(videos_root: Path, tmp_path: Path, demo_root: Path) -> None:
+    theme = themes.load(videos_root)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "scenario.csv").write_text("name\nbase\n")
+    setup = tmp_path / "setup.sh"
+    setup.write_text('echo "$ANALYSIS_DATA_DIR" > "$ANALYSIS_DATA_DIR/where.txt"\n')
+    store = render.prepare_demo(data, setup, theme, tmp_path / "store")
+    assert (store / "data" / "where.txt").read_text().strip() == str(demo_root / "data")
+    status = render.run(["git", "status", "--porcelain"], cwd=store / "data").stdout
+    assert status == ""
+    log = render.run(["git", "log", "--format=%s %an"], cwd=store / "data").stdout.split("\n")
+    assert log[:2] == ["setup Demo", "demo data Demo"]
+    assert (store / ".videorc").is_file() and not demo_root.exists()
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_prepare_demo_reports_a_failing_setup(videos_root: Path, tmp_path: Path, demo_root: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "scenario.csv").write_text("name\nbase\n")
+    setup = tmp_path / "setup.sh"
+    setup.write_text("echo before\nfalse\necho never\n")
+    with pytest.raises(scripts.ScriptError, match=r"setup\.sh failed \(1\)"):
+        render.prepare_demo(data, setup, themes.load(videos_root), tmp_path / "store")
+
+
+def test_a_tape_can_set_its_own_font_size(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    tape = render.full_tape("Set FontSize 24\nType \"sim explain\"\nEnter\n", theme, "/rc", Path("/out.mp4"))
+    lines = tape.splitlines()
+    theme_size = next(i for i, line in enumerate(lines) if line.startswith("Set FontSize"))
+    assert lines[theme_size + 1 :].index(f"Set FontSize {24 * theme.scale}") < lines.index("Hide")
+    assert "Set FontSize 24" not in lines[lines.index("Hide") :]
+    with pytest.raises(scripts.ScriptError, match="only FontSize"):
+        render.full_tape("Set Width 800\nEnter\n", theme, "/rc", Path("/out.mp4"))
+
+
+def test_respellings_change_the_voice_not_the_captions(videos_root: Path) -> None:
+    folder = _write(videos_root / "01-say", SCRIPT.replace(
+        "Second paragraph!", "Every run {records|ree-cords} it, in Jupyter or {Jupyter|/dʒˈuːpɪɾɚ/}."))
+    intro = scripts.load(folder).scenes[0]
+    assert intro.sentences[-1] == "Every run records it, in Jupyter or Jupyter."
+    lexicon = {"Jupyter": "Jupiter", "run": "/ɹˈʌn/"}
+    assert intro.spoken(lexicon)[-1] == "Every ⟦ɹˈʌn⟧ ree-cords it, in Jupiter or ⟦dʒˈuːpɪɾɚ⟧."
+    assert intro.spoken()[-1] == "Every run ree-cords it, in Jupyter or ⟦dʒˈuːpɪɾɚ⟧."
+
+
+def test_an_unclosed_respelling_is_an_error(videos_root: Path) -> None:
+    folder = _write(videos_root / "01-say", SCRIPT.replace("Second paragraph!", "Say {records here."))
+    with pytest.raises(scripts.ScriptError, match=r"script\.md:\d+: a respelling is written"):
+        scripts.load(folder)
+
+
+def test_card_body_list_is_one_item_per_line(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    html = render.slide_html(theme, {}, {"template": "card", "heading": "H", "body": ["One?", "<Two>"]}, "en")
+    assert '<div class="line">One?</div><div class="line">&lt;Two&gt;</div>' in html
+
+
 def _tape_builder(videos_root: Path, repo_root: Path, tmp_path: Path, front: str) -> _Builder:
     folder = _write(videos_root / "01-own-data", SCRIPT.replace('data = "prototype_data"\n', front))
     theme = themes.load(videos_root)

@@ -40,6 +40,13 @@ _LANG_FILE = re.compile(r"^script\.(?P<lang>[a-z]{2,3}(?:-[A-Za-z0-9]+)?)\.md$")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|(?<=[。！？])")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _EMPHASIS = re.compile(r"(\*\*|__|\*|_|`)")
+# {shown|spoken}: the caption shows the first part and the voice says the
+# second, a respelling or /IPA phonemes/.
+_RESPELL = re.compile(r"\{([^{}|]+)\|([^{}|]+)\}")
+_IPA = re.compile(r"^/(.+)/$")
+# How an IPA respelling reaches the narration worker, which phonemizes the
+# text around it and splices it in.
+IPA_OPEN, IPA_CLOSE = "\u27e6", "\u27e7"
 
 VISUAL_KINDS = ("tape", "slide")
 
@@ -68,12 +75,47 @@ class Scene:
     line: int
 
     @property
-    def sentences(self) -> tuple[str, ...]:
-        """Narration split into sentences: the unit of synthesis and of captions."""
+    def _marked(self) -> tuple[str, ...]:
         out: list[str] = []
         for paragraph in self.narration:
             out.extend(s.strip() for s in _SENTENCE_END.split(paragraph) if s.strip())
         return tuple(out)
+
+    @property
+    def sentences(self) -> tuple[str, ...]:
+        """Narration split into sentences, as the captions show them: the unit of synthesis and of captions."""
+        return tuple(_RESPELL.sub(r"\1", s) for s in self._marked)
+
+    def spoken(self, lexicon: dict[str, str] | None = None) -> tuple[str, ...]:
+        """The sentences as the voice is to say them: respellings applied.
+
+        ``lexicon`` maps a word to how it's said wherever it appears (the
+        theme's ``[narration.<lang>.pronounce]``); an inline ``{word|said}``
+        overrides it for one place.
+        """
+        return tuple(say(s, lexicon or {}) for s in self._marked)
+
+
+def _said(respelling: str) -> str:
+    ipa = _IPA.match(respelling.strip())
+    return f"{IPA_OPEN}{ipa[1]}{IPA_CLOSE}" if ipa else respelling
+
+
+def say(sentence: str, lexicon: dict[str, str]) -> str:
+    """One sentence as spoken: inline {shown|said} first, then the lexicon on the rest."""
+    def by_lexicon(text: str) -> str:
+        if not lexicon:
+            return text
+        alternatives = "|".join(map(re.escape, sorted(lexicon, key=len, reverse=True)))
+        return re.sub(rf"\b({alternatives})\b", lambda w: _said(lexicon[w[1]]), text)
+
+    out: list[str] = []
+    pos = 0
+    for m in _RESPELL.finditer(sentence):
+        out += [by_lexicon(sentence[pos : m.start()]), _said(m[2])]
+        pos = m.end()
+    out.append(by_lexicon(sentence[pos:]))
+    return "".join(out)
 
 
 @dataclass(frozen=True)
@@ -119,10 +161,14 @@ def _parse(path: Path, *, translation: bool) -> tuple[dict[str, Any], list[Scene
 
     current: dict[str, Any] | None = None
     paragraph: list[str] = []
+    paragraph_line = 0
 
     def end_paragraph() -> None:
         if current is not None and paragraph:
-            current["narration"].append(plain_text(" ".join(paragraph)))
+            text = plain_text(" ".join(paragraph))
+            if re.search(r"[{}]", _RESPELL.sub("", text)):
+                raise ScriptError(f"{path}:{paragraph_line}: a respelling is written {{shown|said}}")
+            current["narration"].append(text)
         paragraph.clear()
 
     def end_scene() -> None:
@@ -221,6 +267,8 @@ def _parse(path: Path, *, translation: bool) -> tuple[dict[str, Any], list[Scene
             end_paragraph()  # notes, lists and tables aren't spoken, through to the next blank line
             in_note = True
         elif current is not None and not in_note:
+            if not paragraph:
+                paragraph_line = lineno
             paragraph.append(stripped)
 
     if in_comment:

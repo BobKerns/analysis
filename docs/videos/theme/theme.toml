@@ -79,6 +79,13 @@ voice = "af_heart"
 lang = "en-us"
 speed = 1.0
 
+# How the voice says words it gets wrong, wherever they appear: a respelling,
+# or IPA phonemes between slashes (see docs/videos/README.md). The captions
+# keep the word.
+[narration.en.pronounce]
+IRA = "/ˌaɪˌɑːɹˈeɪ/"
+Jupyter = "Jupiter"
+
 [narration.ja]
 engine = "kokoro"
 voice = "jf_alpha"

@@ -3,12 +3,13 @@
 Every product is cached under ``out/videos/.cache`` by a hash of exactly
 what went into it, so a build redoes only what changed:
 
-- narration: the scene's sentences and the language's voice settings;
+- narration: the scene's sentences as spoken (respellings applied) and the
+  language's voice settings;
 - a slide: the page its template renders (so template, asset, theme and
   field edits all count);
-- a tape: its commands, the terminal theme, and its data's bytes. The
-  CLI's own behavior isn't hashed, so ``--rerecord`` re-records tapes
-  after a CLI change;
+- a tape: its commands, the terminal theme, its data's bytes and the
+  video's ``setup.sh``. The CLI's own behavior isn't hashed, so
+  ``--rerecord`` re-records tapes after a CLI change;
 - a clip: its narration, its visual and the timing.
 """
 
@@ -16,6 +17,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,8 +66,12 @@ def repo_root(start: Path) -> Path:
 
 
 class _Builder:
-    def __init__(self, script: Script, theme: Theme, cache: Path, repo: Path, *, engine: str | None, rerecord: bool):
+    def __init__(self, script: Script, theme: Theme, cache: Path, repo: Path, *, engine: str | None, rerecord: bool,
+                 setup: Path | None = None):
         self.script = script
+        self.setup = setup
+        # prepare_demo's result, made when the first tape needs recording.
+        self.prepared: Path | None = None
         self.theme = theme
         self.cache = cache
         self.repo = repo
@@ -77,18 +84,21 @@ class _Builder:
         self.tail = theme.timing("tail")
 
     def narration(self, scene: Scene) -> tuple[Path | None, list[float], str, str]:
-        sentences = scene.sentences
+        # The voice says the respelled sentences; the captions show scene.sentences.
+        voice = {k: v for k, v in self.voice.items() if k != "pronounce"}
+        sentences = scene.spoken(self.voice.get("pronounce"))
         if not sentences:
             return None, [], "none", "-"
         worker = ""
-        if self.voice.get("engine", "kokoro") == "kokoro":
+        if voice.get("engine", "kokoro") == "kokoro":
             worker = render.digest((self.repo / "scripts" / "videos" / "tts_kokoro.py").read_text(encoding="utf-8"))
-        key = render.digest("narration", self.voice, self.gap, sentences, worker)
+        # Keyed on what's said, so a lexicon entry re-voices only the scenes that use it.
+        key = render.digest("narration", voice, self.gap, sentences, worker)
         wav = self.cache / f"narration-{key}.wav"
         meta = wav.with_suffix(".json")
         if wav.is_file() and meta.is_file():
             return wav, json.loads(meta.read_text())["durations"], "cached", key
-        durations = render.synthesize(sentences, self.voice, self.gap, wav, self.repo)
+        durations = render.synthesize(sentences, voice, self.gap, wav, self.repo)
         meta.write_text(json.dumps({"durations": durations, "sentences": list(sentences)}, ensure_ascii=False))
         return wav, durations, "made", key
 
@@ -134,11 +144,15 @@ class _Builder:
             return png, True, "made", key
         data = self.tape_data()
         key = render.digest("tape", v.source, self.theme.vhs_settings(), self.theme.data["terminal"],
-                            self.theme.data["palette"]["accent"], render.tree_digest(data))
+                            self.theme.data["palette"]["accent"], render.tree_digest(data),
+                            self.setup.read_text(encoding="utf-8") if self.setup else None)
         mp4 = self.cache / f"tape-{key}.mp4"
         if mp4.is_file() and not self.rerecord:
             return mp4, False, "cached", key
-        render.record_tape(v.source, self.theme, data, mp4)
+        if self.prepared is None:
+            store = Path(tempfile.mkdtemp(prefix="analysis-video-prepared-"))
+            self.prepared = render.prepare_demo(data, self.setup, self.theme, store)
+        render.record_tape(v.source, self.theme, self.prepared, mp4)
         return mp4, False, "made", key
 
     def scene(self, scene: Scene, *, first: bool, last: bool) -> tuple[SceneBuild, list[float], Path]:
@@ -178,7 +192,8 @@ def build(
     """Build the video in ``folder`` for ``lang``; return what was made and where.
 
     ``repo`` (default: the repository holding ``folder``) is where demo data,
-    the narration worker and the default ``out/videos`` are found.
+    the narration worker and the default ``out/videos`` are found. A
+    ``setup.sh`` in ``folder`` prepares the demo data before any tape records.
     """
     script = scripts.load(folder, lang)
     theme = themes.load(themes.videos_root(folder))
@@ -186,7 +201,17 @@ def build(
     out_dir = out_dir or repo / "out" / "videos"
     cache = out_dir / ".cache"
     cache.mkdir(parents=True, exist_ok=True)
-    builder = _Builder(script, theme, cache, repo, engine=engine, rerecord=rerecord)
+    setup = folder / "setup.sh"
+    builder = _Builder(script, theme, cache, repo, engine=engine, rerecord=rerecord,
+                       setup=setup if setup.is_file() else None)
+    try:
+        return _assemble(script, builder, out_dir, log)
+    finally:
+        if builder.prepared is not None:
+            shutil.rmtree(builder.prepared, ignore_errors=True)
+
+
+def _assemble(script: Script, builder: _Builder, out_dir: Path, log: Callable[[str], None]) -> VideoBuild:
 
     results: list[SceneBuild] = []
     cover_is_title = False
