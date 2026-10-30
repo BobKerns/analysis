@@ -196,6 +196,9 @@ def test_compose_holds_the_picture_and_delays_the_narration(videos_root: Path, t
     opening = render.compose_args("ffmpeg", theme, visual=tmp_path / "s.png", still=True, audio=None,
                                   length=7.5, lead=0.6, out=tmp_path / "c.mp4", fade_in=False)
     assert "fade=t=in" not in opening[opening.index("-filter_complex") + 1]  # frame 0 is the preview
+    closing = render.compose_args("ffmpeg", theme, visual=tmp_path / "s.png", still=True, audio=None,
+                                  length=7.5, lead=0.6, out=tmp_path / "c.mp4", fade_out=False)
+    assert "fade=t=out" not in closing[closing.index("-filter_complex") + 1]  # the last card stays up
     tape = render.compose_args("ffmpeg", theme, visual=tmp_path / "t.mp4", still=False, audio=None,
                                length=12.0, lead=0.6, out=tmp_path / "c.mp4")
     graph = tape[tape.index("-filter_complex") + 1]

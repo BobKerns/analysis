@@ -113,7 +113,7 @@ class _Builder:
         render.record_tape(v.source, self.theme, data, mp4)
         return mp4, False, "made", key
 
-    def scene(self, scene: Scene, *, first: bool) -> tuple[SceneBuild, list[float], Path]:
+    def scene(self, scene: Scene, *, first: bool, last: bool) -> tuple[SceneBuild, list[float], Path]:
         """The scene's clip and narration timing, and its visual (for the thumbnail)."""
         audio, durations, audio_state, audio_key = self.narration(scene)
         visual, still, vis_state, vis_key = self.visual(scene)
@@ -125,13 +125,14 @@ class _Builder:
             length = max(length, render.duration(visual))
         length = round(length, 3)
         key = render.digest("clip", audio_key, vis_key, length, self.lead, self.theme.data["video"],
-                            self.theme.timing("slide_fade"), self.theme.bg_hex(), first)
+                            self.theme.timing("slide_fade"), self.theme.bg_hex(), first, last)
         clip = self.cache / f"clip-{key}.mp4"
         clip_state = "cached"
         if not clip.is_file() or vis_state == "made":
             ffmpeg = render.need("ffmpeg", "install ffmpeg")
             render.run(render.compose_args(ffmpeg, self.theme, visual=visual, still=still, audio=audio,
-                                           length=length, lead=self.lead, out=clip, fade_in=not first))
+                                           length=length, lead=self.lead, out=clip,
+                                           fade_in=not first, fade_out=not last))
             clip_state = "made"
         return SceneBuild(scene.id, length, audio_state, vis_state, clip_state, clip), durations, visual
 
@@ -165,7 +166,7 @@ def build(
     t = 0.0
     cover: Path | None = None  # the title card if there is one, else the first slide, else frame 0
     for i, scene in enumerate(script.scenes):
-        result, durations, visual = builder.scene(scene, first=i == 0)
+        result, durations, visual = builder.scene(scene, first=i == 0, last=i == len(script.scenes) - 1)
         is_title = scene.visual.fields.get("template") == "title"
         if scene.visual.kind == "slide" and (cover is None or (is_title and not cover_is_title)):
             cover, cover_is_title = visual, is_title

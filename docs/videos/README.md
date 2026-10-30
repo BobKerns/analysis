@@ -199,8 +199,10 @@ Requirements: `ffmpeg`, `uv`, Playwright's Chromium (`uv run playwright
 install chromium`), and for tapes VHS and ttyd (`setup` downloads them on
 Linux; `brew install vhs` on macOS).
 
-## Thumbnail and preview
+## Thumbnail, preview and ending
 
+Slides fade in from and out to the background color, with two exceptions.
+The last scene doesn't fade out, so the closing card is what stays on screen.
 The first scene doesn't fade in, so frame 0, which players and file browsers
 show as the preview, is the title card. The build also writes the title card
 (or the first slide, if there's no `title` slide) as a 1280x720 JPEG beside

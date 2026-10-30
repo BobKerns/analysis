@@ -266,11 +266,13 @@ def compose_args(
     lead: float,
     out: Path,
     fade_in: bool = True,
+    fade_out: bool = True,
 ) -> list[str]:
     """ffmpeg arguments for one scene: the picture held to ``length``, narration ``lead`` in.
 
     A still fades in and out through the background color, except that the
-    video's first scene doesn't fade in: players use frame 0 as the preview.
+    video's first scene doesn't fade in (players use frame 0 as the preview)
+    and its last doesn't fade out (the closing card is what stays on screen).
     """
     w, h, fps = theme.width, theme.height, theme.fps
     bg = theme.bg_hex()
@@ -289,7 +291,8 @@ def compose_args(
         fade = theme.timing("slide_fade")
         if fade_in:
             video += f",fade=t=in:st=0:d={fade}:color={bg}"
-        video += f",fade=t=out:st={max(0.0, length - fade):.3f}:d={fade}:color={bg}"
+        if fade_out:
+            video += f",fade=t=out:st={max(0.0, length - fade):.3f}:d={fade}:color={bg}"
     video += ",setpts=PTS-STARTPTS,format=yuv420p[v]"
     delay = int(round(lead * 1000)) if audio is not None else 0
     sound = (
