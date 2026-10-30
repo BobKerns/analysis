@@ -2596,3 +2596,13 @@ def test_sim_run_jobs_defaults_to_available_cpus(
         jobs=default,
     )
     assert jobs == expected
+
+
+def test_sim_prints_a_warning_as_one_plain_line() -> None:
+    """#368: a run's RuntimeWarning (a negative balance) reads as the planner
+    sees it, without Python's file, line number and source line."""
+    from analysis.sim.cli import _format_warning
+
+    text = _format_warning(RuntimeWarning("2033-10-31: account 'X' went negative"),
+                           RuntimeWarning, "/x/engine.py", 1152, "_warn_if_negative(...)")
+    assert text == "warning: 2033-10-31: account 'X' went negative\n"

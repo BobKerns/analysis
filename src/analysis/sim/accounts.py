@@ -95,21 +95,30 @@ def load_accounts_view(
 
 
     # Rate series come from percent_of_balance scheduled transactions
-    # keyed by to_account (the balance-bearing account, per ADR-003).
+    # keyed by to_account (the balance-bearing account, per ADR-003). That
+    # names a chain, not an account (#368): an account's own leaf chain.
     account_name_by_id = accounts.set_index("id")["name"]
+    chains = sc.items("chain")
+    account_id_by_chain = chains.set_index("id")["account_id"] if not chains.empty else {}
     scheduled = sc.items("scheduled")
     rate_rows = scheduled[
         (scheduled["amount_rule_kind"] == "percent_of_balance")
         & scheduled["series"].notna()
     ]
-    rate_by_name: dict[str, tuple[str, int | None]] = {}
+    series_by_name: dict[str, set[str]] = {}
     for _, row in rate_rows.iterrows():
-        account_name = account_name_by_id.get(row["to_account"])
+        account_id = account_id_by_chain.get(row["to_account"])
+        account_name = None if pd.isna(account_id) else account_name_by_id.get(account_id)
         if account_name is None:
             continue
-        rate_by_name[account_name] = (
-            row["series"], _latest_rate_micros(sc, row["series"], as_of),
-        )
+        series_by_name.setdefault(account_name, set()).add(row["series"])
+    # An account whose lots grow at different rates shows each series and no
+    # one rate.
+    rate_by_name: dict[str, tuple[str, int | None]] = {
+        name: (", ".join(sorted(found)),
+               _latest_rate_micros(sc, next(iter(found)), as_of) if len(found) == 1 else None)
+        for name, found in series_by_name.items()
+    }
 
     out: list[AccountRow] = []
     for _, a in accounts.iterrows():

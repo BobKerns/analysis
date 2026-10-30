@@ -16,6 +16,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import warnings
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -251,9 +252,20 @@ def _offer_commit(
     click.echo(f"committed {sha[:7]}: {subject}", err=True)
 
 
+def _format_warning(
+    message: Warning | str, category: type[Warning], filename: str, lineno: int,  # noqa: ARG001
+    line: str | None = None,  # noqa: ARG001
+) -> str:
+    """A warning as a planner reads it (#368): ``warning: <message>``, not
+    Python's file, line number and source line."""
+    return f"warning: {message}\n"
+
+
 @click.group(name="sim")
 def sim_group_command() -> None:
     """Scenario-based finance simulator."""
+    # setattr: ty won't assign a function to a module attribute declared as a def.
+    setattr(warnings, "formatwarning", _format_warning)  # noqa: B010
 
 
 @sim_group_command.command()
@@ -3152,7 +3164,7 @@ def explain(
             raise click.ClickException(f"no simulation_run row in {runfile}")
         (name, status, started, finished, failure, cv, cd, dv, dd,
          by, host, py) = run
-        click.echo(f"file:           {runfile}")
+        click.echo(f"file:           {_shown(runfile)}")
         click.echo(f"scenario:       {name}")
         click.echo(f"status:         {status}" + (f"  ({failure})" if failure else ""))
         click.echo(f"started:        {started}")
@@ -3318,7 +3330,7 @@ def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
     for event in events:
         click.echo(
             f"  {event.get('month', '-')}  {str(event.get('account', '-')):<{width}}"
-            f"  {_fmt_cents(event.get('balance_cents')).strip()}"
+            f"  {_compact_cents(event.get('balance_cents'))}"
             f"  {describe_negative_balance_event(event)}"
         )
 
@@ -4082,8 +4094,8 @@ def items(
             else reason_kind
         )
         table.add_row(
-            date_, own, direction, _fmt_cents(amount).strip(),
-            _fmt_cents(requested).strip(), _fmt_cents(remainder).strip(),
+            date_, own, direction, _compact_cents(amount),
+            _compact_cents(requested), _compact_cents(remainder),
             tax_character, origin,
         )
     Console(width=200).print(table)
@@ -4095,6 +4107,12 @@ def _fmt_quantity(micros: int | None) -> str:
         return "-"
     text = f"{micros / 1_000_000:,.6f}".rstrip("0").rstrip(".")
     return text or "0"
+
+
+def _compact_cents(cents: int | None) -> str:
+    """``$8,000.00``, ``-$12.50``: ``_fmt_cents`` without its column padding,
+    for a sentence rather than a table."""
+    return _fmt_cents(cents).replace(" ", "")
 
 
 def _fmt_cents(cents: int | None) -> str:
@@ -5373,7 +5391,7 @@ def _do_add_transfer(
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"{verb} one_off_transfer {from_account} -> {to_account} "
-        f"{_fmt_cents(cents).strip()} on {date} to {path}"
+        f"{_compact_cents(cents)} on {date} to {_shown(path)}"
     )
 
 
@@ -5676,7 +5694,7 @@ def _echo_guided_scenario(name: str, path: Path, *, defaulted: bool) -> None:
     ``Using scenario`` line (``_resolve_scenario``), so only its file follows."""
     if not defaulted:
         click.echo(f"Scenario: {name}")
-    click.echo(f"  {path}")
+    click.echo(f"  {_shown(path)}")
 
 
 def _match_calendar_rows(
@@ -6051,7 +6069,7 @@ def calendar_delete(row: str | None, yes: bool, scenario: str | None, data_dir: 
                 + ". Change or delete those rows first. Nothing was written."
             )
     own = _read_calendar_rows(path)[chosen.index]
-    click.echo(f"row {chosen.index + 1} of {path}: {label}  {notes[index]}".rstrip())
+    click.echo(f"row {chosen.index + 1} of {_shown(path)}: {label}  {notes[index]}".rstrip())
     if not yes and not click.confirm("delete it?", default=False):
         click.echo("aborted")
         return
@@ -6066,7 +6084,7 @@ def calendar_delete(row: str | None, yes: bool, scenario: str | None, data_dir: 
             f"from {chosen.inherited_from!r} again"
         )
     else:
-        click.echo(f"deleted row {chosen.index + 1} from {path}")
+        click.echo(f"deleted row {chosen.index + 1} from {_shown(path)}")
 
 
 @calendar_group_command.group(name="tag")
@@ -6117,7 +6135,7 @@ def _calendar_tag(
     if chosen.index is None:
         click.echo(
             f"wrote an override of calendar row {label!r} (inherited from "
-            f"{chosen.inherited_from!r}) to {path}; tags: {tags or '(none)'}"
+            f"{chosen.inherited_from!r}) to {_shown(path)}; tags: {tags or '(none)'}"
         )
     else:
         click.echo(f"calendar row {label!r} tags: {tags or '(none)'}")
@@ -6280,7 +6298,7 @@ def calendar_add_set_rate(
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"{verb} set_rate {series!r} -> {row["amount"]} on {date} "
-        f"(aux_kind={aux_kind!r}) to {path}"
+        f"(aux_kind={aux_kind!r}) to {_shown(path)}"
     )
 
 
@@ -6301,7 +6319,7 @@ def _write_resume_row(
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"{verb} set_rate {series!r} -> resume what governed before {vary_resume} "
-        f"on {date} (aux_kind={aux_kind!r}) to {path}"
+        f"on {date} (aux_kind={aux_kind!r}) to {_shown(path)}"
     )
 
 
@@ -6374,8 +6392,8 @@ def calendar_add_set_amount(
     path = scenario_dir / "calendar.csv"
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
-        f"{verb} set_amount {scheduled_name!r} -> {_fmt_cents(cents).strip()} "
-        f"on {date} to {path}"
+        f"{verb} set_amount {scheduled_name!r} -> {_compact_cents(cents)} "
+        f"on {date} to {_shown(path)}"
     )
 
 
@@ -6442,7 +6460,7 @@ def calendar_add_retire_scheduled(
     }
     path = scenario_dir / "calendar.csv"
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
-    click.echo(f"{verb} retire_scheduled {scheduled_name!r} on {date} to {path}")
+    click.echo(f"{verb} retire_scheduled {scheduled_name!r} on {date} to {_shown(path)}")
 
 
 @calendar_add_group_command.command("latent-factor")
@@ -6479,7 +6497,7 @@ def calendar_add_latent_factor(
     }
     path = scenario_dir / "calendar.csv"
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
-    click.echo(f"{verb} latent_factor {name!r} to {path}")
+    click.echo(f"{verb} latent_factor {name!r} to {_shown(path)}")
 
 
 @calendar_add_group_command.command("date-marker")
@@ -6558,7 +6576,7 @@ def calendar_add_date_marker(
     }
     path = scenario_dir / "calendar.csv"
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
-    click.echo(f"{verb} date_marker {name!r} on {date} to {path}")
+    click.echo(f"{verb} date_marker {name!r} on {date} to {_shown(path)}")
 
 
 @calendar_add_group_command.command("transfer")
@@ -6723,7 +6741,7 @@ def calendar_add_transfer_balance(
     path = scenario_dir / "calendar.csv"
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
-        f"{verb} transfer_balance {from_account} -> {to_account} on {date} to {path}"
+        f"{verb} transfer_balance {from_account} -> {to_account} on {date} to {_shown(path)}"
     )
 
 
@@ -6800,7 +6818,7 @@ def calendar_add_swap_aux_table(
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     replaced = f"{aux_kind}__{series}" if series else aux_kind
     click.echo(
-        f"{verb} swap_aux_table {replaced} -> {aux_kind}__{source_series} on {date} to {path}"
+        f"{verb} swap_aux_table {replaced} -> {aux_kind}__{source_series} on {date} to {_shown(path)}"
     )
 
 
@@ -7119,8 +7137,9 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
               help="The date inflation is measured from (default: DATE).")
 @click.option("--inflation-cadence", type=click.Choice(["monthly", "annual"]), default=None,
               help="annual steps once each January, as a COLA does (default: monthly).")
-@click.option("--person", type=completion.PERSON, default=None,
-              help="Person id: required for rmd, ss_benefit and on_death.")
+@click.option("--person", type=completion.RULE_PERSON, default=None,
+              help="Person id, or joint for the household: required for rmd, ss_benefit "
+                   "and on_death.")
 @click.option("--claim-age", type=int, default=None, help="Required for ss_benefit.")
 @click.option("--rate", default=None,
               help="mortgage_payment: annual rate, e.g. 6%. fill_bracket: the bracket to fill, e.g. 22%.")
@@ -7263,11 +7282,11 @@ def scheduled_add(
     path = scenario_dir / "scheduled.csv"
     _append_and_validate(path, registries.SCHEDULED_CSV_HEADER, row,
                          data_dir=data_dir_p, scenario_name=scenario_name)
-    what = f" {_fmt_cents(_parse_amount_cents(row['amount'])).strip()}" if row["amount"] else ""
+    what = f" {_compact_cents(_parse_amount_cents(row['amount']))}" if row["amount"] else ""
     kind_note = "" if rule_kind == "fixed_amount" else f" {rule_kind}"
     click.echo(
         f"appended scheduled row '{row_name}'{kind_note} ({row['cadence']}) "
-        f"{from_account} -> {to_account}{what} to {path}"
+        f"{from_account} -> {to_account}{what} to {_shown(path)}"
     )
 
 
@@ -7420,7 +7439,7 @@ def scheduled_import_baseline(
     )
     scheduled_path = scenario_dir / "scheduled.csv"
     if dry_run:
-        click.echo(f"(dry run) would replace {len(rows)} generated row(s) in {scheduled_path}")
+        click.echo(f"(dry run) would replace {len(rows)} generated row(s) in {_shown(scheduled_path)}")
         for row in rows:
             click.echo(f"  {row['name']}: {row['amount']} -> {row['to_account']}")
         return
@@ -7458,7 +7477,7 @@ def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
         table.add_column(column, justify=justify)
     for row in named_rows(rows):
         if row.amount_rule_kind == "fixed_amount" and pd.notna(row.amount):
-            amt = _fmt_cents(round(row.amount * 100)).strip()
+            amt = _compact_cents(round(row.amount * 100))
         elif row.amount_rule_kind == "percent_of_balance":
             amt = "% of bal"
         else:
@@ -7630,10 +7649,10 @@ def scheduled_edit(
         if chosen.index is None:
             click.echo(
                 f"wrote an override of scheduled rule '{rule}' "
-                f"(inherited from {chosen.inherited_from!r}) to {path}"
+                f"(inherited from {chosen.inherited_from!r}) to {_shown(path)}"
             )
         else:
-            click.echo(f"updated scheduled rule '{rule}' in {path}")
+            click.echo(f"updated scheduled rule '{rule}' in {_shown(path)}")
 
     answers = scheduled_guide.answers_of(current)
     given = {param: value.strip() for param, value in values.items() if value is not None}
@@ -7728,7 +7747,7 @@ def scheduled_delete(name: str | None, yes: bool, scenario: str | None, data_dir
             data_dir_p, scenario_name, path, picked, None,
             drop_calendar=calendar if references else None, name=rule,
         )
-        click.echo(f"deleted scheduled rule '{rule}' from {path}")
+        click.echo(f"deleted scheduled rule '{rule}' from {_shown(path)}")
         return
 
     with _intent_db(data_dir_p, scenario_name) as (con, _name):
@@ -7748,7 +7767,7 @@ def scheduled_delete(name: str | None, yes: bool, scenario: str | None, data_dir
         return
     row = {**current, "end": end, "ytd_amount": "", "ytd_preroll": ""}
     _write_scheduled(data_dir_p, scenario_name, path, picked, row)
-    click.echo(f"wrote an override ending scheduled rule '{rule}' in {end} to {path}")
+    click.echo(f"wrote an override ending scheduled rule '{rule}' in {end} to {_shown(path)}")
 
 
 def _ask_growth_character(account: str, subkind: str) -> str:
@@ -7948,10 +7967,10 @@ def add_account(
                     "prior_year_end_balance": "",
                 },
             )
-    click.echo(f"appended account '{name}' to {accounts_path}")
+    click.echo(f"appended account '{name}' to {_shown(accounts_path)}")
     if cents is not None:
         click.echo(
-            f"appended opening balance {_fmt_cents(cents).strip()} to {values_path}"
+            f"appended opening balance {_compact_cents(cents)} to {_shown(values_path)}"
         )
 
 
@@ -8157,7 +8176,7 @@ def delete_account(name: str | None, scenario: str | None, data_dir: Path | None
 
     with _scenario_edit(data_dir_p, scenario_name) as edit:
         _delete_account_references(edit.scenario_dir, name, series)
-    click.echo(f"deleted account '{name}' from {accounts_path}")
+    click.echo(f"deleted account '{name}' from {_shown(accounts_path)}")
 
 
 @account_group_command.command("edit")
@@ -8355,7 +8374,7 @@ def edit_account(
             _rename_account(edit, name, new_name)
         df.to_csv(edit.path(accounts_path), index=False)
 
-    click.echo(f"updated account '{new_name}' in {accounts_path}")
+    click.echo(f"updated account '{new_name}' in {_shown(accounts_path)}")
 
 
 @account_group_command.command("rename")
@@ -9954,7 +9973,7 @@ def lot_add(
         # resolved again, in case the default changed during the prompts.
         _write_lot(data_dir_p, scenario_name, path, row, replace=zeroed, growth_character=character)
         _echo_growth_character(key[0], character)
-        click.echo(f"{'re-added' if zeroed else 'added'} lot {key[1]!r} of {key[0]!r} in {path}")
+        click.echo(f"{'re-added' if zeroed else 'added'} lot {key[1]!r} of {key[0]!r} in {_shown(path)}")
 
     answers = {param: value for param, value in values.items() if value is not None}
     if account is not None and lot is not None:
@@ -10030,14 +10049,14 @@ def lot_edit(
         )
         _echo_growth_character(chosen.account, character)
         if chosen.implicit:
-            click.echo(f"added lot {new!r} of {chosen.account!r} to {path}")
+            click.echo(f"added lot {new!r} of {chosen.account!r} to {_shown(path)}")
         elif chosen.index is None:
             click.echo(
                 f"wrote an override of lot {chosen.lot!r} of {chosen.account!r} "
-                f"(inherited from {chosen.inherited_from!r}) to {path}"
+                f"(inherited from {chosen.inherited_from!r}) to {_shown(path)}"
             )
         else:
-            click.echo(f"updated lot {new!r} of {chosen.account!r} in {path}")
+            click.echo(f"updated lot {new!r} of {chosen.account!r} in {_shown(path)}")
 
     answers = lot_guide.answers_of(chosen.row)
     given = {param: value.strip() for param, value in values.items() if value is not None}
@@ -10117,7 +10136,7 @@ def lot_delete(
             data_dir_p, scenario_name, path, None, replace=chosen,
             delete_references=(chosen.account, chosen.lot),
         )
-        click.echo(f"deleted {label} from {path}")
+        click.echo(f"deleted {label} from {_shown(path)}")
         if not any(one.account == chosen.account
                    for one in _scenario_lots(scenario_dir, scenario_name)):
             click.echo(
@@ -10142,7 +10161,7 @@ def lot_delete(
             zeroed[column] = zero
     _write_lot(data_dir_p, scenario_name, path, zeroed, replace=chosen)
     click.echo(
-        f"zeroed {label} in {path}: it comes from scenario {chosen.inherited_from!r}, "
+        f"zeroed {label} in {_shown(path)}: it comes from scenario {chosen.inherited_from!r}, "
         "so an empty override stands in for deleting it"
     )
     # Down the whole family: the parents' rows still run, and so do those of
@@ -10294,7 +10313,7 @@ def sync_account_lots(
             writer.writeheader()
             writer.writerows(values_rows)
 
-    click.echo(f"synced {len(missing)} missing account(s) to {values_path}")
+    click.echo(f"synced {len(missing)} missing account(s) to {_shown(values_path)}")
     for name in missing:
         click.echo(f"  + {name}")
 
@@ -10512,7 +10531,7 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
             if row["kind"] == "transfer_balance":
                 amount = "balance"  # whatever the lot holds when it fires
             elif row["amount"] is not None:
-                amount = _fmt_cents(row["amount"]).strip()
+                amount = _compact_cents(row["amount"])
             else:
                 amount = ""
             rows.append((
@@ -10537,7 +10556,7 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
             "WHERE s.cadence = 'one_off' AND s.created_by_event_id IS NULL"
         ):
             if row["amount_cents"] is not None:
-                amt = _fmt_cents(row["amount_cents"]).strip()
+                amt = _compact_cents(row["amount_cents"])
             else:
                 amt = row["amount_rule_kind"]
             rows.append((
@@ -13267,6 +13286,9 @@ def calendar_list(
     or latent factor's vary_* cells; "~ name rho" is what it correlates
     with. Defined in says where each row comes from: this scenario, the
     ancestor it is inherited from, or "overrides <ancestor>".
+
+    Latent factors, which only shape an ensemble's variation, are counted
+    rather than listed unless --kind or --tag asks for them.
     """
     from rich.markup import escape
     from rich.table import Table
@@ -13282,8 +13304,18 @@ def calendar_list(
         if (kind is None or entry.row["kind"] == kind)
         and (tag is None or _tag_matches(entry.row["tags"], tag))
     ]
+    # Every scenario inherits the templates' latent factors (#368): two dozen
+    # rows about ensemble variation would bury the dated events.
+    factors = 0
+    if kind is None and tag is None:
+        factors = sum(entry.row["kind"] == "latent_factor" for entry in rows)
+        rows = [entry for entry in rows if entry.row["kind"] != "latent_factor"]
+    factor_note = (f"{factors} latent factor(s), for ensemble variation, not shown: "
+                   "--kind latent_factor lists them")
     if not rows:
         click.echo(f"no calendar rows in {ref.name}" + (" match" if kind or tag else ""))
+        if factors:
+            click.echo(factor_note)
         return
     table = Table(title=f"calendar ({ref.name})", header_style="bold")
     columns = ["#", "Date", "Kind", "Name", "Target", "Amount", "Varies", "Tags", "Defined in"]
@@ -13303,6 +13335,8 @@ def calendar_list(
             cells += [row["description"], row["params_json"]]
         table.add_row(*(escape(cell) for cell in cells))
     _print_wide(table)
+    if factors:
+        click.echo(factor_note)
 
 
 @sim_group_command.group(name="person")
@@ -13611,7 +13645,7 @@ def person_add(
     )
     row = pd.DataFrame([{"id": person_id, **fields}])
     _write_persons(data, scenario, pd.concat([df, row], ignore_index=True).fillna(""), before)
-    click.echo(f"added person '{person_id}' to {path} ({_SHARED_PERSONS_NOTE})")
+    click.echo(f"added person '{person_id}' to {_shown(path)} ({_SHARED_PERSONS_NOTE})")
 
 
 @person_group_command.command("edit")
@@ -13652,7 +13686,7 @@ def person_edit(
     for column, value in fields.items():
         df.at[idx, column] = value
     _write_persons(data, scenario, df, before)
-    click.echo(f"changed person '{current['id']}' in {path} ({_SHARED_PERSONS_NOTE})")
+    click.echo(f"changed person '{current['id']}' in {_shown(path)} ({_SHARED_PERSONS_NOTE})")
 
 
 @person_group_command.group(name="lifespan")
@@ -13864,10 +13898,10 @@ def lifespan_set(
             replace=None if found is None or found.index is None else df.index[found.index],
         )
     if found is not None and found.index is None:
-        click.echo(f"set {person}'s lifespan to {_lifespan_summary(row)} in {path}, overriding "
+        click.echo(f"set {person}'s lifespan to {_lifespan_summary(row)} in {_shown(path)}, overriding "
                    f"{_lifespan_summary(found.row)} from {found.inherited_from!r}")
     else:
-        click.echo(f"set {person}'s lifespan to {_lifespan_summary(row)} in {path}")
+        click.echo(f"set {person}'s lifespan to {_lifespan_summary(row)} in {_shown(path)}")
     if row["vary_distribution"] == registries.LIFE_TABLE_DISTRIBUTION:
         click.echo(_life_table_summary(data, scenario_name, person))
 
@@ -13935,10 +13969,10 @@ def lifespan_clear(person: str | None, scenario: str | None, data_dir: Path | No
     if found.inherited_from is not None:
         after = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
         if after is not None:
-            click.echo(f"cleared {person}'s lifespan in {path}; it now inherits "
+            click.echo(f"cleared {person}'s lifespan in {_shown(path)}; it now inherits "
                        f"{_lifespan_summary(after.row)} from {after.inherited_from!r}")
             return
-    click.echo(f"cleared {person}'s lifespan in {path}")
+    click.echo(f"cleared {person}'s lifespan in {_shown(path)}")
 
 
 @sim_group_command.group(name="ytd")
@@ -14211,7 +14245,7 @@ def ytd_add(
         staged = edit.path(path)
         _widen_ytd_header(staged, scenario_dir)
         _append_csv_row(staged, registries.YEAR_TO_DATE_CSV_HEADER, row)
-    click.echo(f"appended year-to-date row '{name}' {_ytd_summary(row)} to {path}")
+    click.echo(f"appended year-to-date row '{name}' {_ytd_summary(row)} to {_shown(path)}")
 
 
 def _ytd_options[F: Callable[..., object]](f: F) -> F:
@@ -14274,10 +14308,10 @@ def ytd_edit(
         if chosen.index is None:
             click.echo(
                 f"wrote an override of year-to-date row '{row_name}' "
-                f"(inherited from {chosen.inherited_from!r}) to {path}"
+                f"(inherited from {chosen.inherited_from!r}) to {_shown(path)}"
             )
         else:
-            click.echo(f"updated year-to-date row '{row_name}' in {path}")
+            click.echo(f"updated year-to-date row '{row_name}' in {_shown(path)}")
 
     answers = ytd_guide.answers_of(current)
     given = {param: value.strip() for param, value in values.items() if value is not None}
@@ -14357,7 +14391,7 @@ def ytd_delete(name: str | None, yes: bool, scenario: str | None, data_dir: Path
                 f"it is inherited from {chosen.inherited_from!r} again"
             )
         else:
-            click.echo(f"deleted year-to-date row '{row_name}' from {path}")
+            click.echo(f"deleted year-to-date row '{row_name}' from {_shown(path)}")
         return
 
     current = {column: chosen.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
@@ -14373,7 +14407,7 @@ def ytd_delete(name: str | None, yes: bool, scenario: str | None, data_dir: Path
         click.echo("aborted")
         return
     _write_ytd(data_dir_p, scenario_name, path, picked, {**current, "amount": "0.00"})
-    click.echo(f"wrote an override zeroing year-to-date row '{row_name}' to {path}")
+    click.echo(f"wrote an override zeroing year-to-date row '{row_name}' to {_shown(path)}")
 
 
 # ---------- guard-rail list|add|edit|delete: guard_rails.csv (#305) ----------
@@ -14619,7 +14653,7 @@ def guard_rail_add(
         row = _guard_rail_row(params, {**empty, "name": name}, context)
         _check_guard_rail_row(row)
         _write_guard_rail(data_dir_p, scenario_name, path, None, row)
-        click.echo(f"appended guard rail '{name}' ({_rail_summary(row)}) to {path}")
+        click.echo(f"appended guard rail '{name}' ({_rail_summary(row)}) to {_shown(path)}")
 
     guide = _guard_rail_guide()
     if given:
@@ -14684,9 +14718,9 @@ def guard_rail_edit(
         _write_guard_rail(data_dir_p, scenario_name, path, picked, row)
         if chosen.index is None:
             click.echo(f"wrote an override of guard rail '{rail}' "
-                       f"(inherited from {chosen.inherited_from!r}) to {path}")
+                       f"(inherited from {chosen.inherited_from!r}) to {_shown(path)}")
         else:
-            click.echo(f"updated guard rail '{rail}' in {path}")
+            click.echo(f"updated guard rail '{rail}' in {_shown(path)}")
 
     answers = guard_rail_guide.answers_of(current)
     given = {param: value.strip() for param, value in values.items() if value is not None}
@@ -14746,10 +14780,10 @@ def guard_rail_delete(name: str | None, yes: bool, scenario: str | None, data_di
             return
         _write_guard_rail(data_dir_p, scenario_name, path, picked, None)
         if chosen.inherited_from is not None:
-            click.echo(f"deleted this scenario's override of guard rail '{rail}' from {path}; "
+            click.echo(f"deleted this scenario's override of guard rail '{rail}' from {_shown(path)}; "
                        f"it is inherited from {chosen.inherited_from!r} again")
         else:
-            click.echo(f"deleted guard rail '{rail}' from {path}")
+            click.echo(f"deleted guard rail '{rail}' from {_shown(path)}")
         return
 
     with _intent_db(data_dir_p, scenario_name) as (con, _name):
@@ -14768,7 +14802,7 @@ def guard_rail_delete(name: str | None, yes: bool, scenario: str | None, data_di
         click.echo("aborted")
         return
     _write_guard_rail(data_dir_p, scenario_name, path, picked, {**current, "end": end})
-    click.echo(f"wrote an override ending guard rail '{rail}' in {end} to {path}")
+    click.echo(f"wrote an override ending guard rail '{rail}' in {end} to {_shown(path)}")
 
 
 @sim_group_command.group(name="itemization")

@@ -384,3 +384,16 @@ def test_a_named_batch_is_offered_only_when_it_holds_runs_of_the_mode(tmp_path: 
     assert result.exit_code == 0, result.output
     assert "ensembles with a batch b1: mc_recipe\n" in result.output
 
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_rules_person_may_be_the_household(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    """#368: `joint` is a rule's person even when persons.csv has no row
+    for it (as `sim init` writes it): the loader supplies one."""
+    persons = test_data_dir / "persons.csv"
+    persons.write_text("".join(line for line in persons.read_text().splitlines(keepends=True)
+                               if not line.startswith("joint,")))
+    result = sim("scheduled", "add", "2027-01-31", "Asset_Checking", "Expense_Living", "100",
+                 "--name", "shared", "--person", "joint", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output

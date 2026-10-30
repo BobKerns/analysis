@@ -279,9 +279,17 @@ ITEMIZATION = NameType(_in_scenario(names.itemization_names), "itemization",
 LIFE_TABLE = NameType(
     _in_scenario(lambda d, s: names.series_names(d, s, "life_table")), "life table",
 )  # #315: the <name> of an aux life_table__<name>.csv
+def _with_joint(ids: list[str]) -> list[str]:
+    """The persons and the household, ``joint``, which the loader supplies
+    when persons.csv has no row for it."""
+    return [*ids, "joint"] if "joint" not in ids else ids
+
+
 PERSON = NameType(lambda ctx, data_dir: names.person_ids(data_dir), "person")  # noqa: ARG005
 # An account's owner: a person, or both of them.
-OWNER = NameType(lambda ctx, data_dir: [*names.person_ids(data_dir), "joint"], "owner")  # noqa: ARG005
+OWNER = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), "owner")  # noqa: ARG005
+# A rule's person: one person's lifespan, or the household's (`joint`, #368).
+RULE_PERSON = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), "person")  # noqa: ARG005
 # A lot may hold a symbol nothing names yet, and prices can fetch one.
 SYMBOL = NameType(lambda ctx, data_dir: names.symbols(data_dir), "symbol", check=False)  # noqa: ARG005
 AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS), "aux kind")  # noqa: ARG005
