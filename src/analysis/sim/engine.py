@@ -228,7 +228,7 @@ def run_scenario(
             roth_qualified=lambda lot, on: _roth_qualified(roth[lot], on) if lot in roth else None,
             end=months[-1],
             rule_budget=lambda tid, on: _rule_year_budget(
-                Txn._make(txn_by_id[tid]), on, aux, inflation_factor_cache, rule_lifespan,
+                Txn._make(txn_by_id[tid]), on, aux, inflation_factor_cache, rule_lifespan, months[-1],
             ),
             growth_sources=growth_sources, opening_balances=balances, first_month=months[0],
         )
@@ -1631,19 +1631,20 @@ def _rule_year_budget(
     txn: Txn, month: date,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     cache: dict[tuple[str, date, date, str], int],
-    rule_lifespan: Mapping[str, str],
+    rule_lifespan: Mapping[str, str], run_end: date,
 ) -> int:
     """A ``fixed_amount`` rule's spending over the twelve months from
     ``month``, at ``month``'s prices (``ctx.budget``, #387): its amount indexed
     to now, times the times it posts then, gated as the posting loop gates
     it. Twelve months rather than the calendar year, so a run that starts in
-    May still sees a whole year's plan."""
+    May still sees a whole year's plan; cut at ``run_end``, so a run ending
+    mid-year doesn't budget months it never posts."""
     if txn.amount_rule_kind != "fixed_amount":
         return 0
     rule_start = _parse_scheduled_date(txn.start, txn.id, txn.name, "start")
     rule_end = (_parse_scheduled_date(txn.end, txn.id, txn.name, "end")
                 if txn.end is not None else None)
-    last = date(month.year + 1, month.month, 1) - timedelta(days=1)
+    last = min(date(month.year + 1, month.month, 1) - timedelta(days=1), run_end)
     fires = sum(
         _rule_fire_count(
             m, rule_kind=txn.amount_rule_kind, cadence=txn.cadence,

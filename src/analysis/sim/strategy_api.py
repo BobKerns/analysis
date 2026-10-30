@@ -302,8 +302,9 @@ class Context:
     def budget(self) -> int:
         """The strategy's own rules' spending over the twelve months from
         this one at this month's prices, in cents: each rule's amount,
-        indexed to now, times the times it posts in them. Today's plan, not
-        a forecast of inflation. Zero for a strategy that owns no rules."""
+        indexed to now, times the times it posts in them, stopping at the
+        run's end. Today's plan, not a forecast of inflation. Zero for a
+        strategy that owns no rules."""
         return self._budget() if self._budget is not None else 0
 
     def annual_return(self, lots: Iterable[LotRef], year: int) -> float | None:

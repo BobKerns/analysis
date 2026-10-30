@@ -56,7 +56,7 @@ This module is the only part of the simulator a strategy imports. Engine interna
 | `end` | The scenario's last month: the plan's horizon, not future data |
 | `cpi(since)` | The CPI factor from a past month end to now, in millionths |
 | `people` | Each person's role, birthdate, age in whole years, whether alive, and the final month a lifespan gives |
-| `budget()` | The strategy's own rules' spending over the twelve months from this one, at this month's prices: each rule's amount indexed to now, times the times it posts in them (within its start, end and person's lifespan). Twelve months rather than the calendar year, so a run that starts in May sees a whole year's plan |
+| `budget()` | The strategy's own rules' spending over the twelve months from this one, at this month's prices: each rule's amount indexed to now, times the times it posts in them (within its start, end and person's lifespan, and the run's end). Twelve months rather than the calendar year, so a run that starts in May sees a whole year's plan; a run ending mid-year budgets only the months it has left |
 | `annual_return(lots, year)` | A finished year's investment return on the lots: the growth posted to them that year over their balance at its start (the run's opening balance in its first year); `None` when they held nothing or the year is before the run. Asking for the current year or a later one is an error |
 
 Views are frozen dataclasses and read-only mappings. Future series values, future calendar rows and other ensemble members are not reachable.

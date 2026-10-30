@@ -241,6 +241,22 @@ def test_the_context_shows_budget_people_cpi_and_returns(
     assert second["ages"]["alice"] == first["ages"]["alice"] + 1 or second["ages"]["alice"] == first["ages"]["alice"]
 
 
+def test_the_budget_stops_at_the_end_of_the_run(
+    strategy_module: Callable[[str, str], Path], strategy_csv: Callable[[str, str], Path],
+    run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    _probe(strategy_module, strategy_csv)
+    _rewrite(strategy_csv(SCENARIO, "scenario.csv"), SCENARIO, end="2040-06-30")
+    run = run_strategy_scenario(SCENARIO)
+    memory = json.loads(_query(run, (
+        "SELECT memory_json FROM strategy_decision WHERE memory_json IS NOT NULL ORDER BY id DESC LIMIT 1"
+    ))[0][0])
+    # 2039: twelve months of travel ($18,000) and December's gifts ($12,000).
+    # 2040 ends in June: six months of travel, no gifts, a year's CPI later.
+    ratio = memory["2040"]["budget"] / memory["2039"]["budget"]
+    assert 9_000 / 30_000 < ratio < 9_000 / 30_000 * 1.1, ratio
+
+
 @pytest.mark.parametrize(("scale", "message"), [
     ("return Decision([])", "a scale answers with one Spend"),
     ("return Decision([Spend(-1)])", "must be whole cents >= 0"),
