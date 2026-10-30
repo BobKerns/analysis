@@ -5,6 +5,8 @@ the ``fake_claude`` stand-in."""
 
 from __future__ import annotations
 
+import re
+
 import csv
 import shutil
 from datetime import date
@@ -157,6 +159,61 @@ def test_links_between_tabs_switch_tabs(research_bundles: Path) -> None:
     japanese = page.split('<section id="p1-1">')[1].split("</section>")[0]
     assert '<label class="tablink" for="lang0">English: Tear sheet</label>' in japanese
     assert ".md" not in english + japanese
+
+
+def test_titled_and_anchored_links_switch_tabs(tmp_path: Path) -> None:
+    (tmp_path / "X-tear-sheet.md").write_text(
+        '[Detail](X-detail.md "the detail") and [drawdown](X-glossary.md#drawdown)\n', encoding="utf-8")
+    (tmp_path / "X-detail.md").write_text("# Detail\n", encoding="utf-8")
+    (tmp_path / "X-glossary.md").write_text("# Glossary\n", encoding="utf-8")
+    page = research.render_page(research.bundle_tabs(tmp_path, "X"), title="X")
+    assert '<label class="tablink" for="tab1">Detail</label>' in page
+    assert '<label class="tablink" for="tab2">drawdown</label>' in page
+    assert ".md" not in page.split("<body>")[1]
+
+
+def test_a_tab_only_in_a_translation_shows_under_english_too(tmp_path: Path) -> None:
+    (tmp_path / "X-tear-sheet.md").write_text("# Tear sheet\n", encoding="utf-8")
+    (tmp_path / "X-glossary-ja.md").write_text("# 用語集\n", encoding="utf-8")
+    tabs = research.bundle_tabs(tmp_path, "X", JA)
+    page = research.render_page(tabs, title="X", language_labels={"ja": "日本語"})
+    english = page.split('<section id="p0-1">')[1].split("</section>")[0]
+    assert "Not in English; showing 日本語." in english and "用語集" in english
+    assert '<nav class="row l0"><label for="tab0">Tear sheet</label><label for="tab1">Glossary</label></nav>' in page
+
+
+def test_language_codes_may_carry_a_region(tmp_path: Path) -> None:
+    (tmp_path / "X-overview.md").write_text("# Overview\n", encoding="utf-8")
+    (tmp_path / "X-overview-pt-br.md").write_text("# Overview (pt-br)\n", encoding="utf-8")
+    assert [(t.lang, t.key) for t in research.bundle_tabs(tmp_path, "X")] == [
+        ("en", "overview"), ("pt-br", "overview")]
+
+
+def test_price_file_from_stooq_with_a_bom_reads(tmp_path: Path) -> None:
+    prices = tmp_path / "X-prices.csv"
+    prices.write_text("\N{BYTE ORDER MARK}Date,Open,High,Low,Close,Volume\n2025-01-31,9,11,8,10,100\n"
+                      "2025-02-28,10,12,9,11,100\n", encoding="utf-8")
+    assert research.read_prices(prices) == [("2025-01-31", 10.0), ("2025-02-28", 11.0)]
+
+
+def test_price_chart_skips_non_finite_closes(tmp_path: Path) -> None:
+    prices = tmp_path / "X-prices.csv"
+    prices.write_text("date,close\n2025-01-31,10\n2025-02-28,nan\n2025-03-31,inf\n2025-04-30,12\n",
+                      encoding="utf-8")
+    assert research.read_prices(prices) == [("2025-01-31", 10.0), ("2025-04-30", 12.0)]
+    assert "<svg" in research.price_chart_svg(prices)
+
+
+def test_price_chart_places_points_by_date_and_breaks_at_gaps(tmp_path: Path) -> None:
+    prices = tmp_path / "X-prices.csv"
+    prices.write_text("date,close\n2025-01-31,10\n2025-02-28,11\n2025-06-30,12\n2025-07-31,13\n"
+                      "2025-09-30,14\n", encoding="utf-8")
+    svg = research.price_chart_svg(prices)
+    lines = re.findall(r'<polyline class="line" points="([^"]+)"/>', svg)
+    assert len(lines) == 2 and svg.count('<circle class="dot"') == 1
+    xs = [float(p.split(",")[0]) for line in lines for p in line.split()]
+    # Jan, Feb, Jun, Jul over Jan..Sep: x moves by date, not by row.
+    assert xs[1] - xs[0] == pytest.approx((xs[2] - xs[0]) / 5)
 
 
 def test_price_chart_survives_bad_rows(tmp_path: Path) -> None:

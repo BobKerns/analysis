@@ -218,6 +218,10 @@ class Tab:
     chart: Path | None = None
 
 
+# A language code as a file suffix: ja, pt-br, zh-hant.
+_LANG_CODE = re.compile(r"[a-z]+(?:-[a-z]+)*")
+
+
 def _tab_files(bundle: Path, symbol: str) -> dict[tuple[str, str], Path]:
     """``(language, tab key) -> file`` for each tab file in ``bundle``:
     ``<symbol>-<key>.md`` is English, ``<symbol>-<key>-<lang>.md`` a translation."""
@@ -233,7 +237,7 @@ def _tab_files(bundle: Path, symbol: str) -> dict[tuple[str, str], Path]:
         for key, _ in TABS:
             if rest == key:
                 found[("en", key)] = p
-            elif rest.startswith(key + "-") and rest[len(key) + 1:].isalpha():
+            elif rest.startswith(key + "-") and _LANG_CODE.fullmatch(rest[len(key) + 1:]):
                 found[(rest[len(key) + 1:], key)] = p
     return found
 
@@ -291,6 +295,7 @@ label.tablink { color: var(--accent); text-decoration: underline; cursor: pointe
 p.note { color: var(--muted); font-style: italic; }
 svg.chart { width: 100%%; height: auto; margin: 8px 0; }
 svg.chart .line { fill: none; stroke: var(--accent); stroke-width: 2; }
+svg.chart .dot { fill: var(--accent); }
 svg.chart .grid { stroke: var(--line); stroke-width: 1; }
 svg.chart text { fill: var(--muted); font-size: 12px; }
 %(show)s
@@ -321,15 +326,18 @@ def _page_rules(n_langs: int, n_tabs: int) -> str:
     return "\n".join(rules)
 
 
-_LINK = re.compile(r'<a href="([^"]+)">(.*?)</a>', re.S)
+# markdown-it writes href first, then a title if the link has one.
+_LINK = re.compile(r'<a href="([^"]+)"[^>]*>(.*?)</a>', re.S)
 
 
 def _tab_links(body: str, targets: dict[str, tuple[int, int]], here: tuple[int, int]) -> str:
     """``body`` with each link to another tab's file turned into a label that
     switches to that tab: the file name means nothing in the page. A link to
-    the same tab in another language switches only the language."""
+    the same tab in another language switches only the language. A
+    ``#heading`` on the link is dropped: a label can switch tabs but not scroll."""
     def swap(match: re.Match[str]) -> str:
-        target = targets.get(html.unescape(match.group(1)).rsplit("/", 1)[-1].lower())
+        href = re.split(r"[#?]", html.unescape(match.group(1)), maxsplit=1)[0]
+        target = targets.get(href.rsplit("/", 1)[-1].lower())
         if target is None:
             return match.group(0)
         li, ki = target
@@ -347,8 +355,11 @@ def render_page(tabs: list[Tab], *, title: str, subtitle: str = "",
     by default)."""
     from markdown_it import MarkdownIt
 
+    from analysis.research_plugin import tab_names
+
     md = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
     labels = {"en": "English", **(language_labels or {})}
+    english = tab_names()
     langs = list(dict.fromkeys(tab.lang for tab in tabs))
     keys = list(dict.fromkeys(tab.key or tab.label for tab in tabs))
     grid = {(tab.lang, tab.key or tab.label): tab for tab in tabs}
@@ -377,19 +388,26 @@ def render_page(tabs: list[Tab], *, title: str, subtitle: str = "",
         parts.append('<nav class="langs">' + "".join(
             f'<label for="lang{li}">{html.escape(labels.get(lang, lang))}</label>' for li, lang in enumerate(langs)
         ) + "</nav>")
+    def shown(lang: str, key: str) -> Tab | None:
+        """The tab for ``(lang, key)``, else the first language that has it."""
+        return grid.get((lang, key)) or next((grid[(other, key)] for other in langs if (other, key) in grid), None)
+
     for li, lang in enumerate(langs):
         row = []
         for ki, key in enumerate(keys):
-            tab = grid.get((lang, key)) or grid.get((langs[0], key))
-            row.append(f'<label for="tab{ki}">{html.escape(tab.label if tab else key)}</label>')
+            # A tab this language lacks: English names its own tabs; another
+            # language borrows the name of the tab it shows instead.
+            tab = grid.get((lang, key)) or shown(lang, key)
+            name = english.get(key) if lang == "en" and (lang, key) not in grid else None
+            row.append(f'<label for="tab{ki}">{html.escape(name or (tab.label if tab else key))}</label>')
         parts.append(f'<nav class="row l{li}">{"".join(row)}</nav>')
     for li, lang in enumerate(langs):
         for ki, key in enumerate(keys):
-            tab = grid.get((lang, key))
+            tab = shown(lang, key)
             note = ""
-            if tab is None:
-                tab = grid.get((langs[0], key))
-                note = f'<p class="note">Not in {html.escape(labels.get(lang, lang))}; showing English.</p>'
+            if tab is not None and tab.lang != lang:
+                note = (f'<p class="note">Not in {html.escape(labels.get(lang, lang))}; '
+                        f'showing {html.escape(labels.get(tab.lang, tab.lang))}.</p>')
             body = ""
             if tab is not None:
                 if tab.chart is not None:
@@ -409,22 +427,47 @@ def _nice_step(span: float, ticks: int = 4) -> float:
     return next(m * power for m in (1, 2, 5, 10) if m * power >= raw)
 
 
+def _month_index(day: str) -> int | None:
+    """``YYYY-MM[-DD]`` as a count of months, so points sit by date."""
+    try:
+        return int(day[:4]) * 12 + int(day[5:7]) - 1
+    except ValueError:
+        return None
+
+
+def read_prices(path: Path) -> list[tuple[str, float]]:
+    """``(date, close)`` rows from ``path``, oldest first. Header names match
+    in any case (Stooq writes ``Date,...,Close``) and a byte-order mark is
+    ignored; a row whose date or close doesn't parse, or isn't finite, is
+    skipped, so it shows as a gap."""
+    points = []
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            reader = csv.reader(fh)
+            header = [name.strip().lower() for name in next(reader, [])]
+            if "date" not in header or "close" not in header:
+                return []
+            at_date, at_close = header.index("date"), header.index("close")
+            for row in reader:
+                try:
+                    day, close = row[at_date].strip(), float(row[at_close].replace(",", ""))
+                except (IndexError, ValueError):
+                    continue
+                if math.isfinite(close) and _month_index(day) is not None:
+                    points.append((day, close))
+    except OSError:
+        return []
+    return sorted(points)
+
+
 def price_chart_svg(path: Path) -> str:
     """An inline SVG line chart of ``path``'s ``date,close`` rows (the price
-    tab's data), drawn here so the page needs no script or library."""
-    points: list[tuple[str, float]] = []
-    try:
-        with path.open(encoding="utf-8", newline="") as fh:
-            for row in csv.DictReader(fh):
-                try:
-                    points.append((str(row["date"]).strip(), float(str(row["close"]).replace(",", ""))))
-                except (KeyError, TypeError, ValueError):
-                    continue
-    except OSError:
-        points = []
+    tab's data), drawn here so the page needs no script or library. Points
+    sit by month, and a missing month breaks the line."""
+    points = read_prices(path)
     if len(points) < 2:
         return '<p class="note">The price file has too few rows to draw a chart.</p>'
-    points.sort()
+    months = [_month_index(day) or 0 for day, _ in points]
     width, height, left, right, top, bottom = 880, 300, 64, 16, 12, 28
     low, high = min(c for _, c in points), max(c for _, c in points)
     step = _nice_step(high - low)
@@ -432,9 +475,10 @@ def price_chart_svg(path: Path) -> str:
     if y1 == y0:
         y1 = y0 + step
     plot_w, plot_h = width - left - right, height - top - bottom
+    span = max(months[-1] - months[0], 1)
 
-    def x(i: int) -> float:
-        return left + plot_w * i / (len(points) - 1)
+    def x(month: int) -> float:
+        return left + plot_w * (month - months[0]) / span
 
     def y(v: float) -> float:
         return top + plot_h * (1 - (v - y0) / (y1 - y0))
@@ -447,13 +491,23 @@ def price_chart_svg(path: Path) -> str:
         out.append(f'<line class="grid" x1="{left}" x2="{width - right}" y1="{y(tick):.1f}" y2="{y(tick):.1f}"/>')
         out.append(f'<text x="{left - 6}" y="{y(tick) + 4:.1f}" text-anchor="end">${tick:,.{decimals}f}</text>')
         tick += step
-    years = [(i, d[:4]) for i, (d, _) in enumerate(points) if i == 0 or d[:4] != points[i - 1][0][:4]]
+    years = range(months[0] // 12, months[-1] // 12 + 1)
     every = max(1, math.ceil(len(years) / 10))
-    for n, (i, year) in enumerate(years):
+    for n, year in enumerate(years):
         if n % every == 0:
-            out.append(f'<text x="{x(i):.1f}" y="{height - 8}" text-anchor="middle">{html.escape(year)}</text>')
-    line = " ".join(f"{x(i):.1f},{y(c):.1f}" for i, (_, c) in enumerate(points))
-    out.append(f'<polyline class="line" points="{line}"/>')
+            at = max(year * 12, months[0])
+            out.append(f'<text x="{x(at):.1f}" y="{height - 8}" text-anchor="middle">{year}</text>')
+    runs: list[list[str]] = []
+    for i, (month, (_, close)) in enumerate(zip(months, points, strict=True)):
+        if i == 0 or month - months[i - 1] > 1:
+            runs.append([])
+        runs[-1].append(f"{x(month):.1f},{y(close):.1f}")
+    for run in runs:
+        if len(run) == 1:  # a lone month between gaps: a dot, since a line needs two points
+            cx, cy = run[0].split(",")
+            out.append(f'<circle class="dot" cx="{cx}" cy="{cy}" r="2.5"/>')
+        else:
+            out.append(f'<polyline class="line" points="{" ".join(run)}"/>')
     out.append("</svg>")
     return "".join(out)
 
