@@ -93,7 +93,7 @@ class _Builder:
         v = scene.visual
         if v.kind == "slide":
             html = render.slide_html(self.theme, self.script.meta, v.fields, self.script.lang)
-            key = render.digest("slide", html, self.theme.width, self.theme.height)
+            key = render.digest("slide", html, self.theme.out_width, self.theme.out_height)
             png = self.cache / f"slide-{key}.png"
             if png.is_file():
                 return png, True, "cached", key
