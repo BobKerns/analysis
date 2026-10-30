@@ -35,16 +35,17 @@ kinds of accounts, and a lot of questions.
 ```slide
 template = "card"
 heading = "Questions it helps answer"
-body = "Can we retire at 62? How long will the money last? What does a Roth conversion buy us? How bad would a bad decade be?"
+body = "When can we retire? Which investment mix suits us? Sell the house now, or later? What does a Roth conversion buy us? How much room does the plan have?"
 speaker = "bill"
 ```
 
-Can we retire at sixty-two, or should we wait? How long will the money last?
-What does converting part of an IRA to a Roth actually buy us? And how bad
-would it be if the next ten years were a bad decade?
+When can we retire, and how much can we spend once we do? Which mix of
+investments suits us best? Should we sell the house now, or in five years,
+and buy something smaller? What does converting part of an IRA to a Roth
+actually buy us? And how much room does the plan have if markets disappoint?
 
 This simulator is built to answer questions like these, for your own
-household.
+household, by playing each choice forward and putting them side by side.
 
 ## Scene `model`: A model of the household
 
@@ -184,7 +185,8 @@ like 2008's, landing some time between 2028 and 2034, right around their
 retirements. The summary shows the spread, year by year: the median, the
 percentiles, and the average of the worst five percent. By 2040, the worst
 five percent of these futures leave them a little over half of what the middle one
-does. That's how you answer: how bad could a bad decade be?
+does. That's how much room the plan has, and the ensemble shows it for good
+futures as well as bad.
 
 ## Scene `end`: Next time
 
