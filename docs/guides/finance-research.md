@@ -154,10 +154,11 @@ Add `--case <glob>` to run one case.
 `claude -p "<request>" --plugin-dir out/finance-research/finance-research`
 runs a skill without an install.
 
-`sim symbol research ABCDX` does this for a fund and takes it from there
+`sim symbol research ABCDX` does this for a fund, or a company, by ticker
+or by name, and takes it from there
 ([user guide §4.11](../user-guide.md#411-add-a-stock-or-fund)). It renders
 the plugin afresh from `research.yaml` into a temporary folder (or uses
-`--plugin-dir`), runs the fund skill in a temporary folder, and stops it
+`--plugin-dir`), runs the skill in a temporary folder, and stops it
 after `--timeout` minutes (20 by default), along with anything it started.
 It prints a line per step, and the cost when Claude Code reports one.
 
