@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{#
+  A plain card for section breaks and endings. Fields: heading, body,
+  speaker (one asset name, shown at the left, optional).
+#}
+{% block style %}
+.card { position: absolute; left: {{ 560 if speaker else 160 }}px; right: 160px; top: 260px; }
+h2 { margin: 24px 0 0; font-family: var(--font-heading); font-weight: 800; font-size: 92px; line-height: 1.05; }
+.body { margin-top: 36px; font-size: 46px; line-height: 1.35; color: var(--muted); }
+.speaker { position: absolute; left: 120px; bottom: -45px; width: 380px; }
+{% endblock %}
+{% block body %}
+<div class="ground"></div>
+{% if speaker %}<div class="speaker">{{ asset(speaker) | safe }}</div>{% endif %}
+<div class="card">
+  <div class="series">{{ series }}</div>
+  <h2>{{ heading }}</h2>
+  {% if body %}<div class="body">{{ body }}</div>{% endif %}
+</div>
+{% endblock %}

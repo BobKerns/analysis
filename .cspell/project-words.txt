@@ -3,16 +3,22 @@ AAII
 ABCDX
 acquirability
 addl
+adelay
 affordances
+aformat
 aggfunc
 allclose
 AMOLED
+anullsrc
 anywidget
+apad
 arcsinh
 arctanh
+aresample
 ARKK
 ascontiguousarray
 atleast
+atrim
 autocorr
 autofetch
 autofmt
@@ -26,6 +32,7 @@ axisbelow
 axvline
 axvspan
 backfillable
+backticked
 begidx
 bengen
 birthdates
@@ -90,8 +97,10 @@ executescript
 execv
 extrasaction
 facecolor
+faststart
 FDCAX
 Fenwick
+ffprobe
 fignums
 figsize
 financials
@@ -104,6 +113,7 @@ fstat
 ftruncate
 FTSE
 GAAP
+geteuid
 gethostname
 getpid
 Ghostty
@@ -119,6 +129,7 @@ heloc
 hexsha
 Heygotrade
 HIFO
+HISTFILE
 htmlcov
 huggingface
 hyperscaler
@@ -128,6 +139,7 @@ iinfo
 illiquidity
 imgcat
 imshow
+inlines
 inspectable
 intraday
 IRMAA
@@ -141,6 +153,7 @@ Kensho
 kernelspec
 killpg
 klinger
+kokoro
 Kolmogorov
 kstest
 labelbottom
@@ -148,9 +161,11 @@ labelcolor
 labelrotation
 LABSTAT
 lastrowid
+lavfi
 liab
 libc
 libedit
+libx
 lifetable
 linalg
 linestyle
@@ -164,12 +179,14 @@ Macrotrends
 markerfacecolor
 markersize
 mcolors
+Menlo
 metas
 MHLW
 microcap
 midnightblue
 mktree
 modelcontextprotocol
+movflags
 msecs
 mtimes
 mult
@@ -181,6 +198,7 @@ nanmean
 nbstripout
 ncol
 networth
+Neue
 nextstrain
 NOCASE
 noconfirm
@@ -252,6 +270,7 @@ rollups
 rootdir
 Roths
 roundtrips
+RRGGBB
 rtol
 runfile
 sandboxed
@@ -262,6 +281,7 @@ semideviation
 servname
 setopt
 setp
+setpts
 sharex
 SHASUMS
 shellcheck
@@ -281,6 +301,7 @@ SQQQ
 SRRC
 SRRCᵢ
 startangle
+STARTPTS
 stcg
 stdlib
 steelblue
@@ -316,11 +337,13 @@ TLJH
 tobytes
 tolist
 topup
+tpad
 TQQQ
 Tracxn
 traditionalira
 TRRBX
 truststore
+ttyd
 twinx
 txns
 unclipped
@@ -344,6 +367,7 @@ usefixtures
 USSTK
 vaccts
 VFIFX
+videorc
 viewpane
 vmax
 VMFXX

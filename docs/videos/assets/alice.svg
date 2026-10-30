@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" class="character alice" role="img">
+  <title>Alice</title>
+  <style>
+    .alice .skin { fill: #f1c6a3; }
+    .alice .hair { fill: #6b3f24; }
+    .alice .top { fill: #4fb3a9; }
+    .alice .collar { fill: #3d9188; }
+    .alice .accent { fill: #f2a541; }
+    .alice .ink { fill: #2a2a2a; }
+    .alice .cheek { fill: #e9967a; opacity: 0.45; }
+    .alice .line { fill: none; stroke: #2a2a2a; stroke-width: 6; stroke-linecap: round; }
+  </style>
+  <path class="hair" d="M104 210 C92 112 146 58 200 58 C256 58 310 112 296 210 L306 336 C262 352 138 352 94 336 Z"/>
+  <path class="top" d="M58 500 C58 404 122 352 200 352 C278 352 342 404 342 500 Z"/>
+  <path class="collar" d="M152 360 L200 420 L248 360 C232 354 216 352 200 352 C184 352 168 354 152 360 Z"/>
+  <rect class="skin" x="174" y="286" width="52" height="78" rx="22"/>
+  <ellipse class="skin" cx="111" cy="214" rx="14" ry="22"/>
+  <ellipse class="skin" cx="289" cy="214" rx="14" ry="22"/>
+  <ellipse class="skin" cx="200" cy="200" rx="86" ry="102"/>
+  <path class="hair" d="M113 196 C110 122 156 92 202 92 C254 92 292 126 288 196 C262 150 222 140 184 120 C168 152 142 176 113 196 Z"/>
+  <circle class="ink" cx="168" cy="212" r="8"/>
+  <circle class="ink" cx="232" cy="212" r="8"/>
+  <path class="line" d="M154 186 Q168 178 182 186"/>
+  <path class="line" d="M218 186 Q232 178 246 186"/>
+  <circle class="cheek" cx="146" cy="244" r="14"/>
+  <circle class="cheek" cx="254" cy="244" r="14"/>
+  <path class="line" d="M172 256 Q200 280 228 256"/>
+  <circle class="accent" cx="200" cy="392" r="11"/>
+</svg>
