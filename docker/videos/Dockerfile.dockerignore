@@ -1,0 +1,12 @@
+# The video image's build context is the repo root; send only what the
+# Dockerfile copies. docs/videos is mounted at run time, not copied.
+*
+!README.md
+!pyproject.toml
+!uv.lock
+!src/
+!prototype_data/
+!scripts/videos/tts_kokoro.py
+!docker/videos/entrypoint.sh
+**/__pycache__
+**/.DS_Store

@@ -51,6 +51,7 @@ carryforward
 carryforwards
 categoriser
 ccon
+charmbracelet
 chipmaker
 CLAUDECODE
 clsname
@@ -79,6 +80,7 @@ datarepo
 dataviz
 dateutil
 ddof
+dejavu
 delenv
 dflt
 dietz
@@ -209,6 +211,7 @@ noninteractive
 nonpositive
 nonqualified
 NOPASSWD
+noto
 nunique
 OBBBA
 oneoff
