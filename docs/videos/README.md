@@ -267,7 +267,10 @@ build prints what it made and what it reused:
 
 Requirements for a native build: `ffmpeg`, `uv`, Playwright's Chromium
 (`uv run playwright install chromium`), and for tapes VHS and ttyd (`setup`
-downloads them on Linux; `brew install vhs` on macOS). The container has them
+downloads them on Linux; `brew install vhs` on macOS). Japanese narration
+also needs a C++ compiler and `cmake` the first time the narration worker's
+environment is made, since OpenJTalk builds from source (Xcode's
+command-line tools and `brew install cmake` on macOS). The container has them
 all.
 
 ## Building in a container

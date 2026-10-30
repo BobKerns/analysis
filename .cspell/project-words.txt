@@ -192,6 +192,7 @@ midnightblue
 misaki
 mktree
 modelcontextprotocol
+mojimoji
 movflags
 msecs
 mtimes
