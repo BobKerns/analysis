@@ -111,6 +111,17 @@ def test_init_commits_everything_but_the_per_machine_files(tmp_path: Path) -> No
                           "sim/.retention.yaml"}
 
 
+def test_init_into_an_existing_repo_keeps_its_gitignore(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".gitignore").write_text("*.log")
+
+    result = _init(str(root), *_ALICE)
+
+    assert result.exit_code == 0, result.output
+    assert (root / ".gitignore").read_text() == "*.log\n/state/\n"
+
+
 def test_init_without_commit_leaves_git_alone(tmp_path: Path) -> None:
     result = _init(str(tmp_path / "repo"), *_ALICE, "--no-commit")
 

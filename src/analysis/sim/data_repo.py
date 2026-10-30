@@ -126,12 +126,23 @@ def create_data_repo(
     write_current_scenario(sim, START_SCENARIO)
     # state/ (beside sim/) holds runs, rebuilt from the data; the code repo's
     # cspell.json reads .cspell/data-words.txt for the household's words.
-    (root / ".gitignore").write_text("/state/\n", encoding="utf-8")
+    _ignore(root / ".gitignore", "/state/")
     (root / ".cspell").mkdir(exist_ok=True)
     (root / ".cspell" / "data-words.txt").touch()
     if commit:
         return _commit(root)
     return None
+
+
+def _ignore(path: Path, pattern: str) -> None:
+    """Add ``pattern`` to the ignore file at ``path`` unless it's there:
+    ``root`` may be an existing repository with its own."""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if pattern in text.splitlines():
+        return
+    if text and not text.endswith("\n"):
+        text += "\n"
+    path.write_text(f"{text}{pattern}\n", encoding="utf-8")
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
