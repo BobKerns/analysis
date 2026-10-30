@@ -462,7 +462,12 @@ def _shortfall_events(rc: RunConnection) -> pd.DataFrame:
     """Each owned rule's posting that a strategy scaled (#387), as an expense
     event of what it left unspent (budgeted less delivered, negative for a
     raise), against the account the rule pays into: added to the delivered
-    expenses it makes the budget, grouped the same way."""
+    expenses it makes the budget, grouped the same way.
+
+    Only a rule paying straight into an expense account is spending, as
+    only those postings are delivered expenses: one that saves into an asset
+    (a 529) isn't, and one into an interior chain can't say which expense
+    its unspent budget would have reached."""
     columns = ["amount", "reason_kind", "reason_id", "account", "subkind", "month"]
     con = rc._con
     if not con.execute(
@@ -475,10 +480,11 @@ def _shortfall_events(rc: RunConnection) -> pd.DataFrame:
         "       COALESCE(a.subkind, '') AS subkind, s.month AS month "
         "FROM spending_baseline b JOIN simulation_step s ON s.id = b.step_id "
         "JOIN scheduled_transaction r ON r.id = b.scheduled_transaction_id "
-        "JOIN chain c ON c.id = r.to_account LEFT JOIN account a ON a.name = c.name "
-        "WHERE b.budgeted_cents != b.delivered_cents",
+        "JOIN chain c ON c.id = r.to_account JOIN account a ON a.id = c.account_id "
+        "WHERE b.budgeted_cents != b.delivered_cents AND a.kind = 'expense'",
         con,
     )
+    frame = frame[~frame["account"].isin(NON_CASH_EXPENSE_ACCOUNTS)]
     frame["month"] = pd.to_datetime(frame["month"])
     return frame[columns]
 

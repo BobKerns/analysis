@@ -172,11 +172,17 @@ def target_sets(rows: Sequence[Mapping[str, str]]) -> dict[str, list[tuple[str, 
 
 # ---------- reading a run ----------
 
+def has_rule_tags(con: sqlite3.Connection) -> bool:
+    """Whether the file's strategies can own rules (#387): a run from before
+    has only chains."""
+    return any(r[1] == "rule_tag" for r in con.execute("PRAGMA table_info(strategy)"))
+
+
 def owns_sql(con: sqlite3.Connection) -> str:
     """A SQL expression naming what strategy ``s`` owns, for a query that
     LEFT JOINs ``chain c ON c.id = s.chain_id``: the chain, ``rules <tag>``,
-    or both. A run from before rule ownership (#387) has only chains."""
-    if not any(r[1] == "rule_tag" for r in con.execute("PRAGMA table_info(strategy)")):
+    or both."""
+    if not has_rule_tags(con):
         return "c.name"
     return (
         "CASE WHEN s.rule_tag IS NULL THEN c.name "

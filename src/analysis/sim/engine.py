@@ -157,13 +157,8 @@ def run_scenario(
         } or set(person_birthdates)
         txns: list[list[Any]] = [
             list(r) for r in con.execute(
-                'SELECT id, name, from_account, to_account, cadence, month_of_year, '
-                '       amount_rule_kind, interest_account, person, series, '
-                '       rate_micros, claim_age, amount_cents, params_json, '
-                '       tax_character, tax_year, start, "end", priority, base_date, '
-                '       ytd_amount, ytd_preroll, inflation_cadence '
-                'FROM scheduled_transaction '
-                'ORDER BY priority, id'
+                f"SELECT {', '.join(f'"{c}"' for c in Txn._fields)} "
+                "FROM scheduled_transaction ORDER BY priority, id"
             ).fetchall()
         ]
         # A fill_bracket conversion runs after everything else in its month
@@ -233,7 +228,7 @@ def run_scenario(
             roth_qualified=lambda lot, on: _roth_qualified(roth[lot], on) if lot in roth else None,
             end=months[-1],
             rule_budget=lambda tid, on: _rule_year_budget(
-                txn_by_id[tid], on, aux, inflation_factor_cache, rule_lifespan,
+                Txn._make(txn_by_id[tid]), on, aux, inflation_factor_cache, rule_lifespan,
             ),
             growth_sources=growth_sources, opening_balances=balances, first_month=months[0],
         )
@@ -336,26 +331,10 @@ def run_scenario(
                         f"scheduled_transaction id={tid}: interior chain destination "
                         "is only supported for fixed_amount rules"
                     )
-                if month_s < t_start:
-                    continue
-                if t_end is not None and month_s > t_end:
-                    continue
-                # Only a rule's own `person` stops it at a death (#256).
-                # percent_of_balance is asset growth (ADR-003 §2.2: "an asset
-                # account's growth is a property of the account"), never a
-                # personal service tied to the living owner, so it's exempt
-                # even with a person. on_death is the
-                # rule kind that FIRES on the death transition itself, so it
-                # must not be suppressed by the very gating it triggers.
-                # A `joint` rule stops at the household's last death.
-                if (
-                    rule_lifespan and rule_kind not in ("percent_of_balance", "on_death")
-                    and _past_person_lifespan(month_s, p_person, rule_lifespan)
-                ):
-                    continue
-                fire_count = _cadence_count(
-                    cadence, moy, month,
-                    rule_start, rule_end,
+                fire_count = _rule_fire_count(
+                    month, rule_kind=rule_kind, cadence=cadence, month_of_year=moy,
+                    person=p_person, start=t_start, end=t_end,
+                    rule_start=rule_start, rule_end=rule_end, rule_lifespan=rule_lifespan,
                 )
                 if fire_count == 0:
                     continue
@@ -385,24 +364,9 @@ def run_scenario(
 
                 match rule_kind:
                     case "fixed_amount":
-                        if p_amount_cents is None:
-                            raise EngineError(
-                                f"scheduled_transaction id={tid} fixed_amount missing amount"
-                            )
-                        amount = p_amount_cents
-                        if p_series and p_series != "fixed":
-                            if not t_base_date:
-                                raise EngineError(
-                                    f"scheduled_transaction id={tid}: series set "
-                                    "without base_date"
-                                )
-                            factor = _cumulative_inflation_factor(
-                                aux, p_series, _parse_date(t_base_date), month,
-                                inflation_factor_cache,
-                                cadence=t_inflation_cadence or "monthly",
-                            )
-                            amount = amount * factor // 1_000_000
-                        amount *= fire_count
+                        amount = _fixed_amount_at(
+                            Txn._make(txn), month, aux, inflation_factor_cache,
+                        ) * fire_count
                         owner = strategy_runtime.rule_owner(tid, month_s) if strategy_runtime else None
                         if owner is not None:
                             # The rule's amount is the budget; its owner says what
@@ -1587,47 +1551,117 @@ def _post_ytd_chain(
         remaining -= allocation
 
 
-def _rule_year_budget(
-    txn: Sequence[Any], month: date,
+class Txn(NamedTuple):
+    """A ``scheduled_transaction`` row as the engine reads it; the SELECT is
+    built from these fields, so the two can't drift apart."""
+
+    id: int
+    name: str
+    from_account: int
+    to_account: int
+    cadence: str
+    month_of_year: int | None
+    amount_rule_kind: str
+    interest_account: str | None
+    person: str | None
+    series: str | None
+    rate_micros: int | None
+    claim_age: int | None
+    amount_cents: int | None
+    params_json: str | None
+    tax_character: str
+    tax_year: int | None
+    start: str
+    end: str | None
+    priority: int
+    base_date: str | None
+    ytd_amount: int | None
+    ytd_preroll: int
+    inflation_cadence: str | None
+
+
+def _rule_fire_count(
+    month: date, *, rule_kind: str, cadence: str, month_of_year: int | None,
+    person: str | None, start: str, end: str | None, rule_start: date, rule_end: date | None,
+    rule_lifespan: Mapping[str, str],
+) -> int:
+    """How many times a rule posts in ``month``: 0 outside its start and end,
+    after its person's death, or in a month its cadence skips."""
+    month_s = month.isoformat()
+    if month_s < start or (end is not None and month_s > end):
+        return 0
+    # Only a rule's own `person` stops it at a death (#256).
+    # percent_of_balance is asset growth (ADR-003 §2.2: "an asset
+    # account's growth is a property of the account"), never a
+    # personal service tied to the living owner, so it's exempt
+    # even with a person. on_death is the
+    # rule kind that FIRES on the death transition itself, so it
+    # must not be suppressed by the very gating it triggers.
+    # A `joint` rule stops at the household's last death.
+    if (
+        rule_lifespan and rule_kind not in ("percent_of_balance", "on_death")
+        and _past_person_lifespan(month_s, person, rule_lifespan)
+    ):
+        return 0
+    return _cadence_count(cadence, month_of_year, month, rule_start, rule_end)
+
+
+def _fixed_amount_at(
+    txn: Txn, month: date,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     cache: dict[tuple[str, date, date, str], int],
-    rule_lifespan: dict[str, str],
+) -> int:
+    """A ``fixed_amount`` rule's amount for one posting in ``month``,
+    indexed by its series from its base date."""
+    if txn.amount_cents is None:
+        raise EngineError(f"scheduled_transaction id={txn.id} fixed_amount missing amount")
+    amount = txn.amount_cents
+    if txn.series and txn.series != "fixed":
+        if not txn.base_date:
+            raise EngineError(f"scheduled_transaction id={txn.id}: series set without base_date")
+        factor = _cumulative_inflation_factor(
+            aux, txn.series, _parse_date(txn.base_date), month, cache,
+            cadence=txn.inflation_cadence or "monthly",
+        )
+        amount = amount * factor // 1_000_000
+    return amount
+
+
+def _rule_year_budget(
+    txn: Txn, month: date,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    cache: dict[tuple[str, date, date, str], int],
+    rule_lifespan: Mapping[str, str],
 ) -> int:
     """A ``fixed_amount`` rule's spending over the twelve months from
     ``month``, at ``month``'s prices (``ctx.budget``, #387): its amount indexed
-    to now, times the times it posts then within its start, end and person's
-    lifespan. Twelve months rather than the calendar year, so a run that
-    starts in May still sees a whole year's plan."""
-    (tid, name, _frm, _to, cadence, moy, rule_kind, _i, person, series, _r, _c, amount, _x,
-     _tc, _ty, t_start, t_end, _p, base_date, _ya, _yp, inflation_cadence) = txn
-    if rule_kind != "fixed_amount" or amount is None:
+    to now, times the times it posts then, gated as the posting loop gates
+    it. Twelve months rather than the calendar year, so a run that starts in
+    May still sees a whole year's plan."""
+    if txn.amount_rule_kind != "fixed_amount":
         return 0
-    if series and series != "fixed" and base_date:
-        amount = amount * _cumulative_inflation_factor(
-            aux, series, _parse_date(base_date), month, cache,
-            cadence=inflation_cadence or "monthly",
-        ) // 1_000_000
-    rule_start = _parse_scheduled_date(t_start, tid, name, "start")
-    rule_end = _parse_scheduled_date(t_end, tid, name, "end") if t_end is not None else None
-    fires = 0
+    rule_start = _parse_scheduled_date(txn.start, txn.id, txn.name, "start")
+    rule_end = (_parse_scheduled_date(txn.end, txn.id, txn.name, "end")
+                if txn.end is not None else None)
     last = date(month.year + 1, month.month, 1) - timedelta(days=1)
-    for m in _month_ends(month, last):
-        m_s = m.isoformat()
-        if m_s < t_start or (t_end is not None and m_s > t_end):
-            continue
-        if rule_lifespan and _past_person_lifespan(m_s, person, rule_lifespan):
-            continue
-        fires += _cadence_count(cadence, moy, m, rule_start, rule_end)
-    return amount * fires
+    fires = sum(
+        _rule_fire_count(
+            m, rule_kind=txn.amount_rule_kind, cadence=txn.cadence,
+            month_of_year=txn.month_of_year, person=txn.person, start=txn.start, end=txn.end,
+            rule_start=rule_start, rule_end=rule_end, rule_lifespan=rule_lifespan,
+        )
+        for m in _month_ends(month, last)
+    )
+    return _fixed_amount_at(txn, month, aux, cache) * fires if fires else 0
 
 
 def _past_person_lifespan(
-    month_s: str, p_person: str | None, person_lifespan: dict[str, str],
+    month_s: str, p_person: str | None, person_lifespan: Mapping[str, str],
 ) -> bool:
     """True if this rule's ``person`` has died by ``month_s`` (ADR-003 §4.9).
     Only the rule's own ``person`` column counts, not its accounts' owner: a
     survivor keeps paying from, and into, a decedent's accounts (#256)."""
-    return p_person in person_lifespan and month_s > person_lifespan[p_person]
+    return p_person is not None and p_person in person_lifespan and month_s > person_lifespan[p_person]
 
 
 def _build_cal_payload(

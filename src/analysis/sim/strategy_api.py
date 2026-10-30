@@ -34,11 +34,12 @@ __all__ = [
 ]
 
 API_VERSION = 2
-"""2 (#387) added ``year_start``, ``scale`` and :class:`Spend`, and the
-context's ``end``, ``cpi``, ``people``, ``budget`` and ``annual_return``."""
-"""Bumped when a strategy written against the previous version could break.
-A module may set ``API_VERSION`` to the version it was written for; one newer
-than this is refused at load."""
+"""Bumped when a strategy written against the previous version could break,
+or one written for this version needs what the previous lacks. A module may
+set ``API_VERSION`` to the version it was written for; one newer than this
+is refused at load. 2 (#387) added ``year_start``, ``scale`` and
+:class:`Spend`, and the context's ``end``, ``cpi``, ``people``, ``budget``
+and ``annual_return``."""
 
 
 class StrategyError(Exception):

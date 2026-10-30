@@ -397,7 +397,7 @@ def scenario_deaths(connections: Mapping[str, RunConnection], scenarios: Sequenc
 
 # ---------- strategies (#359) ----------
 
-STRATEGY_COMPARE_COLUMNS = ["kind", "chain", "start", "end", "params_json"]
+STRATEGY_COMPARE_COLUMNS = ["kind", "chain", "rules", "start", "end", "params_json"]
 
 
 def _keyed_differences(
@@ -450,10 +450,16 @@ def strategy_differences(
     """Strategies as each run had them (only enabled ones run), rows
     (strategy, field), where a variant differs from the baseline; a strategy
     a scenario doesn't run is missing there, as one switched off is."""
+    from analysis.sim.strategy_guide import has_rule_tags
+
     frames = {}
     for name in scenarios:
-        frame = _table(connections[name], 'SELECT s.name, s.kind, c.name AS chain, s.start, s."end", '
-                       "s.params_json FROM strategy s JOIN chain c ON c.id = s.chain_id")
+        rc = connections[name]
+        # A spending strategy owns rules and no chain (#387); a run from
+        # before rule ownership has no rule_tag column.
+        rules = "s.rule_tag" if has_rule_tags(rc._con) else "NULL"
+        frame = _table(rc, f'SELECT s.name, s.kind, c.name AS chain, {rules} AS rules, s.start, '
+                       's."end", s.params_json FROM strategy s LEFT JOIN chain c ON c.id = s.chain_id')
         frames[name] = (frame.set_index("name") if not frame.empty
                         else pd.DataFrame(columns=STRATEGY_COMPARE_COLUMNS))
     return _keyed_differences(frames, scenarios, baseline, STRATEGY_COMPARE_COLUMNS, ["strategy"])

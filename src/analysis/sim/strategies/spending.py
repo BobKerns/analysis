@@ -100,7 +100,9 @@ class Guardrail(_Spending):
     (capital preservation, not in the last ``final_years`` of the
     scenario); below it by ``lower``, it is raised by ``adjust``
     (prosperity). After a year with a negative return, while the rate is
-    above the initial one, the year's inflation raise is skipped."""
+    above the initial one, the year's inflation raise is skipped: the raise
+    the owned rules' budget got since last January, at most inflation, so a
+    rule with a fixed amount loses nothing."""
 
     kind = "guardrail"
 
@@ -127,24 +129,29 @@ class Guardrail(_Spending):
         if "initial_rate" not in memory:
             if balance <= 0 or budget <= 0:
                 return None  # nothing to measure against yet
-            memory.update(initial_rate=budget / balance, factor=1.0, since=ctx.month.isoformat())
+            memory.update(initial_rate=budget / balance, factor=1.0, since=ctx.month.isoformat(),
+                          budget=budget)
             return Decision([], note=(
                 f"initial withdrawal rate {budget / balance:.2%}: "
                 f"budget {_dollars(budget)} of {_dollars(balance)}"
             ), detail={"portfolio": balance, "budget": budget})
         initial = memory["initial_rate"]
         factor = start = memory["factor"]
-        inflation = _cpi_since(ctx, memory["since"])
-        memory["since"] = ctx.month.isoformat()
+        # The raise the budget got since last January: inflation for indexed
+        # rules, none for fixed ones (so skipping it never cuts a flat budget),
+        # and never more than inflation (a rule the plan adds isn't a raise).
+        raised = min(_cpi_since(ctx, memory["since"]), budget / memory["budget"]) if memory["budget"] else 1.0
+        memory.update(since=ctx.month.isoformat(), budget=budget)
 
         def rate() -> float:
             return factor * budget / balance if balance > 0 else float("inf")
 
         notes = []
         last = self._last_return(ctx, p.portfolio)
-        if p.skip_inflation_after_loss and last is not None and last < 0 and rate() > initial:
-            factor /= inflation
-            notes.append(f"no inflation raise after a {last:.1%} year")
+        if (p.skip_inflation_after_loss and last is not None and last < 0 and rate() > initial
+                and raised > 1):
+            factor /= raised
+            notes.append(f"no {raised - 1:.1%} inflation raise after a {last:.1%} year")
         years_left = ctx.end.year - ctx.year + 1
         checked = rate()  # the rate the guardrails test, after any skipped raise
         if checked > initial * (1 + p.upper / 1_000_000) and years_left > p.final_years:
@@ -166,10 +173,13 @@ class Guardrail(_Spending):
 
 @register
 class CeilingFloor(_Spending):
-    """Dynamic spending: each year aims to spend ``rate`` of the portfolio,
-    but its change from last year's spending, after inflation, is held
-    between ``-floor`` and ``+ceiling``. A ``rate`` of 0% (the default)
-    takes the first year's budget over the portfolio, so it starts on plan."""
+    """Dynamic spending: each year aims to spend ``rate`` of the portfolio
+    on the owned rules, but its change from last year's spending, after
+    inflation, is held between ``-floor`` and ``+ceiling``. A ``rate`` of 0%
+    (the default) takes the first year's budget over the portfolio, so it
+    starts on plan. An explicit ``rate`` is the share for the owned rules
+    alone, and sets their first year's spending outright: owning only the
+    optional rules, leave it at 0%."""
 
     kind = "ceiling_floor"
 
@@ -178,7 +188,7 @@ class CeilingFloor(_Spending):
         portfolio: Tag
         """Account tag whose asset lots are the portfolio spending is drawn from."""
         rate: Percent = 0
-        """The share of the portfolio to spend each year; 0% starts from the plan."""
+        """The share of the portfolio to spend on the owned rules each year; 0% starts from the plan."""
         ceiling: Percent = percent("5%")
         """The most real spending may rise in a year."""
         floor: Percent = percent("2.5%")

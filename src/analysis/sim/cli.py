@@ -8785,12 +8785,17 @@ def report_group_command() -> None:
     """Income, expenses, gains and tax by year, from a run."""
 
 
+def _check_by(by: str) -> None:
+    """A flow report's ``--by``: category, account or tag:ROLE."""
+    if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
+        raise click.ClickException("--by must be category, account or tag:ROLE")
+
+
 def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bool,
                  dollars: str, runfile: Path | None, scenario: str | None,
                  data_dir: Path | None, *, pre_tax: bool = False,
                  as_graph: bool = False, graph_file: Path | None = None) -> None:
-    if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
-        raise click.ClickException("--by must be category, account or tag:ROLE")
+    _check_by(by)
     if untagged and not by.startswith("tag:"):
         raise click.ClickException("--untagged needs --by tag:ROLE")
     mode = DollarMode(dollars)
@@ -8939,11 +8944,13 @@ def report_spending_command(
     cosine similarity of the two mixes (near 1 for most mixes, so read it
     beside redirected, never instead of the level).
     """
-    if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
-        raise click.ClickException("--by must be category, account or tag:ROLE")
+    _check_by(by)
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
-        delivered, budgeted = reports.spending_by_year(rc, by=by, mode=mode)
+        try:
+            delivered, budgeted = reports.spending_by_year(rc, by=by, mode=mode)
+        except KeyError as exc:
+            raise click.ClickException(exc.args[0]) from None
     if delivered.empty and budgeted.empty:
         click.echo(f"no spending in {described}")
         return

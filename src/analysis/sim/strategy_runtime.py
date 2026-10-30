@@ -122,6 +122,8 @@ class StrategyRuntime:
         # The CPI index at each month end so far; 1.0 before the first month.
         self._cpi_index: dict[date, int] = {}
         self._started: set[int] = set()
+        # ctx.people, made once a month: it changes only with the month.
+        self._people_month: tuple[date, Mapping[str, PersonView]] | None = None
         self._people = [
             (pid, role or None, date.fromisoformat(birth) if birth else None)
             for pid, role, birth in con.execute("SELECT id, role, birthdate FROM person ORDER BY id")
@@ -284,7 +286,7 @@ class StrategyRuntime:
             memory=self.memory[owned.id],
             end=self._end,
             cpi=(lambda since: self._cpi(since, month)) if self._cpi_index else None,
-            people=MappingProxyType(self._people_at(month)),
+            people=self._people_at(month),
             budget=lambda: self._budget(owned, month),
             annual_return=self._annual_return,
         )
@@ -301,7 +303,9 @@ class StrategyRuntime:
                 raise StrategyError(f"no CPI index for {since.isoformat()} (use a month end)")
         return now * 1_000_000 // then
 
-    def _people_at(self, month: date) -> dict[str, PersonView]:
+    def _people_at(self, month: date) -> Mapping[str, PersonView]:
+        if self._people_month is not None and self._people_month[0] == month:
+            return self._people_month[1]
         out: dict[str, PersonView] = {}
         for pid, role, birth in self._people:
             age = None
@@ -312,7 +316,9 @@ class StrategyRuntime:
                 id=pid, role=role, birthdate=birth, age=age,
                 alive=final is None or month <= final, final_month=final,
             )
-        return out
+        view = MappingProxyType(out)
+        self._people_month = (month, view)
+        return view
 
     def _budget(self, owned: Owned, month: date) -> int:
         if self._rule_budget is None:

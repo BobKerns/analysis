@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -43,6 +44,17 @@ def _rewrite(path: Path, name: str, **changes: str) -> None:
 def _strategy(strategy_csv: Callable[[str, str], Path], kind: str, **params: object) -> None:
     _rewrite(strategy_csv(SCENARIO, "strategies.csv"), "flex", kind=kind,
              params_json=json.dumps({"portfolio": "portfolio:invest", **params}))
+
+
+def _down_year(strategy_csv: Callable[[str, str], Path]) -> None:
+    """Give the portfolio one down year: US stocks (the brokerage's USSTK)
+    lose 25% in 2030 and earn 6% from 2031."""
+    header = ("date,kind,scheduled_name,account_1,lot_1,account_2,lot_2,series,amount,param_date,"
+              "tax_character,params_json,description,tags,name")
+    strategy_csv(SCENARIO, "calendar.csv").write_text(
+        f"{header}\n"
+        "2030-01-31,set_rate,,,,,,stock_us,-25%,,,,a down year,,crash\n"
+        "2031-01-31,set_rate,,,,,,stock_us,6%,,,,recovery,,recovery\n")
 
 
 def _query(run: Path, sql: str) -> list[tuple]:
@@ -123,11 +135,13 @@ def test_threshold_skips_years_below_its_minimum(
 def test_threshold_can_skip_the_year_after_a_loss(
     strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
 ) -> None:
-    """The persona portfolio has down years once its growth series turns
-    (USSTK's rate falls in the prototype series), and each is skipped."""
+    """The year after the portfolio's down year is skipped, and only that one."""
+    _down_year(strategy_csv)
     _strategy(strategy_csv, "threshold", skip_after_loss=True)
     run = run_strategy_scenario(SCENARIO)
-    for month, note, detail in _year_starts(run):
+    starts = _year_starts(run)
+    assert [m[:4] for m, n, _d in starts if n.startswith("skip")] == ["2031"]
+    for month, note, detail in starts:
         if note.startswith("skip"):
             assert detail["last_return"] < 0, (month, note)
             assert "last year's return -" in note
@@ -362,3 +376,66 @@ def test_shape_measures() -> None:
     assert frame.loc[2030, "filled:travel"] == pytest.approx(0.6)
     assert "filled:living" not in frame.columns
     assert summary["rms"] == pytest.approx(20.0)
+
+
+# ---------- review fixes ----------
+
+def test_compare_lists_a_rules_only_strategy_that_differs(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    """A spending strategy owns no chain; it still shows in the differences."""
+    child = strategy_scenarios / "scenarios" / "alice_spending_trim"
+    child.mkdir()
+    (child / "scenario.csv").write_text(
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        "alice_spending_trim,,2026-05-31,2040-12-31,42,alice_spending,alice,{}\n")
+    (child / "README.md").write_text("# alice_spending_trim\n\nBuilds on: alice_spending\n")
+    (child / "strategies.csv").write_text(strategy_csv(SCENARIO, "strategies.csv").read_text()
+                                          .replace(",guardrail,", ",threshold,"))
+    for name in (SCENARIO, "alice_spending_trim"):
+        result = _cli(strategy_scenarios, "run", name, "--allow-dirty-data", "--allow-dirty-code")
+        assert result.exit_code == 0, result.output
+    result = _cli(strategy_scenarios, "compare", SCENARIO, "alice_spending_trim",
+                  "--section", "differences", "--section", "strategies")
+    assert result.exit_code == 0, result.output
+    differs = result.output.split("Strategies that differ", 1)[1].split("Target weights", 1)[0]
+    assert re.search(r"flex +kind +guardrail +threshold", differs), differs
+    assert "rules flex:optional" in result.output  # what it owns, in the activity table
+
+
+def test_unspent_budget_counts_only_for_rules_into_expenses(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+    run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """Gifts saved into savings instead of spent: skipping them is not a
+    spending cut, so the report's budget leaves them out."""
+    _rewrite(strategy_csv(SCENARIO, "scheduled.csv"), "gifts", to_account="Asset_Savings")
+    _strategy(strategy_csv, "threshold", minimum="900000.00")
+    run = run_strategy_scenario(SCENARIO)
+    from analysis.sim.connection import RunConnection
+
+    rc = RunConnection(run)
+    try:
+        delivered, budgeted = reports.spending_by_year(rc, by="tag:category")
+    finally:
+        rc.close()
+    assert "gifts" not in budgeted.columns
+    assert budgeted.loc[2027, "travel"] > 0 and delivered.loc[2027, "travel"] == 0
+
+
+@pytest.mark.allow_negative_balance  # the drain that sets off the rule runs checking short
+def test_guardrail_never_cuts_a_fixed_budget_for_inflation(
+    strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """A skipped raise is the raise the budget got: indexed rules lose one
+    after a down year, fixed-amount rules (which got none) lose nothing."""
+    _rewrite(strategy_csv(SCENARIO, "scheduled.csv"), "travel", amount="6000.00")
+    _down_year(strategy_csv)
+    _strategy(strategy_csv, "guardrail", final_years=100, lower="99%")
+    run = run_strategy_scenario(SCENARIO)
+    assert [n for _m, n, _d in _year_starts(run) if "inflation raise after a -" in n]
+    run.unlink()
+    for rule in ("travel", "gifts"):
+        _rewrite(strategy_csv(SCENARIO, "scheduled.csv"), rule, series="", base_date="")
+    run = run_strategy_scenario(SCENARIO)
+    assert not [n for _m, n, _d in _year_starts(run) if "inflation raise" in n]

@@ -174,12 +174,15 @@ def series_names(data_dir: Path, scenario: str, kind: str | None = None) -> list
     return sorted(names)
 
 
-def tag_tokens(data_dir: Path, scenario: str) -> list[str]:
+def tag_tokens(
+    data_dir: Path, scenario: str,
+    filenames: tuple[str, ...] = ("accounts.csv", "scheduled.csv", "calendar.csv"),
+) -> list[str]:
     """Every ``role:name`` tag on the scenario's accounts, rules and
-    calendar rows. A malformed token is skipped."""
+    calendar rows (or just ``filenames``'). A malformed token is skipped."""
     tokens: set[str] = set()
     for d in _lineage_dirs(data_dir, scenario):
-        for filename in ("accounts.csv", "scheduled.csv", "calendar.csv"):
+        for filename in filenames:
             for row in _rows(d / filename):
                 tokens.update(
                     t for t in row.get("tags", "").split() if registries.TAG_TOKEN_RE.match(t)
@@ -190,11 +193,7 @@ def tag_tokens(data_dir: Path, scenario: str) -> list[str]:
 def rule_tags(data_dir: Path, scenario: str) -> list[str]:
     """Every ``role:name`` tag on the scenario's scheduled rules: what a
     spending strategy's ``rules`` column names (#387)."""
-    tokens: set[str] = set()
-    for d in _lineage_dirs(data_dir, scenario):
-        for row in _rows(d / "scheduled.csv"):
-            tokens.update(t for t in row.get("tags", "").split() if registries.TAG_TOKEN_RE.match(t))
-    return sorted(tokens)
+    return tag_tokens(data_dir, scenario, ("scheduled.csv",))
 
 
 def symbols(data_dir: Path) -> list[str]:
