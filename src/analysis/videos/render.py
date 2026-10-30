@@ -319,11 +319,15 @@ def record_tape(tape: str, theme: Theme, prepared: Path, out: Path) -> None:
     shutil.copytree(prepared, root, symlinks=True)
     try:
         tape_file = root / "scene.tape"
-        tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), out), encoding="utf-8")
+        # Recorded beside ``out`` and renamed once whole: an interrupted
+        # recording mustn't leave a truncated file the cache would reuse.
+        partial = out.with_name(f"{out.stem}.partial{out.suffix}")
+        tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), partial), encoding="utf-8")
         env = {**os.environ, "PATH": tool_path()}
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             env["VHS_NO_SANDBOX"] = "true"  # Chromium refuses to sandbox as root (containers)
         run([vhs, str(tape_file)], cwd=root, env=env)
+        partial.replace(out)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

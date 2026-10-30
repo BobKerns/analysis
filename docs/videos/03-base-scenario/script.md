@@ -540,6 +540,7 @@ out unless you ask; video six is about those.
 ## Scene `last-run`: The plan, after tax
 
 ```tape
+Set FontSize 20
 Hide
 Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
 Enter
