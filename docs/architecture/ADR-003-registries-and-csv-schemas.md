@@ -717,7 +717,7 @@ A scenario name starting `t_` is a **template**. The analysis code repository sh
 - **Fallback dates and seed:** a template's `start`, `end` and `seed` apply only where no data repo scenario in the load order sets them. Without that, a template mixed in after a scenario that doesn't build on the templates would replace that scenario's span and seed, since a mix-in loads after the parent's line (§4.5). Only `t_empty`, the root, sets them, so every template loads alone; `meta_json` (an ensemble template's `ensemble_size`) merges as usual.
 - **Listings:** `sim scenario list`, `sim all` and `sim check --all` cover the data repo's own scenarios only (`sim all` skipping a mix-in only one, §4.5); `sim scenario list --all` and `sim ensemble list --all` add the templates. Name completion offers the templates too, since they can be named as parents or run.
 - **Provenance:** a template's files aren't in the data repo, so they're outside `scenario_tree_id`'s scope; the code version covers them ([ADR-004](ADR-004-reproducibility-and-activation.md) §2).
-- **Copying `templates/`:** `scripts/link-data.sh --template` copies `templates/` into a new data repo without its `t_` folders, which would otherwise replace the templates and go stale.
+- **Copying `templates/`:** `sim init` ([ADR-004](ADR-004-reproducibility-and-activation.md) §4) and `scripts/link-data.sh --template` copy `templates/` into a new data repo without its `t_` folders or its aux tables but `filing_status.csv`, which would otherwise replace the templates and go stale.
 
 The templates, their layers and their numbers are described in the historical calibration guide, under "Template scenarios".
 
@@ -1299,3 +1299,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#292](https://github.com/BobKerns/analysis/issues/292) ([ADR-009](ADR-009-pooled-ensembles.md)): a scenario whose own `meta_json` has a `pool` key is a pool, which nothing loads; deleting a pool's component is refused (§4.5); a pool's rails are its base component's plus its own (§4.11).
 - [#305](https://github.com/BobKerns/analysis/issues/305): `scenario_compare.ipynb` shows each rail's margins across scenarios (§4.11).
 - [#356](https://github.com/BobKerns/analysis/issues/356): `calendar edit` offers `name` on every event row, offers to name an unnamed inherited row where it is defined before changing its key, and takes its changes as options (§7).
+- [#289](https://github.com/BobKerns/analysis/issues/289): `sim init` copies `templates/` into a new data repo the way `link-data.sh --template` does (§4.5a).

@@ -15,6 +15,13 @@ uv run python -m analysis.videos check                     # every script parses
 The result is `out/videos/00-pilot.en.mp4`, with its captions
 (`00-pilot.en.srt`) and thumbnail (`00-pilot.en.jpg`) beside it.
 
+Or build in a container that has all the tools, with only Docker installed
+(see [Building in a container](#building-in-a-container)):
+
+```sh
+scripts/videos/docker.sh build 00-pilot
+```
+
 ## Layout
 
 | Path | What it holds |
@@ -35,7 +42,8 @@ order of #366's outline (`01-intro`, `02-setup`, ...).
 
 A script is markdown with TOML front matter between `+++` lines. The front
 matter's fields are available to every slide; `data` names the demo data a
-tape starts from.
+tape starts from (a repo folder such as `prototype_data`; leave it out to use
+[the video's own data repo](#each-videos-data-repo)).
 
 ````markdown
 +++
@@ -93,10 +101,10 @@ A tape is a list of [VHS](https://github.com/charmbracelet/vhs) commands
 (`Type`, `Enter`, `Sleep`, `Hide`/`Show`, ...). The builder adds the output
 file, the theme's terminal settings, and a hidden setup that:
 
-- copies the front matter's `data` folder (the prototype personas' data) to
-  a fresh, committed scratch folder, after the video's `setup.sh` (if any)
-  has run in it, and points `ANALYSIS_DATA_DIR` at it, so every recording
-  starts from the same state;
+- copies the front matter's `data` folder (the prototype personas' data),
+  or the video's own data repo, to a fresh, committed scratch folder, after
+  the video's `setup.sh` (if any) has run in it, and points
+  `ANALYSIS_DATA_DIR` at it, so every recording starts from the same state;
 - puts this checkout's `sim`/`analysis` on `PATH`;
 - sets the prompt (`alice@home $`, from the theme).
 
@@ -244,9 +252,50 @@ build prints what it made and what it reused:
   end                 4.9s  narration cached  visual cached  clip cached
 ```
 
-Requirements: `ffmpeg`, `uv`, Playwright's Chromium (`uv run playwright
-install chromium`), and for tapes VHS and ttyd (`setup` downloads them on
-Linux; `brew install vhs` on macOS).
+Requirements for a native build: `ffmpeg`, `uv`, Playwright's Chromium
+(`uv run playwright install chromium`), and for tapes VHS and ttyd (`setup`
+downloads them on Linux; `brew install vhs` on macOS). The container has them
+all.
+
+## Building in a container
+
+`scripts/videos/docker.sh` builds videos in a container (the image is
+`docker/videos/Dockerfile`), so the only thing the host needs is Docker. The
+image has ffmpeg, VHS, ttyd, Playwright's Chromium, the Kokoro voice model,
+the project's Python and Node.js, and the theme's fonts. It builds for amd64
+and arm64 (Docker Desktop on Apple silicon).
+
+```sh
+scripts/videos/docker.sh build 00-pilot [--lang ja] [--silent] [--rerecord]
+scripts/videos/docker.sh check                 # every video, or name some
+scripts/videos/docker.sh shell 01-intro        # bash, with the video's data repo
+```
+
+Each run rebuilds the `analysis-videos` image from the checkout first. The
+first build takes several minutes (the model and Chromium are most of it);
+after that it's a quick check unless the code changed, which rebuilds only
+the code's layers. So a tape records this checkout's CLI. `docs/videos` is
+mounted read-only rather than copied, so editing a script needs no rebuild.
+Videos and the build cache land in `out/videos` (or `$ANALYSIS_VIDEO_OUT`),
+as in a native build.
+
+### Each video's data repo
+
+A video that builds its own scenario, rather than starting from
+`prototype_data`, keeps its data in its own data repo: the named Docker
+volume `analysis-video-<video>`, mounted at `/data`. Its script leaves `data`
+out of the front matter, and each tape starts from a fresh copy of that repo,
+so recordings stay repeatable and the CLI's changes during one tape don't
+leak into the next.
+
+Create the repo from `shell` with `sim init /data --no-builder` (#289;
+the container has no background builds), which makes the
+simulator's tree at `/data/sim`; `ANALYSIS_DATA_DIR` is already `/data/sim`
+there and `sim` is on `PATH`, so the CLI changes it as it would any data
+repo.
+`docker volume rm analysis-video-<video>` discards it. Outside the container
+the same fallback reads `$ANALYSIS_VIDEO_DATA`, never `$ANALYSIS_DATA_DIR`,
+so a native build can't record the household's real data.
 
 ## Resolution
 

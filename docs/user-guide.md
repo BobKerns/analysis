@@ -6,7 +6,8 @@
 
 This guide shows how to make common changes to a scenario, step by step, with
 real examples, and how to look at what a run produced. It assumes you already
-have a data repo. If you don't, see [templates/README.md](../templates/README.md) first.
+have a data repo. If you don't, start one with `sim init DIR`, which asks who you
+are and builds it from the code repository's templates ([templates/README.md](../templates/README.md)).
 
 For the reasons behind these designs, see the documents in
 `docs/architecture/`. [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) lists every CSV column in detail. This guide
