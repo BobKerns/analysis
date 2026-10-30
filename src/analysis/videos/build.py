@@ -6,7 +6,7 @@ what went into it, so a build redoes only what changed:
 - narration: the scene's sentences and the language's voice settings;
 - a slide: the page its template renders (so template, asset, theme and
   field edits all count);
-- a tape: its commands, the terminal theme, and the demo data's bytes. The
+- a tape: its commands, the terminal theme, and its data's bytes. The
   CLI's own behavior isn't hashed, so ``--rerecord`` re-records tapes
   after a CLI change;
 - a clip: its narration, its visual and the timing.
@@ -15,6 +15,7 @@ what went into it, so a build redoes only what changed:
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,9 @@ from analysis.videos import script as scripts
 from analysis.videos import theme as themes
 from analysis.videos.script import Scene, Script, ScriptError
 from analysis.videos.theme import Theme
+
+# Where a video's own data repo is, for a tape whose script names no demo data.
+VIDEO_DATA_ENV = "ANALYSIS_VIDEO_DATA"
 
 # A slide with no narration still stays up this long.
 MIN_SLIDE_SECONDS = 2.5
@@ -88,6 +92,35 @@ class _Builder:
         meta.write_text(json.dumps({"durations": durations, "sentences": list(sentences)}, ensure_ascii=False))
         return wav, durations, "made", key
 
+    def tape_data(self) -> Path:
+        """The data a tape starts from: front matter ``data``, else the video's own data repo.
+
+        The video's own repo is ``$ANALYSIS_VIDEO_DATA`` (the video container
+        mounts the video's data volume there). It is deliberately not
+        ``$ANALYSIS_DATA_DIR``, which in a planner's shell names the real data.
+        """
+        data_name = self.script.meta.get("data")
+        if data_name:
+            data = self.repo / data_name
+            if not data.is_dir():
+                raise ScriptError(f"{self.script.path}: demo data {data_name!r} isn't a folder in the repo")
+            return data
+        env = os.environ.get(VIDEO_DATA_ENV)
+        if not env:
+            raise ScriptError(
+                f"{self.script.path}: a tape needs data = \"<demo data dir>\" in the front matter, "
+                f"or the video's data repo in ${VIDEO_DATA_ENV} (scripts/videos/docker.sh sets it)"
+            )
+        data = Path(env)
+        # A data repo's mark (data_repo.is_data_repo), not just a folder: an
+        # aborted `sim init` leaves a partial one.
+        if not (data / "persons.csv").is_file():
+            raise ScriptError(
+                f"{self.script.path}: the video's data {data} doesn't exist yet; create it first "
+                f"(scripts/videos/docker.sh shell {self.script.name})"
+            )
+        return data
+
     def visual(self, scene: Scene) -> tuple[Path, bool, str, str]:
         """The scene's picture: (file, is a still, made/cached, key)."""
         v = scene.visual
@@ -99,12 +132,7 @@ class _Builder:
                 return png, True, "cached", key
             render.render_slide(html, self.theme, png)
             return png, True, "made", key
-        data_name = self.script.meta.get("data")
-        if not data_name:
-            raise ScriptError(f"{self.script.path}: a tape needs data = \"<demo data dir>\" in the front matter")
-        data = self.repo / data_name
-        if not data.is_dir():
-            raise ScriptError(f"{self.script.path}: demo data {data_name!r} isn't a folder in the repo")
+        data = self.tape_data()
         key = render.digest("tape", v.source, self.theme.vhs_settings(), self.theme.data["terminal"],
                             self.theme.data["palette"]["accent"], render.tree_digest(data))
         mp4 = self.cache / f"tape-{key}.mp4"

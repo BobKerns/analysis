@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -10,8 +11,8 @@ import pytest
 from analysis.videos import captions, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
-from analysis.videos.__main__ import check
-from analysis.videos.build import build
+from analysis.videos.__main__ import TTYD_URL, VHS_URL, check
+from analysis.videos.build import VIDEO_DATA_ENV, _Builder, build
 
 SCRIPT = """\
 +++
@@ -263,3 +264,45 @@ def test_narration_edit_rebuilds_only_that_scene(videos_root: Path, repo_root: P
     states = {s.id: (s.narration, s.visual, s.clip) for s in second.scenes}
     assert states == {"intro": ("cached", "cached", "cached"), "end": ("made", "cached", "made")}
     assert "See you next time." in second.captions.read_text()
+
+
+def _tape_builder(videos_root: Path, repo_root: Path, tmp_path: Path, front: str) -> _Builder:
+    folder = _write(videos_root / "01-own-data", SCRIPT.replace('data = "prototype_data"\n', front))
+    theme = themes.load(videos_root)
+    return _Builder(scripts.load(folder), theme, tmp_path, repo_root, engine="silent", rerecord=False)
+
+
+def test_tape_data_front_matter_wins_over_the_videos_own_repo(
+    videos_root: Path, repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(VIDEO_DATA_ENV, str(tmp_path))
+    builder = _tape_builder(videos_root, repo_root, tmp_path, 'data = "prototype_data"\n')
+    assert builder.tape_data() == repo_root / "prototype_data"
+
+
+def test_tape_data_falls_back_to_the_videos_own_repo(
+    videos_root: Path, repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    own = tmp_path / "own"
+    (own / "scenarios").mkdir(parents=True)  # a partial sim init: no persons.csv
+    builder = _tape_builder(videos_root, repo_root, tmp_path, "")
+    monkeypatch.delenv(VIDEO_DATA_ENV, raising=False)
+    # Never the planner's real data repo, even when it's set.
+    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(repo_root / "prototype_data"))
+    with pytest.raises(scripts.ScriptError, match="needs data"):
+        builder.tape_data()
+    monkeypatch.setenv(VIDEO_DATA_ENV, str(own))
+    with pytest.raises(scripts.ScriptError, match="doesn't exist yet.*docker.sh shell 01-own-data"):
+        builder.tape_data()
+    (own / "persons.csv").write_text("id\n")
+    assert builder.tape_data() == own
+
+
+def test_video_image_pins_the_builders_tool_versions(repo_root: Path) -> None:
+    dockerfile = (repo_root / "docker" / "videos" / "Dockerfile").read_text()
+    args = dict(re.findall(r"^ARG (\w+)=(\S+)$", dockerfile, re.MULTILINE))
+    assert f"/v{args['VHS_VERSION']}/vhs_{args['VHS_VERSION']}_" in VHS_URL
+    assert f"/{args['TTYD_VERSION']}/ttyd." in TTYD_URL
+    assert args["KOKORO_RELEASE"] == render.KOKORO_RELEASE
+    for name in render.KOKORO_FILES:
+        assert name in dockerfile

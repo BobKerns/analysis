@@ -41,6 +41,7 @@ blockquotes
 Bogleheads
 BONDX
 BPOS
+BUILDKIT
 businesswire
 cachedir
 calevt
@@ -51,6 +52,7 @@ carryforward
 carryforwards
 categoriser
 ccon
+charmbracelet
 chipmaker
 CLAUDECODE
 clsname
@@ -79,6 +81,7 @@ datarepo
 dataviz
 dateutil
 ddof
+dejavu
 delenv
 dflt
 dietz
@@ -209,6 +212,7 @@ noninteractive
 nonpositive
 nonqualified
 NOPASSWD
+noto
 nunique
 OBBBA
 oneoff
@@ -318,6 +322,7 @@ symlog
 tablink
 tailnet
 tailweight
+TARGETARCH
 targetdate
 taxchar
 tbill
