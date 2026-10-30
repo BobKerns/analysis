@@ -74,15 +74,14 @@ def _nothing_to_chart(chart: pd.DataFrame, what: str, rc: RunConnection) -> bool
     return True
 
 
-def _flows(rc: RunConnection, side: reports.FlowSide, mode: DollarMode,
-           time_range: TimeRangePicker) -> pd.DataFrame:
+def _flows(rc: RunConnection, side: reports.FlowSide, mode: DollarMode) -> pd.DataFrame:
     """``sim report income|expenses``' groups by category and their total,
     less a category with nothing in any year, as the report leaves it out."""
     frame = reports.without_empty_groups(
         reports.flows_by_year(rc, side, mode=mode, story=False)
         .rename(columns={reports.ECONOMIC_INCOME: "total"}),
         keep={"total"})
-    return time_range.clip(frame[[*run_charts.flow_groups(frame), "total"]])
+    return frame[[*run_charts.flow_groups(frame), "total"]]
 
 
 def _flow_widget(rc: RunConnection, side: reports.FlowSide, dollar_mode: DollarModePicker,
@@ -96,10 +95,15 @@ def _flow_widget(rc: RunConnection, side: reports.FlowSide, dollar_mode: DollarM
         with caveat_out:
             display(StyledMarkdown(caveat))
         extra.append(caveat_out)
+    # reports caches nothing: build each mode's frame once, so moving the
+    # year slider only clips it rather than re-reading the run's events.
+    by_mode: dict[DollarMode, pd.DataFrame] = {}
 
     def _redraw(*_):
         mode = dollar_mode.value
-        yearly = _flows(rc, side, mode, time_range)
+        if mode not in by_mode:
+            by_mode[mode] = _flows(rc, side, mode)
+        yearly = time_range.clip(by_mode[mode])
         with table_out:
             clear_output(wait=True)
             display(yearly.style.format("${:,.0f}"))
@@ -254,9 +258,13 @@ def tax_widget(rc: RunConnection,
     table_out = widgets.Output()
     chart_out = widgets.Output()
 
+    by_mode: dict[DollarMode, pd.DataFrame] = {}  # as in _flow_widget
+
     def _redraw(*_):
         mode = dollar_mode.value
-        whole = reports.tax_by_year(rc, mode)
+        if mode not in by_mode:
+            by_mode[mode] = reports.tax_by_year(rc, mode)
+        whole = by_mode[mode]
         frame = time_range.clip(whole)
         for out in (chart_out, table_out):
             with out:

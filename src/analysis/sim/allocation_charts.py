@@ -29,7 +29,7 @@ def allocation_pie_figure(table: pd.DataFrame, title: str = "") -> Figure:
     without ``by``), largest first, clockwise from the top. Classes with no
     balance are left out."""
     body = _body(table)
-    body = body[body["percent"] > 0]
+    body = body[body["percent"] > 0].sort_values("percent", ascending=False)
     fig = Figure(figsize=(7, 5.5))
     if body.empty:
         fig.text(0.5, 0.5, "No holdings to chart.", ha="center", va="center")

@@ -133,13 +133,17 @@ def one_year_figure(frame: pd.DataFrame, title: str) -> Figure:
     """One year of income or expenses (``reports.flows_for_year``): a
     horizontal bar per group, largest at the top, its share at its end."""
     body = frame.drop(index="total", errors="ignore")
-    body = body[body["amount"] != 0].sort_values("amount")
+    body = body[body["amount"] != 0]
+    # Colors by the table's order, before sorting: an account or tag takes
+    # the cycle by position, so sorting first would recolor it.
+    colors = dict(zip(body.index, _group_colors([str(n) for n in body.index]), strict=True))
+    body = body.sort_values("amount")
     fig = Figure(figsize=(10, max(2.5, 0.45 * len(body) + 1.2)))
     if body.empty:
         return _nothing(fig, "flows")
     ax = fig.subplots()
     names = [str(n) for n in body.index]
-    ax.barh(names, body["amount"], color=_group_colors(names))
+    ax.barh(names, body["amount"], color=[colors[n] for n in body.index])
     for y, (amount, share) in enumerate(zip(body["amount"], body["share"], strict=True)):
         if pd.notna(share):
             ax.annotate(f" {share:.0%}", (amount, y), va="center",
@@ -266,7 +270,8 @@ def tax_figure(frame: pd.DataFrame, title: str, *, deaths: Sequence[Death] = ())
     ax = fig.subplots()
     labels = {"fed_tax": "federal", "state_tax": "state"}
     frame[columns].fillna(0).rename(columns=labels).plot(
-        kind="bar", stacked=True, ax=ax, color=["#9467bd", "#e377c2"][:len(columns)])
+        kind="bar", stacked=True, ax=ax,
+        color=[{"fed_tax": "#9467bd", "state_tax": "#e377c2"}[c] for c in columns])
     ax.axhline(0, color="grey", linewidth=0.8)
     _money_axis(ax, title)
     include_zero(ax)

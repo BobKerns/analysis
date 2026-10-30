@@ -150,7 +150,7 @@ from analysis.sim.overlay import (
     scenario_calendar_rows as _scenario_calendar_rows,
 )
 from analysis.frames import index_years, named_rows
-from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, ItemType
 from analysis.sim.retention import RetentionError, prune_state
 from analysis.sim.schema import connect_sim_file
 
@@ -8507,7 +8507,7 @@ def account_history_command(
                                             yearly=yearly, mode=mode)
         except KeyError as exc:
             raise click.ClickException(exc.args[0]) from None
-        deaths = rc.deaths() if as_graph or graph_file is not None else ()  # only a chart marks them
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     if frame.empty:
         click.echo(f"no balances for {account} in that range ({described})")
         _graph_nothing(graph_file, "balances", "history-")
@@ -8532,6 +8532,12 @@ def _graph_nothing(graph_file: Path | None, what: str, prefix: str) -> None:
         from analysis.sim.run_charts import nothing_figure
 
         _draw_figure(nothing_figure(what), graph_file, prefix)
+
+
+def _chart_deaths(rc: RunConnection, as_graph: bool, graph_file: Path | None) -> list[Death]:
+    """The run's deaths when a chart is asked for, else none: only a chart
+    marks them, so a table alone needn't read them."""
+    return rc.deaths() if as_graph or graph_file is not None else []
 
 
 def _draw_report(as_graph: bool, graph_file: Path | None, figure: Callable[[], Any],
@@ -8564,7 +8570,7 @@ def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bo
                                                  untagged=untagged))
         except KeyError as exc:
             raise click.ClickException(exc.args[0]) from None
-        deaths = rc.deaths() if as_graph or graph_file is not None else ()  # only a chart marks them
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     period = "" if year is None else f" in {year}"
     shown = (frame.index if year is not None
              else frame.columns).difference(["total", reports.ECONOMIC_INCOME, reports.CASH_INCOME,
@@ -8698,7 +8704,7 @@ def report_gains_command(
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         frame = reports.gains_by_year(rc, mode)
-        deaths = rc.deaths() if as_graph or graph_file is not None else ()  # only a chart marks them
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     _print_report(frame, "realized vs. unrealized gains", described, mode)
 
     def figure():
@@ -8734,7 +8740,7 @@ def report_tax_command(
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         frame = (reports.tax_reconciliation(rc, mode) if reconciliation
                  else reports.tax_by_year(rc, mode))
-        deaths = rc.deaths() if as_graph or graph_file is not None else ()  # only a chart marks them
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     if frame.empty:
         click.echo(f"no tax was computed in this run ({described})")
         _graph_nothing(graph_file, "tax", "tax-")
@@ -8883,7 +8889,7 @@ def report_guard_rails_command(
                 f"{described} has no 'cpi' inflation index, so no CPI-constant dollars; "
                 "pass --dollars nominal")
         results = guard_rails.evaluate_run(rc, rails, mode)
-        deaths = rc.deaths() if as_graph or graph_file is not None else ()  # only a chart marks them
+        deaths = _chart_deaths(rc, as_graph, graph_file)
         name = rc.label
     shown = [r for r in results if r.applies]
     for r in results:
@@ -10600,11 +10606,11 @@ def chain_show_command(
     """
     from rich.console import Console
 
-    if sum([as_mermaid, as_graph, graph_file is not None]) > 1:
+    # --graph with --graph-file, and the file's suffix, are _graph_options' to check.
+    if as_mermaid and (as_graph or graph_file is not None):
         raise click.UsageError("use one of --mermaid, --graph and --graph-file")
     if depth is not None and not (as_mermaid or as_graph or graph_file is not None):
         raise click.UsageError("--depth needs --mermaid, --graph or --graph-file")
-    _check_graph_file(graph_file)
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     with open_scenario(data, ref.name, scenarios_dir=ref.scenarios_dir) as scn:
