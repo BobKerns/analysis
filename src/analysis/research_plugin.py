@@ -4,10 +4,11 @@
 only, no tax state. A household's choices live in the data repo, in
 ``$ANALYSIS_DATA_DIR/research.yaml``::
 
-    languages: [en, ja]   # overview languages; en first
+    languages: [en, ja]   # tab languages; en first, each other adds a copy of every tab
     tax_state: CA         # two-letter state code; leave out for none
     tabs:
       overview: true
+      price: true
       glossary: true
 
 An installed plugin runs wherever Claude Code does, usually with no data repo
@@ -83,6 +84,19 @@ STATE_NAMES = {
 }
 
 
+# Each tab's key (the Markdown fallback's file suffix, and the key a
+# language.yaml labels it by) and English name, in reading order.
+TABS = (
+    ("overview", "Overview"),
+    ("tear-sheet", "Tear sheet"),
+    ("price", "Price chart"),
+    ("detail", "Detail"),
+    ("glossary", "Glossary"),
+)
+# The tabs research.yaml can turn off.
+OPTIONAL_TABS = ("overview", "price", "glossary")
+
+
 class ResearchConfigError(ValueError):
     """``research.yaml`` can't be read as research settings."""
 
@@ -95,6 +109,12 @@ class ResearchConfig:
     tax_state: str | None = None
     overview: bool = True
     glossary: bool = True
+    price: bool = True
+
+    def tab_keys(self) -> list[str]:
+        """The keys of the tabs every sheet gets, in reading order."""
+        off = {name for name in OPTIONAL_TABS if not getattr(self, name)}
+        return [key for key, _ in TABS if key not in off]
 
 
 NEUTRAL = ResearchConfig()
@@ -137,7 +157,7 @@ def parse_config(text: str, *, where: str = CONFIG_FILENAME, source: Path = SOUR
     for lang in languages[1:]:
         if lang not in supported:
             have = ", ".join(sorted(supported)) or "none"
-            raise ResearchConfigError(f"{where}: no overview overlay for language {lang!r} (available: {have})")
+            raise ResearchConfigError(f"{where}: no translation overlay for language {lang!r} (available: {have})")
 
     state = doc.get("tax_state")
     if state is not None:
@@ -147,8 +167,8 @@ def parse_config(text: str, *, where: str = CONFIG_FILENAME, source: Path = SOUR
 
     tabs = doc.get("tabs") or {}
     if not isinstance(tabs, dict):
-        raise ResearchConfigError(f"{where}: tabs must map overview/glossary to true or false")
-    unknown = sorted(set(tabs) - {"overview", "glossary"})
+        raise ResearchConfigError(f"{where}: tabs must map {'/'.join(OPTIONAL_TABS)} to true or false")
+    unknown = sorted(set(tabs) - set(OPTIONAL_TABS))
     if unknown:
         raise ResearchConfigError(f"{where}: unknown tab(s) {', '.join(unknown)}")
     for name, value in tabs.items():
@@ -156,12 +176,14 @@ def parse_config(text: str, *, where: str = CONFIG_FILENAME, source: Path = SOUR
             raise ResearchConfigError(f"{where}: tabs.{name} must be true or false")
     return ResearchConfig(
         languages=tuple(languages), tax_state=state,
-        overview=tabs.get("overview", True), glossary=tabs.get("glossary", True),
+        overview=tabs.get("overview", True), glossary=tabs.get("glossary", True), price=tabs.get("price", True),
     )
 
 
-def available_languages(source: Path = SOURCE_DIR) -> dict[str, dict[str, str]]:
-    """Each translated-overview overlay's code -> its ``language.yaml``."""
+def available_languages(source: Path = SOURCE_DIR) -> dict[str, dict[str, Any]]:
+    """Each translation overlay's code -> its ``language.yaml``: ``name``
+    (in English), ``label`` (the parent tab's name) and ``tabs`` (each tab
+    key's name in that language)."""
     found = {}
     for meta in sorted((source / "overlays").glob("*/language.yaml")):
         found[meta.parent.name] = yaml.safe_load(meta.read_text(encoding="utf-8"))
@@ -172,23 +194,41 @@ def skill_names(source: Path = SOURCE_DIR) -> list[str]:
     return sorted(p.parent.name for p in (source / "skills").glob("*/SKILL.md"))
 
 
+def tab_names(meta: dict[str, Any] | None = None) -> dict[str, str]:
+    """Each tab key's name: English, or in the language ``meta`` describes,
+    falling back to English for a tab it doesn't name."""
+    names = dict(TABS)
+    if meta:
+        names.update({key: str(name) for key, name in (meta.get("tabs") or {}).items() if key in names})
+    return names
+
+
 def defaults_context(config: ResearchConfig, skill: str, source: Path = SOURCE_DIR) -> dict[str, Any]:
     languages = available_languages(source)
-    translations = [
-        {"code": code, "name": languages[code]["name"], "tab": languages[code]["tab"]}
-        for code in config.languages[1:]
-    ] if config.overview else []
-    tabs = (["Overview"] + [t["tab"] for t in translations] if config.overview else [])
-    tabs += ["Tear sheet", "Detail"] + (["Glossary"] if config.glossary else [])
-    optional = (["overview"] if config.overview else []) + [t["name"] for t in translations]
-    optional += ["glossary"] if config.glossary else []
+    english = tab_names()
+    keys = config.tab_keys()
+    translations: list[dict[str, Any]] = []
+    for code in config.languages[1:]:
+        meta = languages[code]
+        names = tab_names(meta)
+        translations.append({
+            "code": code, "name": meta["name"], "label": meta.get("label") or meta["name"],
+            "tabs": [names[k] for k in keys],
+            "pairs": [f"{english[k]} → {names[k]}" for k in keys],
+        })
+    # What a user may leave off one sheet, in tab order; a language goes whole.
+    optional = [english[k].lower() for k in ("overview", "price") if k in keys]
+    optional += [str(t["name"]) for t in translations] + (["glossary"] if config.glossary else [])
     state = None
     if config.tax_state:
         rules = source / "overlays" / "state" / config.tax_state / skill
         state = {"code": config.tax_state, "name": STATE_NAMES[config.tax_state], "rules": rules.is_dir()}
     choices = [f"no {name}" for name in optional]
     optional_text = (", ".join(choices[:-1]) + " or " + choices[-1]) if len(choices) > 1 else "".join(choices)
-    return {"tabs": tabs, "translations": translations, "state": state, "optional_tabs": optional_text}
+    return {
+        "tabs": [english[k] for k in keys], "translations": translations, "state": state,
+        "optional_tabs": optional_text, "price": config.price, "glossary": config.glossary,
+    }
 
 
 def render_defaults(config: ResearchConfig, skill: str, source: Path = SOURCE_DIR) -> str:
@@ -241,7 +281,7 @@ def render(config: ResearchConfig, out_dir: Path, source: Path = SOURCE_DIR) -> 
     shutil.copytree(source, plugin, ignore=shutil.ignore_patterns("__pycache__", *RENDER_ONLY))
     for skill in skill_names(source):
         skill_dir = plugin / "skills" / skill
-        overlays = [source / "overlays" / lang / skill for lang in config.languages[1:] if config.overview]
+        overlays = [source / "overlays" / lang / skill for lang in config.languages[1:]]
         if config.tax_state:
             overlays.append(source / "overlays" / "state" / config.tax_state / skill)
         for overlay in overlays:
@@ -286,9 +326,10 @@ def describe(config: ResearchConfig) -> str:
     languages = available_languages()
     names = ["English"] + [languages[code]["name"] for code in config.languages[1:]]
     state = STATE_NAMES[config.tax_state] if config.tax_state else "none"
-    tabs = [t for t, on in (("overview", config.overview), ("glossary", config.glossary)) if not on]
+    english = tab_names()
+    tabs = [english[t].lower() for t in OPTIONAL_TABS if not getattr(config, t)]
     off = f"; no {' or '.join(tabs)} tab" if tabs else ""
-    return f"overview languages {', '.join(names)}; tax state {state}{off}"
+    return f"tab languages {', '.join(names)}; tax state {state}{off}"
 
 
 def _claude(*args: str) -> None:

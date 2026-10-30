@@ -2,9 +2,9 @@
 ## Defaults for this installation
 - **Tabs:** {{ tabs | join(", ") }}.
 {% for lang in translations %}
-- **{{ lang.name }}:** only the overview is translated, following `references/overview-{{ lang.code }}.md`. Numbers and dates stay exactly as on the English tabs ($38.0B, 0.20%, Nov 19), never converted.
+- **{{ lang.name }}:** every tab is translated, following `references/translate-{{ lang.code }}.md` ({{ lang.pairs | join(", ") }}). The {{ lang.name }} tabs come after the English ones: a parent tab named "{{ lang.label }}: {{ lang.tabs[0] }}" holding the {{ lang.tabs[0] }} tab's text, with {{ lang.tabs[1:] | join(", ") }} nested under it. Numbers and dates stay exactly as on the English tabs ($38.0B, 0.20%, Nov 19), never converted.
 {% else %}
-- **Translated overviews:** none.
+- **Translated tabs:** none.
 {% endfor %}
 {% if state %}
 - **Tax state: {{ state.name }}.** Where state tax matters (money market and bond funds, Treasury income), apply {{ state.name }}'s rules{% if state.rules %} (`references/state-tax.md`){% endif %} and show {{ state.name }} marginal-rate bands. Never assume a particular bracket.
@@ -13,5 +13,5 @@
 {% endif %}
 - **Account type changes every tax point.** Every tax observation (state exemption, tax-equivalent yield, capital-gains distributions, qualified dividends, tax efficiency of ETFs vs mutual funds) applies only in a taxable account. Say so next to it: inside an IRA, 401(k) or other tax-deferred account these don't apply, because withdrawals from a traditional IRA are taxed as ordinary income, federal and state, whatever the fund earned; and qualified Roth withdrawals are tax-free. Don't assume which kind of account the user holds the fund in.
 {% if optional_tabs %}
-- If the user asks for {{ optional_tabs }} on a particular sheet, omit that tab.
+- If the user asks for {{ optional_tabs }} on a particular sheet, omit that tab{% if translations %} (for a language, all of its tabs){% endif %}.
 {% endif %}

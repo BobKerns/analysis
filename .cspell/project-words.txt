@@ -111,6 +111,7 @@ globenewswire
 gmtoffset
 Gompertz
 gpgsign
+gridlines
 gridspec
 gterm
 guyton
@@ -283,6 +284,7 @@ startangle
 stcg
 stdlib
 steelblue
+Stooq
 subkey
 subkind
 subkinds
@@ -292,6 +294,7 @@ supercentenarians
 suptitle
 SWVXX
 symlog
+tablink
 tailnet
 tailweight
 targetdate

@@ -5,7 +5,7 @@ The Overview is an on-ramp for a reader who isn't familiar with stocks or financ
 
 Write it last, from the finished tear sheet, so every number matches exactly. "Matches" means the same value. Adding a unit the table header carries is fine (a "$M" table's 461.5 becomes $461.5M), but rounding differently or recomputing is not.
 
-**Length:** 500–750 words (private companies: up to 800). A translated overview listed under "Defaults for this installation" follows its own reference file for length and style.
+**Length:** 500–750 words (private companies: up to 800). A translated overview follows its language's `translate-<lang>.md` for length and style.
 
 ## Structure (English Overview tab)
 Open with a 2–3 sentence summary of the company and its situation right now, in everyday words. Then answer five questions. For each question, give:
@@ -40,4 +40,4 @@ Plain language is where facts quietly change. Check each overview sentence again
 Write as a knowledgeable friend explaining over coffee, not a textbook. Short sentences, concrete comparisons, no condescension. Assume an intelligent adult who is new to the vocabulary, not new to thinking. Never give advice on what to do with the stock.
 
 ## Markdown fallback
-Write `<name>-overview.md` beside the tear sheet, and `<name>-overview-<lang>.md` for each translated overview.
+Write `<name>-overview.md` beside the tear sheet, and `<name>-overview-<lang>.md` for each translated language.

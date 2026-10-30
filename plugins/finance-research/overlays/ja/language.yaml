@@ -1,4 +1,11 @@
-# A translated-overview overlay: its files are copied into each skill's
-# references/ when research.yaml lists this language.
+# A translation overlay: its files are copied into each skill's references/
+# when research.yaml lists this language. Every tab gets a copy in this
+# language, nested under one parent tab named `label`.
 name: Japanese
-tab: 概要 (Japanese overview)
+label: 日本語
+tabs:
+  overview: 概要
+  tear-sheet: ティアシート
+  price: 価格チャート
+  detail: 詳細
+  glossary: 用語集

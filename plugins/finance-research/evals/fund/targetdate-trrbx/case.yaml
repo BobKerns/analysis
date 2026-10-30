@@ -1,4 +1,4 @@
 schema_version: "1.1"
 name: targetdate-trrbx
 expected_outcome: |
-  Target-date tear sheet on TRRBX: current allocation and underlying funds, where it is on a glide path that keeps shifting after the target date and when it reaches its final allocation, equity share vs rivals, costs, overview/概要/glossary.
+  Target-date tear sheet on TRRBX: current allocation and underlying funds, where it is on a glide path that keeps shifting after the target date and when it reaches its final allocation, equity share vs rivals, costs, every tab in English and Japanese (概要, ティアシート, 価格チャート, 詳細, 用語集), price chart.

@@ -69,7 +69,7 @@ Finally, if Claude Code (`claude`) is on your `PATH`, it offers to install the
 finance-research Claude plugin, which writes tear sheets on funds and
 companies from public sources. The answer defaults to no, and it isn't asked
 under CI or an agent. Each run of the plugin browses the web for several
-minutes and uses around 150k tokens. Its settings (overview languages, tax
+minutes and uses around 150k tokens. Its settings (tab languages, tax
 state) come from the data repo's `research.yaml`, and setup says which it
 used; once installed, a re-run of setup updates it. Install or remove it by
 hand with `.venv/bin/analysis research-plugin install` or `uninstall`; see

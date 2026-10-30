@@ -5,9 +5,9 @@
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
 The `finance-research` Claude Code plugin researches a security from free
-public sources and writes a **tear sheet**: a one-page summary, a Detail tab
-with the evidence, an Overview for a newcomer and a Glossary. It has two
-skills:
+public sources and writes a **tear sheet**: a one-page summary, a Price
+chart, a Detail tab with the evidence, an Overview for a newcomer and a
+Glossary, each optionally also in another language. It has two skills:
 
 - **`fund-tear-sheet`**, for mutual funds, ETFs, money market, bond,
   target-date and thematic funds. It also works out the fund's asset-class
@@ -59,20 +59,36 @@ The settings are a household's choice, so they live in the data repo, as
 `research.yaml` beside `allocations.csv` (`$ANALYSIS_DATA_DIR/research.yaml`):
 
 ```yaml
-languages: [en, ja]   # overview languages; en first. Each other language adds
-                      # a translated overview tab.
+languages: [en, ja]   # tab languages; en first. Each other language adds a
+                      # copy of every tab in that language.
 tax_state: CA         # two-letter state code for state-tax notes on money
                       # market and Treasury income; leave out for none.
 tabs:
-  overview: true      # false drops the overview tabs
-  glossary: true      # false drops the glossary
+  overview: true      # false drops the overview, in every language
+  price: true         # false drops the price chart, in every language
+  glossary: true      # false drops the glossary, in every language
 ```
 
 Every setting is optional. With no file, the plugin is neutral: English
 only, and state-tax points say that the treatment depends on your state,
-with no state rate bands. A translated overview keeps every number and date
-exactly as on the English tabs. Only Japanese (`ja`) has a translation file
+with no state rate bands. Only Japanese (`ja`) has a translation file
 today.
+
+**Translated tabs.** With `ja` listed, each sheet gets a Japanese copy of
+every tab, written from the finished English tabs. In a Claude doc they
+come after the English tabs, nested under one parent tab ("日本語: 概要",
+which holds the Japanese overview, with ティアシート, 価格チャート, 詳細 and 用語集
+under it). The first line of each tab links to the same tab in the other
+language, so switching language keeps your place. Numbers and dates stay
+exactly as on the English tabs, never converted; the Overview is rewritten
+for the reader, and the other tabs are translated faithfully. Expect a run
+with a translation to use roughly a third to a half more tokens, most of it
+on the Detail tab.
+
+**Price chart.** Month-end closes for ten years (or since inception), with
+a few lines on how to read them. A money market fund (held at $1.00) and a
+private company get none. In the Markdown files the data is
+`<TICKER>-prices.csv` beside the tabs.
 
 A setting the plugin can't follow (a language with no translation file, a
 misspelled key) stops `render` and `install` with a message naming it.
@@ -84,8 +100,8 @@ plugins/finance-research/
   .claude-plugin/plugin.json   name and version
   skills/<skill>/              SKILL.md, references/, scripts/: the neutral plugin
   defaults/<skill>.md.j2       each SKILL.md's "Defaults for this installation" block
-  overlays/<lang>/             a translated overview: language.yaml, then
-                               <skill>/overview-<lang>.md
+  overlays/<lang>/             a translation: language.yaml (its tab names),
+                               then <skill>/translate-<lang>.md
   overlays/state/<CODE>/       a state's tax rules: <skill>/state-tax.md
   evals/, evals-neutral/       test cases (below)
 .claude-plugin/marketplace.json  the repo's "analysis" marketplace
@@ -101,8 +117,8 @@ block, edit its template, then run
 `.venv/bin/analysis research-plugin render --neutral` to update the
 committed block; a test fails until they match, and another fails if any
 Japanese text appears outside `overlays/`. To add a language, add
-`overlays/<code>/language.yaml` (its name and tab label) and an
-`overview-<code>.md` for each skill. `public-tear-sheet` is under the Apache
+`overlays/<code>/language.yaml` (its English name, its parent-tab label and
+a name for each tab) and a `translate-<code>.md` for each skill. `public-tear-sheet` is under the Apache
 License 2.0 (its `LICENSE` file); the rest is under this repo's MIT license.
 
 ## What it reads and writes
@@ -121,7 +137,7 @@ License 2.0 (its `LICENSE` file); the rest is under this repo's MIT license.
 
 Each skill has test cases in the `claude plugin eval` layout. They are not
 part of the gates: every case is a full research run. The cases in `evals/`
-expect the settings in `evals/research.yaml` (Japanese overview, California),
+expect the settings in `evals/research.yaml` (Japanese tabs, California),
 so render with those first; `evals-neutral/` checks the neutral plugin:
 
 ```sh

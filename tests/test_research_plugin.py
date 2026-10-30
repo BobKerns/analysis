@@ -35,7 +35,7 @@ def test_committed_defaults_are_a_neutral_render(skill):
 def test_neutral_plugin_has_no_household_settings():
     text = _skill_text(rp.SOURCE_DIR)
     assert not JAPANESE.search(text)
-    assert "overview-ja" not in text
+    assert "translate-ja" not in text
     assert "Tax state: none set." in text
 
 
@@ -43,14 +43,18 @@ def test_household_render_adds_overlays(tmp_path):
     plugin = rp.render(HOUSEHOLD, tmp_path)
     fund = plugin / "skills" / "fund-tear-sheet"
     company = plugin / "skills" / "public-tear-sheet"
-    assert (fund / "references" / "overview-ja.md").exists()
-    assert (company / "references" / "overview-ja.md").exists()
+    assert (fund / "references" / "translate-ja.md").exists()
+    assert (company / "references" / "translate-ja.md").exists()
     assert (fund / "references" / "state-tax.md").exists()
     assert not (company / "references" / "state-tax.md").exists()
     skill = (fund / "SKILL.md").read_text(encoding="utf-8")
-    assert "**Tabs:** Overview, 概要 (Japanese overview), Tear sheet, Detail, Glossary." in skill
+    assert "**Tabs:** Overview, Tear sheet, Price chart, Detail, Glossary." in skill
+    assert "every tab is translated, following `references/translate-ja.md`" in skill
+    assert 'a parent tab named "日本語: 概要"' in skill
+    assert "with ティアシート, 価格チャート, 詳細, 用語集 nested under it" in skill
     assert "**Tax state: California.**" in skill
-    assert "no overview, no Japanese or no glossary" in skill
+    assert "no overview, no price chart, no Japanese or no glossary" in skill
+    assert "(for a language, all of its tabs)" in skill
     assert not (plugin / "defaults").exists()
     assert not (plugin / "overlays").exists()
     manifest = json.loads((tmp_path / ".claude-plugin" / "marketplace.json").read_text())
@@ -61,7 +65,7 @@ def test_household_render_adds_overlays(tmp_path):
 def test_render_replaces_an_earlier_render(tmp_path):
     rp.render(HOUSEHOLD, tmp_path)
     plugin = rp.render(rp.NEUTRAL, tmp_path)
-    assert not (plugin / "skills" / "fund-tear-sheet" / "references" / "overview-ja.md").exists()
+    assert not (plugin / "skills" / "fund-tear-sheet" / "references" / "translate-ja.md").exists()
     assert not JAPANESE.search(_skill_text(plugin))
 
 
@@ -72,13 +76,29 @@ def test_state_without_rules_file_still_names_the_state(tmp_path):
     assert "state-tax.md" not in skill
 
 
-def test_tabs_off_drop_overview_and_its_translations(tmp_path):
-    config = rp.ResearchConfig(languages=("en", "ja"), overview=False, glossary=False)
+def test_tabs_off_drop_those_tabs_in_every_language(tmp_path):
+    config = rp.ResearchConfig(languages=("en", "ja"), overview=False, glossary=False, price=False)
     plugin = rp.render(config, tmp_path)
     skill = (plugin / "skills" / "public-tear-sheet" / "SKILL.md").read_text(encoding="utf-8")
     assert "**Tabs:** Tear sheet, Detail." in skill
+    # The translation stays, for the tabs that are left.
+    assert 'a parent tab named "日本語: ティアシート"' in skill
+    assert "with 詳細 nested under it" in skill
+    assert "If the user asks for no Japanese on a particular sheet" in skill
+    assert (plugin / "skills" / "public-tear-sheet" / "references" / "translate-ja.md").exists()
+
+
+def test_tabs_off_with_english_only_leaves_no_optional_tab(tmp_path):
+    config = rp.ResearchConfig(overview=False, glossary=False, price=False)
+    skill = rp.render_defaults(config, "public-tear-sheet")
+    assert "**Tabs:** Tear sheet, Detail." in skill
     assert "If the user asks for" not in skill
-    assert not (plugin / "skills" / "public-tear-sheet" / "references" / "overview-ja.md").exists()
+
+
+def test_every_language_names_every_tab():
+    for code, meta in rp.available_languages().items():
+        assert meta.get("label"), code
+        assert set(meta["tabs"]) == {key for key, _ in rp.TABS}, code
 
 
 def test_skill_zips_hold_each_skill_folder(tmp_path):
@@ -87,12 +107,13 @@ def test_skill_zips_hold_each_skill_folder(tmp_path):
     assert [z.name for z in zips] == ["fund-tear-sheet.skill", "public-tear-sheet.skill"]
     names = zipfile.ZipFile(zips[0]).namelist()
     assert "fund-tear-sheet/SKILL.md" in names
-    assert "fund-tear-sheet/references/overview-ja.md" in names
+    assert "fund-tear-sheet/references/translate-ja.md" in names
 
 
 def test_parse_config_full():
     config = rp.parse_config("languages: [en, ja]\ntax_state: ca\ntabs: {glossary: false}\n")
     assert config == rp.ResearchConfig(languages=("en", "ja"), tax_state="CA", glossary=False)
+    assert rp.parse_config("tabs: {price: false}\n").tab_keys() == ["overview", "tear-sheet", "detail", "glossary"]
 
 
 def test_missing_or_empty_config_is_neutral(tmp_path):
@@ -105,7 +126,7 @@ def test_missing_or_empty_config_is_neutral(tmp_path):
     ("language: [en]\n", "unknown setting"),
     ("languages: [ja]\n", "start with en"),
     ("languages: [en, en]\n", "twice"),
-    ("languages: [en, fr]\n", "no overview overlay for language 'fr'"),
+    ("languages: [en, fr]\n", "no translation overlay for language 'fr'"),
     ("tax_state: Calif\n", "two-letter"),
     ("tabs: {detail: false}\n", "unknown tab"),
     ("tabs: {glossary: no-thanks}\n", "true or false"),
@@ -166,8 +187,8 @@ def test_install_renders_then_installs_from_local_marketplace(tmp_path, monkeypa
     result = CliRunner().invoke(rp.research_plugin_command,
                                 ["install", "--data-dir", str(data), "--out", str(out)])
     assert result.exit_code == 0, result.output
-    assert "overview languages English, Japanese; tax state none" in result.output
-    assert (out / rp.PLUGIN_NAME / "skills" / "fund-tear-sheet" / "references" / "overview-ja.md").exists()
+    assert "tab languages English, Japanese; tax state none" in result.output
+    assert (out / rp.PLUGIN_NAME / "skills" / "fund-tear-sheet" / "references" / "translate-ja.md").exists()
     assert calls == [
         ["claude", "plugin", "marketplace", "add", str(out.resolve())],
         ["claude", "plugin", "install", f"{rp.PLUGIN_NAME}@{rp.LOCAL_MARKETPLACE}"],

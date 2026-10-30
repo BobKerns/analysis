@@ -1,4 +1,4 @@
 schema_version: "1.1"
 name: active-dodgx
 expected_outcome: |
-  Active value-equity tear sheet on DODGX: its team of managers (an investment committee, not one star manager) and their tenure, returns vs benchmark after fees over several periods, turnover and capital-gains distributions, index alternative cost comparison, analytical bottom line on the fee question, overview/概要/glossary.
+  Active value-equity tear sheet on DODGX: its team of managers (an investment committee, not one star manager) and their tenure, returns vs benchmark after fees over several periods, turnover and capital-gains distributions, index alternative cost comparison, analytical bottom line on the fee question, every tab in English and Japanese (概要, ティアシート, 価格チャート, 詳細, 用語集), price chart.

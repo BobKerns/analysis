@@ -2,10 +2,10 @@
 ## Defaults for this installation
 - **Tabs:** {{ tabs | join(", ") }}.
 {% for lang in translations %}
-- **{{ lang.name }}:** only the overview is translated, following `references/overview-{{ lang.code }}.md`. Numbers stay as written in English ($38.0B), never converted.
+- **{{ lang.name }}:** every tab is translated, following `references/translate-{{ lang.code }}.md` ({{ lang.pairs | join(", ") }}). The {{ lang.name }} tabs come after the English ones: a parent tab named "{{ lang.label }}: {{ lang.tabs[0] }}" holding the {{ lang.tabs[0] }} tab's text, with {{ lang.tabs[1:] | join(", ") }} nested under it. Numbers and dates stay exactly as on the English tabs ($38.0B, Nov 19), never converted.
 {% else %}
-- **Translated overviews:** none.
+- **Translated tabs:** none.
 {% endfor %}
 {% if optional_tabs %}
-- If the user asks for {{ optional_tabs }} on a particular sheet, leave that tab out.
+- If the user asks for {{ optional_tabs }} on a particular sheet, leave that tab out{% if translations %} (for a language, all of its tabs){% endif %}.
 {% endif %}
