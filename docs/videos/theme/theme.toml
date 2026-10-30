@@ -1,0 +1,79 @@
+# The look every video shares. Slides read [palette] and [fonts] as CSS
+# variables (--bg, --font-heading, ...); tapes read [terminal]; narration
+# reads [narration.<lang>]. Changing a value here re-renders every scene
+# that uses it, and only those.
+
+[video]
+width = 1920
+height = 1080
+fps = 30
+
+[timing]
+# Seconds of picture before the narration starts and after it ends.
+lead = 0.6
+tail = 0.9
+# Pause between sentences.
+sentence_gap = 0.35
+# Slides fade in from and out to the background color.
+slide_fade = 0.5
+
+[palette]
+bg = "#10242f"
+surface = "#1b3a48"
+ink = "#f4efe6"
+muted = "#a9bcc4"
+accent = "#f2a541"   # warm gold: titles, the prompt
+accent2 = "#4fb3a9"  # teal: Alice
+accent3 = "#e07a5f"  # terracotta: Bill
+ground = "#2c5a4a"
+
+[fonts]
+# Stacks, so a machine without the first font still renders.
+heading = "'Inter Display', Inter, 'Helvetica Neue', Arial, sans-serif"
+body = "Inter, 'Helvetica Neue', Arial, sans-serif"
+mono = "'JetBrains Mono', 'DejaVu Sans Mono', Menlo, monospace"
+
+[terminal]
+# VHS settings (https://github.com/charmbracelet/vhs#settings).
+font_family = "JetBrains Mono"
+font_size = 30
+padding = 48
+typing_speed = "55ms"
+prompt = "alice@home"
+window_bar = "Colorful"
+
+[terminal.colors]
+background = "#10242f"
+foreground = "#f4efe6"
+cursor = "#f2a541"
+selection = "#2f5566"
+black = "#10242f"
+red = "#e07a5f"
+green = "#81b29a"
+yellow = "#f2a541"
+blue = "#6fa8dc"
+magenta = "#c38fd6"
+cyan = "#4fb3a9"
+white = "#f4efe6"
+brightBlack = "#5d7a86"
+brightRed = "#f09a80"
+brightGreen = "#a3d0b8"
+brightYellow = "#f7c37a"
+brightBlue = "#9cc4ea"
+brightMagenta = "#d9b1e6"
+brightCyan = "#7fd1c8"
+brightWhite = "#ffffff"
+
+# One table per narration language. A translation (script.<lang>.md) needs one.
+# engine: kokoro (synthesized) or silent (timed silence, for drafts and tests).
+[narration.en]
+engine = "kokoro"
+voice = "af_heart"
+lang = "en-us"
+speed = 1.0
+
+[narration.ja]
+engine = "kokoro"
+voice = "jf_alpha"
+lang = "ja"
+speed = 1.0

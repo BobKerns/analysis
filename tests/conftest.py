@@ -493,6 +493,18 @@ def prototype_data(repo_root: Path) -> Path:
     return repo_root / "prototype_data"
 
 
+@pytest.fixture(scope="function")
+def videos_root(tmp_path: Path, repo_root: Path) -> Path:
+    """A private docs/videos: the repo's theme and assets, no videos yet.
+
+    Tests write a video folder (``videos_root / "01-x" / "script.md"``) into it.
+    """
+    root = tmp_path / "videos"
+    for part in ("theme", "assets"):
+        shutil.copytree(repo_root / "docs" / "videos" / part, root / part)
+    return root
+
+
 @pytest.fixture(scope="session")
 def variant_a_scenario_create(data_dir: Path) -> Path:
     """Fixture to provide the path to the variant_a scenario within the data directory."""
