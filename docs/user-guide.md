@@ -1305,6 +1305,44 @@ always shows exactly what decided it. The design, and the API a strategy is
 written against, are in
 [ADR-010](architecture/ADR-010-responsive-strategies.md).
 
+### 4.17 Spend less after bad years (spending strategies)
+
+Your scheduled rules spend the same inflation-indexed amount every year,
+whatever the markets do. A **spending strategy** changes that: it owns the
+rules carrying a tag and decides, each January, how much of their budget to
+spend that year.
+
+1. Tag the rules it may change, for example the optional ones:
+   `sim scheduled tag add travel flex:optional`, and the same for gifts.
+   Only `fixed_amount` rules can be owned.
+2. `sim strategy add` asks for the kind, the rule tag (`flex:optional`) and
+   its parameters. Three are built in:
+   - `threshold` spends the tagged rules only in a year that starts with
+     the portfolio above a minimum (and, if you like, not after a year it
+     lost money).
+   - `guardrail` (Guyton-Klinger) cuts the tagged spending 10% when the
+     withdrawal rate has risen 20% above where it started, raises it 10%
+     when it has fallen 20% below, and skips the inflation raise after a
+     down year.
+   - `ceiling_floor` aims at a share of the portfolio but never lets
+     spending rise more than 5% or fall more than 2.5% in a year, after
+     inflation.
+
+Each rule still says what you planned, and the run keeps both: what the
+plan would have spent and what was spent.
+`sim report spending` puts them side by side, year by year, in today's
+dollars: budgeted, delivered, the difference and the share of plan, then
+how much of the spending went somewhere other than the plan's mix
+(`redirected`) and how much of each group's budget was spent (`filled:`).
+`--by tag:category` groups it by your own tags. `sim strategy log` shows
+each year's decision, such as
+`cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`.
+
+Compare against the plan as written the same way as above: a child
+scenario with the strategy switched off, run both, and `sim compare` them.
+The design is in
+[ADR-010 §6.2](architecture/ADR-010-responsive-strategies.md).
+
 ## 5. Looking at your results
 
 A **run** is what happens when the simulator plays a scenario forward, month

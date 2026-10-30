@@ -258,7 +258,7 @@ ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "we
 
 # Per-scenario strategies.csv and targets.csv (#326, ADR-003 §4.12, §4.13).
 STRATEGIES_CSV_HEADER: tuple[str, ...] = (
-    "name", "kind", "chain", "start", "end", "enabled", "params_json", "description",
+    "name", "kind", "chain", "rules", "start", "end", "enabled", "params_json", "description",
 )
 TARGETS_CSV_HEADER: tuple[str, ...] = ("target_set", "as_of", "asset_class", "weight")
 CASH_SYMBOL = "CASH"

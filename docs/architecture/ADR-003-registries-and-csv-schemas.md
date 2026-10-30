@@ -930,14 +930,15 @@ Which responsive strategies the scenario runs ([ADR-010](ADR-010-responsive-stra
 | --- | --- | --- | --- |
 | `name` | text | ✓ | unique within the scenario's lineage |
 | `kind` | text | ✓ | a registered kind (`sim strategy kinds`) |
-| `chain` | text | ✓ | the interior chain it owns (§4.7): not an account's own leaf chain. A source chain needs a kind with a `draw` hook, a destination chain one with `place`. One enabled strategy per chain |
+| `chain` | text | | the interior chain it owns (§4.7): not an account's own leaf chain. A source chain needs a kind with a `draw` hook, a destination chain one with `place`. One enabled strategy per chain |
+| `rules` | tag | | a scheduled-rule tag (`role:name`, §4.6): the strategy owns every rule carrying it, and its `scale` hook decides what each posting spends ([ADR-010](ADR-010-responsive-strategies.md) §6.2). Only `fixed_amount` rules, each owned by one enabled strategy. A row gives `chain`, `rules` or both. A file written before the column loads unchanged |
 | `start` | YYYY-MM | | first month it decides; blank is the scenario's start |
 | `end` | YYYY-MM | | last month it decides; blank is the end. Outside `start`/`end` the chain's steps decide alone |
 | `enabled` | bool | | `true` (blank) or `false`. A disabled row is still checked; a child sets it `false` to run a parent's scenario without the strategy |
 | `params_json` | json | | an object of the kind's parameters, with percents (`"5%"`) and dollars (`"1200.00"`) written as in CSV cells; checked against the kind and stored in cents and millionths |
 | `description` | text | | |
 
-A kind that fails to import, an unknown kind, a chain that doesn't fit, a parameter the kind rejects (a tag no account carries, a target set `targets.csv` lacks), or an unclassified lot in a tagged portfolio (§4.1b) is a load error naming the row. `sim strategy add|edit|delete` edit the file through a staged edit (§7); editing an inherited row writes an override of the whole row, and deleting an inherited one is refused in favor of `--disable`.
+A kind that fails to import, an unknown kind, a chain that doesn't fit, a `rules` tag no rule carries or one carried by a rule of another kind, a parameter the kind rejects (a tag no account carries, a target set `targets.csv` lacks), or an unclassified lot in a tagged portfolio (§4.1b) is a load error naming the row. `sim strategy add|edit|delete` edit the file through a staged edit (§7); editing an inherited row writes an override of the whole row, and deleting an inherited one is refused in favor of `--disable`.
 
 #### 4.13 Per-scenario: `data_repo/scenarios/<name>/targets.csv` (optional)
 
@@ -1300,3 +1301,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#305](https://github.com/BobKerns/analysis/issues/305): `scenario_compare.ipynb` shows each rail's margins across scenarios (§4.11).
 - [#356](https://github.com/BobKerns/analysis/issues/356): `calendar edit` offers `name` on every event row, offers to name an unnamed inherited row where it is defined before changing its key, and takes its changes as options (§7).
 - [#289](https://github.com/BobKerns/analysis/issues/289): `sim init` copies `templates/` into a new data repo the way `link-data.sh --template` does (§4.5a).
+- [#387](https://github.com/BobKerns/analysis/issues/387): `strategies.csv` gains `rules`, the scheduled-rule tag a spending strategy owns; `chain` is no longer required (§4.12).

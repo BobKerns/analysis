@@ -647,7 +647,7 @@ def test_strategy_add_with_options_writes_a_checked_row(
                   "--scenario", "alice_rebalance")
     assert result.exit_code == 0, result.output
     text = strategy_csv("alice_rebalance", "strategies.csv").read_text()
-    assert 'steer,rebalance,portfolio_draw,2027-01,,,"{""portfolio"":""portfolio:invest"",""targets"":' in text
+    assert 'steer,rebalance,portfolio_draw,,2027-01,,,"{""portfolio"":""portfolio:invest"",""targets"":' in text
     assert '""band"":""3%""' in text
 
 

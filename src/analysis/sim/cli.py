@@ -3253,9 +3253,10 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
     if not _has_table(con, "strategy_decision"):
         return
     rows = con.execute(
-        "SELECT s.name, s.kind, c.name, COUNT(d.id), COALESCE(SUM(d.asked_cents), 0), "
-        "       COALESCE(SUM(d.chosen_cents), 0), COALESCE(SUM(d.fallback_cents), 0) "
-        "FROM strategy s JOIN chain c ON c.id = s.chain_id "
+        f"SELECT s.name, s.kind, {strategy_guide.owns_sql(con)}, COUNT(d.id), "
+        "       COALESCE(SUM(d.asked_cents), 0), COALESCE(SUM(d.chosen_cents), 0), "
+        "       COALESCE(SUM(d.fallback_cents), 0) "
+        "FROM strategy s LEFT JOIN chain c ON c.id = s.chain_id "
         "LEFT JOIN strategy_decision d ON d.strategy_id = s.id GROUP BY s.id ORDER BY s.name"
     ).fetchall()
     if not rows:
@@ -8807,12 +8808,17 @@ def report_group_command() -> None:
     """Income, expenses, gains and tax by year, from a run."""
 
 
+def _check_by(by: str) -> None:
+    """A flow report's ``--by``: category, account or tag:ROLE."""
+    if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
+        raise click.ClickException("--by must be category, account or tag:ROLE")
+
+
 def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bool,
                  dollars: str, runfile: Path | None, scenario: str | None,
                  data_dir: Path | None, *, pre_tax: bool = False,
                  as_graph: bool = False, graph_file: Path | None = None) -> None:
-    if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
-        raise click.ClickException("--by must be category, account or tag:ROLE")
+    _check_by(by)
     if untagged and not by.startswith("tag:"):
         raise click.ClickException("--untagged needs --by tag:ROLE")
     mode = DollarMode(dollars)
@@ -8939,6 +8945,52 @@ def report_expenses_command(
     """
     _flow_report("expenses", year, by, untagged, dollars, runfile, scenario, data_dir,
                  as_graph=as_graph, graph_file=graph_file)
+
+
+@report_group_command.command("spending")
+@click.option("--by", "by", default="category", show_default=True,
+              help="Group by category (default), account, or tag:ROLE, as `sim report expenses` does.")
+@_report_options
+def report_spending_command(
+    by: str, dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show spending against the plan by year: what spending strategies
+    delivered against the budget their rules set (#387).
+
+    The level comes first: budgeted (what the rules would have spent),
+    delivered (what `sim report expenses` counts), their difference and
+    of_plan. Then the shape: redirected, the share of the year's spending
+    that went somewhere other than the plan's mix (half the sum of the
+    differences in each group's share), and filled:GROUP, delivered over
+    budgeted, for each group a strategy changed. Below the table: the RMS of
+    the yearly differences, redirected on average and at its worst, and the
+    cosine similarity of the two mixes (near 1 for most mixes, so read it
+    beside redirected, never instead of the level).
+    """
+    _check_by(by)
+    mode = DollarMode(dollars)
+    with _report_run(scenario, data_dir, runfile) as (rc, described):
+        try:
+            delivered, budgeted = reports.spending_by_year(rc, by=by, mode=mode)
+        except KeyError as exc:
+            raise click.ClickException(exc.args[0]) from None
+    if delivered.empty and budgeted.empty:
+        click.echo(f"no spending in {described}")
+        return
+    frame, summary = reports.spending_report(delivered, budgeted)
+    _print_report(frame, f"spending against plan by {by.removeprefix('tag:')}", described, mode)
+    if summary["of_plan"] == 1.0 and not any(k.startswith(reports.FILLED) for k in summary):
+        click.echo("no spending strategy changed this run's spending: delivered is the plan")
+        return
+    click.echo(f"over the run: {summary['of_plan']:.1%} of plan; RMS difference "
+               f"${summary['rms']:,.0f} a year")
+    click.echo(f"redirected: {summary['redirected_mean']:.1%} on average, "
+               f"{summary['redirected_worst']:.1%} at worst ({summary['redirected_worst_year']:.0f}); "
+               f"cosine similarity {summary['cosine_mean']:.3f}")
+    filled = [f"{k.removeprefix(reports.FILLED)} {v:.0%}" for k, v in summary.items()
+              if k.startswith(reports.FILLED)]
+    if filled:
+        click.echo(f"filled: {', '.join(filled)}")
 
 
 @report_group_command.command("gains")
@@ -15400,7 +15452,11 @@ def strategy_list_command(scenario: str | None, data_dir: Path | None) -> None:
 
 _STRATEGY_OPTIONS = (
     click.option("--chain", type=completion.CHAIN, default=None,
-                 help="The chain it owns: a source chain for a draw, a destination chain to place into."),
+                 help="The chain it owns: a source chain for a draw, a destination chain to place into "
+                      "('' for none)."),
+    click.option("--rules", type=completion.RULE_TAG, default=None,
+                 help="The scheduled rules it scales: those carrying this tag, e.g. spending:travel "
+                      "('' for none)."),
     click.option("--param", "param_specs", multiple=True, metavar="NAME=VALUE",
                  help="A parameter (repeatable), e.g. --param band=5%; NAME= restores its default. "
                       "`sim strategy kinds KIND` lists them."),
@@ -15424,11 +15480,46 @@ def _strategy_options(f: Callable[..., None]) -> Callable[..., None]:
 def _owned_chains(data: Path, scenario: str, cls: type[Strategy]) -> list[str]:
     """The chains a strategy of kind ``cls`` could own: interior chains of a
     role it has a hook for."""
-    roles = {"source"} if cls.hooks == {"draw"} else {"destination"} if cls.hooks == {"place"} else {
-        "source", "destination"}
+    roles = {role for role, hook in (("source", "draw"), ("destination", "place")) if hook in cls.hooks}
     with _intent_db(data, scenario) as (con, _name):
         return [n for (n, role) in con.execute(
             "SELECT name, role FROM chain WHERE role IS NOT NULL ORDER BY name") if role in roles]
+
+
+def _ask_owned(
+    data: Path, scenario: str, cls: type[Strategy], chain: str | None, rules: str | None,
+    current: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
+    """The chain and rule tag a strategy of kind ``cls`` owns, asking for
+    what is left out: a chain for a kind with a draw or place hook, a rule
+    tag for one with a scale hook (blank for none when it has both)."""
+    current = current or {}
+    wants_chain = bool({"draw", "place"} & cls.hooks)
+    wants_rules = "scale" in cls.hooks
+    both = wants_chain and wants_rules
+    if chain is None:
+        chain = ""
+        if wants_chain:
+            choices = _owned_chains(data, scenario, cls)
+            if current or both:
+                chain = _prompt_with_completion(
+                    "chain it owns" + (" (blank: none)" if both else ""), choices=choices,
+                    default=current.get("chain", ""),
+                )
+            else:
+                chain = _ask_name("chain", choices, prompt="chain it owns")
+    if rules is None:
+        rules = ""
+        if wants_rules:
+            choices = names.rule_tags(data, scenario)
+            if current or both:
+                rules = _prompt_with_completion(
+                    "rule tag it scales" + (" (blank: none)" if both else ""), choices=choices,
+                    default=current.get("rules", ""),
+                )
+            else:
+                rules = _ask_name("rule tag", choices, prompt="rule tag it scales", plural="rule tags")
+    return chain.strip(), rules.strip()
 
 
 def _merge_params(current: str, changes: Mapping[str, Any]) -> str:
@@ -15489,13 +15580,14 @@ def _write_strategy(
               help="What it does (`sim strategy kinds`).")
 @_strategy_options
 def strategy_add_command(
-    name: str | None, kind: str | None, chain: str | None, param_specs: tuple[str, ...],
-    start: str | None, end: str | None, description: str | None, enabled: bool | None,
-    scenario: str | None, data_dir: Path | None,
+    name: str | None, kind: str | None, chain: str | None, rules: str | None,
+    param_specs: tuple[str, ...], start: str | None, end: str | None, description: str | None,
+    enabled: bool | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Add a strategy to the scenario's strategies.csv. Whatever is left out
-    is asked for: the kind, the chain it owns, and each parameter (with its
-    default). The scenario must still load with it."""
+    is asked for: the kind, what it owns (a chain for a kind that draws or
+    places, a rule tag for one that scales spending), and each parameter
+    (with its default). The scenario must still load with it."""
     data = _resolve_data_dir(data_dir)
     folder, scenario_name = _strategy_dir(data, scenario)
     existing = _overlay_rows(folder, "strategies.csv")
@@ -15505,14 +15597,14 @@ def strategy_add_command(
     if name in existing:
         raise click.ClickException(f"strategy {name!r} already exists (sim strategy edit)")
     kinds = _strategy_kinds(data)
-    guided = kind is None or chain is None
+    guided = kind is None or (chain is None and rules is None)
     if kind is None:
         kind = _ask_name("strategy kind", sorted(kinds.kinds), plural="strategy kinds")
     if kind not in kinds.kinds:
         raise click.ClickException(f"no strategy kind {kind!r}; kinds: {', '.join(sorted(kinds.kinds))}")
     cls = kinds.kinds[kind]
-    if chain is None:
-        chain = _ask_name("chain", _owned_chains(data, scenario_name, cls), prompt="chain it owns")
+    if guided:
+        chain, rules = _ask_owned(data, scenario_name, cls, chain, rules)
     try:
         params = strategy_guide.parse_param_specs(cls, param_specs)
     except ValueError as exc:
@@ -15520,7 +15612,8 @@ def strategy_add_command(
     if guided:
         params.update(_ask_params(cls, {k: v for k, v in params.items() if v is not None}))
     row = {
-        "name": name, "kind": kind, "chain": chain.strip(), "start": (start or "").strip(),
+        "name": name, "kind": kind, "chain": (chain or "").strip(), "rules": (rules or "").strip(),
+        "start": (start or "").strip(),
         "end": (end or "").strip(), "enabled": "" if enabled in (None, True) else "false",
         "params_json": _merge_params("", params), "description": (description or "").strip(),
     }
@@ -15543,9 +15636,9 @@ def _pick_strategy(folder: Path, scenario_name: str, name: str | None, prompt: s
 @click.argument("name", required=False, type=completion.STRATEGY)
 @_strategy_options
 def strategy_edit_command(
-    name: str | None, chain: str | None, param_specs: tuple[str, ...], start: str | None,
-    end: str | None, description: str | None, enabled: bool | None, scenario: str | None,
-    data_dir: Path | None,
+    name: str | None, chain: str | None, rules: str | None, param_specs: tuple[str, ...],
+    start: str | None, end: str | None, description: str | None, enabled: bool | None,
+    scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Change a strategy. With no options, asks for each field and parameter
     with its current value as the default; options change just those. An
@@ -15559,15 +15652,14 @@ def strategy_edit_command(
     cls = kinds.kinds.get(row["kind"])
     if cls is None:
         raise click.ClickException(f"strategy {row['name']}'s kind {row['kind']!r} isn't defined")
-    guided = all(v is None for v in (chain, start, end, description, enabled)) and not param_specs
+    guided = all(v is None for v in (chain, rules, start, end, description, enabled)) and not param_specs
     try:
         changes = strategy_guide.parse_param_specs(cls, param_specs)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
     if guided:
         click.echo(f"{row['name']}: {strategy_guide.summary(row)}")
-        chain = _prompt_with_completion("chain it owns", choices=_owned_chains(data, scenario_name, cls),
-                                        default=row["chain"])
+        chain, rules = _ask_owned(data, scenario_name, cls, None, None, current=row)
         start = click.prompt("first month (blank: the start)", default=row["start"], show_default=False)
         end = click.prompt("last month (blank: the end)", default=row["end"], show_default=False)
         enabled = click.confirm("enabled", default=row["enabled"].strip().lower() not in ("false", "no", "0"))
@@ -15575,7 +15667,8 @@ def strategy_edit_command(
         changes = _ask_params(cls, current)
         description = click.prompt("description", default=row["description"], show_default=False)
     new = dict(row)
-    for column, value in (("chain", chain), ("start", start), ("end", end), ("description", description)):
+    for column, value in (("chain", chain), ("rules", rules), ("start", start), ("end", end),
+                          ("description", description)):
         if value is not None:
             new[column] = value.strip()
     if enabled is not None:
