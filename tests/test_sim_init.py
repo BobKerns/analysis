@@ -27,6 +27,7 @@ def _git_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 @pytest.fixture(autouse=True)
 def code_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A stand-in code worktree, so no test links the real data/shared."""
+    monkeypatch.delenv("ANALYSIS_NO_BUILDER", raising=False)
     code = tmp_path / "code"
     code.mkdir()
     monkeypatch.setattr(data_repo, "CODE_REPO_DIR", code)
@@ -198,3 +199,32 @@ def test_init_without_a_builder_touches_neither_repo(
     assert result.exit_code == 0, result.output
     assert not (code_repo / "data").exists()
     assert installs == []
+
+
+def test_init_with_no_builder_in_the_environment_touches_neither_repo(
+    tmp_path: Path, code_repo: Path, installs: list[Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANALYSIS_NO_BUILDER", "1")
+    result = _init(str(tmp_path / "repo"), *_ALICE)
+
+    assert result.exit_code == 0, result.output
+    assert not (code_repo / "data").exists()
+    assert installs == []
+
+
+def test_init_shows_paths_as_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Paths under the working directory print relative to it, and ones
+    elsewhere in the home folder as ~/..., not as full absolute paths (#374)."""
+    home = tmp_path / "home"
+    (home / "work").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(home / "work")
+
+    here = _init("retirement", *_ALICE, "--no-builder")
+    there = _init(str(home / "other"), *_ALICE, "--no-builder")
+
+    assert here.exit_code == 0 and there.exit_code == 0, here.output + there.output
+    assert "created a data repo in retirement; its data dir is retirement/sim" in here.output
+    assert "Next: source retirement/sim/activate-analysis," in here.output
+    assert "created a data repo in ~/other; its data dir is ~/other/sim" in there.output
+    assert str(tmp_path) not in here.output + there.output

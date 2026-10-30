@@ -262,6 +262,9 @@ def _sandbox(data: Path, theme: Theme, root: Path) -> Path:
                 f"export ANALYSIS_DATA_DIR={root / 'data'}",
                 f"export PATH={Path(sys.executable).parent}:$PATH",
                 *(f"export {k}={v}" for k, v in _GIT_ENV.items()),
+                # A recorded `sim init` mustn't link this checkout's data/shared
+                # or start background builds.
+                "export ANALYSIS_NO_BUILDER=1",
                 "unset PROMPT_COMMAND HISTFILE",
                 f"PS1='\\[\\e[38;2;{accent}m\\]{term['prompt']}\\[\\e[0m\\] $ '",
                 "",
