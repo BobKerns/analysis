@@ -375,3 +375,17 @@ def test_video_image_pins_the_builders_tool_versions(repo_root: Path) -> None:
     assert args["KOKORO_RELEASE"] == render.KOKORO_RELEASE
     for name in render.KOKORO_FILES:
         assert name in dockerfile
+
+
+def test_long_cjk_captions_break_after_commas() -> None:
+    sentence = (
+        "この年代の多くの人と同じように、ふたりの貯蓄はいくつかの種類の口座に分かれていて、聞きたいことがたくさんあります。"
+    )
+    cues = captions.scene_cues([sentence], [6.0], start=0.0, gap=0.3)
+    assert [c.text for c in cues] == [
+        "この年代の多くの人と同じように、",
+        "ふたりの貯蓄はいくつかの種類の口座に分かれていて、",
+        "聞きたいことがたくさんあります。",
+    ]
+    assert cues[-1].end == pytest.approx(6.0)
+    assert [c.text for c in captions.scene_cues(["短い文です。"], [1.0], start=0.0, gap=0.3)] == ["短い文です。"]

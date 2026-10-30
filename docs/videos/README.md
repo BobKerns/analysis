@@ -224,6 +224,17 @@ scenes, change a template, or carry tapes: the terminal shows the CLI, which
 is in English. Its front matter overrides the master's (a translated
 `title`). Each language needs a `[narration.<lang>]` table in the theme.
 
+A translation shows the English CLI, so it writes a command or scenario name
+as the screen shows it and respells it for the voice:
+`{sim explain|シム・エクスプレイン}`, `{retire alice|リタイア・アリス}`.
+`01-intro/script.ja.md` is an example. The theme's fonts end with Noto Sans
+CJK (in the video image) and Hiragino (macOS) for Japanese slides.
+
+Japanese narration is phonemized with misaki's OpenJTalk front end, as
+Kokoro's own pipeline does; espeak-ng, which kokoro-onnx uses otherwise,
+reads kanji and kana as "Chinese letter" and "Japanese letter". Its
+dictionary (about 23 MB) downloads on first use.
+
 `build` makes every language the video has, or one with `--lang`: each its
 own MP4 and SRT (`00-pilot.ja.mp4`, `00-pilot.ja.srt`). Captions are a
 separate file, not burned into the picture, which is what YouTube and most
