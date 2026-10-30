@@ -109,7 +109,9 @@ COPY historical_data/ historical_data/
 COPY prototype_data/ prototype_data/
 COPY templates/ templates/
 COPY src/ src/
-RUN uv sync --quiet --frozen --no-dev
+RUN uv sync --quiet --frozen --no-dev \
+ && ln -s /opt/venv .venv
+# (.venv: activate-analysis, which video 2 sources, looks for the code's venv there.)
 
 # An identity for commits made in the container (`sim init`, the CLI's
 # data commits), which has no user of its own.

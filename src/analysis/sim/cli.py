@@ -3819,7 +3819,8 @@ def commit_command(
 @click.option("--no-commit", is_flag=True,
               help="Leave the new files uncommitted (and DIR not a git repository).")
 @click.option("--no-builder", is_flag=True,
-              help="Don't turn on background builds (for scripts and tests).")
+              help="Don't turn on background builds (for scripts and tests); "
+                   "ANALYSIS_NO_BUILDER=1 does the same.")
 def init_command(
     directory: Path | None, person_id: str | None, display: str | None, birthdate: str | None,
     sex: str | None, filing_status: str | None, no_commit: bool, no_builder: bool,
@@ -3840,11 +3841,16 @@ def init_command(
     data/shared isn't there yet, and installs DIR's git hooks. --no-builder
     leaves both alone, for scripts and tests, where a background build is
     no use; so does --no-commit, since the builder needs a git repository.
+    So does ANALYSIS_NO_BUILDER set in the environment, as for setup.sh.
 
     Refuses a DIR that already holds a data repo.
     """
     from analysis.sim import data_repo
 
+    # The variable setup.sh honors too: a recording (the setup video, #374)
+    # shows `sim init` as typed, so it can't pass --no-builder, and must not
+    # link or hook anything in the checkout it records from.
+    no_builder = no_builder or bool(os.environ.get("ANALYSIS_NO_BUILDER"))
     if directory is None:
         directory = Path(click.prompt("directory for the new data repo", default="."))
     root = directory.expanduser().resolve()

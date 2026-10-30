@@ -27,6 +27,7 @@ def _git_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 @pytest.fixture(autouse=True)
 def code_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A stand-in code worktree, so no test links the real data/shared."""
+    monkeypatch.delenv("ANALYSIS_NO_BUILDER", raising=False)
     code = tmp_path / "code"
     code.mkdir()
     monkeypatch.setattr(data_repo, "CODE_REPO_DIR", code)
@@ -194,6 +195,17 @@ def test_init_without_a_builder_touches_neither_repo(
     tmp_path: Path, code_repo: Path, installs: list[Path], flag: str,
 ) -> None:
     result = _init(str(tmp_path / "repo"), *_ALICE, flag)
+
+    assert result.exit_code == 0, result.output
+    assert not (code_repo / "data").exists()
+    assert installs == []
+
+
+def test_init_with_no_builder_in_the_environment_touches_neither_repo(
+    tmp_path: Path, code_repo: Path, installs: list[Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANALYSIS_NO_BUILDER", "1")
+    result = _init(str(tmp_path / "repo"), *_ALICE)
 
     assert result.exit_code == 0, result.output
     assert not (code_repo / "data").exists()
