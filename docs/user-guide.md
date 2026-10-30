@@ -8,6 +8,7 @@ This guide shows how to make common changes to a scenario, step by step, with
 real examples, and how to look at what a run produced. It assumes you already
 have a data repo. If you don't, start one with `sim init DIR`, which asks who you
 are and builds it from the code repository's templates ([templates/README.md](../templates/README.md)).
+The one-line installer ([SETUP.md](SETUP.md)) does that for you.
 
 For the reasons behind these designs, see the documents in
 `docs/architecture/`. [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) lists every CSV column in detail. This guide
@@ -1338,6 +1339,14 @@ data are committed and the same as when it ran) and says so; `sim all
 --force` reruns everything. If you added
 the VS Code tasks (see below), you don't need to type either command: use the
 **Run All Scenarios** task.
+
+A run is reproducible only from committed data, so when you've changed a
+scenario's files since the last commit, `sim run` lists them and asks
+whether to commit them first (Enter means yes). It commits only those files,
+with a message naming them, such as `Edit base: accounts.csv`. Answer no and
+it doesn't run. `sim run --commit` commits without asking, and
+`sim commit [scenario]` commits without running, which is all you need when
+background builds do your runs.
 
 ### A quick first look
 

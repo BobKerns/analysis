@@ -534,3 +534,44 @@ def test_a_cancelled_builds_output_stays_under_its_record(
     records = builder_log.read_records(daemon.paths.dir)
     assert [r.text for r in records] == [f"building {name}", f"cancelled {name}: test"]
     assert records[0].body == ["  started"] and records[1].body == []
+
+
+# -- #308: a command that commits and builds holds its scenarios ---------------
+
+
+def test_a_held_scenario_stops_its_build_and_waits_for_the_command(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir)})
+    monkeypatch.setattr(builder, "_holding", {})
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.queue.remove("base")
+    daemon.queue.insert(0, "base")
+    daemon.start_next(("t1",))
+    assert daemon.build is not None and daemon.build.scenario == "base"
+
+    builder.hold(daemon.data_dir, ["base"])
+    daemon.scan()
+    assert daemon.build is None  # stopped, not left to race the command
+    assert "base" not in daemon.queue and "retire_alice" in daemon.queue
+    assert daemon.cancelled["base"]["why"] == f"a command (pid {os.getpid()}) is building it"
+    assert not builder._pending(daemon.paths, daemon.data_dir, "base")
+
+    # Its command ends without its exit handler (killed): the hold lapses.
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    builder._write_json(daemon.paths.holds / f"{os.getpid()}.json",
+                        {"pid": gone.pid, "scenarios": ["base"]})
+    assert builder.held(daemon.paths) == {}
+    daemon.scan()
+    assert "base" in daemon.queue
+
+
+def test_hold_does_nothing_where_the_builder_is_not_installed(
+    pair: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _code, data_dir = pair
+    monkeypatch.setattr(builder, "_holding", {})
+    builder.hold(data_dir, ["base"])
+    assert not BuilderPaths.for_data(data_dir).holds.exists()

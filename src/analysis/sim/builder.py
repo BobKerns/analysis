@@ -34,6 +34,7 @@ per data worktree): ``config.json`` (the opt-in and the pair),
 
 from __future__ import annotations
 
+import atexit
 import fcntl
 import json
 import os
@@ -43,7 +44,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -120,6 +121,11 @@ class BuilderPaths:
     @property
     def requests(self) -> Path:
         return self.dir / "requests"
+
+    @property
+    def holds(self) -> Path:
+        """Scenarios a command is building itself (#308), a file per process."""
+        return self.dir / "holds"
 
     @property
     def log_dir(self) -> Path:
@@ -314,6 +320,62 @@ def notify(data_dir: Path, *, start: bool = True) -> str:
     return "started the background builder"
 
 
+# -- holds -------------------------------------------------------------------------
+
+# This process's hold file, once it has one, and what it holds.
+_holding: dict[Path, set[str]] = {}
+
+
+def hold(data_dir: Path, scenarios: Sequence[str]) -> None:
+    """Keep the background builder off ``scenarios`` while this process
+    lives (#308). A command that commits their data and then builds them
+    would otherwise race the build that the commit's hook starts, and one
+    of the two would build them again; a build of one already running is
+    stopped. Does nothing where the builder isn't installed."""
+    if not scenarios:
+        return
+    paths = BuilderPaths.for_data(data_dir)
+    if read_config(paths) is None:
+        return
+    path = paths.holds / f"{os.getpid()}.json"
+    if path not in _holding:
+        _holding[path] = set()
+        atexit.register(path.unlink, missing_ok=True)
+    _holding[path].update(scenarios)
+    _write_json(path, {"pid": os.getpid(), "scenarios": sorted(_holding[path])})
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # someone else's, but there
+    return True
+
+
+def held(paths: BuilderPaths) -> dict[str, int]:
+    """Each held scenario and the pid of the command holding it. A hold
+    whose process has gone (killed, so its exit handler never ran) is
+    removed."""
+    out: dict[str, int] = {}
+    if not paths.holds.is_dir():
+        return out
+    for path in paths.holds.glob("*.json"):
+        try:
+            body = json.loads(path.read_text())
+            pid = int(body["pid"])
+            names = [str(name) for name in body["scenarios"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # being written; the next look sees it whole
+        if not _alive(pid):
+            path.unlink(missing_ok=True)
+            continue
+        out.update(dict.fromkeys(names, pid))
+    return out
+
+
 # -- the daemon ----------------------------------------------------------------
 
 
@@ -344,6 +406,8 @@ class _Daemon:
         # Builds preempted for a scenario someone is waiting on: next in line.
         self.resume: list[str] = []
         self.waiting: dict[str, str] = {}
+        # Scenarios a command is building itself (hold()), and its pid.
+        self.held: dict[str, int] = {}
         self.status = read_status(self.paths)
         self.failed: dict[str, dict[str, Any]] = dict(self.status.get("failed") or {})
         # Builds stopped because their inputs changed (an edit, #309), so a
@@ -402,7 +466,8 @@ class _Daemon:
         _write_json(self.paths.status, {
             "pid": os.getpid(), "state": self.state, "reason": self.reason,
             "current": current, "queue": self.queue, "waiting": self.waiting,
-            "failed": self.failed, "cancelled": self.cancelled, "updated": time.time(),
+            "failed": self.failed, "cancelled": self.cancelled, "held": self.held,
+            "updated": time.time(),
         })
 
     def scan(self) -> None:
@@ -427,8 +492,12 @@ class _Daemon:
         code = code_tree()
         queue, waiting = [], {}
         disabled = read_disabled_scenarios(self.data_dir)
+        self.held = held(self.paths)
         for name in list_scenario_names(self.data_dir):
             if name in disabled:  # only built when named
+                continue
+            if name in self.held:
+                waiting[name] = f"being built by pid {self.held[name]}"
                 continue
             data = data_stamps(self.data_dir, name)
             if data.dirty:
@@ -444,6 +513,8 @@ class _Daemon:
         def why_dropped(name: str) -> str:
             if name in disabled:
                 return "it was disabled"
+            if name in self.held:
+                return f"a command (pid {self.held[name]}) is building it"
             if name in waiting:
                 return "its data has uncommitted changes"
             return "its inputs changed"
@@ -455,7 +526,7 @@ class _Daemon:
                 self.cancelled[name] = {"at": time.time(), "why": why_dropped(name)}
         if self.build is not None:
             name = self.build.scenario
-            if name in disabled or self.build.key != self.key(name, trees):
+            if name in disabled or name in self.held or self.build.key != self.key(name, trees):
                 why = why_dropped(name)
                 self.cancel(f"{name}: {why}")
                 self.cancelled[name] = {"at": time.time(), "why": why}
@@ -598,6 +669,8 @@ class _Daemon:
                         name = request["scenario"]
                         self.first = [name, *[n for n in self.first if n != name]]
                 if self.finished():
+                    rescan = True
+                if held(self.paths) != self.held:  # one taken, or its command ended
                     rescan = True
                 if rescan:
                     rescan = False
@@ -760,6 +833,8 @@ def _pending_build(runs_dir: Path, scenario: str) -> tuple[BuilderPaths, Path] |
 
 def _pending(paths: BuilderPaths, data_dir: Path, scenario: str) -> bool:
     """Whether the builder has (or would have) a build of ``scenario`` to do."""
+    if scenario in held(paths):
+        return False  # a command is building it; its build lock is what to wait on
     if daemon_alive(paths):
         status = read_status(paths)
         current = (status.get("current") or {}).get("scenario")

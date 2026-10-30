@@ -4,7 +4,30 @@
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
-Run the setup script (idempotent — safe to re-run):
+## Install with one line
+
+If you don't have the code yet, or don't use git, paste this into a terminal
+(macOS, Linux or WSL):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+```
+
+It installs git if it's missing (on macOS, Apple's command-line tools: finish
+installing them in the window that opens, then paste the line again),
+downloads the code into `~/retirement/analysis`, runs the setup script below,
+and creates your data repo in `~/retirement/data` with `sim init`, asking who
+you are. It asks before using either place, and an existing data repo at the
+data place is linked rather than created. Paste the same line again to
+update: it brings the code up to date (unless you've changed it, or switched
+it to another branch, which it says) and re-runs setup. Without a terminal,
+pass the answers as options, `... | sh -s -- --yes --id alice --display
+"Alice Example" --birthdate 1960-05-01 --filing-status MFJ`; the comment at
+the top of [`scripts/install.sh`](../scripts/install.sh) lists them all.
+
+## The setup script
+
+In a clone of the code, run the setup script (idempotent — safe to re-run):
 
 ```sh
 ./scripts/setup.sh
@@ -45,11 +68,13 @@ verification gates do.
 
 Last, it links the data and code repositories together. It asks for the path to
 your data repo, makes `data/shared` point to it, and asks which of the data
-repo's primary persons you are. Leave the path blank and it fills `data/shared`
-with the template data instead, used as a `test` person, which is what CI does.
-To start a data repo of your own, finish setup with the template data, remove
-`data/shared`, and run `.venv/bin/sim init DIR`: it links `data/shared` to the
-new repo and turns on background builds. Either way, this then gives you a working environment:
+repo's primary persons you are. Give a path with no data repo yet and it offers
+to create one there with `sim init`, which asks who you are. Leave the path
+blank and it fills `data/shared` with the template data instead, used as a
+`test` person, which is what CI does. Arguments to `setup.sh` go to
+`scripts/link-data.sh` instead of the question: a data repo's path,
+`--new PATH` (with `sim init`'s options, if you like) or `--template`.
+Either way, this then gives you a working environment:
 
 ```sh
 source data/shared/sim/activate-analysis
@@ -131,7 +156,8 @@ hand with `.venv/bin/analysis research-plugin install` or `uninstall`; see
     ```sh
     scripts/link-data.sh /path/to/data-repo   # or --template for template data
     ```
-    With no argument it asks for the path. Once `data/shared` exists, re-running
+    `--new PATH` creates a data repo there with `sim init` first. With no
+    argument it asks for the path. Once `data/shared` exists, re-running
     it leaves it alone; remove `data/shared` to link a different data repo.
 10. Turn on background scenario builds, for a linked data repo:
     ```sh

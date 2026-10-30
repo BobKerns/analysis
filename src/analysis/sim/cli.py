@@ -179,6 +179,61 @@ def _builds(fn):
     return wrapper
 
 
+# Set once a command has offered to commit (#308), so `load` invoking
+# `run`, or `sim all` invoking `load` per scenario, doesn't ask again.
+_COMMIT_OFFERED = "analysis.sim.commit_offered"
+
+_commit_option = click.option(
+    "--commit", "commit", is_flag=True, default=False,
+    help="Commit the scenario's uncommitted data changes first, without asking "
+         "(at a terminal, sim asks). See `sim commit`.",
+)
+
+
+def _offer_commit(
+    data_dir: Path, names: Sequence[str], *, commit: bool, allow_dirty_data: bool, command: str,
+) -> None:
+    """Commit the changes that make ``names`` dirty (#308): with ``commit``,
+    at once; at a terminal, after asking (yes by default). Otherwise, or
+    when the answer is no, nothing happens and the load refuses as before,
+    unless ``allow_dirty_data``."""
+    ctx = click.get_current_context(silent=True)
+    if ctx is not None:
+        if ctx.meta.get(_COMMIT_OFFERED):
+            return
+        ctx.meta[_COMMIT_OFFERED] = True
+    if os.environ.get(BUILDER_CHILD_ENV) or (allow_dirty_data and not commit):
+        return
+    if not commit and not _interactive():
+        return
+    from analysis.sim import data_commit
+    from analysis.sim.provenance import scoped_changes
+
+    changes = scoped_changes(data_dir, names)
+    if not changes:
+        return
+    if not commit:
+        what = names[0] if len(names) == 1 else "these scenarios"
+        click.echo(f"{what}: data has uncommitted changes:", err=True)
+        for status, path in changes:
+            click.echo(f"  {path}{data_commit.note(status)}", err=True)
+        if not click.confirm("Commit them so the run is reproducible?", default=True,
+                             err=True):
+            return
+    # The commit's hook wakes the background builder, which would build
+    # these alongside this command (#308).
+    from analysis.sim import builder
+    from analysis.sim.provenance import changed_scenarios
+
+    builder.hold(data_dir, changed_scenarios(data_dir, names, changes))
+    try:
+        sha, subject = data_commit.commit(data_dir, changes, command=command)
+    except data_commit.CommitError as exc:
+        click.echo(f"not committed: {exc}", err=True)
+        return
+    click.echo(f"committed {sha[:7]}: {subject}", err=True)
+
+
 @click.group(name="sim")
 def sim_group_command() -> None:
     """Scenario-based finance simulator."""
@@ -224,6 +279,7 @@ def sim_group_command() -> None:
     default=True,
     help="Also run the scenario after loading (default). Use --no-run to only build the intent file.",
 )
+@_commit_option
 @click.pass_context
 @_builds
 def load(
@@ -236,6 +292,7 @@ def load(
     allow_dirty_code: bool,
     run_by: str | None,
     run_after_load: bool,
+    commit: bool = False,
 ) -> None:
     """Build state/intent/<scenario>.sqlite3 from the data repo, then run it.
 
@@ -247,6 +304,8 @@ def load(
     resolved = _resolve_data_dir(data_dir)
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved)
     ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
+    _offer_commit(resolved, [ref.name], commit=commit, allow_dirty_data=allow_dirty_data,
+                  command=f"sim load {ref.name}")
     if is_pool(resolved / "scenarios", ref.name):
         # ADR-009: nothing to load; with the run, the pool is built.
         if not run_after_load:
@@ -283,6 +342,17 @@ def _load_locked(
     run_after_load: bool,
 ) -> None:
     """``sim load``'s work, under the scenario's build lock."""
+    if os.environ.get(BUILDER_CHILD_ENV) and run_after_load:
+        # A background build that waited for this lock: a `sim run` just
+        # made the run it was going to (often right after committing, which
+        # woke the builder; #308).
+        from analysis.sim.freshness import code_tree, unchanged_run
+
+        fresh = unchanged_run(resolved, _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved),
+                              name, code_tree())
+        if fresh is not None:
+            click.echo(f"{name}: unchanged since {fresh.path.name}; nothing to build")
+            return
     try:
         result = load_scenario(
             resolved, name, intent_dir=resolved_intent_dir,
@@ -567,6 +637,7 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
     "--rebuild", is_flag=True, default=False,
     help="A pool (ADR-009): rerun every component, even those whose latest run is current.",
 )
+@_commit_option
 @_builds
 def run(
     scenario_name: str | None,
@@ -582,6 +653,7 @@ def run(
     quantiles_text: str | None,
     jobs: int,
     rebuild: bool = False,
+    commit: bool = False,
 ) -> None:
     """Load <scenario> fresh from the data repo, then run it and write a new run file.
 
@@ -617,6 +689,9 @@ def run(
         scenario_name = _resolve_scenario(resolved_data_dir, scenario_name).name
         if is_mixin_only(resolved_data_dir / "scenarios", scenario_name):
             _refuse_mixin_only_run(scenario_name, sc.dependents(resolved_data_dir / "scenarios", scenario_name))
+    if resolved_data_dir is not None:
+        _offer_commit(resolved_data_dir, [scenario_name], commit=commit,
+                      allow_dirty_data=allow_dirty_data, command=f"sim run {scenario_name}")
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     is_a_pool = resolved_data_dir is not None and is_pool(resolved_data_dir / "scenarios", scenario_name)
@@ -977,8 +1052,9 @@ def _run_pool(
         # The loader's gate (ADR-004 §3), which nothing here calls: the
         # pool's folder or a component's lineage has uncommitted changes.
         raise click.ClickException(
-            f"{pool_name}: data dirty; refusing to build the pool (commit the changes, or pass "
-            f"--allow-dirty-data): {', '.join(stamps.dirty_paths)}")
+            f"{pool_name}: data dirty; refusing to build the pool (commit the changes with "
+            f"`sim commit` or --commit, or pass --allow-dirty-data): "
+            f"{', '.join(stamps.dirty_paths)}")
     with _build_lock(intent_dir, pool_name):
         batch, intent_batch, runs_batch = _reserve_batch(pool_name, intent_dir, runs_dir)
         try:
@@ -2841,6 +2917,7 @@ def _report_oat(
     "--force", is_flag=True, default=False,
     help="Rerun every scenario, even one whose latest run can't have changed.",
 )
+@_commit_option
 @click.pass_context
 @_builds
 def all_scenarios(
@@ -2852,6 +2929,7 @@ def all_scenarios(
     allow_dirty_code: bool,
     run_by: str | None,
     force: bool,
+    commit: bool = False,
 ) -> None:
     """Load and run every scenario in the data repo.
 
@@ -2885,6 +2963,9 @@ def all_scenarios(
     if mixins := [name for name in names if is_mixin_only(resolved / "scenarios", name)]:
         names = [name for name in names if name not in mixins]
         click.echo(f"mix-in only, not run: {', '.join(mixins)}")
+    # One question, and one commit, for all of them (#308).
+    _offer_commit(resolved, names, commit=commit, allow_dirty_data=allow_dirty_data,
+                  command="sim all")
     # Pools last (ADR-009): they take their members from the others' batches.
     names.sort(key=lambda name: is_pool(resolved / "scenarios", name))
     # Components settled earlier in this run, so a pool needn't check or
@@ -3670,6 +3751,58 @@ def _echo_guard_rail_comparison(
     for rail, frame in frames.items():
         click.echo(f"\n{rail}:")
         _echo_frame(frame.map(_cell))
+
+
+@sim_group_command.command("commit")
+@click.argument("scenario_name", type=completion.SCENARIO, required=False)
+@click.option("--all", "every", is_flag=True, default=False,
+              help="Every scenario's changes, not just one scenario's.")
+@click.option("-m", "--message", default=None,
+              help="The commit's first line (default: written from the changed files).")
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+def commit_command(
+    scenario_name: str | None, every: bool, message: str | None, data_dir: Path | None,
+) -> None:
+    """Commit a scenario's changed data, so its runs are reproducible (#308).
+
+    Commits only the changes a run of SCENARIO (the current scenario when
+    left out) would read, which `sim run` would call dirty: its folder, its
+    parents' and mix-ins', and the shared files. Anything else changed in
+    the data repo is left as it is. With background builds on, the builder
+    then picks the scenario up. `sim run --commit` does the same before a run.
+    """
+    from analysis.sim import data_commit
+    from analysis.sim.provenance import scoped_changes
+
+    resolved = _resolve_data_dir(data_dir)
+    if every:
+        if scenario_name is not None:
+            raise click.UsageError("give a scenario or --all, not both")
+        try:
+            names = list_scenario_names(resolved)
+        except LoadError as exc:
+            raise click.ClickException("; ".join(exc.issues)) from None
+        command = "sim commit --all"
+    else:
+        names = [_resolve_scenario(resolved, scenario_name).name]
+        command = f"sim commit {names[0]}"
+    changes = scoped_changes(resolved, names)
+    if not changes:
+        click.echo("nothing to commit: " + ("no scenario's data has changed" if every
+                                            else f"{names[0]}'s data has no changes"))
+        return
+    try:
+        sha, subject = data_commit.commit(resolved, changes, command=command, subject=message)
+    except data_commit.CommitError as exc:
+        raise click.ClickException(f"not committed: {exc}") from None
+    click.echo(f"committed {sha[:7]}: {subject}")
+    for _status, path in changes:
+        click.echo(f"  {path}")
 
 
 @sim_group_command.command("init")
