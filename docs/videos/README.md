@@ -62,6 +62,7 @@ Meet Alice and Bill.
 ```tape
 Type "sim networth"
 Enter
+Wait
 Sleep 6s
 ```
 
@@ -97,8 +98,10 @@ file, the theme's terminal settings, and a hidden setup that:
 - puts this checkout's `sim`/`analysis` on `PATH`;
 - sets the prompt (`alice@home $`, from the theme).
 
-Set-up the viewer shouldn't see goes between `Hide` and `Show`. Pace the
-typing with `Sleep` so the picture keeps up with the narration; the
+Set-up the viewer shouldn't see goes between `Hide` and `Show`. After a
+command's `Enter`, put `Wait`: it waits for the prompt to come back, however
+long the command takes (a fixed `Sleep` breaks when a first run is slow).
+Pace the rest with `Sleep` so the picture keeps up with the narration; the
 narration starts `lead` seconds into the scene. A tape must not set
 `Output`.
 
@@ -198,6 +201,14 @@ build prints what it made and what it reused:
 Requirements: `ffmpeg`, `uv`, Playwright's Chromium (`uv run playwright
 install chromium`), and for tapes VHS and ttyd (`setup` downloads them on
 Linux; `brew install vhs` on macOS).
+
+## Resolution
+
+Slides and the terminal are laid out at 1920x1080 and rendered at
+`[video] scale` times that: 2, so the videos are 4K (3840x2160). YouTube
+encodes 4K uploads at a much higher bitrate, which keeps terminal text sharp
+even for viewers watching at 1080p. The terminal font is 36 layout pixels,
+about 84 columns by 22 rows; keep a command's output within that.
 
 ## Thumbnail, preview and ending
 

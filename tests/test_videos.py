@@ -162,6 +162,18 @@ def test_theme_has_a_voice_per_translation_language(repo_root: Path) -> None:
         theme.narration("xx")
 
 
+def test_scale_renders_the_layout_at_more_pixels(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    theme.data["video"]["scale"] = 2
+    theme.data["terminal"]["font_size"] = 36
+    settings = theme.vhs_settings()
+    assert (theme.out_width, theme.out_height) == (2 * theme.width, 2 * theme.height)
+    assert "Set FontSize 72" in settings and f"Set Width {2 * theme.width}" in settings
+    assert f"--width: {theme.width}px;" in theme.css()  # templates lay out in layout pixels
+    prompt = theme.data["terminal"]["prompt"]
+    assert any(s.startswith("Set WaitPattern /") and prompt in s for s in settings)
+
+
 def test_slide_html_fills_template_inlines_assets_and_escapes(videos_root: Path) -> None:
     theme = themes.load(videos_root)
     html = render.slide_html(theme, {"series": "S", "title": "A <video>"}, {"template": "title"}, "en")

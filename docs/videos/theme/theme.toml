@@ -4,8 +4,13 @@
 # that uses it, and only those.
 
 [video]
+# The layout size: slides and the terminal are designed at 1920x1080.
 width = 1920
 height = 1080
+# Output pixels per layout pixel. 2 renders at 4K (3840x2160): YouTube
+# encodes 4K uploads at a much higher bitrate, which keeps terminal text
+# sharp even for viewers watching at 1080p.
+scale = 2
 fps = 30
 
 [timing]
@@ -36,7 +41,9 @@ mono = "'JetBrains Mono', 'DejaVu Sans Mono', Menlo, monospace"
 [terminal]
 # VHS settings (https://github.com/charmbracelet/vhs#settings).
 font_family = "JetBrains Mono"
-font_size = 30
+# Layout pixels (multiplied by [video] scale). 36 gives about 84 columns
+# by 22 rows: readable on a laptop screen at 1080p.
+font_size = 36
 padding = 48
 typing_speed = "55ms"
 prompt = "alice@home"

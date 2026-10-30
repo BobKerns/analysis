@@ -169,7 +169,9 @@ def render_slide(html: str, theme: Theme, out: Path) -> None:
             except Error:
                 browser = pw.chromium.launch(channel="chrome")  # an installed Google Chrome
             try:
-                page = browser.new_page(viewport={"width": theme.width, "height": theme.height})
+                page = browser.new_page(
+                    viewport={"width": theme.width, "height": theme.height}, device_scale_factor=theme.scale
+                )
                 page.goto(page_file.as_uri())
                 page.evaluate("document.fonts.ready")
                 page.screenshot(path=str(out))
@@ -274,7 +276,7 @@ def compose_args(
     video's first scene doesn't fade in (players use frame 0 as the preview)
     and its last doesn't fade out (the closing card is what stays on screen).
     """
-    w, h, fps = theme.width, theme.height, theme.fps
+    w, h, fps = theme.out_width, theme.out_height, theme.fps
     bg = theme.bg_hex()
     args = [ffmpeg, "-y", "-v", "error"]
     if still:
@@ -300,7 +302,7 @@ def compose_args(
         f"apad,atrim=duration={length:.3f}[a]"
     )
     args += ["-filter_complex", f"{video};{sound}", "-map", "[v]", "-map", "[a]"]
-    args += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", str(fps), "-pix_fmt", "yuv420p"]
+    args += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-r", str(fps), "-pix_fmt", "yuv420p"]
     args += ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-t", f"{length:.3f}", str(out)]
     return args
 
