@@ -16,6 +16,7 @@ folders, already covered the same way.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -31,8 +32,8 @@ class DataDirtyRefused(RuntimeError):
         super().__init__(
             "data repo dirty in scoped paths:\n  "
             + "\n  ".join(dirty_paths)
-            + "\nCommit/stash the changes, or pass allow_dirty_data=True"
-            " (CLI: --allow-dirty-data)."
+            + "\nCommit them (CLI: `sim commit`, or --commit), or pass"
+            " allow_dirty_data=True (CLI: --allow-dirty-data)."
         )
         self.dirty_paths = dirty_paths
 
@@ -90,6 +91,36 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
         tree_id=tree_id,
         dirty_paths=dirty_paths,
     )
+
+
+def scoped_changes(data_dir: Path, scenario_names: Sequence[str]) -> list[tuple[str, str]]:
+    """The uncommitted changes that make any of ``scenario_names`` dirty,
+    as ``(status, path)`` pairs, ``path`` relative to the repository's top
+    and ``status`` git's two porcelain letters. Untracked files are listed
+    one by one, so a new scenario folder names each file. Empty when the
+    data dir isn't in a git repository (nothing could be committed)."""
+    data_dir = data_dir.resolve()
+    repo = _open_repo(data_dir)
+    if repo is None:
+        return []
+    scoped = sorted({str(data_dir / p) for name in scenario_names
+                     for p in _scoped_paths(data_dir, name)})
+    if not scoped:
+        return []
+    out = repo.git.status("--porcelain", "-z", "--untracked-files=all", "--",
+                          *scoped, *_NOT_DATA)
+    changes: list[tuple[str, str]] = []
+    fields = iter(out.split("\0"))
+    for field in fields:
+        if not field:
+            continue
+        status, path = field[:2], field[3:]
+        changes.append((status, path))
+        if "R" in status or "C" in status:
+            # -z puts a rename's source in the next field; it's gone from
+            # the tree, so committing it records the removal.
+            changes.append(("D ", next(fields, "")))
+    return changes
 
 
 # Files in a scenario folder that no run reads, so editing one must not
