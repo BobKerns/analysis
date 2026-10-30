@@ -41,6 +41,7 @@ blockquotes
 Bogleheads
 BONDX
 BPOS
+BUILDKIT
 businesswire
 cachedir
 calevt
@@ -321,6 +322,7 @@ symlog
 tablink
 tailnet
 tailweight
+TARGETARCH
 targetdate
 taxchar
 tbill

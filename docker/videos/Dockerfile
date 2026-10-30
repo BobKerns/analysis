@@ -12,12 +12,15 @@
 #   /data              the video's own data repo (`sim init /data` makes
 #                      /data/sim): a named volume per video
 #
-# The code, templates/ (which the loader and `sim init` read) and
-# prototype_data are copied in, not mounted, so the CLI a tape
+# The code, templates/ (which the loader and `sim init` read),
+# historical_data/ (`analysis historical`'s cache) and prototype_data are
+# copied in, not mounted, so the CLI a tape
 # records is the checkout's at the time of the build; the script rebuilds
 # the image each run, which is quick when nothing changed.
 #
-# Works on amd64 and arm64 (Docker Desktop on Apple silicon).
+# Works on amd64 and arm64 (Docker Desktop on Apple silicon). Needs
+# BuildKit (docker.sh turns it on): the legacy builder ignores
+# Dockerfile.dockerignore and would send data/, out/ and state/.
 
 FROM ubuntu:24.04
 
@@ -63,10 +66,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 RUN set -eu; \
-    case "$TARGETARCH" in \
-        amd64) node=x64; uv=x86_64; vhs=x86_64; ttyd=x86_64 ;; \
-        arm64) node=arm64; uv=aarch64; vhs=arm64; ttyd=aarch64 ;; \
-        *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    case "${TARGETARCH:-$(uname -m)}" in \
+        amd64|x86_64) node=x64; uv=x86_64; vhs=x86_64; ttyd=x86_64 ;; \
+        arm64|aarch64) node=arm64; uv=aarch64; vhs=arm64; ttyd=aarch64 ;; \
+        *) echo "unsupported architecture: ${TARGETARCH:-$(uname -m)}" >&2; exit 1 ;; \
     esac; \
     gh=https://github.com; \
     mkdir /opt/node; \
@@ -102,6 +105,7 @@ RUN uv sync --quiet --frozen --no-dev --no-install-project \
  && ln -s "$chrome" /opt/pw-browsers/chromium \
  && ln -s "$chrome" /usr/local/bin/chromium
 
+COPY historical_data/ historical_data/
 COPY prototype_data/ prototype_data/
 COPY templates/ templates/
 COPY src/ src/

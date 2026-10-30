@@ -20,6 +20,13 @@
 # `docker volume rm analysis-video-VIDEO` discards it.
 set -eu
 
+# Relative to where it was run from, not the repo root.
+out=${ANALYSIS_VIDEO_OUT:-}
+if [ -n "$out" ]; then
+    mkdir -p "$out"
+    out=$(cd "$out" && pwd)
+fi
+
 cd "$(dirname "$0")/../.."
 
 image=analysis-videos
@@ -50,11 +57,19 @@ case $command in
         ;;
     check)
         name=
+        # Named before the build, so a typo doesn't wait for it.
+        folders=()
+        for v in "$@"; do
+            folders+=("docs/videos/$(video_name "$v")")
+        done
         ;;
     *) echo "docker.sh: unknown command $command (build, check or shell)" >&2; exit 2 ;;
 esac
 
-# A first build takes several minutes; show it. Later ones are near no-ops.
+# BuildKit, for Dockerfile.dockerignore (without it the whole repo, data/ and
+# all, is sent) and TARGETARCH. A first build takes several minutes; show it.
+# Later ones are near no-ops.
+export DOCKER_BUILDKIT=1
 if docker image inspect "$image" >/dev/null 2>&1; then
     docker build -q -t "$image" -f docker/videos/Dockerfile . >/dev/null
 else
@@ -62,11 +77,12 @@ else
     docker build -t "$image" -f docker/videos/Dockerfile .
 fi
 
-out=${ANALYSIS_VIDEO_OUT:-out/videos}
-mkdir -p "$out"
-out=$(cd "$out" && pwd)
+if [ -z "$out" ]; then
+    mkdir -p out/videos
+    out=$(pwd)/out/videos
+fi
 
-docker_run=(docker run --rm -i)
+docker_run=(docker run --rm --init -i)
 if [ -t 0 ] && [ -t 1 ]; then
     docker_run+=(-t)
 fi
@@ -80,10 +96,6 @@ case $command in
         exec "${docker_run[@]}" "$image" python -m analysis.videos build "docs/videos/$name" --out /out "$@"
         ;;
     check)
-        folders=()
-        for v in "$@"; do
-            folders+=("docs/videos/$(video_name "$v")")
-        done
         exec "${docker_run[@]}" "$image" python -m analysis.videos check ${folders[@]+"${folders[@]}"}
         ;;
     shell)

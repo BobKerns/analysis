@@ -284,7 +284,7 @@ def test_tape_data_falls_back_to_the_videos_own_repo(
     videos_root: Path, repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     own = tmp_path / "own"
-    (own / ".git").mkdir(parents=True)
+    (own / "scenarios").mkdir(parents=True)  # a partial sim init: no persons.csv
     builder = _tape_builder(videos_root, repo_root, tmp_path, "")
     monkeypatch.delenv(VIDEO_DATA_ENV, raising=False)
     # Never the planner's real data repo, even when it's set.
@@ -294,7 +294,7 @@ def test_tape_data_falls_back_to_the_videos_own_repo(
     monkeypatch.setenv(VIDEO_DATA_ENV, str(own))
     with pytest.raises(scripts.ScriptError, match="doesn't exist yet.*docker.sh shell 01-own-data"):
         builder.tape_data()
-    (own / "scenarios").mkdir()
+    (own / "persons.csv").write_text("id\n")
     assert builder.tape_data() == own
 
 

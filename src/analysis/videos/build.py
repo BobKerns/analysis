@@ -112,7 +112,9 @@ class _Builder:
                 f"or the video's data repo in ${VIDEO_DATA_ENV} (scripts/videos/docker.sh sets it)"
             )
         data = Path(env)
-        if not data.is_dir() or not any(p.name != ".git" for p in data.iterdir()):
+        # A data repo's mark (data_repo.is_data_repo), not just a folder: an
+        # aborted `sim init` leaves a partial one.
+        if not (data / "persons.csv").is_file():
             raise ScriptError(
                 f"{self.script.path}: the video's data {data} doesn't exist yet; create it first "
                 f"(scripts/videos/docker.sh shell {self.script.name})"
