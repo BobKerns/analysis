@@ -19,7 +19,11 @@ To read a formatted `.md` file:
 This repository is a single top-level Python project. There are no nested repos or subprojects.
 
 ## Setup
-Run the setup script (idempotent — safe to re-run):
+To install without git knowledge, paste this into a terminal:
+```sh
+curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+```
+In a clone, run the setup script (idempotent — safe to re-run):
 ```sh
 ./scripts/setup.sh
 ```

@@ -209,13 +209,16 @@ noninteractive
 nonpositive
 nonqualified
 NOPASSWD
+NOSYSTEM
 nunique
 OBBBA
+oneline
 oneoff
 OpenStax
 overfit
 pacman
 pathoplexus
+pathspecs
 paywalled
 pcon
 pdftotext

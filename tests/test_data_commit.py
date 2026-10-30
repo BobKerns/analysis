@@ -43,7 +43,7 @@ def _edit(data: Path, relative: str, text: str = "# edited\n") -> None:
 
 
 def _log(repo: git.Repo) -> list[str]:
-    return [c.summary for c in repo.iter_commits()]
+    return [str(c.summary) for c in repo.iter_commits()]
 
 
 def _status(repo: git.Repo) -> str:
