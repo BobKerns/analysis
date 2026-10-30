@@ -242,7 +242,8 @@ out of the front matter, and each tape starts from a fresh copy of that repo,
 so recordings stay repeatable and the CLI's changes during one tape don't
 leak into the next.
 
-Create the repo from `shell` with `sim init /data` (#289), which makes the
+Create the repo from `shell` with `sim init /data --no-builder` (#289;
+the container has no background builds), which makes the
 simulator's tree at `/data/sim`; `ANALYSIS_DATA_DIR` is already `/data/sim`
 there and `sim` is on `PATH`, so the CLI changes it as it would any data
 repo.

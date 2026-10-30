@@ -6,6 +6,7 @@
 !uv.lock
 !src/
 !prototype_data/
+!templates/
 !scripts/videos/tts_kokoro.py
 !docker/videos/entrypoint.sh
 **/__pycache__

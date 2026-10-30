@@ -16,7 +16,7 @@
 # mounted at /data. A tape whose script names no demo data (data = ...)
 # starts from a copy of it. `shell VIDEO` opens bash in the container with
 # the volume mounted and ANALYSIS_DATA_DIR=/data/sim, to create the repo
-# (`sim init /data`) or change it with the CLI.
+# (`sim init /data --no-builder`) or change it with the CLI.
 # `docker volume rm analysis-video-VIDEO` discards it.
 set -eu
 

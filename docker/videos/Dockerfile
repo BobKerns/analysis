@@ -12,7 +12,8 @@
 #   /data              the video's own data repo (`sim init /data` makes
 #                      /data/sim): a named volume per video
 #
-# The code and prototype_data are copied in, not mounted, so the CLI a tape
+# The code, templates/ (which the loader and `sim init` read) and
+# prototype_data are copied in, not mounted, so the CLI a tape
 # records is the checkout's at the time of the build; the script rebuilds
 # the image each run, which is quick when nothing changed.
 #
@@ -31,6 +32,7 @@ ARG TARGETARCH
 
 # UV_LINK_MODE=copy: the uv cache and the venv are on different layers.
 # VHS_NO_SANDBOX: Chromium can't sandbox itself inside a container.
+# ANALYSIS_BUILDER=off: no background builds (#300); a tape runs what it shows.
 ENV LANG=C.UTF-8 \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/opt/uv-cache \
@@ -42,6 +44,7 @@ ENV LANG=C.UTF-8 \
     ANALYSIS_VIDEO_DATA=/data/sim \
     ANALYSIS_DATA_DIR=/data/sim \
     VHS_NO_SANDBOX=true \
+    ANALYSIS_BUILDER=off \
     PATH=/opt/venv/bin:/opt/node/bin:$PATH
 
 # git: the tape sandbox commits its copy of the data. The fonts are the
@@ -100,8 +103,14 @@ RUN uv sync --quiet --frozen --no-dev --no-install-project \
  && ln -s "$chrome" /usr/local/bin/chromium
 
 COPY prototype_data/ prototype_data/
+COPY templates/ templates/
 COPY src/ src/
 RUN uv sync --quiet --frozen --no-dev
+
+# An identity for commits made in the container (`sim init`, the CLI's
+# data commits), which has no user of its own.
+RUN git config --system user.name "Video builder" \
+ && git config --system user.email "videos@example.com"
 
 COPY docker/videos/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
