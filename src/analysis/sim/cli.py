@@ -11543,7 +11543,14 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
 
 
 @symbol_group_command.command("research")
-@click.argument("symbol", type=completion.SYMBOL, required=False)
+@click.argument("subject", metavar="SYMBOL_OR_NAME", type=completion.SYMBOL, required=False)
+@click.option("--symbol", "ticker", default=None, type=completion.SYMBOL,
+              help="File the research, and any weights, under this ticker; for a name, its folder "
+                   "is otherwise the name's words joined by '-'.")
+@click.option("--fund", "kind", flag_value="fund", default=None,
+              help="Research it as a fund (default: whichever it turns out to be).")
+@click.option("--company", "kind", flag_value="company",
+              help="Research it as a company, public or private.")
 @click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
               help="Date the weights by this month instead of the research's own as-of.")
 @click.option("--name", default=None, help="The fund's name for securities.csv, when the symbol "
@@ -11567,17 +11574,21 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def symbol_research_command(
-    symbol: str | None, as_of: str | None, name: str | None, replace: bool, yes: bool,
-    open_page: bool, from_bundle: Path | None, plugin_dir: Path | None, timeout_minutes: float,
-    data_dir: Path | None,
+    subject: str | None, ticker: str | None, kind: str | None, as_of: str | None, name: str | None,
+    replace: bool, yes: bool, open_page: bool, from_bundle: Path | None, plugin_dir: Path | None,
+    timeout_minutes: float, data_dir: Path | None,
 ) -> None:
-    """Research a fund with Claude and record its asset-class weights.
+    """Research a fund or a company with Claude; record a fund's asset-class weights.
 
-    Runs the finance-research plugin's fund-tear-sheet skill headless
-    (`claude -p`), keeps what it writes under the data repo's
-    research/SYMBOL/DATE/, opens the tear sheet as a page with tabs, then shows
-    the fund's proposed weights beside its current ones and asks before writing
-    them to allocations.csv (and its name to securities.csv, when new).
+    SYMBOL_OR_NAME is a ticker or, quoted, a name ("Acme Robotics"), which
+    suits a private company or an ambiguous ticker. Runs the
+    finance-research plugin's fund-tear-sheet or public-tear-sheet skill
+    headless (`claude -p`), keeps what it writes under the data repo's
+    research/SYMBOL/DATE/ (a name's words joined by '-' stand in for SYMBOL),
+    opens the tear sheet as a page with tabs, then, for a fund, shows its
+    proposed weights beside its current ones and asks before writing them to
+    allocations.csv (and its name to securities.csv, when new). Weights from
+    research on a name need a ticker: --symbol, or asked for.
 
     A run takes several minutes and about 150k tokens, on Claude Code's own
     login: a claude.ai plan's usage limits, or per-token billing when
@@ -11587,10 +11598,22 @@ def symbol_research_command(
     from analysis import research_plugin
 
     data = _resolve_data_dir(data_dir)
-    if symbol is None:
-        symbol = click.prompt("symbol (ticker)").strip()
+    if subject is None:
+        subject = click.prompt("symbol (ticker) or name").strip()
+    subject = " ".join(subject.split())
+    # A ticker is its own folder name; a name (#372) gets one made from its
+    # words, and weights only once a ticker is known.
     try:
-        symbol = symbols.normalize_symbol(symbol)
+        label = symbols.normalize_symbol(subject)
+    except ValueError:
+        label = subject
+    else:
+        ticker = ticker or label
+    try:
+        if ticker is not None:
+            ticker = key = symbols.normalize_symbol(ticker)
+        else:
+            key = research.name_key(subject)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from None
     if as_of:
@@ -11603,37 +11626,63 @@ def symbol_research_command(
         if research.is_under(from_bundle, data / research.RESEARCH_DIR):
             bundle = from_bundle.resolve()
         else:
-            bundle = research.bundle_dir(data, symbol)
+            bundle = research.bundle_dir(data, key)
             try:
                 research.keep_bundle(from_bundle, bundle)
             except research.ResearchError as exc:
                 raise click.ClickException(f"{exc}; is it the folder holding the tear sheet's files?") from None
     else:
-        bundle = _run_research(data, symbol, plugin_dir, timeout_minutes)
+        bundle = _run_research(data, subject, key, kind, plugin_dir, timeout_minutes)
     click.echo(f"Bundle: {bundle}")
 
     try:
-        page = research.write_page(bundle, symbol, research_plugin.available_languages())
+        page = research.write_page(bundle, key, research_plugin.available_languages(), label=label)
         if open_page:
             click.launch(str(page))
         else:
             click.echo(f"Report: {page}")
-        allocation = research.read_allocation(bundle, symbol)
+        allocation = research.read_allocation(bundle, key)
     except research.ResearchError as exc:
         raise click.ClickException(f"{exc}\nNothing was written; the bundle is kept at {bundle}") from None
     if allocation is None:
-        click.echo(f"{symbol}: the bundle has no allocation export, so nothing was written.")
+        click.echo(f"{label}: the bundle has no allocation export, so nothing was written.")
         return
+    if ticker is None:
+        ticker = _ask_research_ticker(label, bundle, yes)
+        if ticker is None:
+            return
+    allocation.symbol = ticker
     if as_of:
         allocation.as_of = as_of
-    _confirm_and_write_research(data, symbol, allocation, bundle, name=name, replace=replace, yes=yes)
+    _confirm_and_write_research(data, ticker, allocation, bundle, key=key, name=name, replace=replace, yes=yes)
 
 
-def _run_research(data: Path, symbol: str, plugin_dir: Path | None, timeout_minutes: float) -> Path:
-    """Run the fund skill on ``symbol`` and keep what it wrote; the bundle's folder."""
+def _ask_research_ticker(label: str, bundle: Path, yes: bool) -> str | None:
+    """The ticker to write weights from research on a name under, or None to
+    write nothing: a name's folder key would make a poor symbol."""
+    if yes:
+        click.echo(f"{label} is a name, not a ticker, so its weights were not written. To write them, "
+                   f"run again with --from-bundle {bundle} and without --yes, and give its ticker.")
+        return None
+    while True:
+        answer = click.prompt("ticker to write these weights under (blank: don't write them)",
+                              default="", show_default=False).strip()
+        if not answer:
+            click.echo(f"Nothing written. The bundle is kept at {bundle}")
+            return None
+        try:
+            return symbols.normalize_symbol(answer)
+        except ValueError as exc:
+            click.echo(f"  {exc}")
+
+
+def _run_research(data: Path, subject: str, key: str, kind: str | None, plugin_dir: Path | None,
+                  timeout_minutes: float) -> Path:
+    """Run the research on ``subject`` and keep what it wrote, under ``key``;
+    the bundle's folder."""
     from analysis import research_plugin
 
-    with tempfile.TemporaryDirectory(prefix=f"research-{symbol}-") as tmp:
+    with tempfile.TemporaryDirectory(prefix=f"research-{key}-") as tmp:
         work = Path(tmp) / "work"
         work.mkdir()
         if plugin_dir is None:
@@ -11643,10 +11692,10 @@ def _run_research(data: Path, symbol: str, plugin_dir: Path | None, timeout_minu
                 raise click.ClickException(str(exc)) from None
             plugin_dir = research_plugin.render(config, Path(tmp) / "plugin")
             click.echo(f"Plugin: finance-research ({research_plugin.describe(config)})")
-        click.echo(f"Researching {symbol}: this takes several minutes and about 150k tokens.")
+        click.echo(f"Researching {subject}: this takes several minutes and about 150k tokens.")
         try:
             outcome = research.run_skill(
-                symbol, work, plugin_dir, timeout_minutes=timeout_minutes,
+                subject, key, work, plugin_dir, kind=kind, timeout_minutes=timeout_minutes,
                 progress=lambda line: click.echo(line, err=True),
             )
         except research.ResearchError as exc:
@@ -11656,9 +11705,10 @@ def _run_research(data: Path, symbol: str, plugin_dir: Path | None, timeout_minu
         has_files = any(p.is_file() and p.suffix.lower() in (".md", ".json", ".csv") for p in work.iterdir())
         if not has_files:
             why = outcome.message if not outcome.ok else (
-                "the run wrote no files; is the fund-tear-sheet skill in the plugin (--plugin-dir)?")
+                "the run wrote no files; are the fund-tear-sheet and public-tear-sheet skills "
+                "in the plugin (--plugin-dir)?")
             raise click.ClickException(f"the research failed: {why}")
-        bundle = research.bundle_dir(data, symbol)
+        bundle = research.bundle_dir(data, key)
         research.keep_bundle(work, bundle)
         if not outcome.ok:
             raise click.ClickException(f"the research failed: {outcome.message}\n"
@@ -11668,16 +11718,17 @@ def _run_research(data: Path, symbol: str, plugin_dir: Path | None, timeout_minu
 
 def _confirm_and_write_research(
     data: Path, symbol: str, allocation: research.Allocation, bundle: Path, *,
-    name: str | None, replace: bool, yes: bool,
+    key: str, name: str | None, replace: bool, yes: bool,
 ) -> None:
-    """Show the proposed weights beside the current ones, ask, and write them."""
+    """Show the proposed weights beside the current ones, ask, and write them
+    under ``symbol``; ``key`` starts the bundle's file names."""
     existing_name = symbols.security_name(data, symbol)
     new_symbol = existing_name is None
     if name and not new_symbol:
         click.echo(f"--name ignored: {symbol} is already named {existing_name!r} in securities.csv; "
                    "edit that file to rename it.")
     if new_symbol and not name:
-        title = research.tear_sheet_title(bundle, symbol)
+        title = research.tear_sheet_title(bundle, key, symbol)
         if yes:
             name = title
         else:

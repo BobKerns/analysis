@@ -997,7 +997,7 @@ Check the answer against the fund's own fact sheet before you save it. An
 AI's figures can be out of date or simply wrong, and nothing in the
 simulator can tell.
 
-#### Research a fund with `sim symbol research`
+#### Research a fund or company with `sim symbol research`
 
 With Claude Code and the finance-research plugin's files in this repo, one
 command researches a fund, records its weights and shows you the tear sheet:
@@ -1006,7 +1006,8 @@ command researches a fund, records its weights and shows you the tear sheet:
 sim symbol research ABCDX
 ```
 
-1. It runs the plugin's `fund-tear-sheet` skill without a chat, configured
+1. It runs the plugin's `fund-tear-sheet` skill, or `public-tear-sheet`
+   for a company, without a chat, configured
    by the data repo's `research.yaml` ([the finance research
    guide](guides/finance-research.md)). A run takes several minutes and
    about 150k tokens on Claude Code's own login: your claude.ai plan's usage
@@ -1042,8 +1043,25 @@ downloaded, or an earlier run, is imported without a run:
 sim symbol research ABCDX --from-bundle ~/Downloads/abcdx-tear-sheet
 ```
 
-The command only handles funds. For a single stock, `sim symbol add ABCDX
---weight stock_us=100%` (or `stock_intl`) is all it needs.
+The run decides from what it finds whether the subject is a fund or a
+company; `--fund` or `--company` decides for it. A company's tear sheet has
+no weights, so nothing is written to `allocations.csv`. For a single stock
+you hold, `sim symbol add ABCDX --weight stock_us=100%` (or `stock_intl`)
+is all it needs.
+
+The subject can be a name instead of a ticker: a private company has no
+ticker, and a name settles which company or fund you mean when a ticker
+might not. Quote it:
+
+```sh
+sim symbol research "Acme Robotics"
+```
+
+The bundle goes under the name's words joined by `-`
+(`research/ACME-ROBOTICS/<today>/`), or under `--symbol TICKER` if you give
+one. If the name turns out to be a fund with weights, the command asks
+which ticker to write them under (blank writes nothing); `--symbol` answers
+in advance, and with `--yes` and no `--symbol` nothing is written.
 
 ### 4.12 Make a new investment, or a Roth conversion
 

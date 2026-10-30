@@ -1763,9 +1763,12 @@ def without_template_aux(tmp_path_factory: pytest.TempPathFactory, monkeypatch: 
 
 @pytest.fixture(scope="session")
 def research_bundles(repo_root: Path) -> Path:
-    """Fund research bundles as the finance-research plugin writes them (#344),
+    """Research bundles as the finance-research plugin writes them (#344),
     read-only: ``abcdx/`` (every tab, an allocation export, a ``fund-work/``
-    folder) and ``unclassified/`` (JSON only: part of the fund unclassified)."""
+    folder), ``unclassified/`` (JSON only: part of the fund unclassified),
+    and two researched by name (#372): ``acme-robotics/``, a private
+    company's tabs under ``ACME-ROBOTICS``, and ``balanced-by-name/``, a
+    fund's tear sheet and weights under ``A-BALANCED-INDEX-FUND``."""
     return repo_root / "tests" / "data" / "research"
 
 

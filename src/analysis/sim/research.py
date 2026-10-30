@@ -1,10 +1,13 @@
-"""`sim symbol research`: a fund tear sheet from the finance-research plugin,
-its asset-class weights for ``allocations.csv``, and a page to read it (#344).
+"""`sim symbol research`: a fund or company tear sheet from the
+finance-research plugin, a fund's asset-class weights for
+``allocations.csv``, and a page to read it (#344).
 
 The plugin's ``fund-tear-sheet`` skill (#345, docs/guides/finance-research.md)
 researches a fund from public sources and, with no docs connector, writes its
 tabs as Markdown files plus ``<TICKER>-allocations-sim.csv``: rows already in
-``allocations.csv``'s format. This module runs the skill headless with
+``allocations.csv``'s format. ``public-tear-sheet`` does the same for a
+company, with no weights. The subject may be a name (#372); its files are
+then named by ``name_key``. This module runs the skill headless with
 ``claude -p``, keeps what it wrote as a *bundle* under the data repo's
 ``research/<SYMBOL>/<date>/``, reads the weights out of it, and renders the
 tabs into one HTML page. Writing the weights is the caller's job, through
@@ -39,7 +42,10 @@ from analysis.sim.dates import month_end_iso
 
 RESEARCH_DIR = "research"
 REPORT_PAGE = "report.html"
-SKILL = "fund-tear-sheet"
+# The plugin's skill for each kind of subject. A run with no kind given
+# names both and lets Claude pick from what it finds: a name says little
+# about whether it's a fund or a company (#372).
+SKILLS = {"fund": "fund-tear-sheet", "company": "public-tear-sheet"}
 DEFAULT_TIMEOUT_MINUTES = 20
 # The tools the skill needs. The run reads untrusted web pages, so a page
 # carrying a prompt injection must not reach a shell or files outside the
@@ -70,6 +76,16 @@ class Allocation:
     method: str = ""
     sources: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+def name_key(name: str) -> str:
+    """The folder and file prefix for research on a name rather than a
+    ticker: its words upper-cased and joined by ``-`` (``Acme Robotics Inc.``
+    is ``ACME-ROBOTICS-INC``). Raises ``ValueError`` when nothing is left."""
+    key = re.sub(r"[^\w.]+", "-", name.strip().upper()).strip("-.")
+    if not key:
+        raise ValueError(f"{name!r} has no letters or digits to name its research folder; give one with --symbol")
+    return key
 
 
 def _find(bundle: Path, symbol: str, suffix: str) -> Path | None:
@@ -156,8 +172,9 @@ def read_allocation(bundle: Path, symbol: str) -> Allocation | None:
     return Allocation(symbol, as_of, weights, method, sources, warnings)
 
 
-def tear_sheet_title(bundle: Path, symbol: str) -> str | None:
-    """The tear sheet's first heading, as a default name for the fund."""
+def tear_sheet_title(bundle: Path, symbol: str, ticker: str | None = None) -> str | None:
+    """The tear sheet's first heading, as a default name for the fund.
+    ``ticker``, when the files are named by something else, is cut too."""
     path = _find(bundle, symbol, "-tear-sheet.md")
     if path is None:
         return None
@@ -165,7 +182,7 @@ def tear_sheet_title(bundle: Path, symbol: str) -> str | None:
         if line.startswith("# "):
             title = line[2:].strip()
             # "Fund Name (TICKER) — tear sheet" reads better as just the name.
-            for cut in (" — ", " - ", " – ", f" ({symbol})", ":"):
+            for cut in (" — ", " - ", " – ", f" ({symbol})", f" ({ticker or symbol})", ":"):
                 head, sep, _ = title.partition(cut)
                 if sep and head.strip():
                     title = head.strip()
@@ -512,12 +529,14 @@ def price_chart_svg(path: Path) -> str:
     return "".join(out)
 
 
-def write_page(bundle: Path, symbol: str, languages: dict[str, dict[str, Any]] | None = None) -> Path:
+def write_page(bundle: Path, symbol: str, languages: dict[str, dict[str, Any]] | None = None,
+               *, label: str | None = None) -> Path:
+    """The bundle's report page; ``label`` (default ``symbol``) titles it."""
     languages = languages or {}
     tabs = bundle_tabs(bundle, symbol, languages)
     page = bundle / REPORT_PAGE
     labels = {code: str(meta.get("label") or meta.get("name") or code) for code, meta in languages.items()}
-    page.write_text(render_page(tabs, title=f"{symbol} research", subtitle=f"Research bundle {bundle.name}",
+    page.write_text(render_page(tabs, title=f"{label or symbol} research", subtitle=f"Research bundle {bundle.name}",
                                 language_labels=labels), encoding="utf-8")
     return page
 
@@ -526,16 +545,36 @@ def write_page(bundle: Path, symbol: str, languages: dict[str, dict[str, Any]] |
 # Running the skill
 
 
-def skill_scripts(plugin_dir: Path) -> list[Path]:
-    """The fund skill's helper scripts: the only commands a run may execute."""
-    return sorted((plugin_dir / "skills" / SKILL / "scripts").resolve().glob("*.py"))
+def run_skills(kind: str | None) -> list[str]:
+    """The skills a run on ``kind`` (``fund``, ``company``, or ``None`` for
+    either) may use."""
+    return [SKILLS[kind]] if kind else list(SKILLS.values())
 
 
-def prompt_for(symbol: str, scripts: list[Path]) -> str:
-    where = f" Its scripts are in {scripts[0].parent}; run each by that absolute path with python3." if scripts else ""
+def skill_scripts(plugin_dir: Path, skill: str) -> list[Path]:
+    """A skill's helper scripts: the only commands a run may execute."""
+    return sorted((plugin_dir / "skills" / skill / "scripts").resolve().glob("*.py"))
+
+
+def prompt_for(subject: str, key: str, plugin_dir: Path, kind: str | None = None) -> str:
+    """The request for a run on ``subject`` (a ticker or a name), whose files
+    must start with ``key`` so the importer finds them."""
+    if kind:
+        which = f"Use the {SKILLS[kind]} skill."
+    else:
+        which = (f"If it is a fund or ETF, use the {SKILLS['fund']} skill; if it is a company, "
+                 f"public or private, use the {SKILLS['company']} skill.")
+    where = "".join(
+        f" The {skill} skill's scripts are in {scripts[0].parent}."
+        for skill in run_skills(kind) if (scripts := skill_scripts(plugin_dir, skill))
+    )
+    if where:
+        where += " Run each script by its absolute path with python3."
     return (
-        f"Fund tear sheet on {symbol}. There is no docs connector: write the Markdown files "
-        "and the allocation export into the current folder, as the skill describes."
+        f"Tear sheet on {subject}. {which} There is no docs connector: write the Markdown files "
+        "(and, for a fund, the allocation export) into the current folder, as the skill describes. "
+        f"Where the skill names a file by the ticker or the name, use {key}: {key}-tear-sheet.md, "
+        f"{key}-prices.csv, and --ticker {key} for the allocation script."
         f"{where} No other shell commands are allowed. "
         "Don't ask questions; make reasonable choices and note them."
     )
@@ -546,7 +585,8 @@ def _path_rule(tool: str, folder: Path) -> str:
     return f"{tool}(/{folder.resolve().as_posix()}/**)"
 
 
-def claude_command(symbol: str, plugin_dir: Path, work_dir: Path, claude: str = "claude") -> list[str]:
+def claude_command(subject: str, key: str, plugin_dir: Path, work_dir: Path, claude: str = "claude",
+                   kind: str | None = None) -> list[str]:
     """The headless run, confined so that a prompt injection in a fetched page
     can't run commands or touch files outside the run:
 
@@ -560,7 +600,7 @@ def claude_command(symbol: str, plugin_dir: Path, work_dir: Path, claude: str = 
       allowed only in the working folder, so a run can't plant a script to
       run either. The plugin folder is readable, for the skill's references.
     """
-    scripts = skill_scripts(plugin_dir)
+    scripts = [script for skill in run_skills(kind) for script in skill_scripts(plugin_dir, skill)]
     allowed = [
         "Skill", "WebSearch", "WebFetch", "Read", "Glob", "Grep",
         # An Edit rule covers Write as well; Claude Code ignores a Write(path)
@@ -569,7 +609,7 @@ def claude_command(symbol: str, plugin_dir: Path, work_dir: Path, claude: str = 
         *(f"Bash(python3 {script.as_posix()} *)" for script in scripts),
     ]
     return [
-        claude, "-p", prompt_for(symbol, scripts),
+        claude, "-p", prompt_for(subject, key, plugin_dir, kind),
         "--plugin-dir", str(plugin_dir),
         "--add-dir", str(plugin_dir.resolve()),
         "--restricted", "--strict-mcp-config",
@@ -609,16 +649,18 @@ class RunResult:
 
 
 def run_skill(
-    symbol: str, work_dir: Path, plugin_dir: Path, *, timeout_minutes: float = DEFAULT_TIMEOUT_MINUTES,
-    claude: str = "claude", progress: Callable[[str], None] = print,
+    subject: str, key: str, work_dir: Path, plugin_dir: Path, *, kind: str | None = None,
+    timeout_minutes: float = DEFAULT_TIMEOUT_MINUTES, claude: str = "claude",
+    progress: Callable[[str], None] = print,
 ) -> RunResult:
-    """Run the fund skill on ``symbol`` with ``work_dir`` as its folder,
-    reporting each tool call through ``progress``. Stops the run after
-    ``timeout_minutes``."""
+    """Run the skill for ``kind`` (either, when ``None``) on ``subject``, a
+    ticker or a name, with ``work_dir`` as its folder and ``key`` starting
+    its files, reporting each tool call through ``progress``. Stops the run
+    after ``timeout_minutes``."""
     executable = shutil.which(claude)
     if executable is None:
         raise ResearchError(f"{claude!r} isn't on PATH; install Claude Code (docs/guides/finance-research.md)")
-    command = claude_command(symbol, plugin_dir, work_dir, executable)
+    command = claude_command(subject, key, plugin_dir, work_dir, executable, kind)
     start = time.monotonic()
     # stderr goes to a file: a pipe nobody reads until the end could fill and
     # stall the run.

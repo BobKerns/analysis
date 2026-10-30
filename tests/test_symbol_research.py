@@ -1,4 +1,5 @@
-"""`sim symbol research`: a fund's tear sheet bundle, its weights, its page (#344).
+"""`sim symbol research`: a fund's or company's tear sheet bundle, its
+weights, its page (#344, #372).
 
 Nothing here runs the real research: the CLI tests use ``--from-bundle`` or
 the ``fake_claude`` stand-in."""
@@ -287,13 +288,95 @@ def test_name_for_a_symbol_already_named_is_reported_ignored(test_data_dir: Path
     assert symbols.security_name(test_data_dir, "ABCDX") == "Old"
 
 
-@pytest.mark.parametrize("symbol", ["..", "A/B", "A B"])
-def test_a_symbol_that_cant_be_a_folder_name_is_refused(test_data_dir: Path, research_bundles: Path,
-                                                        symbol: str) -> None:
-    result = _sim(test_data_dir, symbol, "--from-bundle", str(research_bundles / "abcdx"), "--yes", "--no-open")
+@pytest.mark.parametrize(("args", "message"), [
+    (["..", ], "no letters or digits"),
+    (["A Fund", "--symbol", "A B"], "must be one word"),
+    (["ABCDX", "--symbol", "../x"], "must be one word"),
+])
+def test_a_folder_name_that_cant_be_made_is_refused(test_data_dir: Path, research_bundles: Path,
+                                                    args: list[str], message: str) -> None:
+    result = _sim(test_data_dir, *args, "--from-bundle", str(research_bundles / "abcdx"), "--yes", "--no-open")
     assert result.exit_code == 2
-    assert "must be one word" in result.output
+    assert message in result.output
     assert not (test_data_dir / "research").exists()
+
+
+# --- research on a name (#372) ---------------------------------------------
+
+
+@pytest.mark.parametrize(("name", "key"), [
+    ("Acme Robotics", "ACME-ROBOTICS"),
+    ("  Acme   Robotics, Inc. ", "ACME-ROBOTICS-INC"),
+    ("A/B", "A-B"),
+])
+def test_a_names_folder_is_its_words_joined(name: str, key: str) -> None:
+    assert research.name_key(name) == key
+
+
+def test_a_company_by_name_is_researched_and_kept_under_its_words(
+    test_data_dir: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE_BUNDLE", "acme-robotics")
+    result = _sim(test_data_dir, "Acme  Robotics", "--yes", "--no-open")
+    assert result.exit_code == 0, result.output
+    assert "Researching Acme Robotics:" in result.output
+    args = fake_claude.read_text(encoding="utf-8").splitlines()
+    prompt = args[1]
+    assert "Tear sheet on Acme Robotics." in prompt
+    assert "fund-tear-sheet" in prompt and "public-tear-sheet" in prompt  # the run picks
+    assert "ACME-ROBOTICS-tear-sheet.md" in prompt and "--ticker ACME-ROBOTICS" in prompt
+    allowed = args[args.index("--allowedTools") + 1:args.index("--output-format")]
+    bash = " ".join(a for a in allowed if a.startswith("Bash"))
+    assert "/fund-tear-sheet/scripts/" in bash and "/public-tear-sheet/scripts/" in bash
+    [bundle] = sorted((test_data_dir / "research" / "ACME-ROBOTICS").iterdir())
+    assert "<title>Acme Robotics research" in (bundle / "report.html").read_text(encoding="utf-8")
+    assert "Acme Robotics: the bundle has no allocation export, so nothing was written." in result.output
+    assert not (test_data_dir / "allocations.csv").exists() or not any(
+        r["symbol"].startswith("ACME") for r in _allocations(test_data_dir))
+
+
+@pytest.mark.parametrize(("flag", "skill", "other"), [
+    ("--company", "public-tear-sheet", "fund-tear-sheet"),
+    ("--fund", "fund-tear-sheet", "public-tear-sheet"),
+])
+def test_company_or_fund_runs_only_that_skill(test_data_dir: Path, fake_claude: Path, flag: str, skill: str,
+                                              other: str) -> None:
+    result = _sim(test_data_dir, "ABCDX", flag, "--yes", "--no-open")
+    assert result.exit_code == 0, result.output
+    args = fake_claude.read_text(encoding="utf-8").splitlines()
+    assert f"Use the {skill} skill." in args[1] and other not in args[1]
+    allowed = args[args.index("--allowedTools") + 1:args.index("--output-format")]
+    bash = " ".join(a for a in allowed if a.startswith("Bash"))
+    assert f"/{skill}/scripts/" in bash and f"/{other}/" not in bash
+
+
+def test_weights_from_research_on_a_name_ask_for_a_ticker(test_data_dir: Path, research_bundles: Path) -> None:
+    result = _sim(test_data_dir, "A Balanced Index Fund", "--from-bundle", str(research_bundles / "balanced-by-name"),
+                  "--no-open", input="a b\nabcdx\n\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "must be one word" in result.output  # re-asked
+    assert symbols.latest_set(test_data_dir, "ABCDX") == ("2026-09", [("stock_us", "60%"), ("bond", "40%")])
+    assert symbols.security_name(test_data_dir, "ABCDX") == "A Balanced Index Fund"
+    assert len(list((test_data_dir / "research" / "A-BALANCED-INDEX-FUND").iterdir())) == 1
+
+
+def test_weights_from_research_on_a_name_are_not_written_with_yes(
+    test_data_dir: Path, research_bundles: Path,
+) -> None:
+    result = _sim(test_data_dir, "A Balanced Index Fund", "--from-bundle", str(research_bundles / "balanced-by-name"),
+                  "--yes", "--no-open")
+    assert result.exit_code == 0, result.output
+    assert "is a name, not a ticker, so its weights were not written" in result.output
+    assert symbols.latest_set(test_data_dir, "A-BALANCED-INDEX-FUND") is None
+
+
+def test_symbol_files_research_on_a_name_under_that_ticker(test_data_dir: Path, research_bundles: Path) -> None:
+    result = _sim(test_data_dir, "A Balanced Index Fund", "--symbol", "abcdx",
+                  "--from-bundle", str(research_bundles / "abcdx"), "--yes", "--no-open")
+    assert result.exit_code == 0, result.output
+    assert symbols.latest_set(test_data_dir, "ABCDX") is not None
+    [bundle] = _bundles(test_data_dir)
+    assert "<title>A Balanced Index Fund research" in (bundle / "report.html").read_text(encoding="utf-8")
 
 
 def test_asked_replace_shows_both_sets(test_data_dir: Path, research_bundles: Path) -> None:
@@ -356,7 +439,7 @@ def test_a_run_renders_the_plugin_runs_claude_and_imports(test_data_dir: Path, f
     assert "WebSearch ABCDX fact sheet" in result.output
     assert "$1.25" in result.output
     args = fake_claude.read_text(encoding="utf-8").splitlines()
-    assert args[0] == "-p" and "Fund tear sheet on ABCDX" in args[1]
+    assert args[0] == "-p" and "Tear sheet on ABCDX." in args[1]
     plugin = Path(args[args.index("--plugin-dir") + 1])
     assert plugin.name == "finance-research"
     assert not plugin.exists()  # rendered into a temporary folder
@@ -366,11 +449,13 @@ def test_a_run_renders_the_plugin_runs_claude_and_imports(test_data_dir: Path, f
     allowed = args[args.index("--allowedTools") + 1:args.index("--output-format")]
     bash = [a for a in allowed if a.startswith("Bash")]
     # Resolved, as the rules are: on macOS the temporary folder is behind a symlink.
-    scripts = plugin.resolve() / "skills" / "fund-tear-sheet" / "scripts"
-    assert bash and all(a.startswith(f"Bash(python3 {scripts}") and a.endswith(".py *)") for a in bash)
+    skills = plugin.resolve() / "skills"
+    scripts = [skills / skill / "scripts" for skill in ("fund-tear-sheet", "public-tear-sheet")]
+    assert bash and all(a.startswith(tuple(f"Bash(python3 {s}/" for s in scripts)) and a.endswith(".py *)")
+                        for a in bash)
     edits = [a for a in allowed if a.startswith(("Edit", "Write"))]
     assert len(edits) == 1 and edits[0].startswith("Edit(//") and edits[0].endswith("/work/**)")
-    assert str(scripts) in args[1]  # the prompt says where the scripts are
+    assert all(str(s) in args[1] for s in scripts)  # the prompt says where the scripts are
     assert symbols.latest_set(test_data_dir, "ABCDX") is not None
 
 
@@ -411,7 +496,7 @@ def test_run_skill_stops_at_the_timeout(
     monkeypatch.setenv("FAKE_CLAUDE_SLEEP", "30")
     work = tmp_path / "work"
     work.mkdir()
-    outcome = research.run_skill("ABCDX", work, tmp_path, timeout_minutes=0.01, progress=lambda _: None)
+    outcome = research.run_skill("ABCDX", "ABCDX", work, tmp_path, timeout_minutes=0.01, progress=lambda _: None)
     assert not outcome.ok
     assert "stopped after" in outcome.message
     assert outcome.seconds < 10
@@ -423,7 +508,7 @@ def test_the_timeout_stops_what_claude_started_too(
     monkeypatch.setenv("FAKE_CLAUDE_CHILD", "1")
     work = tmp_path / "work"
     work.mkdir()
-    outcome = research.run_skill("ABCDX", work, tmp_path, timeout_minutes=0.01, progress=lambda _: None)
+    outcome = research.run_skill("ABCDX", "ABCDX", work, tmp_path, timeout_minutes=0.01, progress=lambda _: None)
     assert "stopped after" in outcome.message
     assert outcome.seconds < 10
 
