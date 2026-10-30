@@ -48,11 +48,14 @@ ask() {
     printf '%s\n' "${answer:-$2}"
 }
 
-expand_home() {
+# $1 as an absolute path: setup.sh runs from the code's folder, so a
+# relative --data would otherwise mean a different place there.
+full_path() {
     case $1 in
         \~) printf '%s\n' "$HOME" ;;
         \~/*) printf '%s\n' "$HOME/${1#\~/}" ;;
-        *) printf '%s\n' "$1" ;;
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s\n' "$PWD/$1" ;;
     esac
 }
 
@@ -142,7 +145,7 @@ main() {
     if (: </dev/tty) 2>/dev/null; then tty=/dev/tty; else tty=/dev/null; fi
 
     say "This installs the retirement simulator."
-    code=$(expand_home "${code:-$(ask "Where should the code go?" "$HOME/retirement/analysis")}")
+    code=$(full_path "${code:-$(ask "Where should the code go?" "$HOME/retirement/analysis")}")
     need_git
     get_code
 
@@ -150,7 +153,7 @@ main() {
     if [ -e "$code/data/shared" ] || [ -L "$code/data/shared" ]; then
         : # linked already; link-data.sh says so and leaves it alone
     else
-        data=$(expand_home "${data:-$(ask "Where is your data, or where should it go?" \
+        data=$(full_path "${data:-$(ask "Where is your data, or where should it go?" \
             "$HOME/retirement/data")}")
         if [ -f "$data/sim/persons.csv" ]; then
             set -- "$data"
@@ -173,7 +176,9 @@ main() {
     fi
 
     say "Setting up (this takes a few minutes the first time)..."
-    (cd "$code" && scripts/setup.sh "$@" <"$tty")
+    # --yes means no questions, from setup.sh and what it runs as well.
+    if [ "$yes" ]; then input=/dev/null; else input=$tty; fi
+    (cd "$code" && scripts/setup.sh "$@" <"$input")
 
     shared=$(cd "$code/data/shared" 2>/dev/null && pwd -P) || shared="$code/data/shared"
     if [ "$branch" != main ] && [ -f "$shared/state/builder/config.json" ]; then

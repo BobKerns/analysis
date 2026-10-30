@@ -125,18 +125,25 @@ def test_no_commit_on_a_detached_head(data: Path, repo: git.Repo) -> None:
         data_commit.commit(data, scoped_changes(data, ["retire_alice"]))
 
 
+@pytest.mark.parametrize(("env_email", "email"), [
+    ("", "alice@analysis.local"),
+    # Set in the repo too: the builder or an editor may not have $EMAIL.
+    ("alice@example.com", "alice@example.com"),
+])
 def test_a_missing_identity_is_set_in_the_data_repo_only(
     data: Path, repo: git.Repo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    env_email: str, email: str,
 ) -> None:
     empty = tmp_path / "empty-gitconfig"
     empty.write_text("")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("ANALYSIS_USER", "alice")
+    monkeypatch.setenv("EMAIL", env_email)
     _edit(data, "scenarios/retire_alice/README.md")
     data_commit.commit(data, scoped_changes(data, ["retire_alice"]))
     reader = repo.config_reader("repository")
-    assert reader.get_value("user", "email") == "alice@analysis.local"
+    assert reader.get_value("user", "email") == email
     assert str(reader.get_value("user", "name")).startswith("Alice")
     assert empty.read_text() == ""
 
@@ -216,6 +223,24 @@ def test_sim_all_asks_once_and_makes_one_commit(
     assert "all 2 scenario(s) succeeded" in result.stdout
 
 
+@pytest.mark.parametrize(("edited", "held"), [
+    ("scenarios/retire_alice/README.md", ["retire_alice"]),  # base doesn't read it
+    ("scenarios/base/README.md", ["base", "retire_alice"]),  # retire_alice inherits base
+])
+def test_the_commit_holds_off_the_builder_for_the_scenarios_it_changes(
+    data: Path, intent_dir: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+    edited: str, held: list[str],
+) -> None:
+    from analysis.sim import builder
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(builder, "hold", lambda _data, names: calls.append(sorted(names)))
+    _edit(data, edited)
+    result = _sim("all", "--commit", "--data-dir", str(data), *_state(intent_dir, runs_dir))
+    assert result.exit_code == 0, result.output
+    assert calls == [held]
+
+
 def test_sim_commit(data: Path, repo: git.Repo) -> None:
     result = _sim("commit", "retire_alice", "--data-dir", str(data))
     assert result.exit_code == 0, result.output
@@ -263,6 +288,7 @@ def test_sim_init_gives_a_new_repo_an_identity(
     empty.write_text("[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.delenv("EMAIL", raising=False)
     root = tmp_path / "data"
     person = {"id": "alice", "display": "Alice Example", "birthdate": "1960-05-01", "sex": "f"}
     assert data_repo.create_data_repo(root, person, "MFJ") is None

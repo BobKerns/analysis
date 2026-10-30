@@ -216,11 +216,16 @@ def _offer_commit(
         what = names[0] if len(names) == 1 else "these scenarios"
         click.echo(f"{what}: data has uncommitted changes:", err=True)
         for status, path in changes:
-            note = " (new)" if status == "??" else (" (deleted)" if "D" in status else "")
-            click.echo(f"  {path}{note}", err=True)
+            click.echo(f"  {path}{data_commit.note(status)}", err=True)
         if not click.confirm("Commit them so the run is reproducible?", default=True,
                              err=True):
             return
+    # The commit's hook wakes the background builder, which would build
+    # these alongside this command (#308).
+    from analysis.sim import builder
+    from analysis.sim.provenance import changed_scenarios
+
+    builder.hold(data_dir, changed_scenarios(data_dir, names, changes))
     try:
         sha, subject = data_commit.commit(data_dir, changes, command=command)
     except data_commit.CommitError as exc:

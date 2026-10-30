@@ -123,6 +123,25 @@ def scoped_changes(data_dir: Path, scenario_names: Sequence[str]) -> list[tuple[
     return changes
 
 
+def changed_scenarios(
+    data_dir: Path, scenario_names: Sequence[str], changes: Sequence[tuple[str, str]],
+) -> list[str]:
+    """Those of ``scenario_names`` whose scope holds one of ``changes``
+    (:func:`scoped_changes`'s pairs): the ones committing them changes."""
+    data_dir = data_dir.resolve()
+    repo = _open_repo(data_dir)
+    if repo is None or repo.working_tree_dir is None:
+        return []
+    top = Path(repo.working_tree_dir).resolve()
+    changed = [top / path for _status, path in changes]
+    out = []
+    for name in scenario_names:
+        scope = [data_dir / p for p in _scoped_paths(data_dir, name)]
+        if any(path == s or s in path.parents for path in changed for s in scope):
+            out.append(name)
+    return out
+
+
 # Files in a scenario folder that no run reads, so editing one must not
 # change its tree (or its children's), nor make them dirty: `.disable`
 # (loader.DISABLE_FILE, #300) says whether to build a scenario, not what it

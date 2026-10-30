@@ -87,9 +87,11 @@ def operator(data_dir: Path) -> tuple[str, str]:
 
 
 def ensure_identity(root: Path, person_id: str, display: str) -> bool:
-    """Give the repository at ``root`` a committer when git has none, from
-    the person: ``display`` and ``<id>@analysis.local``. Only in that
-    repository's own config, never the global one. True if it set one."""
+    """Give the repository at ``root`` a committer when git's config has
+    none: ``display``, and $EMAIL when it's set, else ``<id>@analysis.local``.
+    $EMAIL is written into the config too, since the builder, an editor or
+    another shell may not have it. Only in that repository's own config,
+    never the global one. True if it set one."""
     have_name = not _git(root, "config", "user.name").returncode
     have_email = not _git(root, "config", "user.email").returncode
     if have_name and have_email:
@@ -97,7 +99,8 @@ def ensure_identity(root: Path, person_id: str, display: str) -> bool:
     if not have_name:
         _git(root, "config", "user.name", display or person_id, check=True)
     if not have_email:
-        _git(root, "config", "user.email", f"{person_id}@{_EMAIL_DOMAIN}", check=True)
+        email = os.environ.get("EMAIL", "").strip() or f"{person_id}@{_EMAIL_DOMAIN}"
+        _git(root, "config", "user.email", email, check=True)
     return True
 
 
@@ -113,6 +116,14 @@ def describe(data_dir: Path, root: Path, path: str) -> tuple[str | None, str]:
     if len(parts) > 2 and parts[0] == "scenarios":
         return parts[1], Path(*parts[2:]).as_posix()
     return None, rel.as_posix()
+
+
+def note(status: str) -> str:
+    """What a change's porcelain ``status`` adds to its path when listed:
+    " (new)", " (deleted)" or nothing."""
+    if status == "??" or "A" in status:
+        return " (new)"
+    return " (deleted)" if "D" in status else ""
 
 
 def message(data_dir: Path, root: Path, changes: Sequence[tuple[str, str]], command: str) -> str:
@@ -131,9 +142,7 @@ def message(data_dir: Path, root: Path, changes: Sequence[tuple[str, str]], comm
         else:
             scenarios.setdefault(scenario, []).append(name)
             shown = f"scenarios/{scenario}/{name}"
-        note = " (new)" if status == "??" or "A" in status else (
-            " (deleted)" if "D" in status else "")
-        lines.append(f"- {shown}{note}")
+        lines.append(f"- {shown}{note(status)}")
     if len(scenarios) == 1 and not shared:
         (scenario, names), = scenarios.items()
         subject = _subject(f"Edit {scenario}: ", sorted(dict.fromkeys(names)))
@@ -145,12 +154,14 @@ def message(data_dir: Path, root: Path, changes: Sequence[tuple[str, str]], comm
 
 def _subject(lead: str, items: Sequence[str]) -> str:
     """``lead`` and ``items``, as many as fit the width, then "and N more"."""
-    for shown in range(len(items), 0, -1):
+    def line(shown: int) -> str:
         rest = len(items) - shown
-        text = lead + ", ".join(items[:shown]) + (f" and {rest} more" if rest else "")
-        if len(text) <= _SUBJECT_WIDTH or shown == 1:
-            return text
-    return lead.rstrip(": ")
+        return lead + ", ".join(items[:shown]) + (f" and {rest} more" if rest else "")
+
+    shown = len(items)
+    while shown > 1 and len(line(shown)) > _SUBJECT_WIDTH:
+        shown -= 1
+    return line(shown)
 
 
 def commit(

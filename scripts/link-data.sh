@@ -95,7 +95,8 @@ if [ "$mode" = link ] && [ ! -f "$target/sim/persons.csv" ] && [ -t 0 ]; then
     read -r answer || answer=""
     case $answer in
         [Nn]*) ;;
-        *) mode="new" ;;
+        # "$@" is still just PATH, which isn't one of sim init's options.
+        *) mode="new"; set -- ;;
     esac
 fi
 if [ "$mode" = new ]; then
