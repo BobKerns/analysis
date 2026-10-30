@@ -12,8 +12,8 @@ uv run python -m analysis.videos build docs/videos/00-pilot
 uv run python -m analysis.videos check                     # every script parses, every slide renders
 ```
 
-The result is `out/videos/00-pilot.en.mp4` with captions beside it in
-`out/videos/00-pilot.en.srt`.
+The result is `out/videos/00-pilot.en.mp4`, with its captions
+(`00-pilot.en.srt`) and thumbnail (`00-pilot.en.jpg`) beside it.
 
 ## Layout
 
@@ -199,6 +199,29 @@ Requirements: `ffmpeg`, `uv`, Playwright's Chromium (`uv run playwright
 install chromium`), and for tapes VHS and ttyd (`setup` downloads them on
 Linux; `brew install vhs` on macOS).
 
+## Thumbnail and preview
+
+The first scene doesn't fade in, so frame 0, which players and file browsers
+show as the preview, is the title card. The build also writes the title card
+(or the first slide, if there's no `title` slide) as a 1280x720 JPEG beside
+the video and embeds it in the MP4 as cover art.
+
+## Publishing on YouTube
+
+By hand, in YouTube Studio:
+
+1. Upload the MP4. On the Details step, choose the `.jpg` as the custom
+   thumbnail (custom thumbnails need a verified channel).
+2. Under Subtitles (or the Video elements step), Add, then Upload file, With
+   timing, and pick the `.srt`, with its language set to match.
+3. Each translation's `.srt` goes on the same video under its own language.
+   A translation's narration can go on as an extra audio track where the
+   channel has multi-language audio; otherwise it's its own video.
+
+The YouTube Data API (`videos.insert`, `thumbnails.set`, `captions.insert`)
+could script this once there are several videos; it needs a one-time OAuth
+setup.
+
 ## What's committed
 
 Sources only: scripts, templates, assets, the theme, the builder. Videos,
@@ -209,6 +232,7 @@ in the tool cache).
 
 - Hosting: YouTube (it can auto-translate captions, unevenly) or release
   assets, and where the docs link to them.
+- Whether to script the YouTube upload.
 - Target length: 5 to 10 minutes per video, as #373 suggests.
 - Notebook scenes, background music, and pronunciation hints for words the
   voice gets wrong.

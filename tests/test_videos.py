@@ -192,6 +192,10 @@ def test_compose_holds_the_picture_and_delays_the_narration(videos_root: Path, t
                                length=7.5, lead=0.6, out=tmp_path / "c.mp4")
     graph = args[args.index("-filter_complex") + 1]
     assert "-loop" in args and "adelay=600" in graph and "fade=t=out:st=7.000" in graph
+    assert "fade=t=in" in graph
+    opening = render.compose_args("ffmpeg", theme, visual=tmp_path / "s.png", still=True, audio=None,
+                                  length=7.5, lead=0.6, out=tmp_path / "c.mp4", fade_in=False)
+    assert "fade=t=in" not in opening[opening.index("-filter_complex") + 1]  # frame 0 is the preview
     tape = render.compose_args("ffmpeg", theme, visual=tmp_path / "t.mp4", still=False, audio=None,
                                length=12.0, lead=0.6, out=tmp_path / "c.mp4")
     graph = tape[tape.index("-filter_complex") + 1]
@@ -237,6 +241,7 @@ def test_narration_edit_rebuilds_only_that_scene(videos_root: Path, repo_root: P
     assert [(s.narration, s.visual, s.clip) for s in first.scenes] == [("made", "made", "made")] * 2
     assert first.video.is_file() and first.captions.read_text().count("-->") == 2
     assert render.duration(first.video) == pytest.approx(first.length, abs=0.2)
+    assert first.thumbnail.is_file() and first.thumbnail.suffix == ".jpg"
 
     (folder / "script.md").write_text(SLIDES_ONLY.replace("Goodbye for now.", "See you next time."))
     second = build(folder, out_dir=out, engine="silent", repo=repo_root, log=lambda _: None)

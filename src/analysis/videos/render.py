@@ -265,8 +265,13 @@ def compose_args(
     length: float,
     lead: float,
     out: Path,
+    fade_in: bool = True,
 ) -> list[str]:
-    """ffmpeg arguments for one scene: the picture held to ``length``, narration ``lead`` in."""
+    """ffmpeg arguments for one scene: the picture held to ``length``, narration ``lead`` in.
+
+    A still fades in and out through the background color, except that the
+    video's first scene doesn't fade in: players use frame 0 as the preview.
+    """
     w, h, fps = theme.width, theme.height, theme.fps
     bg = theme.bg_hex()
     args = [ffmpeg, "-y", "-v", "error"]
@@ -282,7 +287,9 @@ def compose_args(
     video = f"[0:v]fps={fps},{fit},tpad=stop_mode=clone:stop_duration={length:.3f},trim=duration={length:.3f}"
     if still:
         fade = theme.timing("slide_fade")
-        video += f",fade=t=in:st=0:d={fade}:color={bg},fade=t=out:st={max(0.0, length - fade):.3f}:d={fade}:color={bg}"
+        if fade_in:
+            video += f",fade=t=in:st=0:d={fade}:color={bg}"
+        video += f",fade=t=out:st={max(0.0, length - fade):.3f}:d={fade}:color={bg}"
     video += ",setpts=PTS-STARTPTS,format=yuv420p[v]"
     delay = int(round(lead * 1000)) if audio is not None else 0
     sound = (
@@ -295,15 +302,30 @@ def compose_args(
     return args
 
 
-def concat(parts: Sequence[Path], out: Path) -> None:
-    """Join scene clips (same size, rate and codecs) without re-encoding."""
+def thumbnail(source: Path, out: Path) -> None:
+    """A 1280x720 JPEG of source (a still or a video's first frame): YouTube's thumbnail size."""
+    ffmpeg = need("ffmpeg", "install ffmpeg")
+    run([ffmpeg, "-y", "-v", "error", "-i", str(source), "-frames:v", "1", "-vf", "scale=1280:720",
+         "-q:v", "3", str(out)])
+
+
+def concat(parts: Sequence[Path], out: Path, cover: Path | None = None) -> None:
+    """Join scene clips (same size, rate and codecs) without re-encoding.
+
+    ``cover`` (a JPEG) is embedded as cover art, which file browsers and
+    players show as the video's preview.
+    """
     ffmpeg = need("ffmpeg", "install ffmpeg")
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         for p in parts:
             f.write(f"file '{p.resolve()}'\n")
         listing = f.name
+    args = [ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", listing]
+    if cover is not None:
+        args += ["-i", str(cover), "-map", "0", "-map", "1", "-c", "copy", "-disposition:v:1", "attached_pic"]
+    else:
+        args += ["-c", "copy"]
     try:
-        run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", listing, "-c", "copy",
-             "-movflags", "+faststart", str(out)])
+        run([*args, "-movflags", "+faststart", str(out)])
     finally:
         os.unlink(listing)
