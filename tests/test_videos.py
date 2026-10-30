@@ -266,8 +266,16 @@ def test_narration_edit_rebuilds_only_that_scene(videos_root: Path, repo_root: P
     assert "See you next time." in second.captions.read_text()
 
 
+@pytest.fixture
+def demo_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A private DEMO_ROOT: the real one is a fixed path, shared by parallel test workers."""
+    root = tmp_path / "demo-root"
+    monkeypatch.setattr(render, "DEMO_ROOT", root)
+    return root
+
+
 @pytest.mark.skipif(not shutil.which("git"), reason="needs git")
-def test_prepare_demo_runs_setup_and_commits_what_it_leaves(videos_root: Path, tmp_path: Path) -> None:
+def test_prepare_demo_runs_setup_and_commits_what_it_leaves(videos_root: Path, tmp_path: Path, demo_root: Path) -> None:
     theme = themes.load(videos_root)
     data = tmp_path / "data"
     data.mkdir()
@@ -275,16 +283,16 @@ def test_prepare_demo_runs_setup_and_commits_what_it_leaves(videos_root: Path, t
     setup = tmp_path / "setup.sh"
     setup.write_text('echo "$ANALYSIS_DATA_DIR" > "$ANALYSIS_DATA_DIR/where.txt"\n')
     store = render.prepare_demo(data, setup, theme, tmp_path / "store")
-    assert (store / "data" / "where.txt").read_text().strip() == str(render.DEMO_ROOT / "data")
+    assert (store / "data" / "where.txt").read_text().strip() == str(demo_root / "data")
     status = render.run(["git", "status", "--porcelain"], cwd=store / "data").stdout
     assert status == ""
     log = render.run(["git", "log", "--format=%s %an"], cwd=store / "data").stdout.split("\n")
     assert log[:2] == ["setup Demo", "demo data Demo"]
-    assert (store / ".videorc").is_file() and not render.DEMO_ROOT.exists()
+    assert (store / ".videorc").is_file() and not demo_root.exists()
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="needs git")
-def test_prepare_demo_reports_a_failing_setup(videos_root: Path, tmp_path: Path) -> None:
+def test_prepare_demo_reports_a_failing_setup(videos_root: Path, tmp_path: Path, demo_root: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
     (data / "scenario.csv").write_text("name\nbase\n")
