@@ -10,9 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import ipywidgets as widgets
-from matplotlib.figure import Figure
 import pandas as pd
-from IPython.display import Image, clear_output, display
+from IPython.display import clear_output, display
 
 from analysis.frames import by_year_and_label
 from analysis.sim import registries, units
@@ -31,7 +30,6 @@ from analysis.sim.ensemble_plots import (
     ensemble_compare_figure,
     ensemble_fan_chart,
     ensemble_fan_figure,
-    figure_bytes,
 )
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.notebook_ui.pickers import (
@@ -55,7 +53,7 @@ from analysis.sim.series_db import (
     series_db_path,
 )
 from analysis.sim.types import DollarMode, LogLinearMode
-from analysis.sim.notebook_ui.styled import StyledMarkdown
+from analysis.sim.notebook_ui.styled import StyledMarkdown, figure_image, show_figure
 
 __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
@@ -98,11 +96,6 @@ def ensemble_summary_view(
     if failed_count:
         heading += f" ({failed_count} failed, excluded)"
     return heading, yearly
-
-
-def _png(fig: Figure) -> Image:
-    """``fig`` as an inline PNG, cropped like matplotlib-inline's own output."""
-    return Image(data=figure_bytes(fig), format="png")
 
 
 NET_WORTH = "Net worth"
@@ -588,11 +581,11 @@ def ensemble_widget(*_,
                 "that reaches zero or below; showing linear instead._"
             ))
             wants_log = False
-        display(_png(ensemble_fan_figure(
+        show_figure(ensemble_fan_figure(
             monthly_summary, f"{subject} fan chart ({mode_label}) ({recipe})",
             reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
             log_scale=wants_log, deaths=store.base_case_deaths(),
-        )))
+        ))
         display(yearly.style.format(_share_format(yearly.columns)))
 
     dropdown.observe(_redraw, names="value")
@@ -684,9 +677,9 @@ def ensemble_guard_rails_widget(*_,
         if not shown:
             display(StyledMarkdown("No guard rail covers these members' years."))
             return
-        display(_png(ensemble_guard_rail_figure(
+        show_figure(ensemble_guard_rail_figure(
             shown, f"Guard rails ({recipe})", unit=unit, years=(low, high),
-            deaths=store.base_case_deaths())))
+            deaths=store.base_case_deaths()))
         for r in shown:
             table = guard_rails.ensemble_rail_frame(r)
             table = table[(table.index >= low) & (table.index <= high)]
@@ -812,8 +805,8 @@ def ensemble_drift_widget(*_,
         display(StyledMarkdown(
             f"{recipe}: {len(store)} member(s)" + (f", {failed_count} failed" if failed_count else "")
             + f"; drift from {targets.value} ({whose}), percentage points (batch {batch_dir.name})"))
-        display(_png(drift_fan_figure(members, f"Drift from {targets.value}: {what} ({recipe})",
-                                      band=band, years=(low, high), deaths=store.base_case_deaths())))
+        show_figure(drift_fan_figure(members, f"Drift from {targets.value}: {what} ({recipe})",
+                                     band=band, years=(low, high), deaths=store.base_case_deaths()))
         table = drift.ensemble_drift_table(members, band=band if column == drift.MAX_ABS else None)
         if not table.empty:
             table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
@@ -1013,7 +1006,7 @@ def ensemble_compare_widget(*_,
             note = f"paired over {len(pairs)} futures" if pairs else f"not paired: {unpaired}"
             outputs.append(StyledMarkdown(
                 f"### {other} vs {baseline}\n\n{len(sides.stores[other])} members, {note}."))
-            outputs.append(_png(ensemble_compare_figure(
+            outputs.append(figure_image(ensemble_compare_figure(
                 baseline, other, sides.frames[baseline], sides.frames[other], pairs,
                 sides.mode_label, sides.reserve, sides.cpi_pair(baseline, other), log_scale,
                 clip=time_range.clip, deaths=sides.stores[baseline].base_case_deaths(),
@@ -1025,7 +1018,7 @@ def ensemble_compare_widget(*_,
             assert note is not None
             outputs.append(note)
             for name, frame in sides.frames.items():
-                outputs.append(_png(ensemble_fan_figure(
+                outputs.append(figure_image(ensemble_fan_figure(
                     time_range.clip(summary_with_percentiles(frame)),
                     f"{sides.subject} fan chart ({sides.mode_label}) ({name})",
                     reserve=sides.reserve if sides.mode == DollarMode.CPI_CONSTANT else None,

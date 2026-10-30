@@ -20,9 +20,10 @@ from IPython.display import Markdown
 from markdown_it import MarkdownIt
 
 if TYPE_CHECKING:
+    from IPython.display import Image
     from matplotlib.figure import Figure
 
-__all__ = ["StyledMarkdown", "show_figure", "styled_html"]
+__all__ = ["StyledMarkdown", "figure_image", "show_figure", "styled_html"]
 
 
 @cache
@@ -57,11 +58,19 @@ class StyledMarkdown(Markdown):
         return styled_html(_renderer().render(self.data or ""))
 
 
-def show_figure(fig: Figure) -> None:
-    """Display a plain matplotlib ``Figure`` (one of the shared chart modules',
-    drawn without pyplot) as a PNG, as matplotlib-inline would show it."""
-    from IPython.display import Image, display
+def figure_image(fig: Figure) -> Image:
+    """A plain matplotlib ``Figure`` (one of the shared chart modules', drawn
+    without pyplot) as an inline PNG, cropped as matplotlib-inline crops its
+    own output: for a widget that gathers its outputs to display later."""
+    from IPython.display import Image
 
     from analysis.sim.ensemble_plots import figure_bytes
 
-    display(Image(data=figure_bytes(fig), format="png"))
+    return Image(data=figure_bytes(fig), format="png")
+
+
+def show_figure(fig: Figure) -> None:
+    """Display ``figure_image(fig)`` now."""
+    from IPython.display import display
+
+    display(figure_image(fig))
