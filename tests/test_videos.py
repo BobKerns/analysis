@@ -251,3 +251,31 @@ def test_narration_edit_rebuilds_only_that_scene(videos_root: Path, repo_root: P
     states = {s.id: (s.narration, s.visual, s.clip) for s in second.scenes}
     assert states == {"intro": ("cached", "cached", "cached"), "end": ("made", "cached", "made")}
     assert "See you next time." in second.captions.read_text()
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_prepare_demo_runs_setup_and_commits_what_it_leaves(videos_root: Path, tmp_path: Path) -> None:
+    theme = themes.load(videos_root)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "scenario.csv").write_text("name\nbase\n")
+    setup = tmp_path / "setup.sh"
+    setup.write_text('echo "$ANALYSIS_DATA_DIR" > "$ANALYSIS_DATA_DIR/where.txt"\n')
+    store = render.prepare_demo(data, setup, theme, tmp_path / "store")
+    assert (store / "data" / "where.txt").read_text().strip() == str(render.DEMO_ROOT / "data")
+    status = render.run(["git", "status", "--porcelain"], cwd=store / "data").stdout
+    assert status == ""
+    log = render.run(["git", "log", "--format=%s %an"], cwd=store / "data").stdout.split("\n")
+    assert log[:2] == ["setup Demo", "demo data Demo"]
+    assert (store / ".videorc").is_file() and not render.DEMO_ROOT.exists()
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_prepare_demo_reports_a_failing_setup(videos_root: Path, tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "scenario.csv").write_text("name\nbase\n")
+    setup = tmp_path / "setup.sh"
+    setup.write_text("echo before\nfalse\necho never\n")
+    with pytest.raises(scripts.ScriptError, match=r"setup\.sh failed \(1\)"):
+        render.prepare_demo(data, setup, themes.load(videos_root), tmp_path / "store")

@@ -220,6 +220,7 @@ paywalled
 pcon
 pdftotext
 Pewsey
+pipefail
 pitchbook
 plottable
 polyfit

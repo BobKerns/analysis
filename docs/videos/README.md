@@ -20,6 +20,7 @@ The result is `out/videos/00-pilot.en.mp4`, with its captions
 | Path | What it holds |
 | --- | --- |
 | `docs/videos/<nn>-<slug>/script.md` | One video: its scenes, narration beside the commands and slides |
+| `docs/videos/<nn>-<slug>/setup.sh` | Optional: prepares the demo data the video's tapes start from |
 | `docs/videos/<nn>-<slug>/script.<lang>.md` | A translation of that video's narration and slide text |
 | `docs/videos/theme/theme.toml` | The shared look: palette, fonts, terminal colors, voices, timing |
 | `docs/videos/theme/templates/*.html` | Slide templates (Jinja2): `title` opens every video, `card` for breaks and endings |
@@ -92,18 +93,39 @@ A tape is a list of [VHS](https://github.com/charmbracelet/vhs) commands
 file, the theme's terminal settings, and a hidden setup that:
 
 - copies the front matter's `data` folder (the prototype personas' data) to
-  a fresh, committed scratch folder and points `ANALYSIS_DATA_DIR` at it, so
-  every recording starts from the same state;
+  a fresh, committed scratch folder, after the video's `setup.sh` (if any)
+  has run in it, and points `ANALYSIS_DATA_DIR` at it, so every recording
+  starts from the same state;
 - puts this checkout's `sim`/`analysis` on `PATH`;
 - sets the prompt (`alice@home $`, from the theme).
 
-Set-up the viewer shouldn't see goes between `Hide` and `Show`. Pace the
-typing with `Sleep` so the picture keeps up with the narration; the
-narration starts `lead` seconds into the scene. A tape must not set
-`Output`.
+Each tape starts from the same state, so a tape can't rely on an earlier
+one: what a scene shows has to exist before it records. That's what
+`setup.sh` is for (below). A little set-up the viewer shouldn't see can also
+go between `Hide` and `Show`. Pace the typing with `Sleep` so the picture
+keeps up with the narration; the narration starts `lead` seconds into the
+scene. A tape must not set `Output`.
 
 The demo data's bytes are part of a tape's cache key, but the CLI's
 behavior isn't, so after a CLI change rebuild with `--rerecord`.
+
+### Setting up the demo
+
+A video that shows more than the prototype data's starting point (a
+scenario already run, an ensemble, an edit) keeps the commands that build it
+in `setup.sh`, beside its script. The builder runs it once, before the first
+tape records, with `bash -euo pipefail`, inside the fresh copy of the demo
+data, with the tapes' environment (`sim` on `PATH`, `ANALYSIS_DATA_DIR`
+set). Whatever it leaves uncommitted is committed after it, under a fixed
+author and date. Every tape then starts from a copy of the result, its
+`state/runs` included, so `sim explain` in one scene doesn't need `sim run`
+recorded in the scene before.
+
+`sim run` refuses uncommitted data, so a setup that changes a scenario and
+then runs it commits in between (`git add -A && git commit -q -m ...`; the
+identity is already set). Setup's output isn't shown; if it fails, the build
+stops with its last lines. Its text is part of every tape's cache key, so
+editing it re-records the video's tapes. `01-intro/setup.sh` is an example.
 
 Notebook scenes (Playwright driving JupyterLab) aren't supported yet; they'll
 be a third visual kind beside `tape` and `slide`.
@@ -182,7 +204,7 @@ what went into it:
 | --- | --- |
 | Narration | The scene's sentences, the voice settings |
 | Slide | The page its template renders: template, assets, theme, fields |
-| Tape | Its commands, the terminal theme, the demo data; or `--rerecord` |
+| Tape | Its commands, the terminal theme, the demo data, the video's `setup.sh`; or `--rerecord` |
 | Scene clip | Its narration, its visual, the timing |
 
 So editing one sentence re-synthesizes and re-assembles that scene only. The

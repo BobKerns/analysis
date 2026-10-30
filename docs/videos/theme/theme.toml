@@ -36,7 +36,7 @@ mono = "'JetBrains Mono', 'DejaVu Sans Mono', Menlo, monospace"
 [terminal]
 # VHS settings (https://github.com/charmbracelet/vhs#settings).
 font_family = "JetBrains Mono"
-font_size = 30
+font_size = 22
 padding = 48
 typing_speed = "55ms"
 prompt = "alice@home"
