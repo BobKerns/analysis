@@ -3,9 +3,10 @@
 See [docs/user-guide.md](../docs/user-guide.md) for a task-based walkthrough (adding accounts and lots, changing expenses, modeling a sale, chains, lifespans, calendar events). This file is the CSV column reference and conventions cheat sheet.
 
 Skeletons for every CSV the simulator's loader expects (per [ADR-002](../docs/architecture/ADR-002-storage-schema.md) + [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md)).
-Copy this folder to a new data repo's `sim/` and edit: replace the `test`
-person in `persons.csv` with your own, delete `.analysis_user`, and start from
-the one scenario, `scenarios/base`. `scripts/link-data.sh --template` (run by
+Start a new data repo with `sim init DIR`: it asks who you are and your
+filing status, copies what you'll edit from this folder into `DIR/sim`, with
+`scenarios/base` as the one scenario, and makes `DIR` a git repository with a
+first commit. `scripts/link-data.sh --template` (run by
 `scripts/setup.sh` when you give it no data repo, and by CI) copies it unedited
 to `data/shared/sim`, where it loads as is. **Every header row matches the
 corresponding DDL column name exactly** to minimize confusion when reading the

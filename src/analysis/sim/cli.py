@@ -3672,6 +3672,72 @@ def _echo_guard_rail_comparison(
         _echo_frame(frame.map(_cell))
 
 
+@sim_group_command.command("init")
+@click.argument("directory", required=False, metavar="DIR",
+                type=click.Path(file_okay=False, path_type=Path))
+@click.option("--id", "person_id", default=None,
+              help="Your id in persons.csv, one word (asked for when left out).")
+@click.option("--display", default=None, help="Your full or display name.")
+@click.option("--birthdate", default=None, help="Your birthdate, YYYY-MM-DD.")
+@click.option("--sex", default=None,
+              help="f or m ('' for none); a life_table lifespan needs it.")
+@click.option("--filing-status", type=click.Choice(registries.FILING_STATUSES), default=None,
+              help="The household's tax filing status (asked for when left out).")
+@click.option("--no-commit", is_flag=True,
+              help="Leave the new files uncommitted (and DIR not a git repository).")
+def init_command(
+    directory: Path | None, person_id: str | None, display: str | None, birthdate: str | None,
+    sex: str | None, filing_status: str | None, no_commit: bool,
+) -> None:
+    """Start a new data repo in DIR (#289), asking for what the options
+    leave out: DIR, you (the operator, its first primary person) and the
+    household's filing status.
+
+    DIR gets sim/ with persons.csv, the other shared CSVs, activate-analysis,
+    .retention.yaml and scenarios/base, made current, from the code
+    repository's templates/. The template scenarios (t_*) and tax-law aux
+    tables aren't copied: they're read from templates/ itself, so they stay
+    current as the code changes. DIR is made a git repository with a first
+    commit, so runs record which data they read from the start.
+
+    Refuses a DIR that already holds a data repo.
+    """
+    from analysis.sim import data_repo
+
+    if directory is None:
+        directory = Path(click.prompt("directory for the new data repo", default="."))
+    root = directory.expanduser().resolve()
+    if data_repo.is_data_repo(root):
+        raise click.ClickException(f"{root} already holds a data repo")
+    if person_id is None:
+        person_id = _ask_new_name("your id in persons.csv (one word, e.g. alice)")
+    person_id = person_id.strip()
+    if not person_id or any(c.isspace() or c == "," for c in person_id):
+        raise click.ClickException(f"an id is one word, without commas: {person_id!r}")
+    fields = _person_fields(
+        {}, [], guided=display is None or birthdate is None,
+        display=display, birthdate=birthdate, sex=sex, role="primary", meta_json="{}",
+    )
+    if filing_status is None:
+        filing_status = click.prompt("filing status", default="MFJ",
+                                     type=click.Choice(registries.FILING_STATUSES))
+    try:
+        failed = data_repo.create_data_repo(
+            root, {"id": person_id, **fields}, filing_status, commit=not no_commit)
+    except data_repo.InitError as exc:
+        raise click.ClickException(str(exc)) from None
+    sim = root / "sim"
+    click.echo(f"created a data repo in {root}; its data dir is {sim}")
+    if failed:
+        click.echo(f"  warning: not committed: {failed}", err=True)
+    elif not no_commit:
+        click.echo("  committed the new files")
+    click.echo(f"checking {data_repo.START_SCENARIO}: ", nl=False)
+    _check_scenario(sim, data_repo.START_SCENARIO, unused=False)
+    click.echo(f"Next: source {sim / 'activate-analysis'}, then add the rest of the household "
+               "with `sim person add` and accounts to the base scenario with `sim account add`.")
+
+
 @sim_group_command.command("switch")
 @click.argument("scenario", type=completion.SCENARIO, required=False)
 @click.option("--data-dir",

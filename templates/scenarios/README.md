@@ -3,9 +3,9 @@
 Scenarios the analysis code repository ships for every data repo to build
 on: a vetted inflation and market structure, with no household data.
 
-**Starting a new data repo:** copy `base` (this folder's only scenario
-without a `t_` name) into your data repo's `scenarios/` as your starting
-point. Don't copy the `t_` scenarios. A data repo that names a `t_`
+**Starting a new data repo:** `sim init` copies `base` (this folder's only
+scenario without a `t_` name) into your data repo's `scenarios/` as your
+starting point. Don't copy the `t_` scenarios. A data repo that names a `t_`
 scenario it has no folder for reads it from here, so the templates stay
 current as the code changes. To change one, copy just that folder into your
 `scenarios/`; it then replaces the template whole.
