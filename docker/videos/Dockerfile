@@ -50,11 +50,16 @@ ENV LANG=C.UTF-8 \
     ANALYSIS_BUILDER=off \
     PATH=/opt/venv/bin:/opt/node/bin:$PATH
 
-# git: the tape sandbox commits its copy of the data. The fonts are the
-# theme's (Inter, JetBrains Mono) plus CJK for translated slides.
+# git: the tape sandbox commits its copy of the data. build-essential and
+# cmake: the narration worker's Japanese packages (misaki[ja]) build from
+# source: pyopenjtalk has no wheels at all, and mojimoji none for arm64 or
+# Python 3.13. The fonts are the theme's (Inter, JetBrains Mono) plus CJK
+# for translated slides.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
         ca-certificates \
+        cmake \
         curl \
         ffmpeg \
         fonts-dejavu-core \
@@ -89,9 +94,13 @@ RUN set -eu; \
 WORKDIR /repo
 
 # The narration worker's own environment (Python < 3.14, kokoro-onnx), made
-# now so a build doesn't download it.
+# now so a build doesn't download it. OpenJTalk fetches its dictionary
+# (about 23 MB) into the environment the first time it's used; use it once
+# here, so it's in the image rather than fetched by every container.
 COPY scripts/videos/tts_kokoro.py scripts/videos/
-RUN uv sync --quiet --script scripts/videos/tts_kokoro.py
+RUN uv sync --quiet --script scripts/videos/tts_kokoro.py \
+ && "$(uv python find --script scripts/videos/tts_kokoro.py)" -c \
+        "import pyopenjtalk; pyopenjtalk.g2p('テスト')"
 
 # The project's dependencies, then Chromium (with the libraries it needs).
 # /opt/pw-browsers/chromium is where the builder looks for it, and VHS finds
