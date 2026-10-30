@@ -3685,9 +3685,11 @@ def _echo_guard_rail_comparison(
               help="The household's tax filing status (asked for when left out).")
 @click.option("--no-commit", is_flag=True,
               help="Leave the new files uncommitted (and DIR not a git repository).")
+@click.option("--no-builder", is_flag=True,
+              help="Don't turn on background builds (for scripts and tests).")
 def init_command(
     directory: Path | None, person_id: str | None, display: str | None, birthdate: str | None,
-    sex: str | None, filing_status: str | None, no_commit: bool,
+    sex: str | None, filing_status: str | None, no_commit: bool, no_builder: bool,
 ) -> None:
     """Start a new data repo in DIR (#289), asking for what the options
     leave out: DIR, you (the operator, its first primary person) and the
@@ -3699,6 +3701,12 @@ def init_command(
     tables aren't copied: they're read from templates/ itself, so they stay
     current as the code changes. DIR is made a git repository with a first
     commit, so runs record which data they read from the start.
+
+    Then it turns on background builds (ADR-004 §12), as `sim builder
+    install` does: it links this code repository's data/shared to DIR, if
+    data/shared isn't there yet, and installs DIR's git hooks. --no-builder
+    leaves both alone, for scripts and tests, where a background build is
+    no use; so does --no-commit, since the builder needs a git repository.
 
     Refuses a DIR that already holds a data repo.
     """
@@ -3734,8 +3742,33 @@ def init_command(
         click.echo("  committed the new files")
     click.echo(f"checking {data_repo.START_SCENARIO}: ", nl=False)
     _check_scenario(sim, data_repo.START_SCENARIO, unused=False)
+    if not no_builder and not no_commit and not failed:
+        _init_builder(sim)
     click.echo(f"Next: source {sim / 'activate-analysis'}, then add the rest of the household "
                "with `sim person add` and accounts to the base scenario with `sim account add`.")
+
+
+def _init_builder(sim: Path) -> None:
+    """Pair the new data repo with this code worktree and install the
+    builder's hooks; a pair that can't be made is a warning, not a failure,
+    since the data repo itself is ready."""
+    from analysis.sim import builder, data_repo
+
+    shared = data_repo.CODE_REPO_DIR / "data" / "shared"
+    if not shared.exists() and not shared.is_symlink():
+        shared.parent.mkdir(exist_ok=True)
+        shared.symlink_to(sim.parent)
+        click.echo(f"linked {shared} to {sim.parent}")
+    try:
+        done = builder.install(sim)
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+        click.echo(f"  warning: background builds not turned on: {exc}", err=True)
+        click.echo(f"  once {shared} leads to {sim.parent}: sim builder install --data-dir {sim}",
+                   err=True)
+        return
+    for line in done:
+        click.echo(line)
+    click.echo(builder.notify(sim))
 
 
 @sim_group_command.command("switch")

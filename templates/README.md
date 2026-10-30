@@ -6,7 +6,9 @@ Skeletons for every CSV the simulator's loader expects (per [ADR-002](../docs/ar
 Start a new data repo with `sim init DIR`: it asks who you are and your
 filing status, copies what you'll edit from this folder into `DIR/sim`, with
 `scenarios/base` as the one scenario, and makes `DIR` a git repository with a
-first commit. `scripts/link-data.sh --template` (run by
+first commit, links this repository's `data/shared` to it if that isn't
+taken, and turns on background builds (`--no-builder` doesn't).
+`scripts/link-data.sh --template` (run by
 `scripts/setup.sh` when you give it no data repo, and by CI) copies it unedited
 to `data/shared/sim`, where it loads as is. **Every header row matches the
 corresponding DDL column name exactly** to minimize confusion when reading the

@@ -47,9 +47,9 @@ Last, it links the data and code repositories together. It asks for the path to
 your data repo, makes `data/shared` point to it, and asks which of the data
 repo's primary persons you are. Leave the path blank and it fills `data/shared`
 with the template data instead, used as a `test` person, which is what CI does.
-To start a data repo of your own, finish setup with the template data, run
-`.venv/bin/sim init DIR`, then remove `data/shared` and run
-`scripts/link-data.sh DIR`. Either way, this then gives you a working environment:
+To start a data repo of your own, finish setup with the template data, remove
+`data/shared`, and run `.venv/bin/sim init DIR`: it links `data/shared` to the
+new repo and turns on background builds. Either way, this then gives you a working environment:
 
 ```sh
 source data/shared/sim/activate-analysis

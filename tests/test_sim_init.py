@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
-from analysis.sim.data_repo import CODE_REPO_DIR
+from analysis.sim import builder, data_repo
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +22,28 @@ def _git_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for who in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{who}_NAME", "t")
         monkeypatch.setenv(f"GIT_{who}_EMAIL", "t@t")
+
+
+@pytest.fixture(autouse=True)
+def code_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A stand-in code worktree, so no test links the real data/shared."""
+    code = tmp_path / "code"
+    code.mkdir()
+    monkeypatch.setattr(data_repo, "CODE_REPO_DIR", code)
+    return code
+
+
+@pytest.fixture(autouse=True)
+def installs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """The data dirs the builder was installed for, in place of installing."""
+    done: list[Path] = []
+
+    def install(data_dir: Path, branch: str | None = None) -> list[str]:  # noqa: ARG001
+        done.append(data_dir)
+        return [f"installed hooks for {data_dir}"]
+    monkeypatch.setattr(builder, "install", install)
+    monkeypatch.setattr(builder, "notify", lambda data_dir: "notified")  # noqa: ARG005
+    return done
 
 
 def _init(*args: str, input: str | None = None) -> Result:
@@ -52,7 +74,9 @@ def test_init_asks_for_what_its_options_leave_out(tmp_path: Path, monkeypatch: p
     assert "checking base: ok" in result.output
 
 
-def test_init_copies_what_the_household_edits_and_reads_the_rest_from_templates(tmp_path: Path) -> None:
+def test_init_copies_what_the_household_edits_and_reads_the_rest_from_templates(
+    tmp_path: Path, code_repo: Path,
+) -> None:
     result = _init(str(tmp_path / "repo"), *_ALICE)
 
     assert result.exit_code == 0, result.output
@@ -64,7 +88,7 @@ def test_init_copies_what_the_household_edits_and_reads_the_rest_from_templates(
     assert not (sim / "README.md").exists()  # describes the code repo's templates/
     assert _rows(sim / "scenarios" / "base" / "scenario.csv")[0]["created_by"] == "alice"
     # activate-analysis needn't ask for the code repo or the user.
-    assert (sim / ".analysis").read_text() == f"{CODE_REPO_DIR}\n"
+    assert (sim / ".analysis").read_text() == f"{code_repo}\n"
     assert (sim / ".analysis_user").read_text() == "alice\n"
     assert (sim / ".current_scenario").read_text() == "base\n"
 
@@ -122,3 +146,44 @@ def test_init_refuses_an_id_of_more_than_one_word(tmp_path: Path) -> None:
     assert result.exit_code != 0
     assert "one word" in result.output
     assert not (tmp_path / "repo").exists()
+
+
+# ---------- background builds ----------
+
+def test_init_links_data_shared_and_installs_the_builder(
+    tmp_path: Path, code_repo: Path, installs: list[Path],
+) -> None:
+    root = tmp_path / "repo"
+    result = _init(str(root), *_ALICE)
+
+    assert result.exit_code == 0, result.output
+    assert (code_repo / "data" / "shared").resolve() == root.resolve()
+    assert installs == [root.resolve() / "sim"]
+    assert "notified" in result.output
+
+
+def test_init_leaves_an_existing_data_shared_alone(
+    tmp_path: Path, code_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (code_repo / "data" / "shared").mkdir(parents=True)
+
+    def install(data_dir: Path, branch: str | None = None) -> list[str]:  # noqa: ARG001
+        raise ValueError("data/shared doesn't lead to the data repo")
+    monkeypatch.setattr(builder, "install", install)
+
+    result = _init(str(tmp_path / "repo"), *_ALICE)
+
+    assert result.exit_code == 0, result.output
+    assert not (code_repo / "data" / "shared").is_symlink()
+    assert "background builds not turned on" in result.output
+
+
+@pytest.mark.parametrize("flag", ["--no-builder", "--no-commit"])
+def test_init_without_a_builder_touches_neither_repo(
+    tmp_path: Path, code_repo: Path, installs: list[Path], flag: str,
+) -> None:
+    result = _init(str(tmp_path / "repo"), *_ALICE, flag)
+
+    assert result.exit_code == 0, result.output
+    assert not (code_repo / "data").exists()
+    assert installs == []
