@@ -148,7 +148,7 @@ which inlines the SVG so the theme's CSS can restyle it.
 | Template | Fields |
 | --- | --- |
 | `title` | `series`, `episode`, `title`, `subtitle`, `cast` (assets to show; default home, Alice, Bill) |
-| `card` | `series`, `heading`, `body`, `speaker` (one asset, optional) |
+| `card` | `series`, `heading`, `body` (text, or a list shown one item per line), `speaker` (one asset, optional) |
 
 A new template extends `base.html`, which supplies the background, the
 ground, the theme's CSS variables (`--bg`, `--accent`, `--font-heading`, ...)

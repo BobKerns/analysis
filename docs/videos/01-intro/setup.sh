@@ -19,6 +19,12 @@ sim scheduled add 2027-04-30 Asset_Checking Expense_Taxes_Federal --kind tax_acc
 git add -A && git commit -q -m "Invest the savings; add federal income tax"
 sim run
 
+# The what-if the scenarios scene points at: Bill's salary ends a year
+# earlier. Only that rule's row lives in bill_early; the rest is inherited.
+sim scenario create bill_early retire_alice --description "Bill retires a year early, at the end of 2029"
+sim scheduled edit salary_bill --end 2029-12-31
+git add -A && git commit -q -m "What-if: Bill retires a year early"
+
 # The ensemble at the end: eighty futures of markets and inflation, with a
 # 2008-style crash placed some time from mid-2028 to 2034, around Alice's and
 # Bill's retirements, so a bad decade lands where it hurts most.

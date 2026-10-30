@@ -318,3 +318,9 @@ def test_an_unclosed_respelling_is_an_error(videos_root: Path) -> None:
     folder = _write(videos_root / "01-say", SCRIPT.replace("Second paragraph!", "Say {records here."))
     with pytest.raises(scripts.ScriptError, match=r"script\.md:\d+: a respelling is written"):
         scripts.load(folder)
+
+
+def test_card_body_list_is_one_item_per_line(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    html = render.slide_html(theme, {}, {"template": "card", "heading": "H", "body": ["One?", "<Two>"]}, "en")
+    assert '<div class="line">One?</div><div class="line">&lt;Two&gt;</div>' in html

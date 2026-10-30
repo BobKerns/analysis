@@ -12,8 +12,8 @@ the views on a run, and an ensemble of many runs.
 
 `setup.sh` beside this script prepares the demo before any scene records:
 it invests the prototype's savings in stocks and bonds, adds a federal
-income tax, runs `retire_alice`, and builds and runs the `alice_crisis`
-ensemble. So each terminal scene shows its own command without first
+income tax, runs `retire_alice`, creates the `bill_early` what-if, and
+builds and runs the `alice_crisis` ensemble. So each terminal scene shows its own command without first
 recording the ones before it.
 
 Notebooks are left to video 4, until the pipeline can record them.
@@ -35,7 +35,13 @@ kinds of accounts, and a lot of questions.
 ```slide
 template = "card"
 heading = "Questions it helps answer"
-body = "When can we retire? Which investment mix suits us? Sell the house now, or later? What does a Roth conversion buy us? How much room does the plan have?"
+body = [
+  "When can we retire, and how much can we spend?",
+  "Which mix of investments suits us best?",
+  "Sell the house now, or in five years?",
+  "What does a Roth conversion buy us?",
+  "How much room does the plan have?",
+]
 speaker = "bill"
 ```
 
@@ -90,16 +96,17 @@ Sleep 13s
 A plan is called a scenario, and most scenarios build on another one. Here,
 base holds the general assumptions: long-run inflation and market rates.
 Alice's plan, retire alice, builds on base and adds the household: their
-accounts, income and spending. A what-if, say Bill retiring a year early,
-would build on retire alice and list only what changes. Fix something in
-base, and every scenario below it picks up the fix. Alice crisis, at the
-top, we'll come back to at the end.
+accounts, income and spending. Bill early is a what-if: Bill retiring a
+year early. It builds on retire alice, and all it holds is the one change,
+his salary ending a year sooner. Fix something in base, and every scenario
+below it picks up the fix. Alice crisis, at the top, we'll come back to at
+the end.
 
 > Production note: this tape and the explain and ensemble tapes use a
 > smaller font, so their wide tables fit.
 >
-> Production note: "retire alice" and "alice crisis" are spelled with a
-> space so the voice doesn't say "underscore".
+> Production note: "retire alice", "bill early" and "alice crisis" are
+> spelled with a space so the voice doesn't say "underscore".
 
 ## Scene `run`: Run it
 
@@ -193,9 +200,9 @@ futures as well as bad.
 ```slide
 template = "card"
 heading = "Next: setup and install"
-body = "Getting the simulator running on your own computer, and making your first data folder."
+body = "Getting the simulator running on your own computer, and making your data folder."
 speaker = "alice"
 ```
 
 Next time: getting the simulator running on your own computer, and making
-your first data folder.
+your data folder.

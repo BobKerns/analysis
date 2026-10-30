@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {#
-  A plain card for section breaks and endings. Fields: heading, body,
-  speaker (one asset name, shown at the left, optional).
+  A plain card for section breaks and endings. Fields: heading, body (text,
+  or a list shown one item per line), speaker (one asset name, shown at the
+  left, optional).
 #}
 {% block style %}
 .card { position: absolute; left: {{ 560 if speaker else 160 }}px; right: 160px; top: 260px; }
 h2 { margin: 24px 0 0; font-family: var(--font-heading); font-weight: 800; font-size: 92px; line-height: 1.05; }
 .body { margin-top: 36px; font-size: 46px; line-height: 1.35; color: var(--muted); }
+.body .line + .line { margin-top: 14px; }
 .speaker { position: absolute; left: 120px; bottom: -45px; width: 380px; }
 {% endblock %}
 {% block body %}
@@ -15,6 +17,7 @@ h2 { margin: 24px 0 0; font-family: var(--font-heading); font-weight: 800; font-
 <div class="card">
   <div class="series">{{ series }}</div>
   <h2>{{ heading }}</h2>
-  {% if body %}<div class="body">{{ body }}</div>{% endif %}
+  {% if body is string %}<div class="body">{{ body }}</div>
+  {% elif body %}<div class="body">{% for line in body %}<div class="line">{{ line }}</div>{% endfor %}</div>{% endif %}
 </div>
 {% endblock %}
