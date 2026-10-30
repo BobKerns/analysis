@@ -34,8 +34,11 @@ ground = "#2c5a4a"
 
 [fonts]
 # Stacks, so a machine without the first font still renders.
-heading = "'Inter Display', Inter, 'Helvetica Neue', Arial, sans-serif"
-body = "Inter, 'Helvetica Neue', Arial, sans-serif"
+# The CJK fonts after the Latin ones cover Japanese slides: Chromium takes
+# each character from the first font that has it. The video image installs
+# Noto Sans CJK; macOS has Hiragino.
+heading = "'Inter Display', Inter, 'Helvetica Neue', Arial, 'Noto Sans CJK JP', 'Hiragino Sans', sans-serif"
+body = "Inter, 'Helvetica Neue', Arial, 'Noto Sans CJK JP', 'Hiragino Sans', sans-serif"
 mono = "'JetBrains Mono', 'DejaVu Sans Mono', Menlo, monospace"
 
 [terminal]
@@ -85,6 +88,8 @@ speed = 1.0
 [narration.en.pronounce]
 IRA = "/ˌaɪˌɑːɹˈeɪ/"
 Jupyter = "Jupiter"
+JupyterLab = "Jupiter Lab"
+jupyter = "jupiter"
 
 [narration.ja]
 engine = "kokoro"

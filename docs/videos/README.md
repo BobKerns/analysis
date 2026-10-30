@@ -106,6 +106,8 @@ file, the theme's terminal settings, and a hidden setup that:
   the video's `setup.sh` (if any) has run in it, and points
   `ANALYSIS_DATA_DIR` at it, so every recording starts from the same state;
 - puts this checkout's `sim`/`analysis` on `PATH`;
+- sets `ANALYSIS_NO_BUILDER=1`, so a recorded `sim init` (video 2) doesn't
+  link this checkout's `data/shared` or turn on background builds;
 - sets the prompt (`alice@home $`, from the theme).
 
 Each tape starts from the same state, so a tape can't rely on an earlier
@@ -223,6 +225,17 @@ block of fields to override, such as a translated `heading`. It can't add
 scenes, change a template, or carry tapes: the terminal shows the CLI, which
 is in English. Its front matter overrides the master's (a translated
 `title`). Each language needs a `[narration.<lang>]` table in the theme.
+
+A translation shows the English CLI, so it writes a command or scenario name
+as the screen shows it and respells it for the voice:
+`{sim explain|シム・エクスプレイン}`, `{retire alice|リタイア・アリス}`.
+`01-intro/script.ja.md` is an example. The theme's fonts end with Noto Sans
+CJK (in the video image) and Hiragino (macOS) for Japanese slides.
+
+Japanese narration is phonemized with misaki's OpenJTalk front end, as
+Kokoro's own pipeline does; espeak-ng, which kokoro-onnx uses otherwise,
+reads kanji and kana as "Chinese letter" and "Japanese letter". Its
+dictionary (about 23 MB) downloads on first use.
 
 `build` makes every language the video has, or one with `--lang`: each its
 own MP4 and SRT (`00-pilot.ja.mp4`, `00-pilot.ja.srt`). Captions are a
