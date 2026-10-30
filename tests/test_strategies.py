@@ -727,6 +727,11 @@ def test_log_explain_and_drift_read_the_run(
     assert result.exit_code == 0, result.output
     assert "drift from target set main, percentage points (accounts tagged portfolio:invest" in result.output
     assert "bond" in result.output and "stock_us" in result.output and "max_abs" in result.output
+    chart = strategy_scenarios / "drift.svg"
+    result = _cli(strategy_scenarios, "allocation", "--drift", "--runfile", run,
+                  "--graph-file", str(chart))
+    assert result.exit_code == 0, result.output
+    assert "<svg" in chart.read_text()  # a line per asset class (#327)
 
 
 def test_strategy_check_runs_twice(strategy_scenarios: Path) -> None:

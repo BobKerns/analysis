@@ -14,6 +14,7 @@ from analysis.cli import main
 from analysis.sim.allocation import (
     UNCLASSIFIED, asset_classes_present, lot_classes, portfolio_allocation,
 )
+from analysis.sim.allocation_charts import allocation_figure, allocation_pie_figure
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import LoadError
 from analysis.sim.notebook_ui.allocation_widgets import allocation_view, portfolio_allocation_widget
@@ -244,7 +245,7 @@ def test_widgets_return_their_box_without_displaying_it(
     assert not any(isinstance(item, widgets.Widget) for item in shown)
 
 
-def test_the_pie_figure_is_closed_after_it_is_drawn(
+def test_the_pie_leaves_no_pyplot_figure(
     allocations_csv: Path, two_lot_run: RunConnection,
 ) -> None:
     import matplotlib.pyplot as plt
@@ -254,19 +255,18 @@ def test_the_pie_figure_is_closed_after_it_is_drawn(
     assert plt.get_fignums() == []  # closed, so the inline backend does not show it again
 
 
-def test_the_account_history_figure_is_displayed_and_closed(
+def test_the_account_history_figure_is_shown_as_an_image_without_pyplot(
     two_lot_run: RunConnection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import IPython.display
     import matplotlib.pyplot as plt
-    from matplotlib.figure import Figure
-    from analysis.sim.notebook_ui import accounts_plots
 
     shown: list[object] = []
-    monkeypatch.setattr(accounts_plots, "display", lambda *args, **kwargs: shown.extend(args))
+    monkeypatch.setattr(IPython.display, "display", lambda *args, **kwargs: shown.extend(args))
     plt.close("all")
     account_history_widget(two_lot_run, "asset", "Balances")
-    assert any(isinstance(item, Figure) for item in shown)
-    assert plt.get_fignums() == []  # closed, so the inline backend does not show it again
+    assert any(isinstance(item, IPython.display.Image) for item in shown)
+    assert plt.get_fignums() == []  # no pyplot figure for the inline backend to show again
 
 
 def test_allocation_command_labels_a_run_month_as_nominal_dollars(
@@ -315,3 +315,34 @@ def test_symbol_commands_point_to_the_add_a_symbol_guide(command: list[str]) -> 
     assert result.exit_code == 0, result.output
     assert "Part 4.11" in result.output
     assert "Add a stock or fund" in " ".join(result.output.split())
+
+
+# ---------- charts (#327) ----------
+
+
+@pytest.mark.parametrize("by", [[], ["--by", "owner"]])
+def test_allocation_graph(
+    allocations_csv: Path, two_lot_run_file: Path, test_data_dir: Path, tmp_path: Path,
+    by: list[str],
+) -> None:
+    chart = tmp_path / "allocation.svg"
+    result = CliRunner().invoke(main, [
+        "sim", "allocation", *by, "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
+        "--runfile", str(two_lot_run_file), "--graph-file", str(chart),
+    ], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    assert "asset allocation" in result.output
+    assert "<svg" in chart.read_text()
+
+
+def test_allocation_figures(allocations_csv: Path, two_lot_run: RunConnection) -> None:
+    pie = allocation_figure(portfolio_allocation(two_lot_run))
+    assert len(pie.axes) == 1 and pie.axes[0].patches  # wedges
+    split = allocation_figure(portfolio_allocation(two_lot_run, by="account"))
+    ax = split.axes[0]
+    legend = ax.get_legend()
+    assert legend is not None
+    assert "Asset_Brokerage_Joint" in [t.get_text() for t in legend.get_texts()]
+    assert allocation_pie_figure(portfolio_allocation(two_lot_run, exclude=(
+        "stock_us", "stock_intl", "bond", "cash", "real_estate", "other", "unclassified",
+    ))).texts  # nothing left: says so

@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 
 from analysis.sim.accounts import accounts_dataframe
 from analysis.sim.types import DollarMode
-from analysis.sim.notebook_ui.accounts_plots import render_balance_history_figure
+from analysis.sim.run_charts import balance_history_figure
 from analysis.sim.connection import RunConnection, open_run
 from analysis.sim.notebook_ui.accounts_plots import account_history_widget, show_account_setup
 from analysis.sim.notebook_ui.pickers import AccountPicker, TimeRangePicker, run_years
@@ -24,6 +24,7 @@ from analysis.sim.notebook_ui.networth_plots import (
     guard_rails_widget,
     income_widget,
     net_worth_widget,
+    tax_widget,
 )
 
 
@@ -95,6 +96,21 @@ def test_economic_income_widget_builds_without_error(retire_alice_run_file: Path
         dollar_mode, after_tax, _time_range = controls.children
         dollar_mode.value = DollarMode.CPI_CONSTANT
         after_tax.value = not after_tax.value
+
+
+def test_tax_widget_toggles_dollar_basis(report_run: RunConnection) -> None:
+    widget = tax_widget(report_run)
+    controls, _chart_out, _table_out = widget.children
+    dollar_mode, _time_range = controls.children
+    dollar_mode.value = DollarMode.CPI_CONSTANT  # must not raise
+
+
+def test_tax_widget_says_when_no_tax_was_computed(
+    retire_alice_run: RunConnection, capsys: pytest.CaptureFixture[str],
+) -> None:
+    tax_widget(retire_alice_run)
+    # Outside a kernel an Output widget's prints reach stdout.
+    assert "No tax was computed in this run" in capsys.readouterr().out
 
 
 def test_economic_income_widget_says_an_empty_run_has_no_net_worth(
@@ -188,7 +204,7 @@ def test_balance_history_adds_total_for_multiple_accounts() -> None:
     index = pd.to_datetime(["2026-01-31", "2026-02-28"])
     balances = pd.DataFrame({"Checking": [100, 120], "Savings": [50, 80]}, index=index)
 
-    fig = render_balance_history_figure(balances, ["Checking", "Savings"], "Assets")
+    fig = balance_history_figure(balances, ["Checking", "Savings"], "Assets")
 
     assert fig is not None
     assert [line.get_label() for line in fig.axes[0].lines] == [
@@ -208,7 +224,7 @@ def test_balance_history_clips_after_taking_the_monthly_change() -> None:
     time_range.cover([2026, 2027])
     time_range.value = (2027, 2027)
 
-    fig = render_balance_history_figure(
+    fig = balance_history_figure(
         balances, ["Checking"], "Assets",
         value_mode=ValuePlotMode.MONTHLY, clip=time_range.clip,
     )

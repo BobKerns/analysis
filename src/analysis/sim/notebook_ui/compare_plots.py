@@ -15,13 +15,12 @@ from typing import TYPE_CHECKING
 
 import ipywidgets as widgets
 import pandas as pd
-from IPython.display import Image, clear_output, display
+from IPython.display import clear_output, display
 
 from analysis.sim import compare
 from analysis.sim.compare import breakeven_month
 from analysis.sim.compare_charts import comparison_figure
 from analysis.sim.connection import RunConnection
-from analysis.sim.ensemble_plots import figure_bytes
 from analysis.sim.notebook_ui.pickers import (
     _TOGGLE_LAYOUT,
     AccountPicker,
@@ -39,7 +38,7 @@ from analysis.sim.notebook_ui.pickers import (
 )
 from analysis.sim.plotting import FRAME_ALPHA, include_zero, mark_deaths
 from analysis.sim.types import AccountKind, Death, DollarMode, ValuePlotMode
-from analysis.sim.notebook_ui.styled import StyledMarkdown
+from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
 if TYPE_CHECKING:
     from analysis.sim.guard_rails import RailResult
@@ -117,13 +116,13 @@ def plot_net_worth_and_delta(
     baseline, as ``sim compare --graph`` draws it. ``delta`` is
     ``variant_delta(nw, container)``, which the chart recomputes."""
     del delta
-    mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+    mode_label = DollarMode(mode).label
     figure = comparison_figure(
         nw, container.baseline, container.variants, f"Net worth, {mode_label}",
         colors=container.colors,
         deaths=compare.scenario_deaths(container.connections, container.scenarios),
     )
-    display(Image(data=figure_bytes(figure), format="png"))
+    show_figure(figure)
 
 
 def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
@@ -297,7 +296,7 @@ def strategy_compare_widget(
             fig = drift_compare_figure(
                 frames, f"Drift from {target_set} ({whose}), percentage points", band=band,
                 years=(low, high), deaths=compare.scenario_deaths(connections, scenarios))
-            display(Image(data=figure_bytes(fig), format="png"))
+            show_figure(fig)
             table = pd.DataFrame({name: year_end_rows(frame)[MAX_ABS] for name, frame in frames.items()})
             table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
             display(StyledMarkdown("**Largest drift either way at year end**, percentage points"
@@ -375,7 +374,7 @@ def breakeven_widget(
             )
             if nw.empty:  # two empty scenarios have no months (#174)
                 return
-            mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+            mode_label = DollarMode(mode).label
             display(StyledMarkdown(
                 f"`{baseline}` final net worth ({mode_label}): "
                 f"**${nw[baseline].iloc[-1]:,.0f}**"
@@ -494,7 +493,7 @@ def guard_rails_compare_widget(
 
     def _redraw(*_):
         mode = dollar_mode.value
-        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        unit = DollarMode(mode).label
         baseline, variants = container.baseline, list(container.variants)
         with output:
             clear_output(wait=True)
@@ -511,7 +510,7 @@ def guard_rails_compare_widget(
                 results, baseline, variants, "Guard rails", unit=unit,
                 colors=container.colors, years=(low, high),
                 deaths=compare.scenario_deaths(container.connections, container.scenarios))
-            display(Image(data=figure_bytes(fig), format="png"))
+            show_figure(fig)
             senses = _rail_senses(results, container.scenarios)
             for rail, frame in frames.items():
                 frame = time_range.clip(frame)
