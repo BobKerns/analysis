@@ -150,11 +150,12 @@ from analysis.sim.overlay import (
     scenario_calendar_rows as _scenario_calendar_rows,
 )
 from analysis.frames import index_years, named_rows
-from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, ItemType
 from analysis.sim.retention import RetentionError, prune_state
 from analysis.sim.schema import connect_sim_file
 
 if TYPE_CHECKING:
+    from matplotlib.figure import Figure
     from rich.console import RenderableType
 
 
@@ -1745,21 +1746,50 @@ _PRE_TAX_OPTION = click.option(
          "drawdown of traditional balances and taxable gains would owe, and any tax "
          "due but not yet paid. An account's balance is always before tax.",
 )
-_ENSEMBLE_GRAPH_OPTION = click.option(
-    "--graph", "as_graph", is_flag=True,
-    help="After the tables, draw them as the notebook's chart in the terminal (kitty or "
-         "iTerm2 image protocol), or write a PNG file when the terminal can't show images.",
-)
-_ENSEMBLE_GRAPH_FILE_OPTION = click.option(
-    "--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
-    help="After the tables, write the chart to this .png or .svg file.",
-)
+def _graph_options(
+    drawn: str, *, after: str | None = None, written: str = "the chart", how: str = "",
+    file_note: str = "",
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """``--graph`` and ``--graph-file``, the same on every command that
+    draws; only the help's words differ: what is ``drawn`` (and ``written``
+    to a file), and ``after`` what, when the chart follows a table."""
+    lead = f"After {after}, " if after else ""
+
+    def capital(text: str) -> str:
+        return text[:1].upper() + text[1:]
+
+    graph = click.option(
+        "--graph", "as_graph", is_flag=True,
+        help=capital(f"{lead}draw {drawn} in the terminal (kitty or iTerm2 image protocol){how}, "
+                     "or write a PNG file when the terminal can't show images."),
+    )
+    graph_file = click.option(
+        "--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
+        help=capital(f"{lead}write {written} to this .png or .svg file{file_note}."),
+    )
+
+    def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        # The pair is checked here, before the command's body, so no command
+        # can forget to (or print a table before refusing).
+        @functools.wraps(fn)
+        def checked(*args: Any, **kwargs: Any) -> Any:
+            _check_graph_options(kwargs.get("as_graph", False), kwargs.get("graph_file"))
+            return fn(*args, **kwargs)
+        return graph(graph_file(checked))
+    return decorate
+
+
+_ENSEMBLE_GRAPH_OPTIONS = _graph_options("them as the notebook's chart", after="the tables")
 
 
 def _check_graph_options(as_graph: bool, graph_file: Path | None) -> None:
     if as_graph and graph_file is not None:
         raise click.UsageError("use one of --graph and --graph-file")
     _check_graph_file(graph_file)
+
+
+# A one-run report's chart (#327): what the notebook draws of it, after the table.
+_report_graph_options = _graph_options("it as the notebook's chart", after="the table")
 
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
@@ -1848,8 +1878,7 @@ def _subject(account: str | None, lot: str | None, after_tax: bool = False) -> s
 @_ENSEMBLE_LOT_OPTION
 @_ENSEMBLE_RESERVE_OPTION
 @_PRE_TAX_OPTION
-@_ENSEMBLE_GRAPH_OPTION
-@_ENSEMBLE_GRAPH_FILE_OPTION
+@_ENSEMBLE_GRAPH_OPTIONS
 def ensemble_summary(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     account: str | None, lot: str | None, reserve: str | None, pre_tax: bool,
@@ -1862,7 +1891,6 @@ def ensemble_summary(
 
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
     _check_lot_has_account(account, lot)
-    _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
@@ -1932,8 +1960,7 @@ def ensemble_summary(
     help="Dollars the percentiles and tail means are reported in.",
 )
 @_PRE_TAX_OPTION
-@_ENSEMBLE_GRAPH_OPTION
-@_ENSEMBLE_GRAPH_FILE_OPTION
+@_ENSEMBLE_GRAPH_OPTIONS
 def ensemble_compare(
     baseline: str | None, variant: str | None, runs_dir: Path | None, data_dir: Path | None,
     account: str | None, lot: str | None, reserve: str | None, dollars: str,
@@ -1953,7 +1980,6 @@ def ensemble_compare(
 
     Either ensemble left out is asked for, from those that have been run."""
     _check_lot_has_account(account, lot)
-    _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if baseline is None or variant is None:
         if baseline is None:
@@ -1988,7 +2014,7 @@ def ensemble_compare(
         )
         for name in frames
     } if reserve_dollars is not None else {}
-    mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    mode_label = DollarMode(mode).label
     click.echo(
         f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
         f"{len(base_conns)} and {len(variant_conns)} member(s)"
@@ -2116,8 +2142,7 @@ _ENSEMBLE_RAIL_LEGEND = (
     default=DollarMode.CPI_CONSTANT.value, show_default=True,
     help="Dollars the RMS overshoot is reported in.",
 )
-@_ENSEMBLE_GRAPH_OPTION
-@_ENSEMBLE_GRAPH_FILE_OPTION
+@_ENSEMBLE_GRAPH_OPTIONS
 def ensemble_guard_rails(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     rail_names: tuple[str, ...], dollars: str, as_graph: bool, graph_file: Path | None,
@@ -2137,7 +2162,6 @@ def ensemble_guard_rails(
     data repo: editing one reruns nothing. --graph draws the shares and RMS.
 
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
-    _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
@@ -2174,7 +2198,7 @@ def ensemble_guard_rails(
     if as_graph or graph_file is not None:
         from analysis.sim.guard_rail_charts import ensemble_guard_rail_figure
 
-        unit = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        unit = DollarMode(mode).label
         _draw_figure(ensemble_guard_rail_figure(
             shown, f"Guard rails ({scenario_name})", unit=unit,
             deaths=store.base_case_deaths()), graph_file, "ensemble-")
@@ -2195,8 +2219,7 @@ def ensemble_guard_rails(
                    "else every asset lot).")
 @click.option("--asset-class", "asset_class", type=click.Choice(registries.ASSET_CLASSES), default=None,
               help="One class's drift (share less target, signed) instead of the largest either way.")
-@_ENSEMBLE_GRAPH_OPTION
-@_ENSEMBLE_GRAPH_FILE_OPTION
+@_ENSEMBLE_GRAPH_OPTIONS
 def ensemble_drift(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     target_set: str | None, portfolio: str | None, asset_class: str | None, as_graph: bool,
@@ -2213,7 +2236,6 @@ def ensemble_drift(
     over every month.
 
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
-    _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
@@ -3213,18 +3235,49 @@ def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
               help="cpi_constant (deflated by the run's CPI series, so decades "
                    "compare at a glance), or nominal.")
 @_PRE_TAX_OPTION
+@_report_graph_options
 @_run_target_options
 def networth_command(
     scenario: str | None, period: str, dollars: str, pre_tax: bool,
+    as_graph: bool, graph_file: Path | None,
     runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """Net worth by year or month from a run: the scenario's latest (the
     current scenario's by default), or --runfile. As in net_worth.ipynb.
-    It is after the tax still owed on it (#251) unless --pre-tax."""
+    It is after the tax still owed on it (#251) unless --pre-tax.
+
+    --graph draws it month by month, after tax with the pre-tax net worth
+    dashed beside it (the gap is the tax still owed), or pre-tax alone."""
     runfile = _resolve_run_target(scenario, runfile, data_dir, runs_dir)
-    if not pre_tax:
-        _echo_after_tax_networth(runfile, period, DollarMode(dollars))
+    mode = DollarMode(dollars)
+    if pre_tax and not (as_graph or graph_file is not None):
+        _echo_pre_tax_networth(runfile, period, dollars)  # reads the run's views itself
         return
+    # One connection for the table and the chart: the after-tax frame is
+    # cached on it, and is the slow part of a large run.
+    with RunConnection(runfile) as rc:
+        if not pre_tax:
+            _echo_after_tax_networth(rc, runfile, period, mode)
+        else:
+            _echo_pre_tax_networth(runfile, period, dollars)
+        _draw_report(as_graph, graph_file, lambda: _networth_figure(rc, mode, pre_tax), "networth-")
+
+
+def _networth_figure(rc: RunConnection, mode: DollarMode, pre_tax: bool) -> Figure:
+    from analysis.sim.run_charts import net_worth_figure
+
+    pre = rc.net_worth_series(mode).rename("pre-tax" if not pre_tax else "net worth")
+    if pre_tax:
+        lines = pre.to_frame()
+    else:
+        lines = pd.DataFrame({"after tax": rc.net_worth_series(mode, after_tax=True), "pre-tax": pre})
+    title = (f"{'Net' if pre_tax else 'After-tax net'} worth, "
+             f"{_DOLLAR_LABELS[mode]} ({rc.name})")
+    return net_worth_figure(lines, title, deaths=rc.deaths())
+
+
+def _echo_pre_tax_networth(runfile: Path, period: str, dollars: str) -> None:
+    """``sim networth --pre-tax``: the sum of the balances, read from the run's views."""
     # Nominal reads net_worth itself, so a run without a CPI series still has it.
     view, column = (("net_worth_constant_cpi", "constant_cents")
                     if dollars == DollarMode.CPI_CONSTANT else ("net_worth", "net_worth"))
@@ -3253,35 +3306,34 @@ def networth_command(
             )
     finally:
         con.close()
-    label = "CPI-constant" if dollars == DollarMode.CPI_CONSTANT else "nominal"
+    label = DollarMode(dollars).label
     click.echo(f"net worth, {label} dollars ({name}, run {runfile.name}):")
     for month, cents in rows:
         when = month if period == "monthly" else month[:4]
         click.echo(f"  {when}  {_fmt_cents(cents)}")
 
 
-def _echo_after_tax_networth(runfile: Path, period: str, mode: DollarMode) -> None:
+def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode: DollarMode) -> None:
     """``sim networth`` without --pre-tax: net worth, the deferred and unpaid tax
     taken from it, and what's left, from the run's RunConnection."""
-    with RunConnection(runfile) as rc:
-        name = rc.name
-        frame = rc.after_tax_net_worth_frame()
-        pre = rc.net_worth_series(mode)
-        taxes = frame[["deferred_tax", "unpaid_tax"]]
-        if mode == DollarMode.CPI_CONSTANT:
-            if pre.isna().all() and not pre.empty:
-                raise click.ClickException(
-                    f"{runfile.name} has no 'cpi' inflation index, so no CPI-constant "
-                    "net worth; pass --dollars nominal")
-            taxes = rc.to_cpi_constant(taxes)
+    name = rc.name
+    frame = rc.after_tax_net_worth_frame()
+    pre = rc.net_worth_series(mode)
+    taxes = frame[["deferred_tax", "unpaid_tax"]]
+    if mode == DollarMode.CPI_CONSTANT:
+        if pre.isna().all() and not pre.empty:
+            raise click.ClickException(
+                f"{runfile.name} has no 'cpi' inflation index, so no CPI-constant "
+                "net worth; pass --dollars nominal")
+        taxes = rc.to_cpi_constant(taxes)
     table = pd.DataFrame({
         "net_worth": pre, "deferred_tax": taxes["deferred_tax"],
         "unpaid_tax": taxes["unpaid_tax"],
-        "after_tax": frame["cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"],
+        "after_tax": rc.net_worth_series(mode, after_tax=True),
     })
     if period != "monthly":
         table = table.groupby(index_years(table)).tail(1)
-    label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    label = DollarMode(mode).label
     click.echo(f"after-tax net worth, {label} dollars ({name}, run {runfile.name}):")
     _echo_table(
         ["month" if period == "monthly" else "year", *table.columns],
@@ -3353,12 +3405,8 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
               help="Also compare this account's balance (a section of its own).")
 @click.option("--lot", type=completion.LotName("account"), default=None,
               help="With --account: one lot of the account instead of its total.")
-@click.option("--graph", "as_graph", is_flag=True,
-              help="After the tables, draw net worth (or --account's balance) and each "
-                   "variant's difference in the terminal (kitty or iTerm2 image protocol), "
-                   "or write a PNG file when the terminal can't show images.")
-@click.option("--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
-              help="After the tables, write that chart to this .png or .svg file.")
+@_graph_options("net worth (or --account's balance) and each variant's difference",
+                after="the tables", written="that chart")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 @click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
@@ -3387,7 +3435,6 @@ def compare_command(
         raise click.UsageError("--lot needs --account")
     if "account" in sections and account is None:
         raise click.UsageError("--section account needs --account")
-    _check_graph_options(as_graph, graph_file)
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, baseline, runs_dir=runs_dir)
     baseline = ref.name
@@ -3404,7 +3451,7 @@ def compare_command(
     after_tax = not pre_tax
     shown = set(sections) or {*COMPARE_SECTIONS[:-1], *(["account"] if account else [])}
     mode = DollarMode(dollars)
-    mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    mode_label = DollarMode(mode).label
     scenarios = [baseline, *variants]
     with ExitStack() as stack:
         connections: dict[str, RunConnection] = {}
@@ -3617,7 +3664,7 @@ def _echo_guard_rail_comparison(
         if asked:
             click.echo("\nGuard rails: none in these scenarios")
         return
-    label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    label = DollarMode(mode).label
     click.echo(f"\nGuard rail margins ({label}): negative is past the rail; cum is the years "
                "so far summed")
     for rail, frame in frames.items():
@@ -8268,9 +8315,11 @@ def account_holders_command(
 @click.option("--portfolio", type=completion.TAG, default=None,
               help="With --drift: the accounts carrying this tag (default: the strategy's portfolio, "
                    "else every asset lot).")
+@_report_graph_options
 @_holdings_options
 def allocation_command(
     excluded: tuple[str, ...], by: str | None, drift: bool, target_set: str | None, portfolio: str | None,
+    as_graph: bool, graph_file: Path | None,
     scenario: str | None, data_dir: Path | None, month: str | None, opening: bool, runfile: Path | None,
 ) -> None:
     """Show the whole portfolio by asset class, from the lots and allocations.csv.
@@ -8282,11 +8331,14 @@ def allocation_command(
 
     With --drift, shows how far the run's portfolio strays from its target
     allocation (targets.csv) at each year-end instead.
+
+    --graph draws the asset classes as a pie; with --by, a bar per class
+    split by the group; with --drift, a line per class by year.
     """
     if drift:
         if by or excluded or month or opening:
             raise click.ClickException("--drift can't be combined with --by, --exclude, --month or --opening")
-        _allocation_drift(scenario, data_dir, runfile, target_set, portfolio)
+        _allocation_drift(scenario, data_dir, runfile, target_set, portfolio, as_graph, graph_file)
         return
     if target_set or portfolio:
         raise click.ClickException("--targets and --portfolio go with --drift")
@@ -8307,10 +8359,17 @@ def allocation_command(
         click.echo("unclassified: lots whose symbol has no rows in allocations.csv"
                    " (user guide Part 4.11: Add a stock or fund)", err=True)
 
+    def figure():
+        from analysis.sim.allocation_charts import allocation_figure
+
+        return allocation_figure(table, title[0].upper() + title[1:])
+
+    _draw_report(as_graph, graph_file, figure, "allocation-")
+
 
 def _allocation_drift(
     scenario: str | None, data_dir: Path | None, runfile: Path | None, target_set: str | None,
-    portfolio: str | None,
+    portfolio: str | None, as_graph: bool = False, graph_file: Path | None = None,
 ) -> None:
     """``sim allocation --drift``: the target set and portfolio default to
     those of the run's strategy (when it has just one target set in use)."""
@@ -8328,8 +8387,17 @@ def _allocation_drift(
     click.echo(f"drift from target set {target_set}, percentage points ({whose}; {path.name})")
     if frame.empty:
         click.echo("(no months in the run)")
+        _graph_nothing(graph_file, "drift", "drift-")
         return
     click.echo(frame.to_string(float_format=lambda v: f"{v:+.1f}"))
+
+    def figure():
+        from analysis.sim.allocation_charts import allocation_drift_figure
+
+        return allocation_drift_figure(
+            frame, f"Drift from target set {target_set} ({whose}; {path.name})")
+
+    _draw_report(as_graph, graph_file, figure, "drift-")
 
 
 def _print_unclipped(rendered) -> None:
@@ -8348,7 +8416,7 @@ def _print_unclipped(rendered) -> None:
 
 # ---------- Result reports (#187): account history, sim report ----------
 
-_DOLLAR_LABELS = {DollarMode.NOMINAL: "nominal dollars", DollarMode.CPI_CONSTANT: "CPI-constant dollars"}
+_DOLLAR_LABELS = {mode: f"{mode.label} dollars" for mode in DollarMode}
 
 
 def _report_options(fn):
@@ -8409,9 +8477,11 @@ def _print_report(frame: pd.DataFrame, what: str, described: str, mode: DollarMo
 @click.option("--start", default=None, help="First month (YYYY-MM or YYYY-MM-DD).")
 @click.option("--end", default=None, help="Last month (YYYY-MM or YYYY-MM-DD).")
 @click.option("--yearly", is_flag=True, default=False, help="Year-end rows instead of month-end.")
+@_report_graph_options
 @_report_options
 def account_history_command(
     account: str | None, lot: str | None, start: str | None, end: str | None, yearly: bool,
+    as_graph: bool, graph_file: Path | None,
     dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show ACCOUNT's balance month by month (or year by year) from a run.
@@ -8421,7 +8491,8 @@ def account_history_command(
     flow. With --lot, an asset lot also shows its cost basis, unrealized gain
     and quantity where the run tracks them.
 
-    Without ACCOUNT, it is asked for.
+    Without ACCOUNT, it is asked for. --graph draws the balance (and a lot's
+    cost basis) over the rows shown.
     """
     start_iso = month_end_iso(_validate_month_date(start)) if start else None
     end_iso = month_end_iso(_validate_month_date(end)) if end else None
@@ -8436,10 +8507,44 @@ def account_history_command(
                                             yearly=yearly, mode=mode)
         except KeyError as exc:
             raise click.ClickException(exc.args[0]) from None
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     if frame.empty:
         click.echo(f"no balances for {account} in that range ({described})")
+        _graph_nothing(graph_file, "balances", "history-")
         return
-    _print_report(frame, f"{account}/{lot}" if lot else account, described, mode)
+    subject = f"{account}/{lot}" if lot else account
+    _print_report(frame, subject, described, mode)
+
+    def figure():
+        from analysis.sim.run_charts import account_history_figure
+
+        return account_history_figure(
+            frame, f"{subject}, {_DOLLAR_LABELS[mode]} ({described})", deaths=deaths)
+
+    _draw_report(as_graph, graph_file, figure, "history-")
+
+
+def _graph_nothing(graph_file: Path | None, what: str, prefix: str) -> None:
+    """On a report's nothing-to-show path, still write --graph-file: a chart
+    saying there's no ``what`` to chart, so a script that asked for the file
+    finds one. (--graph has the message printed above it to show.)"""
+    if graph_file is not None:
+        from analysis.sim.run_charts import nothing_figure
+
+        _draw_figure(nothing_figure(what), graph_file, prefix)
+
+
+def _chart_deaths(rc: RunConnection, as_graph: bool, graph_file: Path | None) -> list[Death]:
+    """The run's deaths when a chart is asked for, else none: only a chart
+    marks them, so a table alone needn't read them."""
+    return rc.deaths() if as_graph or graph_file is not None else []
+
+
+def _draw_report(as_graph: bool, graph_file: Path | None, figure: Callable[[], Any],
+                 prefix: str) -> None:
+    """Draw a report's chart when --graph or --graph-file asks for one."""
+    if as_graph or graph_file is not None:
+        _draw_figure(figure(), graph_file, prefix)
 
 
 @sim_group_command.group(name="report")
@@ -8449,7 +8554,8 @@ def report_group_command() -> None:
 
 def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bool,
                  dollars: str, runfile: Path | None, scenario: str | None,
-                 data_dir: Path | None, *, pre_tax: bool = False) -> None:
+                 data_dir: Path | None, *, pre_tax: bool = False,
+                 as_graph: bool = False, graph_file: Path | None = None) -> None:
     if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
         raise click.ClickException("--by must be category, account or tag:ROLE")
     if untagged and not by.startswith("tag:"):
@@ -8464,6 +8570,7 @@ def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bo
                                                  untagged=untagged))
         except KeyError as exc:
             raise click.ClickException(exc.args[0]) from None
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     period = "" if year is None else f" in {year}"
     shown = (frame.index if year is not None
              else frame.columns).difference(["total", reports.ECONOMIC_INCOME, reports.CASH_INCOME,
@@ -8472,16 +8579,28 @@ def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bo
         role = by.removeprefix("tag:")
         click.echo(f"no {side}{period} is tagged in role {role} ({described});"
                    " --untagged shows it all")
+        _graph_nothing(graph_file, f"{side} tagged in role {role}", f"{side}-")
         return
     if year is None:
         # A column with nothing in any year (no business, no inheritance)
         # only widens the table; the totals stay, whatever they hold.
-        kept = {"total", reports.ECONOMIC_INCOME, reports.NET_WORTH_CHANGE}
-        empty = [c for c in frame.columns
-                 if c not in kept and frame[c].fillna(0).round(2).eq(0).all()]
-        frame = frame.drop(columns=empty)
-    _print_report(frame, f"{side}{period} by {by.removeprefix('tag:')}", described, mode,
-                  total_row=year is not None)
+        frame = reports.without_empty_groups(
+            frame, keep={"total", reports.ECONOMIC_INCOME, reports.NET_WORTH_CHANGE})
+    what = f"{side}{period} by {by.removeprefix('tag:')}"
+    _print_report(frame, what, described, mode, total_row=year is not None)
+
+    def figure():
+        from analysis.sim import run_charts
+
+        title = f"{what[0].upper()}{what[1:]}, {_DOLLAR_LABELS[mode]} ({described})"
+        if year is not None:
+            return run_charts.one_year_figure(frame, title)
+        legend = by.removeprefix("tag:")
+        if side == "income":
+            return run_charts.income_figure(frame, title, legend_title=legend, deaths=deaths)
+        return run_charts.flows_figure(frame, title, legend_title=legend, deaths=deaths)
+
+    _draw_report(as_graph, graph_file, figure, f"{side}-")
 
 
 _BY_HELP = ("Group by category (default), account, or tag:ROLE: each flow's tag in ROLE,"
@@ -8500,9 +8619,11 @@ _UNTAGGED_HELP = ("With --by tag:ROLE, also show flows with no tag in ROLE as (u
          "paid in the year. By default it is after tax (#251): the year's tax liability "
          "and the change in tax owed later.",
 )
+@_report_graph_options
 @_report_options
 def report_income_command(
-    year: int | None, by: str, untagged: bool, pre_tax: bool, dollars: str,
+    year: int | None, by: str, untagged: bool, pre_tax: bool,
+    as_graph: bool, graph_file: Path | None, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show income by year: what each income account paid out, and where it went.
@@ -8533,19 +8654,23 @@ def report_income_command(
     --untagged is given, and their sum is named total.
 
     A column that is zero in every year is left out.
+
+    --graph draws the groups stacked by year, over economic income carried
+    down to the change in net worth; with --year, a bar per group.
     """
     _flow_report("income", year, by, untagged, dollars, runfile, scenario, data_dir,
-                 pre_tax=pre_tax)
+                 pre_tax=pre_tax, as_graph=as_graph, graph_file=graph_file)
 
 
 @report_group_command.command("expenses")
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
 @click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
+@_report_graph_options
 @_report_options
 def report_expenses_command(
-    year: int | None, by: str, untagged: bool, dollars: str,
-    runfile: Path | None, scenario: str | None, data_dir: Path | None,
+    year: int | None, by: str, untagged: bool, as_graph: bool, graph_file: Path | None,
+    dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show expenses by year: what was paid into each expense account.
 
@@ -8554,13 +8679,18 @@ def report_expenses_command(
 
     By tag, expenses with no tag in the role are left out unless --untagged
     is given. A column that is zero in every year is left out.
+
+    --graph draws the groups stacked by year; with --year, a bar per group.
     """
-    _flow_report("expenses", year, by, untagged, dollars, runfile, scenario, data_dir)
+    _flow_report("expenses", year, by, untagged, dollars, runfile, scenario, data_dir,
+                 as_graph=as_graph, graph_file=graph_file)
 
 
 @report_group_command.command("gains")
+@_report_graph_options
 @_report_options
 def report_gains_command(
+    as_graph: bool, graph_file: Path | None,
     dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show realized vs. unrealized gains by year, against that year's expenses.
@@ -8568,20 +8698,31 @@ def report_gains_command(
     taxable and non-taxable are income that reached cash (Social Security
     split by the year's computed taxable share); unrealized is growth that
     stayed invested. distribution_coverage is realized_total minus expenses:
-    a negative year spent principal.
+    a negative year spent principal. --graph draws the gains stacked by
+    year, with the expenses as a line.
     """
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         frame = reports.gains_by_year(rc, mode)
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     _print_report(frame, "realized vs. unrealized gains", described, mode)
+
+    def figure():
+        from analysis.sim.run_charts import gains_figure
+
+        return gains_figure(frame, f"Realized vs. unrealized gains, {_DOLLAR_LABELS[mode]} "
+                                   f"({described})", deaths=deaths)
+
+    _draw_report(as_graph, graph_file, figure, "gains-")
 
 
 @report_group_command.command("tax")
 @click.option("--reconciliation", is_flag=True, default=False,
               help="Each year's liability, what was paid during it, and the April balance due or refund.")
+@_report_graph_options
 @_report_options
 def report_tax_command(
-    reconciliation: bool, dollars: str,
+    reconciliation: bool, as_graph: bool, graph_file: Path | None, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show federal and state tax by year, and the income each was figured on.
@@ -8591,16 +8732,32 @@ def report_tax_command(
     taxed, and the tax. effective_rate is total tax over federal AGI. Tax
     belongs to the year the income was earned in; its balance due or refund
     settles the April after (see --reconciliation).
+
+    --graph draws federal and state tax stacked by year with the effective
+    rate; with --reconciliation, each April's balance due and refund.
     """
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         frame = (reports.tax_reconciliation(rc, mode) if reconciliation
                  else reports.tax_by_year(rc, mode))
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     if frame.empty:
         click.echo(f"no tax was computed in this run ({described})")
+        _graph_nothing(graph_file, "tax", "tax-")
         return
     _print_report(frame, "tax reconciliation" if reconciliation else "tax and taxable income",
                   described, mode)
+
+    def figure():
+        from analysis.sim.run_charts import tax_figure, tax_reconciliation_figure
+
+        if reconciliation:
+            return tax_reconciliation_figure(
+                frame, f"April balance due and refund, {_DOLLAR_LABELS[mode]} ({described})",
+                deaths=deaths)
+        return tax_figure(frame, f"Tax, {_DOLLAR_LABELS[mode]} ({described})", deaths=deaths)
+
+    _draw_report(as_graph, graph_file, figure, "tax-")
 
 
 # ---------- guard rails (#305) ----------
@@ -8681,10 +8838,11 @@ def _render_rail_summary(summary: pd.DataFrame):
                    "measure and threshold.")
 @click.option("--carried", is_flag=True,
               help="Add each rail's cumulative margin carried at the portfolio's return.")
+@_report_graph_options
 @_report_options
 def report_guard_rails_command(
-    rail_names: tuple[str, ...], carried: bool, dollars: str,
-    runfile: Path | None, scenario: str | None, data_dir: Path | None,
+    rail_names: tuple[str, ...], carried: bool, as_graph: bool, graph_file: Path | None,
+    dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show where a run stands against its scenario's guard rails, year by year.
 
@@ -8706,6 +8864,10 @@ def report_guard_rails_command(
 
     Rails are read from the scenario's guard_rails.csv now, not from the
     run, so a run file needs the data repo too.
+
+    --graph draws, per measure, the year's measure against each rail above
+    its cumulative margin, as net_worth.ipynb does (with --carried, the
+    carried line dotted).
     """
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
@@ -8720,17 +8882,21 @@ def report_guard_rails_command(
         if not rails:
             click.echo(f"no guard rails in {rc.name!r} ({described}); "
                        "`sim guard-rail add` adds one")
+            _graph_nothing(graph_file, "guard rails", "guard-rails-")
             return
         if mode == DollarMode.CPI_CONSTANT and rc.cpi_index().isna().all():
             raise click.ClickException(
                 f"{described} has no 'cpi' inflation index, so no CPI-constant dollars; "
                 "pass --dollars nominal")
         results = guard_rails.evaluate_run(rc, rails, mode)
+        deaths = _chart_deaths(rc, as_graph, graph_file)
+        name = rc.label
     shown = [r for r in results if r.applies]
     for r in results:
         if not r.applies:
             click.echo(f"  {r.rail.name} covers none of this run's years")
     if not shown:
+        _graph_nothing(graph_file, "guard rails", "guard-rails-")
         return
     style = _margin_style(shown)
     if len(rail_names) == 1:
@@ -8754,6 +8920,15 @@ def report_guard_rails_command(
         _print_unclipped(reports.render_report_table(frame, cell_style=style))
     click.echo("")
     _print_unclipped(_render_rail_summary(guard_rails.summary_frame(shown)))
+
+    def figure():
+        from analysis.sim.guard_rail_charts import guard_rail_figure
+
+        unit = DollarMode(mode).label
+        return guard_rail_figure(shown, f"Guard rails ({name})", unit=unit, carried=carried,
+                                 deaths=deaths)
+
+    _draw_report(as_graph, graph_file, figure, "guard-rails-")
 
 
 @account_group_command.group(name="tag")
@@ -10407,11 +10582,7 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.argument("names", type=completion.ENDPOINT, nargs=-1)
 @click.option("--mermaid", "as_mermaid", is_flag=True,
               help="Print the flowchart's Mermaid source (to paste into markdown) instead of a tree.")
-@click.option("--graph", "as_graph", is_flag=True,
-              help="Draw the flowchart in the terminal (kitty or iTerm2 image protocol), "
-                   "or write it to a PNG file when the terminal can't show images.")
-@click.option("--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
-              help="Write the flowchart to this .png or .svg file instead of showing it.")
+@_graph_options("the flowchart", written="the flowchart", file_note=" instead of showing it")
 @click.option("--rules", "with_rules", is_flag=True,
               help="With --mermaid, --graph or --graph-file, also draw the rules and calendar "
                    "transfers that use each chain.")
@@ -10435,11 +10606,11 @@ def chain_show_command(
     """
     from rich.console import Console
 
-    if sum([as_mermaid, as_graph, graph_file is not None]) > 1:
+    # --graph with --graph-file, and the file's suffix, are _graph_options' to check.
+    if as_mermaid and (as_graph or graph_file is not None):
         raise click.UsageError("use one of --mermaid, --graph and --graph-file")
     if depth is not None and not (as_mermaid or as_graph or graph_file is not None):
         raise click.UsageError("--depth needs --mermaid, --graph or --graph-file")
-    _check_graph_file(graph_file)
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     with open_scenario(data, ref.name, scenarios_dir=ref.scenarios_dir) as scn:
@@ -12818,12 +12989,7 @@ def person_list(scenario: str | None, data_dir: Path | None) -> None:
 
 @person_group_command.command("show")
 @click.argument("person", required=False, type=completion.PERSON)
-@click.option("--graph", "as_graph", is_flag=True,
-              help="Draw the chart in the terminal (kitty or iTerm2 image protocol), filling "
-                   "it less three lines for the prompt, or write a PNG file when the terminal "
-                   "can't show images.")
-@click.option("--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
-              help="Write the chart to this .png or .svg file.")
+@_graph_options("the chart", how=", filling it less three lines for the prompt")
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def person_show(
@@ -12849,7 +13015,6 @@ def person_show(
 
     from analysis.sim.lifespan_curves import household, lifespan_figure, person_lifespans
 
-    _check_graph_options(as_graph, graph_file)
     data = _resolve_data_dir(data_dir)
     with _intent_db(data, scenario) as (con, name):
         persons, notes = person_lifespans(con)

@@ -10,7 +10,7 @@ them.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Literal
 
 import pandas as pd
@@ -232,9 +232,20 @@ def _group_order(side: FlowSide, by: str, totals: pd.Series) -> list[str]:
     return [*order, *([UNTAGGED] if UNTAGGED in totals.index else [])]
 
 
+def without_empty_groups(frame: pd.DataFrame, keep: Collection[str] = ()) -> pd.DataFrame:
+    """``frame`` less each column with nothing in any year (no business, no
+    inheritance), which only widens a table; a column in ``keep`` stays
+    whatever it holds. `sim report income|expenses` and the notebooks' flow
+    tables drop the same columns through this, so they show the same groups."""
+    empty = [c for c in frame.columns
+             if c not in keep and frame[c].fillna(0).round(2).eq(0).all()]
+    return frame.drop(columns=empty)
+
+
 def flows_by_year(
     rc: RunConnection, side: FlowSide, *, by: str = "category",
     mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False, after_tax: bool = True,
+    story: bool = True,
 ) -> pd.DataFrame:
     """Year x group income (or expense) totals in dollars, plus a ``total`` column
     and, for income, ``cash_income``: the part of the total that was paid
@@ -258,7 +269,9 @@ def flows_by_year(
     Income that tells the whole story (not just the tagged part) names its
     total ``economic_income`` and follows it, before the cash columns, with
     :func:`net_worth_change_by_year`'s columns down to ``Δnet_worth``,
-    after tax unless ``after_tax=False``.
+    after tax unless ``after_tax=False``; ``story=False`` leaves those out,
+    for a caller that shows only the groups (the slow part is the after-tax
+    net worth they need).
     """
     events = _flow_events(rc, side)
     events["group"] = _groups(rc, events, side, by)
@@ -294,8 +307,9 @@ def flows_by_year(
         # The whole story (#249): the total is economic income, carried on
         # down to the change in net worth.
         yearly = yearly.rename(columns={"total": ECONOMIC_INCOME})
-        yearly = yearly.join(net_worth_change_by_year(
-            rc, yearly[ECONOMIC_INCOME], mode=mode, after_tax=after_tax))
+        if story:
+            yearly = yearly.join(net_worth_change_by_year(
+                rc, yearly[ECONOMIC_INCOME], mode=mode, after_tax=after_tax))
     return yearly.join(cash_totals)
 
 

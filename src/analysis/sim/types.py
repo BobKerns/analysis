@@ -30,6 +30,12 @@ class DollarMode(StrEnum):
     NOMINAL = "nominal"
     CPI_CONSTANT = "cpi_constant"
 
+    @property
+    def label(self) -> str:
+        """How charts and tables name these dollars: "CPI-constant" or
+        "nominal". One spelling, so titles and headings can't drift apart."""
+        return "CPI-constant" if self is DollarMode.CPI_CONSTANT else "nominal"
+
 
 class ValuePlotMode(StrEnum):
     """Value plot mode type."""
