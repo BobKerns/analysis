@@ -94,6 +94,7 @@ endidx
 errorbar
 errstate
 esac
+espeak
 evals
 executemany
 executescript
@@ -132,6 +133,7 @@ heloc
 hexsha
 Heygotrade
 HIFO
+Hiragino
 HISTFILE
 htmlcov
 huggingface
@@ -187,6 +189,7 @@ metas
 MHLW
 microcap
 midnightblue
+misaki
 mktree
 modelcontextprotocol
 movflags
@@ -248,6 +251,7 @@ purelib
 pushback
 pwrite
 pyeb
+pyopenjtalk
 pypi
 pytestmark
 QQQM
