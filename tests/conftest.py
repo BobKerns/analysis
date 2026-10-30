@@ -832,7 +832,9 @@ def strategy_scenarios(test_data_dir: Path, test_scenarios_dir: Path, test_data:
     checking's refill chain; ``alice_last_leaf`` swaps in the data-repo kind
     ``last_leaf`` from ``strategies/``; ``alice_rebalance_off`` switches the
     strategy off (an ``enabled`` false override), for comparing the two
-    (#359). Brings its own allocations.csv (USSTK, BONDX). Returns the data
+    (#359); ``alice_spending`` adds travel and gifts rules tagged
+    ``flex:optional``, owned by a ``guardrail`` spending strategy (#387).
+    Brings its own allocations.csv (USSTK, BONDX). Returns the data
     directory."""
     source = test_data / "sim" / "strategies"
     for folder in (source / "scenarios").iterdir():

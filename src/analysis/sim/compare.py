@@ -483,11 +483,15 @@ def strategy_activity(
     (scenario, strategy); kind, chain, decisions, and dollars asked, moved
     by the strategy and left to the chain's steps."""
     rows = []
+    from analysis.sim.strategy_guide import owns_sql
+
     for name in scenarios:
-        frame = _table(connections[name], (
-            "SELECT s.name, s.kind, c.name AS chain, COUNT(d.id) AS decisions, "
+        rc = connections[name]
+        frame = _table(rc, (
+            f"SELECT s.name, s.kind, {owns_sql(rc._con)} AS chain, COUNT(d.id) AS decisions, "
             "COALESCE(SUM(d.asked_cents), 0) AS asked, COALESCE(SUM(d.chosen_cents), 0) AS moved, "
-            "COALESCE(SUM(d.fallback_cents), 0) AS steps FROM strategy s JOIN chain c ON c.id = s.chain_id "
+            "COALESCE(SUM(d.fallback_cents), 0) AS steps FROM strategy s "
+            "LEFT JOIN chain c ON c.id = s.chain_id "
             "LEFT JOIN strategy_decision d ON d.strategy_id = s.id GROUP BY s.id ORDER BY s.name"))
         for row in named_rows(frame):
             rows.append({"scenario": name, "strategy": row.name, "kind": row.kind, "chain": row.chain,

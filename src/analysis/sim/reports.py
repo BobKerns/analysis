@@ -454,6 +454,123 @@ def net_worth_change_by_year(
     return pd.DataFrame(columns, index=years).astype(float)
 
 
+FILLED = "filled:"
+"""Prefix of a spending report's per-group fulfillment column."""
+
+
+def _shortfall_events(rc: RunConnection) -> pd.DataFrame:
+    """Each owned rule's posting that a strategy scaled (#387), as an expense
+    event of what it left unspent (budgeted less delivered, negative for a
+    raise), against the account the rule pays into: added to the delivered
+    expenses it makes the budget, grouped the same way."""
+    columns = ["amount", "reason_kind", "reason_id", "account", "subkind", "month"]
+    con = rc._con
+    if not con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spending_baseline'"
+    ).fetchone():
+        return pd.DataFrame(columns=columns)
+    frame = pd.read_sql_query(
+        "SELECT b.budgeted_cents - b.delivered_cents AS amount, 'rule' AS reason_kind, "
+        "       b.scheduled_transaction_id AS reason_id, c.name AS account, "
+        "       COALESCE(a.subkind, '') AS subkind, s.month AS month "
+        "FROM spending_baseline b JOIN simulation_step s ON s.id = b.step_id "
+        "JOIN scheduled_transaction r ON r.id = b.scheduled_transaction_id "
+        "JOIN chain c ON c.id = r.to_account LEFT JOIN account a ON a.name = c.name "
+        "WHERE b.budgeted_cents != b.delivered_cents",
+        con,
+    )
+    frame["month"] = pd.to_datetime(frame["month"])
+    return frame[columns]
+
+
+def spending_by_year(
+    rc: RunConnection, *, by: str = "category", mode: DollarMode = DollarMode.CPI_CONSTANT,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Year x group spending, delivered and budgeted (#387), in dollars.
+
+    Delivered is what ``sim report expenses`` counts. Budgeted adds back what
+    spending strategies left unspent of the rules they own (or takes off
+    what they added), from the run's recorded baseline; a run without one
+    has budgeted equal to delivered. ``by`` groups as the expense report
+    does (``category``, ``account`` or ``tag:ROLE``, untagged flows kept)."""
+    events = _flow_events(rc, "expenses")
+    events["group"] = _groups(rc, events, "expenses", by)
+    short = _shortfall_events(rc)
+    if not short.empty:
+        short["group"] = _groups(rc, short, "expenses", by)
+
+    def yearly(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty:
+            return pd.DataFrame()
+        monthly = frame.groupby(["month", "group"])["amount"].sum().unstack("group", fill_value=0) / 100
+        monthly = _cpi(rc, monthly, mode)
+        out = monthly.groupby(index_years(monthly)).sum()
+        out.index.name = "year"
+        out.columns.name = None
+        return out
+
+    delivered = yearly(events)
+    budgeted = delivered.add(yearly(short), fill_value=0) if not short.empty else delivered.copy()
+    columns = _group_order("expenses", by, budgeted.sum()) if by != "category" else [
+        c for c in EXPENSE_CATEGORIES if c in budgeted.columns or c in delivered.columns]
+    columns += [c for c in budgeted.columns.union(delivered.columns) if c not in columns]
+    index = delivered.index.union(budgeted.index)
+    return (delivered.reindex(index=index, columns=columns, fill_value=0),
+            budgeted.reindex(index=index, columns=columns, fill_value=0))
+
+
+def redirected_share(delivered: pd.Series, budgeted: pd.Series) -> float:
+    """½ Σ |delivered share − budgeted share| over the groups: the share of
+    spending that went somewhere other than the plan's mix (total variation
+    distance). 0 when either is empty."""
+    d, b = delivered.clip(lower=0), budgeted.clip(lower=0)
+    if d.sum() <= 0 or b.sum() <= 0:
+        return 0.0
+    return float((d / d.sum() - b / b.sum()).abs().sum() / 2)
+
+
+def cosine_similarity(delivered: pd.Series, budgeted: pd.Series) -> float:
+    """The cosine of the angle between the two spending mixes; 1 is the same
+    shape. Near 1 for most real mixes and led by the largest groups, so it is
+    shown only beside the share redirected."""
+    norm = float((delivered ** 2).sum() ** 0.5 * (budgeted ** 2).sum() ** 0.5)
+    return float((delivered * budgeted).sum()) / norm if norm else 1.0
+
+
+def spending_report(
+    delivered: pd.DataFrame, budgeted: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """The level and shape of spending against the plan, by year: budgeted,
+    delivered, difference and ``of_plan`` (level, the headline), then
+    ``redirected`` (shape) and a ``filled:<group>`` column (delivered over
+    budgeted) for each group a strategy changed. And the run's summary:
+    ``rms`` (RMS of the yearly differences), ``redirected_mean``,
+    ``redirected_worst`` and its ``redirected_worst_year``, ``cosine_mean``
+    and ``of_plan`` over the whole run."""
+    total_d, total_b = delivered.sum(axis=1), budgeted.sum(axis=1)
+    frame = pd.DataFrame({
+        "budgeted": total_b, "delivered": total_d, "difference": total_d - total_b,
+        "of_plan": (total_d / total_b.where(total_b != 0)).fillna(1.0),
+    })
+    frame["redirected"] = [redirected_share(delivered.loc[y], budgeted.loc[y]) for y in frame.index]
+    changed = [c for c in budgeted.columns if round(float((budgeted[c] - delivered[c]).abs().sum()), 2)]
+    for c in changed:
+        frame[f"{FILLED}{c}"] = (delivered[c] / budgeted[c].where(budgeted[c] != 0)).fillna(1.0)
+    cosines = [cosine_similarity(delivered.loc[y], budgeted.loc[y]) for y in frame.index]
+    worst = frame["redirected"].idxmax() if len(frame) else None
+    summary = {
+        "rms": float((frame["difference"] ** 2).mean() ** 0.5) if len(frame) else 0.0,
+        "of_plan": float(total_d.sum() / total_b.sum()) if total_b.sum() else 1.0,
+        "redirected_mean": float(frame["redirected"].mean()) if len(frame) else 0.0,
+        "redirected_worst": float(frame["redirected"].max()) if len(frame) else 0.0,
+        "redirected_worst_year": float(worst) if worst is not None else float("nan"),
+        "cosine_mean": float(sum(cosines) / len(cosines)) if cosines else 1.0,
+    }
+    for c in changed:
+        summary[f"{FILLED}{c}"] = float(delivered[c].sum() / budgeted[c].sum()) if budgeted[c].sum() else 1.0
+    return frame, summary
+
+
 def flows_for_year(
     rc: RunConnection, side: FlowSide, year: int, *, by: str = "category",
     mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False,
@@ -586,13 +703,13 @@ def tax_reconciliation(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL)
     return _cpi(rc, frame.fillna(0), mode, annual=True)
 
 
-_PERCENT_COLUMNS = frozenset({"share", "effective_rate"})
+_PERCENT_COLUMNS = frozenset({"share", "effective_rate", "of_plan", "redirected"})
 
 
 def _cell(value: float, column: str) -> str:
     if pd.isna(value):
         return ""
-    if column in _PERCENT_COLUMNS:
+    if column in _PERCENT_COLUMNS or column.startswith(FILLED):
         return f"{value:.1%}"
     if column == "irmaa_tier":
         return f"{value:.0f}"

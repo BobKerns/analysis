@@ -187,6 +187,16 @@ def tag_tokens(data_dir: Path, scenario: str) -> list[str]:
     return sorted(tokens)
 
 
+def rule_tags(data_dir: Path, scenario: str) -> list[str]:
+    """Every ``role:name`` tag on the scenario's scheduled rules: what a
+    spending strategy's ``rules`` column names (#387)."""
+    tokens: set[str] = set()
+    for d in _lineage_dirs(data_dir, scenario):
+        for row in _rows(d / "scheduled.csv"):
+            tokens.update(t for t in row.get("tags", "").split() if registries.TAG_TOKEN_RE.match(t))
+    return sorted(tokens)
+
+
 def symbols(data_dir: Path) -> list[str]:
     """Every symbol named anywhere, from the sources ``symbols.symbol_table``
     lists: securities.csv, allocations.csv, the shared and every scenario's

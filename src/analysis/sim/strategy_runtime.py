@@ -22,7 +22,8 @@ from typing import Any, NamedTuple
 
 from analysis.sim.asset_classes import class_weights, weight_sets, weights_at
 from analysis.sim.strategy_api import (
-    ChainView, Context, Decision, LotRef, LotView, Put, StepView, Strategy, StrategyError, Take,
+    ChainView, Context, Decision, LotRef, LotView, PersonView, Put, RuleView, Spend, StepView,
+    Strategy, StrategyError, Take,
 )
 from analysis.sim.strategy_code import StrategyKinds
 
@@ -36,10 +37,15 @@ class Owned(NamedTuple):
     name: str
     kind: str
     strategy: Strategy
-    chain_id: int
+    chain_id: int | None
     role: str
     start: str | None
     end: str | None
+    rules: tuple[int, ...] = ()
+    """The scheduled rules it owns by tag (#387)."""
+
+    def active(self, month_s: str) -> bool:
+        return not (self.start and month_s < self.start) and not (self.end and month_s > self.end)
 
 
 class _LotInfo(NamedTuple):
@@ -89,14 +95,55 @@ class StrategyRuntime:
         leaf_lot: Mapping[int, int],
         members: Mapping[int, list[tuple[Any, ...]]],
         roth_qualified: Callable[[int, date], bool | None],
+        end: date | None = None,
+        rule_budget: Callable[[int, date], int] | None = None,
+        growth_sources: frozenset[int] = frozenset(),
+        opening_balances: Mapping[int, int] | None = None,
+        first_month: date | None = None,
     ) -> None:
         rows = con.execute(
-            'SELECT id, name, kind, chain_id, start, "end", params_json FROM strategy ORDER BY id'
+            'SELECT id, name, kind, chain_id, rule_tag, start, "end", params_json '
+            "FROM strategy ORDER BY id"
         ).fetchall()
         self.owned: dict[int, Owned] = {}
+        """Strategies by the chain they own."""
+        self.by_rule: dict[int, Owned] = {}
+        """Strategies by the scheduled rule they own."""
+        self.strategies: list[Owned] = []
         self.memory: dict[int, dict[str, Any]] = {}
         if not rows:
             return  # nothing to ask: skip building the views
+        self._con = con
+        self._end = end
+        self._rule_budget = rule_budget
+        self._growth_sources = growth_sources
+        self._opening = dict(opening_balances or balances)
+        self._first_month = first_month
+        # The CPI index at each month end so far; 1.0 before the first month.
+        self._cpi_index: dict[date, int] = {}
+        self._started: set[int] = set()
+        self._people = [
+            (pid, role or None, date.fromisoformat(birth) if birth else None)
+            for pid, role, birth in con.execute("SELECT id, role, birthdate FROM person ORDER BY id")
+        ]
+        self._final_month = {
+            person: date.fromisoformat(final)
+            for person, final in con.execute("SELECT person, final_month FROM person_lifespan")
+        }
+        self._rules: dict[int, tuple[str, str, int | None, int | None, int, str | None]] = {
+            tid: (name, kind, frm, to, amount or 0, series)
+            for tid, name, kind, frm, to, amount, series in con.execute(
+                "SELECT id, name, amount_rule_kind, from_account, to_account, amount_cents, series "
+                "FROM scheduled_transaction"
+            )
+        }
+        self._rule_tags: dict[int, frozenset[str]] = {}
+        for tid, role, name in con.execute(
+            "SELECT st.scheduled_transaction_id, t.role, t.name FROM scheduled_transaction_tag st "
+            "JOIN tag t ON t.id = st.tag_id"
+        ):
+            self._rule_tags[tid] = self._rule_tags.get(tid, frozenset()) | {f"{role}:{name}"}
+        self._rule_views: dict[int, RuleView] = {}
         self._balances = balances
         self._cost_bases = cost_bases
         self._minimum_of = minimum_of
@@ -150,11 +197,19 @@ class StrategyRuntime:
         if kinds.problems:
             kinds.unload()
             raise StrategyError("; ".join(kinds.problems))
-        for sid, name, kind, chain_id, start, end, params_json in rows:
+        for sid, name, kind, chain_id, rule_tag, start, stop, params_json in rows:
             cls = kinds.get(kind)
             params = cls.Params(**json.loads(params_json))
-            role = self.chain_role.get(chain_id) or ""
-            self.owned[chain_id] = Owned(sid, name, kind, cls(name, params), chain_id, role, start, end)
+            role = (self.chain_role.get(chain_id) or "") if chain_id is not None else ""
+            rules = tuple(sorted(
+                tid for tid, tags in self._rule_tags.items() if rule_tag and rule_tag in tags
+            ))
+            owned = Owned(sid, name, kind, cls(name, params), chain_id, role, start, stop, rules)
+            self.strategies.append(owned)
+            if chain_id is not None:
+                self.owned[chain_id] = owned
+            for tid in rules:
+                self.by_rule[tid] = owned
             self.memory[sid] = {}
             self._recorded_memory[sid] = "{}"
 
@@ -165,18 +220,22 @@ class StrategyRuntime:
             kinds.unload()
 
     def __bool__(self) -> bool:
-        return bool(self.owned)
+        return bool(self.strategies)
 
     def owner(self, chain_id: int, month_s: str) -> Owned | None:
         """The strategy owning ``chain_id`` this month, if any."""
         owned = self.owned.get(chain_id)
-        if owned is None:
-            return None
-        if owned.start and month_s < owned.start:
-            return None
-        if owned.end and month_s > owned.end:
-            return None
-        return owned
+        return owned if owned is not None and owned.active(month_s) else None
+
+    def rule_owner(self, tid: int, month_s: str) -> Owned | None:
+        """The strategy owning scheduled rule ``tid`` this month, if any."""
+        owned = self.by_rule.get(tid)
+        return owned if owned is not None and owned.active(month_s) else None
+
+    def note_cpi(self, month: date, index: int | None) -> None:
+        """Keep the month's CPI index (``ctx.cpi`` divides two of them)."""
+        if index is not None:
+            self._cpi_index[month] = index
 
     # ---------- the strategy's view ----------
 
@@ -223,7 +282,95 @@ class StrategyRuntime:
             weights=lambda ref: MappingProxyType(self._weights(self.lot_id[ref], month_s)),
             targets=lambda name: self._target(name, month_s),
             memory=self.memory[owned.id],
+            end=self._end,
+            cpi=(lambda since: self._cpi(since, month)) if self._cpi_index else None,
+            people=MappingProxyType(self._people_at(month)),
+            budget=lambda: self._budget(owned, month),
+            annual_return=self._annual_return,
         )
+
+    def _cpi(self, since: date, month: date) -> int:
+        now = self._cpi_index.get(month)
+        if now is None:
+            raise StrategyError(f"no CPI index for {month.isoformat()}")
+        then = self._cpi_index.get(since)
+        if then is None:
+            if self._first_month is not None and since < self._first_month:
+                then = 1_000_000  # the index before the run's first month
+            else:
+                raise StrategyError(f"no CPI index for {since.isoformat()} (use a month end)")
+        return now * 1_000_000 // then
+
+    def _people_at(self, month: date) -> dict[str, PersonView]:
+        out: dict[str, PersonView] = {}
+        for pid, role, birth in self._people:
+            age = None
+            if birth is not None:
+                age = month.year - birth.year - ((month.month, month.day) < (birth.month, birth.day))
+            final = self._final_month.get(pid)
+            out[pid] = PersonView(
+                id=pid, role=role, birthdate=birth, age=age,
+                alive=final is None or month <= final, final_month=final,
+            )
+        return out
+
+    def _budget(self, owned: Owned, month: date) -> int:
+        if self._rule_budget is None:
+            return 0
+        return sum(self._rule_budget(tid, month) for tid in owned.rules)
+
+    def _annual_return(self, refs: tuple[LotRef, ...], year: int) -> float | None:
+        """Growth posted to ``refs`` in ``year`` over their balance at its start."""
+        if self._first_month is None or year < self._first_month.year:
+            return None
+        ids = [self.lot_id[ref] for ref in refs if ref in self.lot_id]
+        if not ids:
+            return None
+        if year == self._first_month.year:
+            base = sum(self._opening.get(i, 0) for i in ids)
+        else:
+            marks = ",".join("?" * len(ids))
+            row = self._con.execute(
+                f"SELECT COALESCE(SUM(ls.balance), 0) FROM lot_state ls "
+                f"JOIN simulation_step s ON s.id = ls.step_id "
+                f"WHERE s.month = ? AND ls.lot_id IN ({marks})",
+                (date(year - 1, 12, 31).isoformat(), *ids),
+            ).fetchone()
+            base = row[0]
+        if base <= 0:
+            return None
+        growth = self._growth(ids, year)
+        return growth / base
+
+    def _growth(self, ids: list[int], year: int) -> int:
+        if not self._growth_sources:
+            return 0
+        marks = ",".join("?" * len(ids))
+        sources = ",".join("?" * len(self._growth_sources))
+        lo, hi = f"{year}-01-01", f"{year}-12-31"
+        src = sorted(self._growth_sources)
+        row = self._con.execute(
+            f"SELECT "
+            f"  COALESCE(SUM(CASE WHEN to_lot_id IN ({marks}) THEN amount ELSE 0 END), 0) - "
+            f"  COALESCE(SUM(CASE WHEN from_lot_id IN ({marks}) THEN amount ELSE 0 END), 0) "
+            f"FROM transfer_event WHERE date BETWEEN ? AND ? AND "
+            f"((from_lot_id IN ({sources}) AND to_lot_id IN ({marks})) OR "
+            f" (to_lot_id IN ({sources}) AND from_lot_id IN ({marks})))",
+            (*ids, *ids, lo, hi, *src, *ids, *src, *ids),
+        ).fetchone()
+        return int(row[0])
+
+    def rule_view(self, tid: int) -> RuleView:
+        view = self._rule_views.get(tid)
+        if view is None:
+            name, kind, frm, to, amount, series = self._rules[tid]
+            view = self._rule_views[tid] = RuleView(
+                name=name, kind=kind, tags=self._rule_tags.get(tid, frozenset()),
+                source=self.chain_name.get(frm, "") if frm is not None else "",
+                destination=self.chain_name.get(to, "") if to is not None else "",
+                base_amount=amount, series=series if series and series != "fixed" else None,
+            )
+        return view
 
     def chain_view(self, chain_id: int) -> ChainView:
         """``chain_id`` as a strategy sees it; fixed for the run, so made once."""
@@ -269,19 +416,9 @@ class StrategyRuntime:
         isn't allowed, is raised as :class:`StrategyError` naming it."""
         what = f"strategy {owned.name!r} ({owned.kind}) {hook} in {month.isoformat()}"
         chain = self.chain_view(chain_id)
-        ctx = self.context(owned, month)
-        try:
-            decision = getattr(owned.strategy, hook)(ctx, chain, amount)
-        except Exception as e:
-            raise StrategyError(f"{what}: {type(e).__name__}: {e}") from e
-        try:
-            json.dumps(self.memory[owned.id], sort_keys=True)
-        except (TypeError, ValueError) as e:
-            raise StrategyError(f"{what}: memory must hold JSON values: {e}") from e
+        decision = self._ask(owned, hook, month, chain, amount)
         if decision is None:
             return None
-        if not isinstance(decision, Decision):
-            raise StrategyError(f"{what}: returned {type(decision).__name__}, not a Decision or None")
         move_type = Take if hook == "draw" else Put
         leaves = set(chain.leaves)
         moves: list[tuple[int, int]] = []
@@ -301,14 +438,84 @@ class StrategyRuntime:
             moves.append((self.lot_id[move.lot], move.amount))
         if total > amount:
             raise StrategyError(f"{what}: moves total {total} cents, more than the {amount} asked")
+        return decision, moves
+
+    def _ask(self, owned: Owned, hook: str, month: date, *args: Any) -> Decision | None:
+        """Call ``hook``; its exception, a non-JSON memory or a wrong answer
+        type is a :class:`StrategyError` naming the strategy."""
+        what = f"strategy {owned.name!r} ({owned.kind}) {hook} in {month.isoformat()}"
+        ctx = self.context(owned, month)
+        try:
+            decision = getattr(owned.strategy, hook)(ctx, *args)
+        except StrategyError as e:
+            raise StrategyError(f"{what}: {e}") from e
+        except Exception as e:
+            raise StrategyError(f"{what}: {type(e).__name__}: {e}") from e
+        try:
+            json.dumps(self.memory[owned.id], sort_keys=True)
+        except (TypeError, ValueError) as e:
+            raise StrategyError(f"{what}: memory must hold JSON values: {e}") from e
+        if decision is None:
+            return None
+        if not isinstance(decision, Decision):
+            raise StrategyError(f"{what}: returned {type(decision).__name__}, not a Decision or None")
         try:
             decision.detail_json()
         except (TypeError, ValueError) as e:
             raise StrategyError(f"{what}: detail must hold JSON values: {e}") from e
-        return decision, moves
+        return decision
+
+    def year_start(self, con: sqlite3.Connection, step_id: int, month: date) -> None:
+        """Ask each active strategy's ``year_start`` in its first month and
+        each January after (#387), and record what it said."""
+        month_s = month.isoformat()
+        for owned in self.strategies:
+            if "year_start" not in owned.strategy.hooks or not owned.active(month_s):
+                continue
+            if owned.id in self._started and month.month != 1:
+                continue
+            self._started.add(owned.id)
+            decision = self._ask(owned, "year_start", month)
+            if decision is None:
+                continue
+            if list(decision.moves):
+                raise StrategyError(
+                    f"strategy {owned.name!r} ({owned.kind}) year_start in {month_s}: "
+                    "year_start moves nothing; keep the year's course in ctx.memory"
+                )
+            self.record(con, owned, "year_start", step_id=step_id, asked=0, decision=decision)
+
+    def scale(
+        self, con: sqlite3.Connection, owned: Owned, tid: int, amount: int, *,
+        step_id: int, month: date,
+    ) -> int:
+        """Ask ``owned`` to scale rule ``tid``'s ``amount`` cents; record the
+        baseline (and the decision, if it gave one). Returns what to post."""
+        what = f"strategy {owned.name!r} ({owned.kind}) scale in {month.isoformat()}"
+        decision = self._ask(owned, "scale", month, self.rule_view(tid), amount)
+        delivered = amount
+        decision_id = None
+        if decision is not None:
+            moves = list(decision.moves)
+            if len(moves) != 1 or not isinstance(moves[0], Spend):
+                raise StrategyError(f"{what}: a scale answers with one Spend, not {moves!r}")
+            delivered = moves[0].amount
+            if not isinstance(delivered, int) or isinstance(delivered, bool) or delivered < 0:
+                raise StrategyError(f"{what}: Spend amount {delivered!r} must be whole cents >= 0")
+            decision_id = self.record(
+                con, owned, "scale", step_id=step_id, rule_id=tid, asked=amount, decision=decision,
+            )
+            self.finish(con, decision_id, chosen=delivered, fallback=0)
+        con.execute(
+            "INSERT INTO spending_baseline(step_id, scheduled_transaction_id, strategy_id, "
+            "strategy_decision_id, budgeted_cents, delivered_cents) VALUES (?,?,?,?,?,?)",
+            (step_id, tid, owned.id, decision_id, amount, delivered),
+        )
+        return delivered
 
     def record(
-        self, con: sqlite3.Connection, owned: Owned, hook: str, *, step_id: int, chain_id: int,
+        self, con: sqlite3.Connection, owned: Owned, hook: str, *, step_id: int,
+        chain_id: int | None = None, rule_id: int | None = None,
         asked: int, decision: Decision,
     ) -> int:
         """Insert the decision row (amounts filled in by :meth:`finish`). Its
@@ -318,11 +525,11 @@ class StrategyRuntime:
         changed = memory != self._recorded_memory[owned.id]
         self._recorded_memory[owned.id] = memory
         cur = con.execute(
-            "INSERT INTO strategy_decision(step_id, strategy_id, hook, chain_id, asked_cents, "
-            "chosen_cents, fallback_cents, note, detail_json, memory_json) "
-            "VALUES (?,?,?,?,?,0,0,?,?,?)",
-            (step_id, owned.id, hook, chain_id, asked, decision.note, decision.detail_json(),
-             memory if changed else None),
+            "INSERT INTO strategy_decision(step_id, strategy_id, hook, chain_id, "
+            "scheduled_transaction_id, asked_cents, chosen_cents, fallback_cents, note, "
+            "detail_json, memory_json) VALUES (?,?,?,?,?,?,0,0,?,?,?)",
+            (step_id, owned.id, hook, chain_id, rule_id, asked, decision.note,
+             decision.detail_json(), memory if changed else None),
         )
         assert cur.lastrowid is not None
         return cur.lastrowid

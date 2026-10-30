@@ -29,7 +29,7 @@ from analysis.sim.loader import read_current_scenario
 __all__ = [
     "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
-    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "STRATEGY",
+    "RULE_TAG", "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "STRATEGY",
     "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET",
     "TARGET_SET_OR_NEW", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
 ]
@@ -269,6 +269,8 @@ def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:
 TAG = NameType(_in_scenario(names.tag_tokens), "tag")
 # A tag being added: completes from the tags in use, but may be new.
 ANY_TAG = NameType(_in_scenario(names.tag_tokens), "tag", check=False)
+# The rules a spending strategy owns (#387): a tag some scheduled rule carries.
+RULE_TAG = NameType(_in_scenario(names.rule_tags), "rule tag")
 # A filter: a tag or a role:* pattern, which may match nothing.
 TAG_FILTER = NameType(_in_scenario(lambda d, s: [*names.tag_tokens(d, s), *_tag_patterns(d, s)]),
                       "tag", check=False)

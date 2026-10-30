@@ -112,7 +112,7 @@ state/
 | `strategy`, `strategy_source`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `spending_baseline` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -120,7 +120,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 50) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 52) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -160,13 +160,15 @@ CREATE TABLE strategy_source (
 );
 
 -- The scenario's enabled strategies (strategies.csv, merged over the
--- lineage). Each owns one interior chain; params_json is already in stored
--- units (cents, millionths).
+-- lineage). Each owns an interior chain, the scheduled rules carrying
+-- rule_tag (#387), or both; params_json is already in stored units (cents,
+-- millionths).
 CREATE TABLE strategy (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     kind        TEXT NOT NULL,
-    chain_id    INTEGER NOT NULL UNIQUE REFERENCES chain(id),
+    chain_id    INTEGER UNIQUE REFERENCES chain(id),
+    rule_tag    TEXT,
     start       TEXT,
     "end"       TEXT,
     params_json TEXT NOT NULL DEFAULT '{}',
@@ -733,8 +735,10 @@ CREATE TABLE strategy_decision (
     id             INTEGER PRIMARY KEY,
     step_id        INTEGER NOT NULL REFERENCES simulation_step(id),
     strategy_id    INTEGER NOT NULL REFERENCES strategy(id),
-    hook           TEXT NOT NULL CHECK (hook IN ('draw','place')),
+    hook           TEXT NOT NULL CHECK (hook IN ('draw','place','year_start','scale')),
     chain_id       INTEGER REFERENCES chain(id),
+    -- The owned rule a scale decision was about (#387).
+    scheduled_transaction_id INTEGER REFERENCES scheduled_transaction(id),
     asked_cents    INTEGER NOT NULL,
     chosen_cents   INTEGER NOT NULL,
     fallback_cents INTEGER NOT NULL,
@@ -744,6 +748,21 @@ CREATE TABLE strategy_decision (
     memory_json    TEXT
 );
 CREATE INDEX idx_decision_step ON strategy_decision(step_id);
+
+-- Each posting of a rule a strategy owns (#387, ADR-010 §4): what the rule
+-- would have posted (budgeted) and what it did post (delivered), so reports
+-- compare spending against the plan. A skipped posting has a row with 0
+-- delivered; strategy_decision_id is NULL when scale answered "no opinion".
+CREATE TABLE spending_baseline (
+    id                       INTEGER PRIMARY KEY,
+    step_id                  INTEGER NOT NULL REFERENCES simulation_step(id),
+    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    strategy_id              INTEGER NOT NULL REFERENCES strategy(id),
+    strategy_decision_id     INTEGER REFERENCES strategy_decision(id),
+    budgeted_cents           INTEGER NOT NULL,
+    delivered_cents          INTEGER NOT NULL
+);
+CREATE INDEX idx_baseline_step ON spending_baseline(step_id);
 
 -- #199: basis a sale could not recover, from a chain step whose
 -- tax_character is return_of_capital. No money moved, so it is not a
@@ -831,9 +850,10 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `scenario` | The scenario this file represents (one row). |
 | `person_lifespan` | Optional per-person age at death for a scenario, its final month, and how it varies ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
 | `year_to_date` | Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
-| `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
+| `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, the rules carrying a tag, or both, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
 | `allocation_target` | Named, dated sets of asset-class target weights (from `targets.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13). |
-| `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. |
+| `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. A `scale` row names its rule; a `year_start` row moves nothing. |
+| `spending_baseline` | Each posting of a rule a spending strategy owns: budgeted (what the rule would have posted) and delivered. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
@@ -1030,3 +1050,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#315](https://github.com/BobKerns/analysis/issues/315): `person_lifespan.life_table`, the life table a scenario reads a person's lifespan against (Intent layer DDL; schema 49).
 - [#324](https://github.com/BobKerns/analysis/issues/324): `scenario.mixin_only`, so a run without the data repo still refuses a mix-in only scenario now that one may have parents (Intent layer DDL; schema 50).
 - [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies' `strategy`, `strategy_source` and `allocation_target` (Intent layer DDL), `strategy_decision` and `transfer_event.strategy_decision_id` (Ledger layer DDL; schema 51).
+- [#387](https://github.com/BobKerns/analysis/issues/387): spending strategies: `strategy.rule_tag` with `chain_id` optional (Intent layer DDL), `strategy_decision`'s `year_start` and `scale` hooks and `scheduled_transaction_id`, and the run table `spending_baseline` (Ledger layer DDL, glossary; schema 52).

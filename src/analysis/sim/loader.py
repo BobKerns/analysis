@@ -1253,6 +1253,7 @@ def load_scenario(
     strategy_kinds, strategies = _validate_strategies(
         strategy_rows, target_rows, strategy_sources,
         accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
+        scheduled_rows=scheduled_rows,
         start=scenario_row.get("start", ""), issues=issues, unused=unused,
     )
     _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
@@ -4281,6 +4282,7 @@ def _validate_strategies(
     value_rows: list[dict[str, str]],
     allocations: list[dict[str, str]],
     chains: dict[str, tuple[str, list[dict[str, str]]]],
+    scheduled_rows: list[dict[str, str]],
     start: str,
     issues: list[str],
     unused: list[str],
@@ -4299,10 +4301,18 @@ def _validate_strategies(
             tags[a["name"]] = frozenset(f"{r}:{n}" for r, n in registries.parse_tags(a.get("tags", "")))
         except ValueError:
             tags[a["name"]] = frozenset()  # reported by _validate_accounts
+    rules = []
+    for r in scheduled_rows:
+        try:
+            rule_tags = frozenset(f"{t}:{n}" for t, n in registries.parse_tags(r.get("tags", "")))
+        except ValueError:
+            rule_tags = frozenset()  # reported with the scheduled rows
+        rules.append((r.get("name", ""), r.get("amount_rule_kind", ""), rule_tags))
     prepared = strategy_load.prepare_strategies(
         list(_located(strategy_rows, "strategies.csv")),
         kinds=kinds, chains=chains, account_names={a["name"] for a in accounts},
-        tags=frozenset().union(*tags.values()), target_sets=target_sets, issues=issues,
+        tags=frozenset().union(*tags.values()), target_sets=target_sets, rules=rules,
+        issues=issues,
     )
     by_account = {a["name"]: a for a in accounts}
     lots = [

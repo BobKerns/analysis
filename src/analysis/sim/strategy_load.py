@@ -46,6 +46,7 @@ class PreparedStrategy:
     name: str
     kind: str
     chain: str
+    rules: str
     start: str | None
     end: str | None
     params: dict[str, Any]
@@ -170,14 +171,19 @@ def prepare_strategies(
     account_names: Collection[str],
     tags: Collection[str],
     target_sets: Collection[str],
+    rules: Sequence[tuple[str, str, frozenset[str]]] = (),
     issues: list[str],
 ) -> list[PreparedStrategy]:
-    """The enabled strategies, each checked: a known kind, an interior chain
-    whose role fits a hook the kind implements, owned by no other enabled
-    strategy, a start no later than its end, and params its ``Params``
-    accepts. Disabled rows are checked too, except for chain ownership."""
+    """The enabled strategies, each checked: a known kind; an interior chain
+    whose role fits a hook the kind implements, or a rule tag (``rules``) on
+    ``fixed_amount`` rules for a kind with a ``scale`` hook, or both; each
+    chain and rule owned by no other enabled strategy; a start no later than
+    its end; and params its ``Params`` accepts. Disabled rows are checked
+    too, except for ownership. ``rules`` is each scheduled rule's ``(name,
+    amount_rule_kind, tags)``."""
     prepared: list[PreparedStrategy] = []
     owner_of: dict[str, str] = {}
+    rule_owner: dict[str, str] = {}
     for where, row in located:
         name = row.get("name", "")
         where = f"{where} ({name or '?'})"
@@ -196,9 +202,12 @@ def prepare_strategies(
                 f"unknown kind '{kind}' (known: {', '.join(sorted(kinds.kinds)) or 'none'})"
             )
         chain = row.get("chain", "")
+        rule_tag = (row.get("rules") or "").strip()
         role = chains.get(chain, (None, []))[0]
+        owned_rules = _owned_rules(rule_tag, rules, kind, cls, problems) if rule_tag else []
         if not chain:
-            problems.append("missing chain")
+            if not rule_tag:
+                problems.append("give a chain, a rules tag, or both")
         elif chain not in chains:
             problems.append(
                 f"chain '{chain}' is an account; a strategy owns a chain with steps"
@@ -241,13 +250,48 @@ def prepare_strategies(
                 problems.append(f"chain '{chain}' is already owned by strategy '{owner_of[chain]}'")
             else:
                 owner_of[chain] = name
+        if enabled:
+            for rule in owned_rules:
+                if rule in rule_owner:
+                    problems.append(
+                        f"rule '{rule}' (tag {rule_tag}) is already owned by strategy "
+                        f"'{rule_owner[rule]}'"
+                    )
+                else:
+                    rule_owner[rule] = name
         issues.extend(f"{where}: {p}" for p in problems)
         if enabled and not problems:
             prepared.append(PreparedStrategy(
-                name=name, kind=kind, chain=chain, start=start, end=end,
+                name=name, kind=kind, chain=chain, rules=rule_tag, start=start, end=end,
                 params=params, description=row.get("description", ""),
             ))
     return prepared
+
+
+def _owned_rules(
+    rule_tag: str, rules: Sequence[tuple[str, str, frozenset[str]]], kind: str,
+    cls: type[Strategy] | None, problems: list[str],
+) -> list[str]:
+    """The rules ``rule_tag`` gives a strategy: only ``fixed_amount`` rules
+    can be scaled, and a tag no rule carries is a mistake."""
+    if ":" not in rule_tag:
+        problems.append(f"rules {rule_tag!r} must be a rule tag like \"spending:travel\"")
+        return []
+    if cls is not None and "scale" not in cls.hooks:
+        problems.append(
+            f"kind '{kind}' has no scale hook, which owning rules needs "
+            f"(it implements {', '.join(sorted(cls.hooks))})"
+        )
+    tagged = [(name, rule_kind) for name, rule_kind, tags in rules if rule_tag in tags]
+    if not tagged:
+        problems.append(f"no scheduled rule carries tag {rule_tag}")
+    for name, rule_kind in tagged:
+        if rule_kind != "fixed_amount":
+            problems.append(
+                f"rule '{name}' carries tag {rule_tag} but is {rule_kind}; "
+                "a strategy scales only fixed_amount rules"
+            )
+    return [name for name, _ in tagged]
 
 
 def check_portfolio_classes(
@@ -296,9 +340,9 @@ def write_strategies(
     chain_id = dict(con.execute("SELECT name, id FROM chain").fetchall())
     for s in prepared:
         con.execute(
-            'INSERT INTO strategy(name, kind, chain_id, start, "end", params_json, description) '
-            "VALUES (?,?,?,?,?,?,?)",
-            (s.name, s.kind, chain_id[s.chain], s.start, s.end,
+            'INSERT INTO strategy(name, kind, chain_id, rule_tag, start, "end", params_json, '
+            "description) VALUES (?,?,?,?,?,?,?,?)",
+            (s.name, s.kind, chain_id[s.chain] if s.chain else None, s.rules or None, s.start, s.end,
              json.dumps(s.params, sort_keys=True, separators=(",", ":")), s.description),
         )
     counts["strategy"] = len(prepared)

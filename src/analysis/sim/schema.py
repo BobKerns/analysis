@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 51
+SCHEMA_VERSION = 52
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -422,13 +422,15 @@ CREATE TABLE strategy_source (
 );
 
 -- The scenario's enabled strategies (strategies.csv, merged over the
--- lineage). Each owns one interior chain; params_json is already in stored
--- units (cents, millionths).
+-- lineage). Each owns an interior chain, the scheduled rules carrying
+-- rule_tag (#387), or both; params_json is already in stored units (cents,
+-- millionths).
 CREATE TABLE strategy (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     kind        TEXT NOT NULL,
-    chain_id    INTEGER NOT NULL UNIQUE REFERENCES chain(id),
+    chain_id    INTEGER UNIQUE REFERENCES chain(id),
+    rule_tag    TEXT,
     start       TEXT,
     "end"       TEXT,
     params_json TEXT NOT NULL DEFAULT '{}',
@@ -641,8 +643,10 @@ CREATE TABLE strategy_decision (
     id             INTEGER PRIMARY KEY,
     step_id        INTEGER NOT NULL REFERENCES simulation_step(id),
     strategy_id    INTEGER NOT NULL REFERENCES strategy(id),
-    hook           TEXT NOT NULL CHECK (hook IN ('draw','place')),
+    hook           TEXT NOT NULL CHECK (hook IN ('draw','place','year_start','scale')),
     chain_id       INTEGER REFERENCES chain(id),
+    -- The owned rule a scale decision was about (#387).
+    scheduled_transaction_id INTEGER REFERENCES scheduled_transaction(id),
     asked_cents    INTEGER NOT NULL,
     chosen_cents   INTEGER NOT NULL,
     fallback_cents INTEGER NOT NULL,
@@ -652,6 +656,21 @@ CREATE TABLE strategy_decision (
     memory_json    TEXT
 );
 CREATE INDEX idx_decision_step ON strategy_decision(step_id);
+
+-- Each posting of a rule a strategy owns (#387, ADR-010 §4): what the rule
+-- would have posted (budgeted) and what it did post (delivered), so reports
+-- compare spending against the plan. A skipped posting has a row with 0
+-- delivered; strategy_decision_id is NULL when scale answered "no opinion".
+CREATE TABLE spending_baseline (
+    id                       INTEGER PRIMARY KEY,
+    step_id                  INTEGER NOT NULL REFERENCES simulation_step(id),
+    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    strategy_id              INTEGER NOT NULL REFERENCES strategy(id),
+    strategy_decision_id     INTEGER REFERENCES strategy_decision(id),
+    budgeted_cents           INTEGER NOT NULL,
+    delivered_cents          INTEGER NOT NULL
+);
+CREATE INDEX idx_baseline_step ON spending_baseline(step_id);
 
 -- #199: basis a sale could not recover, from a chain step whose
 -- tax_character is return_of_capital. No money moved, so it is not a

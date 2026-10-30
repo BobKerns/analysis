@@ -28,11 +28,14 @@ from typing import Annotated, Any, ClassVar, NamedTuple, get_args, get_origin, g
 
 __all__ = [
     "API_VERSION", "Allocation", "ChainView", "Context", "Decision", "Dollars", "LotRef",
-    "LotView", "Percent", "Put", "StepView", "Strategy", "StrategyError", "Tag", "Take",
-    "TargetSet", "Unit", "is_registered", "param_units", "percent", "register",
+    "LotView", "Percent", "PersonView", "Put", "RuleView", "Spend", "StepView", "Strategy",
+    "StrategyError", "Tag", "Take", "TargetSet", "Unit", "is_registered", "param_units",
+    "percent", "register",
 ]
 
-API_VERSION = 1
+API_VERSION = 2
+"""2 (#387) added ``year_start``, ``scale`` and :class:`Spend`, and the
+context's ``end``, ``cpi``, ``people``, ``budget`` and ``annual_return``."""
 """Bumped when a strategy written against the previous version could break.
 A module may set ``API_VERSION`` to the version it was written for; one newer
 than this is refused at load."""
@@ -147,6 +150,40 @@ class ChainView:
 
 
 @dataclass(frozen=True)
+class RuleView:
+    """A scheduled rule the strategy owns, at one posting (``scale``)."""
+
+    name: str
+    kind: str
+    tags: frozenset[str]
+    """The rule's own tags, ``role:name``."""
+    source: str
+    """The chain or account it draws from."""
+    destination: str
+    """The chain or account it pays into."""
+    base_amount: int
+    """Its ``amount`` as written (cents, before inflation)."""
+    series: str | None
+    """The inflation series indexing it, or None for a fixed amount."""
+
+
+@dataclass(frozen=True)
+class PersonView:
+    """A person in ``persons.csv`` as of the current month."""
+
+    id: str
+    role: str | None
+    birthdate: date | None
+    age: int | None
+    """Whole years at the current month, or None without a birthdate."""
+    alive: bool
+    """False after the month their ``lifespan.csv`` row ends."""
+    final_month: date | None
+    """The last month they are alive, when a lifespan says (a plan, as
+    the scenario's end is)."""
+
+
+@dataclass(frozen=True)
 class Allocation:
     """A set of lots split by asset class at the current month."""
 
@@ -184,11 +221,21 @@ class Context:
         weights: Callable[[LotRef], Mapping[str, float]],
         targets: Callable[[str], Mapping[str, float]],
         memory: dict[str, Any],
+        end: date | None = None,
+        cpi: Callable[[date], int] | None = None,
+        people: Mapping[str, PersonView] | None = None,
+        budget: Callable[[], int] | None = None,
+        annual_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
     ) -> None:
         self._month = month
         self._lots = lots
         self._weights = weights
         self._targets = targets
+        self._end = end
+        self._cpi = cpi
+        self._people = people if people is not None else {}
+        self._budget = budget
+        self._annual_return = annual_return
         self.memory = memory
         """The strategy's own state, kept across calls. JSON values only."""
 
@@ -229,6 +276,46 @@ class Context:
         out are 0)."""
         return dict(self._targets(target_set))
 
+    @property
+    def end(self) -> date:
+        """The scenario's last month: the plan's horizon, not future data."""
+        if self._end is None:
+            raise StrategyError("this context has no end month")
+        return self._end
+
+    @property
+    def people(self) -> Mapping[str, PersonView]:
+        """Each person by id, as of this month."""
+        return self._people
+
+    def cpi(self, since: date) -> int:
+        """The CPI factor from the month ending ``since`` (no later than
+        this month) to this month, in millionths: 1050000 is 5% inflation.
+        Multiply cents by it and divide by 1000000 for today's dollars."""
+        if since > self._month:
+            raise StrategyError(f"cpi({since.isoformat()}) is after {self._month.isoformat()}")
+        if self._cpi is None:
+            raise StrategyError("this context has no CPI series")
+        return self._cpi(since)
+
+    def budget(self) -> int:
+        """The strategy's own rules' spending over the twelve months from
+        this one at this month's prices, in cents: each rule's amount,
+        indexed to now, times the times it posts in them. Today's plan, not
+        a forecast of inflation. Zero for a strategy that owns no rules."""
+        return self._budget() if self._budget is not None else 0
+
+    def annual_return(self, lots: Iterable[LotRef], year: int) -> float | None:
+        """A finished year's investment return on ``lots``: the growth
+        posted to them that year over their balance at its start (the
+        run's opening balance in its first year). None when they held
+        nothing then, or the year is before the run."""
+        if year >= self.year:
+            raise StrategyError(f"annual_return({year}) needs a year before {self.year}")
+        if self._annual_return is None:
+            return None
+        return self._annual_return(tuple(lots), year)
+
 
 # ---------- what a strategy returns ----------
 
@@ -249,12 +336,20 @@ class Put:
 
 
 @dataclass(frozen=True)
+class Spend:
+    """Post ``amount`` cents of an owned rule's posting (``scale``): 0 skips
+    it, and more than it asked raises it."""
+
+    amount: int
+
+
+@dataclass(frozen=True)
 class Decision:
     """A hook's answer: its moves, a one-line ``note`` a person reads in
     ``sim strategy log``, and ``detail`` (JSON values) with the numbers
     behind it."""
 
-    moves: Sequence[Take | Put]
+    moves: Sequence[Take | Put | Spend]
     note: str = ""
     detail: Mapping[str, Any] = field(default_factory=dict)
 
@@ -304,8 +399,20 @@ class Strategy:
         ``amount`` cents. What the moves leave falls through to its steps."""
         return None
 
+    def year_start(self, ctx: Context) -> Decision | None:
+        """Asked in the strategy's first month and each January after, before
+        any rule posts: set the year's course in ``ctx.memory``. It moves
+        nothing; a returned decision (no moves) is recorded with its note."""
+        return None
 
-_HOOKS = ("draw", "place")
+    def scale(self, ctx: Context, rule: RuleView, amount: int) -> Decision | None:
+        """Asked before each posting of a rule the strategy owns (by tag), with
+        the ``amount`` it would post: the budgeted amount. Answer with one
+        :class:`Spend` to post that instead; None posts the budget."""
+        return None
+
+
+_HOOKS = ("draw", "place", "year_start", "scale")
 _REGISTERED = "__strategy_registered__"
 
 

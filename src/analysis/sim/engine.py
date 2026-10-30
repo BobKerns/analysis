@@ -225,11 +225,17 @@ def run_scenario(
             if cost_bases.get(lot_id) is None:
                 cost_bases[lot_id] = balances.get(lot_id, 0)
         roth = refill_ctx.roth
+        txn_by_id = {r[0]: r for r in txns}
         strategy_runtime = StrategyRuntime(
             con, balances=balances, cost_bases=cost_bases,
             minimum_of=chain_graph.minimum_of, leaf_lot=chain_graph.leaf_lot,
             members=chain_graph.members,
             roth_qualified=lambda lot, on: _roth_qualified(roth[lot], on) if lot in roth else None,
+            end=months[-1],
+            rule_budget=lambda tid, on: _rule_year_budget(
+                txn_by_id[tid], on, aux, inflation_factor_cache, rule_lifespan,
+            ),
+            growth_sources=growth_sources, opening_balances=balances, first_month=months[0],
         )
         refill_ctx.strategies = strategy_runtime or None
 
@@ -305,6 +311,10 @@ def run_scenario(
             _advance_inflation_indexes(
                 con, step_id, month_s, aux, inflation_indexes,
             )
+            if strategy_runtime:
+                # A spending strategy sets the year's course before any rule posts (#387).
+                strategy_runtime.note_cpi(month, inflation_indexes.get("cpi"))
+                strategy_runtime.year_start(con, step_id, month)
 
             opening_balances = dict(balances)
 
@@ -392,11 +402,22 @@ def run_scenario(
                                 cadence=t_inflation_cadence or "monthly",
                             )
                             amount = amount * factor // 1_000_000
-                        _post_fixed_amount(
-                            con, balances, account_kinds, step_id, month_s, refill_ctx,
-                            frm, to_chain, amount * fire_count, tax_char, tid,
-                            tax_year=tax_year, what=f"scheduled_transaction id={tid} ({_name!r})",
-                        )
+                        amount *= fire_count
+                        owner = strategy_runtime.rule_owner(tid, month_s) if strategy_runtime else None
+                        if owner is not None:
+                            # The rule's amount is the budget; its owner says what
+                            # is spent, and the baseline keeps both (#387).
+                            assert strategy_runtime is not None
+                            amount = strategy_runtime.scale(
+                                con, owner, tid, amount, step_id=step_id, month=month,
+                            )
+                        if owner is None or amount > 0:
+                            _post_fixed_amount(
+                                con, balances, account_kinds, step_id, month_s, refill_ctx,
+                                frm, to_chain, amount, tax_char, tid,
+                                tax_year=tax_year,
+                                what=f"scheduled_transaction id={tid} ({_name!r})",
+                            )
                     case "percent_of_balance":
                         assert to is not None  # only fixed_amount may target an interior chain
                         if from_account is None:
@@ -1564,6 +1585,40 @@ def _post_ytd_chain(
             from_id, allocation, tax_char, reason_id,
         )
         remaining -= allocation
+
+
+def _rule_year_budget(
+    txn: Sequence[Any], month: date,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    cache: dict[tuple[str, date, date, str], int],
+    rule_lifespan: dict[str, str],
+) -> int:
+    """A ``fixed_amount`` rule's spending over the twelve months from
+    ``month``, at ``month``'s prices (``ctx.budget``, #387): its amount indexed
+    to now, times the times it posts then within its start, end and person's
+    lifespan. Twelve months rather than the calendar year, so a run that
+    starts in May still sees a whole year's plan."""
+    (tid, name, _frm, _to, cadence, moy, rule_kind, _i, person, series, _r, _c, amount, _x,
+     _tc, _ty, t_start, t_end, _p, base_date, _ya, _yp, inflation_cadence) = txn
+    if rule_kind != "fixed_amount" or amount is None:
+        return 0
+    if series and series != "fixed" and base_date:
+        amount = amount * _cumulative_inflation_factor(
+            aux, series, _parse_date(base_date), month, cache,
+            cadence=inflation_cadence or "monthly",
+        ) // 1_000_000
+    rule_start = _parse_scheduled_date(t_start, tid, name, "start")
+    rule_end = _parse_scheduled_date(t_end, tid, name, "end") if t_end is not None else None
+    fires = 0
+    last = date(month.year + 1, month.month, 1) - timedelta(days=1)
+    for m in _month_ends(month, last):
+        m_s = m.isoformat()
+        if m_s < t_start or (t_end is not None and m_s > t_end):
+            continue
+        if rule_lifespan and _past_person_lifespan(m_s, person, rule_lifespan):
+            continue
+        fires += _cadence_count(cadence, moy, m, rule_start, rule_end)
+    return amount * fires
 
 
 def _past_person_lifespan(

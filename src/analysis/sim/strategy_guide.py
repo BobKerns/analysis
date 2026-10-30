@@ -158,7 +158,10 @@ def summary(row: Mapping[str, str]) -> str:
         when = f" {row.get('start') or '…'} to {row.get('end') or '…'}"
     off = "" if (row.get("enabled") or "").strip().lower() not in ("false", "no", "0") else " (disabled)"
     params = f" {row['params_json']}" if row.get("params_json") else ""
-    return f"{row.get('kind', '')} on {row.get('chain', '')}{when}{params}{off}"
+    owns = " and ".join(
+        part for part in (row.get("chain", ""), f"rules {row['rules']}" if row.get("rules") else "") if part
+    )
+    return f"{row.get('kind', '')} on {owns}{when}{params}{off}"
 
 
 def target_sets(rows: Sequence[Mapping[str, str]]) -> dict[str, list[tuple[str, dict[str, str]]]]:
@@ -169,16 +172,40 @@ def target_sets(rows: Sequence[Mapping[str, str]]) -> dict[str, list[tuple[str, 
 
 # ---------- reading a run ----------
 
+def owns_sql(con: sqlite3.Connection) -> str:
+    """A SQL expression naming what strategy ``s`` owns, for a query that
+    LEFT JOINs ``chain c ON c.id = s.chain_id``: the chain, ``rules <tag>``,
+    or both. A run from before rule ownership (#387) has only chains."""
+    if not any(r[1] == "rule_tag" for r in con.execute("PRAGMA table_info(strategy)")):
+        return "c.name"
+    return (
+        "CASE WHEN s.rule_tag IS NULL THEN c.name "
+        "     WHEN c.name IS NULL THEN 'rules ' || s.rule_tag "
+        "     ELSE c.name || ' and rules ' || s.rule_tag END"
+    )
+
+
 def decision_log(
     con: sqlite3.Connection, *, strategy: str | None = None, year: int | None = None,
 ) -> pd.DataFrame:
     """A run's strategy decisions, oldest first: month, strategy, hook, asked,
-    chosen and fallback (dollars), and the note."""
+    chosen and fallback (dollars), and the note. A ``scale`` decision's note
+    starts with the rule it scaled."""
+    has_rule = any(
+        r[1] == "scheduled_transaction_id" for r in con.execute("PRAGMA table_info(strategy_decision)")
+    )
+    rule = (
+        "CASE WHEN d.scheduled_transaction_id IS NULL THEN d.note "
+        "     WHEN d.note = '' THEN r.name ELSE r.name || ': ' || d.note END AS note"
+        if has_rule else "d.note"
+    )
+    join = ("LEFT JOIN scheduled_transaction r ON r.id = d.scheduled_transaction_id "
+            if has_rule else "")
     query = (
         "SELECT s.month, st.name AS strategy, d.hook, d.asked_cents, d.chosen_cents, "
-        "       d.fallback_cents, d.note "
+        f"       d.fallback_cents, {rule} "
         "FROM strategy_decision d JOIN simulation_step s ON s.id = d.step_id "
-        "JOIN strategy st ON st.id = d.strategy_id WHERE 1=1"
+        f"JOIN strategy st ON st.id = d.strategy_id {join}WHERE 1=1"
     )
     args: list[Any] = []
     if strategy:
