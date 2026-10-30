@@ -162,6 +162,18 @@ def test_theme_has_a_voice_per_translation_language(repo_root: Path) -> None:
         theme.narration("xx")
 
 
+def test_scale_renders_the_layout_at_more_pixels(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    theme.data["video"]["scale"] = 2
+    theme.data["terminal"]["font_size"] = 36
+    settings = theme.vhs_settings()
+    assert (theme.out_width, theme.out_height) == (2 * theme.width, 2 * theme.height)
+    assert "Set FontSize 72" in settings and f"Set Width {2 * theme.width}" in settings
+    assert f"--width: {theme.width}px;" in theme.css()  # templates lay out in layout pixels
+    prompt = theme.data["terminal"]["prompt"]
+    assert any(s.startswith("Set WaitPattern /") and prompt in s for s in settings)
+
+
 def test_slide_html_fills_template_inlines_assets_and_escapes(videos_root: Path) -> None:
     theme = themes.load(videos_root)
     html = render.slide_html(theme, {"series": "S", "title": "A <video>"}, {"template": "title"}, "en")
@@ -279,3 +291,30 @@ def test_prepare_demo_reports_a_failing_setup(videos_root: Path, tmp_path: Path)
     setup.write_text("echo before\nfalse\necho never\n")
     with pytest.raises(scripts.ScriptError, match=r"setup\.sh failed \(1\)"):
         render.prepare_demo(data, setup, themes.load(videos_root), tmp_path / "store")
+
+
+def test_a_tape_can_set_its_own_font_size(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    tape = render.full_tape("Set FontSize 24\nType \"sim explain\"\nEnter\n", theme, "/rc", Path("/out.mp4"))
+    lines = tape.splitlines()
+    theme_size = next(i for i, line in enumerate(lines) if line.startswith("Set FontSize"))
+    assert lines[theme_size + 1 :].index(f"Set FontSize {24 * theme.scale}") < lines.index("Hide")
+    assert "Set FontSize 24" not in lines[lines.index("Hide") :]
+    with pytest.raises(scripts.ScriptError, match="only FontSize"):
+        render.full_tape("Set Width 800\nEnter\n", theme, "/rc", Path("/out.mp4"))
+
+
+def test_respellings_change_the_voice_not_the_captions(videos_root: Path) -> None:
+    folder = _write(videos_root / "01-say", SCRIPT.replace(
+        "Second paragraph!", "Every run {records|ree-cords} it, in Jupyter or {Jupyter|/dʒˈuːpɪɾɚ/}."))
+    intro = scripts.load(folder).scenes[0]
+    assert intro.sentences[-1] == "Every run records it, in Jupyter or Jupyter."
+    lexicon = {"Jupyter": "Jupiter", "run": "/ɹˈʌn/"}
+    assert intro.spoken(lexicon)[-1] == "Every ⟦ɹˈʌn⟧ ree-cords it, in Jupiter or ⟦dʒˈuːpɪɾɚ⟧."
+    assert intro.spoken()[-1] == "Every run ree-cords it, in Jupyter or ⟦dʒˈuːpɪɾɚ⟧."
+
+
+def test_an_unclosed_respelling_is_an_error(videos_root: Path) -> None:
+    folder = _write(videos_root / "01-say", SCRIPT.replace("Second paragraph!", "Say {records here."))
+    with pytest.raises(scripts.ScriptError, match=r"script\.md:\d+: a respelling is written"):
+        scripts.load(folder)

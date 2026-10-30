@@ -169,7 +169,9 @@ def render_slide(html: str, theme: Theme, out: Path) -> None:
             except Error:
                 browser = pw.chromium.launch(channel="chrome")  # an installed Google Chrome
             try:
-                page = browser.new_page(viewport={"width": theme.width, "height": theme.height})
+                page = browser.new_page(
+                    viewport={"width": theme.width, "height": theme.height}, device_scale_factor=theme.scale
+                )
                 page.goto(page_file.as_uri())
                 page.evaluate("document.fonts.ready")
                 page.screenshot(path=str(out))
@@ -185,12 +187,36 @@ def _rgb(hex_color: str) -> str:
     return ";".join(str(int(h[i : i + 2], 16)) for i in (0, 2, 4))
 
 
+_TAPE_FONT_SIZE = re.compile(r"^Set\s+FontSize\s+(\d+)\s*$")
+
+
+def _tape_settings(tape: str, theme: Theme) -> tuple[list[str], str]:
+    """Split a tape's own leading ``Set FontSize <n>`` off its commands.
+
+    VHS ignores a setting after the first command, so it has to move up,
+    after the theme's; ``n`` is in layout pixels, scaled like the theme's.
+    """
+    lines = tape.splitlines()
+    settings: list[str] = []
+    while lines and (lines[0].strip() == "" or lines[0].lstrip().startswith("Set ")):
+        line = lines.pop(0).strip()
+        if not line:
+            continue
+        match = _TAPE_FONT_SIZE.match(line)
+        if not match:
+            raise ScriptError(f"a tape can set only FontSize, not {line!r}")
+        settings.append(f"Set FontSize {int(match.group(1)) * theme.scale}")
+    return settings, "\n".join(lines)
+
+
 def full_tape(tape: str, theme: Theme, rc: str, out: Path) -> str:
     """The tape VHS runs: output, theme settings, a hidden setup, then the scene's commands."""
+    own, tape = _tape_settings(tape, theme)
     return "\n".join(
         [
             f'Output "{out}"',
             *theme.vhs_settings(),
+            *own,
             "Hide",
             f'Type "source {rc} && clear"',
             "Enter",
@@ -321,7 +347,7 @@ def compose_args(
     video's first scene doesn't fade in (players use frame 0 as the preview)
     and its last doesn't fade out (the closing card is what stays on screen).
     """
-    w, h, fps = theme.width, theme.height, theme.fps
+    w, h, fps = theme.out_width, theme.out_height, theme.fps
     bg = theme.bg_hex()
     args = [ffmpeg, "-y", "-v", "error"]
     if still:
@@ -347,7 +373,7 @@ def compose_args(
         f"apad,atrim=duration={length:.3f}[a]"
     )
     args += ["-filter_complex", f"{video};{sound}", "-map", "[v]", "-map", "[a]"]
-    args += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", str(fps), "-pix_fmt", "yuv420p"]
+    args += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-r", str(fps), "-pix_fmt", "yuv420p"]
     args += ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-t", f"{length:.3f}", str(out)]
     return args
 

@@ -220,6 +220,10 @@ paywalled
 pcon
 pdftotext
 Pewsey
+phonemize
+phonemized
+phonemizer
+phonemizes
 pipefail
 pitchbook
 plottable
@@ -261,6 +265,7 @@ repost
 reprompts
 rerunnable
 rescan
+respellings
 retarget
 reweighted
 rint

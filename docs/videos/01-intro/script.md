@@ -71,17 +71,19 @@ speaker = "alice"
 
 Your numbers live in plain text files, in a folder of your own, kept under
 version control. The code is separate. Nothing is uploaded anywhere, and
-every run records exactly which version of your data and of the code
+every run {records|/ɹᵻkˈɔːɹdz/} exactly which version of your data and of the code
 produced it.
 
 ## Scene `scenarios`: Scenarios build on each other
 
 ```tape
+Set FontSize 23
 Sleep 500ms
 Type "sim scenario list -v"
 Sleep 400ms
 Enter
-Sleep 14s
+Wait
+Sleep 13s
 ```
 
 A plan is called a scenario, and most scenarios build on another one. Here,
@@ -92,6 +94,9 @@ would build on retire alice and list only what changes. Fix something in
 base, and every scenario below it picks up the fix. Alice crisis, at the
 top, we'll come back to at the end.
 
+> Production note: this tape and the explain and ensemble tapes use a
+> smaller font, so their wide tables fit.
+>
 > Production note: "retire alice" and "alice crisis" are spelled with a
 > space so the voice doesn't say "underscore".
 
@@ -102,7 +107,8 @@ Sleep 500ms
 Type "sim run"
 Sleep 400ms
 Enter
-Sleep 10s
+Wait
+Sleep 9s
 ```
 
 To see where a plan leads, you run it. The simulator steps forward one month
@@ -113,15 +119,17 @@ run is deterministic: the same inputs always give the same result.
 ## Scene `explain`: A quick first look
 
 ```tape
+Set FontSize 23
 Sleep 500ms
 Type "sim explain"
 Sleep 400ms
 Enter
-Sleep 18s
+Wait
+Sleep 17s
 ```
 
-Sim explain gives a quick first look at the latest run: whether it finished,
-what's left in each account at the end, and net worth each year. Then come
+Sim explain gives a quick first look at the latest run: what's left in each
+account at the end, and net worth each year. Then come
 the warnings. If an account would have gone negative, it says when. A
 shortfall doesn't stop the run; it's recorded, so you can see it and fix the
 plan. And these lines show the years when spending crossed guard rails
@@ -134,7 +142,8 @@ Sleep 500ms
 Type "sim networth"
 Sleep 400ms
 Enter
-Sleep 16s
+Wait
+Sleep 15s
 ```
 
 Sim networth shows net worth by year, in today's dollars, so 2040 compares
@@ -158,11 +167,13 @@ videos go through them one at a time.
 ## Scene `ensemble`: Many futures
 
 ```tape
+Set FontSize 23
 Sleep 500ms
 Type "sim ensemble summary alice_crisis"
 Sleep 400ms
 Enter
-Sleep 24s
+Wait
+Sleep 23s
 ```
 
 One run is one possible future, with average markets and average inflation.

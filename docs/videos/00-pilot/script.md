@@ -29,11 +29,13 @@ Sleep 600ms
 Type "sim run"
 Sleep 400ms
 Enter
-Sleep 2.5s
+Wait
+Sleep 1.5s
 Type "sim networth"
 Sleep 400ms
 Enter
-Sleep 9s
+Wait
+Sleep 8s
 ```
 
 Alice's retirement plan is a scenario called retire alice. The sim run

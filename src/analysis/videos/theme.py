@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,19 @@ class Theme:
     @property
     def height(self) -> int:
         return int(self.data["video"]["height"])
+
+    @property
+    def scale(self) -> int:
+        """Output pixels per layout pixel: 2 renders a 1920x1080 layout at 4K."""
+        return int(self.data["video"].get("scale", 1))
+
+    @property
+    def out_width(self) -> int:
+        return self.width * self.scale
+
+    @property
+    def out_height(self) -> int:
+        return self.height * self.scale
 
     @property
     def fps(self) -> int:
@@ -59,10 +73,14 @@ class Theme:
         return [
             'Set Shell "bash"',
             f'Set FontFamily "{t["font_family"]}"',
-            f"Set FontSize {int(t['font_size'])}",
-            f"Set Width {self.width}",
-            f"Set Height {self.height}",
-            f"Set Padding {int(t['padding'])}",
+            f"Set FontSize {int(t['font_size']) * self.scale}",
+            f"Set Width {self.out_width}",
+            f"Set Height {self.out_height}",
+            f"Set Padding {int(t['padding']) * self.scale}",
+            f"Set WindowBarSize {int(t.get('window_bar_size', 30)) * self.scale}",
+            # `Wait` in a tape waits for the prompt, however long the command takes.
+            f"Set WaitPattern /{re.escape(str(t['prompt']))} \\$$/",
+            "Set WaitTimeout 120s",
             f"Set Framerate {self.fps}",
             f"Set TypingSpeed {t['typing_speed']}",
             f"Set WindowBar {t['window_bar']}",

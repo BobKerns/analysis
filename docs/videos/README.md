@@ -63,6 +63,7 @@ Meet Alice and Bill.
 ```tape
 Type "sim networth"
 Enter
+Wait
 Sleep 6s
 ```
 
@@ -102,9 +103,16 @@ file, the theme's terminal settings, and a hidden setup that:
 Each tape starts from the same state, so a tape can't rely on an earlier
 one: what a scene shows has to exist before it records. That's what
 `setup.sh` is for (below). A little set-up the viewer shouldn't see can also
-go between `Hide` and `Show`. Pace the typing with `Sleep` so the picture
-keeps up with the narration; the narration starts `lead` seconds into the
-scene. A tape must not set `Output`.
+go between `Hide` and `Show`. After a command's `Enter`, put `Wait`: it
+waits for the prompt to come back, however long the command takes (a fixed
+`Sleep` breaks when a first run is slow). Pace the rest with `Sleep` so the
+picture keeps up with the narration; the narration starts `lead` seconds
+into the scene. A tape must not set `Output`.
+
+A tape whose output is wider or longer than the terminal (84 columns by 22
+rows) can start with `Set FontSize <n>`, in layout pixels like the theme's
+`font_size`: 24 fits about 126 columns by 33 rows, and 4K keeps it sharp.
+Only `FontSize` can be set this way, and only on the tape's first lines.
 
 The demo data's bytes are part of a tape's cache key, but the CLI's
 behavior isn't, so after a CLI change rebuild with `--rerecord`.
@@ -180,6 +188,25 @@ quick drafts of timing and pictures, no model needed.
 A human recording can replace synthesis later; it would be another engine,
 reading a WAV per scene.
 
+### Pronunciation
+
+When the voice says a word wrong, respell it. The captions keep the word as
+written; only the voice changes, and only the scenes that use it re-voice.
+
+- **Everywhere**: add it to `[narration.<lang>.pronounce]` in `theme.toml`,
+  such as `Jupyter = "Jupiter"`. Whole words, case-sensitive.
+- **In one place**: write `{shown|said}` in the narration, such as
+  `every run {records|ree-cords} it`. Use this for a word whose sound
+  depends on its part of speech (records, live, read), which the voice
+  guesses from context and sometimes gets wrong.
+
+Either kind can give IPA phonemes between slashes instead of a respelling:
+`{records|/ɹᵻkˈɔːɹdz/}`, `IRA = "/ˌaɪˌɑːɹˈeɪ/"`. They go to the voice as
+written. To see how the voice says a word, and borrow its phonemes from a
+sentence it gets right, ask its phonemizer, from `uv run --script` in the
+narration worker's environment:
+`Kokoro(model, voices).tokenizer.phonemize("She records it.", "en-us")`.
+
 ## Languages and captions
 
 `script.md` is the English master. A translation, `script.<lang>.md`, has
@@ -221,6 +248,15 @@ Requirements: `ffmpeg`, `uv`, Playwright's Chromium (`uv run playwright
 install chromium`), and for tapes VHS and ttyd (`setup` downloads them on
 Linux; `brew install vhs` on macOS).
 
+## Resolution
+
+Slides and the terminal are laid out at 1920x1080 and rendered at
+`[video] scale` times that: 2, so the videos are 4K (3840x2160). YouTube
+encodes 4K uploads at a much higher bitrate, which keeps terminal text sharp
+even for viewers watching at 1080p. The terminal font is 36 layout pixels,
+about 84 columns by 22 rows; keep a command's output within that, or set a
+smaller font for that tape (see Tapes).
+
 ## Thumbnail, preview and ending
 
 Slides fade in from and out to the background color, with two exceptions.
@@ -258,5 +294,4 @@ in the tool cache).
   assets, and where the docs link to them.
 - Whether to script the YouTube upload.
 - Target length: 5 to 10 minutes per video, as #373 suggests.
-- Notebook scenes, background music, and pronunciation hints for words the
-  voice gets wrong.
+- Notebook scenes and background music.

@@ -3,7 +3,8 @@
 Every product is cached under ``out/videos/.cache`` by a hash of exactly
 what went into it, so a build redoes only what changed:
 
-- narration: the scene's sentences and the language's voice settings;
+- narration: the scene's sentences as spoken (respellings applied) and the
+  language's voice settings;
 - a slide: the page its template renders (so template, asset, theme and
   field edits all count);
 - a tape: its commands, the terminal theme, the demo data's bytes and the
@@ -79,18 +80,21 @@ class _Builder:
         self.tail = theme.timing("tail")
 
     def narration(self, scene: Scene) -> tuple[Path | None, list[float], str, str]:
-        sentences = scene.sentences
+        # The voice says the respelled sentences; the captions show scene.sentences.
+        voice = {k: v for k, v in self.voice.items() if k != "pronounce"}
+        sentences = scene.spoken(self.voice.get("pronounce"))
         if not sentences:
             return None, [], "none", "-"
         worker = ""
-        if self.voice.get("engine", "kokoro") == "kokoro":
+        if voice.get("engine", "kokoro") == "kokoro":
             worker = render.digest((self.repo / "scripts" / "videos" / "tts_kokoro.py").read_text(encoding="utf-8"))
-        key = render.digest("narration", self.voice, self.gap, sentences, worker)
+        # Keyed on what's said, so a lexicon entry re-voices only the scenes that use it.
+        key = render.digest("narration", voice, self.gap, sentences, worker)
         wav = self.cache / f"narration-{key}.wav"
         meta = wav.with_suffix(".json")
         if wav.is_file() and meta.is_file():
             return wav, json.loads(meta.read_text())["durations"], "cached", key
-        durations = render.synthesize(sentences, self.voice, self.gap, wav, self.repo)
+        durations = render.synthesize(sentences, voice, self.gap, wav, self.repo)
         meta.write_text(json.dumps({"durations": durations, "sentences": list(sentences)}, ensure_ascii=False))
         return wav, durations, "made", key
 
@@ -99,7 +103,7 @@ class _Builder:
         v = scene.visual
         if v.kind == "slide":
             html = render.slide_html(self.theme, self.script.meta, v.fields, self.script.lang)
-            key = render.digest("slide", html, self.theme.width, self.theme.height)
+            key = render.digest("slide", html, self.theme.out_width, self.theme.out_height)
             png = self.cache / f"slide-{key}.png"
             if png.is_file():
                 return png, True, "cached", key
