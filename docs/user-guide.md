@@ -1432,7 +1432,8 @@ differently, net worth at each year end with each variant's difference, and
 the month after which each variant stays ahead (break-even), and each
 scenario's guard rail margins when any has rails. `--account NAME`
 adds that account's balance, `--section` prints only the parts you name, and
-`--graph` draws net worth (or the account) over time in the terminal. Leave
+`--chart` draws net worth (or the account) over time in the terminal instead of
+the tables (`--table` too for both). Leave
 out BASELINE to start from the current scenario.
 
 ### The notebooks
@@ -1464,7 +1465,7 @@ machine too small for a notebook comfortably.
 | accounts and their opening balances | `sim account list` |
 | the lots in one account | `sim account holdings <account>` (balances from a run), `sim account lot list <account>` (as entered) |
 | the accounts holding a symbol | `sim account holders <symbol>` |
-| the portfolio by asset class | `sim allocation [--graph]` |
+| the portfolio by asset class | `sim allocation [--chart]` |
 | scheduled transactions | `sim scheduled list` |
 | one-time transfers | `sim transfer list` |
 | a scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `sim scenario show [scenario]` |
@@ -1474,31 +1475,32 @@ machine too small for a notebook comfortably.
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
-| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--graph]` |
-| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly] [--graph]` |
-| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged] [--graph]` |
-| economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax] [--graph]` |
-| realized vs. unrealized gains by year | `sim report gains [--graph]` |
-| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--graph]` |
-| where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--graph]` |
+| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--chart]` |
+| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly] [--chart]` |
+| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged] [--chart]` |
+| economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax] [--chart]` |
+| realized vs. unrealized gains by year | `sim report gains [--chart]` |
+| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--chart]` |
+| where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--chart]` |
 | a scenario's guard rails | `sim guard-rail list` |
-| an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--graph]` |
+| an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--chart]` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.
 
-`--graph` adds the notebook's chart of the view after its table: drawn in the
-terminal when it shows images (iTerm2, kitty, Ghostty and others), else
-written to a temporary PNG whose name it prints. `--graph-file NAME.png` (or
-`.svg`) writes it to that file instead. The chart follows the command's
+`--chart` shows the notebook's chart of the view instead of its table: drawn
+in the terminal when it shows images (iTerm2, kitty, Ghostty and others),
+else written to a temporary PNG whose name it prints. `--chart-file NAME.png`
+(or `.svg`) writes it to that file instead. `--table` with either prints the
+table too, after the chart. The chart follows the command's
 options: `--dollars`, `--pre-tax`, `--by`, `--year`, `--lot`, `--exclude` and
-the rest. `sim networth --graph` draws every month, after-tax net worth with
+the rest. `sim networth --chart` draws every month, after-tax net worth with
 the pre-tax total dashed above it, so the gap is the tax still owed.
-`sim report income --graph` stacks the income by group above economic income
+`sim report income --chart` stacks the income by group above economic income
 carried down to the change in net worth; with `--year`, it draws a bar per
-group. `sim report tax --graph` stacks federal and state tax with the
+group. `sim report tax --chart` stacks federal and state tax with the
 effective rate on its own axis (with `--reconciliation`, each April's balance
-due and refund). `sim allocation --graph` draws a pie of the asset classes, a
+due and refund). `sim allocation --chart` draws a pie of the asset classes, a
 bar per class split by the group with `--by`, and a line per class with
 `--drift`.
 

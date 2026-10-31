@@ -1,7 +1,7 @@
 """The scenario comparison's chart (#188) as a plain matplotlib figure:
 each scenario's values over time above each variant's difference from the
 baseline. ``scenario_compare.ipynb`` shows it inline and ``sim compare
---graph`` in the terminal. No pyplot, as in ``ensemble_plots``: the CLI must
+--chart`` in the terminal. No pyplot, as in ``ensemble_plots``: the CLI must
 not pick a GUI backend."""
 
 from __future__ import annotations
