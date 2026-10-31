@@ -427,9 +427,13 @@ YouTube's limits (title length, no `<` or `>`, description size).
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), make a
    project, and enable **YouTube Data API v3** for it.
-2. Under APIs & Services, set up the OAuth consent screen (External, in
-   testing, with the channel's Google account as a test user), then make
-   an OAuth client of type **Desktop app**. Download its JSON as
+2. Under Google Auth Platform (formerly the OAuth consent screen), set
+   **Audience** to **External** and leave it in **Testing**, and add the
+   Google account that owns or manages the channel as a test user. A
+   project made under a Google Workspace organization defaults to
+   Internal, which only lets that organization's accounts sign in ("can
+   only be used within its organization"). Then, under Clients, make an
+   OAuth client of type **Desktop app**. Download its JSON as
    `~/.config/analysis-videos/client_secret.json` (or into
    `$ANALYSIS_VIDEO_SECRETS`).
 3. The first `publish` opens a browser to sign in to the channel's account,
