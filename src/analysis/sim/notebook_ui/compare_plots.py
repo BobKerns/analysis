@@ -113,7 +113,7 @@ def plot_net_worth_and_delta(
     mode: str = "nominal",
 ) -> None:
     """Two-panel chart: net worth per scenario, and each variant's delta vs
-    baseline, as ``sim compare --graph`` draws it. ``delta`` is
+    baseline, as ``sim compare --chart`` draws it. ``delta`` is
     ``variant_delta(nw, container)``, which the chart recomputes."""
     del delta
     mode_label = DollarMode(mode).label

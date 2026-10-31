@@ -192,7 +192,7 @@ each rail, year and form, annual and cumulative:
 
 ```sh
 sim ensemble guard-rails RECIPE           # every rail
-sim ensemble guard-rails RECIPE --graph   # shares over RMS, annual beside cumulative
+sim ensemble guard-rails RECIPE --chart   # shares over RMS, annual beside cumulative
 sim ensemble compare RECIPE VARIANT       # adds each rail's change
 ```
 
