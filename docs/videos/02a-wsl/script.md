@@ -11,6 +11,9 @@ turning on WSL, making the Linux user, finding the terminal and the files
 again, and VS Code. It ends where video 2's install scene begins, so Mac and
 Linux viewers never sit through it.
 
+YouTube title: "WSL for Windows". Kept short so lists don't truncate it; the
+title card's longer title is fine on the video itself.
+
 The tapes record a Linux terminal, and nothing else, so the Windows screens
 are drawn by the `window` slide template from the text in each slide block:
 they re-render and translate like any other slide, with no Windows machine.

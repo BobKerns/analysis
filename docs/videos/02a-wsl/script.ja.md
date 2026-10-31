@@ -11,6 +11,8 @@ most viewers of this channel; their headings and notes are translated.
 Commands and screen names are spelled out for the voice with
 `{shown|said}`, so the captions keep them as typed.
 
+YouTube title: "ウィンドウズで WSL" (short, so lists don't truncate it).
+
 ## Scene `title`: タイトル
 
 シミュレーターで考える老後の資金計画。第2a回、ウィンドウズの準備です。
