@@ -341,12 +341,13 @@ class _TagReader:
     """Read API against ``self._con``. Per-item-type DataFrames are cached.
 
     ``self._con`` is opened on one thread (typically the notebook kernel's main
-    thread) and SQLite connections are bound to it. A notebook front end has, on
-    rare, unreproduced occasions, reached a widget's query from a different
-    thread; ``_read_sql`` notices sqlite3's thread-mismatch error and falls back
-    to a temporary read-only connection opened on the calling thread instead of
-    raising, since every query here is read-only. It warns when this happens, so
-    a recurrence leaves a trace to diagnose from.
+    thread) and SQLite connections are bound to it. A widget's query can come
+    from another thread: JupyterLab sends widget messages to an ipykernel
+    subshell (#375), whose thread is named ``subshell-<id>``. ``_read_sql``
+    notices sqlite3's thread-mismatch error and falls back to a temporary
+    read-only connection opened on the calling thread instead of raising, since
+    every query here is read-only. It warns when the thread isn't a subshell,
+    so an unexplained case still leaves a trace to diagnose from.
     """
 
     _con: sqlite3.Connection
@@ -376,12 +377,13 @@ class _TagReader:
             # self.label is avoided here: on some subclasses it runs its own query
             # (e.g. RunConnection reads its metadata for its finish date), which would
             # hit this same cross-thread error and recurse back into this handler.
-            warnings.warn(
-                f"{type(self).__name__} {self._db_path}: query reached from thread "
-                f"{threading.current_thread().name!r}, not the thread that opened "
-                "the connection; using a temporary read-only connection",
-                RuntimeWarning, stacklevel=2,
-            )
+            if not threading.current_thread().name.startswith("subshell-"):
+                warnings.warn(
+                    f"{type(self).__name__} {self._db_path}: query reached from thread "
+                    f"{threading.current_thread().name!r}, not the thread that opened "
+                    "the connection; using a temporary read-only connection",
+                    RuntimeWarning, stacklevel=2,
+                )
             temp = connect_sim_file(f"file:{self._db_path}?mode=ro", uri=True)
             try:
                 return pd.read_sql_query(sql, temp, params=list(params))
