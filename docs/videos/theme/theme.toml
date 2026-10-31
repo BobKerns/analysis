@@ -90,6 +90,9 @@ IRA = "/ˌaɪˌɑːɹˈeɪ/"
 Jupyter = "Jupiter"
 JupyterLab = "Jupiter Lab"
 jupyter = "jupiter"
+# Said as one word without a break; the comma adds about 130 ms between them.
+"what-if" = "what, if"
+"What-if" = "What, if"
 
 [narration.ja]
 engine = "kokoro"

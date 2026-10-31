@@ -150,7 +150,8 @@ LOT = KindSpec(
         Field(
             "opening_cost_basis", "opening cost basis in dollars", type="money",
             option="--opening-cost-basis", required=False, applies=_has_basis,
-            help="For a Roth lot, its contributions and conversions; blank means all of it.",
+            help=("What was paid for it (for a Roth lot, its contributions and conversions); "
+                  "blank means all of it."),
         ),
         Field(
             "prior_year_end_balance", "balance on the Dec 31 before the scenario starts",

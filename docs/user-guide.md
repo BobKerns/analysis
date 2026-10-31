@@ -1460,7 +1460,7 @@ machine too small for a notebook comfortably.
 | a scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `sim scenario show [scenario]` |
 | persons and their lifespans | `sim person list` |
 | each person's age-at-death distribution, and the household's last death | `sim person show [person] [--graph]` |
-| calendar rows of every kind, with where each is defined | `sim calendar list [--kind KIND] [--tag TAG]` |
+| calendar rows of every kind, with where each is defined (latent factors, for ensembles, only with `--kind latent_factor`) | `sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |

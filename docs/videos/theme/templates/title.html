@@ -2,17 +2,22 @@
 {#
   The opening card every video shares. Fields: series, episode, title,
   subtitle (front matter or the slide block), cast (asset names, default
-  alice, bill, home). A newline in the title breaks the line there: CJK has
-  no spaces, so the browser would break it anywhere.
+  alice, bill, home). A newline in the title breaks the line there. CJK has
+  no spaces, so the title and subtitle break only at a newline or after
+  punctuation (keep-all), never inside a word; a line too long for the card
+  still wraps.
 #}
 {% block style %}
-.text { position: absolute; left: 140px; top: 170px; width: 900px; }
+/* Wide enough for a katakana title on one line; the title sits above the
+   home's roof, and the subtitle, lower, stops short of it. */
+.text { position: absolute; left: 140px; top: 170px; width: 1500px; }
+h1, .subtitle { word-break: keep-all; overflow-wrap: anywhere; text-wrap: balance; }
 .episode { margin-top: 14px; font-size: 30px; color: var(--muted); }
 h1 {
   margin: 36px 0 0; font-family: var(--font-heading); font-weight: 800;
   font-size: 112px; line-height: 1.02; letter-spacing: -0.01em; white-space: pre-line;
 }
-.subtitle { margin-top: 34px; font-size: 44px; line-height: 1.25; color: var(--muted); max-width: 820px; }
+.subtitle { margin-top: 34px; font-size: 44px; line-height: 1.25; color: var(--muted); max-width: 960px; }
 .rule { margin-top: 40px; width: 160px; height: 10px; border-radius: 5px; background: var(--accent); }
 /* The home stands on the ground; Alice and Bill stand in front of it, cut off by the frame. */
 .stage { position: absolute; right: 60px; bottom: 0; width: 900px; height: 900px; }

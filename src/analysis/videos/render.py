@@ -151,6 +151,14 @@ def slide_html(theme: Theme, meta: dict[str, Any], fields: dict[str, Any], lang:
     return env.get_template(f"{name}.html").render(context)
 
 
+def chromium_path() -> str | None:
+    """A Chromium to use when Playwright's own download doesn't match:
+    ``$ANALYSIS_VIDEO_CHROMIUM``, or the one the cloud container ships."""
+    return os.environ.get("ANALYSIS_VIDEO_CHROMIUM") or (
+        _CONTAINER_CHROMIUM if Path(_CONTAINER_CHROMIUM).exists() else None
+    )
+
+
 def render_slide(html: str, theme: Theme, out: Path) -> None:
     """Screenshot the slide's page at the video's size (Playwright's Chromium)."""
     from playwright.sync_api import Error, sync_playwright
@@ -159,13 +167,8 @@ def render_slide(html: str, theme: Theme, out: Path) -> None:
         page_file = Path(tmp) / "slide.html"
         page_file.write_text(html, encoding="utf-8")
         with sync_playwright() as pw:
-            # ANALYSIS_VIDEO_CHROMIUM names a Chromium to use when Playwright's
-            # own download doesn't match (the cloud container ships one).
-            chromium = os.environ.get("ANALYSIS_VIDEO_CHROMIUM") or (
-                _CONTAINER_CHROMIUM if Path(_CONTAINER_CHROMIUM).exists() else None
-            )
             try:
-                browser = pw.chromium.launch(executable_path=chromium)
+                browser = pw.chromium.launch(executable_path=chromium_path())
             except Error:
                 browser = pw.chromium.launch(channel="chrome")  # an installed Google Chrome
             try:
@@ -265,6 +268,10 @@ def _sandbox(data: Path, theme: Theme, root: Path) -> Path:
                 # A recorded `sim init` mustn't link this checkout's data/shared
                 # or start background builds.
                 "export ANALYSIS_NO_BUILDER=1",
+                # `sim chain show --graph` draws with the slides' Chromium, and
+                # shows the chart in ttyd's terminal by iTerm2's image protocol.
+                *([f"export ANALYSIS_CHROMIUM={chromium}"] if (chromium := chromium_path()) else []),
+                "export ANALYSIS_IMAGE_PROTOCOL=iterm",
                 "unset PROMPT_COMMAND HISTFILE",
                 f"PS1='\\[\\e[38;2;{accent}m\\]{term['prompt']}\\[\\e[0m\\] $ '",
                 "",
@@ -319,11 +326,15 @@ def record_tape(tape: str, theme: Theme, prepared: Path, out: Path) -> None:
     shutil.copytree(prepared, root, symlinks=True)
     try:
         tape_file = root / "scene.tape"
-        tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), out), encoding="utf-8")
+        # Recorded beside ``out`` and renamed once whole: an interrupted
+        # recording mustn't leave a truncated file the cache would reuse.
+        partial = out.with_name(f"{out.stem}.partial{out.suffix}")
+        tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), partial), encoding="utf-8")
         env = {**os.environ, "PATH": tool_path()}
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             env["VHS_NO_SANDBOX"] = "true"  # Chromium refuses to sandbox as root (containers)
         run([vhs, str(tape_file)], cwd=root, env=env)
+        partial.replace(out)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

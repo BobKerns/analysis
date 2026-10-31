@@ -443,7 +443,7 @@ above; it is folded into "chains/*/*.csv" here rather than drawn as its own laye
 
 #### 4.1 Shared base: `data_repo/persons.csv`
 
-Single identity list for the household: account owners *and* operator identities (`$ANALYSIS_USER`) live in the same table. The two sets typically coincide; the `role` column distinguishes persons-who-can-act from persons-who-only-appear (e.g. deceased ancestors carried for basis, a `joint` household pseudo-row, future heirs).
+Single identity list for the household: account owners *and* operator identities (`$ANALYSIS_USER`) live in the same table. The two sets typically coincide; the `role` column distinguishes persons-who-can-act from persons-who-only-appear (e.g. deceased ancestors carried for basis, a `joint` household pseudo-row, future heirs). The household's `joint` pseudo-person, which owns what no one person does, needs no row: when `persons.csv` has none, the loader supplies one (blank birthdate and role, `meta_json` `{"household": true}`), so a repo `sim init` made, which lists only real people, still takes an account owned by `joint`.
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
@@ -1302,3 +1302,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#356](https://github.com/BobKerns/analysis/issues/356): `calendar edit` offers `name` on every event row, offers to name an unnamed inherited row where it is defined before changing its key, and takes its changes as options (§7).
 - [#289](https://github.com/BobKerns/analysis/issues/289): `sim init` copies `templates/` into a new data repo the way `link-data.sh --template` does (§4.5a).
 - [#387](https://github.com/BobKerns/analysis/issues/387): `strategies.csv` gains `rules`, the scheduled-rule tag a spending strategy owns; `chain` is no longer required (§4.12).
+- [#368](https://github.com/BobKerns/analysis/issues/368): the loader supplies the `joint` pseudo-person when `persons.csv` has no row for it (§4.1).

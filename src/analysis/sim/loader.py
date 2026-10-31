@@ -1133,6 +1133,12 @@ def load_scenario(
 
     persons = _read_csv(data_dir / "persons.csv", issues)
     _validate_birthdates(persons, issues)
+    # `joint`, the household, owns what no one person does; the CLI offers it
+    # as every account's default owner, so a persons.csv without the row
+    # (sim init writes only real people) still loads (#368).
+    if not any(p.get("id") == "joint" for p in persons):
+        persons.append({"id": "joint", "display": "Joint household", "birthdate": "",
+                        "sex": "", "role": "", "meta_json": '{"household": true}'})
     securities = _read_csv(data_dir / "securities.csv", issues, optional=True)
     _validate_securities(securities, issues)
     allocations = _read_csv(data_dir / "allocations.csv", issues, optional=True)
