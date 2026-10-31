@@ -1,2 +1,0 @@
-name,kind,chain,rules,start,end,enabled,params_json,description
-flex,guardrail,,flex:optional,,,,"{""portfolio"":""portfolio:invest""}",Trim optional spending when the portfolio falls behind

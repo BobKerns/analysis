@@ -26,6 +26,7 @@ from analysis.sim.loader import LoadError, load_scenario
 from analysis.sim.strategy_api import StrategyError
 
 SCENARIO = "alice_spending"
+FLEX = "strategies/flex.csv"
 
 
 def _rewrite(path: Path, name: str, **changes: str) -> None:
@@ -41,9 +42,20 @@ def _rewrite(path: Path, name: str, **changes: str) -> None:
         writer.writerows(rows)
 
 
+def _rewrite_flex(strategy_csv: Callable[[str, str], Path], **changes: str) -> None:
+    """Change the ``flex`` strategy's file (one row)."""
+    path = strategy_csv(SCENARIO, FLEX)
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    rows[0].update(changes)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def _strategy(strategy_csv: Callable[[str, str], Path], kind: str, **params: object) -> None:
-    _rewrite(strategy_csv(SCENARIO, "strategies.csv"), "flex", kind=kind,
-             params_json=json.dumps({"portfolio": "portfolio:invest", **params}))
+    _rewrite_flex(strategy_csv, kind=kind, params_json=json.dumps({"portfolio": "portfolio:invest", **params}))
 
 
 def _down_year(strategy_csv: Callable[[str, str], Path]) -> None:
@@ -219,7 +231,7 @@ class Probe(Strategy):
 def _probe(strategy_module: Callable[[str, str], Path], strategy_csv: Callable[[str, str], Path],
            scale: str = "return None") -> None:
     strategy_module("probe", _PROBE.format(scale="\n".join("        " + b for b in scale.splitlines())))
-    _rewrite(strategy_csv(SCENARIO, "strategies.csv"), "flex", kind="probe", params_json="")
+    _rewrite_flex(strategy_csv, kind="probe", params_json="")
 
 
 def test_the_context_shows_budget_people_cpi_and_returns(
@@ -279,7 +291,7 @@ def test_year_start_moves_nothing(
 ) -> None:
     strategy_module("probe", _PROBE.format(scale="        return None").replace(
         'return Decision([], note="probe")', 'return Decision([Spend(1)])'))
-    _rewrite(strategy_csv(SCENARIO, "strategies.csv"), "flex", kind="probe", params_json="")
+    _rewrite_flex(strategy_csv, kind="probe", params_json="")
     with pytest.raises(StrategyError, match="year_start moves nothing"):
         run_strategy_scenario(SCENARIO)
 
@@ -297,7 +309,7 @@ def test_bad_rule_ownership_fails_the_load(
     strategy_scenarios: Path, intent_dir: Path, strategy_csv: Callable[[str, str], Path],
     changes: dict[str, str], message: str,
 ) -> None:
-    _rewrite(strategy_csv(SCENARIO, "strategies.csv"), "flex", **changes)
+    _rewrite_flex(strategy_csv, **changes)
     errors = _load_errors(strategy_scenarios, intent_dir)
     assert message in errors and "(flex)" in errors
 
@@ -320,9 +332,8 @@ def test_only_fixed_amount_rules_can_be_owned(
 def test_two_strategies_cannot_own_one_rule(
     strategy_scenarios: Path, intent_dir: Path, strategy_csv: Callable[[str, str], Path],
 ) -> None:
-    path = strategy_csv(SCENARIO, "strategies.csv")
-    lines = path.read_text().splitlines()
-    path.write_text("\n".join([*lines, lines[1].replace("flex", "second", 1)]) + "\n")
+    path = strategy_csv(SCENARIO, FLEX)
+    path.with_name("second.csv").write_text(path.read_text())
     errors = _load_errors(strategy_scenarios, intent_dir)
     assert "rule 'gifts' (tag flex:optional) is already owned by strategy 'flex'" in errors
 
@@ -332,14 +343,14 @@ def test_two_strategies_cannot_own_one_rule(
 def test_strategy_add_asks_for_the_rule_tag(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
 ) -> None:
-    strategy_csv(SCENARIO, "strategies.csv").unlink()
+    strategy_csv(SCENARIO, FLEX).unlink()
     # kind, rule tag, then portfolio, minimum and skip_after_loss (defaults)
     result = _cli(strategy_scenarios, "strategy", "add", "trim", "--scenario", SCENARIO,
                   input="threshold\nflex:optional\nportfolio:invest\n\n\n")
     assert result.exit_code == 0, result.output
     assert "rule tags: category:gifts, category:travel, flex:optional" in result.output
-    text = strategy_csv(SCENARIO, "strategies.csv").read_text()
-    assert 'trim,threshold,,flex:optional,,,,"{""portfolio"":""portfolio:invest""}",' in text
+    text = strategy_csv(SCENARIO, "strategies/trim.csv").read_text()
+    assert 'threshold,,flex:optional,,,,"{""portfolio"":""portfolio:invest""}",' in text
     result = _cli(strategy_scenarios, "strategy", "list", SCENARIO)
     assert "trim                threshold on rules flex:optional" in result.output
 
@@ -406,8 +417,8 @@ def test_compare_lists_a_rules_only_strategy_that_differs(
         "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
         "alice_spending_trim,,2026-05-31,2040-12-31,42,alice_spending,alice,{}\n")
     (child / "README.md").write_text("# alice_spending_trim\n\nBuilds on: alice_spending\n")
-    (child / "strategies.csv").write_text(strategy_csv(SCENARIO, "strategies.csv").read_text()
-                                          .replace(",guardrail,", ",threshold,"))
+    (child / "strategies").mkdir()
+    (child / FLEX).write_text(strategy_csv(SCENARIO, FLEX).read_text().replace("guardrail,", "threshold,"))
     for name in (SCENARIO, "alice_spending_trim"):
         result = _cli(strategy_scenarios, "run", name, "--allow-dirty-data", "--allow-dirty-code")
         assert result.exit_code == 0, result.output

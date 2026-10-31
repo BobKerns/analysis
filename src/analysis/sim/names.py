@@ -214,8 +214,24 @@ def symbols(data_dir: Path) -> list[str]:
 
 
 def strategy_names(data_dir: Path, scenario: str) -> list[str]:
-    """The scenario's strategies.csv rows, its own and inherited (#326)."""
-    return _column((d / "strategies.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
+    """The scenario's strategies, its own and inherited (#326): a file each
+    in ``strategies/`` (#408)."""
+    dirs = _lineage_dirs(data_dir, scenario)
+    return sorted(_stems(d / registries.STRATEGIES_DIR for d in dirs))
+
+
+def strategy_vary_nodes(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's varied strategy parameters' correlation nodes,
+    ``strategy:<name>.<param>`` (#408), its own and inherited."""
+    found: dict[str, list[str]] = {}
+    for d in _lineage_dirs(data_dir, scenario):
+        folder = d / registries.STRATEGY_VARY_DIR
+        if folder.is_dir():
+            for path in folder.glob("*.csv"):
+                if not path.stem.startswith("_"):
+                    found[path.stem] = [row["param"] for row in _rows(path) if row.get("param")]
+    return sorted(f"{registries.STRATEGY_NODE_PREFIX}{name}.{param}"
+                  for name, params in found.items() for param in params)
 
 
 def target_set_names(data_dir: Path, scenario: str) -> list[str]:

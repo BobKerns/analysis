@@ -14,7 +14,7 @@ import csv
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from analysis.sim import registries
+from analysis.sim import registries, strategy_files
 from analysis.sim.lineage import load_order, scenario_dir
 
 __all__ = [
@@ -40,10 +40,10 @@ REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     "scheduled.csv": ("from_account", "to_account"),
     "calendar.csv": ("account_1", "account_2"),
     "account_lots.csv": ("refill_chain", "overflow_chain"),
-    "strategies.csv": ("chain",),
 }
 """The columns, per scenario file, that may name a chain. Chain files' own
-``account_name`` steps are handled with the chain files."""
+``account_name`` steps are handled with the chain files, and strategy
+files' ``chain`` (``strategies/<name>.csv``) with ``rename_references``."""
 
 
 class AmbiguousChain(ValueError):
@@ -177,6 +177,9 @@ def rename_references(scenario_dir: Path, old: str, new: str) -> list[str]:
     for path in chain_files(scenario_dir):
         if rename_cells(path, ("account_name",), old, new):
             changed.append(f"chains/{path.parent.name}/{path.name}")
+    for path in strategy_files.own_files(scenario_dir, registries.STRATEGIES_DIR):
+        if rename_cells(path, ("chain",), old, new):
+            changed.append(f"{registries.STRATEGIES_DIR}/{path.name}")
     return changed
 
 

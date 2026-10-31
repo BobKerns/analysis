@@ -44,7 +44,8 @@ data_repo/
             calendar.csv    # CalendarEvents
             lifespan.csv    # per-person age at death
             year_to_date.csv # partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10)
-            strategies.csv  # which strategies run, on which chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12)
+            strategies/<name>.csv    # one strategy each: which run, on which chains or rules ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12)
+            strategy_vary/<name>.csv # a strategy's parameters an ensemble varies ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.14)
             targets.csv     # allocation targets ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13)
             chains/
                 source/asset_checking_liquidity.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
@@ -109,7 +110,7 @@ state/
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | ✓ | ✓ (snapshot) |
 | `year_to_date` | ✓ | ✓ (snapshot) |
 | `ensemble_manifest`, `ensemble_draw`, `ensemble_tail_scale`, `ensemble_path_shock` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
-| `strategy`, `strategy_source`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
+| `strategy`, `strategy_source`, `strategy_vary`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
 | `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `spending_baseline` | — | ✓ |
@@ -120,7 +121,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 52) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 53) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -159,7 +160,7 @@ CREATE TABLE strategy_source (
     source  TEXT NOT NULL
 );
 
--- The scenario's enabled strategies (strategies.csv, merged over the
+-- The scenario's enabled strategies (strategies/<name>.csv, merged over the
 -- lineage). Each owns an interior chain, the scheduled rules carrying
 -- rule_tag (#387), or both; params_json is already in stored units (cents,
 -- millionths).
@@ -173,6 +174,34 @@ CREATE TABLE strategy (
     "end"       TEXT,
     params_json TEXT NOT NULL DEFAULT '{}',
     description TEXT NOT NULL DEFAULT ''
+);
+
+-- A strategy parameter an ensemble varies (#408, strategy_vary/<name>.csv).
+-- name is its node, strategy:<strategy>.<param>; bounds are in the
+-- parameter's stored unit (cents, millionths, or a plain number), and base
+-- is the authored value (params_json's, or the kind's default), which is
+-- member 0's. A member writes its draw into strategy.params_json and clears
+-- vary_distribution. unit: cents, micros or number; whole: the parameter
+-- takes whole numbers.
+CREATE TABLE strategy_vary (
+    strategy_id         INTEGER NOT NULL REFERENCES strategy(id),
+    param               TEXT NOT NULL,
+    name                TEXT NOT NULL UNIQUE,
+    base                REAL NOT NULL,
+    unit                TEXT NOT NULL,
+    whole               INTEGER NOT NULL,
+    vary_distribution   TEXT,
+    vary_low            TEXT,
+    vary_high           TEXT,
+    vary_mode           TEXT,
+    vary_median         TEXT,
+    vary_sd             TEXT,
+    vary_skew           REAL,
+    vary_tailweight     REAL,
+    vary_outcomes       TEXT,
+    vary_correlate_with TEXT,
+    vary_correlation    REAL,
+    PRIMARY KEY (strategy_id, param)
 );
 
 -- Allocation targets (targets.csv). One set of weights per (target_set,
@@ -851,6 +880,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `person_lifespan` | Optional per-person age at death for a scenario, its final month, and how it varies ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
 | `year_to_date` | Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
 | `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, the rules carrying a tag, or both, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
+| `strategy_vary` | A strategy parameter an ensemble varies: its node `strategy:<name>.<param>`, authored value and distribution; a member writes its draw into `strategy.params_json` ([ADR-006](ADR-006-ensemble-scenarios.md) §3b). |
 | `allocation_target` | Named, dated sets of asset-class target weights (from `targets.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13). |
 | `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. A `scale` row names its rule; a `year_start` row moves nothing. |
 | `spending_baseline` | Each posting of a rule a spending strategy owns: budgeted (what the rule would have posted) and delivered. |
@@ -1051,3 +1081,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#324](https://github.com/BobKerns/analysis/issues/324): `scenario.mixin_only`, so a run without the data repo still refuses a mix-in only scenario now that one may have parents (Intent layer DDL; schema 50).
 - [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies' `strategy`, `strategy_source` and `allocation_target` (Intent layer DDL), `strategy_decision` and `transfer_event.strategy_decision_id` (Ledger layer DDL; schema 51).
 - [#387](https://github.com/BobKerns/analysis/issues/387): spending strategies: `strategy.rule_tag` with `chain_id` optional (Intent layer DDL), `strategy_decision`'s `year_start` and `scale` hooks and `scheduled_transaction_id`, and the run table `spending_baseline` (Ledger layer DDL, glossary; schema 52).
+- [#408](https://github.com/BobKerns/analysis/issues/408): `strategy_vary`, a strategy's varied parameters (Intent layer DDL, glossary; schema 53); a strategy is one file, `strategies/<name>.csv` (data repo layout).

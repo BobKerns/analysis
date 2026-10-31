@@ -1303,6 +1303,32 @@ shows how far the members stray and how many end up past the band.
 The same strategy can own a destination chain: an overflow then goes to
 whatever is underweight.
 
+Each strategy is one file in the scenario's `strategies/` folder, named for
+it (`strategies/draw_by_allocation.csv`), as a chain is. A scenario built on
+another inherits its strategies; its own file for one replaces the
+inherited one whole, which is what `sim strategy edit` writes.
+
+**Varying a strategy across an ensemble.** How wide a band or how deep a cut
+should be is rarely certain, so an ensemble can draw a strategy's
+parameters as it draws any other uncertain value. Beside the strategy's
+file, `strategy_vary/<name>.csv` lists the parameters that vary, one row
+each, in the parameter's own unit:
+
+```csv
+param,vary_distribution,vary_low,vary_high,vary_mode,vary_correlate_with,vary_correlation
+band,triangular,3%,8%,,,
+step,uniform,0.5%,2%,,,
+```
+
+Any percent, dollar or number parameter can vary, with the same
+distributions as a calendar row. Member 0 keeps the values the strategy's
+own file gives, which must lie within each range (and a blank `vary_mode`
+is that value). Each parameter is a node named `strategy:<name>.<param>`
+(`strategy:draw_by_allocation.band`), so it can be correlated with another
+parameter, a lifespan or a calendar row, and the sensitivity notebook
+sweeps it like the rest. See
+[ADR-006 §3b](architecture/ADR-006-ensemble-scenarios.md).
+
 You can write your own in Python, in your data repo's `strategies/` folder.
 `sim strategy kinds` lists what's available, with each parameter, and
 `sim strategy check` runs a scenario twice to make sure your strategy

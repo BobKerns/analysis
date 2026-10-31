@@ -81,7 +81,7 @@ __all__ = [
     "QUINTILES", "REPORT_PERCENTILES", "percentiles", "summary_with_percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
     "factor_reach", "process_path", "varying_names", "lifespan_distribution",
-    "life_table_age",
+    "life_table_age", "strategy_vary_rows", "resolve_strategy_value",
     "correlation_links",
     "members_balance_by_month", "TAIL_LEVELS", "tail_means", "reserve_shares",
     "recipe_reserve", "quantile_deltas", "member_pairs", "paired_deltas",
@@ -646,6 +646,46 @@ def _lifespan_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def _has_table(con: sqlite3.Connection, table: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone() is not None
+
+
+def strategy_vary_rows(con: sqlite3.Connection, *, resolved: bool = False) -> list[sqlite3.Row]:
+    """The varied strategy parameters (#408), each with its strategy's name;
+    with ``resolved``, those a member already drew too. None in a file
+    written before schema 53."""
+    if not _has_table(con, "strategy_vary"):
+        return []
+    cur = con.cursor()
+    cur.row_factory = sqlite3.Row
+    where = "" if resolved else "WHERE v.vary_distribution IS NOT NULL "
+    return cur.execute(
+        "SELECT v.*, s.name AS strategy FROM strategy_vary v JOIN strategy s ON s.id = v.strategy_id "
+        f"{where}ORDER BY v.name"
+    ).fetchall()
+
+
+def resolve_strategy_value(
+    row: sqlite3.Row, *, overrides: dict[str, float] | None, seed: int | None, member_index: int,
+    score: float | None, conditional: bool, nu: float | None,
+) -> tuple[float, float | None, float | None]:
+    """A varied strategy parameter's value on one member (#408), by
+    ``_resolve_value``'s rules, but, like a lifespan, its base case (member
+    0, and an OAT member that doesn't move it) is the authored value, not
+    the distribution's median: a member 0 runs the strategy as written. A
+    whole-number parameter (cents, millionths, a count) is rounded."""
+    if overrides is None and member_index != 0 or row["name"] in (overrides or {}) or conditional:
+        value, quantile, u = _resolve_value(
+            row, build_distribution(dict(row), "amount"), as_int=False, overrides=overrides, seed=seed,
+            member_index=member_index, score=score, conditional=conditional, nu=nu,
+        )
+    else:
+        value, quantile, u = row["base"], None, None
+    return (float(round(value)) if row["whole"] else value), quantile, u
+
+
 def varying_names(con: sqlite3.Connection) -> list[str]:
     """Every unresolved varying node in an intent, sorted: the calendar rows
     with `vary_distribution` set, and the varying lifespans' nodes (#221)."""
@@ -656,6 +696,7 @@ def varying_names(con: sqlite3.Connection) -> list[str]:
         names += [LIFESPAN_NODE_PREFIX + person for (person,) in con.execute(
             "SELECT person FROM person_lifespan WHERE vary_distribution IS NOT NULL"
         )]
+    names += [row["name"] for row in strategy_vary_rows(con)]
     return sorted(names)
 
 
@@ -676,6 +717,13 @@ def correlation_links(con: sqlite3.Connection) -> dict[str, Link]:
             LIFESPAN_NODE_PREFIX + person: Link(parent, rho)
             for person, parent, rho in con.execute(
                 "SELECT person, vary_correlate_with, vary_correlation FROM person_lifespan "
+                "WHERE vary_correlate_with IS NOT NULL"
+            )
+        })
+    if _has_table(con, "strategy_vary"):
+        links.update({
+            name: Link(parent, rho) for name, parent, rho in con.execute(
+                "SELECT name, vary_correlate_with, vary_correlation FROM strategy_vary "
                 "WHERE vary_correlate_with IS NOT NULL"
             )
         })
@@ -930,12 +978,13 @@ def resolve_member(
             "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL"
         ).fetchall()
         lifespans = _lifespan_rows(con)
+        strategy_params = strategy_vary_rows(con)
         links, factors = _correlation_links(con)
         node_tails = _node_tails(links, tree_members(links) | set(factors), _tail_dependence(con))
         if overrides is not None:
             unknown = (
                 set(overrides) - {r["name"] for r in rows} - {r["name"] for r in lifespans}
-                - set(factors)
+                - {r["name"] for r in strategy_params} - set(factors)
             )
             if unknown:
                 raise EnsembleError(
@@ -1001,6 +1050,24 @@ def resolve_member(
             draws.append((row["name"], LIFESPAN_TARGET, f"{age:.4f}", quantile,
                           row["vary_distribution"], scores.get(row["name"]),
                           noise.get(row["name"]), u))
+
+        # #408: each varied strategy parameter goes into its strategy's
+        # params_json, which the engine reads.
+        for row in strategy_params:
+            value, quantile, u = resolve_strategy_value(
+                row, overrides=overrides, seed=seed, member_index=member_index,
+                score=scores.get(row["name"]), conditional=row["name"] in moved,
+                nu=node_tails.get(row["name"]),
+            )
+            drawn: int | float = int(value) if row["whole"] else value
+            params = json.loads(con.execute(
+                "SELECT params_json FROM strategy WHERE id = ?", (row["strategy_id"],)).fetchone()[0])
+            params[row["param"]] = drawn
+            con.execute("UPDATE strategy SET params_json = ? WHERE id = ?",
+                        (json.dumps(params, sort_keys=True, separators=(",", ":")), row["strategy_id"]))
+            con.execute("UPDATE strategy_vary SET vary_distribution = NULL WHERE name = ?", (row["name"],))
+            draws.append((row["name"], row["param"], repr(drawn), quantile, row["vary_distribution"],
+                          scores.get(row["name"]), noise.get(row["name"]), u))
 
         # Process paths (ADR-006 §4a) need the drawn dates (a path stops at the
         # next set_rate for its series), and every yearly shock before the

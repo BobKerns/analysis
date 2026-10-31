@@ -196,10 +196,11 @@ class PoolComponent(NameType):
 
 
 def _correlate_with(data_dir: Path, scenario: str) -> list[str]:
-    """What a ``vary_correlate_with`` can name: a calendar row, or a
-    person's lifespan node."""
+    """What a ``vary_correlate_with`` can name: a calendar row, a person's
+    lifespan node, or a varied strategy parameter's (#408)."""
     lifespans = [f"{registries.LIFESPAN_NODE_PREFIX}{p}" for p in names.person_ids(data_dir)]
-    return [*names.calendar_row_names(data_dir, scenario), *lifespans]
+    return [*names.calendar_row_names(data_dir, scenario), *lifespans,
+            *names.strategy_vary_nodes(data_dir, scenario)]
 
 
 def _scenarios(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001

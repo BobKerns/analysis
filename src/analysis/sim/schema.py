@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 52
+SCHEMA_VERSION = 53
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -421,7 +421,7 @@ CREATE TABLE strategy_source (
     source  TEXT NOT NULL
 );
 
--- The scenario's enabled strategies (strategies.csv, merged over the
+-- The scenario's enabled strategies (strategies/<name>.csv, merged over the
 -- lineage). Each owns an interior chain, the scheduled rules carrying
 -- rule_tag (#387), or both; params_json is already in stored units (cents,
 -- millionths).
@@ -435,6 +435,34 @@ CREATE TABLE strategy (
     "end"       TEXT,
     params_json TEXT NOT NULL DEFAULT '{}',
     description TEXT NOT NULL DEFAULT ''
+);
+
+-- A strategy parameter an ensemble varies (#408, strategy_vary/<name>.csv).
+-- name is its node, strategy:<strategy>.<param>; bounds are in the
+-- parameter's stored unit (cents, millionths, or a plain number), and base
+-- is the authored value (params_json's, or the kind's default), which is
+-- member 0's. A member writes its draw into strategy.params_json and clears
+-- vary_distribution. unit: cents, micros or number; whole: the parameter
+-- takes whole numbers.
+CREATE TABLE strategy_vary (
+    strategy_id         INTEGER NOT NULL REFERENCES strategy(id),
+    param               TEXT NOT NULL,
+    name                TEXT NOT NULL UNIQUE,
+    base                REAL NOT NULL,
+    unit                TEXT NOT NULL,
+    whole               INTEGER NOT NULL,
+    vary_distribution   TEXT,
+    vary_low            TEXT,
+    vary_high           TEXT,
+    vary_mode           TEXT,
+    vary_median         TEXT,
+    vary_sd             TEXT,
+    vary_skew           REAL,
+    vary_tailweight     REAL,
+    vary_outcomes       TEXT,
+    vary_correlate_with TEXT,
+    vary_correlation    REAL,
+    PRIMARY KEY (strategy_id, param)
 );
 
 -- Allocation targets (targets.csv). One set of weights per (target_set,
@@ -854,6 +882,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "calendar_event_tag",
     "strategy_source",
     "strategy",
+    "strategy_vary",
     "allocation_target",
     "ensemble_manifest",
     "ensemble_draw",

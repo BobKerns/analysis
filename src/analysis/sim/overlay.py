@@ -13,12 +13,12 @@ from typing import NamedTuple
 
 import pandas as pd
 
-from analysis.sim import registries
+from analysis.sim import registries, strategy_files
 from analysis.sim.lineage import load_order
 from analysis.sim.lineage import scenario_dir as _scenario_dir
 from analysis.sim.loader import calendar_row_key
 
-__all__ = ["CalendarRow", "Overlaid", "overlay_rows", "scenario_calendar_rows"]
+__all__ = ["CalendarRow", "Overlaid", "overlay_rows", "scenario_calendar_rows", "strategy_rows"]
 
 
 class Overlaid(NamedTuple):
@@ -55,6 +55,30 @@ def overlay_rows(scenario_dir: Path, filename: str, key: str = "name") -> dict[s
             else:
                 inherited_from = prior.inherited_from if prior is not None else None
                 rows[row[key]] = Overlaid(merged, index, inherited_from)
+    return rows
+
+
+def strategy_rows(scenario_dir: Path) -> dict[str, Overlaid]:
+    """Every strategy of the scenario, its own and inherited, by name: a
+    file each, ``strategies/<name>.csv`` (#408), the last in the load order
+    winning whole. ``index`` is 0 for one the scenario's own file defines."""
+    name = scenario_dir.name
+    rows: dict[str, Overlaid] = {}
+    for scenario_name in load_order(scenario_dir.parent, name):
+        folder = _scenario_dir(scenario_dir.parent, scenario_name)
+        for path in strategy_files.own_files(folder, registries.STRATEGIES_DIR):
+            if path.stat().st_size == 0:
+                continue
+            frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+            if len(frame) != 1:
+                continue  # the loader reports it
+            row = {str(k): str(v).strip() for k, v in frame.to_dict("records")[0].items()}
+            row = {"name": path.stem, **{c: row.get(c, "") for c in registries.STRATEGY_CSV_HEADER}}
+            prior = rows.get(path.stem)
+            if scenario_name != name:
+                rows[path.stem] = Overlaid(row, None, scenario_name)
+            else:
+                rows[path.stem] = Overlaid(row, 0, prior.inherited_from if prior else None)
     return rows
 
 
