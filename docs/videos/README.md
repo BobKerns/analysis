@@ -222,8 +222,8 @@ which inlines the SVG so the theme's CSS can restyle it.
 | `figure` | `series`, `heading` (the command, shown as typed), `demo_image` (a picture `setup.sh` made) |
 | `window` | `series`, `heading`, `title` (the title bar), `look` (`terminal`, `light`, `files` or `editor`), `lines`, `address` (`files`), `status` (`editor`), `note` (below the window) |
 
-A `demo_image` is a path under the demo root (`home/networth.png` is
-the file `setup.sh` wrote to `~/networth.png`); the builder runs the
+A `demo_image` is a path under the demo root (`home/chart.png` would be
+the file `setup.sh` wrote to `~/chart.png`); the builder runs the
 setup, reads the file and gives the template its `image` as a `data:` URI.
 The slide is cached like a tape, under the demo data and `setup.sh`.
 

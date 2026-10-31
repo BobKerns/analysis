@@ -73,10 +73,20 @@ an AI about a run, in plain words.
 
 ## Scene `networth-graph`: Net worth at a glance
 
-```slide
-template = "figure"
-heading = "sim networth --graph"
-demo_image = "home/networth.png"
+```tape
+Hide
+Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
+Enter
+Type "cd ~/retirement/data/sim && clear"
+Enter
+Sleep 2s
+Show
+Sleep 500ms
+Type "sim networth --graph"
+Sleep 400ms
+Enter
+Wait
+Sleep 12s
 ```
 
 Sim networth dash dash graph draws the base plan from today to 2060. The
