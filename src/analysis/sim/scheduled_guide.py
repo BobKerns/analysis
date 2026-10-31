@@ -68,8 +68,17 @@ KIND_TAX_CHARACTER: dict[str, str] = {
 }
 
 
+# Income accounts whose money is ordinary income wherever a rule moves it
+# from (ADR-003 §2): paid as a fixed amount, a salary is still wages.
+ORDINARY_INCOME_SUBKINDS: frozenset[str] = frozenset({"salary", "pension", "interest"})
+
+
 def tax_character_for(ctx: GuideContext, answers: Mapping[str, object]) -> str:
     """The usual tax character of the rule ``answers`` describe.
+
+    A ``fixed_amount`` out of a salary, pension or interest income account
+    is ordinary income; out of anything else it moves money already taxed
+    (or not income at all), so ``none``.
 
     An ``irmaa`` surcharge withheld from Social Security comes out of the
     benefit's income account (subkind ``ss_benefit``) and counts in gross
@@ -77,8 +86,11 @@ def tax_character_for(ctx: GuideContext, answers: Mapping[str, object]) -> str:
     or anywhere else, it is no income at all.
     """
     kind = str(answers.get("amount_rule_kind", ""))
-    if kind == "irmaa" and ctx.subkinds.get(str(answers.get("from_account"))) == "ss_benefit":
+    source = ctx.subkinds.get(str(answers.get("from_account")))
+    if kind == "irmaa" and source == "ss_benefit":
         return "ss_benefit"
+    if kind == "fixed_amount" and source in ORDINARY_INCOME_SUBKINDS:
+        return "ordinary"
     return KIND_TAX_CHARACTER.get(kind, "")
 
 # Kinds the engine runs only once a year (ADR-003 §2.3, §2.6), and the month

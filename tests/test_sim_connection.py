@@ -365,8 +365,13 @@ def test_year_end_values_and_yearly_totals(retire_alice_run: RunConnection) -> N
     assert set(income_yearly.index) == set(index_years(rc.income_by_category()))
 
 
+@pytest.mark.parametrize(("thread_name", "warns"), [
+    ("Thread-unexplained", True),
+    # JupyterLab sends widget messages to an ipykernel subshell (#375): expected, no warning.
+    ("subshell-0f3c", False),
+])
 def test_a_query_from_a_different_thread_falls_back_to_a_temporary_connection(
-    retire_alice_run,
+    retire_alice_run, thread_name: str, warns: bool,
 ) -> None:
     import threading
     import warnings
@@ -383,11 +388,11 @@ def test_a_query_from_a_different_thread_falls_back_to_a_temporary_connection(
         except Exception as exc:  # pragma: no cover - surfaced via errors below
             errors.append(exc)
 
-    thread = threading.Thread(target=query_from_another_thread)
+    thread = threading.Thread(target=query_from_another_thread, name=thread_name)
     thread.start()
     thread.join()
 
     assert not errors, errors
     (frame, caught), = results
     assert not frame.empty
-    assert any("not the thread that opened" in str(w.message) for w in caught)
+    assert any("not the thread that opened" in str(w.message) for w in caught) == warns
