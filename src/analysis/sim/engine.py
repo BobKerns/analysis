@@ -26,6 +26,7 @@ import calendar
 import functools
 import json
 import bisect
+import itertools
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass
@@ -3645,6 +3646,7 @@ the inherited-IRA rule's ten (SECURE Act, 2019)."""
 
 def _drawdown_tax(
     con, tax_year: int, tax_with_in: Callable[[int], Callable[[int, int], int]],
+    paycheck_years: Collection[int] = (),
 ) -> tuple[int | None, int]:
     """The money ``tax_year``'s after-tax net worth taxes and the extra tax on
     it (#251): its year-end traditional (tax_deferred) balances, and the
@@ -3653,6 +3655,8 @@ def _drawdown_tax(
     Each year's share is priced on top of that year's own income, brackets
     and filing status, ``tax_with_in(year)`` (#404): money left at a year end
     is spent in the years that follow, not on top of this year's paycheck.
+    Nobody draws savings down while still earning, so the drawdown skips
+    ``paycheck_years`` (those with salary) and starts once they end.
     ``(None, 0)`` for a year the run has no month of (a year-to-date one)."""
     step = con.execute(
         "SELECT id FROM simulation_step WHERE substr(month, 1, 4) = ? "
@@ -3684,9 +3688,11 @@ def _drawdown_tax(
     # to the whole base.
     (deferred_share, deferred_extra), (gains_share, gains_extra) = (
         divmod(deferred, years), divmod(gains, years))
+    draw_years = (year for year in itertools.count(tax_year + 1) if year not in paycheck_years)
     extra = 0
-    for i in range(years):
-        tax_with = tax_with_in(tax_year + 1 + i)
+    # The years are endless, so the shares end the loop.
+    for i, draw_year in zip(range(years), draw_years, strict=False):
+        tax_with = tax_with_in(draw_year)
         share = (deferred_share + (i < deferred_extra), gains_share + (i < gains_extra))
         extra += tax_with(*share) - tax_with(0, 0)
     return deferred + gains, extra
@@ -3698,7 +3704,14 @@ def _record_drawdown_taxes(
     """Each computed tax year's ``<scope>_drawdown_base`` and
     ``<scope>_drawdown_tax`` (#251), once the run has every year's income
     (#404). A share in a year past the run's last computed year is priced
-    with that last year's income, as the run can't say what comes after."""
+    with that last year's income, as the run can't say what comes after. The
+    drawdown skips the years with salary (``_drawdown_tax``)."""
+    paycheck_years = {
+        int(year) for (year,) in con.execute(
+            "SELECT DISTINCT COALESCE(te.tax_year, CAST(substr(te.date, 1, 4) AS INTEGER)) "
+            "FROM transfer_event te JOIN account a ON a.id = te.from_account "
+            "WHERE a.kind = 'income' AND a.subkind = 'salary' AND te.amount > 0")
+    }
     by_scope: dict[str, dict[int, Callable[[int, int], int]]] = defaultdict(dict)
     for (scope, year), tax_with in pricing.items():
         by_scope[scope][year] = tax_with
@@ -3710,7 +3723,7 @@ def _record_drawdown_taxes(
             return by_year[known[max(0, bisect.bisect_right(known, year) - 1)]]
 
         for year in known:
-            base, extra = _drawdown_tax(con, year, tax_with_in)
+            base, extra = _drawdown_tax(con, year, tax_with_in, paycheck_years)
             if base is None:
                 continue
             for bucket, amount in ((f"{scope}_drawdown_base", base),

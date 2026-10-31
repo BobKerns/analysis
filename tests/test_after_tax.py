@@ -98,6 +98,20 @@ def test_each_share_is_priced_in_the_year_it_would_be_drawn(report_run_file: Pat
     assert only_2030 == 0
 
 
+def test_the_drawdown_waits_for_the_paychecks_to_end(report_run_file: Path) -> None:
+    """#404: savings aren't drawn while still earning, so a share never
+    lands in a year with salary."""
+    def only(priced: int) -> Callable[[int], Callable[[int, int], int]]:
+        return lambda year: (lambda ordinary, gains: ordinary + gains) if year == priced \
+            else (lambda ordinary, gains: 0)
+    with sqlite3.connect(report_run_file) as con:
+        base, in_2031 = _drawdown_tax(con, 2030, only(2031), paycheck_years={2031, 2032})
+        _, in_2033 = _drawdown_tax(con, 2030, only(2033), paycheck_years={2031, 2032})
+    assert base
+    assert in_2031 == 0
+    assert in_2033 in (base // 10, base // 10 + 1)
+
+
 def test_a_year_without_a_rate_takes_no_drawdown_tax_off(
     report_run: RunConnection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
