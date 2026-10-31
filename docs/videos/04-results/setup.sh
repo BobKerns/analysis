@@ -88,3 +88,7 @@ demo_run 2026-10-30T091500Z
 sim calendar add transfer 2031-06 Asset_Checking Expense_Living 40000 --description "a new car"
 sim calendar add set-amount 2036-01 living 6500 --description "less travel"
 demo_run 2026-10-30T093000Z
+
+# The chart `sim networth --graph` would draw, for the networth-graph slide
+# (VHS records the terminal's text, not its pictures).
+sim networth --graph-file ~/networth.png > /dev/null

@@ -36,21 +36,93 @@ tax, reports on income, spending and tax, and the notebooks' charts.
 template = "card"
 heading = "Ways to look at a run"
 body = [
+  "Net worth, after tax and in today's dollars",
+  "Charts with --graph; tables for the numbers",
   "Runs: one file each, the latest unless you say",
   "sim explain: did it do what you expected?",
-  "Net worth, after tax and in today's dollars",
   "Reports: an account, income, spending, gains, tax",
-  "The notebooks: the same views, as charts",
+  "The notebooks: the charts, to explore",
   "Asking an AI",
 ]
 speaker = "bill"
 ```
 
-Every run is saved, so you can look at it as often as you like. Sim
-explain gives the quick answer to "did it do what I expected?". Net worth
-comes after tax and in today's dollars. Reports break it down: one account,
-income, spending, gains and tax. The notebooks show the same views as
-charts you can change. And you can ask an AI about a run, in plain words.
+First, the big picture: net worth, after tax and in today's dollars, as a
+chart and then as numbers. Every run is saved, so you can look at it as
+often as you like, and sim explain gives the quick answer to "did it do
+what I expected?". Reports break it down: one account, income, spending,
+gains and tax. Each one draws a chart too. The notebooks put those charts
+in your browser, where you can click and zoom to explore. And you can ask
+an AI about a run, in plain words.
+
+## Scene `networth-graph`: Net worth at a glance
+
+```slide
+template = "figure"
+heading = "sim networth --graph"
+demo_image = "home/networth.png"
+```
+
+Sim networth dash dash graph draws the base plan from today to 2060. The
+solid line is net worth after tax, in today's dollars; the dashed line
+beside it is the total before tax, and the gap between them is tax the
+money still owes. It climbs while they work, dips once the paychecks stop
+and the car is bought, then grows again. In a terminal that can't show
+pictures, it saves the chart as a file instead. Every report takes dash
+dash graph the same way.
+
+## Scene `after-tax`: What net worth means here
+
+```slide
+template = "card"
+heading = "Net worth, as you can spend it"
+body = [
+  "After tax: less the tax the money still owes",
+  "IRA withdrawals and unrealized gains are taxed when spent",
+  "In today's dollars: inflation taken out",
+  "--pre-tax and --dollars nominal show the raw totals",
+]
+speaker = "alice"
+```
+
+Why after tax? A dollar in Alice's traditional IRA isn't a dollar she can spend: tax
+comes out when she takes it. The same goes for the gain in their brokerage
+stocks. So the simulator shows net worth after the tax it still owes,
+priced as if the money were drawn down over ten years at that year's
+brackets. And it shows today's dollars, with inflation taken out, so 2060
+compares fairly with 2026. Two options show the raw totals instead.
+
+## Scene `networth`: Net worth by year
+
+```tape
+Set FontSize 20
+Hide
+Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
+Enter
+Type "cd ~/retirement/data/sim && clear"
+Enter
+Sleep 2s
+Show
+Sleep 500ms
+Type "sim networth"
+Sleep 400ms
+Enter
+Wait
+Sleep 14s
+Type "clear && sim networth --pre-tax --dollars nominal"
+Sleep 400ms
+Enter
+Wait
+Sleep 9s
+```
+
+Without dash dash graph, sim networth shows the numbers behind the chart, at each year end. Net worth is everything they own, less
+what they owe. Deferred tax is what the IRA and the gains still owe, and
+unpaid tax is a finished year's bill, due the next April. What's left is
+after tax: about one point eight million dollars in 2060, in today's money.
+With dash dash pre tax and nominal dollars, the same run shows the plain
+total in future dollars: more than five point eight million. Same plan;
+the first number is the one to plan with.
 
 ## Scene `runs`: Every run is a file
 
@@ -115,59 +187,6 @@ latest run, with no name given, has no negative balances at all.
 > Production note: the tail keeps the second explain to its last lines;
 > the first one showed the rest.
 
-## Scene `after-tax`: What net worth means here
-
-```slide
-template = "card"
-heading = "Net worth, as you can spend it"
-body = [
-  "After tax: less the tax the money still owes",
-  "IRA withdrawals and unrealized gains are taxed when spent",
-  "In today's dollars: inflation taken out",
-  "--pre-tax and --dollars nominal show the raw totals",
-]
-speaker = "alice"
-```
-
-A dollar in Alice's traditional IRA isn't a dollar she can spend: tax
-comes out when she takes it. The same goes for the gain in their brokerage
-stocks. So the simulator shows net worth after the tax it still owes,
-priced as if the money were drawn down over ten years at that year's
-brackets. And it shows today's dollars, with inflation taken out, so 2060
-compares fairly with 2026. Two options show the raw totals instead.
-
-## Scene `networth`: Net worth by year
-
-```tape
-Set FontSize 20
-Hide
-Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
-Enter
-Type "cd ~/retirement/data/sim && clear"
-Enter
-Sleep 2s
-Show
-Sleep 500ms
-Type "sim networth"
-Sleep 400ms
-Enter
-Wait
-Sleep 14s
-Type "clear && sim networth --pre-tax --dollars nominal"
-Sleep 400ms
-Enter
-Wait
-Sleep 9s
-```
-
-Sim networth shows each year end. Net worth is everything they own, less
-what they owe. Deferred tax is what the IRA and the gains still owe, and
-unpaid tax is a finished year's bill, due the next April. What's left is
-after tax: about one point eight million dollars in 2060, in today's money.
-With dash dash pre tax and nominal dollars, the same run shows the plain
-total in future dollars: more than five point eight million. Same plan;
-the first number is the one to plan with.
-
 ## Scene `history`: One account over time
 
 ```tape
@@ -230,7 +249,8 @@ In 2030, Bill's last year at work, salary is still the biggest part. In
 investment counts the growth of what they hold, sold or not. Without dash
 dash year, it's a table of every year that follows each one from income,
 through tax and spending, down to the change in net worth. It's wide, so
-we'll see it in a notebook.
+that one is best as a chart: dash dash graph draws it, and the notebook
+lets you explore it.
 
 ## Scene `expenses`: Spending and gains
 
@@ -305,8 +325,8 @@ body = [
 speaker = "bill"
 ```
 
-The same views, and a few more, come as notebooks: pages in your browser
-with charts and controls. Analysis jupyter opens them. You don't write any
+For a more interactive way to explore, the same views, and a few more,
+come as notebooks: pages in your browser with charts and controls. Analysis jupyter opens them. You don't write any
 code: run the notebook, pick from the menus, and the charts follow.
 
 ## Scene `nb-networth`: Net worth, as a chart
