@@ -4,6 +4,23 @@ episode = "Video 1"
 title = "What it does, and how it works"
 subtitle = "A tour with Alice and Bill"
 data = "prototype_data"
+
+[youtube]
+title = "Introduction"
+summary = """
+A tour of the retirement simulator with Alice and Bill: the questions it \
+helps answer, how it models a household month by month, and how one plan \
+becomes many possible futures."""
+contents = [
+  "The questions it helps answer: when to retire, how much to spend, which investments, when to sell the house",
+  "A month-by-month model of the household, with each year's taxes",
+  "Your data stays yours: plain text files on your own computer, with their history",
+  "Scenarios that build on each other",
+  "Running a plan, and a first look at the result (sim run, sim explain)",
+  "Net worth, after tax (sim networth)",
+  "Reports, comparisons and notebooks",
+  "Ensembles: the same plan through many futures (sim ensemble summary)",
+]
 +++
 
 The first video of #366 (issue #367): the questions the simulator answers,

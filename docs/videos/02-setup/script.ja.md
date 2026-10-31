@@ -3,6 +3,25 @@ series = "シミュレーターで考える老後の資金計画"
 episode = "第2回"
 title = "セットアップとインストール"
 subtitle = "何もないところから、自分のデータフォルダーまで"
+
+[youtube]
+title = "セットアップ"
+summary = """
+アリスが、自分のコンピューターでシミュレーターを動かせるようにして、世帯のデータを\
+入れるフォルダーを作ります。1行インストーラーのあるセットアップガイド(英語): \
+https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md"""
+contents = [
+  "1行でインストール。Mac、Linux、WindowsのWSLで",
+  "インストーラーがすること",
+  "グラフを表示できるターミナル",
+  "二つのフォルダー: コードと、あなたのデータ",
+  "データフォルダーを作る(sim init)",
+  "その中身",
+  "データを有効にする。今のシナリオ(sim switch)",
+  "自分のプラン(sim scenario create)",
+  "ノートブック(analysis jupyter)",
+  "作業を保存して、どの実行も再現できるように(sim run、sim commit)",
+]
 +++
 
 The Japanese narration of video 2 (#374). Scenes match `script.md` by id;
