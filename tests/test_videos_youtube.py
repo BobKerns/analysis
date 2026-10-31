@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import py_compile
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -236,6 +237,7 @@ def test_every_published_repo_video_has_a_description(repo_root: Path) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
 def test_build_writes_the_scene_lengths_and_the_description(videos_root: Path, repo_root: Path,
                                                              tmp_path: Path) -> None:
     from playwright.sync_api import Error
