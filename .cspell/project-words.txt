@@ -119,6 +119,7 @@ fstat
 ftruncate
 FTSE
 GAAP
+getbasetemp
 geteuid
 gethostname
 getpid

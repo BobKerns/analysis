@@ -48,8 +48,15 @@ def is_data_repo(root: Path) -> bool:
     return (root / "sim" / "persons.csv").exists()
 
 
+# Files an OS leaves in a folder it shows (Finder, Explorer): never part of
+# the templates, though a checkout's templates/ may hold them.
+_OS_JUNK = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
+
 def _copied(relative: Path) -> bool:
     if relative.as_posix() in _NOT_COPIED:
+        return False
+    if relative.name in _OS_JUNK or relative.name.startswith("._"):
         return False
     parts = relative.parts
     if parts[0] == "scenarios" and len(parts) > 1 and parts[1].startswith(TEMPLATE_PREFIX):

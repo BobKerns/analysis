@@ -295,6 +295,30 @@ def test_lot_picker_offers_only_the_shown_recipes_lots(
 
 
 @pytest.mark.slow
+def test_a_disabled_default_recipe_still_offers_its_lots(
+    two_lot_ensemble_runs_dir: Path, test_data_dir: Path,
+) -> None:
+    """A widget keeps a disabled recipe that is its default (#300); the
+    shared controls must still know that recipe's lots (#401)."""
+    from analysis.sim.loader import set_scenario_enabled
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble", rename_lot="a")
+    (test_data_dir / "scenarios" / "base_ensemble").mkdir()
+    set_scenario_enabled(test_data_dir, "base_ensemble", enabled=False)
+    # As ensemble.ipynb builds them: one set of controls, from the data repo.
+    controls = ensemble_widgets.EnsembleControls(
+        data_dir=test_data_dir, runs_dir=two_lot_ensemble_runs_dir)
+    fan = ensemble_widgets.ensemble_widget(
+        data_dir=test_data_dir, runs_dir=two_lot_ensemble_runs_dir, controls=controls,
+        default="base_ensemble")
+    dropdown, row, _loading, _out = fan.children
+    assert dropdown.value == "base_ensemble"
+    row.controls.account_picker.account_picker.value = BROKERAGE
+    assert [label for label, _ in row.lot_picker.picker.options] == [ALL_LOTS, "renamed", "b"]
+
+
+@pytest.mark.slow
 def test_compare_lots_are_the_baseline_and_variants_own(
     two_lot_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

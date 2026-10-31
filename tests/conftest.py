@@ -89,9 +89,17 @@ _ANALYSIS_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _no_ambient_analysis_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_ambient_analysis_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory,
+) -> None:
     for name in _ANALYSIS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    # Without $ANALYSIS_DATA_DIR the notebook widgets fall back to the
+    # checkout's data/shared/sim: on a dev machine, the real data repo,
+    # whose disabled scenarios once hid a test's recipe (#401).
+    monkeypatch.setattr(
+        "analysis.sim.notebook_ui.pickers._checkout_data_dir",
+        lambda: tmp_path_factory.getbasetemp() / "no-checkout-data" / "sim")
     # No test starts or waits on a background builder (#300) unless it
     # turns the builder back on itself.
     monkeypatch.setenv("ANALYSIS_BUILDER", "off")
