@@ -10,8 +10,9 @@ among ``scenarios``. A scenario with no accounts is a valid compare point
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 
@@ -62,7 +63,48 @@ def comparability(
 
 # ---------- what differs: rules and calendar events ----------
 
-RULE_COMPARE_COLUMNS = ["amount_cents", "start", "end", "series", "cadence", "tax_character"]
+def _dollars(cents: Any) -> str:
+    return f"${int(cents) / 100:,.2f}"
+
+
+def _percent(micros: Any) -> str:
+    return f"{int(micros) / 10_000:g}%"
+
+
+def _whole(value: Any) -> str:
+    return str(int(value))
+
+
+RULE_COMPARE_COLUMNS: dict[str, tuple[str, Callable[[Any], str] | None]] = {
+    # column: (the field's name in the table, how a value shows)
+    "amount_rule_kind": ("kind", None),
+    "from_name": ("from", None),
+    "to_name": ("to", None),
+    "amount_cents": ("amount", _dollars),
+    "rate_micros": ("rate", _percent),
+    "claim_age": ("claim_age", _whole),
+    "person": ("person", None),
+    "series": ("series", None),
+    "base_date": ("base_date", None),
+    "inflation_cadence": ("inflation_cadence", None),
+    "cadence": ("cadence", None),
+    "month_of_year": ("month_of_year", _whole),
+    "start": ("start", None),
+    "end": ("end", None),
+    "tax_character": ("tax_character", None),
+    "tax_year": ("tax_year", _whole),
+    "priority": ("priority", _whole),
+    "ytd_amount": ("ytd_amount", _dollars),
+    "ytd_preroll": ("ytd_preroll", _whole),
+    "params_json": ("params", None),
+    "tags": ("tags", None),
+}
+"""Every scheduled-rule field a run's behavior follows, in the order the
+differences list them (#376: a changed claim age has to show)."""
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (not isinstance(value, str) and pd.isna(value)) or value == ""
 
 
 def rule_differences(
@@ -70,26 +112,31 @@ def rule_differences(
 ) -> pd.DataFrame:
     """Scheduled rules as they stand at the end of each run, rows (rule,
     field), one column per scenario, only where a variant differs from the
-    baseline; a rule a scenario lacks is missing there. A calendar event
+    baseline, each value as it reads (dollars, a percent); a rule a scenario
+    lacks, or a field it leaves blank, is missing there. A calendar event
     that edits a rule mid-run shows here as its end state."""
+    columns = list(RULE_COMPARE_COLUMNS)
     rules = {
         name: connections[name].items("scheduled")
-            .set_index("name").reindex(columns=RULE_COMPARE_COLUMNS)
+            .set_index("name").reindex(columns=columns)
         for name in scenarios
     }
     index = sorted(set().union(*(frame.index for frame in rules.values())))
     rules = {name: frame.reindex(index) for name, frame in rules.items()}
-    base_rules = rules[baseline]
-    differs = pd.DataFrame(False, index=index, columns=RULE_COMPARE_COLUMNS)
-    for name in scenarios:
-        if name != baseline:
-            other = rules[name]
-            differs |= (base_rules != other) & ~(base_rules.isna() & other.isna())
-    rows = [
-        {"rule": rule, "field": field, **{name: rules[name].at[rule, field] for name in scenarios}}
-        for rule in index if differs.loc[rule].any()
-        for field in RULE_COMPARE_COLUMNS if differs.at[rule, field]
-    ]
+
+    def shown(name: str, rule: str, column: str) -> Any:
+        value = rules[name].at[rule, column]
+        if _blank(value):
+            return None
+        formatter = RULE_COMPARE_COLUMNS[column][1]
+        return formatter(value) if formatter else str(value)
+
+    rows = []
+    for rule in index:
+        for column in columns:
+            values = {name: shown(name, rule, column) for name in scenarios}
+            if any(values[name] != values[baseline] for name in scenarios):
+                rows.append({"rule": rule, "field": RULE_COMPARE_COLUMNS[column][0], **values})
     if not rows:
         return pd.DataFrame(
             columns=list(scenarios),

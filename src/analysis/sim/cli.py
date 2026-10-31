@@ -3602,12 +3602,7 @@ def compare_command(
             if rules.empty:
                 click.echo("  none")
             else:
-                money = rules.index.get_level_values("field") == "amount_cents"
-                cells = rules.astype(object)
-                cells[money] = cells[money].map(
-                    lambda v: v if pd.isna(v) else f"${int(v) / 100:,.2f}")
-                cells = cells.rename(index={"amount_cents": "amount"}, level="field")
-                _echo_frame(cells.map(_cell))
+                _echo_frame(rules.map(_cell))
             events = compare.event_differences(connections, scenarios)
             click.echo("\nCalendar events that differ:")
             if events.empty:
