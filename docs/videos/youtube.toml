@@ -1,0 +1,45 @@
+# What every video on the channel shares: settings, and the wording around
+# each video's own [youtube] summary and list (#395). See README.md,
+# "Publishing on YouTube".
+
+# Applied when a video is uploaded. A later publish only updates titles,
+# descriptions and tags, so privacy is changed in Studio after a look.
+privacy = "private"
+category_id = 27  # Education
+made_for_kids = false
+license = "youtube"
+embeddable = true
+
+# Every video's tags; a language's and a video's own come after these.
+tags = ["retirement planning", "retirement simulator", "financial planning", "Monte Carlo", "Python"]
+
+# Per language. {number} is the video folder's prefix (03, 02a); {title} is
+# the script's [youtube] title, else its front matter title. In previous and
+# next, {episode} and {title} are the neighbor's; its link follows once it's
+# up. version_label introduces the link to this language's version from the
+# other languages' descriptions.
+[en]
+title = "Retirement Simulator: {number}—{title}"
+playlist = "Retirement Simulator Guide"
+version_label = "English version"
+in_this_video = "In this video:"
+chapters = "Chapters:"
+first_chapter = "Introduction"
+footer = "Alice and Bill are made-up people, and their numbers are examples, not advice."
+previous = "Previous: {episode}, {title}"
+next = "Next: {episode}, {title}"
+
+[ja]
+# The English prefix stays, so both languages sort together on the channel.
+title = "Retirement Simulator: {number}—{title}"
+playlist = "Retirement Simulator Guide (日本語)"
+version_label = "日本語版"
+in_this_video = "この回の内容:"
+chapters = "チャプター:"
+first_chapter = "はじめに"
+footer = """
+画面のコマンドと出力は英語のままです。日本語字幕があります。
+アリスとビルは架空の人物で、金額は例です。助言ではありません。"""
+previous = "前回: {episode} {title}"
+next = "次回: {episode} {title}"
+tags = ["老後資金", "資金計画", "シミュレーション"]

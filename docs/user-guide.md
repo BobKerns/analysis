@@ -10,6 +10,11 @@ have a data repo. If you don't, start one with `sim init DIR`, which asks who yo
 are and builds it from the code repository's templates ([templates/README.md](../templates/README.md)).
 The one-line installer ([SETUP.md](SETUP.md)) does that for you.
 
+**Videos.** The *Retirement Simulator Guide* walks through the same ground
+with Alice and Bill, starting from what the simulator does and how to install
+it: [the guide's playlists on YouTube](https://www.youtube.com/@bobdeadbeef/playlists),
+in English and in Japanese (日本語).
+
 For the reasons behind these designs, see the documents in
 `docs/architecture/`. [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) lists every CSV column in detail. This guide
 does not repeat all of that; it points to [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) when you need the full list.
