@@ -7,7 +7,8 @@
 ## Install with one line
 
 If you don't have the code yet, or don't use git, paste this into a terminal
-(macOS, Linux or WSL):
+(macOS, Linux or WSL; on Windows, [set up WSL](#windows-set-up-wsl-first)
+first):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
@@ -24,6 +25,47 @@ it to another branch, which it says) and re-runs setup. Without a terminal,
 pass the answers as options, `... | sh -s -- --yes --id alice --display
 "Alice Example" --birthdate 1960-05-01 --filing-status MFJ`; the comment at
 the top of [`scripts/install.sh`](../scripts/install.sh) lists them all.
+
+## Windows: set up WSL first
+
+The simulator runs on Linux and macOS. On Windows it runs in WSL, the Windows
+Subsystem for Linux, which runs Ubuntu inside Windows 11, or Windows 10
+version 2004 or later. Video 2a (`docs/videos/02a-wsl`) walks through this.
+
+1. Right-click Start and choose **Terminal (Admin)** (on Windows 10,
+   **Windows PowerShell (Admin)**), then run `wsl --install`. Restart when
+   it asks.
+2. Ubuntu opens after the restart and asks for a Linux user name (one word,
+   lowercase; it needn't match your Windows name) and a password. Nothing
+   shows as you type the password. Linux asks for it with `sudo`, and the
+   installer needs it once, to install a compiler.
+3. Open Ubuntu again from the Start menu, or from Windows Terminal's
+   new-tab arrow. In Windows Terminal's Settings, **Startup**, **Default
+   profile** makes Ubuntu the tab it opens.
+4. Paste the install line above into the Ubuntu terminal (Ctrl+V in Windows
+   Terminal).
+
+Keep the code and data in your Linux home folder, where the installer puts
+them, not under `/mnt/c` (your C: drive): it's much faster, and git behaves.
+To reach them from Windows, click **Linux** at the bottom of File Explorer's
+left side, or type `\\wsl$\Ubuntu\home\<your Linux name>` in its address
+bar. From Ubuntu, `explorer.exe .` opens the current folder in File Explorer.
+
+For the notebooks, and a terminal that shows `--graph` charts, install
+[VS Code](https://code.visualstudio.com) in Windows, add its **WSL**
+extension, and open the code from Ubuntu with `code ~/retirement/analysis`.
+Turn on **Terminal › Integrated: Enable Images** in its settings. Windows
+Terminal doesn't take the image protocols `--graph` uses, so there it saves
+the chart as a PNG and prints its path (see
+[Drawing chain flowcharts](#drawing-chain-flowcharts-in-the-terminal)).
+`analysis jupyter` works too: if no browser opens, Ctrl+click the link it
+prints.
+
+If `wsl --install` fails with a message about virtualization, it is turned
+off in the computer's firmware (BIOS or UEFI) settings, often called Intel
+VT-x, AMD-V or SVM; turn it on there. Microsoft's
+[WSL install guide](https://learn.microsoft.com/windows/wsl/install) has the
+details.
 
 ## The setup script
 
