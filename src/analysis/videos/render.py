@@ -273,6 +273,12 @@ def _sandbox(data: Path, theme: Theme, root: Path) -> Path:
                 *([f"export ANALYSIS_CHROMIUM={chromium}"] if (chromium := chromium_path()) else []),
                 "export ANALYSIS_IMAGE_PROTOCOL=iterm",
                 "unset PROMPT_COMMAND HISTFILE",
+                # A build run from an activated shell (activate-analysis) passes
+                # its user, repo and venv down; in a tape they'd name a person the
+                # demo's persons.csv lacks (so activate-analysis asks who you
+                # are) and show the household's repo name in the prompt.
+                "unset ANALYSIS_USER ANALYSIS_DATA_REPO_NAME ANALYSIS_REPO_DIR "
+                "VIRTUAL_ENV VIRTUAL_ENV_PROMPT",
                 f"PS1='\\[\\e[38;2;{accent}m\\]{term['prompt']}\\[\\e[0m\\] $ '",
                 "",
             ]

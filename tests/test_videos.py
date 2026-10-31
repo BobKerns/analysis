@@ -293,6 +293,22 @@ def test_prepare_demo_runs_setup_and_commits_what_it_leaves(videos_root: Path, t
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_the_tapes_environment_drops_the_builders_activation(
+    videos_root: Path, tmp_path: Path, demo_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build from an activated shell mustn't hand its user or repo name to
+    the tapes (activate-analysis would ask who you are, on camera)."""
+    for name in ("ANALYSIS_USER", "ANALYSIS_DATA_REPO_NAME", "ANALYSIS_REPO_DIR", "VIRTUAL_ENV"):
+        monkeypatch.setenv(name, "from-the-builder")
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "scenario.csv").write_text("name\nbase\n")
+    store = render.prepare_demo(data, None, themes.load(videos_root), tmp_path / "store")
+    shown = render.run(["bash", "-c", f"source {store / '.videorc'} && env"], cwd=tmp_path).stdout
+    assert "from-the-builder" not in shown
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
 def test_prepare_demo_reports_a_failing_setup(videos_root: Path, tmp_path: Path, demo_root: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
