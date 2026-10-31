@@ -458,6 +458,12 @@ Two of Google's limits:
 - The default quota, 10,000 units a day, covers only a few uploads (an
   upload is by far the costliest call). Updating descriptions is cheap.
 
+The upload's settings (license, made for kids, embedding, synthetic
+content, notifying subscribers, category) come from `youtube.toml`. A few
+others the API can't set, such as age restriction, paid promotion,
+caption certification and remixing; `youtube.toml` lists them, to set
+once in Studio's upload defaults.
+
 The API can't do cards, end screens, or a translation as a second audio
 track. Each language is its own video, and its description links to the
 others; add a card to the other language's video in Studio if you want one.

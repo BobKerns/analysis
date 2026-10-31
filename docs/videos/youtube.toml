@@ -5,10 +5,23 @@
 # Applied when a video is uploaded. A later publish only updates titles,
 # descriptions and tags, so privacy is changed in Studio after a look.
 privacy = "private"
-category_id = 27  # Education
+# Education (27) suits how-to series; YouTube uses it as a hint for
+# recommendations and search. Others: 26 Howto & Style, 28 Science & Technology.
+category_id = 27
 made_for_kids = false
-license = "youtube"
+license = "creativeCommon"  # Creative Commons Attribution; "youtube" is the standard license
 embeddable = true
+# Altered or synthetic content: YouTube asks for it on realistic content a
+# viewer could mistake for real people, places or events. The voice is
+# synthesized, but it narrates drawn characters and a real terminal.
+contains_synthetic_media = false
+# Only takes effect for a video that goes up public; a private upload
+# notifies no one, and Studio asks again when you publish it.
+notify_subscribers = true
+# The API can't set these; set them once in Studio, Settings, Upload
+# defaults, and check them on the first upload: age restriction (none),
+# paid promotion (no), automatic places (off), caption certification
+# (never aired on U.S. television), remixing (not allowed).
 
 # Titles must show whole: YouTube cuts long ones off in lists, on phones
 # and beside a playing video. `check` refuses a title wider than this, with

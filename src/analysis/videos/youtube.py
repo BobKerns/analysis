@@ -73,6 +73,8 @@ class Metadata:
     made_for_kids: bool
     license: str
     embeddable: bool
+    contains_synthetic_media: bool
+    notify_subscribers: bool
     playlist: str | None
 
     def snippet(self) -> dict[str, Any]:
@@ -91,6 +93,7 @@ class Metadata:
             "selfDeclaredMadeForKids": self.made_for_kids,
             "license": self.license,
             "embeddable": self.embeddable,
+            "containsSyntheticMedia": self.contains_synthetic_media,
         }
 
 
@@ -339,6 +342,8 @@ def metadata(s: Script, lengths: Sequence[tuple[str, float]], *, channel: dict[s
         made_for_kids=bool(channel.get("made_for_kids", False)),
         license=channel.get("license", "youtube"),
         embeddable=bool(channel.get("embeddable", True)),
+        contains_synthetic_media=bool(channel.get("contains_synthetic_media", False)),
+        notify_subscribers=bool(channel.get("notify_subscribers", True)),
         playlist=words.get("playlist") or None,
     )
     _check_limits(meta, where, int(channel.get("title_width", MAX_TITLE)))
@@ -507,7 +512,10 @@ def publish(
             log(f"{folder.name} [{lang}]: uploading {b.video.name}...")
             request = {
                 "secrets": secrets,
-                "upload": {"file": str(b.video), "status": meta.status()},
+                "upload": {"file": str(b.video), "status": meta.status(), "notify": meta.notify_subscribers,
+                           # The build's date: when its terminal scenes were recorded, near enough.
+                           "recording_date": datetime.fromtimestamp(b.video.stat().st_mtime, UTC)
+                           .strftime("%Y-%m-%dT00:00:00Z")},
                 "snippet": meta.snippet(),
                 "thumbnail": str(b.thumbnail),
                 "captions": {"file": str(b.captions), "language": lang},

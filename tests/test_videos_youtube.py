@@ -146,7 +146,10 @@ def test_publish_uploads_then_links_the_languages(videos_root: Path, tmp_path: P
 
     uploads = [r for r in api.requests if r.get("upload")]
     assert [r["captions"]["language"] for r in uploads] == ["en", "ja"]
-    assert uploads[0]["upload"]["status"]["privacyStatus"] == "private"
+    status = uploads[0]["upload"]["status"]
+    assert status["privacyStatus"] == "private" and status["license"] == "creativeCommon"
+    assert status["containsSyntheticMedia"] is False and uploads[0]["upload"]["notify"] is True
+    assert uploads[0]["upload"]["recording_date"].endswith("T00:00:00Z")
     assert uploads[1]["playlist"] == "Retirement Simulator (日本語)"
     updates = {r["video"]: r["snippet"]["description"] for r in api.requests if not r.get("upload")}
     assert "日本語版: https://youtu.be/id2" in updates["id1"]

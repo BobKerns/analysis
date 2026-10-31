@@ -10,7 +10,8 @@ depend on Google's client libraries.
 Reads one JSON request on stdin:
     {"secrets": dir holding client_secret.json (and token.json, written here),
      "video": id of a video already up, or absent with "upload",
-     "upload": {"file": mp4, "status": {...}},     # optional: a new video
+     "upload": {"file": mp4, "status": {...},      # optional: a new video
+                "notify": bool, "recording_date": "YYYY-MM-DDT00:00:00Z"},
      "snippet": {...},                              # title, description, ...
      "thumbnail": jpg, "captions": {"file": srt, "language": "en"},
      "playlist": "playlist title"}                  # optional, uploads only
@@ -65,9 +66,11 @@ def credentials(secrets: Path) -> Credentials:
 
 
 def upload(yt, request: dict) -> str:
-    body = {"snippet": request["snippet"], "status": request["upload"]["status"]}
+    body = {"snippet": request["snippet"], "status": request["upload"]["status"],
+            "recordingDetails": {"recordingDate": request["upload"]["recording_date"]}}
     media = MediaFileUpload(request["upload"]["file"], mimetype="video/mp4", chunksize=CHUNK, resumable=True)
-    call = yt.videos().insert(part="snippet,status", body=body, media_body=media, notifySubscribers=False)
+    call = yt.videos().insert(part="snippet,status,recordingDetails", body=body, media_body=media,
+                              notifySubscribers=request["upload"]["notify"])
     response = None
     while response is None:
         status, response = call.next_chunk(num_retries=5)
