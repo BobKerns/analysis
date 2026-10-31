@@ -23,6 +23,7 @@ The first run opens a browser to sign in to the channel's Google account
 client file.
 """
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -103,24 +104,30 @@ def add_to_playlist(yt, video: str, title: str) -> None:
 
 def main() -> None:
     request = json.load(sys.stdin)
+    answer: dict = {"video": request.get("video")}
+    # Only the answer goes to stdout: the sign-in flow and the libraries
+    # print there too (the sign-in URL above all), so send that to stderr.
+    with contextlib.redirect_stdout(sys.stderr):
+        try:
+            run(request, answer)
+        except (HttpError, SystemExit) as e:
+            # The video may be up already: say so, so its id is kept.
+            answer["error"] = f"{e.resp.status}: {e.reason}" if isinstance(e, HttpError) else str(e)
+    print(json.dumps(answer))
+    sys.exit(1 if answer.get("error") else 0)
+
+
+def run(request: dict, answer: dict) -> None:
     yt = build("youtube", "v3", credentials=credentials(Path(request["secrets"])), cache_discovery=False)
-    video = request.get("video")
-    try:
-        if request.get("upload"):
-            video = upload(yt, request)
-            yt.thumbnails().set(videoId=video, media_body=MediaFileUpload(request["thumbnail"],
-                                                                          mimetype="image/jpeg")).execute()
-            captions(yt, video, request["captions"]["file"], request["captions"]["language"])
-            if request.get("playlist"):
-                add_to_playlist(yt, video, request["playlist"])
-        else:
-            yt.videos().update(part="snippet", body={"id": video, "snippet": request["snippet"]}).execute()
-    except (HttpError, SystemExit) as e:
-        # The video may be up already: say so, so its id is kept.
-        error = f"{e.resp.status}: {e.reason}" if isinstance(e, HttpError) else str(e)
-        print(json.dumps({"video": video, "error": error}))
-        sys.exit(1)
-    print(json.dumps({"video": video}))
+    if request.get("upload"):
+        answer["video"] = video = upload(yt, request)
+        yt.thumbnails().set(videoId=video, media_body=MediaFileUpload(request["thumbnail"],
+                                                                      mimetype="image/jpeg")).execute()
+        captions(yt, video, request["captions"]["file"], request["captions"]["language"])
+        if request.get("playlist"):
+            add_to_playlist(yt, video, request["playlist"])
+    else:
+        yt.videos().update(part="snippet", body={"id": answer["video"], "snippet": request["snippet"]}).execute()
 
 
 if __name__ == "__main__":

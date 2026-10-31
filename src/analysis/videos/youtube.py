@@ -398,11 +398,19 @@ def run_worker(request: dict[str, Any], repo: Path) -> dict[str, Any]:
     # the upload's progress.
     result = subprocess.run(["uv", "run", "--quiet", "--script", str(worker)], input=json.dumps(request),
                             stdout=subprocess.PIPE, text=True, check=False)
+    return worker_answer(result.stdout, result.returncode)
+
+
+def worker_answer(stdout: str, returncode: int) -> dict[str, Any]:
+    """The worker's answer: the last line it printed, which is JSON."""
+    lines = [line for line in stdout.splitlines() if line.strip()]
     try:
-        answer = json.loads(result.stdout)
+        answer = json.loads(lines[-1]) if lines else {}
     except json.JSONDecodeError:
-        answer = {"video": None, "error": result.stdout.strip() or "the YouTube worker failed (see above)"}
-    if result.returncode and not answer.get("error"):
+        answer = {}
+    if not isinstance(answer, dict) or "video" not in answer:
+        answer = {"video": None, "error": stdout.strip() or "the YouTube worker failed (see above)"}
+    if returncode and not answer.get("error"):
         answer["error"] = "the YouTube worker failed (see above)"
     return answer
 

@@ -250,3 +250,10 @@ def test_build_writes_the_scene_lengths_and_the_description(videos_root: Path, r
     assert result.description.read_text().startswith("Retirement Simulator: 01—A video\n\nWhat it shows.")
     # And publish finds that build.
     assert youtube.built(scripts.load(folder), tmp_path / "out").lengths == [tuple(x) for x in lengths]
+
+
+def test_worker_answer_is_its_last_line() -> None:
+    # A library printing before the answer (the sign-in prompt did) doesn't hide the id.
+    assert youtube.worker_answer('Sign in: https://x\n{"video": "abc"}\n', 0) == {"video": "abc"}
+    assert youtube.worker_answer('{"video": "abc", "error": "403: quota"}\n', 1)["error"] == "403: quota"
+    assert youtube.worker_answer("Traceback ...\n", 1) == {"video": None, "error": "Traceback ..."}
