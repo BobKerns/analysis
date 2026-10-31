@@ -3,6 +3,22 @@ series = "シミュレーターで考える老後の資金計画"
 episode = "第2a回"
 title = "ウィンドウズ: WSL の準備"
 subtitle = "シミュレーターのための、ウィンドウズ上のリナックス"
+
+[youtube]
+title = "WindowsでWSL"
+summary = """
+Windowsの人向け: アリスが、Windowsに組み込まれたLinuxであるWSLをオンにして、\
+第2回の出発点になるターミナルを用意します。セットアップガイド(英語): \
+https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md#windows-set-up-wsl-first"""
+contents = [
+  "なぜWSLか",
+  "オンにする(wsl --install)",
+  "Linuxのユーザー名とパスワード",
+  "Ubuntuをもう一度開く",
+  "Linuxのファイルを、エクスプローラーとLinuxから",
+  "WSL拡張機能付きのVS Codeと、ターミナルのグラフ",
+]
+tags = ["WSL", "Windows"]
 +++
 
 The Japanese narration of video 2a (#389). Scenes match `script.md` by id.
@@ -10,8 +26,6 @@ The drawn windows keep their English screen text, as Windows shows it to
 most viewers of this channel; their headings and notes are translated.
 Commands and screen names are spelled out for the voice with
 `{shown|said}`, so the captions keep them as typed.
-
-YouTube title: "ウィンドウズで WSL" (short, so lists don't truncate it).
 
 ## Scene `title`: タイトル
 

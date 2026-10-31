@@ -4,15 +4,32 @@ episode = "Video 2a"
 title = "Windows: getting WSL ready"
 subtitle = "A Linux terminal on Windows, for the simulator"
 data = "prototype_data"
+
+[youtube]
+title = "WSL for Windows"
+summary = """
+For Windows only: Alice turns on WSL, the Linux built into Windows, and \
+gets the terminal that video 2 starts from. Setup guide: \
+https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md#windows-set-up-wsl-first"""
+contents = [
+  "Why WSL",
+  "Turning it on (wsl --install)",
+  "Your Linux user name and password",
+  "Opening Ubuntu again",
+  "Your Linux files, from File Explorer and from Linux",
+  "VS Code with the WSL extension, and charts in its terminal",
+]
+tags = ["WSL", "Windows"]
+# A side trip for Windows viewers before video 2: it leads there, and
+# video 2 goes on to video 3 without it.
+previous = ""
+next = "02-setup"
 +++
 
 A companion to video 2 (issue #389, part of #366), for Windows viewers only:
 turning on WSL, making the Linux user, finding the terminal and the files
 again, and VS Code. It ends where video 2's install scene begins, so Mac and
 Linux viewers never sit through it.
-
-YouTube title: "WSL for Windows". Kept short so lists don't truncate it; the
-title card's longer title is fine on the video itself.
 
 The tapes record a Linux terminal, and nothing else, so the Windows screens
 are drawn by the `window` slide template from the text in each slide block:

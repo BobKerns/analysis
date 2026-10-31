@@ -6,6 +6,9 @@ subtitle = "From nothing to a data folder of your own"
 data = "prototype_data"
 
 [youtube]
+# Video 2a (WSL) is a side trip from here, for Windows viewers; the series
+# goes on to video 3.
+next = "03-base-scenario"
 summary = """
 Alice gets the simulator running on her own computer, and starts a folder \
 for her household's data. Setup guide, with the one-line installer: \
