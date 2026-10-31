@@ -33,7 +33,7 @@ See [docs/SETUP.md](./docs/SETUP.md) for what it does and the manual steps.
 - CLI tools: `python -m analysis ...`
 - Notebooks: Open and run notebooks in `notebooks/`
 - Videos: the *Retirement Simulator Guide* on YouTube, in
-  [English and Japanese](https://www.youtube.com/@bobdeadbeef/playlists).
+  [English](https://www.youtube.com/playlist?list=PLMCxY-aRDiI4) and [Japanese (日本語)](https://www.youtube.com/playlist?list=PLQhWLzBzvwNM).
   Making them (Docker needed) is in [docs/videos/README.md](./docs/videos/README.md).
 
 Three CLI entry points are installed:
