@@ -198,16 +198,16 @@ Enter
 Sleep 2s
 Show
 Sleep 500ms
-Type "sim all"
+Type "sim all > /dev/null && sim list"
 Sleep 400ms
 Enter
 Wait
-Sleep 6s
+Sleep 8s
 ```
 
 Each what-if needs a run before it can be compared. Sim all runs every
 scenario in the data repo, skipping any whose last run is still up to
-date, and says how each one went.
+date. Sim list then shows a run for each of the four.
 
 ## Scene `compare-graph`: Who comes out ahead
 
@@ -240,24 +240,25 @@ Type "sim compare base work-longer claim-early both --section differences"
 Sleep 400ms
 Enter
 Wait
-Sleep 8s
-Type "clear && sim compare base work-longer claim-early both --section net-worth"
+Sleep 10s
+Type "clear && sim compare base work-longer claim-early both --section net-worth | head -18"
 Sleep 400ms
 Enter
 Wait
-Sleep 14s
+Sleep 12s
 ```
 
 Without the graph, sim compare starts with what differs. Here that's just
 the two rows the what-ifs changed: the salary's end, and the claim age.
 If a row you meant to change isn't listed, the change didn't take. Then
-net worth at each year end, with each what-if's difference from base.
+net worth at each year end, with each what-if's difference from base, the
+first years shown here.
 
 ## Scene `after-tax-dip`: Why working longer starts behind
 
 ```slide
 template = "card"
-heading = "Why working longer starts behind"
+heading = "Why it starts behind"
 body = [
   "After tax, net worth takes off the IRA's future tax",
   "That tax depends on the years the money is spent",
@@ -308,7 +309,7 @@ Bill is working anyway.
 ## Scene `account`: One account, side by side
 
 ```tape
-Set FontSize 22
+Set FontSize 20
 Hide
 Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
 Enter
@@ -340,37 +341,22 @@ Scroll "Baseline:"
 Show
 Sleep 6s
 Scroll "Net worth:"
-Sleep 8s
+Sleep 3s
+Click "CPI-constant"
+Sleep 5s
 Drag "Years:" 2026 2036
-Sleep 7s
+Sleep 5s
+ScrollBy 700
+Sleep 6s
 ```
 
 The scenario comparison notebook does the same, as charts. Pick a
 baseline, and up to four what-ifs; here, it picked base and the other
-three. Below are the rows that differ, then net worth for each, with the
-differences under it. The years slider zooms in: here, the first ten
-years, where the lines cross.
-
-## Scene `nb-account`: One account, as a chart
-
-```notebook
-Set DataDir "home/retirement/data/sim"
-Set Zoom 1.25
-Hide
-Open "scenario_compare.ipynb"
-RunAll
-Scroll "Account:"
-Show
-Sleep 3s
-Select "Account:" "Asset_Brokerage_Joint"
-Sleep 3s
-Select "Lot:" "bonds"
-Sleep 7s
-```
-
-Further down, pick an account to compare its balance: the brokerage
-account, then its bonds. Base sells them off from 2033; the what-ifs with
-Bill's extra salary keep them.
+three. Below are the rows that differ, then net worth for each, in
+nominal or today's dollars. The years slider zooms in: here, the first ten
+years, where the lines cross. Under the chart, break even, as in the
+terminal, and further down, an account picker that compares one account or
+lot, month by month.
 
 ## Scene `ai`: Asking an AI to compare
 
