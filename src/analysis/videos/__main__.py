@@ -11,7 +11,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from analysis.videos import render
+from analysis.videos import notebook, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
 from analysis.videos import youtube
@@ -98,6 +98,8 @@ def check(folders: list[Path]) -> int:
                 for scene in s.scenes:
                     if scene.visual.kind == "slide":
                         render.slide_html(theme, s.meta, scene.visual.fields, lang)
+                    elif scene.visual.kind == "notebook":
+                        notebook.check(notebook.parse(scene.visual.source), repo_root(folder) / "notebooks")
                 youtube.check(s)
                 print(f"ok   {folder.name} [{lang}]: {len(s.scenes)} scenes")
         except scripts.ScriptError as e:
@@ -141,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--lang", default=None, help="language (default: every language the script has)")
     b.add_argument("--out", type=Path, default=None, help="output folder (default: out/videos)")
     b.add_argument("--silent", action="store_true", help="timed silence instead of a voice (fast drafts)")
-    b.add_argument("--rerecord", action="store_true", help="re-record tapes (after a CLI change)")
+    b.add_argument("--rerecord", action="store_true", help="re-record tapes and notebook scenes (after a code change)")
     c = sub.add_parser("check", help="check scripts parse and slides render (no media)")
     c.add_argument("folders", type=Path, nargs="*", help="video folders (default: all in docs/videos)")
     p = sub.add_parser("publish", help="upload built videos to YouTube, or update what's there")

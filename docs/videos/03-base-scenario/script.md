@@ -383,7 +383,7 @@ Sleep 14s
 ```
 
 That's enough to run. Sim run steps through every month to 2060, and
-already it has a warning: in October 2033, checking went below zero. Sim
+already it has a warning: in November 2032, checking went below zero. Sim
 explain gives a first look at the run. At the bottom, the same warning;
 above it, net worth each year. The run kept going, and the plan looks rich:
 net worth keeps climbing, to more than five million dollars by 2060. But

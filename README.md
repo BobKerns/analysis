@@ -1,6 +1,37 @@
 # Financial Analysis and Planning
 
-This project provides tools for personal financial analysis and planning, supporting both CLI and Jupyter notebook workflows. It uses Python 3.14+, uv for package management, and modern Python best practices.
+A retirement simulator for exploring your options and possible futures, at
+home, at your own pace, and for free. A session with a financial planner
+typically gives you one projection from one set of assumptions; here you can
+compare what-if scenarios side by side, and run hundreds of simulated futures
+to see the range of outcomes, not just one number.
+
+- **Guidelines:** check a plan against the 4% rule, or let Guyton-Klinger
+  guardrails adjust your spending
+  ([guard rails](./docs/guides/guard-rails.md),
+  [spending strategies](./docs/user-guide.md#417-spend-less-after-bad-years-spending-strategies)).
+- **Taxes:** federal and state tax worked out each year
+  ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)), including
+  Medicare's IRMAA surcharge
+  ([§4.14](./docs/user-guide.md#414-medicares-income-surcharge-irmaa)),
+  required minimum distributions, Roth conversions
+  ([§4.12](./docs/user-guide.md#412-make-a-new-investment-or-a-roth-conversion)),
+  capital gains, and home sales
+  ([§4.5](./docs/user-guide.md#45-selling-an-asset)).
+- **Future changes to the rules:** a new tax table from the date a law takes
+  effect, or a move to another state
+  ([§4.8](./docs/user-guide.md#48-calendar-for-more-complex-changes)).
+- **A range of outcomes:** ensembles vary returns, inflation, lifespans and
+  more across hundreds of runs
+  ([ensembles](./docs/guides/ensembles.md)).
+
+Watch the *Retirement Simulator Guide* on
+[YouTube](https://www.youtube.com/channel/UCQnUgmsanqEqAj1I-0i7vOA/), in
+[English](https://www.youtube.com/playlist?list=PLMCxY-aRDiI4) and
+[Japanese (日本語)](https://www.youtube.com/playlist?list=PLQhWLzBzvwNM).
+
+The repository also holds an Amazon expense categorizer. Both tools work from
+a CLI and from Jupyter notebooks, on Python 3.14+ with uv.
 
 To read a formatted `.md` file:
 - In Jupyter: right-click on it and select `Open With / Markdown Preview`
@@ -32,9 +63,8 @@ See [docs/SETUP.md](./docs/SETUP.md) for what it does and the manual steps.
 ## Usage
 - CLI tools: `python -m analysis ...`
 - Notebooks: Open and run notebooks in `notebooks/`
-- Videos: the *Retirement Simulator Guide* on YouTube, in
-  [English](https://www.youtube.com/playlist?list=PLMCxY-aRDiI4) and [Japanese (日本語)](https://www.youtube.com/playlist?list=PLQhWLzBzvwNM).
-  Making them (Docker needed) is in [docs/videos/README.md](./docs/videos/README.md).
+- Videos: the guide videos linked above are made from
+  [docs/videos/README.md](./docs/videos/README.md) (Docker needed).
 
 Three CLI entry points are installed:
 

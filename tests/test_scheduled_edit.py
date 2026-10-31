@@ -472,6 +472,23 @@ def test_add_irmaa_takes_its_tax_character_from_where_it_is_paid(
     assert _rule(scheduled(), "irmaa_test")["tax_character"] == character
 
 
+@pytest.mark.parametrize(("from_account", "character"), [
+    ("Income_Salary_Alice", "ordinary"),  # wages, paid as a fixed amount
+    ("Asset_Savings", "none"),  # money already taxed, moving between accounts
+])
+def test_add_fixed_amount_takes_its_tax_character_from_its_source(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame], from_account: str,
+    character: str,
+) -> None:
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2030-03", from_account, "Asset_Checking", "1000",
+        "--name", "fixed_test",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _rule(scheduled(), "fixed_test")["tax_character"] == character
+
+
 def test_an_annual_kind_refuses_another_cadence(test_data_dir: Path) -> None:
     result = _sim(
         test_data_dir, "retire_alice", "add", "2027-01", "Asset_TraditionalIRA_Alice",
