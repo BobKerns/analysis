@@ -222,12 +222,19 @@ which inlines the SVG so the theme's CSS can restyle it.
 | `figure` | `series`, `heading` (the command, shown as typed), `demo_image` (a picture `setup.sh` made) |
 | `window` | `series`, `heading`, `title` (the title bar), `look` (`terminal`, `light`, `files` or `editor`), `lines`, `address` (`files`), `status` (`editor`), `note` (below the window) |
 
-A `demo_image` is a path under the demo root (`home/spending-chain.png` is
-the file `setup.sh` wrote to `~/spending-chain.png`); the builder runs the
+A `demo_image` is a path under the demo root (`home/chart.png` would be
+the file `setup.sh` wrote to `~/chart.png`); the builder runs the
 setup, reads the file and gives the template its `image` as a `data:` URI.
-That's how a scene shows a picture a command draws in the terminal, such as
-`sim chain show --graph`: VHS records the terminal's text, not its images.
 The slide is cached like a tape, under the demo data and `setup.sh`.
+
+A tape can show a picture a command draws in the terminal, such as
+`sim chain show --graph`, as it appears (video 3's `chains-graph`). Stock
+VHS records only the terminal's text; the builder uses a VHS build from
+[a fork](https://github.com/BobKerns/vhs/releases) that adds image capture
+([charmbracelet/vhs#783](https://github.com/charmbracelet/vhs/pull/783)),
+and every tape turns it on (`Set Sixel true`, which also covers the iTerm2
+images `--graph` sends). `setup` and the container fetch that build; a
+build refuses another VHS, such as Homebrew's.
 
 A `window` draws a screen another system shows, which VHS can't record:
 PowerShell, File Explorer, VS Code (video 2a, on WSL). Each of its `lines`
@@ -345,7 +352,7 @@ build prints what it made and what it reused:
 
 Requirements for a native build: `ffmpeg`, `uv`, Playwright's Chromium
 (`uv run playwright install chromium`), and for tapes VHS and ttyd (`setup`
-downloads them on Linux; `brew install vhs` on macOS). Japanese narration
+downloads VHS, and ttyd on Linux; `brew install ttyd` on macOS). Japanese narration
 also needs a C++ compiler and `cmake` the first time the narration worker's
 environment is made, since OpenJTalk builds from source (Xcode's
 command-line tools and `brew install cmake` on macOS). The container has them

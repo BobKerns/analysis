@@ -311,6 +311,7 @@ Shiller
 sidefx
 signum
 Simons
+Sixel
 Smirnov
 SNSXX
 Sobol
