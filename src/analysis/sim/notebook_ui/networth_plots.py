@@ -151,6 +151,68 @@ def expenses_widget(rc: RunConnection,
                         time_range or TimeRangePicker(), caveat=_EXPENSES_CAVEAT)
 
 
+def spending_widget(rc: RunConnection,
+                    dollar_mode: DollarModePicker | None = None,
+                    time_range: TimeRangePicker | None = None,
+                    **_) -> widgets.VBox:
+    """Spending against the plan (#387, #408), as ``sim report spending``
+    shows it: delivered spending by year against what the rules budgeted,
+    grouped by category, account or a tag role; then the level and shape
+    by year, and the run's summary."""
+    from analysis.sim.spending_charts import spending_figure
+
+    dollar_mode = dollar_mode or DollarModePicker()
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
+    # The roles an expense can be grouped by: any tag's, as `--by tag:ROLE` takes them.
+    roles = [role for (role,) in rc._con.execute("SELECT DISTINCT role FROM tag ORDER BY role")]
+    by = widgets.Dropdown(options=["category", "account", *(f"tag:{r}" for r in roles)],
+                          value="category", description="By:")
+    chart_out = widgets.Output()
+    table_out = widgets.Output()
+
+    def _redraw(*_):
+        mode = DollarMode(dollar_mode.value)
+        delivered, budgeted = reports.spending_by_year(rc, by=by.value, mode=mode)
+        if delivered.empty:
+            with chart_out:
+                clear_output(wait=True)
+                print(f"No spending in this run ({rc.label}).")
+            with table_out:
+                clear_output(wait=True)
+            return
+        frame, summary = reports.spending_report(delivered, budgeted)
+        unit = f"{mode.label} dollars"
+        with chart_out:
+            clear_output(wait=True)
+            low, high = time_range.value
+            show_figure(spending_figure(frame, f"Spending against the plan ({rc.label})", ylabel=unit,
+                                        years=(low, high), deaths=rc.deaths()))
+        with table_out:
+            clear_output(wait=True)
+            shown = time_range.clip(frame)
+            shares = [c for c in shown.columns if c in ("of_plan", "redirected")
+                      or c.startswith(reports.FILLED)]
+            display(shown.style.format({**{c: "${:,.0f}" for c in shown.columns if c not in shares},
+                                        **dict.fromkeys(shares, "{:.1%}")}))
+            if summary["of_plan"] == 1.0 and not any(k.startswith(reports.FILLED) for k in summary):
+                display(StyledMarkdown("_No spending strategy changed this run's spending: "
+                                       "delivered is the plan._"))
+            else:
+                display(StyledMarkdown(
+                    f"Over the run: **{summary['of_plan']:.1%} of plan**, RMS difference "
+                    f"${summary['rms']:,.0f} a year; redirected {summary['redirected_mean']:.1%} on "
+                    f"average, {summary['redirected_worst']:.1%} at worst "
+                    f"({summary['redirected_worst_year']:.0f}); cosine similarity "
+                    f"{summary['cosine_mean']:.3f}."))
+
+    by.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
+    _redraw()
+    return widgets.VBox([controls_row(by, dollar_mode, time_range), chart_out, table_out])
+
+
 def gains_widget(rc: RunConnection,
                  dollar_mode: DollarModePicker | None = None,
                  time_range: TimeRangePicker | None = None,

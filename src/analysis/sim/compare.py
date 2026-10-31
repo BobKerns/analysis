@@ -539,3 +539,73 @@ def drift_by_scenario(
         if drift.has_table(con, "allocation_target") and target_set in drift.target_sets(con):
             out[name] = drift.drift_by_month(con, target_set, portfolio=portfolio)
     return out
+
+
+# ---------- spending against the plan (#408) ----------
+
+
+def uses_spending_strategies(connections: Mapping[str, RunConnection]) -> bool:
+    """Whether any run has a strategy owning scheduled rules: without one,
+    every run's spending is its plan and the section leaves no trace."""
+    from analysis.sim.drift import has_table
+
+    return any(
+        has_table(rc._con, "spending_baseline")
+        and rc._con.execute("SELECT 1 FROM spending_baseline LIMIT 1").fetchone()
+        for rc in connections.values())
+
+
+type SpendingReport = tuple[pd.DataFrame, dict[str, float], list[int]]
+"""A run's ``reports.spending_report`` frame and summary, and its whole years."""
+
+
+def spending_by_scenario(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], mode: DollarMode,
+) -> dict[str, SpendingReport]:
+    """Each run's ``reports.spending_report`` and the years it covers whole,
+    by scenario, in ``mode`` dollars; a run that spent nothing is left out."""
+    from analysis.sim.reports import spending_by_year, spending_report, whole_years
+
+    out = {}
+    for name in scenarios:
+        rc = connections[name]
+        delivered, budgeted = spending_by_year(rc, mode=mode)
+        if not delivered.empty:
+            out[name] = (*spending_report(delivered, budgeted), whole_years(pd.DatetimeIndex(rc.cpi_index().index)))
+    return out
+
+
+def spending_comparison(
+    reports: Mapping[str, SpendingReport], baseline: str, variants: Sequence[str],
+) -> pd.DataFrame:
+    """Delivered spending by year: a column per scenario, then ``Δ name``,
+    each variant's less the baseline's (0 where either spent nothing)."""
+    frame = pd.DataFrame({name: report["delivered"] for name, (report, _summary, _years) in reports.items()})
+    frame.index.name = "year"
+    for name in variants:
+        if name in frame.columns and baseline in frame.columns:
+            frame[f"Δ {name}"] = frame[name].fillna(0) - frame[baseline].fillna(0)
+    return frame
+
+
+def spending_summaries(reports: Mapping[str, SpendingReport]) -> pd.DataFrame:
+    """Per scenario, over the whole run: delivered and budgeted in all,
+    ``of_plan``, the RMS of the yearly differences, the whole year spending
+    was lowest and how low (a part year would always be lowest), and the
+    share redirected on average."""
+    rows = {}
+    for name, (report, summary, years) in reports.items():
+        whole = report.loc[report.index.isin(years)]
+        lowest = whole if not whole.empty else report
+        rows[name] = {
+            "delivered": float(report["delivered"].sum()),
+            "budgeted": float(report["budgeted"].sum()),
+            "of_plan": summary["of_plan"],
+            "rms": summary["rms"],
+            "lowest_year": int(lowest["delivered"].idxmin()),
+            "lowest": float(lowest["delivered"].min()),
+            "redirected": summary["redirected_mean"],
+        }
+    frame = pd.DataFrame.from_dict(rows, orient="index")
+    frame.index.name = "scenario"
+    return frame

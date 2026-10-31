@@ -489,6 +489,33 @@ def _shortfall_events(rc: RunConnection) -> pd.DataFrame:
     return frame[columns]
 
 
+def spending_by_month(rc: RunConnection, *, by: str = "category") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Month x group spending, delivered and budgeted (#387), in nominal
+    dollars: ``spending_by_year``'s figures before they're converted and
+    summed by year. Both frames have the same months and groups."""
+    events = _flow_events(rc, "expenses")
+    events["group"] = _groups(rc, events, "expenses", by)
+    short = _shortfall_events(rc)
+    if not short.empty:
+        short["group"] = _groups(rc, short, "expenses", by)
+
+    def monthly(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty:
+            return pd.DataFrame()
+        out = frame.groupby(["month", "group"])["amount"].sum().unstack("group", fill_value=0) / 100
+        out.columns.name = None
+        return out
+
+    delivered = monthly(events)
+    budgeted = delivered.add(monthly(short), fill_value=0) if not short.empty else delivered.copy()
+    columns = _group_order("expenses", by, budgeted.sum()) if by != "category" else [
+        c for c in EXPENSE_CATEGORIES if c in budgeted.columns or c in delivered.columns]
+    columns += [c for c in budgeted.columns.union(delivered.columns) if c not in columns]
+    index = delivered.index.union(budgeted.index)
+    return (delivered.reindex(index=index, columns=columns, fill_value=0),
+            budgeted.reindex(index=index, columns=columns, fill_value=0))
+
+
 def spending_by_year(
     rc: RunConnection, *, by: str = "category", mode: DollarMode = DollarMode.CPI_CONSTANT,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -499,30 +526,16 @@ def spending_by_year(
     what they added), from the run's recorded baseline; a run without one
     has budgeted equal to delivered. ``by`` groups as the expense report
     does (``category``, ``account`` or ``tag:ROLE``, untagged flows kept)."""
-    events = _flow_events(rc, "expenses")
-    events["group"] = _groups(rc, events, "expenses", by)
-    short = _shortfall_events(rc)
-    if not short.empty:
-        short["group"] = _groups(rc, short, "expenses", by)
-
-    def yearly(frame: pd.DataFrame) -> pd.DataFrame:
-        if frame.empty:
-            return pd.DataFrame()
-        monthly = frame.groupby(["month", "group"])["amount"].sum().unstack("group", fill_value=0) / 100
+    def yearly(monthly: pd.DataFrame) -> pd.DataFrame:
+        if monthly.empty:
+            return monthly
         monthly = _cpi(rc, monthly, mode)
         out = monthly.groupby(index_years(monthly)).sum()
         out.index.name = "year"
-        out.columns.name = None
         return out
 
-    delivered = yearly(events)
-    budgeted = delivered.add(yearly(short), fill_value=0) if not short.empty else delivered.copy()
-    columns = _group_order("expenses", by, budgeted.sum()) if by != "category" else [
-        c for c in EXPENSE_CATEGORIES if c in budgeted.columns or c in delivered.columns]
-    columns += [c for c in budgeted.columns.union(delivered.columns) if c not in columns]
-    index = delivered.index.union(budgeted.index)
-    return (delivered.reindex(index=index, columns=columns, fill_value=0),
-            budgeted.reindex(index=index, columns=columns, fill_value=0))
+    delivered, budgeted = spending_by_month(rc, by=by)
+    return yearly(delivered), yearly(budgeted)
 
 
 def redirected_share(delivered: pd.Series, budgeted: pd.Series) -> float:
@@ -575,6 +588,73 @@ def spending_report(
     for c in changed:
         summary[f"{FILLED}{c}"] = float(delivered[c].sum() / budgeted[c].sum()) if budgeted[c].sum() else 1.0
     return frame, summary
+
+
+# A member-year's spending counts as cut when it is below plan by more
+# than rounding: a strategy's factor is applied to cents.
+_CUT_TOLERANCE = 0.005
+
+
+def ensemble_spending_table(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> pd.DataFrame:
+    """An ensemble's spending against the plan by year (#408). ``delivered``
+    and ``budgeted`` are a column per member, by year
+    (``EnsembleSeries.spending``). Per year, across members: delivered
+    spending's 5th, 50th and 95th percentiles and the mean of its worst 5%
+    and 20% (``cvar05``, ``cvar20``, as for net worth), the median budget,
+    the median ``of_plan`` (delivered over budgeted), and ``cut``, the
+    share of members spending below their plan."""
+    from analysis.sim.ensemble import tail_means
+
+    if delivered.empty:
+        return pd.DataFrame()
+    of_plan = (delivered / budgeted.where(budgeted != 0)).fillna(1.0)
+    out = pd.DataFrame({
+        "p5": delivered.quantile(0.05, axis=1),
+        "median": delivered.median(axis=1),
+        "p95": delivered.quantile(0.95, axis=1),
+    })
+    out = out.join(tail_means(delivered))
+    out["budgeted"] = budgeted.median(axis=1)
+    out["of_plan"] = of_plan.median(axis=1)
+    out["cut"] = (of_plan < 1 - _CUT_TOLERANCE).mean(axis=1)
+    return out
+
+
+def whole_years(months: pd.DatetimeIndex) -> list[int]:
+    """The years ``months`` (a run's) covers all twelve months of. A run
+    starting in May spends only part of its first year, which would always
+    look like its worst."""
+    ones = pd.Series(1, index=months)
+    counts = ones.groupby(index_years(ones)).sum()
+    return [int(year) for year, n in counts.items() if n == 12]
+
+
+def ensemble_spending_summary(
+    delivered: pd.DataFrame, budgeted: pd.DataFrame, years: Collection[int] | None = None,
+) -> dict[str, float]:
+    """Over the whole run, per member and then across members (#408): each
+    member's worst year of delivered spending among ``years`` (whole years:
+    see ``whole_years``; default every year), as its median and the mean of
+    the worst 5% and 20% of members' worst years; its whole-run
+    ``of_plan``, its share of years cut, and the share of members ever cut."""
+    from analysis.sim.ensemble import TAIL_LEVELS, tail_means
+
+    if delivered.empty:
+        return {}
+    counted = delivered if years is None else delivered.loc[delivered.index.isin(list(years))]
+    worst = (counted if not counted.empty else delivered).min(axis=0)
+    of_plan = (delivered / budgeted.where(budgeted != 0)).fillna(1.0)
+    years_cut = (of_plan < 1 - _CUT_TOLERANCE).mean(axis=0)
+    whole = delivered.sum(axis=0) / budgeted.sum(axis=0).where(budgeted.sum(axis=0) != 0)
+    tails = tail_means(worst.to_frame().T).iloc[0]
+    return {
+        "worst_year_median": float(worst.median()),
+        **{f"worst_year_cvar{q * 100:02g}": float(tails[f"cvar{q * 100:02g}"]) for q in TAIL_LEVELS},
+        "of_plan_median": float(whole.fillna(1.0).median()),
+        "of_plan_worst": float(whole.fillna(1.0).min()),
+        "years_cut_mean": float(years_cut.mean()),
+        "members_ever_cut": float((years_cut > 0).mean()),
+    }
 
 
 def flows_for_year(

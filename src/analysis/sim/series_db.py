@@ -58,7 +58,7 @@ from analysis.frames import index_years
 from analysis.sim import drift as allocation_drift
 from analysis.sim import units
 from analysis.sim.asset_classes import weight_sets
-from analysis.sim.connection import RunConnection, account_balance_cpi, to_cpi_constant
+from analysis.sim.connection import EXPENSE_CATEGORIES, RunConnection, account_balance_cpi, to_cpi_constant
 from analysis.sim.schema import connect_sim_file
 from analysis.sim.drift import Watch
 from analysis.sim.types import Death, DollarMode
@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 SERIES_DB_FILENAME = "series.sqlite3"
 # Bump when the stored layout changes. A change to how a series is derived
 # needs no bump: the store records a hash of the modules that derive them.
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 NET_WORTH = "net_worth"
 AFTER_TAX = "after_tax"
@@ -78,6 +78,11 @@ LOT = "lot"
 # An asset class's dollars: account is the portfolio tag ('' for every asset
 # lot), lot the asset class.
 CLASS = "class"
+# Spending against the plan (#408): account is the expense category, lot
+# DELIVERED or BUDGETED; each month's flow, not a balance.
+SPENDING = "spending"
+DELIVERED = "delivered"
+BUDGETED = "budgeted"
 
 _DDL = """
 CREATE TABLE batch (
@@ -158,9 +163,11 @@ def _code_hash() -> str:
     store written by different code is rebuilt, not trusted."""
     import analysis.sim.asset_classes as asset_classes
     import analysis.sim.connection as connection
+    import analysis.sim.reports as reports
 
     digest = hashlib.sha256(str(FORMAT_VERSION).encode())
-    for module_file in (connection.__file__, __file__, allocation_drift.__file__, asset_classes.__file__):
+    for module_file in (connection.__file__, __file__, allocation_drift.__file__, asset_classes.__file__,
+                        reports.__file__):
         digest.update(Path(module_file).read_bytes())
     return digest.hexdigest()
 
@@ -267,6 +274,7 @@ def member_series(run_path: Path) -> MemberSeries:
             None, _floats(con.after_tax_net_worth_frame()["nominal"].reindex(months)))
         _add_balances(out, con._con, months)
         _add_classes(out, con._con, months)
+        _add_spending(out, con, months)
         return out
     finally:
         con.close()
@@ -322,6 +330,25 @@ def _add_classes(out: MemberSeries, con: sqlite3.Connection, months: pd.Datetime
         cents = np.rint(frame.reindex(iso).fillna(0.0).to_numpy(dtype=float) * 100).astype(np.int64)
         for j, asset_class in enumerate(frame.columns):
             out.subjects[(CLASS, portfolio, asset_class)] = ("asset", cents[:, j])
+
+
+def _add_spending(out: MemberSeries, con: RunConnection, months: pd.DatetimeIndex) -> None:
+    """Each expense category's delivered and budgeted cents by month
+    (``reports.spending_by_month``). A month outside ``months`` (a
+    year-to-date catch-up dated before the run) is added to the nearest end:
+    it is in the same year, and converts at that end's CPI, as the report
+    converts it."""
+    from analysis.sim.reports import spending_by_month
+
+    delivered, budgeted = spending_by_month(con)
+    if delivered.empty:
+        return
+    position = np.clip(months.searchsorted(pd.DatetimeIndex(delivered.index)), 0, len(months) - 1)
+    for lot, frame in ((DELIVERED, delivered), (BUDGETED, budgeted)):
+        for category in frame.columns:
+            cents = np.zeros(len(months), dtype=np.int64)
+            np.add.at(cents, position, np.rint(frame[category].to_numpy(dtype=float) * 100).astype(np.int64))
+            out.subjects[(SPENDING, str(category), lot)] = ("expense", cents)
 
 
 def _add_flows(out: MemberSeries, flows: pd.DataFrame, months: pd.DatetimeIndex) -> None:
@@ -638,6 +665,47 @@ class EnsembleSeries:
         out = pd.DataFrame(columns)
         out.index = pd.DatetimeIndex(pd.to_datetime(out.index))
         return out
+
+    # ---------- spending against the plan (#408) ----------
+
+    def spending_categories(self) -> list[str]:
+        """The expense categories any member spent on, in report order."""
+        found = {account for kind, account, lot in self._subjects if kind == SPENDING}
+        return [c for c in EXPENSE_CATEGORIES if c in found] + sorted(found - set(EXPENSE_CATEGORIES))
+
+    def whole_years(self) -> list[int]:
+        """The years every member covers all twelve months of."""
+        from analysis.sim.reports import whole_years
+
+        sets = [set(whole_years(m.months)) for m in self._members.values()]
+        return sorted(set.intersection(*sets)) if sets else []
+
+    def spending(
+        self, mode: DollarMode = DollarMode.CPI_CONSTANT, category: str | None = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Each member's yearly spending, delivered and budgeted: a column
+        per member, by year, in ``mode`` dollars, for one expense category
+        or (None) all of them. A member that spent nothing has zeros, and a
+        batch without a strategy has budgeted equal to delivered."""
+        def build() -> tuple[pd.DataFrame, pd.DataFrame]:
+            categories = [category] if category is not None else self.spending_categories()
+            out = []
+            for lot in (DELIVERED, BUDGETED):
+                values = [self._nominal((SPENDING, c, lot)) for c in categories]
+                columns: dict[str, pd.Series] = {}
+                for member_id, member in self._members.items():
+                    monthly = pd.Series(0.0, index=member.months)
+                    for by_member in values:
+                        if member_id in by_member:
+                            monthly = monthly + by_member[member_id]
+                    if mode == DollarMode.CPI_CONSTANT:
+                        monthly = to_cpi_constant(monthly, member.cpi_index)
+                    columns[member.stem] = monthly.groupby(index_years(monthly)).sum()
+                frame = pd.DataFrame(columns).fillna(0.0)
+                frame.index.name = "year"
+                out.append(frame)
+            return out[0], out[1]
+        return self.memo(("spending", mode, category), build)
 
     def _nominal(self, key: tuple[str, str, str]) -> dict[int, np.ndarray]:
         subject = self._subjects.get(key)

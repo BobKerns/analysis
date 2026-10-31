@@ -14,7 +14,7 @@ import pandas as pd
 from IPython.display import clear_output, display
 
 from analysis.frames import by_year_and_label
-from analysis.sim import registries, units
+from analysis.sim import registries, reports, units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
@@ -59,7 +59,7 @@ __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
     "ensemble_table_widget", "ensemble_guard_rails_widget", "ensemble_guard_rails_table_widget",
-    "ensemble_drift_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
+    "ensemble_drift_widget", "ensemble_spending_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
     "RecipeSeeds", "LoadingIndicator",
 ]
 
@@ -825,6 +825,109 @@ def ensemble_drift_widget(*_,
     return widgets.VBox([
         dropdown,
         widgets.HBox([targets, portfolio, measure, time_range],
+                     layout=widgets.Layout(flex_flow="row wrap", align_items="center")),
+        loading, out,
+    ])
+
+
+_ALL_SPENDING = "(all spending)"
+
+
+def ensemble_spending_widget(*_,
+                             data_dir: Path | str | None = None,
+                             state_dir: Path | None = None,
+                             runs_dir: Path | str | None = None,
+                             controls: EnsembleControls | None = None,
+                             default: str | None = None,
+                             **__,
+                             ) -> widgets.VBox:
+    """Spending against the plan across an ensemble's members (#408), as
+    ``sim ensemble spending`` shows it: the spread of delivered spending by
+    year with the median plan dashed, then by year the percentiles, CVaR,
+    median share of plan and share of members cut, and the whole-run
+    summary. **Spending** picks one expense category. ``controls`` shares
+    the dollars and the years shown."""
+    from analysis.sim.spending_charts import ensemble_spending_figure
+
+    resolved_data_dir = find_data_dir(data_dir)
+    runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default])
+    dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
+    if _default(recipes, default) is not None:
+        dropdown.value = default
+    controls = controls or EnsembleControls(runs_dir=runs_dir)
+    time_range, dollar_picker = controls.time_range, controls.dollar_picker
+    category = widgets.Dropdown(options=[_ALL_SPENDING], description="Spending:")
+    loading = LoadingIndicator()
+    out = widgets.Output()
+    updating = [False]  # while the category list is refilled for a new recipe
+
+    def _redraw(*_: object) -> None:
+        if updating[0]:
+            return
+        with out:
+            if not dropdown.value:
+                clear_output()
+                return
+            try:
+                _draw(dropdown.value)
+            finally:
+                loading.finish()
+
+    def _draw(recipe: str) -> None:
+        opened = _open_recipe(runs_dir, recipe, loading)
+        if opened is None:
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**No Monte Carlo batch for {recipe}.**"))
+            return
+        batch_dir, store, failed_count = opened
+        offered = [_ALL_SPENDING, *store.spending_categories()]
+        if list(category.options) != offered:
+            updating[0] = True
+            try:
+                kept = category.value if category.value in offered else _ALL_SPENDING
+                category.options = offered
+                category.value = kept
+            finally:
+                updating[0] = False
+        picked = None if category.value == _ALL_SPENDING else category.value
+        mode = DollarMode(dollar_picker.value)
+        loading.note(f"Reading {recipe}'s spending")
+        delivered, budgeted = store.spending(mode, picked)
+        low, high = time_range.value
+        what = f"{picked} spending" if picked else "spending"
+        unit = f"{mode.label} dollars"
+        clear_output(wait=True)
+        display(StyledMarkdown(
+            f"{recipe}: {len(store)} member(s)" + (f", {failed_count} failed" if failed_count else "")
+            + f"; {what} against the plan, {unit} (batch {batch_dir.name})"))
+        if delivered.empty:
+            display(StyledMarkdown("_No spending in the members._"))
+            return
+        show_figure(ensemble_spending_figure(
+            delivered, budgeted, f"{what.capitalize()} against the plan ({recipe})", ylabel=unit,
+            years=(low, high), deaths=store.base_case_deaths()))
+        table = reports.ensemble_spending_table(delivered, budgeted)
+        table = table[[low <= int(y) <= high for y in table.index]]
+        shares = ("of_plan", "cut")
+        display(table.style.format({**{c: "${:,.0f}" for c in table.columns if c not in shares},
+                                    **dict.fromkeys(shares, "{:.0%}")}))
+        summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years())
+        display(StyledMarkdown(
+            f"Worst whole year per member: median ${summary['worst_year_median']:,.0f}, CVaR 5% "
+            f"${summary['worst_year_cvar05']:,.0f}, 20% ${summary['worst_year_cvar20']:,.0f}. "
+            f"Of plan over the run: median {summary['of_plan_median']:.1%}, worst member "
+            f"{summary['of_plan_worst']:.1%}; years cut {summary['years_cut_mean']:.0%} on average; "
+            f"members ever cut {summary['members_ever_cut']:.0%}."))
+
+    dropdown.observe(_redraw, names="value")
+    note_picks(resolved_data_dir, dropdown)
+    for picker in (category, dollar_picker, time_range):
+        picker.observe(_redraw, names="value")
+    when_cell_is_done(_redraw)
+    return widgets.VBox([
+        dropdown,
+        widgets.HBox([category, dollar_picker, time_range],
                      layout=widgets.Layout(flex_flow="row wrap", align_items="center")),
         loading, out,
     ])
