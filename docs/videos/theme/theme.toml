@@ -87,6 +87,7 @@ speed = 1.0
 # keep the word.
 [narration.en.pronounce]
 IRA = "/ˌaɪˌɑːɹˈeɪ/"
+WSL = "W S L"
 Jupyter = "Jupiter"
 JupyterLab = "Jupiter Lab"
 jupyter = "jupiter"

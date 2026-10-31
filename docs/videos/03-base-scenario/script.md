@@ -7,6 +7,7 @@ data = "prototype_data"
 
 [youtube]
 title = "Creating a base scenario"
+previous = "02-setup"  # not 2a, the Windows side trip
 summary = """
 Alice and Bill build their base scenario: the household as it is today, \
 and the plan as it stands. Every what-if they try later builds on it."""

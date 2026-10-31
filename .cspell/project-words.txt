@@ -25,7 +25,6 @@ autofmt
 autopct
 autoreload
 autouse
-axhspan
 axhline
 axhspan
 axisbelow
@@ -369,6 +368,7 @@ truststore
 ttyd
 twinx
 txns
+UEFI
 unclipped
 underflows
 unestimable
