@@ -106,6 +106,3 @@ demo_run work-longer 2026-10-31T090100Z
 demo_run claim-early 2026-10-31T090200Z
 demo_run both 2026-10-31T090300Z
 
-# The chart `sim compare --graph` would draw, for the compare-graph slide
-# (VHS records the terminal's text, not its pictures).
-sim compare base work-longer claim-early --graph-file ~/compare.png > /dev/null

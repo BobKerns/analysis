@@ -16,7 +16,7 @@ contents = [
   "A what-if builds on another scenario: parents, mix-ins, only the rows that differ",
   "Making one: sim scenario create, then editing an inherited rule (sim scheduled edit)",
   "Combining two what-ifs with a mix-in, and running them all (sim all)",
-  "sim compare: what differs, net worth by year, break-even, one account (--account, --lot)",
+  "sim compare: a chart (--chart), what differs, net worth by year, break-even, one account (--account, --lot)",
   "Why working longer looks a little worse at first, after tax",
   "The scenario comparison notebook",
   "Asking an AI to compare",
@@ -211,14 +211,24 @@ date. Sim list then shows a run for each of the four.
 
 ## Scene `compare-graph`: Who comes out ahead
 
-```slide
-template = "figure"
-heading = "sim compare base work-longer claim-early --graph"
-demo_image = "home/compare.png"
+```tape
+Hide
+Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
+Enter
+Type "cd ~/retirement/data/sim && clear"
+Enter
+Sleep 2s
+Show
+Sleep 500ms
+Type "sim compare base work-longer claim-early --chart"
+Sleep 400ms
+Enter
+Wait
+Sleep 20s
 ```
 
 Sim compare names a baseline, here base, and the what-ifs to set beside
-it. With dash dash graph, it draws net worth after tax for each one, and
+it. With dash dash chart, it draws net worth after tax for each one, and
 below, each what-if's difference from base. Working longer pulls ahead in
 2031 and stays about a hundred and fifty thousand dollars ahead. Claiming
 early pulls ahead too, but its lead shrinks every year after Bill turns
@@ -248,7 +258,7 @@ Wait
 Sleep 12s
 ```
 
-Without the graph, sim compare starts with what differs. Here that's just
+Without dash dash chart, sim compare prints tables, starting with what differs. Here that's just
 the two rows the what-ifs changed: the salary's end, and the claim age.
 If a row you meant to change isn't listed, the change didn't take. Then
 net worth at each year end, with each what-if's difference from base, the
