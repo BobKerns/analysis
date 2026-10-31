@@ -495,13 +495,14 @@ def prototype_data(repo_root: Path) -> Path:
 
 @pytest.fixture(scope="function")
 def videos_root(tmp_path: Path, repo_root: Path) -> Path:
-    """A private docs/videos: the repo's theme and assets, no videos yet.
+    """A private docs/videos: the repo's theme, assets and YouTube settings, no videos yet.
 
     Tests write a video folder (``videos_root / "01-x" / "script.md"``) into it.
     """
     root = tmp_path / "videos"
     for part in ("theme", "assets"):
         shutil.copytree(repo_root / "docs" / "videos" / part, root / part)
+    shutil.copy(repo_root / "docs" / "videos" / "youtube.toml", root / "youtube.toml")
     return root
 
 

@@ -53,6 +53,7 @@ categoriser
 ccon
 charmbracelet
 chipmaker
+chunksize
 CLAUDECODE
 clsname
 cmap
@@ -70,6 +71,7 @@ corrcoef
 counterclock
 cpus
 CREAT
+creds
 CRSP
 Crunchbase
 Damodaran
@@ -85,6 +87,7 @@ delenv
 dflt
 dietz
 DODGX
+doraise
 EBITDA
 ecolor
 edgecolor
@@ -123,6 +126,7 @@ Ghostty
 globenewswire
 gmtoffset
 Gompertz
+googleapiclient
 gpgsign
 gridlines
 gridspec
@@ -414,6 +418,7 @@ xytext
 ydata
 ylabel
 ylim
+youtu
 yscale
 yticklabels
 yticks

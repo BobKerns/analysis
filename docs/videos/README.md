@@ -6,6 +6,15 @@ terminal sessions it records, its slides and the shared look. The pictures
 and sound are rebuilt from those, so a CLI change means re-running a build,
 not re-recording by hand, and fixing a sentence re-renders one scene.
 
+**You need Docker.** The recommended way to build a video is in the video
+container, which has every tool and font the build uses, so the only
+thing to install is [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+(macOS, Windows) or Docker Engine (Linux); see
+[Building in a container](#building-in-a-container). A native build works
+too, but needs its own list of tools (see [Building and caching](#building-and-caching)).
+Publishing on YouTube needs only `uv`, on the machine whose browser can
+sign in to the channel.
+
 ```sh
 uv run python -m analysis.videos setup                     # once: voice model, VHS, ttyd
 uv run python -m analysis.videos build docs/videos/00-pilot
@@ -29,8 +38,10 @@ scripts/videos/docker.sh build 00-pilot
 | `docs/videos/<nn>-<slug>/script.md` | One video: its scenes, narration beside the commands and slides |
 | `docs/videos/<nn>-<slug>/setup.sh` | Optional: prepares the demo data the video's tapes start from |
 | `docs/videos/<nn>-<slug>/script.<lang>.md` | A translation of that video's narration and slide text |
+| `docs/videos/<nn>-<slug>/published.toml` | Written by `publish`: each language's YouTube video id, and its scenes' lengths |
 | `docs/videos/theme/theme.toml` | The shared look: palette, fonts, terminal colors, voices, timing |
 | `docs/videos/theme/templates/*.html` | Slide templates (Jinja2): `title` opens every video, `card` for breaks and endings, `figure` for a picture a command made, `window` for a screen the tapes can't record |
+| `docs/videos/youtube.toml` | The channel's settings and the wording around each description |
 | `docs/videos/assets/*.svg` | Reusable characters and props: Alice, Bill, their home |
 | `src/analysis/videos/` | The builder |
 | `scripts/videos/tts_kokoro.py` | The narration worker (runs in its own environment) |
@@ -350,19 +361,121 @@ the video and embeds it in the MP4 as cover art.
 
 ## Publishing on YouTube
 
-By hand, in YouTube Studio:
+`publish` uploads a built video, with its thumbnail, captions and settings,
+and keeps its title and description up to date (#395):
 
-1. Upload the MP4. On the Details step, choose the `.jpg` as the custom
-   thumbnail (custom thumbnails need a verified channel).
-2. Under Subtitles (or the Video elements step), Add, then Upload file, With
-   timing, and pick the `.srt`, with its language set to match.
-3. Each translation's `.srt` goes on the same video under its own language.
-   A translation's narration can go on as an extra audio track where the
-   channel has multi-language audio; otherwise it's its own video.
+```sh
+uv run python -m analysis.videos publish docs/videos/03-base-scenario --dry-run   # shows what it would send
+uv run python -m analysis.videos publish docs/videos/03-base-scenario [--lang ja]
+uv run python -m analysis.videos publish --refresh     # every published video's title and description
+```
 
-The YouTube Data API (`videos.insert`, `thumbnails.set`, `captions.insert`)
-could script this once there are several videos; it needs a one-time OAuth
-setup.
+It works from the build in `out/videos` (`--out` for another), so build
+first. Each language is its own video. An upload:
+
+- sends the MP4, as **private**, so you can look it over and make it public
+  in Studio;
+- sets the title card as the custom thumbnail, and uploads that
+  language's captions;
+- adds it to the language's playlist (`playlist` in `youtube.toml`, by
+  title; the playlist must exist);
+- records its id in `published.toml` beside the script. Commit that file:
+  ids are public, and they're how a later `publish` updates the video
+  instead of uploading it again, and how descriptions link to it.
+
+A video already up only has its title, description and tags updated, and
+the same goes for the videos before and after it, whose descriptions link
+to it. Privacy is never touched after the upload. YouTube can't replace a
+video's picture, so after a rebuild, `--new-upload` makes a new video (with
+a new link); delete the old one in Studio.
+
+### Titles and descriptions
+
+A script's front matter holds what only that video says, in a `[youtube]`
+table:
+
+```toml
+[youtube]
+title = "Creating a base scenario"  # optional; default: the front matter's title
+summary = """
+Alice and Bill build their base scenario: the household as it is today, \
+and the plan as it stands."""
+contents = [                        # the "In this video" list
+  "Add a person to the household (sim person add)",
+]
+tags = ["base scenario"]            # after the channel's and the language's
+chapters = { contents = "What goes in the base", end = false }
+```
+
+The description is put together from it and `youtube.toml`: the summary,
+the list, the chapters, the language's footer, a link to the video in each
+other language, and the previous and next videos (linked once they're
+up). The title is the language's `title` pattern, such as
+`Retirement Simulator: {number}—{title}`, where `{number}` is the folder's
+prefix.
+
+**A title must show whole.** YouTube cuts long titles off in lists, on
+phones and beside a playing video, so `check` refuses one wider than
+`title_width` in `youtube.toml` (50, a CJK character counting as two).
+Shorten it with `[youtube] title`, which needn't match the title card:
+video 1's card says "What it does, and how it works", its YouTube title
+"Introduction".
+
+Chapters are the scenes, timed from the build that was uploaded, so they
+stay right when narration changes. Each is named by its scene's heading;
+the first is the language's `first_chapter` (Introduction). `chapters`
+renames one by scene id, and `false` folds it into the one before. As
+YouTube requires, a scene shorter than ten seconds joins the chapter
+before it, and a video with fewer than three chapters lists none.
+
+A translation's `[youtube]` has its own title, summary, list, tags and
+chapter names; it takes `skip`, `previous` and `next` from `script.md`.
+Previous and next default to the folders before and after, leaving out
+any with `skip = true` (the pilot); `previous = "01-intro"` names one, and
+`""` means none. A translation's scene headings name its chapters, so give
+each scene its title (``## Scene `id`: タイトル``).
+
+`build` writes the result beside the video, `03-base-scenario.en.youtube.txt`,
+to read before uploading; `check` checks the `[youtube]` fields and
+YouTube's limits (title length, no `<` or `>`, description size).
+
+### One-time setup
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), make a
+   project, and enable **YouTube Data API v3** for it.
+2. Under Google Auth Platform (formerly the OAuth consent screen), set
+   **Audience** to **External** and leave it in **Testing**, and add the
+   Google account that owns or manages the channel as a test user. A
+   project made under a Google Workspace organization defaults to
+   Internal, which only lets that organization's accounts sign in ("can
+   only be used within its organization"). Then, under Clients, make an
+   OAuth client of type **Desktop app**. Download its JSON as
+   `~/.config/analysis-videos/client_secret.json` (or into
+   `$ANALYSIS_VIDEO_SECRETS`).
+3. The first `publish` opens a browser to sign in to the channel's account,
+   and keeps the token in `token.json` beside the client file. Neither file
+   goes in git. While the consent screen is in testing, Google ends a
+   sign-in after seven days, and `publish` asks again.
+
+The worker that talks to YouTube, `scripts/videos/youtube_api.py`, runs with
+`uv run --script` in its own environment, like the narration worker.
+
+Two of Google's limits:
+
+- A project that hasn't passed Google's API audit can only upload private
+  videos, which is the default here anyway; make them public in Studio.
+- The default quota, 10,000 units a day, covers only a few uploads (an
+  upload is by far the costliest call). Updating descriptions is cheap.
+
+The upload's settings (license, made for kids, embedding, synthetic
+content, notifying subscribers, category) come from `youtube.toml`. A few
+others the API can't set, such as age restriction, paid promotion,
+caption certification and remixing; `youtube.toml` lists them, to set
+once in Studio's upload defaults.
+
+The API can't do cards, end screens, or a translation as a second audio
+track. Each language is its own video, and its description links to the
+others; add a card to the other language's video in Studio if you want one.
 
 ## What's committed
 
@@ -372,8 +485,5 @@ in the tool cache).
 
 ## Still to decide
 
-- Hosting: YouTube (it can auto-translate captions, unevenly) or release
-  assets, and where the docs link to them.
-- Whether to script the YouTube upload.
 - Target length: 5 to 10 minutes per video, as #373 suggests.
 - Notebook scenes and background music.
