@@ -1,4 +1,4 @@
-"""``python -m analysis.videos build|check|setup`` (see docs/videos/README.md)."""
+"""``python -m analysis.videos build|check|publish|setup`` (see docs/videos/README.md)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 from analysis.videos import notebook, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
+from analysis.videos import youtube
 from analysis.videos.build import build, repo_root
 
 VHS_URL = "https://github.com/charmbracelet/vhs/releases/download/v0.10.0/vhs_0.10.0_Linux_x86_64.tar.gz"
@@ -77,11 +78,32 @@ def check(folders: list[Path]) -> int:
                         render.slide_html(theme, s.meta, scene.visual.fields, lang)
                     elif scene.visual.kind == "notebook":
                         notebook.check(notebook.parse(scene.visual.source), repo_root(folder) / "notebooks")
+                youtube.check(s)
                 print(f"ok   {folder.name} [{lang}]: {len(s.scenes)} scenes")
         except scripts.ScriptError as e:
             failed += 1
             print(f"FAIL {e}", file=sys.stderr)
     return 1 if failed else 0
+
+
+def publish(args: argparse.Namespace) -> int:
+    repo = repo_root(Path.cwd())
+    folders: list[Path] = args.folders
+    if not folders:
+        if not args.refresh:
+            print("error: name the videos to publish (or --refresh for every published one)", file=sys.stderr)
+            return 2
+        folders = youtube.published_folders(repo / "docs" / "videos")
+    if args.refresh and args.new_upload:
+        print("error: --refresh and --new-upload don't go together", file=sys.stderr)
+        return 2
+    try:
+        youtube.publish(folders, langs=[args.lang] if args.lang else None, out_dir=args.out or repo / "out" / "videos",
+                        repo=repo, dry_run=args.dry_run, new_upload=args.new_upload, refresh_only=args.refresh)
+    except scripts.ScriptError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _video_folders(args: list[Path]) -> list[Path]:
@@ -102,6 +124,15 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--rerecord", action="store_true", help="re-record tapes and notebook scenes (after a code change)")
     c = sub.add_parser("check", help="check scripts parse and slides render (no media)")
     c.add_argument("folders", type=Path, nargs="*", help="video folders (default: all in docs/videos)")
+    p = sub.add_parser("publish", help="upload built videos to YouTube, or update what's there")
+    p.add_argument("folders", type=Path, nargs="*", help="video folders (with --refresh, default: every published one)")
+    p.add_argument("--lang", default=None, help="language (default: every language the script has)")
+    p.add_argument("--out", type=Path, default=None, help="where the builds are (default: out/videos)")
+    p.add_argument("--dry-run", action="store_true", help="show what would be sent; send nothing")
+    p.add_argument("--refresh", action="store_true",
+                   help="only update titles and descriptions of videos already up")
+    p.add_argument("--new-upload", action="store_true",
+                   help="upload again as a new video (YouTube can't replace a video's picture)")
     sub.add_parser("setup", help="download the voice model and recording tools")
     args = parser.parse_args(argv)
 
@@ -109,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
         return setup()
     if args.command == "check":
         return check(_video_folders(args.folders))
+    if args.command == "publish":
+        return publish(args)
     langs = [args.lang] if args.lang else scripts.languages(args.folder)
     try:
         for lang in langs:
@@ -116,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
             result = build(args.folder, lang=lang, out_dir=args.out,
                            engine="silent" if args.silent else None, rerecord=args.rerecord)
             print(f"  -> {result.video} ({result.length:.1f}s)\n  -> {result.captions}")
+            if result.description:
+                print(f"  -> {result.description}")
     except (scripts.ScriptError, render.ToolMissing) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

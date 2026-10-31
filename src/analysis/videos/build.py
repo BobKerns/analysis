@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from analysis.videos import captions, notebook, render
+from analysis.videos import captions, notebook, render, youtube
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
 from analysis.videos.script import Scene, Script, ScriptError
@@ -55,6 +55,7 @@ class VideoBuild:
     captions: Path
     thumbnail: Path  # the title card, for YouTube's custom thumbnail
     scenes: tuple[SceneBuild, ...]
+    description: Path | None = None  # the YouTube title and description, if the script has [youtube]
 
     @property
     def length(self) -> float:
@@ -271,4 +272,12 @@ def _assemble(script: Script, builder: _Builder, out_dir: Path, log: Callable[[s
     render.thumbnail(cover or results[0].path, thumb)
     render.concat([r.path for r in results], video, cover=thumb)
     srt.write_text(captions.srt(cues), encoding="utf-8")
-    return VideoBuild(video=video, captions=srt, thumbnail=thumb, scenes=tuple(results))
+    # What `publish` needs from this build: its chapter times, and the
+    # title and description they make, to read before it goes up.
+    lengths = [(r.id, r.length) for r in results]
+    youtube.write_scene_lengths(video, lengths)
+    description: Path | None = None
+    if youtube.fields(script).get("summary") and not youtube.skipped(script):
+        description = out_dir / f"{stem}.youtube.txt"
+        description.write_text(youtube.preview(youtube.metadata(script, lengths)), encoding="utf-8")
+    return VideoBuild(video=video, captions=srt, thumbnail=thumb, scenes=tuple(results), description=description)

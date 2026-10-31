@@ -4,6 +4,23 @@ episode = "Video 3"
 title = "Your base scenario"
 subtitle = "Accounts, income and spending, and where the money comes from"
 data = "prototype_data"
+
+[youtube]
+title = "Creating a base scenario"
+previous = "02-setup"  # not 2a, the Windows side trip
+summary = """
+Alice and Bill build their base scenario: the household as it is today, \
+and the plan as it stands. Every what-if they try later builds on it."""
+contents = [
+  "Add a person to the household (sim person add)",
+  "The four kinds of accounts: assets, liabilities, income and expenses",
+  "Add accounts, and an account with two lots that grow at different rates (sim account add, sim account lot add)",
+  "Scheduled rules: salaries, living costs, health care, Social Security, the required minimum distribution and income tax (sim scheduled add)",
+  "A first run, and what its warning means (sim run, sim explain)",
+  "Chains: where the money comes from when checking runs low, and the chain drawn as a flowchart (sim chain add, sim chain show --graph)",
+  "The calendar: one-time events, like a new car, and changes from a date onward (sim calendar add)",
+  "Net worth, after tax, in today's dollars (sim networth)",
+]
 +++
 
 The third video of #366 (issue #368): filling in the base scenario that

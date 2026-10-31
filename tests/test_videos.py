@@ -336,6 +336,20 @@ def test_card_body_list_is_one_item_per_line(videos_root: Path) -> None:
     assert '<div class="line">One?</div><div class="line">&lt;Two&gt;</div>' in html
 
 
+def test_window_draws_command_lines_files_and_a_blind_prompt(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    lines = [{"prompt": "PS C:\\>", "typed": "wsl --install"}, "<done>", {"prompt": "New password:", "secret": True}]
+    html = render.slide_html(theme, {}, {"template": "window", "title": "Ubuntu", "lines": lines}, "en")
+    assert 'class="window terminal"' in html  # the default look
+    assert '<div class="command">PS C:\\&gt; <span class="typed">wsl --install</span></div>' in html
+    assert "<div>&lt;done&gt;</div>" in html
+    assert '<div class="command">New password:<span class="cursor"></span></div>' in html
+    files = render.slide_html(
+        theme, {}, {"template": "window", "look": "files", "address": "\\\\wsl$", "lines": ["data"]}, "en")
+    assert '<div class="address">\\\\wsl$</div>' in files
+    assert '<div class="row"><span class="folder"></span>data</div>' in files
+
+
 def _tape_builder(videos_root: Path, repo_root: Path, tmp_path: Path, front: str) -> _Builder:
     folder = _write(videos_root / "01-own-data", SCRIPT.replace('data = "prototype_data"\n', front))
     theme = themes.load(videos_root)

@@ -4,6 +4,27 @@ episode = "Video 2"
 title = "Setup and install"
 subtitle = "From nothing to a data folder of your own"
 data = "prototype_data"
+
+[youtube]
+# Video 2a (WSL) is a side trip from here, for Windows viewers; the series
+# goes on to video 3.
+next = "03-base-scenario"
+summary = """
+Alice gets the simulator running on her own computer, and starts a folder \
+for her household's data. Setup guide, with the one-line installer: \
+https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md"""
+contents = [
+  "Installing with one line, on a Mac, Linux, or Windows under WSL",
+  "What the installer does",
+  "Terminals that can show charts",
+  "Two folders: the code, and your data",
+  "Starting a data folder (sim init)",
+  "What's inside it",
+  "Activating your data, and the current scenario (sim switch)",
+  "A plan of your own (sim scenario create)",
+  "The notebooks (analysis jupyter)",
+  "Saving your work, so every run can be repeated (sim run, sim commit)",
+]
 +++
 
 The second video of #366 (issue #374): installing with the one-line

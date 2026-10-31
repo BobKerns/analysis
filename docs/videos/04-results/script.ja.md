@@ -3,6 +3,20 @@ series = "シミュレーターで考える老後の資金計画"
 episode = "第4回"
 title = "結果を見る"
 subtitle = "実行結果、税引き後の純資産、レポート、そしてノートブック"
+
+[youtube]
+summary = """
+アリスとビルのベースシナリオは実行できるようになりました。では、その結果は何を語っているのでしょう。\
+純資産のグラフと数字、ターミナルでのざっとした確認、収入と支出と税のレポート、そしてノートブックのグラフを紹介します。"""
+contents = [
+  "純資産をグラフでひと目で(sim networth --graph)、そしてその数字(--pre-tax)",
+  "実行は1回ごとに1つのファイル。コマンドは最新を読む(sim list)",
+  "ざっと確認する、そして古い実行(sim explain)",
+  "1つの口座やロットの推移(sim account history)",
+  "年ごとの収入、支出、利益、税(sim report income|expenses|gains|tax)。どれも --graph でグラフに",
+  "ノートブック: 同じレポートを操作できるグラフで。動いたすべてのドルと、設定のひと目(analysis jupyter)",
+  "実行結果についてAIに聞く",
+]
 +++
 
 The Japanese narration of video 4 (#375). Scenes match `script.md` by id;

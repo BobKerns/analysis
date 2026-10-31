@@ -3,6 +3,21 @@ series = "シミュレーターで考える老後の資金計画"
 episode = "第3回"
 title = "ベースシナリオを作る"
 subtitle = "口座、収入と支出、そして足りないときのお金の出どころ"
+
+[youtube]
+summary = """
+アリスとビルが、ベースシナリオを作ります。今の世帯と、今の計画です。\
+このあと試す「もしも」は、すべてこの上に作ります。"""
+contents = [
+  "世帯に人を加える(sim person add)",
+  "4種類の口座: 資産、負債、収入、支出",
+  "口座を加える。増え方の違う二つのロットを持つ口座も(sim account add、sim account lot add)",
+  "スケジュールされたルール: 給料、生活費、医療費、社会保障の年金、最低引き出し額、所得税(sim scheduled add)",
+  "最初の実行と、その警告の意味(sim run、sim explain)",
+  "チェーン: 当座預金が足りなくなったときのお金の出どころと、それを描いた流れ図(sim chain add、sim chain show --graph)",
+  "カレンダー: 新しい車のような一度きりの出来事と、ある日付からの変化(sim calendar add)",
+  "税引き後、今日のドルで見る純資産(sim networth)",
+]
 +++
 
 The Japanese narration of video 3 (#368). Scenes match `script.md` by id;

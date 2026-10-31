@@ -4,6 +4,22 @@ episode = "Video 4"
 title = "Looking at the results"
 subtitle = "Runs, net worth after tax, reports, and the notebooks"
 data = "prototype_data"
+
+[youtube]
+title = "Results"
+summary = """
+Alice and Bill's base scenario runs. Now what is it telling them? Ways to \
+look at a run: net worth as a chart and as numbers, a quick check in the \
+terminal, reports on income, spending and tax, and the notebooks' charts."""
+contents = [
+  "Net worth at a glance, as a chart (sim networth --graph), then the numbers behind it (--pre-tax)",
+  "Every run is a file, and commands read the latest one (sim list)",
+  "A quick check, and an older run (sim explain)",
+  "One account or lot over time (sim account history)",
+  "Income, spending, gains and tax by year (sim report income|expenses|gains|tax), each with --graph",
+  "The notebooks: the same reports as charts you can click, plus every dollar that moved and the setup at a glance (analysis jupyter)",
+  "Asking an AI about a run",
+]
 +++
 
 The fourth video of #366 (issue #375): what a run leaves behind, and the
