@@ -32,7 +32,7 @@ next = "Next: {episode}, {title}"
 [ja]
 # The English prefix stays, so both languages sort together on the channel.
 title = "Retirement Simulator: {number}—{title}"
-playlist = "Retirement Simulator Guide (日本語)"
+playlist = "Retirement Simulator (日本語)"
 version_label = "日本語版"
 in_this_video = "この回の内容:"
 chapters = "チャプター:"
