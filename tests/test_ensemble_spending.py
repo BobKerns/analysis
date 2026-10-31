@@ -75,7 +75,7 @@ def test_sim_ensemble_spending(cut_batch: Path, tmp_path: Path) -> None:
     graph = tmp_path / "spending.png"
     result = CliRunner().invoke(main, [
         "sim", "ensemble", "spending", SCENARIO, "--runs-dir", str(cut_batch.parent.parent),
-        "--graph-file", str(graph)], terminal_width=200)
+        "--chart-file", str(graph), "--table"], terminal_width=200)
     assert result.exit_code == 0, result.output
     assert "3 member(s)" in result.output and "cvar05" in result.output
     assert "members ever cut 100%" in result.output

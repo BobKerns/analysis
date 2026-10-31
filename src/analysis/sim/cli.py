@@ -2489,13 +2489,14 @@ def ensemble_spending(
     whose spending strategies cut that year. Below it, over the whole run:
     each member's worst year (median and CVaR across members), its share of
     plan delivered, the years cut on average and the members ever cut.
-    --graph draws the spread of spending by year against the plan.
+    --chart draws the spread of spending by year against the plan.
 
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
     _note_use(data_dir, scenario_name)
+    _hold_tables()
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     store = _open_series(batch_dir)
     mode = DollarMode(dollars)
