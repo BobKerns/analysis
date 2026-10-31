@@ -402,7 +402,9 @@ Sleep 7s
 The events notebook lists every dollar the run moved, and why: which rule,
 or a refill. Choose refill, and you see each time checking was topped up,
 from which account in the chain, linked to the payment that needed it.
-When a number surprises you, this is where to find out why.
+When savings runs out, in March 2033, the bonds take over, part of each
+sale a return of what they paid and part a gain. When a number surprises
+you, this is where to find out why.
 
 ## Scene `nb-overview`: The setup at a glance
 
