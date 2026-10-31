@@ -48,7 +48,7 @@ _IPA = re.compile(r"^/(.+)/$")
 # text around it and splices it in.
 IPA_OPEN, IPA_CLOSE = "\u27e6", "\u27e7"
 
-VISUAL_KINDS = ("tape", "slide")
+VISUAL_KINDS = ("tape", "slide", "notebook")
 # The [youtube] fields a translation takes from script.md unless it sets them.
 YOUTUBE_INHERITED = ("skip", "previous", "next")
 
@@ -59,10 +59,10 @@ class ScriptError(ValueError):
 
 @dataclass(frozen=True)
 class Visual:
-    """What the scene shows: a terminal ``tape`` or a ``slide``."""
+    """What the scene shows: a terminal ``tape``, a ``slide`` or a ``notebook``."""
 
     kind: str
-    # The tape's VHS commands, or the slide's TOML source.
+    # The tape's VHS commands, the notebook's steps, or the slide's TOML source.
     source: str
     # Slide fields (template, duration, and whatever the template reads).
     fields: dict[str, Any] = field(default_factory=dict)
@@ -179,7 +179,8 @@ def _parse(path: Path, *, translation: bool) -> tuple[dict[str, Any], list[Scene
             return
         visual = current["visual"]
         if visual is None and not translation:
-            raise ScriptError(f"{path}:{current['line']}: scene `{current['id']}` has no ```tape or ```slide block")
+            raise ScriptError(
+                f"{path}:{current['line']}: scene `{current['id']}` has no ```tape, ```slide or ```notebook block")
         scenes.append(
             Scene(
                 id=current["id"],
@@ -245,8 +246,8 @@ def _parse(path: Path, *, translation: bool) -> tuple[dict[str, Any], list[Scene
                 raise ScriptError(f"{path}:{lineno}: ```{kind} outside a scene")
             if current["visual"] is not None:
                 raise ScriptError(f"{path}:{lineno}: scene `{current['id']}` has a second visual")
-            if translation and kind == "tape":
-                raise ScriptError(f"{path}:{lineno}: a translation can't change a tape; it comes from script.md")
+            if translation and kind != "slide":
+                raise ScriptError(f"{path}:{lineno}: a translation can't change a {kind}; it comes from script.md")
             source = "\n".join(body)
             fields: dict[str, Any] = {}
             if kind == "slide":
@@ -256,6 +257,13 @@ def _parse(path: Path, *, translation: bool) -> tuple[dict[str, Any], list[Scene
                     raise ScriptError(f"{path}:{lineno}: slide fields: {e}") from e
                 if not translation and "template" not in fields:
                     raise ScriptError(f"{path}:{lineno}: a slide needs template = \"<name>\"")
+            elif kind == "notebook":
+                from analysis.videos import notebook
+
+                try:
+                    notebook.parse("\n".join(body))
+                except ScriptError as e:
+                    raise ScriptError(f"{path}:{lineno}: {e}") from e
             else:
                 for n, tape_line in enumerate(body, start=lineno + 1):
                     if tape_line.strip().startswith("Output"):
@@ -302,7 +310,8 @@ def _translate(base: Script, path: Path, lang: str) -> Script:
             if "template" in tr.visual.fields and tr.visual.fields["template"] != scene.visual.fields.get("template"):
                 raise ScriptError(f"{path}:{tr.line}: a translation can't change a slide's template")
             if scene.visual.kind != "slide":
-                raise ScriptError(f"{path}:{tr.line}: scene `{scene.id}` is a tape; only slides have fields")
+                raise ScriptError(
+                    f"{path}:{tr.line}: scene `{scene.id}` is a {scene.visual.kind}; only slides have fields")
             visual = replace(visual, fields={**scene.visual.fields, **tr.visual.fields})
         merged.append(replace(scene, title=tr.title or scene.title, narration=tr.narration, visual=visual))
     merged_meta = {**base.meta, **meta}

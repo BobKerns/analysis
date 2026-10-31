@@ -510,7 +510,9 @@ sim scheduled edit groceries_monthly                   # or pick fields to chang
 
 `sim scheduled add --kind <kind>` adds a rule of any kind (a Social Security
 benefit, an RMD, a mortgage, ...), asking for what that kind needs, and
-`sim scheduled delete` removes one.
+`sim scheduled delete` removes one. Without `--tax-character`, a rule takes
+its kind's usual one, and a fixed amount out of a salary, pension or
+interest income account is `ordinary` income.
 
 ### 4.4 Change an estimated expense starting at a later date
 

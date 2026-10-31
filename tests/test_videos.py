@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from analysis.videos import captions, render
+from analysis.videos import captions, notebook, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
 from analysis.videos.__main__ import TTYD_URL, VHS_URL, check
@@ -87,7 +87,7 @@ def test_cjk_sentences_split_on_full_stops() -> None:
 @pytest.mark.parametrize(
     ("body", "message"),
     [
-        ("## Scene `a`: A\n\nWords.\n", "no ```tape or ```slide"),
+        ("## Scene `a`: A\n\nWords.\n", "no ```tape, ```slide or ```notebook"),
         ("## Scene `a`: A\n\n```slide\ntemplate='title'\n```\n\n## Scene `a`: B\n", "appears twice"),
         ("## Scene `a`: A\n\n```tape\nOutput x.gif\n```\n", "must not set Output"),
         ("## Scene `a`: A\n\n```slide\nheading='x'\n```\n", "needs template"),
@@ -479,3 +479,123 @@ def test_a_slide_shows_a_picture_setup_made(videos_root: Path, tmp_path: Path, d
     (folder / "setup.sh").write_text("true\n")
     with pytest.raises(scripts.ScriptError, match="setup.sh made no home/graph.png"):
         visual()
+
+
+# --- notebook scenes -----------------------------------------------------------
+
+NOTEBOOK_STEPS = """\
+Set DataDir "home/retirement/data/sim"
+Set Zoom 1.5
+Hide
+Open "net_worth.ipynb"   # comments are allowed
+RunAll
+Scroll "Dollar basis:" 2
+Show
+Click "Pre-tax"
+Select "Accounts:" "Asset_Checking"
+Drag "Years:" 2028 2040
+Sleep 500ms
+"""
+
+
+def test_notebook_steps_parse() -> None:
+    plan = notebook.parse(NOTEBOOK_STEPS)
+    assert (plan.data_dir, plan.zoom, plan.notebooks) == ("home/retirement/data/sim", 1.5, ("net_worth.ipynb",))
+    assert [s.name for s in plan.steps] == [
+        "Hide", "Open", "RunAll", "Scroll", "Show", "Click", "Select", "Drag", "Sleep"]
+    assert plan.steps[3].args == ("Dollar basis:", "2")
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("Sleep 1s\n", "needs an Open step"),
+        ('Click "x"\n', "first step opens a notebook"),
+        ('Open "x.ipynb"\nTwirl\n', "unknown step 'Twirl'"),
+        ('Open "x.ipynb"\nClick\n', "Click takes 1 argument"),
+        ('Open "x.ipynb"\nSleep soon\n', "a duration is like"),
+        ('Open "x.ipynb"\nDrag "Years:" 2028 later\n', "two whole numbers"),
+        ('Open "x.ipynb"\nScroll "Tax" 0\n', "counts matches from 1"),
+        ('Open "x.ipynb"\nScrollBy far\n', "a whole number of pixels"),
+        ('Open "../x.ipynb"\n', "names a notebook in notebooks/"),
+        ('Open "x.ipynb"\nSet Zoom 2\n', "Set comes before the first step"),
+        ('Set DataDir "../real"\nOpen "x.ipynb"\n', "a path inside the demo"),
+        ('Set Color "red"\nOpen "x.ipynb"\n', "Set takes one of DataDir, Zoom"),
+    ],
+)
+def test_notebook_step_errors(source: str, message: str) -> None:
+    with pytest.raises(scripts.ScriptError, match=re.escape(message)):
+        notebook.parse(source)
+
+
+NOTEBOOK_SCRIPT = """\
++++
+data = "prototype_data"
++++
+
+## Scene `nb`: A notebook
+
+```notebook
+Open "net_worth.ipynb"
+RunAll
+```
+
+The notebook.
+"""
+
+
+def test_a_notebook_scene_is_a_visual_a_translation_cannot_change(videos_root: Path, repo_root: Path) -> None:
+    folder = _write(videos_root / "04-nb", NOTEBOOK_SCRIPT)
+    scene = scripts.load(folder).scenes[0]
+    assert scene.visual.kind == "notebook" and "RunAll" in scene.visual.source
+    notebook.check(notebook.parse(scene.visual.source), repo_root / "notebooks")
+    with pytest.raises(scripts.ScriptError, match="isn't in"):
+        notebook.check(notebook.parse('Open "missing.ipynb"'), repo_root / "notebooks")
+    _write(folder, '## Scene `nb`: ノート\n\n```notebook\nOpen "x.ipynb"\n```\n\nノート。\n', "script.ja.md")
+    with pytest.raises(scripts.ScriptError, match="can't change a notebook"):
+        scripts.load(folder, "ja")
+    _write(folder, NOTEBOOK_SCRIPT.replace("RunAll", "Spin"))
+    with pytest.raises(scripts.ScriptError, match="unknown step 'Spin'"):
+        scripts.load(folder)
+
+
+TOGGLE_NOTEBOOK = {
+    "cells": [{
+        "cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [],
+        "source": [
+            "import ipywidgets as w\n",
+            "pick = w.ToggleButtons(options=['One', 'Two'], description='Pick:')\n",
+            "shown = w.Label('picked One')\n",
+            "pick.observe(lambda c: setattr(shown, 'value', f'picked {c.new}'), 'value')\n",
+            "w.VBox([pick, shown])\n",
+        ],
+    }],
+    "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}},
+    "nbformat": 4, "nbformat_minor": 5,
+}
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_a_notebook_scene_records_what_it_clicks(videos_root: Path, tmp_path: Path, demo_root: Path) -> None:
+    import json
+
+    from playwright.sync_api import Error
+
+    notebooks = tmp_path / "notebooks"
+    notebooks.mkdir()
+    (notebooks / "pick.ipynb").write_text(json.dumps(TOGGLE_NOTEBOOK), encoding="utf-8")
+    prepared = tmp_path / "prepared"
+    (prepared / "data").mkdir(parents=True)
+    out = tmp_path / "scene.mp4"
+    steps = 'Hide\nOpen "pick.ipynb"\nRunAll\nShow\nSleep 1s\nClick "Two"\nSleep 1s\n'
+    try:
+        notebook.record(steps, themes.load(videos_root), prepared, notebooks, out)
+    except Error as error:
+        pytest.skip(f"no browser: {error.message.splitlines()[0]}")
+    assert out.is_file() and not out.with_name("scene.partial.mp4").exists()
+    assert 2.0 < render.duration(out) < 15.0  # from Show to the end, not the hidden start
+    assert not demo_root.exists()  # the demo copy is cleaned up
+
+    with pytest.raises(scripts.ScriptError, match="nothing on screen labeled 'Three'"):
+        notebook.record(steps.replace("Two", "Three"), themes.load(videos_root), prepared, notebooks, out)
