@@ -193,7 +193,7 @@ Set FontSize 22
 Hide
 Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
 Enter
-Type "git -C ~/retirement/data reset -q --hard stage/run-all && rm ../state/runs/*_work-longer_* ../state/runs/*_claim-early_* ../state/runs/*_both_* && cd ~/retirement/data/sim && clear"
+Type "git -C ~/retirement/data reset -q --hard stage/run-all && cd ~/retirement/data/sim && rm ../state/runs/*_work-longer_* ../state/runs/*_claim-early_* ../state/runs/*_both_* && clear"
 Enter
 Sleep 2s
 Show
