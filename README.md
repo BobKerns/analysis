@@ -25,7 +25,8 @@ to see the range of outcomes, not just one number.
   more across hundreds of runs
   ([ensembles](./docs/guides/ensembles.md)).
 
-Watch the *Retirement Simulator Guide* on YouTube, in
+Watch the *Retirement Simulator Guide* on
+[YouTube](https://www.youtube.com/channel/UCQnUgmsanqEqAj1I-0i7vOA/), in
 [English](https://www.youtube.com/playlist?list=PLMCxY-aRDiI4) and
 [Japanese (日本語)](https://www.youtube.com/playlist?list=PLQhWLzBzvwNM).
 
