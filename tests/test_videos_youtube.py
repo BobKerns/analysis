@@ -257,3 +257,12 @@ def test_worker_answer_is_its_last_line() -> None:
     assert youtube.worker_answer('Sign in: https://x\n{"video": "abc"}\n', 0) == {"video": "abc"}
     assert youtube.worker_answer('{"video": "abc", "error": "403: quota"}\n', 1)["error"] == "403: quota"
     assert youtube.worker_answer("Traceback ...\n", 1) == {"video": None, "error": "Traceback ..."}
+
+
+def test_a_video_deleted_in_studio_says_where_its_id_is(videos_root: Path, tmp_path: Path) -> None:
+    folder = _video(videos_root, "01-x", youtube_toml=YT)
+    _built(tmp_path / "out", folder, "en", _lengths(scripts.load(folder)))
+    youtube.publish([folder], out_dir=tmp_path / "out", repo=tmp_path, worker=FakeYouTube(), log=lambda _: None)
+    with pytest.raises(ScriptError, match=r"remove \[en\] from .*published.toml"):
+        youtube.publish([folder], out_dir=tmp_path / "out", repo=tmp_path, log=lambda _: None,
+                        worker=lambda request, _: {"video": request["video"], "error": "404: not found"})

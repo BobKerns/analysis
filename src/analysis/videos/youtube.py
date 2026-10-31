@@ -526,7 +526,11 @@ def publish(
             continue
         answer = worker({"secrets": secrets, "video": video, "snippet": meta.snippet()}, repo)
         if answer.get("error"):
-            raise ScriptError(f"{folder.name} [{lang}]: YouTube: {answer['error']}")
+            hint = ""
+            if str(answer["error"]).startswith("404"):
+                hint = (f" (deleted in Studio? remove [{lang}] from {published.path}, "
+                        "and publish uploads it again)")
+            raise ScriptError(f"{folder.name} [{lang}]: YouTube: {answer['error']}{hint}")
         log(f"{folder.name} [{lang}]: title and description updated ({video_url(video)})")
 
 
