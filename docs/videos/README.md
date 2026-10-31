@@ -30,7 +30,7 @@ scripts/videos/docker.sh build 00-pilot
 | `docs/videos/<nn>-<slug>/setup.sh` | Optional: prepares the demo data the video's tapes start from |
 | `docs/videos/<nn>-<slug>/script.<lang>.md` | A translation of that video's narration and slide text |
 | `docs/videos/theme/theme.toml` | The shared look: palette, fonts, terminal colors, voices, timing |
-| `docs/videos/theme/templates/*.html` | Slide templates (Jinja2): `title` opens every video, `card` for breaks and endings |
+| `docs/videos/theme/templates/*.html` | Slide templates (Jinja2): `title` opens every video, `card` for breaks and endings, `figure` for a picture a command made |
 | `docs/videos/assets/*.svg` | Reusable characters and props: Alice, Bill, their home |
 | `src/analysis/videos/` | The builder |
 | `scripts/videos/tts_kokoro.py` | The narration worker (runs in its own environment) |
@@ -159,6 +159,14 @@ which inlines the SVG so the theme's CSS can restyle it.
 | --- | --- |
 | `title` | `series`, `episode`, `title`, `subtitle`, `cast` (assets to show; default home, Alice, Bill) |
 | `card` | `series`, `heading`, `body` (text, or a list shown one item per line), `speaker` (one asset, optional) |
+| `figure` | `series`, `heading` (the command, shown as typed), `demo_image` (a picture `setup.sh` made) |
+
+A `demo_image` is a path under the demo root (`home/spending-chain.png` is
+the file `setup.sh` wrote to `~/spending-chain.png`); the builder runs the
+setup, reads the file and gives the template its `image` as a `data:` URI.
+That's how a scene shows a picture a command draws in the terminal, such as
+`sim chain show --graph`: VHS records the terminal's text, not its images.
+The slide is cached like a tape, under the demo data and `setup.sh`.
 
 A new template extends `base.html`, which supplies the background, the
 ground, the theme's CSS variables (`--bg`, `--accent`, `--font-heading`, ...)
@@ -251,7 +259,7 @@ what went into it:
 | Product | Rebuilt when this changes |
 | --- | --- |
 | Narration | The scene's sentences, the voice settings |
-| Slide | The page its template renders: template, assets, theme, fields |
+| Slide | The page its template renders: template, assets, theme, fields; for a `demo_image`, also the demo data and `setup.sh` |
 | Tape | Its commands, the terminal theme, the demo data, the video's `setup.sh`; or `--rerecord` |
 | Scene clip | Its narration, its visual, the timing |
 

@@ -1,4 +1,5 @@
 """Video production (#373): script parsing, translations, captions, slides, builds."""
+# cspell:ignore HIHR
 
 from __future__ import annotations
 
@@ -389,3 +390,62 @@ def test_long_cjk_captions_break_after_commas() -> None:
     ]
     assert cues[-1].end == pytest.approx(6.0)
     assert [c.text for c in captions.scene_cues(["短い文です。"], [1.0], start=0.0, gap=0.3)] == ["短い文です。"]
+
+
+FIGURE = """\
++++
+series = "Series"
+title = "Figure"
+data = "demo"
++++
+
+## Scene `graph`: A picture
+
+```slide
+template = "figure"
+heading = "sim chain show spending --graph"
+demo_image = "home/graph.png"
+```
+
+The chain as a flowchart.
+"""
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_a_slide_shows_a_picture_setup_made(videos_root: Path, tmp_path: Path, demo_root: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    (repo / "demo").mkdir(parents=True)
+    (repo / "demo" / "scenario.csv").write_text("name\nbase\n")
+    folder = _write(videos_root / "03-figure", FIGURE)
+    (folder / "setup.sh").write_text('mkdir -p ../home && printf "PNG one" > ../home/graph.png\n')
+    pages: list[str] = []
+
+    def screenshot(html: str, theme: themes.Theme, out: Path) -> None:
+        pages.append(html)
+        out.write_bytes(b"png")
+
+    monkeypatch.setattr(render, "render_slide", screenshot)
+    scene = scripts.load(folder).scenes[0]
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    def visual() -> tuple[str, str]:
+        builder = _Builder(scripts.load(folder), themes.load(videos_root), cache, repo, engine="silent",
+                           rerecord=False, setup=folder / "setup.sh")
+        try:
+            _, _, state, key = builder.visual(scene)
+        finally:
+            if builder.prepared is not None:
+                shutil.rmtree(builder.prepared)
+        return state, key
+
+    made, key = visual()
+    assert made == "made" and "data:image/png;base64,UE5HIG9uZQ==" in pages[-1]
+    assert visual() == ("cached", key)  # read from the cache without preparing the demo again
+    (folder / "setup.sh").write_text('mkdir -p ../home && printf "PNG two" > ../home/graph.png\n')
+    state, new_key = visual()
+    assert state == "made" and new_key != key and "UE5HIHR3bw==" in pages[-1]
+    (folder / "setup.sh").write_text("true\n")
+    with pytest.raises(scripts.ScriptError, match="setup.sh made no home/graph.png"):
+        visual()

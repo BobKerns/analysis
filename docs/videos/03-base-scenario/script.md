@@ -450,6 +450,21 @@ chain show draws the chain as a tree: each step takes all that's left of what's
 needed, and the chain refills checking. A step can also take a share, or
 stop at an amount; the chains guide has recipes.
 
+## Scene `chains-graph`: The chain as a picture
+
+```slide
+template = "figure"
+heading = "sim chain show spending --graph"
+demo_image = "home/spending-chain.png"
+```
+
+Add dash dash graph, and sim chain show draws the same chain as a
+flowchart, in a terminal that can show pictures, such as {iTerm2|eye term two}, kitty, or
+VS Code's. Follow the arrows: savings first, then the bonds, the stocks, and
+last the IRA, all flowing into checking whenever it would dip below five
+thousand dollars. Dash dash graph file saves the picture instead, to share or
+to keep with the plan.
+
 ## Scene `chains-run`: Run it again
 
 ```tape

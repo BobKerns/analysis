@@ -15,6 +15,7 @@ what went into it, so a build redoes only what changed:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -135,25 +136,45 @@ class _Builder:
         """The scene's picture: (file, is a still, made/cached, key)."""
         v = scene.visual
         if v.kind == "slide":
-            html = render.slide_html(self.theme, self.script.meta, v.fields, self.script.lang)
-            key = render.digest("slide", html, self.theme.out_width, self.theme.out_height)
+            fields = v.fields
+            html = render.slide_html(self.theme, self.script.meta, fields, self.script.lang)
+            # A demo_image is a file setup.sh makes, so the slide changes
+            # whenever the demo would: key it like a tape, without
+            # preparing the demo just to read a cached slide.
+            demo = fields.get("demo_image")
+            demo_key = [self.demo_parts()] if demo else []
+            key = render.digest("slide", html, self.theme.out_width, self.theme.out_height, *demo_key)
             png = self.cache / f"slide-{key}.png"
             if png.is_file():
                 return png, True, "cached", key
+            if demo:
+                image = self.ensure_prepared() / str(demo)
+                if not image.is_file():
+                    raise ScriptError(f"scene {scene.id}: setup.sh made no {demo} (demo_image)")
+                uri = "data:image/png;base64," + base64.b64encode(image.read_bytes()).decode("ascii")
+                html = render.slide_html(self.theme, self.script.meta, {**fields, "image": uri},
+                                         self.script.lang)
             render.render_slide(html, self.theme, png)
             return png, True, "made", key
-        data = self.tape_data()
         key = render.digest("tape", v.source, self.theme.vhs_settings(), self.theme.data["terminal"],
-                            self.theme.data["palette"]["accent"], render.tree_digest(data),
-                            self.setup.read_text(encoding="utf-8") if self.setup else None)
+                            self.theme.data["palette"]["accent"], *self.demo_parts())
         mp4 = self.cache / f"tape-{key}.mp4"
         if mp4.is_file() and not self.rerecord:
             return mp4, False, "cached", key
+        render.record_tape(v.source, self.theme, self.ensure_prepared(), mp4)
+        return mp4, False, "made", key
+
+    def demo_parts(self) -> list[str | None]:
+        """What the prepared demo is made from, for cache keys: the demo data and setup.sh."""
+        return [render.tree_digest(self.tape_data()),
+                self.setup.read_text(encoding="utf-8") if self.setup else None]
+
+    def ensure_prepared(self) -> Path:
+        """The demo state tapes and demo images come from, prepared once a build."""
         if self.prepared is None:
             store = Path(tempfile.mkdtemp(prefix="analysis-video-prepared-"))
-            self.prepared = render.prepare_demo(data, self.setup, self.theme, store)
-        render.record_tape(v.source, self.theme, self.prepared, mp4)
-        return mp4, False, "made", key
+            self.prepared = render.prepare_demo(self.tape_data(), self.setup, self.theme, store)
+        return self.prepared
 
     def scene(self, scene: Scene, *, first: bool, last: bool) -> tuple[SceneBuild, list[float], Path]:
         """The scene's clip and narration timing, and its visual (for the thumbnail)."""
