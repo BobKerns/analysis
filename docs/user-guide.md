@@ -1407,8 +1407,12 @@ month) with inflation taken out, so decades compare at a glance;
 Net worth is shown after the tax still owed on it. Traditional IRA and
 401(k) balances, and unrealized gains in a brokerage account, owe tax when
 they're spent. The run prices that tax as if the money were drawn down
-evenly over ten years, on top of that year's other income, at that year's
-brackets. Tax due for a finished year but not yet paid comes off too, until
+evenly over the ten years that follow, each year's share on top of the
+income the run has that year (less what it already draws from the same
+money), at that year's brackets. Years with a salary are skipped, since
+nobody draws savings down while still earning. So a last paycheck doesn't
+make the savings look more heavily taxed; the years they'd be spent in
+decide. Tax due for a finished year but not yet paid comes off too, until
 the April payment. The table shows both deductions; `--pre-tax` shows the
 plain balance total instead. To change the ten years, or to leave gains out
 (a basis step-up at death would erase them), set `after_tax` in the

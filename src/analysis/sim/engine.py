@@ -25,8 +25,10 @@ from __future__ import annotations
 import calendar
 import functools
 import json
+import bisect
+import itertools
 import warnings
-from collections import Counter
+from collections import defaultdict
 from dataclasses import dataclass
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -213,6 +215,9 @@ def run_scenario(
             chain_name=dict(con.execute("SELECT id, name FROM chain").fetchall()),
             roth=_roth_lots(con, person_birthdates),
         )
+        # Each tax year's tax_with, by (scope, year): the after-tax drawdown
+        # is priced against the years after it once the run has them (#404).
+        drawdown_pricing: dict[tuple[str, int], Callable[[int, int], int]] = {}
         # A Roth lot tracks its basis (contributions and conversions), which
         # comes out tax-free whatever the clock says. A blank opening basis
         # takes the whole opening balance as basis.
@@ -487,7 +492,7 @@ def run_scenario(
                             account_subkind=account_subkind, account_name=account_name,
                             tax_year=tax_year,
                             person_lifespan=person_lifespan, taxpayers=taxpayers,
-                            refill_ctx=refill_ctx,
+                            refill_ctx=refill_ctx, drawdown_pricing=drawdown_pricing,
                         )
                     case "fill_bracket":
                         if from_account is None or to is None:
@@ -580,7 +585,9 @@ def run_scenario(
                     tax_char=tax_char, tid=tid, post_transfer=False,
                     tax_year=_tax_year,
                     person_lifespan=person_lifespan, taxpayers=taxpayers,
+                    drawdown_pricing=drawdown_pricing,
                 )
+        _record_drawdown_taxes(con, drawdown_pricing)
 
         if skipped_counts:
             con.execute(
@@ -3111,6 +3118,7 @@ def _apply_tax_accumulator(
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
     refill_ctx: RefillContext | None = None,
+    drawdown_pricing: dict[tuple[str, int], Callable[[int, int], int]] | None = None,
 ) -> None:
     """Compute and optionally pay forecasted income tax for a target year.
 
@@ -3137,6 +3145,10 @@ def _apply_tax_accumulator(
     ``run_scenario``) computes and writes ``tax_year_summary`` as normal but
     skips actually moving money -- the tail exists only to let the final
     scenario year's reconciliation compute, not to simulate a real month.
+
+    ``drawdown_pricing`` collects the year's ``tax_with`` by (scope, year), for
+    ``_record_drawdown_taxes`` to price the after-tax drawdown once the run
+    ends.
     """
     year_mode = str(params.get("year", "previous"))
     scope = str(params.get("scope", "federal"))
@@ -3175,9 +3187,20 @@ def _apply_tax_accumulator(
     nol_new = est.nol_new
     taxable_income = est.taxable_income
     tax_liability = est.tax_liability
-    tax_with = est.tax_with
-
-    drawdown_base, drawdown_tax = _drawdown_tax(con, tax_year, tax_with)
+    if drawdown_pricing is not None:
+        # A later year's share replaces what that year already drew from the
+        # same money (an RMD, a sale at a gain), so price it on the rest of
+        # the year's income, or the drawdown taxes those dollars twice.
+        drawn = int(con.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transfer_event "
+            "WHERE tax_character = 'tax_deferred_out' "
+            "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ?",
+            (tax_year,),
+        ).fetchone()[0])
+        realized = max(0, est.capital.ltcg)
+        drawdown_pricing[(scope, tax_year)] = (
+            lambda ordinary, gains, tax_with=est.tax_with, drawn=drawn, realized=realized:
+            tax_with(ordinary - drawn, gains - realized))
 
     paid_transfers = con.execute(
         "SELECT COALESCE(SUM(amount), 0) "
@@ -3235,10 +3258,6 @@ def _apply_tax_accumulator(
         # IRMAA's MAGI (#253): AGI plus tax-exempt interest, which the model
         # has no character for yet (#265), so it is AGI.
         summary_rows["federal_magi"] = summary_rows["federal_adjusted_gross_income"]
-    if drawdown_base is not None:
-        summary_rows[f"{scope}_drawdown_base"] = drawdown_base
-        summary_rows[f"{scope}_drawdown_tax"] = drawdown_tax
-
     for bucket, amount in summary_rows.items():
         con.execute(
             "INSERT OR REPLACE INTO tax_year_summary(year, bucket, amount, computed_at) "
@@ -3626,14 +3645,19 @@ the inherited-IRA rule's ten (SECURE Act, 2019)."""
 
 
 def _drawdown_tax(
-    con, tax_year: int, tax_with: Callable[[int, int], int],
+    con, tax_year: int, tax_with_in: Callable[[int], Callable[[int, int], int]],
+    paycheck_years: Collection[int] = (),
 ) -> tuple[int | None, int]:
     """The money ``tax_year``'s after-tax net worth taxes and the extra tax on
     it (#251): its year-end traditional (tax_deferred) balances, and the
     unrealized gain of its taxable lots with a basis unless ``after_tax``
-    says ``step_up``, drawn down evenly over ``drawdown_years`` with this
-    year's brackets, filing status and other income. ``(None, 0)`` for a year
-    the run has no month of (a year-to-date one)."""
+    says ``step_up``, drawn down evenly over the ``drawdown_years`` after it.
+    Each year's share is priced on top of that year's own income, brackets
+    and filing status, ``tax_with_in(year)`` (#404): money left at a year end
+    is spent in the years that follow, not on top of this year's paycheck.
+    Nobody draws savings down while still earning, so the drawdown skips
+    ``paycheck_years`` (those with salary) and starts once they end.
+    ``(None, 0)`` for a year the run has no month of (a year-to-date one)."""
     step = con.execute(
         "SELECT id FROM simulation_step WHERE substr(month, 1, 4) = ? "
         "ORDER BY month DESC LIMIT 1", (str(tax_year),),
@@ -3661,15 +3685,54 @@ def _drawdown_tax(
     if deferred + gains == 0:
         return 0, 0
     # Each year's share carries its cent of any remainder, so the shares sum
-    # to the whole base; only a few distinct shares need a tax computed.
+    # to the whole base.
     (deferred_share, deferred_extra), (gains_share, gains_extra) = (
         divmod(deferred, years), divmod(gains, years))
-    shares = Counter(
-        (deferred_share + (i < deferred_extra), gains_share + (i < gains_extra))
-        for i in range(years))
-    base_tax = tax_with(0, 0)
-    extra = sum(count * (tax_with(d, g) - base_tax) for (d, g), count in shares.items())
+    draw_years = (year for year in itertools.count(tax_year + 1) if year not in paycheck_years)
+    extra = 0
+    # The years are endless, so the shares end the loop.
+    for i, draw_year in zip(range(years), draw_years, strict=False):
+        tax_with = tax_with_in(draw_year)
+        share = (deferred_share + (i < deferred_extra), gains_share + (i < gains_extra))
+        extra += tax_with(*share) - tax_with(0, 0)
     return deferred + gains, extra
+
+
+def _record_drawdown_taxes(
+    con, pricing: Mapping[tuple[str, int], Callable[[int, int], int]],
+) -> None:
+    """Each computed tax year's ``<scope>_drawdown_base`` and
+    ``<scope>_drawdown_tax`` (#251), once the run has every year's income
+    (#404). A share in a year past the run's last computed year is priced
+    with that last year's income, as the run can't say what comes after. The
+    drawdown skips the years with salary (``_drawdown_tax``)."""
+    paycheck_years = {
+        int(year) for (year,) in con.execute(
+            "SELECT DISTINCT COALESCE(te.tax_year, CAST(substr(te.date, 1, 4) AS INTEGER)) "
+            "FROM transfer_event te JOIN account a ON a.id = te.from_account "
+            "WHERE a.kind = 'income' AND a.subkind = 'salary' AND te.amount > 0")
+    }
+    by_scope: dict[str, dict[int, Callable[[int, int], int]]] = defaultdict(dict)
+    for (scope, year), tax_with in pricing.items():
+        by_scope[scope][year] = tax_with
+    computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for scope, by_year in by_scope.items():
+        known = sorted(by_year)
+
+        def tax_with_in(year: int, by_year=by_year, known=known) -> Callable[[int, int], int]:
+            return by_year[known[max(0, bisect.bisect_right(known, year) - 1)]]
+
+        for year in known:
+            base, extra = _drawdown_tax(con, year, tax_with_in, paycheck_years)
+            if base is None:
+                continue
+            for bucket, amount in ((f"{scope}_drawdown_base", base),
+                                   (f"{scope}_drawdown_tax", extra)):
+                con.execute(
+                    "INSERT OR REPLACE INTO tax_year_summary(year, bucket, amount, computed_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (year, bucket, int(amount), computed_at),
+                )
 
 
 def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
