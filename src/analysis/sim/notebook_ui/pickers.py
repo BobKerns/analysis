@@ -342,10 +342,18 @@ def find_data_dir(data_dir: Path | str | None = None) -> Path:
     Path
         The resolved data directory.
     """
-    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     if data_dir is None:
-        return Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data/shared/sim"))
+        env = os.environ.get("ANALYSIS_DATA_DIR")
+        return Path(env) if env is not None else _checkout_data_dir()
     return Path(data_dir)
+
+
+def _checkout_data_dir() -> Path:
+    """The data dir linked into this checkout, found from the working
+    directory (a notebook runs in notebooks/). One function so the tests
+    can point it away from a developer's real data repo."""
+    repo = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+    return repo / "data" / "shared" / "sim"
 
 
 def find_state_dir(*,
@@ -709,8 +717,7 @@ def multi_scenario_picker(
     """
 
     if data_dir is None:
-        REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
-        data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data" / "shared" / "sim"))  
+        data_dir = find_data_dir()
     data_dir = Path(data_dir)
     if default_baseline is None:
         # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's

@@ -244,8 +244,11 @@ class EnsembleControls:
                  time_range: TimeRangePicker | None = None,
                  after_tax_picker: AfterTaxPicker | None = None):
         resolved = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+        # Every recipe with a batch, disabled ones too (#300): a widget keeps
+        # a disabled recipe that is its default, and must offer its accounts
+        # and lots (#401).
         accounts, self._recipe_lots, years = recipe_accounts(
-            resolved, list_ensemble_recipes(resolved, find_data_dir(data_dir)),
+            resolved, list_ensemble_recipes(resolved),
         )
         # Spanned here, not as each widget draws: the span would otherwise
         # move the slider mid-draw, and that redraws every widget.

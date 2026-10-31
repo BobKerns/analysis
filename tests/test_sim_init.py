@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -58,6 +59,32 @@ _ALICE = ("--id", "alice", "--display", "Alice Example", "--birthdate", "1960-05
 def _rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as fh:
         return list(csv.DictReader(fh))
+
+
+_OS_JUNK = (".DS_Store", "scenarios/.DS_Store", "scenarios/base/._scenario.csv",
+            "Thumbs.db", "aux/desktop.ini")
+
+
+@pytest.fixture
+def junk_in_templates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[str, ...]:
+    """templates/ copied with Finder's and Explorer's files added, as a
+    browsed checkout has them; returns their paths beneath it."""
+    templates = tmp_path / "templates"
+    shutil.copytree(data_repo.TEMPLATES_DIR, templates)
+    for name in _OS_JUNK:
+        (templates / name).write_text("junk")
+    monkeypatch.setattr(data_repo, "TEMPLATES_DIR", templates)
+    return _OS_JUNK
+
+
+def test_init_leaves_os_junk_files_behind(tmp_path: Path, junk_in_templates: tuple[str, ...]) -> None:
+    """They aren't copied into the new data repo (#401)."""
+    result = _init(str(tmp_path / "repo"), *_ALICE)
+
+    assert result.exit_code == 0, result.output
+    sim = tmp_path / "repo" / "sim"
+    assert [name for name in junk_in_templates if (sim / name).exists()] == []
+    assert sorted(p.name for p in (sim / "scenarios").iterdir()) == ["base"]
 
 
 def test_init_asks_for_what_its_options_leave_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
