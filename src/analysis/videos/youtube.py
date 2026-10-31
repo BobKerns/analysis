@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -49,6 +50,7 @@ MIN_CHAPTERS = 3
 _YOUTUBE_KEYS = {"title", "summary", "contents", "tags", "chapters", "skip", "previous", "next"}
 _PRIVACY = ("private", "unlisted", "public")
 _ANGLE = re.compile(r"[<>]")
+_WIDE = ("W", "F")  # unicodedata's East Asian width classes that show double
 _CJK = re.compile(r"[　-鿿＀-￯]")
 
 
@@ -339,13 +341,22 @@ def metadata(s: Script, lengths: Sequence[tuple[str, float]], *, channel: dict[s
         embeddable=bool(channel.get("embeddable", True)),
         playlist=words.get("playlist") or None,
     )
-    _check_limits(meta, where)
+    _check_limits(meta, where, int(channel.get("title_width", MAX_TITLE)))
     return meta
 
 
-def _check_limits(meta: Metadata, where: Path) -> None:
+def title_width(title: str) -> int:
+    """How wide a title shows: a CJK character (East Asian wide, or full width) counts as two."""
+    return sum(2 if unicodedata.east_asian_width(c) in _WIDE else 1 for c in title)
+
+
+def _check_limits(meta: Metadata, where: Path, width: int) -> None:
     if len(meta.title) > MAX_TITLE:
         raise ScriptError(f"{where}: YouTube title is {len(meta.title)} characters; the limit is {MAX_TITLE}")
+    if title_width(meta.title) > width:
+        raise ScriptError(f"{where}: title {meta.title!r} is {title_width(meta.title)} wide (CJK counts 2), "
+                          f"over youtube.toml's title_width of {width}, so YouTube would cut it off; "
+                          "give [youtube] a shorter title")
     size = len(meta.description.encode("utf-8"))
     if size > MAX_DESCRIPTION_BYTES:
         raise ScriptError(f"{where}: description is {size} bytes; YouTube's limit is {MAX_DESCRIPTION_BYTES}")

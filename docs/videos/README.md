@@ -405,6 +405,13 @@ up). The title is the language's `title` pattern, such as
 `Retirement Simulator: {number}—{title}`, where `{number}` is the folder's
 prefix.
 
+**A title must show whole.** YouTube cuts long titles off in lists, on
+phones and beside a playing video, so `check` refuses one wider than
+`title_width` in `youtube.toml` (50, a CJK character counting as two).
+Shorten it with `[youtube] title`, which needn't match the title card:
+video 1's card says "What it does, and how it works", its YouTube title
+"Introduction".
+
 Chapters are the scenes, timed from the build that was uploaded, so they
 stay right when narration changes. Each is named by its scene's heading;
 the first is the language's `first_chapter` (Introduction). `chapters`

@@ -266,3 +266,11 @@ def test_a_video_deleted_in_studio_says_where_its_id_is(videos_root: Path, tmp_p
     with pytest.raises(ScriptError, match=r"remove \[en\] from .*published.toml"):
         youtube.publish([folder], out_dir=tmp_path / "out", repo=tmp_path, log=lambda _: None,
                         worker=lambda request, _: {"video": request["video"], "error": "404: not found"})
+
+
+def test_a_title_that_would_be_cut_off_is_refused(videos_root: Path) -> None:
+    long = _video(videos_root, "01-x", youtube_toml=YT, title="A title long enough to be cut off")
+    with pytest.raises(ScriptError, match="title_width of 50"):
+        youtube.check(scripts.load(long))
+    # CJK characters count double: 25 for the prefix, 26 for 13 kana.
+    assert youtube.title_width("Retirement Simulator: 02—セットアップとインストール") == 51

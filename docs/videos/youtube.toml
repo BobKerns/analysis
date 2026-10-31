@@ -10,6 +10,12 @@ made_for_kids = false
 license = "youtube"
 embeddable = true
 
+# Titles must show whole: YouTube cuts long ones off in lists, on phones
+# and beside a playing video. `check` refuses a title wider than this, with
+# a CJK character counting as two; a script's [youtube] title shortens it
+# (it needn't match the title card).
+title_width = 50
+
 # Every video's tags; a language's and a video's own come after these.
 tags = ["retirement planning", "retirement simulator", "financial planning", "Monte Carlo", "Python"]
 
