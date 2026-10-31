@@ -10,6 +10,8 @@ what went into it, so a build redoes only what changed:
 - a tape: its commands, the terminal theme, its data's bytes and the
   video's ``setup.sh``. The CLI's own behavior isn't hashed, so
   ``--rerecord`` re-records tapes after a CLI change;
+- a notebook scene: its steps, the notebooks it opens, the theme's size,
+  its data and ``setup.sh``; ``--rerecord`` re-records these too;
 - a clip: its narration, its visual and the timing.
 """
 
@@ -24,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from analysis.videos import captions, render
+from analysis.videos import captions, notebook, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
 from analysis.videos.script import Scene, Script, ScriptError
@@ -156,6 +158,18 @@ class _Builder:
                                          self.script.lang)
             render.render_slide(html, self.theme, png)
             return png, True, "made", key
+        if v.kind == "notebook":
+            plan = notebook.parse(v.source)
+            notebooks = self.repo / "notebooks"
+            notebook.check(plan, notebooks)
+            pages = [(notebooks / name).read_text(encoding="utf-8") for name in plan.notebooks]
+            key = render.digest("notebook", v.source, pages, self.theme.out_width, self.theme.out_height,
+                                self.theme.fps, *self.demo_parts())
+            mp4 = self.cache / f"notebook-{key}.mp4"
+            if mp4.is_file() and not self.rerecord:
+                return mp4, False, "cached", key
+            notebook.record(v.source, self.theme, self.ensure_prepared(), notebooks, mp4)
+            return mp4, False, "made", key
         key = render.digest("tape", v.source, self.theme.vhs_settings(), self.theme.data["terminal"],
                             self.theme.data["palette"]["accent"], *self.demo_parts())
         mp4 = self.cache / f"tape-{key}.mp4"

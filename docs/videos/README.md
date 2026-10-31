@@ -85,7 +85,7 @@ Each `## Scene` has:
 - **An id**, the backticked word. Translations refer to scenes by id, so it
   stays put when the heading is reworded. Ids are lowercase letters, digits,
   `-` and `_`.
-- **One visual**: a ```` ```tape ```` block or a ```` ```slide ```` block.
+- **One visual**: a ```` ```tape ````, ```` ```slide ```` or ```` ```notebook ```` block.
 - **Narration**: every plain paragraph. Links keep their text and lose
   their URL; emphasis and backticks are dropped. Write for the ear: say
   `retire alice`, not `retire_alice`, and put the reason in a note.
@@ -145,8 +145,57 @@ identity is already set). Setup's output isn't shown; if it fails, the build
 stops with its last lines. Its text is part of every tape's cache key, so
 editing it re-records the video's tapes. `01-intro/setup.sh` is an example.
 
-Notebook scenes (Playwright driving JupyterLab) aren't supported yet; they'll
-be a third visual kind beside `tape` and `slide`.
+### Notebook scenes
+
+A ```` ```notebook ```` block records JupyterLab: Playwright opens one of
+this checkout's notebooks on the demo data and works its controls, as a
+viewer would. It's written like a tape, one step per line, and a `#` starts a
+comment:
+
+```text
+Set DataDir "home/retirement/data/sim"   # where the notebooks read data
+Hide
+Open "net_worth.ipynb"
+RunAll
+Scroll "Net worth:"
+Show
+Sleep 6s
+Click "Pre-tax"
+Drag "Years:" 2028 2040
+Select "Accounts:" "Asset_Checking"
+Sleep 4s
+```
+
+| Step | What it does |
+| --- | --- |
+| `Set DataDir "<path>"` | Before the first step: the data repo the notebooks read, a path inside the demo (default: the demo data itself, `data`). `Set Zoom <n>` draws JupyterLab larger (default 1.4) so it reads at 1080p |
+| `Open "<notebook>"` | Opens a notebook from `notebooks/` and waits for its kernel |
+| `RunAll` | Runs every cell and waits until they're done, then goes back to the top |
+| `Scroll "<text>" [n]` | Smoothly brings a heading, or the `n`th text that reads so (a widget's label, say), to the top |
+| `ScrollBy <pixels>` | Smoothly scrolls down (or up, negative) by that much of JupyterLab's layout, to bring a chart or table below the controls into view |
+| `Click "<label>"` | Moves the pointer to the on-screen button with that label (a toggle such as `Pre-tax`) and clicks it, then waits for the charts to redraw |
+| `Select "<label>" "<option>"` | Picks an option in the on-screen dropdown or list labeled so (`Accounts:`) |
+| `Drag "<label>" <low> <high>` | Drags the on-screen slider labeled so (the `Years:` range) to those values |
+| `Wait` | Waits for the kernel to finish |
+| `Hide`, `Show`, `Sleep <time>` | As in a tape: nothing between `Hide` and `Show` is recorded |
+
+So the usual scene opens and runs its notebook and scrolls while hidden,
+then shows the part it's about. A step that finds nothing to act on stops
+the build and names its line. The pointer is drawn into the page, since a
+headless browser has none.
+
+Each recording runs JupyterLab on its own fresh copy of the prepared demo
+(its `setup.sh` included), with the notebooks copied in and
+`ANALYSIS_DATA_DIR` set, so a notebook sees the demo's runs and nothing
+else. JupyterLab shows the notebook alone, every cell drawn (so scrolling
+never shows a blank), with no news prompt. Chromium's screencast sends a
+frame whenever the page changes, at the video's full size; ffmpeg holds each
+frame until the next, which keeps the recording's real timing.
+
+A notebook scene is cached on its steps, the notebooks it opens, the theme's
+size and the demo data and `setup.sh`; like a tape, it doesn't see code
+changes, so rebuild with `--rerecord` after changing a widget. A translation
+can't change one.
 
 ### Slides
 
@@ -261,6 +310,7 @@ what went into it:
 | Narration | The scene's sentences, the voice settings |
 | Slide | The page its template renders: template, assets, theme, fields; for a `demo_image`, also the demo data and `setup.sh` |
 | Tape | Its commands, the terminal theme, the demo data, the video's `setup.sh`; or `--rerecord` |
+| Notebook scene | Its steps, the notebooks it opens, the video's size, the demo data, `setup.sh`; or `--rerecord` |
 | Scene clip | Its narration, its visual, the timing |
 
 So editing one sentence re-synthesizes and re-assembles that scene only. The
@@ -367,4 +417,4 @@ in the tool cache).
   assets, and where the docs link to them.
 - Whether to script the YouTube upload.
 - Target length: 5 to 10 minutes per video, as #373 suggests.
-- Notebook scenes and background music.
+- Background music.
