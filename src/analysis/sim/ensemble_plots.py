@@ -1,6 +1,6 @@
 """The ensemble charts (ADR-006, #163), as plain matplotlib figures: the
 fan chart of one recipe's members and the comparison's delta panels. The
-notebook widgets show them inline and ``sim ensemble summary|compare --graph``
+notebook widgets show them inline and ``sim ensemble summary|compare --chart``
 in the terminal (#167), so neither the CLI nor these charts depend on
 ipywidgets or IPython. No pyplot either: a figure pyplot doesn't track can't
 be flushed half-drawn by another notebook thread (#119), and needs no GUI

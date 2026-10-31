@@ -12,11 +12,11 @@ Alice and Bill's base scenario runs. Now what is it telling them? Ways to \
 look at a run: net worth as a chart and as numbers, a quick check in the \
 terminal, reports on income, spending and tax, and the notebooks' charts."""
 contents = [
-  "Net worth at a glance, as a chart (sim networth --graph), then the numbers behind it (--pre-tax)",
+  "Net worth at a glance, as a chart (sim networth --chart), then the numbers behind it (--pre-tax)",
   "Every run is a file, and commands read the latest one (sim list)",
   "A quick check, and an older run (sim explain)",
   "One account or lot over time (sim account history)",
-  "Income, spending, gains and tax by year (sim report income|expenses|gains|tax), each with --graph",
+  "Income, spending, gains and tax by year (sim report income|expenses|gains|tax), each with --chart",
   "The notebooks: the same reports as charts you can click, plus every dollar that moved and the setup at a glance (analysis jupyter)",
   "Asking an AI about a run",
 ]
@@ -53,7 +53,7 @@ template = "card"
 heading = "Ways to look at a run"
 body = [
   "Net worth, after tax and in today's dollars",
-  "Charts with --graph; tables for the numbers",
+  "Charts with --chart; tables for the numbers",
   "Runs: one file each, the latest unless you say",
   "sim explain: did it do what you expected?",
   "Reports: an account, income, spending, gains, tax",
@@ -82,20 +82,20 @@ Enter
 Sleep 2s
 Show
 Sleep 500ms
-Type "sim networth --graph"
+Type "sim networth --chart"
 Sleep 400ms
 Enter
 Wait
 Sleep 12s
 ```
 
-Sim networth dash dash graph draws the base plan from today to 2060. The
+Sim networth dash dash chart draws the base plan from today to 2060. The
 solid line is net worth after tax, in today's dollars; the dashed line
 beside it is the total before tax, and the gap between them is tax the
 money still owes. It climbs while they work, dips once the paychecks stop
 and the car is bought, then grows again. In a terminal that can't show
 pictures, it saves the chart as a file instead. Every report takes dash
-dash graph the same way.
+dash chart the same way; add dash dash table to see the numbers under it too.
 
 ## Scene `after-tax`: What net worth means here
 
@@ -142,7 +142,7 @@ Wait
 Sleep 9s
 ```
 
-Without dash dash graph, sim networth shows the numbers behind the chart, at each year end. Net worth is everything they own, less
+Without dash dash chart, sim networth shows the numbers behind the chart, at each year end. Net worth is everything they own, less
 what they owe. Deferred tax is what the IRA and the gains still owe, and
 unpaid tax is a finished year's bill, due the next April. What's left is
 after tax: about one point eight million dollars in 2060, in today's money.
@@ -275,7 +275,7 @@ In 2030, Bill's last year at work, salary is still the biggest part. In
 investment counts the growth of what they hold, sold or not. Without dash
 dash year, it's a table of every year that follows each one from income,
 through tax and spending, down to the change in net worth. It's wide, so
-that one is best as a chart: dash dash graph draws it, and the notebook
+that one is best as a chart: dash dash chart draws it, and the notebook
 lets you explore it.
 
 ## Scene `expenses`: Spending and gains

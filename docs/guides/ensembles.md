@@ -900,12 +900,12 @@ sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint
 sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint --lot a
 ```
 
-Add `--graph` to either `sim ensemble summary` or `sim ensemble compare` to
-see the notebook's charts after the tables: the fan chart, or the
+Add `--chart` to either `sim ensemble summary` or `sim ensemble compare` to
+see the notebook's charts instead of the tables: the fan chart, or the
 comparison's panels described below. A terminal that shows images (iTerm2,
 kitty, Ghostty, WezTerm, VS Code's) draws them in place; any other gets a
-PNG file and its path. `--graph-file chart.svg` (or `.png`) writes the
-chart to a file instead.
+PNG file and its path. `--chart-file chart.svg` (or `.png`) writes the
+chart to a file instead. Add `--table` for both, the chart first.
 
 `--lot` narrows an account to one of its lots. In the notebook, a Lot
 dropdown appears under Account when the account has more than one, and

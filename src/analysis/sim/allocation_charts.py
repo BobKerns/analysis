@@ -1,7 +1,7 @@
 """The portfolio's asset allocation (#327) as plain matplotlib figures: a pie
 of the asset classes, a bar per class split by a grouping, and the drift from
 a target set by year. ``accounts.ipynb`` shows the first two inline, and
-``sim allocation --graph`` (with ``--by``, or ``--drift``) draws them. No
+``sim allocation --chart`` (with ``--by``, or ``--drift``) draws them. No
 pyplot, as in ``compare_charts``: a CLI chart must not pick a GUI backend."""
 
 from __future__ import annotations
