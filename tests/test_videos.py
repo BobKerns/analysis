@@ -12,7 +12,7 @@ import pytest
 from analysis.videos import captions, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
-from analysis.videos.__main__ import TTYD_URL, VHS_URL, check
+from analysis.videos.__main__ import TTYD_URL, check, vhs_url
 from analysis.videos.build import VIDEO_DATA_ENV, _Builder, build
 
 SCRIPT = """\
@@ -385,7 +385,8 @@ def test_tape_data_falls_back_to_the_videos_own_repo(
 def test_video_image_pins_the_builders_tool_versions(repo_root: Path) -> None:
     dockerfile = (repo_root / "docker" / "videos" / "Dockerfile").read_text()
     args = dict(re.findall(r"^ARG (\w+)=(\S+)$", dockerfile, re.MULTILINE))
-    assert f"/v{args['VHS_VERSION']}/vhs_{args['VHS_VERSION']}_" in VHS_URL
+    assert args["VHS_VERSION"] == render.VHS_VERSION
+    assert f"/BobKerns/vhs/releases/download/v$VHS_VERSION/vhs_${{VHS_VERSION}}_Linux_" in dockerfile
     assert f"/{args['TTYD_VERSION']}/ttyd." in TTYD_URL
     assert args["KOKORO_RELEASE"] == render.KOKORO_RELEASE
     for name in render.KOKORO_FILES:
@@ -463,3 +464,9 @@ def test_a_slide_shows_a_picture_setup_made(videos_root: Path, tmp_path: Path, d
     (folder / "setup.sh").write_text("true\n")
     with pytest.raises(scripts.ScriptError, match="setup.sh made no home/graph.png"):
         visual()
+
+
+def test_vhs_url_names_the_forks_archive_for_each_platform() -> None:
+    assert vhs_url("Linux", "x86_64") == f"{render.VHS_RELEASE}/vhs_{render.VHS_VERSION}_Linux_x86_64.tar.gz"
+    assert vhs_url("Darwin", "arm64") == f"{render.VHS_RELEASE}/vhs_{render.VHS_VERSION}_Darwin_arm64.tar.gz"
+    assert vhs_url("Windows", "AMD64") is None

@@ -75,10 +75,8 @@ sim chain step add spending Asset_Brokerage_Joint --lot bonds
 sim chain step add spending Asset_Brokerage_Joint --lot stocks
 sim chain step add spending Asset_TraditionalIRA_Alice --lot default
 sim account lot edit Asset_Checking --minimum-balance 5000 --refill-chain spending
-# The flowchart `--graph` would draw, for the chains-graph slide (VHS
-# records the terminal's text, not its pictures). It lands in the home
-# folder, outside the data repo, so no stage carries it.
-sim chain show spending --graph-file ~/spending-chain.png
+
+stage chains-graph
 
 stage chains-run
 stage calendar

@@ -17,8 +17,33 @@ from analysis.videos import theme as themes
 from analysis.videos import youtube
 from analysis.videos.build import build, repo_root
 
-VHS_URL = "https://github.com/charmbracelet/vhs/releases/download/v0.10.0/vhs_0.10.0_Linux_x86_64.tar.gz"
+# VHS archives by (platform.system(), platform.machine()), named as upstream's.
+_VHS_PLATFORMS = {
+    ("Linux", "x86_64"): "Linux_x86_64",
+    ("Linux", "AMD64"): "Linux_x86_64",
+    ("Linux", "aarch64"): "Linux_arm64",
+    ("Linux", "arm64"): "Linux_arm64",
+    ("Darwin", "x86_64"): "Darwin_x86_64",
+    ("Darwin", "arm64"): "Darwin_arm64",
+}
 TTYD_URL = "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64"
+
+
+def vhs_url(system: str, machine: str) -> str | None:
+    """The pinned VHS build for a platform, or None if there isn't one."""
+    name = _VHS_PLATFORMS.get((system, machine))
+    return name and f"{render.VHS_RELEASE}/vhs_{render.VHS_VERSION}_{name}.tar.gz"
+
+
+def _install_vhs(url: str, bin_dir: Path) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "vhs.tar.gz"
+        _download(url, archive)
+        with tarfile.open(archive) as tar:
+            member = next(m for m in tar.getmembers() if m.name.endswith("/vhs"))
+            member.name = "vhs"
+            tar.extract(member, bin_dir, filter="data")
+    (bin_dir / "vhs").chmod(0o755)
 
 
 def _download(url: str, dest: Path) -> None:
@@ -30,7 +55,7 @@ def _download(url: str, dest: Path) -> None:
 
 
 def setup() -> int:
-    """Fetch the Kokoro model and, on Linux, VHS and ttyd, into the tool cache."""
+    """Fetch the Kokoro model, VHS and (on Linux) ttyd into the tool cache."""
     home = render.cache_home()
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -39,18 +64,15 @@ def setup() -> int:
         if not (home / name).is_file():
             _download(f"{render.KOKORO_RELEASE}/{name}", home / name)
     linux = platform.system() == "Linux" and platform.machine() in ("x86_64", "AMD64")
-    if not shutil.which("vhs", path=render.tool_path()):
-        if linux:
-            with tempfile.TemporaryDirectory() as tmp:
-                archive = Path(tmp) / "vhs.tar.gz"
-                _download(VHS_URL, archive)
-                with tarfile.open(archive) as tar:
-                    member = next(m for m in tar.getmembers() if m.name.endswith("/vhs"))
-                    member.name = "vhs"
-                    tar.extract(member, bin_dir, filter="data")
-            (bin_dir / "vhs").chmod(0o755)
+    try:
+        render.need_vhs()
+    except (render.ToolMissing, RuntimeError):
+        # Missing, or a stock VHS (brew's), which can't record terminal images.
+        url = vhs_url(platform.system(), platform.machine())
+        if url:
+            _install_vhs(url, bin_dir)
         else:
-            print("  vhs: install it with `brew install vhs` (brings ttyd too)")
+            print(f"  vhs: no build of VHS {render.VHS_VERSION} for this platform; see {render.VHS_RELEASE}")
     if not shutil.which("ttyd", path=render.tool_path()):
         if linux:
             _download(TTYD_URL, bin_dir / "ttyd")

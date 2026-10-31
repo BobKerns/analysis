@@ -29,6 +29,12 @@ KOKORO_FILES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
 _SILENT_WORDS_PER_SECOND = 2.6
 _SILENT_CJK_CHARS_PER_SECOND = 7.0
 _CONTAINER_CHROMIUM = "/opt/pw-browsers/chromium"
+# VHS from Bob's fork: upstream plus image-layer capture (charmbracelet/vhs#783,
+# `Set Sixel true`), so a picture a command draws in the terminal is recorded.
+# Upstream's releases drop it; back to them once #783 is released (#393).
+VHS_VERSION = "0.12.1-analysis.1"
+VHS_RELEASE = f"https://github.com/BobKerns/vhs/releases/download/v{VHS_VERSION}"
+_VHS_HINT = "run `python -m analysis.videos setup`"
 
 
 class ToolMissing(RuntimeError):
@@ -51,6 +57,15 @@ def need(tool: str, hint: str) -> str:
     if not found:
         raise ToolMissing(f"{tool} not found: {hint}")
     return found
+
+
+def need_vhs() -> str:
+    """The VHS that records terminal images: the fork's build, not a stock one (brew's)."""
+    vhs = need("vhs", _VHS_HINT)
+    version = run([vhs, "--version"]).stdout
+    if VHS_VERSION not in version:
+        raise ToolMissing(f"{vhs} is {version.strip()!r}, not VHS {VHS_VERSION}: {_VHS_HINT}")
+    return vhs
 
 
 def digest(*parts: Any) -> str:
@@ -319,7 +334,7 @@ def prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> P
 
 def record_tape(tape: str, theme: Theme, prepared: Path, out: Path) -> None:
     """Record a terminal scene with VHS, from a fresh copy of ``prepare_demo``'s state."""
-    vhs = need("vhs", "run `python -m analysis.videos setup` (Linux) or `brew install vhs` (macOS)")
+    vhs = need_vhs()
     need("ttyd", "run `python -m analysis.videos setup` (Linux) or `brew install ttyd` (macOS)")
     root = DEMO_ROOT
     shutil.rmtree(root, ignore_errors=True)
