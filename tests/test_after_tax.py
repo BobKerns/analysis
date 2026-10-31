@@ -77,9 +77,25 @@ def test_the_drawdown_taxes_every_cent_of_its_base(report_run_file: Path) -> Non
     """The yearly shares carry the remainder, so a tax of 100% on every
     share is the whole base, to the cent."""
     with sqlite3.connect(report_run_file) as con:
-        base, extra = _drawdown_tax(con, 2030, lambda ordinary, gains: ordinary + gains)
+        base, extra = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains: ordinary + gains)
     assert base and base % 10  # a remainder to carry
     assert extra == base
+
+
+def test_each_share_is_priced_in_the_year_it_would_be_drawn(report_run_file: Path) -> None:
+    """#404: 2030's year-end money is drawn over 2031-2040, each share on
+    that year's income, not on top of 2030's own (a last paycheck)."""
+    with sqlite3.connect(report_run_file) as con:
+        base, every_year = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains: ordinary + gains)
+        _, only_2031 = _drawdown_tax(
+            con, 2030, lambda year: (lambda ordinary, gains: ordinary + gains) if year == 2031
+            else (lambda ordinary, gains: 0))
+        _, only_2030 = _drawdown_tax(
+            con, 2030, lambda year: (lambda ordinary, gains: ordinary + gains) if year == 2030
+            else (lambda ordinary, gains: 0))
+    assert base and every_year == base
+    assert only_2031 in (base // 10, base // 10 + 1)
+    assert only_2030 == 0
 
 
 def test_a_year_without_a_rate_takes_no_drawdown_tax_off(
@@ -151,8 +167,10 @@ def test_drawdown_years_and_step_up_change_the_deferred_tax(
         rates = rc._drawdown_rate_by_year()
     assert (stepped["federal_drawdown_base"] <= ten["federal_drawdown_base"]).all()
     assert (stepped["federal_drawdown_base"] < ten["federal_drawdown_base"]).any()
-    assert (deferred > 0).all()  # the traditional balances are still taxed
-    assert (rates > 0).all()
+    # The traditional balances are still taxed, while there's enough of them
+    # to rise above the deduction beside the later years' Social Security.
+    assert (deferred["2026":"2037"] > 0).all()
+    assert (rates.loc[:2037] > 0).all()
 
 
 @pytest.mark.parametrize(("settings", "message"), [
