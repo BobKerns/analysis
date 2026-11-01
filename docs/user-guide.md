@@ -1470,6 +1470,11 @@ After tax is what shows a Roth conversion's or a taxable sale's real effect.
 Before tax, tax paid now looks like a loss, while the tax a traditional
 balance still owes doesn't show at all.
 
+**Video.** *Comparing what-ifs* builds two what-ifs on Alice and Bill's
+base scenario, runs them, and compares them with `sim compare` and
+`scenario_compare.ipynb`: [English](https://www.youtube.com/watch?v=z-HLIqsKTZg),
+[Japanese (日本語)](https://www.youtube.com/watch?v=_9xq98dz6kw).
+
 `sim compare BASELINE VARIANT` puts two or more scenarios' latest runs side
 by side, as `scenario_compare.ipynb` does: whether the runs came from the same
 code and data, the rules, calendar events, accounts and lots each defines
