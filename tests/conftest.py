@@ -884,21 +884,30 @@ def run_strategy_scenario(
 
 
 @pytest.fixture(scope="function")
-def strategy_ensemble_batch(strategy_scenarios: Path, intent_dir: Path, runs_dir: Path) -> Path:
-    """A 3-member Monte Carlo batch of ``alice_rebalance`` (retire_alice's
-    varied rows, seed 5) under ``runs_dir/alice_rebalance/``, its rebalancing
-    strategy steering every member (#359). Returns the batch dir."""
-    recipe = load_scenario(strategy_scenarios, "alice_rebalance", intent_dir=intent_dir / "recipe",
-                           allow_dirty_data=True, compute_stamps=False).intent_path
-    batch_dir = runs_dir / "alice_rebalance" / "2026-01-01T000000Z"
-    for i in range(3):
-        member_intent = resolve_member(
-            recipe, intent_dir / f"alice_rebalance_member_{i}.sqlite3",
-            seed=5, member_index=i, member_count=3, recipe_tree_id="deadbeef",
-        )
-        run_scenario(member_intent, batch_dir / f"member_{i:04d}.sqlite3", run_by="test",
-                     allow_dirty_data=True, allow_dirty_code=True)
-    return batch_dir
+def strategy_ensemble(strategy_scenarios: Path, intent_dir: Path, runs_dir: Path) -> Callable[[str], Path]:
+    """Run a 3-member Monte Carlo batch of a strategy scenario (after a
+    test's edits): retire_alice's varied rows, seed 5, under
+    ``runs_dir/<name>/``. Returns the batch dir."""
+    def _run(name: str) -> Path:
+        recipe = load_scenario(strategy_scenarios, name, intent_dir=intent_dir / "recipe",
+                               allow_dirty_data=True, compute_stamps=False).intent_path
+        batch_dir = runs_dir / name / "2026-01-01T000000Z"
+        for i in range(3):
+            member_intent = resolve_member(
+                recipe, intent_dir / f"{name}_member_{i}.sqlite3",
+                seed=5, member_index=i, member_count=3, recipe_tree_id="deadbeef",
+            )
+            run_scenario(member_intent, batch_dir / f"member_{i:04d}.sqlite3", run_by="test",
+                         allow_dirty_data=True, allow_dirty_code=True)
+        return batch_dir
+    return _run
+
+
+@pytest.fixture(scope="function")
+def strategy_ensemble_batch(strategy_ensemble: Callable[[str], Path]) -> Path:
+    """``strategy_ensemble`` of ``alice_rebalance``, its rebalancing strategy
+    steering every member (#359). Returns the batch dir."""
+    return strategy_ensemble("alice_rebalance")
 
 
 @pytest.fixture(scope="function")

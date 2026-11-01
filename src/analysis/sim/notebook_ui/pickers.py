@@ -29,7 +29,7 @@ import pandas as pd
 import traitlets
 from IPython.display import clear_output, display
 
-from analysis.frames import index_years
+from analysis.frames import clip_years, index_years
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
 from analysis.sim.connection import RunConnection, ScenarioConnection
@@ -1480,20 +1480,9 @@ class TimeRangePicker(widgets.IntRangeSlider):
         self.min, self.max = first, last
 
     def clip(self, data: pd.DataFrame | pd.Series) -> Any:
-        """The rows of ``data`` in the selected years.
-
-        ``data`` is indexed by month (a ``DatetimeIndex`` or ``PeriodIndex``)
-        or by year (integers, or their strings). A full selection returns
-        ``data`` itself."""
-        if self.is_full:
-            return data
-        index = data.index
-        if isinstance(index, (pd.DatetimeIndex, pd.PeriodIndex)):
-            years = pd.Index([moment.year for moment in index])
-        else:
-            years = pd.Index([int(year) for year in index])
-        low, high = self.value
-        return data[(years >= low) & (years <= high)]
+        """The rows of ``data`` in the selected years (``frames.clip_years``:
+        by month or by year). A full selection returns ``data`` itself."""
+        return data if self.is_full else clip_years(data, self.value)
 
 
 def controls_row(*controls: widgets.Widget) -> widgets.HBox:

@@ -375,6 +375,8 @@ def test_time_range_clips_by_month_or_by_year() -> None:
     assert time_range.clip(monthly.to_period("M")).index.year.unique().tolist() == [2027]
     assert time_range.clip(yearly).index.tolist() == [2027]
     assert time_range.clip(labelled).index.tolist() == ["2027"]
+    months = pd.Series([1, 2], index=["2026-12-31", "2027-01-31"])
+    assert time_range.clip(months).index.tolist() == ["2027-01-31"]
 
 
 class _Shown(Connections):

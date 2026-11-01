@@ -44,7 +44,7 @@ from analysis.sim import (
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
-    open_run, open_scenario, year_end_values, Connection, RunConnection,
+    EXPENSE_CATEGORIES, open_run, open_scenario, year_end_values, Connection, RunConnection,
 )
 from analysis.sim.holdings import (
     account_holdings,
@@ -2461,6 +2461,77 @@ def ensemble_drift(
             deaths=store.base_case_deaths()), graph_file, "ensemble-")
 
 
+@ensemble_group_command.command("spending")
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
+@_ENSEMBLE_RUNS_DIR_OPTION
+@_ENSEMBLE_DATA_DIR_OPTION
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to report on; default: the latest.",
+)
+@click.option("--category", default=None, type=completion.EXPENSE_CATEGORY,
+              help="One expense category's spending instead of all of it: any category the "
+                   "members spent on.")
+@click.option(
+    "--dollars", type=click.Choice([m.value for m in DollarMode]),
+    default=DollarMode.CPI_CONSTANT.value, show_default=True,
+    help="Dollars the spending is reported in.",
+)
+@_ENSEMBLE_GRAPH_OPTIONS
+def ensemble_spending(
+    scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    category: str | None, dollars: str, as_graph: bool, graph_file: Path | None,
+) -> None:
+    """Spending against the plan across an ensemble's members (#408).
+
+    Per year, across members: delivered spending's 5th, 50th and 95th
+    percentiles and the mean of its worst 5% and 20% (CVaR), the median
+    plan, the median share of plan delivered, and the share of members
+    whose spending strategies cut that year. Below it, over the whole run:
+    each member's worst year (median and CVaR across members), its share of
+    plan delivered, the years cut on average and the members ever cut.
+    --chart draws the spread of spending by year against the plan.
+
+    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+    _note_use(data_dir, scenario_name)
+    _hold_tables()
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    store = _open_series(batch_dir)
+    mode = DollarMode(dollars)
+    offered = [*EXPENSE_CATEGORIES, *(c for c in store.spending_categories() if c not in EXPENSE_CATEGORIES)]
+    if category is not None and category not in offered:
+        raise click.BadParameter(f"{category!r} is not one of: {', '.join(offered)}",
+                                 param_hint="'--category'")
+    delivered, budgeted = store.spending(mode, category)
+    what = f"{category} spending" if category else "spending"
+    click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); "
+               f"{what} against the plan, {_DOLLAR_LABELS[mode]}")
+    table = reports.ensemble_spending_table(delivered, budgeted)
+    if table.empty:
+        click.echo("(no spending in the members)")
+        return
+    shares = ("of_plan", "cut")
+    click.echo(table.to_string(formatters={
+        **{c: (lambda v: f"{v:,.0f}") for c in table.columns if c not in shares},
+        **{c: (lambda v: f"{v:.0%}") for c in shares},
+    }))
+    summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years())
+    click.echo(f"worst whole year per member: median ${summary['worst_year_median']:,.0f}, "
+               f"CVaR 5% ${summary['worst_year_cvar05']:,.0f}, 20% ${summary['worst_year_cvar20']:,.0f}")
+    click.echo(f"of plan over the run: median {summary['of_plan_median']:.1%}, "
+               f"worst member {summary['of_plan_worst']:.1%}; years cut {summary['years_cut_mean']:.0%} "
+               f"on average; members ever cut {summary['members_ever_cut']:.0%}")
+    if as_graph or graph_file is not None:
+        from analysis.sim.spending_charts import ensemble_spending_figure
+
+        _draw_figure(ensemble_spending_figure(
+            delivered, budgeted, f"{what.capitalize()} against the plan ({scenario_name})",
+            ylabel=_DOLLAR_LABELS[mode], deaths=store.base_case_deaths()), graph_file, "ensemble-")
+
+
 def _echo_ensemble_rail_deltas(
     data_dir: Path | None, baseline: str, variant: str,
     sides: Mapping[str, EnsembleSeries], mode: DollarMode,
@@ -3541,7 +3612,9 @@ def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode
     )
 
 
-COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "account")
+COMPARE_SECTIONS = (
+    "runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "spending", "account",
+)
 """``sim compare``'s sections, in the order it prints them (#188)."""
 
 _COMPARE_MAX_GRAPHED = 4
@@ -3623,7 +3696,8 @@ def compare_command(
     scenario's strategies and its largest allocation drift by year end
     (#359) when any has strategies or targets (a strategy on vs off: compare
     with a child where `sim strategy edit NAME --disable` switches it off),
-    and with --account, that account's balance.
+    each scenario's spending against its plan by year (#408) when any has a
+    spending strategy, and with --account, that account's balance.
 
     BASELINE left out is the current scenario; with no VARIANTS, one is
     asked for. A scenario with no accounts is a valid compare point."""
@@ -3738,6 +3812,8 @@ def compare_command(
                                         mode, asked="guard-rails" in sections)
         if "strategies" in shown:
             _echo_strategy_comparison(connections, scenarios, asked="strategies" in sections)
+        if "spending" in shown:
+            _echo_spending_comparison(connections, scenarios, mode, asked="spending" in sections)
 
         balances = None
         if account is not None and ("account" in shown or graphed):
@@ -3829,6 +3905,42 @@ def _echo_strategy_comparison(
                           for name, frame in by_scenario.items()})
     table.index.name = "month"
     _echo_frame(table.map(lambda v: _cell(v if pd.isna(v) else f"{v:.1f}")))
+
+
+def _whole_dollars(value: float) -> str:
+    """``$1,235``, ``-$12``: whole dollars, the sign before the dollar sign."""
+    dollars = round(value)
+    return f"-${-dollars:,}" if dollars < 0 else f"${dollars:,}"
+
+
+def _echo_spending_comparison(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], mode: DollarMode, *,
+    asked: bool,
+) -> None:
+    """``sim compare``'s spending section (#408): each scenario's delivered
+    spending by year with each variant's difference, then each one's whole
+    run against its plan. Shown by default only when a run has a spending
+    strategy, and said to be empty only when ``asked`` for."""
+    from analysis.sim import compare
+
+    if not asked and not compare.uses_spending_strategies(connections):
+        return
+    found = compare.spending_by_scenario(connections, scenarios, mode)
+    if not found:
+        click.echo("\nSpending: none in these runs")
+        return
+    baseline, variants = scenarios[0], scenarios[1:]
+    click.echo(f"\nSpending delivered by year ({DollarMode(mode).label}):")
+    table = compare.spending_comparison(found, baseline, variants)
+    _echo_frame(table.map(lambda v: _cell(v if pd.isna(v) else _whole_dollars(v))))
+    click.echo("\nSpending against each scenario's plan over the run:")
+    summary = compare.spending_summaries(found)
+    money = ("delivered", "budgeted", "rms", "lowest")
+    shares = ("of_plan", "redirected")
+    _echo_frame(summary.astype(object).assign(
+        **{c: summary[c].map(_whole_dollars) for c in money},
+        **{c: summary[c].map(lambda v: f"{v:.1%}") for c in shares},
+    ).map(_cell))
 
 
 def _echo_guard_rail_comparison(
@@ -9234,7 +9346,7 @@ def _render_rail_summary(summary: pd.DataFrame):
         table.add_column(column, justify=justify, no_wrap=True)
 
     def money(value: float) -> str:
-        return f"-${-value:,.0f}" if round(value) < 0 else f"${value:,.0f}"
+        return _whole_dollars(value)
 
     for row in named_rows(summary):
         style = _PAST_STYLES[str(row.sense)]

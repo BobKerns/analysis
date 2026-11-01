@@ -298,7 +298,7 @@ def strategy_compare_widget(
                 years=(low, high), deaths=compare.scenario_deaths(connections, scenarios))
             show_figure(fig)
             table = pd.DataFrame({name: year_end_rows(frame)[MAX_ABS] for name, frame in frames.items()})
-            table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
+            table = time_range.clip(table)
             display(StyledMarkdown("**Largest drift either way at year end**, percentage points"
                                    + (f" (band ±{band:g})" if band is not None else "")))
             display(table.style.format("{:.1f}", na_rep="—"))
@@ -312,6 +312,61 @@ def strategy_compare_widget(
     if container.ok:
         _redraw()
     return widgets.VBox([controls_row(time_range), output])
+
+
+def spending_compare_widget(
+    container: MultiScenarioConnections,
+    dollar_mode: DollarModePicker | None = None,
+    time_range: TimeRangePicker | None = None,
+    **_,
+) -> widgets.VBox:
+    """Spending against the plan per scenario (#408), as ``sim compare
+    --section spending`` shows it: each run's delivered spending by year as
+    a line, its plan dashed where a strategy moved it off; then delivered by
+    year with each variant's difference, and each run's whole span against
+    its plan."""
+    from analysis.sim.spending_charts import spending_compare_figure
+
+    dollar_mode = dollar_mode or DollarModePicker()
+    time_range = _time_range(time_range, container)
+    output = widgets.Output()
+    connections, scenarios = container.connections, container.scenarios
+    # Only the dollars change the numbers; a new time range only clips them.
+    by_mode: dict[DollarMode, dict[str, compare.SpendingReport]] = {}
+
+    def _redraw(*_):
+        with output:
+            clear_output(wait=True)
+            mode = DollarMode(dollar_mode.value)
+            if mode not in by_mode:
+                by_mode[mode] = compare.spending_by_scenario(connections, scenarios, mode)
+            found = by_mode[mode]
+            if not found:
+                display(StyledMarkdown("_No spending in these runs._"))
+                return
+            low, high = time_range.value
+            unit = f"{mode.label} dollars"
+            show_figure(spending_compare_figure(
+                {name: report for name, (report, _summary, _years) in found.items()},
+                f"Spending against the plan, {unit}", ylabel=unit, years=(low, high),
+                deaths=compare.scenario_deaths(connections, scenarios)))
+            baseline, variants = scenarios[0], list(scenarios[1:])
+            table = compare.spending_comparison(found, baseline, variants)
+            table = time_range.clip(table)
+            display(StyledMarkdown(f"**Spending delivered by year** ({unit})"))
+            display(table.style.format("${:,.0f}", na_rep="—"))
+            summary = compare.spending_summaries(found)
+            display(StyledMarkdown("**Against each scenario's plan over the run**: the lowest year is "
+                                   "the lowest whole year"))
+            display(summary.style.format({
+                "delivered": "${:,.0f}", "budgeted": "${:,.0f}", "rms": "${:,.0f}", "lowest": "${:,.0f}",
+                "of_plan": "{:.1%}", "redirected": "{:.1%}"}))
+
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
+    if container.ok:
+        _redraw()
+    return widgets.VBox([controls_row(dollar_mode, time_range), output])
 
 
 def net_worth_compare_widget(
