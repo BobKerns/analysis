@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -87,12 +88,75 @@ def tree_digest(root: Path) -> str:
     return h.hexdigest()[:20]
 
 
-def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(list(argv), text=True, capture_output=True, **kwargs)
+# The programs run() has going, so a failing parallel build can stop them all.
+_RUNNING: set[subprocess.Popen[str]] = set()
+_RUNNING_LOCK = threading.Lock()
+_stopped = False  # set by stop_running(), until allow_running()
+
+
+def run(argv: Sequence[str], *, input: str | None = None, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run a program to the end, raising with its last lines if it fails.
+
+    Each runs in its own process group, so stop_running() takes its children
+    with it (VHS's browser and ttyd), and so does an interrupt here.
+    """
+    with _RUNNING_LOCK:
+        if _stopped:
+            raise RuntimeError(f"{Path(argv[0]).name}: not started, the build is stopping")
+        proc = subprocess.Popen(list(argv), text=True, stdin=subprocess.PIPE if input is not None else None,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, **kwargs)
+        _RUNNING.add(proc)
+    try:
+        stdout, stderr = proc.communicate(input)
+    except BaseException:
+        _kill(proc)
+        raise
+    finally:
+        with _RUNNING_LOCK:
+            _RUNNING.discard(proc)
     if proc.returncode != 0:
-        tail = "\n".join((proc.stderr or proc.stdout).splitlines()[-15:])
-        raise RuntimeError(f"{Path(argv[0]).name} failed ({proc.returncode}):\n{tail}")
-    return proc
+        tail = "\n".join((stderr or stdout).splitlines()[-15:])
+        raise RuntimeError(f"{Path(argv[0]).name} failed ({_exit_status(proc.returncode)}):\n{tail}")
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def allow_running() -> None:
+    """Let run() start programs again, after stop_running()."""
+    global _stopped
+    with _RUNNING_LOCK:
+        _stopped = False
+
+
+def _exit_status(code: int) -> str:
+    # A negative code is the signal that ended it; SIGKILL from nobody here
+    # is most likely the kernel's out-of-memory killer.
+    if code == -signal.SIGKILL:
+        return f"{code}: killed, most likely out of memory"
+    return str(code)
+
+
+def _kill(proc: subprocess.Popen[str]) -> None:
+    """Stop proc and its process group: politely, then not."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout=3)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def stop_running() -> None:
+    """Stop every program run() has going, and start no more until allow_running() (a build failed)."""
+    global _stopped
+    with _RUNNING_LOCK:
+        _stopped = True
+        running = list(_RUNNING)
+    for proc in running:
+        _kill(proc)
 
 
 def duration(path: Path) -> float:
@@ -151,8 +215,25 @@ def synthesize(sentences: Sequence[str], voice: dict[str, Any], gap: float, out:
     }
     worker = repo / "scripts" / "videos" / "tts_kokoro.py"
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
-    proc = run([uv, "run", "--quiet", "--script", str(worker)], input=json.dumps(request), env=env)
+    argv = [uv, "run", "--quiet", "--script", str(worker)]
+    lang = str(request["lang"])
+    proc = None
+    if lang not in _VOICED:
+        # A language's first narration runs alone: it makes the worker's
+        # environment and, for Japanese, downloads OpenJTalk's dictionary,
+        # which several workers at once corrupt (its tokenizer then fails to start).
+        with _FIRST_VOICE:
+            if lang not in _VOICED:
+                proc = run(argv, input=json.dumps(request), env=env)
+                _VOICED.add(lang)
+    if proc is None:
+        proc = run(argv, input=json.dumps(request), env=env)
     return [float(d) for d in json.loads(proc.stdout.strip().splitlines()[-1])["durations"]]
+
+
+# Narration languages the worker has spoken this run (see synthesize).
+_VOICED: set[str] = set()
+_FIRST_VOICE = threading.Lock()
 
 
 # --- slides ------------------------------------------------------------------
