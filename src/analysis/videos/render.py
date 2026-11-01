@@ -174,18 +174,36 @@ def chromium_path() -> str | None:
     )
 
 
+def launch_chromium(pw: Any, args: Sequence[str] = ()) -> Any:
+    """A headless Chromium for slides and notebook scenes: ``chromium_path()``
+    when there is one, else Playwright's own download, else an installed
+    Google Chrome. A Playwright upgrade wants a new download, and a build
+    shouldn't fail for want of it while Chrome is there."""
+    from playwright.sync_api import Error
+
+    # A stale ANALYSIS_VIDEO_CHROMIUM falls through to the others, like a
+    # missing download.
+    chromium = chromium_path()
+    tries = [*([{"executable_path": chromium}] if chromium else []), {}, {"channel": "chrome"}]
+    for how in tries:
+        try:
+            return pw.chromium.launch(**how, args=list(args))
+        except Error:
+            continue
+    raise ToolMissing(
+        "no Chromium for slides and notebook scenes: run `uv run playwright install chromium`, "
+        "install Google Chrome, or set ANALYSIS_VIDEO_CHROMIUM")
+
+
 def render_slide(html: str, theme: Theme, out: Path) -> None:
     """Screenshot the slide's page at the video's size (Playwright's Chromium)."""
-    from playwright.sync_api import Error, sync_playwright
+    from playwright.sync_api import sync_playwright
 
     with tempfile.TemporaryDirectory() as tmp:
         page_file = Path(tmp) / "slide.html"
         page_file.write_text(html, encoding="utf-8")
         with sync_playwright() as pw:
-            try:
-                browser = pw.chromium.launch(executable_path=chromium_path())
-            except Error:
-                browser = pw.chromium.launch(channel="chrome")  # an installed Google Chrome
+            browser = launch_chromium(pw)
             try:
                 page = browser.new_page(
                     viewport={"width": theme.width, "height": theme.height}, device_scale_factor=theme.scale
