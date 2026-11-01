@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from datetime import date
 
 from analysis.sim.strategy_api import (
-    Account, Context, Decision, Dollars, LotView, Percent, Realize, Strategy, StrategyError, Tag,
-    Transfer, is_long_term, percent, register, sale_gain,
+    Account, Context, Decision, Dollars, LotView, Percent, Realize, ScenarioView, Strategy,
+    StrategyError, Tag, Transfer, is_long_term, percent, register, sale_gain,
 )
 
 TAX_STEP = 10_000
@@ -26,6 +26,15 @@ def _dollars(cents: float) -> str:
 
 def _rate(micros: int) -> str:
     return f"{micros / 10_000:g}%"
+
+
+def _federal_rule(scenario: ScenarioView, what: str) -> list[str]:
+    """The load problem when ``ctx.tax`` would have no single federal rule to read."""
+    count = scenario.tax_rules.get("federal", 0)
+    if count == 1:
+        return []
+    found = "there is none" if count == 0 else f"there are {count}"
+    return [f"{what} measures with the federal tax_accumulator rule, and {found}"]
 
 
 def _largest_within(fits: Callable[[int], bool], cap: int) -> int:
@@ -100,6 +109,10 @@ class Harvest(Strategy):
         """Harvest losses instead, in a year a lot is down by loss_minimum."""
         loss_minimum: Dollars = 100_000
         """The smallest loss on a lot worth harvesting."""
+
+    @classmethod
+    def check(cls, params: Harvest.Params, scenario: ScenarioView) -> list[str]:
+        return _federal_rule(scenario, "harvesting gains") if params.gains else []
 
     def year_end(self, ctx: Context) -> Decision | None:
         p = self.params
@@ -187,7 +200,7 @@ class Gift(Strategy):
     the recipient takes over their basis and the household owes no tax on
     the gain. Otherwise it gives cash, selling the least-appreciated first,
     and gives less when the sale would add more than ``max_tax`` to the
-    year's federal tax. One strategy per recipient."""
+    year's federal tax. Each recipient gets a strategy of its own."""
 
     kind = "gift"
 
@@ -205,6 +218,24 @@ class Gift(Strategy):
         """Give shares (no tax on their gain) rather than sell for cash."""
         max_tax: Dollars | None = None
         """The most a cash gift's sale may add to the year's federal tax; blank: no limit."""
+
+    @classmethod
+    def check(cls, params: Gift.Params, scenario: ScenarioView) -> list[str]:
+        problems = []
+        kind, subkind = scenario.accounts.get(params.to, ("", ""))
+        if (kind, subkind) != ("expense", "gift"):
+            problems.append(
+                f"to '{params.to}' is {kind or '?'}/{subkind or '?'}; "
+                "a gift goes to an expense account of subkind gift")
+        if params.max_tax is not None and not params.in_kind:
+            problems.extend(_federal_rule(scenario, "max_tax"))
+        return problems
+
+    def year_start(self, ctx: Context) -> Decision | None:
+        # The amounts are in dollars of the strategy's first month, not its
+        # first December.
+        ctx.memory.setdefault("since", ctx.month.isoformat())
+        return None
 
     def year_end(self, ctx: Context) -> Decision | None:
         p = self.params

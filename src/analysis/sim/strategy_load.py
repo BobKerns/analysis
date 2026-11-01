@@ -22,7 +22,7 @@ from typing import Any, get_type_hints
 from analysis.sim import registries, units
 from analysis.sim.distributions import DistributionError, rewrite_outcomes
 from analysis.sim.asset_classes import UNCLASSIFIED, class_weights
-from analysis.sim.strategy_api import Strategy, param_units
+from analysis.sim.strategy_api import ScenarioView, Strategy, param_units
 from analysis.sim.strategy_code import StrategyKinds
 
 __all__ = ["PreparedStrategy", "PreparedVary", "parse_enabled", "prepare_strategies",
@@ -207,6 +207,7 @@ def prepare_strategies(
     tags: Collection[str],
     target_sets: Collection[str],
     rules: Sequence[tuple[str, str, frozenset[str]]] = (),
+    scenario: ScenarioView | None = None,
     issues: list[str],
 ) -> list[PreparedStrategy]:
     """The enabled strategies, each checked: a known kind; an interior chain
@@ -215,7 +216,8 @@ def prepare_strategies(
     chain and rule owned by no other enabled strategy; a start no later than
     its end; and params its ``Params`` accepts. Disabled rows are checked
     too, except for ownership. ``rules`` is each scheduled rule's ``(name,
-    amount_rule_kind, tags)``."""
+    amount_rule_kind, tags)``. With ``scenario``, the kind's own
+    :meth:`Strategy.check` runs on params that passed (#421)."""
     prepared: list[PreparedStrategy] = []
     owner_of: dict[str, str] = {}
     rule_owner: dict[str, str] = {}
@@ -282,6 +284,11 @@ def prepare_strategies(
             params, bad = convert_params(
                 cls, raw, tags=tags, target_sets=target_sets, accounts=account_names)
             problems.extend(bad)
+            if not bad and scenario is not None:
+                try:
+                    problems.extend(cls.check(cls.Params(**params), scenario))
+                except Exception as e:  # a data-repo kind's check is its author's code
+                    problems.append(f"kind '{kind}' check failed: {type(e).__name__}: {e}")
         if enabled and chain in chains:
             if chain in owner_of:
                 problems.append(f"chain '{chain}' is already owned by strategy '{owner_of[chain]}'")

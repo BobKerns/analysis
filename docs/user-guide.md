@@ -1430,7 +1430,9 @@ sim strategy add family_gift --kind gift --param to=Expense_Family \
 Each command asks for anything it still needs, offering what you gave as
 the answer.
 
-Both need the scenario's federal tax rule to estimate the year's tax.
+Harvesting gains, and a cash gift with `max_tax`, need the scenario's
+federal tax rule to estimate the year's tax; loading the scenario says so
+if it has none.
 `sim strategy log` gives each year's decision, such as
 `realized $26,112 of long-term gain into the 0% band (room $26,112)`.
 `sim report gains` shows the harvested gains in their own `harvested`

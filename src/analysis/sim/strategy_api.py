@@ -31,8 +31,8 @@ from typing import (
 
 __all__ = [
     "API_VERSION", "Account", "Allocation", "ChainView", "Context", "Decision", "Dollars",
-    "LotRef", "LotView", "Percent", "PersonView", "Put", "Realize", "RuleView", "Spend",
-    "StepView", "Strategy", "StrategyError", "Tag", "Take", "TargetSet", "TaxEstimate",
+    "LotRef", "LotView", "Percent", "PersonView", "Put", "Realize", "RuleView", "ScenarioView",
+    "Spend", "StepView", "Strategy", "StrategyError", "Tag", "Take", "TargetSet", "TaxEstimate",
     "TaxView", "Transfer", "Unit", "is_long_term", "is_registered", "param_units", "percent",
     "register", "sale_gain",
 ]
@@ -606,6 +606,24 @@ class Strategy:
         :class:`Realize` moves, posted in order (a later one sees the
         balances an earlier one left). ``ctx.tax`` sees the year's income."""
         return None
+
+
+    @classmethod
+    def check(cls, params: Any, scenario: ScenarioView) -> Sequence[str]:
+        """Problems with ``params`` (a ``Params``) in ``scenario``, found at
+        load, each a short phrase; none by default. For what a parameter's
+        unit can't say, such as a tax rule the kind needs (#421)."""
+        return ()
+
+
+@dataclass(frozen=True)
+class ScenarioView:
+    """What :meth:`Strategy.check` sees of the scenario at load (#421)."""
+
+    accounts: Mapping[str, tuple[str, str]]
+    """Each account's ``(kind, subkind)``."""
+    tax_rules: Mapping[str, int]
+    """How many ``tax_accumulator`` rules each scope (``federal``, ``state``) has."""
 
 
 _HOOKS = ("draw", "place", "year_start", "scale", "year_end")

@@ -141,27 +141,32 @@ def test_gift_in_kind_gives_basis_and_realizes_no_gain(run_strategy_scenario, st
     _strategy(strategy_csv, "family", "gift", to="Expense_Family", amount="19000.00",
               portfolio="portfolio:invest")
     run = run_strategy_scenario(SCENARIO)
-    month, moved, note, _detail = _year_ends(run)[0]
-    assert (month, moved, note) == ("2026-12-31", 1_900_000, "gave $19,000 in kind to Expense_Family")
+    month, moved, note, detail = _year_ends(run)[0]
+    # The amount is in dollars of the strategy's first month (May), so the
+    # first December's gift is already raised by May-to-December inflation.
+    gift = detail["amount"]
+    assert 1_900_000 < gift < 1_950_000
+    assert (month, moved, note) == (
+        "2026-12-31", gift, f"gave ${gift / 100:,.0f} in kind to Expense_Family")
     legs = _query(run, (
         "SELECT a.name, t.amount, t.tax_character FROM transfer_event t "
         "JOIN account a ON a.id = t.to_account JOIN strategy_decision d ON d.id = t.strategy_decision_id "
         "WHERE d.hook = 'year_end' AND t.date = '2026-12-31'"))
-    assert legs == [("Expense_Family", 1_900_000, "none")]
+    assert legs == [("Expense_Family", gift, "none")]
     before = _query(run, (
         "SELECT ls.balance, ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
         "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
         "WHERE a.name = ? AND s.month = '2026-11-30'"), BROKERAGE)[0]
     after = _lot(run, BROKERAGE, "2026-12-31")
     # December's growth posts before the gift; the basis leaves pro rata.
-    december_balance = after[0] + 1_900_000
-    assert before[1] is not None and after[1] == before[1] - before[1] * 1_900_000 // december_balance
+    december_balance = after[0] + gift
+    assert before[1] is not None and after[1] == before[1] - before[1] * gift // december_balance
     rc = RunConnection(run)
     try:
         expenses = rc.expenses_by_category()
     finally:
         rc.close()
-    assert expenses.loc["2026-12-31", "gifts"] == pytest.approx(19_000)
+    assert expenses.loc["2026-12-31", "gifts"] == pytest.approx(gift / 100)
 
 
 def test_cash_gift_is_held_to_its_tax_limit(run_strategy_scenario, strategy_csv) -> None:
@@ -187,9 +192,11 @@ def test_gift_waits_for_a_surplus(run_strategy_scenario, strategy_csv) -> None:
     _strategy(strategy_csv, "family", "gift", to="Expense_Family", amount="19000.00",
               portfolio="portfolio:invest", minimum="5000000.00")
     run = run_strategy_scenario(SCENARIO)
-    month, moved, note, _detail = _year_ends(run)[0]
+    month, moved, note, detail = _year_ends(run)[0]
     assert month == "2026-12-31" and moved == 0
-    assert note.startswith("no gift: portfolio $") and note.endswith(" not above $5,000,000")
+    # Raised by inflation since the strategy's first month (May).
+    assert 500_000_000 < detail["minimum"] < 515_000_000
+    assert note == f"no gift: portfolio ${detail['portfolio'] / 100:,.0f} not above ${detail['minimum'] / 100:,.0f}"
 
 
 # ---------- the hook, the moves and ctx.tax ----------
@@ -319,6 +326,38 @@ def test_a_gift_needs_an_account_that_exists(run_strategy_scenario, strategy_csv
     with pytest.raises(LoadError, match="no account named 'Expense_Nobody'"):
         run_strategy_scenario(SCENARIO)
 
+
+
+def test_a_gift_goes_to_a_gift_expense_account(run_strategy_scenario, strategy_csv) -> None:
+    _strategy(strategy_csv, "family", "gift", to="Asset_Savings", amount="100.00",
+              portfolio="portfolio:invest")
+    with pytest.raises(LoadError, match="to 'Asset_Savings' is asset/.*; a gift goes to an expense account"):
+        run_strategy_scenario(SCENARIO)
+
+
+@pytest.mark.parametrize(("kind", "params", "what"), [
+    ("harvest", {"portfolio": "portfolio:invest"}, "harvesting gains"),
+    ("gift", {"to": "Expense_Family", "amount": "100.00", "portfolio": "portfolio:invest",
+              "in_kind": False, "max_tax": "500.00"}, "max_tax"),
+])
+def test_tax_aware_moves_need_the_federal_tax_rule_at_load(
+    run_strategy_scenario, strategy_csv, kind: str, params: dict[str, object], what: str,
+) -> None:
+    _no_harvest(strategy_csv)
+    _strategy(strategy_csv, "check", kind, **params)
+    strategy_csv(SCENARIO, "scheduled.csv").write_text(
+        strategy_csv(SCENARIO, "scheduled.csv").read_text().splitlines()[0] + "\n")
+    with pytest.raises(LoadError, match=f"{what} measures with the federal tax_accumulator rule, and there is none"):
+        run_strategy_scenario(SCENARIO)
+
+
+def test_losses_and_in_kind_gifts_need_no_tax_rule(run_strategy_scenario, strategy_csv) -> None:
+    _strategy(strategy_csv, "harvest", "harvest", portfolio="portfolio:invest", gains=False, losses=True)
+    _strategy(strategy_csv, "family", "gift", to="Expense_Family", amount="100.00",
+              portfolio="portfolio:invest")
+    strategy_csv(SCENARIO, "scheduled.csv").write_text(
+        strategy_csv(SCENARIO, "scheduled.csv").read_text().splitlines()[0] + "\n")
+    run_strategy_scenario(SCENARIO)
 
 # ---------- reports ----------
 
