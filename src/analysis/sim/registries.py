@@ -19,7 +19,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     },
     "expense": {
         "living", "healthcare", "housing", "interest_expense", "taxes_federal",
-        "taxes_state", "taxes_property", "business", "other_expense",
+        "taxes_state", "taxes_property", "business", "gift", "other_expense",
     },
 }
 
@@ -232,8 +232,11 @@ RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_40
 
 # transfer_event.reason_kind (schema.py CHECK), in a sensible display order:
 # a rule firing, the run's opening balances, partial-first-year catch-up
-# facts, a refill draw, or a month-end overflow sweep.
-REASON_KINDS: tuple[str, ...] = ("rule", "initial", "ytd", "ytd_rule", "refill", "overflow")
+# facts, a refill draw, a month-end overflow sweep, or a strategy's year-end
+# move (#421; reason_id is its strategy_decision row).
+REASON_KINDS: tuple[str, ...] = (
+    "rule", "initial", "ytd", "ytd_rule", "refill", "overflow", "strategy",
+)
 
 type AssetClass = Literal[
     "stock_us",

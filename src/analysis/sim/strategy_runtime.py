@@ -15,15 +15,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from datetime import date
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
+from analysis.sim import registries
 from analysis.sim.asset_classes import class_weights, weight_sets, weights_at
 from analysis.sim.strategy_api import (
-    ChainView, Context, Decision, LotRef, LotView, PersonView, Put, RuleView, Spend, StepView,
-    Strategy, StrategyError, Take,
+    ChainView, Context, Decision, LotRef, LotView, PersonView, Put, Realize, RuleView, Spend,
+    StepView, Strategy, StrategyError, Take, TaxView, Transfer,
 )
 from analysis.sim.strategy_code import StrategyKinds
 
@@ -100,6 +101,8 @@ class StrategyRuntime:
         growth_sources: frozenset[int] = frozenset(),
         opening_balances: Mapping[int, int] | None = None,
         first_month: date | None = None,
+        acquired: Mapping[int, date | None] | None = None,
+        roth_lots: Collection[int] = (),
     ) -> None:
         rows = con.execute(
             'SELECT id, name, kind, chain_id, rule_tag, start, "end", params_json '
@@ -111,6 +114,8 @@ class StrategyRuntime:
         """Strategies by the scheduled rule they own."""
         self.strategies: list[Owned] = []
         self.memory: dict[int, dict[str, Any]] = {}
+        self.tax: Any = None
+        """The engine's ``_StrategyTax``, which ``ctx.tax`` reads (#421)."""
         if not rows:
             return  # nothing to ask: skip building the views
         self._con = con
@@ -152,6 +157,8 @@ class StrategyRuntime:
         self._leaf_lot = leaf_lot
         self._members = members
         self._roth_qualified = roth_qualified
+        self._acquired = acquired if acquired is not None else {}
+        self._roth_lots = frozenset(roth_lots)
         self.chain_name: dict[int, str] = dict(con.execute("SELECT id, name FROM chain").fetchall())
         self.chain_role: dict[int, str | None] = dict(con.execute("SELECT id, role FROM chain").fetchall())
         self.leaf_chain_of: dict[int, int] = {}
@@ -277,6 +284,8 @@ class StrategyRuntime:
                 symbol=info.symbol, balance=self._balances.get(lot_id, 0),
                 cost_basis=self._cost_bases.get(lot_id), minimum=self._minimum_of.get(lot_id, 0),
                 roth_qualified=self._roth(lot_id, month),
+                acquired=self._acquired.get(lot_id),
+                taxable_sale=self._sells_with_gain(lot_id),
             )
 
         return Context(
@@ -289,6 +298,21 @@ class StrategyRuntime:
             people=self._people_at(month),
             budget=lambda: self._budget(owned, month),
             annual_return=self._annual_return,
+            tax=self._tax_view(month),
+        )
+
+    def _tax_view(self, month: date) -> TaxView | None:
+        tax = self.tax
+        if tax is None:
+            return None
+        year = month.year
+        return TaxView(
+            year=year,
+            estimator=lambda scope: tax.estimate(scope, year),
+            ytd=lambda: MappingProxyType(tax.ytd(year)),
+            last_year=lambda: (lambda found: None if found is None else MappingProxyType(found))(
+                tax.summary(year - 1)),
+            irmaa_floors=lambda status: tax.irmaa_floors(year, status),
         )
 
     def _cpi(self, since: date, month: date) -> int:
@@ -490,6 +514,99 @@ class StrategyRuntime:
                     "year_start moves nothing; keep the year's course in ctx.memory"
                 )
             self.record(con, owned, "year_start", step_id=step_id, asked=0, decision=decision)
+
+    def year_end(
+        self, con: sqlite3.Connection, step_id: int, month: date,
+        post: Callable[[str, int, int, int, bool, int], int],
+    ) -> None:
+        """Ask each active strategy's ``year_end`` in December (#421), record
+        what it said, and post its moves in order through ``post(move,
+        from lot, to lot, cents, in_kind, decision id)``, which returns the
+        cents it moved."""
+        month_s = month.isoformat()
+        for owned in self.strategies:
+            if "year_end" not in owned.strategy.hooks or not owned.active(month_s):
+                continue
+            decision = self._ask(owned, "year_end", month)
+            if decision is None:
+                continue
+            moves = self._year_end_moves(owned, decision, month)
+            decision_id = self.record(con, owned, "year_end", step_id=step_id, asked=0, decision=decision)
+            moved = 0
+            for move, frm, to, amount, in_kind in moves:
+                mark = con.execute("SELECT COALESCE(MAX(id), 0) FROM transfer_event").fetchone()[0]
+                moved += post(move, frm, to, amount, in_kind, decision_id)
+                self.link_legs(con, decision_id, mark=mark, from_lot=frm, to_lot=to)
+            self.finish(con, decision_id, chosen=moved, fallback=0)
+
+    def _year_end_moves(
+        self, owned: Owned, decision: Decision, month: date,
+    ) -> list[tuple[str, int, int, int, bool]]:
+        """``decision``'s moves as ``(move, from lot, to lot, cents, in_kind)``,
+        checked: :class:`Transfer` out of an asset lot into another asset lot
+        or an expense account, ``in_kind`` only from a lot that tracks basis
+        into an expense; :class:`Realize` on a taxable lot that tracks basis."""
+        what = f"strategy {owned.name!r} ({owned.kind}) year_end in {month.isoformat()}"
+        try:
+            given = list(decision.moves)
+        except TypeError as e:
+            raise StrategyError(f"{what}: Decision.moves must be a list of Transfer and Realize: {e}") from e
+        out: list[tuple[str, int, int, int, bool]] = []
+        for move in given:
+            if not isinstance(move, (Transfer, Realize)):
+                raise StrategyError(f"{what}: a year_end answers with Transfer and Realize, not {move!r}")
+            if not isinstance(move.amount, int) or isinstance(move.amount, bool) or move.amount <= 0:
+                raise StrategyError(f"{what}: amount {move.amount!r} in {move!r} must be whole cents > 0")
+            if isinstance(move, Realize):
+                lot = self._asset_lot(move.lot, what)
+                if not self._sells_with_gain(lot):
+                    raise StrategyError(
+                        f"{what}: {move.lot} doesn't track a taxable gain; Realize needs a taxable "
+                        "lot with a cost basis")
+                out.append(("realize", lot, lot, move.amount, False))
+                continue
+            source = self._asset_lot(move.source, what)
+            to = self._destination(move.to, what)
+            if to == source:
+                raise StrategyError(f"{what}: {move.source} can't transfer to itself (use Realize)")
+            to_kind = self.lots[to].kind
+            if move.in_kind:
+                if to_kind != "expense":
+                    raise StrategyError(f"{what}: in_kind gives into an expense account, not {move.to}")
+                if not self._sells_with_gain(source):
+                    raise StrategyError(f"{what}: in_kind gives a lot's shares; {move.source} has no cost basis")
+            out.append(("transfer", source, to, move.amount, bool(move.in_kind)))
+        return out
+
+    def _asset_lot(self, ref: object, what: str) -> int:
+        lot = self.lot_id.get(ref) if isinstance(ref, LotRef) else None
+        if lot is None or self.lots[lot].kind != "asset":
+            raise StrategyError(f"{what}: {ref!r} is not an asset lot")
+        return lot
+
+    def _destination(self, to: object, what: str) -> int:
+        """A move's ``to``: a lot, or an account by name that has one lot."""
+        if isinstance(to, LotRef):
+            lot = self.lot_id.get(to)
+        elif isinstance(to, str):
+            found = [i for ref, i in self.lot_id.items() if ref.account == to]
+            lot = found[0] if len(found) == 1 else None
+            if len(found) > 1:
+                raise StrategyError(f"{what}: account {to!r} has several lots; name one as a LotRef")
+        else:
+            lot = None
+        if lot is None or self.lots[lot].kind not in ("asset", "expense"):
+            raise StrategyError(f"{what}: {to!r} is not an asset lot or an expense account")
+        return lot
+
+    def _sells_with_gain(self, lot: int) -> bool:
+        """A sale out of ``lot`` realizes a gain: a taxable, non-cash lot with a basis."""
+        info = self.lots[lot]
+        return (
+            lot not in self._roth_lots and self._cost_bases.get(lot) is not None
+            and info.tax_treatment == "taxable"
+            and registries.withdrawal_tax_character(info.tax_treatment, info.subkind) is None
+        )
 
     def scale(
         self, con: sqlite3.Connection, owned: Owned, tid: int, amount: int, *,

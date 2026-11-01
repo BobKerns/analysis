@@ -267,6 +267,10 @@ rcpie
 RDONLY
 RDWR
 rebalances
+rebought
+rebuy
+rebuying
+rebuys
 recategorize
 recomputable
 reconstructable
