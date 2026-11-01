@@ -39,6 +39,7 @@ from .schema import connect_sim_file
 
 if TYPE_CHECKING:
     from analysis.sim.lifespan_curves import PersonLifespan
+    from analysis.sim.shortfalls import NegativeBalance
 
 # Category-bucketing defaults for RunConnection's derived-data methods below.
 # Notebooks may pass their own mapping/set to override any of these.
@@ -919,6 +920,16 @@ class RunConnection(Connection):
             return None
         seed = row["seed"].iloc[0]
         return int(row["member_index"].iloc[0]), None if pd.isna(seed) else int(seed)
+
+    def negative_balances(self) -> list[NegativeBalance]:
+        """The run's negative-balance warnings (#431), as ``sim explain``
+        lists them: see ``shortfalls.negative_balances``."""
+        from analysis.sim import shortfalls
+
+        # Its own read-only connection, opened on the calling thread: a
+        # widget redraw can come from a kernel subshell (see _read_sql).
+        return self._cached("negative_balances",
+                            lambda: shortfalls.run_negative_balances(self.run_path))
 
     def deaths(self) -> list[Death]:
         """Each person's death in this run (#255), from ``lifespan.csv``: the
