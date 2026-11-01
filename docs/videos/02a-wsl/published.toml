@@ -1,0 +1,38 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "ABq0vnGIwlk"
+uploaded = 2026-11-01T00:01:18Z
+scenes = [
+  ["title", 20.96],
+  ["why", 30.10],
+  ["turn-on", 26.14],
+  ["linux-user", 16.49],
+  ["password", 24.72],
+  ["open-again", 23.49],
+  ["files", 26.08],
+  ["explorer", 22.99],
+  ["vscode", 27.04],
+  ["vscode-window", 24.61],
+  ["ready", 18.29],
+  ["end", 5.80],
+]
+
+[ja]
+video = "Yo0Z5DRmMNE"
+uploaded = 2026-11-01T00:01:32Z
+scenes = [
+  ["title", 25.37],
+  ["why", 34.56],
+  ["turn-on", 34.97],
+  ["linux-user", 19.51],
+  ["password", 30.15],
+  ["open-again", 26.10],
+  ["files", 32.91],
+  ["explorer", 27.91],
+  ["vscode", 35.04],
+  ["vscode-window", 31.71],
+  ["ready", 24.36],
+  ["end", 7.05],
+]

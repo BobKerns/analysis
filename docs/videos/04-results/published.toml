@@ -1,0 +1,52 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "hCFPwthvFL4"
+uploaded = 2026-11-01T01:08:32Z
+scenes = [
+  ["title", 19.24],
+  ["contents", 30.68],
+  ["networth-graph", 33.64],
+  ["after-tax", 31.07],
+  ["networth", 36.21],
+  ["runs", 33.22],
+  ["explain", 37.73],
+  ["history", 33.98],
+  ["income", 36.01],
+  ["expenses", 30.24],
+  ["tax", 32.49],
+  ["notebooks-card", 16.90],
+  ["nb-networth", 27.57],
+  ["nb-income-tax", 27.17],
+  ["nb-accounts", 24.07],
+  ["nb-events", 26.10],
+  ["nb-overview", 17.27],
+  ["ai", 17.54],
+  ["end", 8.29],
+]
+
+[ja]
+video = "EHjnXhMulQ0"
+uploaded = 2026-11-01T01:09:02Z
+scenes = [
+  ["title", 26.50],
+  ["contents", 36.39],
+  ["networth-graph", 35.87],
+  ["after-tax", 39.23],
+  ["networth", 45.29],
+  ["runs", 43.40],
+  ["explain", 48.21],
+  ["history", 38.45],
+  ["income", 43.35],
+  ["expenses", 36.27],
+  ["tax", 39.75],
+  ["notebooks-card", 23.60],
+  ["nb-networth", 27.57],
+  ["nb-income-tax", 31.92],
+  ["nb-accounts", 24.07],
+  ["nb-events", 36.27],
+  ["nb-overview", 19.78],
+  ["ai", 22.01],
+  ["end", 8.55],
+]
