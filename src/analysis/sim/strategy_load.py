@@ -427,9 +427,12 @@ def _base_value(cls: type[Strategy], param: str, params: Mapping[str, Any]) -> f
         value = params[param]
     else:
         field = next(f for f in dataclasses.fields(cls.Params) if f.name == param)
-        if field.default is dataclasses.MISSING:
+        if field.default is not dataclasses.MISSING:
+            value = field.default
+        elif field.default_factory is not dataclasses.MISSING:
+            value = field.default_factory()
+        else:
             return None
-        value = field.default
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 

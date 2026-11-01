@@ -15934,11 +15934,12 @@ def strategy_edit_command(
               help="Scenario folder name (default: the current scenario).")
 @_LISTING_DATA_DIR_OPTION
 def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
-    """Delete a strategy: its file in strategies/, and its strategy_vary/
-    file when nothing is inherited. The chain's own steps decide again. An
+    """Delete a strategy: its file in strategies/ and this scenario's
+    strategy_vary/ file for it. The chain's own steps decide again. An
     inherited one is deleted where it is defined (or switched off here with
     `sim strategy edit NAME --disable`); deleting this scenario's override
-    of one restores the inherited row."""
+    of one restores the inherited definition, varied as its own scenarios
+    vary it."""
     data = _resolve_data_dir(data_dir)
     folder, scenario_name = _strategy_dir(data, scenario)
     found = _pick_strategy(folder, scenario_name, name, "strategy to delete")
@@ -15949,9 +15950,10 @@ def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, d
             f"switch it off here with `sim strategy edit {strategy_name} --disable`")
     if not yes and not click.confirm(f"delete strategy {strategy_name} from {scenario_name}?", default=False):
         raise click.Abort()
-    _write_strategy(data, scenario_name, folder, strategy_name, None,
-                    drop_vary=found.inherited_from is None)
-    click.echo(f"deleted strategy {strategy_name} from {scenario_name}")
+    varied = strategy_files.vary_path(folder, strategy_name).exists()
+    _write_strategy(data, scenario_name, folder, strategy_name, None, drop_vary=True)
+    click.echo(f"deleted strategy {strategy_name} from {scenario_name}"
+               + (f" (and {registries.STRATEGY_VARY_DIR}/{strategy_name}.csv)" if varied else ""))
 
 
 _has_table = drift.has_table

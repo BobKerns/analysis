@@ -146,7 +146,7 @@ The rates compare spending to the portfolio relative to where they started, so o
 | `sim strategy list [SCENARIO]` | The scenario's strategies, and the scenario each is inherited from |
 | `sim strategy add [NAME]` | Writes `strategies/NAME.csv`. Asks for the kind, what it owns (a chain of a fitting role for a kind that draws or places, a rule tag for one that scales; blank for none when it does both) and each parameter not given as `--param NAME=VALUE`. `--chain` and `--rules` give them |
 | `sim strategy edit [NAME]` | Guided with no options; options change just those fields. Editing an inherited strategy writes the scenario's own file for it, a whole override; `--disable` switches it off for this scenario and its descendants. The kind can't change |
-| `sim strategy delete [NAME]` | Deletes the scenario's own file (restoring an inherited one it overrode; a strategy defined here loses its `strategy_vary/` file too); refuses an inherited one, pointing at `--disable` |
+| `sim strategy delete [NAME]` | Deletes the scenario's own file and its own `strategy_vary/` file for the strategy (restoring an inherited one it overrode, varied as its own scenarios vary it); refuses an inherited one, pointing at `--disable` |
 | `sim strategy log [SCENARIO\|RUNFILE]` | A run's decisions: month, strategy, hook, asked, chosen, chain steps, note (`--strategy`, `--year`); a `scale` decision's note starts with its rule |
 | `sim strategy check [SCENARIO]` | Loads the scenario and runs it twice, comparing every decision |
 | `sim target list\|set\|delete` | `targets.csv`; `set` takes `CLASS=PERCENT` like `sim symbol add`, and sets a class the scenario inherits but leaves out to 0% |

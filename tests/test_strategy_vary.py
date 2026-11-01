@@ -207,3 +207,40 @@ def test_the_parameters_table_and_draws_db_describe_a_strategy_node(
     finally:
         con.close()
     assert node == ("strategy", "flex", "micros", 100_000, 300_000, 200_000)
+
+
+def test_deleting_an_override_drops_its_vary_file(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    child = strategy_scenarios / "scenarios" / "alice_spending_vary"
+    child.mkdir()
+    (child / "scenario.csv").write_text(
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        "alice_spending_vary,,2026-05-31,2040-12-31,42,alice_spending,alice,{}\n")
+    (child / "strategies").mkdir()
+    (child / "strategies" / "flex.csv").write_text(strategy_csv(SCENARIO, "strategies/flex.csv").read_text())
+    vary = _vary(strategy_csv, "upper,uniform,10%,30%,,,\n", scenario="alice_spending_vary")
+    result = CliRunner().invoke(main, ["sim", "strategy", "delete", "flex", "--yes", "--scenario",
+                                       "alice_spending_vary", "--data-dir", str(strategy_scenarios)])
+    assert result.exit_code == 0, result.output
+    assert "(and strategy_vary/flex.csv)" in result.output
+    assert not vary.exists() and not (child / "strategies" / "flex.csv").exists()
+
+
+def test_a_factory_default_is_the_authored_value() -> None:
+    import dataclasses
+
+    from analysis.sim.strategy_load import _base_value
+
+    @dataclasses.dataclass
+    class FactoryParams:
+        years: int = dataclasses.field(default_factory=lambda: 12)
+
+    class Kind:
+        Params = FactoryParams
+
+    assert _base_value(Kind, "years", {}) == 12.0  # ty: ignore[invalid-argument-type]
