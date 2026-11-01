@@ -1,0 +1,2 @@
+kind,chain,rules,trigger,start,end,enabled,params_json,description
+guardrail,,flex:optional,,,,false,"{""portfolio"":""portfolio:invest""}",Switched off

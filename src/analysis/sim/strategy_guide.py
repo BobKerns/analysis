@@ -19,12 +19,14 @@ from typing import Any
 
 import pandas as pd
 
+from analysis.frames import named_rows
 from analysis.sim import drift, registries, units
 from analysis.sim.asset_classes import weight_sets
 from analysis.sim.strategy_api import Strategy, param_units
 
 __all__ = [
-    "ParamInfo", "decision_log", "describe_kind", "drift_by_year", "kind_params", "parse_param_specs",
+    "ParamInfo", "breach_episodes", "breach_text", "breaches", "decision_log", "describe_kind", "drift_by_year",
+    "kind_params", "parse_param_specs",
     "params_text", "read_rows", "summary", "target_sets", "write_rows",
 ]
 
@@ -164,7 +166,8 @@ def summary(row: Mapping[str, str]) -> str:
         part for part in (row.get("chain", ""), f"rules {row['rules']}" if row.get("rules") else "") if part
     )
     on = f" on {owns}" if owns else ""  # a year-end kind owns nothing (#421)
-    return f"{row.get('kind', '')}{on}{when}{params}{off}"
+    answers = f" answering {row['trigger']}" if (row.get("trigger") or "").strip() else ""
+    return f"{row.get('kind', '')}{on}{answers}{when}{params}{off}"
 
 
 def target_sets(rows: Sequence[Mapping[str, str]]) -> dict[str, list[tuple[str, dict[str, str]]]]:
@@ -200,10 +203,11 @@ def decision_log(
 ) -> pd.DataFrame:
     """A run's strategy decisions, oldest first: month, strategy, hook, asked,
     chosen and fallback (dollars), and the note. A ``scale`` decision's note
-    starts with the rule it scaled."""
-    has_rule = any(
-        r[1] == "scheduled_transaction_id" for r in con.execute("PRAGMA table_info(strategy_decision)")
-    )
+    starts with the rule it scaled, an ``on_breach`` one's with the breach it
+    answered (#441): ``tight:annual 2027 entered ($54,658 past)``."""
+    columns = {r[1] for r in con.execute("PRAGMA table_info(strategy_decision)")}
+    has_rule = "scheduled_transaction_id" in columns
+    has_breach = "breach_event_id" in columns
     rule = (
         "CASE WHEN d.scheduled_transaction_id IS NULL THEN d.note "
         "     WHEN d.note = '' THEN r.name ELSE r.name || ': ' || d.note END AS note"
@@ -211,9 +215,14 @@ def decision_log(
     )
     join = ("LEFT JOIN scheduled_transaction r ON r.id = d.scheduled_transaction_id "
             if has_rule else "")
+    breach = ("b.rail AS b_rail, b.margin_kind AS b_kind, b.year AS b_year, b.state AS b_state, "
+              "b.margin_cents AS b_margin" if has_breach else
+              "NULL AS b_rail, NULL AS b_kind, NULL AS b_year, NULL AS b_state, NULL AS b_margin")
+    if has_breach:
+        join += "LEFT JOIN breach_event b ON b.id = d.breach_event_id "
     query = (
         "SELECT s.month, st.name AS strategy, d.hook, d.asked_cents, d.chosen_cents, "
-        f"       d.fallback_cents, {rule} "
+        f"       d.fallback_cents, {rule}, {breach} "
         "FROM strategy_decision d JOIN simulation_step s ON s.id = d.step_id "
         f"JOIN strategy st ON st.id = d.strategy_id {join}WHERE 1=1"
     )
@@ -227,7 +236,72 @@ def decision_log(
     frame = pd.read_sql_query(query + " ORDER BY d.id", con, params=args)
     for column in ("asked", "chosen", "fallback"):
         frame[column] = frame.pop(f"{column}_cents") / 100
+    told = frame["b_rail"].notna()
+    if told.any():
+        frame.loc[told, "note"] = [
+            breach_text(rail, kind, int(year), state, int(margin)) + (f": {note}" if note else "")
+            for rail, kind, year, state, margin, note in zip(
+                frame.loc[told, "b_rail"], frame.loc[told, "b_kind"], frame.loc[told, "b_year"],
+                frame.loc[told, "b_state"], frame.loc[told, "b_margin"], frame.loc[told, "note"],
+                strict=True)
+        ]
     return frame[["month", "strategy", "hook", "asked", "chosen", "fallback", "note"]]
+
+
+def breach_text(rail: str, margin_kind: str, year: int, state: str, margin_cents: int) -> str:
+    """One breach (#441): ``tight:annual 2027 entered ($54,658 past)``, or
+    ``($1,200 inside)`` once back."""
+    side = "past" if margin_cents < 0 else "inside"
+    return f"{rail}:{margin_kind} {year} {state} (${abs(margin_cents) / 100:,.0f} {side})"
+
+
+def breaches(con: sqlite3.Connection, *, strategy: str | None = None) -> pd.DataFrame:
+    """A run's breach events (#441), oldest first: month told, strategy,
+    rail, margin kind, year, state, years past, measure, threshold and
+    margin (dollars, CPI-constant), and whether a decision answered it.
+    Empty for a run from before triggers."""
+    columns = ["month", "strategy", "rail", "margin_kind", "year", "state", "years_past",
+               "measure", "threshold", "margin", "answered"]
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE name = 'breach_event'").fetchone():
+        return pd.DataFrame(columns=columns)
+    query = (
+        "SELECT s.month, st.name AS strategy, b.rail, b.margin_kind, b.year, b.state, b.years_past, "
+        "       b.measure_cents, b.threshold_cents, b.margin_cents, "
+        "       EXISTS (SELECT 1 FROM strategy_decision d WHERE d.breach_event_id = b.id) AS answered "
+        "FROM breach_event b JOIN simulation_step s ON s.id = b.step_id "
+        "JOIN strategy st ON st.id = b.strategy_id"
+    )
+    args: list[Any] = []
+    if strategy:
+        query += " WHERE st.name = ?"
+        args.append(strategy)
+    frame = pd.read_sql_query(query + " ORDER BY b.id", con, params=args)
+    for column in ("measure", "threshold", "margin"):
+        frame[column] = frame.pop(f"{column}_cents") / 100
+    frame["answered"] = frame["answered"].astype(bool)
+    return frame[columns]
+
+
+def breach_episodes(con: sqlite3.Connection) -> list[tuple[str, str, str, int, int | None, int]]:
+    """A run's spells past a triggered rail (#441): ``(strategy, rail,
+    margin_kind, first year past, year back inside or None, answered)``,
+    oldest first, where ``answered`` counts the spell's breaches a
+    decision answered."""
+    told = breaches(con)
+    open_: dict[tuple[str, str, str], list] = {}
+    out: list[tuple[str, str, str, int, int | None, int]] = []
+    for row in named_rows(told, index=False):
+        key = (str(row.strategy), str(row.rail), str(row.margin_kind))
+        if row.state == "entered" or key not in open_:
+            if key in open_:
+                out.append((*key, open_[key][0], None, open_[key][1]))
+            open_[key] = [int(row.year), 0]
+        open_[key][1] += int(bool(row.answered))
+        if row.state == "left":
+            out.append((*key, open_[key][0], int(row.year), open_[key][1]))
+            del open_[key]
+    out.extend((*key, first, None, answered) for key, (first, answered) in open_.items())
+    return sorted(out, key=lambda e: (e[3], e[0], e[1], e[2]))
 
 
 def drift_by_year(

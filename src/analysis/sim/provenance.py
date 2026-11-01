@@ -15,6 +15,7 @@ folders, already covered the same way.
 
 from __future__ import annotations
 
+import csv
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -81,7 +82,7 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
         return DataStamps(version="unversioned", dirty=True, tree_id="", dirty_paths=())
     scoped_abs = [str(data_dir / p) for p in _scoped_paths(data_dir, scenario_name)]
     if scoped_abs:  # an exclude alone would mean everything else
-        scoped_abs.extend(_NOT_DATA)
+        scoped_abs.extend(_not_data(data_dir, [scenario_name]))
     status = repo.git.status("--porcelain", "--", *scoped_abs)
     dirty_paths = tuple(line[3:] for line in status.splitlines()) if status.strip() else ()
     tree_id = _compute_tree_id(repo, scoped_abs)
@@ -108,7 +109,7 @@ def scoped_changes(data_dir: Path, scenario_names: Sequence[str]) -> list[tuple[
     if not scoped:
         return []
     out = repo.git.status("--porcelain", "-z", "--untracked-files=all", "--",
-                          *scoped, *_NOT_DATA)
+                          *scoped, *_not_data(data_dir, scenario_names))
     changes: list[tuple[str, str]] = []
     fields = iter(out.split("\0"))
     for field in fields:
@@ -145,11 +146,43 @@ def changed_scenarios(
 # Files in a scenario folder that no run reads, so editing one must not
 # change its tree (or its children's), nor make them dirty: `.disable`
 # (loader.DISABLE_FILE, #300) says whether to build a scenario, not what it
-# computes, and `guard_rails.csv` (#305) is read only by reports.
+# computes, and `guard_rails.csv` (#305) is read only by reports -- unless a
+# strategy's trigger names a rail (#441), when the run reads them too.
 _NOT_DATA = (
     ":(exclude,glob)**/scenarios/*/.disable",
-    ":(exclude,glob)**/scenarios/*/guard_rails.csv",
 )
+
+
+def _not_data(data_dir: Path, scenario_names: Sequence[str]) -> list[str]:
+    """The excludes for ``scenario_names``' scope: ``_NOT_DATA``, and each
+    lineage folder's ``guard_rails.csv`` unless some lineage holding that
+    folder has a strategy with a ``trigger``, whose rails the run evaluates.
+    A folder two lineages share keeps its rails in scope if either reads
+    them, which can rebuild the other one needlessly but never misses an
+    edit."""
+    folders: set[str] = set()
+    read: set[str] = set()
+    for name in scenario_names:
+        lineage = _scenario_lineage(data_dir, name)
+        folders.update(lineage)
+        if _has_trigger(data_dir, lineage):
+            read.update(lineage)
+    return [*_NOT_DATA, *(f":(exclude,glob)**/scenarios/{folder}/guard_rails.csv"
+                         for folder in sorted(folders - read))]
+
+
+def _has_trigger(data_dir: Path, lineage: Sequence[str]) -> bool:
+    """Whether a strategy file in ``lineage``'s folders has a ``trigger``.
+    Tolerant, as the lineage is: the loader reports a malformed file."""
+    for folder in lineage:
+        for path in sorted((data_dir / "scenarios" / folder / "strategies").glob("*.csv")):
+            try:
+                with path.open(newline="") as f:
+                    if any((row.get("trigger") or "").strip() for row in csv.DictReader(f)):
+                        return True
+            except (OSError, UnicodeDecodeError, csv.Error):
+                continue
+    return False
 
 
 def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:

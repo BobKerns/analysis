@@ -4,10 +4,13 @@ against them, year by year and cumulatively.
 
 A rail is a row of a scenario's ``guard_rails.csv`` (ADR-003 §4.11),
 inherited along the lineage like the other files. Rails are a lens on
-results, not an input to a run: nothing in the engine reads them, the file
-is left out of ``scenario_tree_id`` (ADR-004 §1), and they are evaluated
-from a run when a report asks, so editing one reruns nothing. The loader
-still checks them, so a bad rail fails ``sim check`` and the edit commands.
+results, not an input to a run: the file is left out of
+``scenario_tree_id`` (ADR-004 §1), and they are evaluated from a run when
+a report asks, so editing one reruns nothing. The exception is a rail a
+strategy's ``trigger`` names (#441, ADR-010 §3.3): the intent stores it,
+and each January the engine evaluates it on the run so far with this same
+code (``RunConnection.live``). The loader checks every rail, so a bad one
+fails ``sim check`` and the edit commands.
 
 The two measures:
 

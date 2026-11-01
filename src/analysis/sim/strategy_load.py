@@ -54,6 +54,8 @@ class PreparedStrategy:
     end: str | None
     params: dict[str, Any]
     description: str
+    triggers: tuple[tuple[str, str], ...] = ()
+    """The guard rails it answers (#441): ``(rail, margin kind)``, in file order."""
 
 
 @dataclass(frozen=True)
@@ -208,6 +210,7 @@ def prepare_strategies(
     target_sets: Collection[str],
     rules: Sequence[tuple[str, str, frozenset[str]]] = (),
     scenario: ScenarioView | None = None,
+    rails: Collection[str] = (),
     issues: list[str],
 ) -> list[PreparedStrategy]:
     """The enabled strategies, each checked: a known kind; an interior chain
@@ -217,7 +220,10 @@ def prepare_strategies(
     its end; and params its ``Params`` accepts. Disabled rows are checked
     too, except for ownership. ``rules`` is each scheduled rule's ``(name,
     amount_rule_kind, tags)``. With ``scenario``, the kind's own
-    :meth:`Strategy.check` runs on params that passed (#421)."""
+    :meth:`Strategy.check` runs on params that passed (#421). A ``trigger``
+    names rails among ``rails`` (the lineage's guard rails, #441), each
+    ``<rail>:annual`` or ``<rail>:cumulative``, for a kind with an
+    ``on_breach`` hook."""
     prepared: list[PreparedStrategy] = []
     owner_of: dict[str, str] = {}
     rule_owner: dict[str, str] = {}
@@ -268,6 +274,7 @@ def prepare_strategies(
                     f"chain '{chain}' has steps with a tax_character or basis_of{where}; "
                     "a strategy can't place into such a chain"
                 )
+        triggers = _triggers(row.get("trigger") or "", rails, kind, cls, problems)
         start, end = row.get("start") or None, row.get("end") or None
         if start and end and start > end:
             problems.append(f"start {start} is after end {end}")
@@ -307,9 +314,35 @@ def prepare_strategies(
         if enabled and not problems:
             prepared.append(PreparedStrategy(
                 name=name, kind=kind, chain=chain, rules=rule_tag, start=start, end=end,
-                params=params, description=row.get("description", ""),
+                params=params, description=row.get("description", ""), triggers=triggers,
             ))
     return prepared
+
+
+def _triggers(
+    cell: str, rails: Collection[str], kind: str, cls: type[Strategy] | None, problems: list[str],
+) -> tuple[tuple[str, str], ...]:
+    """A strategy file's ``trigger`` cell as ``(rail, margin kind)`` pairs."""
+    out: list[tuple[str, str]] = []
+    for token in cell.split():
+        rail, colon, margin_kind = token.rpartition(":")
+        if not colon or not rail or margin_kind not in registries.TRIGGER_MARGIN_KINDS:
+            problems.append(
+                f"trigger {token!r} must be <rail>:annual or <rail>:cumulative")
+            continue
+        if rail not in rails:
+            known = ", ".join(sorted(rails)) or "none in guard_rails.csv"
+            problems.append(f"trigger {token!r}: no guard rail named {rail!r} (known: {known})")
+            continue
+        if (rail, margin_kind) in out:
+            problems.append(f"trigger {token!r} is named twice")
+            continue
+        out.append((rail, margin_kind))
+    if out and cls is not None and "on_breach" not in cls.hooks:
+        problems.append(
+            f"kind '{kind}' has no on_breach hook, which a trigger needs "
+            f"(it implements {', '.join(sorted(cls.hooks))})")
+    return tuple(out)
 
 
 def _owned_rules(
@@ -375,21 +408,34 @@ def write_strategies(
     kinds: StrategyKinds,
     sources: Mapping[str, str],
     target_rows: Sequence[Mapping[str, str]],
+    rail_rows: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, int]:
     """Insert ``strategy``, ``allocation_target`` and, when an enabled
     strategy is a data-repo kind, every data-repo module's source
     (``strategy_source``): helpers are imported by path, so the snapshot is
-    the whole folder."""
+    the whole folder. Each trigger's rail goes in as its merged
+    ``guard_rails.csv`` row from ``rail_rows`` (#441)."""
     counts: dict[str, int] = {}
     chain_id = dict(con.execute("SELECT name, id FROM chain").fetchall())
+    triggers = 0
     for s in prepared:
-        con.execute(
+        cur = con.execute(
             'INSERT INTO strategy(name, kind, chain_id, rule_tag, start, "end", params_json, '
             "description) VALUES (?,?,?,?,?,?,?,?)",
             (s.name, s.kind, chain_id[s.chain] if s.chain else None, s.rules or None, s.start, s.end,
              json.dumps(s.params, sort_keys=True, separators=(",", ":")), s.description),
         )
+        for rail, margin_kind in s.triggers:
+            cells = (rail_rows or {})[rail]
+            con.execute(
+                "INSERT INTO strategy_trigger(strategy_id, rail, margin_kind, rail_json) "
+                "VALUES (?,?,?,?)",
+                (cur.lastrowid, rail, margin_kind,
+                 json.dumps(dict(cells), sort_keys=True, separators=(",", ":"))),
+            )
+            triggers += 1
     counts["strategy"] = len(prepared)
+    counts["strategy_trigger"] = triggers
     from_data_repo = any(kinds.origin.get(s.kind) != "built-in" for s in prepared)
     snapshot = sources if from_data_repo else {}
     for module, text in sorted(snapshot.items()):

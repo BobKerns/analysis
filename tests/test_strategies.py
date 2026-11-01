@@ -233,7 +233,7 @@ def test_a_data_repo_kind_snapshots_every_module(
         modules = [m for (m,) in con.execute("SELECT module FROM strategy_source ORDER BY module")]
     finally:
         con.close()
-    assert modules == ["_helpers", "last_leaf"]
+    assert modules == ["_helpers", "cut_on_breach", "last_leaf"]
 
 
 _DRAW = "strategies/draw_by_allocation.csv"
@@ -665,7 +665,7 @@ def test_strategy_add_with_options_writes_a_checked_row(
     assert result.exit_code == 0, result.output
     assert not strategy_csv("alice_rebalance", _DRAW).exists()
     text = strategy_csv("alice_rebalance", "strategies/steer.csv").read_text()
-    assert 'rebalance,portfolio_draw,,2027-01,,,"{""portfolio"":""portfolio:invest"",""targets"":' in text
+    assert 'rebalance,portfolio_draw,,,2027-01,,,"{""portfolio"":""portfolio:invest"",""targets"":' in text
     assert '""band"":""3%""' in text
 
 

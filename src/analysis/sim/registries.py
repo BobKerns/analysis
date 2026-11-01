@@ -264,8 +264,10 @@ ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "we
 # name is the strategy's name.
 STRATEGIES_DIR = "strategies"
 STRATEGY_CSV_HEADER: tuple[str, ...] = (
-    "kind", "chain", "rules", "start", "end", "enabled", "params_json", "description",
+    "kind", "chain", "rules", "trigger", "start", "end", "enabled", "params_json", "description",
 )
+# #441: a strategy's `trigger` names guard rails, each `<rail>:<margin kind>`.
+TRIGGER_MARGIN_KINDS: tuple[str, ...] = ("annual", "cumulative")
 TARGETS_CSV_HEADER: tuple[str, ...] = ("target_set", "as_of", "asset_class", "weight")
 # #408: strategy_vary/<strategy>.csv, one file per strategy, one row per
 # parameter an ensemble varies (ADR-003 §4.14). Bounds are in the parameter's
