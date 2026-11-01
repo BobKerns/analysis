@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from ipywidgets import widgets
 
 from analysis.sim import sensitivity
+from analysis.sim import sensitivity_charts as sc
 from analysis.sim.notebook_ui import sensitivity_widgets as sw
 from analysis.sim.notebook_ui.pickers import (
     AttributionPicker,
@@ -82,7 +83,7 @@ def _deltas(ladder: bool = False) -> pd.DataFrame:
 def test_heatmap_view(value: HeatmapValue, scale: DeltaScale) -> None:
     grid = sensitivity.rank_by_year(_deltas(), value=value.value,
                                     relative=scale == DeltaScale.RELATIVE)
-    ax = sw.heatmap_view(grid, value, scale)
+    ax = sc.heatmap_view(grid, value, scale)
     assert [t.get_text() for t in ax.get_yticklabels()] == ["a", "b"]
     assert any(t.get_text() for t in ax.texts)  # cells labeled
     plt.close("all")
@@ -93,9 +94,9 @@ def test_heatmap_and_tornado_mark_latent_factors() -> None:
     deltas = _deltas()
     deltas.loc[deltas["row"] == "a", "target"] = sensitivity.FACTOR_TARGET
     grid = sensitivity.rank_by_year(deltas)
-    ax = sw.heatmap_view(grid, HeatmapValue.SHARE, DeltaScale.ABSOLUTE)
+    ax = sc.heatmap_view(grid, HeatmapValue.SHARE, DeltaScale.ABSOLUTE)
     assert [t.get_text() for t in ax.get_yticklabels()] == ["a (factor)", "b"]
-    ax = sw.tornado_view(sensitivity.oat_table(deltas, 2031), DeltaScale.ABSOLUTE)
+    ax = sc.tornado_view(sensitivity.oat_table(deltas, 2031), DeltaScale.ABSOLUTE)
     assert {t.get_text() for t in ax.get_yticklabels()} == {"a (factor)", "b"}
     plt.close("all")
 
@@ -107,13 +108,13 @@ def test_share_heatmap_scales_to_a_factor_share_above_one() -> None:
     deltas.loc[deltas["row"] == "a", "target"] = sensitivity.FACTOR_TARGET
     grid = sensitivity.rank_by_year(deltas)
     assert grid.loc["a"].max() > 1
-    ax = sw.heatmap_view(grid, HeatmapValue.SHARE, DeltaScale.ABSOLUTE)
+    ax = sc.heatmap_view(grid, HeatmapValue.SHARE, DeltaScale.ABSOLUTE)
     assert ax.images[0].norm.vmax == pytest.approx(grid.to_numpy(dtype=float).max())
     plt.close("all")
 
 
 def test_tornado_view_puts_largest_swing_on_top() -> None:
-    ax = sw.tornado_view(sensitivity.oat_table(_deltas(), 2031), DeltaScale.ABSOLUTE)
+    ax = sc.tornado_view(sensitivity.oat_table(_deltas(), 2031), DeltaScale.ABSOLUTE)
     by_height = sorted(zip(ax.get_yticks(), (t.get_text() for t in ax.get_yticklabels()), strict=True))
     assert [label for _y, label in by_height] == ["b", "a"]  # "a" (largest swing) on top
     assert len(ax.patches) == 4
@@ -121,22 +122,22 @@ def test_tornado_view_puts_largest_swing_on_top() -> None:
 
 
 def test_delta_over_time_view_one_line_per_quantile() -> None:
-    ax = sw.delta_over_time_view(_deltas(ladder=True), "a", DeltaScale.RELATIVE)
+    ax = sc.delta_over_time_view(_deltas(ladder=True), "a", DeltaScale.RELATIVE)
     assert len(ax.get_lines()) == 4 + 1  # four quantiles plus the zero rule
     plt.close("all")
 
 
 def test_response_curve_includes_the_base_point() -> None:
-    ax = sw.response_curve_view(_deltas(ladder=True), "a", 2031, DeltaScale.ABSOLUTE)
+    ax = sc.response_curve_view(_deltas(ladder=True), "a", 2031, DeltaScale.ABSOLUTE)
     xs = list(ax.get_lines()[0].get_xdata())
     assert 0.5 in xs and len(xs) == 5
     plt.close("all")
 
 
 def test_signed_dollars() -> None:
-    assert sw._signed_dollars(60_000) == "+$60,000"
-    assert sw._signed_dollars(-80_000.4) == "-$80,000"
-    assert sw._signed_dollars(0.3) == "$0"
+    assert sc.signed_dollars(60_000) == "+$60,000"
+    assert sc.signed_dollars(-80_000.4) == "-$80,000"
+    assert sc.signed_dollars(0.3) == "$0"
 
 
 def _attribution_table(scale: float) -> pd.DataFrame:
@@ -148,7 +149,7 @@ def _attribution_table(scale: float) -> pd.DataFrame:
 
 
 def test_attribution_view_stacks_and_reports_numbers() -> None:
-    ax, numbers = sw.attribution_view({0.1: _attribution_table(1), 0.9: _attribution_table(-1)}, 2031)
+    ax, numbers = sc.attribution_view({0.1: _attribution_table(1), 0.9: _attribution_table(-1)}, 2031)
     assert list(numbers.columns) == ["q=0.1", "q=0.9"]
     assert numbers.loc[sensitivity.TOTAL, "q=0.1"] == -230
     labels = [t.get_text() for t in ax.get_legend().get_texts()]
@@ -162,7 +163,7 @@ def test_attribution_view_folds_extra_keys_into_other() -> None:
     table = pd.DataFrame({k: [float(i + 1)] for i, k in enumerate(keys)}, index=[2030])
     table[sensitivity.UNATTRIBUTED] = 0.0
     table[sensitivity.TOTAL] = table[keys].sum(axis=1)
-    _ax, numbers = sw.attribution_view({0.9: table}, 2030)
+    _ax, numbers = sc.attribution_view({0.9: table}, 2030)
     assert "other" in numbers.index
     assert numbers.loc["other", "q=0.9"] == pytest.approx(sum(range(1, 11)) - sum(range(1, 8)))
     plt.close("all")
@@ -175,11 +176,11 @@ def test_correlation_and_r2_views() -> None:
         {"row": "a", "year": 2031, "rho": 0.7, "rho_low": 0.6, "rho_high": 0.8, "srrc": 0.7, "r2": 0.5, "n": 100},
         {"row": "b", "year": 2031, "rho": 0.1, "rho_low": -0.1, "rho_high": 0.3, "srrc": 0.1, "r2": 0.5, "n": 100},
     ])
-    ax = sw.correlation_view(table, 2030, 0.05)
+    ax = sc.correlation_view(table, 2030, 0.05)
     assert [t.get_text() for t in ax.get_yticklabels()] == ["b", "a"]
     perfect = table.assign(rho=1.0, rho_low=0.9999978, rho_high=0.9999995)  # pre-fix interval
-    sw.correlation_view(perfect, 2030, 0.05)  # must not raise on a negative whisker
-    ax = sw.r2_view(table)
+    sc.correlation_view(perfect, 2030, 0.05)  # must not raise on a negative whisker
+    ax = sc.r2_view(table)
     assert list(ax.get_lines()[0].get_ydata()) == [0.9, 0.5]
     plt.close("all")
 
@@ -194,12 +195,12 @@ def test_correlation_view_plots_srrc_and_labels_factors() -> None:
         {"row": "f", "year": 2030, "rho": 0.75, "rho_low": 0.65, "rho_high": 0.85, "srrc": nan,
          "srrc_low": nan, "srrc_high": nan, "r2": 0.9, "n": 100, "factor": True},
     ])
-    ax = sw.correlation_view(table, 2030, 0.05, by="srrc")
+    ax = sc.correlation_view(table, 2030, 0.05, by="srrc")
     # Ranked by |SRRC|, not rho; the factor goes last, labeled.
     assert [t.get_text() for t in ax.get_yticklabels()] == ["a", "b", "f (factor)"]
     assert "others held fixed" in ax.get_xlabel()
     wide = table.assign(srrc_high=table["srrc_high"].where(table["row"] != "b", 1.4))
-    ax = sw.correlation_view(wide, 2030, 0.05, by="srrc")
+    ax = sc.correlation_view(wide, 2030, 0.05, by="srrc")
     assert ax.get_xlim()[1] >= 1.4  # SRRC can pass 1; its whisker isn't clipped
     plt.close("all")
 
@@ -284,17 +285,17 @@ def test_tornado_leaves_undefined_deltas_unplotted() -> None:
     frame = _deltas()
     frame.loc[(frame["row"] == "b") & (frame["quantile"] == 0.9), "relative"] = float("nan")
     table = sensitivity.oat_table(frame, 2031, relative=True)
-    ax = sw.tornado_view(table, DeltaScale.RELATIVE)
+    ax = sc.tornado_view(table, DeltaScale.RELATIVE)
     assert len(ax.patches) == 3  # b's high-quantile bar is omitted, not drawn as zero
     plt.close("all")
 
 
 def test_attribution_view_relative_divides_by_base() -> None:
     tables = {0.1: _attribution_table(1), 0.9: _attribution_table(-1)}
-    _ax, numbers = sw.attribution_view(tables, 2031, scale=DeltaScale.RELATIVE, base=-1_000_000)
+    _ax, numbers = sc.attribution_view(tables, 2031, scale=DeltaScale.RELATIVE, base=-1_000_000)
     assert numbers.loc[sensitivity.TOTAL, "q=0.1"] == pytest.approx(-230 / 1_000_000)
     with pytest.raises(sw.EnsembleError, match="too close to zero"):
-        sw.attribution_view(tables, 2031, scale=DeltaScale.RELATIVE, base=500)
+        sc.attribution_view(tables, 2031, scale=DeltaScale.RELATIVE, base=500)
     plt.close("all")
 
 
@@ -314,7 +315,7 @@ def test_sensitivity_widget_attribution_follows_delta_scale(
 
 def test_swing_heatmap_survives_all_undefined_values() -> None:
     grid = pd.DataFrame({2030: [float("nan")], 2031: [float("nan")]}, index=["r"])
-    sw.heatmap_view(grid, HeatmapValue.SWING, DeltaScale.RELATIVE)
+    sc.heatmap_view(grid, HeatmapValue.SWING, DeltaScale.RELATIVE)
     plt.close("all")
 
 

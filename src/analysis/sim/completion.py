@@ -29,7 +29,8 @@ from analysis.sim.loader import read_current_scenario
 __all__ = [
     "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
-    "RULE_TAG", "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "STRATEGY",
+    "RULE_TAG", "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES",
+    "SENSITIVITY_ROW", "STRATEGY",
     "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET",
     "TARGET_SET_OR_NEW", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
 ]
@@ -203,6 +204,25 @@ def _correlate_with(data_dir: Path, scenario: str) -> list[str]:
             *names.strategy_vary_nodes(data_dir, scenario)]
 
 
+def _sensitivity_rows(ctx: click.Context, data_dir: Path) -> list[str]:
+    """The rows a sensitivity batch varied (#329): the line's --batch of its
+    ensemble, else its latest sensitivity batch, under --runs-dir or the
+    data repo's state/runs."""
+    from analysis.sim.ensemble import read_batch_manifest
+    from analysis.sim.loader import DEFAULT_RUNS_DIR, DEFAULT_STATE_DIR, find_state_dir, latest_ensemble_batch
+
+    scenario = _scenario(ctx, data_dir)
+    if scenario is None or _given(ctx, "mode") == "monte_carlo":
+        return []
+    given = _given(ctx, "runs_dir")
+    runs = Path(given) if given else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
+    batch = _given(ctx, "batch")
+    batch_dir = (runs / scenario / batch if batch
+                 else latest_ensemble_batch(runs / scenario, mode="sensitivity", wait=False))
+    manifest = read_batch_manifest(batch_dir) if batch_dir is not None else None
+    return list((manifest or {}).get("rows", []))
+
+
 def _scenarios(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
     return names.scenario_names(data_dir)
 
@@ -256,6 +276,9 @@ CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", 
 CALENDAR_DATE = NameType(_in_scenario(names.date_marker_names), "date", check=False)
 CORRELATE_WITH = NameType(_in_scenario(_correlate_with), "calendar row or lifespan",
                           plural="calendar rows and lifespans")
+# `sim ensemble sensitivity --row|--attribute`: what the batch varied, which
+# the command checks against the batch itself.
+SENSITIVITY_ROW = NameType(_sensitivity_rows, "varying row", check=False)
 # `sim ensemble draws --node`: a batch draws whatever it drew when it ran,
 # which the command checks against its draws database, not the scenario now.
 DRAW_NODE = NameType(_in_scenario(_correlate_with), "draw node", check=False)
