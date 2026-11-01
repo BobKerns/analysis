@@ -1321,12 +1321,14 @@ def _run_members(
     # stays, by file name; the folder is printed once at the end.
     counting = sys.stdout.isatty() and mode != "sensitivity"
     done = 0
+    short = 0
 
     def _report(i: int, overrides: dict[str, float] | None, intent_path: Path,
-                run_path: Path, result: tuple[str | None, MemberSeries | None]) -> None:
-        nonlocal done
+                run_path: Path, result: tuple[str | None, MemberSeries | None, bool]) -> None:
+        nonlocal done, short
         done += 1
-        error, rows = result
+        error, rows, went_negative = result
+        short += went_negative
         if rows is not None and series is not None:
             series.append(rows)
         if error is not None:
@@ -1355,9 +1357,12 @@ def _run_members(
                 try:
                     result = future.result()
                 except Exception as exc:  # the worker process itself died
-                    result = (f"worker failed: {exc}", None)
+                    result = (f"worker failed: {exc}", None, False)
                 _report(task[3], task[4], task[1], task[2], result)
     click.echo(f"  runs: {_shown(member_runs_dir)}")
+    if short:
+        click.echo(f"  {short} member(s) had an account go negative "
+                   "(`sim explain` on a member's run file says when)")
     return sorted(failures)
 
 
@@ -1366,11 +1371,12 @@ def _run_one_member(
     member_index: int, overrides: dict[str, float] | None, seed: int | None, member_count: int,
     recipe_tree_id: str, mode: str, run_by: str, allow_dirty_data: bool, allow_dirty_code: bool,
     with_series: bool = False,
-) -> tuple[str | None, MemberSeries | None]:
+) -> tuple[str | None, MemberSeries | None, bool]:
     """Resolve and run one member: the error text on failure, else ``None``,
     and with ``with_series`` its series store rows (#298), read here so
     they're read in parallel, or ``None`` if reading them failed (the store
-    is then built when the batch is first opened). Module-level (not a
+    is then built when the batch is first opened); and whether an account
+    went negative in it. Module-level (not a
     closure) so a process pool can pickle it."""
     try:
         resolve_member(
@@ -1378,19 +1384,31 @@ def _run_one_member(
             seed=seed, member_index=member_index, member_count=member_count,
             recipe_tree_id=recipe_tree_id, overrides=overrides, mode=mode,
         )
-        run_scenario(
-            member_intent_path, member_run_path,
-            run_by=run_by,
-            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
-        )
+        # A member's negative balances are recorded in its run file
+        # (negative_balance_warnings); printed, eighty members' warnings
+        # would bury the batch (#369), so the batch counts them instead.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run_scenario(
+                member_intent_path, member_run_path,
+                run_by=run_by,
+                allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+            )
+        short = False
+        for warning in caught:
+            if issubclass(warning.category, RuntimeWarning) and "went negative" in str(warning.message):
+                short = True
+            else:
+                warnings.showwarning(warning.message, warning.category, warning.filename,
+                                     warning.lineno, warning.file, warning.line)
     except Exception as exc:
-        return str(exc), None
+        return str(exc), None, False
     if not with_series:
-        return None, None
+        return None, None, short
     try:
-        return None, member_series(member_run_path)
+        return None, member_series(member_run_path), short
     except Exception:
-        return None, None
+        return None, None, short
 
 
 def _report_batch(label: str, member_count: int, failures: list[tuple[int, Path, str]]) -> None:
@@ -1399,7 +1417,7 @@ def _report_batch(label: str, member_count: int, failures: list[tuple[int, Path,
     if failures:
         click.echo(f"  {len(failures)} failure(s):")
         for i, path, _error in failures:
-            click.echo(f"    member {i}: {path}")
+            click.echo(f"    member {i}: {_shown(path)}")
 
 
 def _suggest_readme(target: Path) -> None:

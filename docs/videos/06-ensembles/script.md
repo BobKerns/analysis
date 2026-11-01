@@ -126,7 +126,7 @@ Set FontSize 24
 Hide
 Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
 Enter
-Type "git -C ~/retirement/data reset -q --hard stage/create && cd ~/retirement/data/sim && clear"
+Type "git -C ~/retirement/data reset -q --hard stage/create && cd ~/retirement/data/sim && sim switch base > /dev/null 2>&1; clear"
 Enter
 Sleep 2s
 Show
@@ -244,7 +244,8 @@ Sleep 5s
 Sim run sees that markets is an ensemble, and runs every member, as many
 at once as the computer has processors. Eighty whole runs of the plan take
 about half a minute here. Each member keeps its own run file, in one
-folder for the batch.
+folder for the batch. And look: in five of the eighty futures, an account
+went negative. In those, the money ran out.
 
 > Production note: the count is live; how long it takes depends on the
 > machine that records it.
@@ -344,7 +345,7 @@ Type "git -C ~/retirement/data reset -q --hard stage/compared && clear"
 Enter
 Sleep 1s
 Show
-Type "sim ensemble compare markets work-longer-mc --start 2029 --end 2036 | head -13"
+Type "sim ensemble compare markets work-longer-mc --start 2029 --end 2036 | head -12"
 Sleep 400ms
 Enter
 Wait
@@ -394,11 +395,15 @@ Scroll "Recipe:"
 Show
 Sleep 7s
 Drag "Years:" 2026 2040
-Sleep 6s
+Sleep 2s
+ScrollBy 450
+Sleep 5s
 Scroll "Baseline:"
 Sleep 2s
 Select "Compare:" "work-longer-mc"
-Sleep 9s
+Sleep 3s
+ScrollBy 350
+Sleep 7s
 ```
 
 The ensemble notebook shows the same, with controls. Pick a recipe, and

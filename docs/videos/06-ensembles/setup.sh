@@ -104,7 +104,6 @@ sim calendar edit 2031-06 --name car --vary-target amount --vary-distribution tr
 stage run
 sim ensemble create work-longer-mc markets work-longer > /dev/null
 stage compared
-sim switch markets > /dev/null
 
 # Run an ensemble and give its batch a fixed time (its folder names).
 demo_batch() {
@@ -117,3 +116,5 @@ demo_batch() {
 
 demo_batch markets 2026-10-31T091000Z
 demo_batch work-longer-mc 2026-10-31T091100Z
+# The tapes' prompt shows the current scenario; start them on markets.
+sim switch markets > /dev/null
