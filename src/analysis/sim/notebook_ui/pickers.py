@@ -27,11 +27,12 @@ from dateutil import relativedelta
 import ipywidgets as widgets
 import pandas as pd
 import traitlets
-from IPython.display import clear_output, display
+from IPython.display import HTML, clear_output, display
 
 from analysis.frames import clip_years, index_years
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
+from analysis.sim import shortfalls
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
@@ -58,19 +59,24 @@ def this_month() -> datetime.date:
     return to_month(today.year, today.month)
 
 
-def warning_html(message: str) -> str:
+def warning_html(message: str, details: Sequence[str] = ()) -> str:
     """Build the HTML for a legible warning box.
 
     Markdown blockquotes (`> ⚠️ ...`) pick up the ambient text color in some
     notebook themes, which can render as black-on-black. This builds plain
     HTML instead, with an explicit light-yellow background and dark text;
     ``notebook.css`` styles its inline code like the rest of our output.
+    ``details`` are lines shown below the message as written, in a fixed
+    font so their columns line up.
     """
     # Escape first so literal "<...>" in messages (e.g. "sim load <name>")
     # isn't swallowed as an HTML tag; **bold**/`code` add real tags after.
     text = html_lib.escape(message)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+    if details:
+        text += ('<pre style="margin:4px 0 0; padding:0; background:none; color:inherit; '
+                 'white-space:pre-wrap;">' + html_lib.escape("\n".join(details)) + "</pre>")
     return styled_html(
         '<div style="background-color:#fff8c5; color:#111; padding:6px 10px; '
         'border-left:4px solid #e6b800; border-radius:3px; margin:4px 0;">'
@@ -78,11 +84,50 @@ def warning_html(message: str) -> str:
     )
 
 
-def display_warning(message: str) -> None:
+def display_warning(message: str, details: Sequence[str] = ()) -> None:
     """Display a warning with a legible background (see `warning_html`)."""
-    from IPython.display import HTML, display
+    display(HTML(warning_html(message, details)))
 
-    display(HTML(warning_html(message)))
+
+# The most negative-balance warnings a banner lists before pointing to
+# `sim explain`, which lists them all.
+SHORTFALL_LINES = 10
+
+
+def _times(count: int) -> str:
+    return "once" if count == 1 else ("twice" if count == 2 else f"{count} times")
+
+
+def shortfall_banner(rc: RunConnection | None, scenario: str | None = None) -> str | None:
+    """The HTML of a warning listing ``rc``'s negative-balance warnings
+    (#431) as ``sim explain`` lists them, or None for a run with none."""
+    if rc is None:
+        return None
+    found = rc.negative_balances()
+    if not found:
+        return None
+    lines = shortfalls.warning_lines(found)
+    explain = f"sim explain {scenario}" if scenario else "sim explain"
+    if len(lines) > SHORTFALL_LINES:
+        lines = [*lines[:SHORTFALL_LINES],
+                 f"... and {len(lines) - SHORTFALL_LINES} more; `{explain}` lists them all"]
+    return warning_html(
+        f"**This run went negative {_times(len(found))}.** A shortfall doesn't stop a "
+        "run: the debit posts and the balance goes below zero.",
+        lines,
+    )
+
+
+def shortfall_summary_line(name: str, rc: RunConnection) -> str | None:
+    """One line on ``rc``'s negative-balance warnings for a list of
+    scenarios (#431): how often, and the lowest balance and where; None
+    for a run with none."""
+    found = rc.negative_balances()
+    if not found:
+        return None
+    worst = min(found, key=lambda w: w.lowest_cents)
+    return (f"{name}: negative {_times(len(found))} from {found[0].month}; lowest "
+            f"{worst.label} {shortfalls.compact_cents(worst.lowest_cents)} at {worst.lowest_month}")
 
 
 # The detachers of the observers the widget now being drawn by
@@ -426,6 +471,7 @@ def scenario_picker(
     require_run: bool = True,
     show_metadata: bool = False,
     show_description: bool = False,
+    show_shortfalls: bool = True,
 ) -> tuple[widgets.VBox, SingleScenarioConnections, widgets.Dropdown]:
     """A ``Scenario:`` dropdown that keeps a live connection pair in sync.
 
@@ -448,6 +494,10 @@ def scenario_picker(
         Whether to display run metadata below the scenario reference.
     show_description : bool, default False
         Whether to display the scenario description below the scenario reference.
+    show_shortfalls : bool, default True
+        Whether to list the run's negative-balance warnings (#431) below the
+        scenario reference, as ``sim explain`` does; a run with none, or no
+        run, shows nothing.
 
     When the selected scenario is an ensemble recipe with generated members
     and ``require_run`` is true, a second ``Member:`` dropdown appears,
@@ -487,6 +537,10 @@ def scenario_picker(
         with ref_out:
             clear_output(wait=True)
             display(container.scenario_ref)
+            if show_shortfalls:
+                banner = shortfall_banner(container.run, container.value)
+                if banner is not None:
+                    display(HTML(banner))
             if show_metadata:
                 rc = container.run
                 if rc is not None:
@@ -761,6 +815,12 @@ def multi_scenario_picker(
             clear_output(wait=True)
             for message in container.warnings:
                 display_warning(message)
+            lines = [line for name, rc in container.connections.items()
+                     if name in container.scenarios
+                     and (line := shortfall_summary_line(name, rc)) is not None]
+            if lines:
+                display_warning("**Negative balances** (a shortfall doesn't stop a run; "
+                                "`sim explain <scenario>` lists them):", lines)
 
     def _on_change(*_) -> None:
         old_connections = dict(container.connections)

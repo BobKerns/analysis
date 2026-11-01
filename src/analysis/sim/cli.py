@@ -40,7 +40,7 @@ from analysis.expenses.baseline import (
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
-    sensitivity, setup_listings, strategy_code, strategy_files, strategy_guide, symbols, units, working_set,
+    sensitivity, setup_listings, shortfalls, strategy_code, strategy_files, strategy_guide, symbols, units, working_set,
     ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
@@ -65,7 +65,8 @@ from analysis.sim.distributions import (
     resolve_truncated_normal_bounds,
     rewrite_outcomes,
 )
-from analysis.sim.engine import describe_negative_balance_event, run_scenario
+from analysis.sim.engine import run_scenario
+from analysis.sim.shortfalls import account_with_lot as _account_with_lot
 from analysis.sim.strategy_api import Strategy
 from analysis.sim.series_db import (
     EnsembleSeries,
@@ -3950,24 +3951,16 @@ def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
 
 def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
     """The run's recorded negative-balance warnings (ADR-003 §4.7): the
-    month each asset account went negative, its balance then, and what its
-    refill chain did, worded as the run's warning was."""
-    (raw,) = con.execute(
-        "SELECT json_extract(run_args_json, '$.negative_balance_warnings') "
-        "FROM simulation_run WHERE id = 1"
-    ).fetchone()
-    events = json.loads(raw) if raw else []
-    if not events:
+    month each asset account went negative, its balance then, the lowest it
+    reached, and what its refill chain did, worded as the run's warning was.
+    The notebooks list them the same way (#431)."""
+    found = shortfalls.negative_balances(con)
+    if not found:
         click.echo("negative-balance warnings: none")
         return
-    click.echo(f"negative-balance warnings ({len(events)}):")
-    width = max(len(str(e.get("account", ""))) for e in events)
-    for event in events:
-        click.echo(
-            f"  {event.get('month', '-')}  {str(event.get('account', '-')):<{width}}"
-            f"  {_compact_cents(event.get('balance_cents'))}"
-            f"  {describe_negative_balance_event(event)}"
-        )
+    click.echo(f"negative-balance warnings ({len(found)}):")
+    for line in shortfalls.warning_lines(found):
+        click.echo(f"  {line}")
 
 
 @sim_group_command.command("networth")
@@ -5466,15 +5459,6 @@ def _write_calendar_row(
             staged, registries.CALENDAR_HEADER, _keep_unexpressed(row, chosen), replace=index,
         )
     return "updated"
-
-
-def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
-    """``name``, plus ``(lot)`` where the lot is worth showing."""
-    if not name:
-        return ""
-    if lot and (subkind in INVESTMENT_ASSET_SUBKINDS or lot != registries.DEFAULT_LOT):
-        return f"{name} ({lot})"
-    return name
 
 
 def _lot_info(con: sqlite3.Connection) -> dict[str, tuple[bool, list[str]]]:
