@@ -115,7 +115,7 @@ def video_group_command() -> None:
 @click.option("--silent", is_flag=True, help="Timed silence instead of a voice (fast drafts).")
 @click.option("--rerecord", is_flag=True, help="Re-record tapes and notebook scenes (after a code change).")
 @click.option("--jobs", type=click.IntRange(min=1), default=None,
-              help="Tasks at once, besides recordings (default: CPUs less 4, at least 2).")
+              help="Tasks at once, besides recordings (default: CPUs less 4, at least 2, and what memory holds).")
 @_where_option
 def build_command(video: str, lang: str | None, out: Path | None, silent: bool, rerecord: bool,
                   jobs: int | None, where: str | None) -> None:

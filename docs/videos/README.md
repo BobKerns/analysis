@@ -362,7 +362,13 @@ tasks; its clip starts when both are done, and the video is joined when every
 clip is. Every language of the video builds at once, on the same pool, each
 line tagged `[en]`, `[ja]`. `--jobs N` sets how many tasks run at once; the
 default is the CPUs less 4, at least 2 (`--jobs 1` builds one step at a
-time). Recordings (tapes and notebook scenes) run at one fixed path, so the
+time), and no more than memory holds: a 4K clip encode or a slide's browser
+takes up to 2 GB, and the recordings 3 GB, so 8 GB (Docker Desktop's default;
+raise it under Settings > Resources > Memory) runs 2 tasks. The build prints
+how many it runs. A program the kernel kills for memory fails with
+`-9: killed, most likely out of memory`. When any task fails, or on Ctrl-C, the
+build stops at once: it kills what's running, starts nothing more, and
+reports the first failure. Recordings (tapes and notebook scenes) run at one fixed path, so the
 paths the CLI prints read the same in every recording, so they take turns on a
 lane of their own, beside the pool, and get the 4 CPUs kept back: VHS and the
 notebook recorder capture through a browser in real time. Each narration and

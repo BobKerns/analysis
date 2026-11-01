@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from analysis.videos import render
 from analysis.videos.script import ScriptError
 from analysis.videos.theme import Theme
 
@@ -234,7 +235,8 @@ class _Lab:
             "MPLCONFIGDIR": str(Path(tempfile.gettempdir()) / "analysis-video-mpl"),
         }
         self.log = (jupyter_dir / "lab.log").open("w")
-        self.proc = subprocess.Popen(
+        # Spawned through render, so a failing build elsewhere stops it too.
+        self.proc = render.spawn(
             [sys.executable, "-m", "jupyterlab", "--no-browser", f"--port={self.port}",
              f"--IdentityProvider.token={self.token}", f"--ServerApp.root_dir={root / 'notebooks'}",
              "--LabApp.expose_app_in_browser=True", "--ServerApp.open_browser=False",
@@ -263,12 +265,7 @@ class _Lab:
         return f"http://127.0.0.1:{self.port}/lab/tree/{notebook}?token={self.token}&reset"
 
     def close(self) -> None:
-        if self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        render.stop(self.proc)
         self.log.close()
 
 
@@ -409,8 +406,6 @@ def _drag(page: Any, label: str, low: int, high: int) -> None:
 
 def record(source: str, theme: Theme, prepared: Path, notebooks: Path, out: Path) -> None:
     """Record a notebook scene from a fresh copy of the prepared demo into ``out`` (MP4)."""
-    from analysis.videos import render
-
     plan = parse(source)
     check(plan, notebooks)
     ffmpeg = render.need("ffmpeg", "install ffmpeg")
@@ -463,6 +458,9 @@ def _record(plan: Plan, theme: Theme, prepared: Path, notebooks: Path, out: Path
 
 def _play(page: Any, plan: Plan, lab: _Lab, recorder: _Recorder) -> float:
     for step in plan.steps:
+        if render.stopping():
+            # Another task failed: its error is the one to report.
+            raise RuntimeError(f"notebook line {step.line}: stopped, the build is stopping")
         a = step.args
         try:
             if step.name == "Open":
