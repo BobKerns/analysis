@@ -1316,18 +1316,31 @@ def _run_members(
         for i, overrides in specs
     ]
     failures: list[tuple[int, Path, str]] = []
+    # A counter at a terminal, not a line per member (#369): eighty paths
+    # bury the result. A sensitivity member's line says what it moved, so it
+    # stays, by file name; the folder is printed once at the end.
+    counting = sys.stdout.isatty() and mode != "sensitivity"
+    done = 0
 
     def _report(i: int, overrides: dict[str, float] | None, intent_path: Path,
                 run_path: Path, result: tuple[str | None, MemberSeries | None]) -> None:
+        nonlocal done
+        done += 1
         error, rows = result
         if rows is not None and series is not None:
             series.append(rows)
         if error is not None:
             failures.append((i, intent_path, error))
-            click.echo(f"  member {i}: FAILED ({error}) -- intent: {intent_path}", err=True)
-        else:
-            label = "" if not overrides else " " + ", ".join(f"{k}@{q:g}" for k, q in overrides.items())
-            click.echo(f"  member {i}:{label} {run_path}")
+            if counting:
+                click.echo("\r\033[K", nl=False)
+            click.echo(f"  member {i}: FAILED ({error}) -- intent: {_shown(intent_path)}", err=True)
+        elif overrides:
+            label = ", ".join(f"{k}@{q:g}" for k, q in overrides.items())
+            click.echo(f"  member {i}: {label} {run_path.name}")
+        elif not counting:
+            click.echo(f"  member {i}: {run_path.name}")
+        if counting:
+            click.echo(f"\r\033[K  {done}/{len(tasks)} members run", nl=done == len(tasks))
 
     if jobs <= 1 or len(tasks) <= 1:
         for task in tasks:
@@ -1344,6 +1357,7 @@ def _run_members(
                 except Exception as exc:  # the worker process itself died
                     result = (f"worker failed: {exc}", None)
                 _report(task[3], task[4], task[1], task[2], result)
+    click.echo(f"  runs: {_shown(member_runs_dir)}")
     return sorted(failures)
 
 
@@ -2347,9 +2361,12 @@ def ensemble_compare(
         _echo_ensemble_comparisons(tables, baseline, list(variants), subject, clip)
     _echo_ensemble_rail_deltas(data_dir, baseline, variants, stores, mode, years)
     if as_graph or graph_file is not None:
-        _draw_figure(_ensemble_compare_chart(tables, baseline, list(variants), subject,
-                                             clip=clip, log_scale=log_scale),
-                     graph_file, "ensemble-")
+        def chart(size: tuple[float, float] | None = None) -> Figure:
+            return _ensemble_compare_chart(tables, baseline, list(variants), subject,
+                                           clip=clip, log_scale=log_scale, size=size)
+
+        _draw_figure(chart(), graph_file, "ensemble-",
+                     fit=lambda size: chart(_reasonable_chart_size(size)))
 
 
 def _reserve_note(tables: RecipeTables) -> str:
@@ -2410,10 +2427,12 @@ def _echo_ensemble_comparisons(
 def _ensemble_compare_chart(
     tables: RecipeTables, baseline: str, variants: list[str], subject: str, *,
     clip: Callable[[pd.DataFrame], pd.DataFrame], log_scale: bool = False,
+    size: tuple[float, float] | None = None,
 ) -> Figure:
     """``sim ensemble compare --chart``'s figure: the comparison panels for
     each variant with the account, or, when only one of a baseline and one
-    variant has it, that recipe's fan chart."""
+    variant has it, that recipe's fan chart. ``size`` is the comparison's
+    (width, height) in inches; ``None`` is 16:9."""
     from analysis.sim.ensemble_plots import (
         CompareSide,
         ensemble_compare_grid_figure,
@@ -2430,7 +2449,7 @@ def _ensemble_compare_chart(
              for name in compared},
             mode_label, tables.reserve, tables.cpi_frames.get(baseline),
             log_scale=log_scale, clip=clip,
-            deaths=tables.stores[baseline].base_case_deaths(),
+            deaths=tables.stores[baseline].base_case_deaths(), size=size,
         )
     if len(tables.frames) != 1:
         raise click.ClickException(f"no chart: {baseline} has no {subject} to compare with")
@@ -11785,6 +11804,17 @@ def _terminal_figure_size(cell: tuple[float, float]) -> tuple[float, float]:
             max(1, size.lines - _PROMPT_LINES) * cell[1] / dpi)
 
 
+def _reasonable_chart_size(size: tuple[float, float]) -> tuple[float, float] | None:
+    """The terminal's ``size`` in inches when a chart can use its shape:
+    between square and 3:1, and at least 6 by 3.5 inches. Else ``None``,
+    for the chart's own 16:9 (#369): a terminal can report a narrow or
+    odd size that would crush the panels."""
+    width, height = size
+    if width < 6 or height < 3.5 or not 1 <= width / height <= 3:
+        return None
+    return size
+
+
 def _figure_dpi(cell: tuple[float, float] | None) -> float:
     """The resolution that draws a figure's 10pt text as tall as the
     terminal's text, ``cell`` being its cell size in the pixels it draws
@@ -12991,7 +13021,7 @@ def _inherits_line(data: Path, parents: Sequence[str]) -> str:
 
 
 def _create_new_scenario(
-    data: Path, name: str, parents: Sequence[str], *, description: str | None, ensemble_size: int,
+    data: Path, name: str, parents: Sequence[str], *, description: str | None,
 ) -> str:
     """Create scenario ``name`` on ``parents`` (none: mix-in only), validated
     in a staged copy; returns the ``inherits`` line to show."""
@@ -13002,7 +13032,6 @@ def _create_new_scenario(
     with _scenario_edit(data, parent or MIXIN_BASE, remember=False, template_parent=True) as edit:
         sc.create_scenario(
             edit.data_dir, name, parent, description=description, mixins=mixins,
-            ensemble_size=ensemble_size,
         )
     line = _inherits_line(data, parents)
     if parents and is_mixin_only(data / "scenarios", name):
@@ -13038,9 +13067,10 @@ def scenario_create(
     just the mix-in itself, stopping at the shared base. See ADR-003 §4.5 for
     merge semantics.
 
-    NAME is never an ensemble: it records ``ensemble_size`` 0, so under an
-    ensemble parent ``sim run NAME`` runs the base case, each varying row at
-    its central value. Use ``sim ensemble create`` for an ensemble.
+    NAME sets no ``ensemble_size`` of its own, so it is an ensemble exactly
+    when its parents make one, and mixing it into an ensemble keeps that
+    ensemble. To turn an ensemble child into a single run, ``sim ensemble
+    edit NAME --size 0``. Use ``sim ensemble create`` for a new ensemble.
 
     With --no-parent, NAME builds on nothing and has no start or end: a
     mix-in only scenario, which `sim run` and `sim all` skip, for mixing into
@@ -13059,7 +13089,7 @@ def scenario_create(
     try:
         data_dir_p = _resolve_data_dir(data_dir)
         name, parents = _ask_new_scenario(data_dir_p, "scenario", name, parent, mixins, no_parent=no_parent)
-        inherits = _create_new_scenario(data_dir_p, name, parents, description=description, ensemble_size=0)
+        inherits = _create_new_scenario(data_dir_p, name, parents, description=description)
         target = data_dir_p / "scenarios" / name
         _make_current(data_dir_p, name)
         click.echo(f"created {_shown(target)}")
@@ -13881,7 +13911,7 @@ def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what
         click.echo(f"  {path.relative_to(data)} still mentions it")
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
     if latest_run_path(runs, name, wait=False) or (runs / name).is_dir():
-        click.echo(f"  runs already made of {name} are kept, under {runs}")
+        click.echo(f"  runs already made of {name} are kept, under {_shown(runs)}")
 
 
 @scenario_group_command.command("delete")

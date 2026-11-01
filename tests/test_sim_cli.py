@@ -1443,6 +1443,9 @@ def test_sim_run_generates_and_runs_ensemble_for_a_recipe(
     )
     assert result.exit_code == 0, result.output
     assert "2/2 member(s) succeeded" in result.output
+    # #369: each member by its file name, the batch's folder once.
+    assert "  member 1: member_0001.sqlite3" in result.output
+    assert result.output.count(str(runs_dir)) == 1
 
     member_intents = sorted((intent_dir / "retire_alice").glob("*/member_*.sqlite3"))
     member_runs = sorted((runs_dir / "retire_alice").glob("*/member_*.sqlite3"))
@@ -2613,3 +2616,19 @@ def test_sim_prints_a_warning_as_one_plain_line() -> None:
     text = _format_warning(RuntimeWarning("2033-10-31: account 'X' went negative"),
                            RuntimeWarning, "/x/engine.py", 1152, "_warn_if_negative(...)")
     assert text == "warning: 2033-10-31: account 'X' went negative\n"
+
+
+@pytest.mark.parametrize(("size", "expected"), [
+    ((16.0, 9.0), (16.0, 9.0)),
+    ((30.0, 9.0), None),     # wider than 3:1
+    ((8.0, 10.0), None),     # taller than wide
+    ((5.0, 4.0), None),      # too small to read
+])
+def test_a_terminals_size_shapes_a_chart_only_when_reasonable(
+    size: tuple[float, float], expected: tuple[float, float] | None,
+) -> None:
+    """#369: the compare chart takes the terminal's shape when it can use it,
+    else its own 16:9."""
+    from analysis.sim.cli import _reasonable_chart_size
+
+    assert _reasonable_chart_size(size) == expected

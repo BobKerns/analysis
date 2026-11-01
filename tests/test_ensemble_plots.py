@@ -13,7 +13,9 @@ import matplotlib.pyplot as plt
 
 from analysis.sim.ensemble import summary_with_percentiles
 from analysis.sim.ensemble_plots import (
+    CompareSide,
     ensemble_compare_figure,
+    ensemble_compare_grid_figure,
     ensemble_fan_chart,
     ensemble_fan_figure,
     figure_bytes,
@@ -111,6 +113,37 @@ def test_ensemble_compare_figure_skips_the_paired_panel_when_unpaired() -> None:
     with_reserve = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal", 2.5)
     assert len(with_reserve.axes) == 3
     assert "reserve" in with_reserve.axes[-1].get_title()
+
+
+def test_one_comparison_fits_16_9_with_its_fan_across_the_top() -> None:
+    """#369: one variant's panels fit a screen: the paired fan across the
+    top, the two delta panels side by side under it."""
+    months = pd.date_range("2027-01-31", periods=3, freq="ME")
+    baseline = pd.DataFrame({"member_0000": [1.0, 2.0, 3.0]}, index=months)
+    fig = ensemble_compare_figure("a", "b", baseline, baseline + 1,
+                                  [("member_0000", "member_0000")], "nominal")
+    width, height = fig.get_size_inches()
+    assert width / height == pytest.approx(16 / 9)
+    fan, cvar, pct = fig.axes
+    fig.canvas.draw()
+    assert fan.get_position().width > 1.5 * cvar.get_position().width
+    assert cvar.get_position().y0 == pytest.approx(pct.get_position().y0)
+    assert cvar.get_position().x1 < pct.get_position().x0
+    # Under a fan that names the pair, the side by side titles leave it out.
+    assert cvar.get_title().startswith("mean of the worst")
+
+
+def test_several_comparisons_fit_16_9_unless_given_a_size() -> None:
+    months = pd.date_range("2027-01-31", periods=3, freq="ME")
+    baseline = pd.DataFrame({"member_0000": [1.0, 2.0, 3.0]}, index=months)
+    sides = {name: CompareSide(baseline + 1, [("member_0000", "member_0000")])
+             for name in ("b", "c")}
+    fig = ensemble_compare_grid_figure("a", baseline, sides, "nominal")
+    width, height = fig.get_size_inches()
+    assert width / height == pytest.approx(16 / 9)
+    assert len(fig.axes) == 6
+    sized = ensemble_compare_grid_figure("a", baseline, sides, "nominal", size=(20, 8))
+    assert tuple(sized.get_size_inches()) == (20, 8)
 
 
 def test_ensemble_compare_figure_clips_after_the_whole_run_deltas() -> None:
