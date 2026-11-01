@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from analysis.sim import reports
+from analysis.sim import engine, reports
 from analysis.cli import main
 from analysis.sim.connection import RunConnection
 from analysis.sim.loader import LoadError
@@ -240,6 +241,15 @@ def test_december_estimate_matches_the_april_settlement(
         assert detail["status"] == "MFJ"
         assert detail["ytd"].get("ordinary", 0) > 0 or year > 2030
     assert decisions[0][3]["last_year"] is False and decisions[1][3]["last_year"] is True
+    assert decisions[0][3]["floors"]
+
+
+def test_irmaa_floors_are_empty_without_the_table() -> None:
+    # The table is optional, and every test data directory has one (from
+    # templates/), so this asks the engine's tax view directly.
+    irmaa = engine.IrmaaContext({}, {}, start_year=2026, prior_magi={}, person_lifespan={}, taxpayers=())
+    tax = engine._StrategyTax(None, [], aux={}, person_lifespan={}, taxpayers=(), irmaa=irmaa)
+    assert tax.irmaa_floors(2027, "MFJ") == ()
 
 
 CONVERT = '''
@@ -378,3 +388,17 @@ def test_explain_and_gains_report_show_the_harvest(run_strategy_scenario) -> Non
         main, ["sim", "strategy", "log", "--runfile", str(run), "--strategy", "harvest"], terminal_width=200)
     assert log.exit_code == 0, log.output
     assert "year_end" in log.output and "0% band" in log.output
+
+
+def test_a_cash_gifts_tax_cap_counts_a_loss_as_no_gain() -> None:
+    # ctx.tax.estimate doesn't net losses or limit them to $3,000, so a loss
+    # counted against the gain could let a cash gift exceed max_tax.
+    from analysis.sim.strategies.year_end import _gains
+    from analysis.sim.strategy_api import LotRef, LotView
+
+    def lot(name: str, basis: int) -> LotView:
+        return LotView(LotRef(name, "default"), "asset", "brokerage", None, "taxable", "joint",
+                       frozenset(), None, 1_000_000, basis, 0, acquired=date(2020, 1, 31), taxable_sale=True)
+
+    plan = [(lot("Up", 400_000), 500_000), (lot("Down", 3_000_000), 500_000)]
+    assert _gains(plan, date(2026, 12, 31)) == (0, 300_000)

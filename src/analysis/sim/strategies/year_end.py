@@ -297,11 +297,14 @@ def _plan(order: Sequence[LotView], give: int) -> list[tuple[LotView, int]]:
 
 
 def _gains(plan: Sequence[tuple[LotView, int]], month: date) -> tuple[int, int]:
-    """The short- and long-term gains selling ``plan`` realizes."""
+    """The short- and long-term gains selling ``plan`` realizes. A lot sold
+    at a loss counts as none: ``ctx.tax.estimate`` doesn't net losses or
+    apply the $3,000 limit, so counting one could understate the tax and
+    let a cash gift exceed ``max_tax``."""
     short = long = 0
     for view, cents in plan:
         if view.taxable_sale and view.cost_basis is not None:
-            gain = sale_gain(view.balance, view.cost_basis, cents)
+            gain = max(0, sale_gain(view.balance, view.cost_basis, cents))
             if is_long_term(view.acquired, month):
                 long += gain
             else:

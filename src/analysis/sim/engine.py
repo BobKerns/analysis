@@ -3335,6 +3335,8 @@ class _StrategyTax:
         return {bucket: int(amount) for bucket, amount in rows} or None
 
     def irmaa_floors(self, year: int, filing_status: str) -> tuple[int, ...]:
+        if (registries.IRMAA_TIERS, None) not in self.irmaa.aux:
+            return ()  # the table is optional; without it there are no floors
         return tuple(t.floor for t in self.irmaa.tiers(year, filing_status, 0))
 
 
