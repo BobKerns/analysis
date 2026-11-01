@@ -3914,8 +3914,10 @@ def _echo_guard_rail_episodes(runfile: Path, data_dir: Path | None) -> None:
 
 def _echo_strategies(con: sqlite3.Connection) -> None:
     """The run's strategies (#326): each one's kind and chain, how many
-    decisions it made, and how much it moved against what it was asked.
-    Says nothing for a run with none, or one from before them."""
+    decisions it made, and how much it moved against what it was asked; a
+    year-end strategy (#421), what its moves moved and the gain they
+    realized (a harvest's, or a cash gift's sale). Says nothing for a run
+    with none, or one from before them."""
     if not _has_table(con, "strategy_decision"):
         return
     rows = con.execute(
@@ -3927,12 +3929,28 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
     ).fetchall()
     if not rows:
         return
+    year_end: dict[str, tuple[int, int]] = {}
+    if "'year_end'" in (con.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'strategy_decision'").fetchone() or ("",))[0]:
+        year_end = {
+            name: (moved, gain) for name, moved, gain in con.execute(
+                "SELECT s.name, SUM(d.chosen_cents), COALESCE(SUM(("
+                "  SELECT SUM(t.amount) FROM transfer_event t WHERE t.strategy_decision_id = d.id "
+                "  AND t.tax_character IN ('ltcg', 'stcg'))), 0) "
+                "FROM strategy_decision d JOIN strategy s ON s.id = d.strategy_id "
+                "WHERE d.hook = 'year_end' GROUP BY s.id")
+        }
     click.echo(f"strategies ({len(rows)}; `sim strategy log` lists the decisions):")
     for name, kind, chain, count, asked, chosen, fallback in rows:
-        click.echo(
-            f"  {name} ({kind} on {chain}): {count} decision{'' if count == 1 else 's'}, "
-            f"asked ${asked / 100:,.2f}, chose ${chosen / 100:,.2f}, chain steps ${fallback / 100:,.2f}"
-        )
+        owns = f" on {chain}" if chain else ""
+        line = f"  {name} ({kind}{owns}): {count} decision{'' if count == 1 else 's'}"
+        if chain:
+            line += (f", asked ${asked / 100:,.2f}, chose ${chosen / 100:,.2f}, "
+                     f"chain steps ${fallback / 100:,.2f}")
+        if name in year_end:
+            moved, gain = year_end[name]
+            line += f", year end moved ${moved / 100:,.2f} realizing ${gain / 100:,.2f} of gain"
+        click.echo(line)
 
 
 def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
