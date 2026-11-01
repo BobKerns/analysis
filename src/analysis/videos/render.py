@@ -181,17 +181,18 @@ def launch_chromium(pw: Any, args: Sequence[str] = ()) -> Any:
     shouldn't fail for want of it while Chrome is there."""
     from playwright.sync_api import Error
 
-    if chromium := chromium_path():
-        return pw.chromium.launch(executable_path=chromium, args=list(args))
-    try:
-        return pw.chromium.launch(args=list(args))
-    except Error:
+    # A stale ANALYSIS_VIDEO_CHROMIUM falls through to the others, like a
+    # missing download.
+    chromium = chromium_path()
+    tries = [*([{"executable_path": chromium}] if chromium else []), {}, {"channel": "chrome"}]
+    for how in tries:
         try:
-            return pw.chromium.launch(channel="chrome", args=list(args))
+            return pw.chromium.launch(**how, args=list(args))
         except Error:
-            raise ToolMissing(
-                "no Chromium for slides and notebook scenes: run `uv run playwright install chromium`, "
-                "install Google Chrome, or set ANALYSIS_VIDEO_CHROMIUM") from None
+            continue
+    raise ToolMissing(
+        "no Chromium for slides and notebook scenes: run `uv run playwright install chromium`, "
+        "install Google Chrome, or set ANALYSIS_VIDEO_CHROMIUM")
 
 
 def render_slide(html: str, theme: Theme, out: Path) -> None:

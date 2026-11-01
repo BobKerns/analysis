@@ -50,7 +50,8 @@ def _complete_video(ctx: click.Context, param: click.Parameter, incomplete: str)
 def _video_folder(video: str) -> Path:
     """A video named (04-results) or given by path, as its folder."""
     path = Path(video)
-    folder = path if path.is_dir() else _videos_root() / path.name
+    # A bare name is a folder in docs/videos; a path must exist as given.
+    folder = path if path.is_dir() or len(path.parts) > 1 else _videos_root() / video
     if not (folder / "script.md").is_file():
         raise click.BadParameter(f"no video {video} (no script.md in {folder})", param_hint="VIDEO")
     return folder
@@ -83,7 +84,7 @@ def _use_docker(where: str | None) -> bool:
 def _docker(args: list[str], out: Path | None = None) -> int:
     env = dict(os.environ)
     if out is not None:
-        env["ANALYSIS_VIDEO_OUT"] = str(out)
+        env["ANALYSIS_VIDEO_OUT"] = str(out.resolve())
     script = _videos_root().parent.parent / "scripts" / "videos" / "docker.sh"
     return subprocess.run(["bash", str(script), *args], env=env, check=False).returncode
 
@@ -162,15 +163,26 @@ _PASS_THROUGH = {"ignore_unknown_options": True, "allow_extra_args": True, "help
 @click.argument("args", nargs=-1, type=click.UNPROCESSED, shell_complete=_complete_video)
 def publish_command(args: tuple[str, ...]) -> None:
     """Upload built videos to YouTube, or update what's there (--help for its options)."""
-    raise SystemExit(_local(["publish", *(_named_folder(a) for a in args)]))
+    raise SystemExit(_local(["publish", *_named_folders(args)]))
 
 
-def _named_folder(arg: str) -> str:
-    """A video's name as its folder, so publish takes 04-results as build does."""
-    if arg.startswith("-") or Path(arg).is_dir():
-        return arg
-    folder = _videos_root() / arg
-    return str(folder) if (folder / "script.md").is_file() else arg
+# publish's options that take a value: the value is never a video's name.
+_PUBLISH_VALUE_OPTIONS = ("--lang", "--out")
+
+
+def _named_folders(args: tuple[str, ...]) -> list[str]:
+    """publish's arguments, with each positional video name as its folder,
+    so publish takes 04-results as build does."""
+    out: list[str] = []
+    takes_value = False
+    for arg in args:
+        if takes_value or arg.startswith("-") or Path(arg).is_dir():
+            out.append(arg)
+        else:
+            folder = _videos_root() / arg
+            out.append(str(folder) if (folder / "script.md").is_file() else arg)
+        takes_value = arg in _PUBLISH_VALUE_OPTIONS
+    return out
 
 
 @video_group_command.command(name="setup", context_settings=_PASS_THROUGH)

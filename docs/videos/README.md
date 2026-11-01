@@ -6,7 +6,7 @@ terminal sessions it records, its slides and the shared look. The pictures
 and sound are rebuilt from those, so a CLI change means re-running a build,
 not re-recording by hand, and fixing a sentence re-renders one scene.
 
-**You need Docker.** The recommended way to build a video is in the video
+**Docker is recommended.** The easiest way to build a video is in the video
 container, which has every tool and font the build uses, so the only
 thing to install is [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 (macOS, Windows) or Docker Engine (Linux); see

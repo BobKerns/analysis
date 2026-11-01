@@ -118,7 +118,7 @@ RUN uv sync --quiet --frozen --no-dev --no-install-project \
 COPY historical_data/ historical_data/
 COPY prototype_data/ prototype_data/
 COPY templates/ templates/
-# The notebooks a ```notebook scene records.
+# notebooks/: the notebooks that `notebook` scenes open and record.
 COPY notebooks/ notebooks/
 COPY src/ src/
 RUN uv sync --quiet --frozen --no-dev \

@@ -632,6 +632,7 @@ class _FakeChromium:
     (None, {"own", "chrome"}, "own", ["own"]),
     (None, {"chrome"}, "chrome", ["own", "chrome"]),
     ("/opt/chromium", {"path"}, "path", ["path"]),
+    ("/stale/chromium", {"own"}, "own", ["path", "own"]),
 ])
 def test_launch_chromium_falls_back_to_an_installed_chrome(monkeypatch: pytest.MonkeyPatch, env_path: str | None,
                                                            works: set[str], expected: str,
@@ -713,4 +714,10 @@ def test_analysis_video_names_a_video_by_folder_name(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 2 and "no video no-such-video" in result.output
     # publish always runs here, and takes a name as build does.
     assert runner.invoke(main, ["video", "publish", "01-intro", "--lang", "ja"]).exit_code == 0
-    assert video_runs["local"] == [["publish", str(Path.cwd() / "docs" / "videos" / "01-intro"), "--lang", "ja"]]
+    # An option's value stays as typed, even one that names a video.
+    assert runner.invoke(main, ["video", "publish", "--out", "01-intro"]).exit_code == 0
+    assert video_runs["local"] == [["publish", str(Path.cwd() / "docs" / "videos" / "01-intro"), "--lang", "ja"],
+                                   ["publish", "--out", "01-intro"]]
+    # A path names a folder as given, not by its last part.
+    result = runner.invoke(main, ["video", "build", "elsewhere/01-intro", "--local"])
+    assert result.exit_code == 2 and "no video elsewhere/01-intro" in result.output
