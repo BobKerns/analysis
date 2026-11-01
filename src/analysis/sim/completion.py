@@ -284,6 +284,25 @@ SENSITIVITY_ROW = NameType(_sensitivity_rows, "varying row", check=False)
 DRAW_NODE = NameType(_in_scenario(_correlate_with), "draw node", check=False)
 
 
+class NodePair(NameType):
+    """``--pair A,B``: TAB completes the node after the comma, never the
+    one before it (#330). Not re-asked as one name, which it isn't."""
+
+    def shell_complete(
+        self, ctx: click.Context, param: click.Parameter, incomplete: str,
+    ) -> list[CompletionItem]:
+        first, comma, last = incomplete.partition(",")
+        if not comma:
+            return [CompletionItem(f"{c},") for c in self.choices(ctx)
+                    if c.lower().startswith(first.lower())]
+        return [CompletionItem(f"{first},{c}") for c in self.choices(ctx)
+                if c.lower().startswith(last.lower()) and c != first]
+
+
+# `sim ensemble draws --pair`: two draw nodes, comma-separated.
+DRAW_PAIR = NodePair(_in_scenario(_correlate_with), "draw node", check=False)
+
+
 def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:
     """``role:*`` for each role in use: a pattern `tags items` takes."""
     return sorted({f"{t.partition(':')[0]}:*" for t in names.tag_tokens(data_dir, scenario)})

@@ -208,3 +208,11 @@ def test_parents_completes_the_name_after_the_last_colon(data_dir: Path) -> None
     assert _complete(data_dir, "scenario edit retire_alice --parents base:t_great") == [
         "base:t_great_inflation"]
     assert "base:base" not in _complete(data_dir, "scenario edit retire_alice --parents base:")
+
+
+def test_draws_pair_completes_each_node(data_dir: Path) -> None:
+    # #330: --pair A,B is one word; each node in it completes, not twice.
+    line = "ensemble draws retire_alice --pair "
+    assert _complete(data_dir, f"{line}apparel_f") == ["apparel_factor,"]
+    assert _complete(data_dir, f"{line}apparel_factor,core_inf") == ["apparel_factor,core_inflation"]
+    assert "apparel_factor,apparel_factor" not in _complete(data_dir, f"{line}apparel_factor,")

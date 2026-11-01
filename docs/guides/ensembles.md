@@ -1261,6 +1261,7 @@ you specified?
 ```sh
 sim ensemble draws my_recipe                 # the check, per row and factor
 sim ensemble draws my_recipe --node growth   # one row's draw in each member
+sim ensemble draws my_recipe --pair core_inflation,fuel_factor  # one pair's scores
 sim ensemble draws my_recipe --csv draws.csv # member x row, for a spreadsheet
 ```
 
@@ -1273,10 +1274,17 @@ p-value under 0.05 turns up now and then by chance, about one row in
 twenty. Correlated pairs follow, with the correlation each achieved, as in
 the Monte Carlo report above.
 
+`--chart` draws what `--node` or `--pair` lists, as the notebook does (or
+`--chart-file growth.png` writes it; add `--table` for the table too). A
+node's chart is a histogram of its drawn values, with the distribution's
+median and 5th and 95th percentiles marked, beside a histogram of its
+**u**, which should come out flat. A pair's is a scatter of the two rows'
+scores, titled with the correlation asked for and the one achieved.
+
 The file holds more than the command prints: every row's parameters, each
 tree node's own random noise before its tree mixes it in, its score, each
 future's turbulence scale under a t copula, and each year's shock on a
 process path. Values are stored as the simulator stores them (cents,
 micros, day numbers); the views ending in `_display` show dollars, percent
 and dates. Any SQLite tool opens it, and `sensitivity.ipynb`'s Draws section
-charts one row's draws and one pair's scores.
+charts one row's draws and one pair's scores, as `--chart` does.
