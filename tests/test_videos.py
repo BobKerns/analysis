@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -606,3 +607,118 @@ def test_vhs_url_names_the_forks_archive_for_each_platform() -> None:
     assert vhs_url("Linux", "x86_64") == f"{render.VHS_RELEASE}/vhs_{render.VHS_VERSION}_Linux_x86_64.tar.gz"
     assert vhs_url("Darwin", "arm64") == f"{render.VHS_RELEASE}/vhs_{render.VHS_VERSION}_Darwin_arm64.tar.gz"
     assert vhs_url("Windows", "AMD64") is None
+
+
+class _FakeChromium:
+    """Stands in for Playwright's ``pw.chromium``: each launch kind either
+    fails (as a missing download does) or returns a label."""
+
+    def __init__(self, works: set[str]) -> None:
+        self.works = works
+        self.tried: list[str] = []
+
+    def launch(self, *, executable_path: str | None = None, channel: str | None = None,
+               args: list[str] | None = None) -> str:
+        from playwright.sync_api import Error
+
+        kind = "path" if executable_path else channel or "own"
+        self.tried.append(kind)
+        if kind not in self.works:
+            raise Error(f"{kind} isn't there")
+        return kind
+
+
+@pytest.mark.parametrize(("env_path", "works", "expected", "tried"), [
+    (None, {"own", "chrome"}, "own", ["own"]),
+    (None, {"chrome"}, "chrome", ["own", "chrome"]),
+    ("/opt/chromium", {"path"}, "path", ["path"]),
+    ("/stale/chromium", {"own"}, "own", ["path", "own"]),
+])
+def test_launch_chromium_falls_back_to_an_installed_chrome(monkeypatch: pytest.MonkeyPatch, env_path: str | None,
+                                                           works: set[str], expected: str,
+                                                           tried: list[str]) -> None:
+    monkeypatch.setattr(render, "chromium_path", lambda: env_path)
+    chromium = _FakeChromium(works)
+    assert render.launch_chromium(SimpleNamespace(chromium=chromium)) == expected
+    assert chromium.tried == tried
+
+
+def test_launch_chromium_says_how_to_get_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(render, "chromium_path", lambda: None)
+    with pytest.raises(render.ToolMissing, match="playwright install chromium"):
+        render.launch_chromium(SimpleNamespace(chromium=_FakeChromium(set())))
+
+
+@pytest.fixture
+def video_runs(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[list[str]]]:
+    """`analysis video` with the container and the local builder replaced
+    by recorders: which one ran, with what arguments."""
+    from analysis.videos import cli as video_cli
+
+    runs: dict[str, list[list[str]]] = {"docker": [], "local": []}
+    monkeypatch.setattr(video_cli, "_docker", lambda args, out=None: runs["docker"].append(args) or 0)
+    monkeypatch.setattr(video_cli, "_local", lambda args: runs["local"].append(args) or 0)
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+    return runs
+
+
+@pytest.mark.parametrize(("running", "where", "ran"), [
+    (True, [], "docker"),
+    (False, [], "local"),
+    (True, ["--local"], "local"),
+    (True, ["--docker"], "docker"),
+])
+def test_analysis_video_build_runs_in_docker_when_it_can(monkeypatch: pytest.MonkeyPatch,
+                                                         video_runs: dict[str, list[list[str]]],
+                                                         running: bool, where: list[str], ran: str) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.videos import cli as video_cli
+
+    monkeypatch.setattr(video_cli, "docker_running", lambda: running)
+    result = CliRunner().invoke(main, ["video", "build", "01-intro", "--lang", "ja", "--silent", "--jobs", "3",
+                                         *where])
+    assert result.exit_code == 0, result.output
+    folder = str(Path.cwd() / "docs" / "videos" / "01-intro")
+    expected = (["build", "01-intro", "--lang", "ja", "--silent", "--jobs", "3"] if ran == "docker"
+                else ["build", folder, "--lang", "ja", "--silent", "--jobs", "3"])
+    assert video_runs[ran] == [expected]
+    assert video_runs["docker" if ran == "local" else "local"] == []
+    assert ("running locally" in result.output) == (not running and not where)
+
+
+def test_analysis_video_docker_needs_docker(monkeypatch: pytest.MonkeyPatch,
+                                            video_runs: dict[str, list[list[str]]]) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.videos import cli as video_cli
+
+    monkeypatch.setattr(video_cli, "docker_running", lambda: False)
+    for args in (["build", "01-intro", "--docker"], ["shell", "01-intro"]):
+        result = CliRunner().invoke(main, ["video", *args])
+        assert result.exit_code == 1 and "Docker" in result.output
+    assert video_runs == {"docker": [], "local": []}
+
+
+def test_analysis_video_names_a_video_by_folder_name(monkeypatch: pytest.MonkeyPatch,
+                                                    video_runs: dict[str, list[list[str]]]) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.videos import cli as video_cli
+
+    monkeypatch.setattr(video_cli, "docker_running", lambda: False)
+    runner = CliRunner()
+    result = runner.invoke(main, ["video", "check", "no-such-video"])
+    assert result.exit_code == 2 and "no video no-such-video" in result.output
+    # publish always runs here, and takes a name as build does.
+    assert runner.invoke(main, ["video", "publish", "01-intro", "--lang", "ja"]).exit_code == 0
+    # An option's value stays as typed, even one that names a video.
+    assert runner.invoke(main, ["video", "publish", "--out", "01-intro"]).exit_code == 0
+    assert video_runs["local"] == [["publish", str(Path.cwd() / "docs" / "videos" / "01-intro"), "--lang", "ja"],
+                                   ["publish", "--out", "01-intro"]]
+    # A path names a folder as given, not by its last part.
+    result = runner.invoke(main, ["video", "build", "elsewhere/01-intro", "--local"])
+    assert result.exit_code == 2 and "no video elsewhere/01-intro" in result.output

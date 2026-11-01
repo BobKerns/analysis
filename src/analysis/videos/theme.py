@@ -88,6 +88,9 @@ class Theme:
             # Record the terminal's image layer too (`sim chain show --graph`);
             # needs the VHS build render.VHS_VERSION names.
             "Set Sixel true",
+            # Hold a frame captured late instead of playing fast from there
+            # (#413): a tape keeps real time however busy the machine is.
+            "Set RealTime true",
         ]
 
     def bg_hex(self) -> str:

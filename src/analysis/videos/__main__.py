@@ -15,7 +15,7 @@ from analysis.videos import notebook, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
 from analysis.videos import youtube
-from analysis.videos.build import build, repo_root
+from analysis.videos.build import build_languages, default_jobs, repo_root
 
 # VHS archives by (platform.system(), platform.machine()), named as upstream's.
 _VHS_PLATFORMS = {
@@ -135,6 +135,13 @@ def _video_folders(args: list[Path]) -> list[Path]:
     return sorted(p for p in root.iterdir() if (p / "script.md").is_file())
 
 
+def _positive(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m analysis.videos", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -144,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--out", type=Path, default=None, help="output folder (default: out/videos)")
     b.add_argument("--silent", action="store_true", help="timed silence instead of a voice (fast drafts)")
     b.add_argument("--rerecord", action="store_true", help="re-record tapes and notebook scenes (after a code change)")
+    b.add_argument("--jobs", type=_positive, default=None,
+                   help=f"tasks at once, besides recordings (default: CPUs less 4, at least 2: {default_jobs()} here)")
     c = sub.add_parser("check", help="check scripts parse and slides render (no media)")
     c.add_argument("folders", type=Path, nargs="*", help="video folders (default: all in docs/videos)")
     p = sub.add_parser("publish", help="upload built videos to YouTube, or update what's there")
@@ -166,10 +175,10 @@ def main(argv: list[str] | None = None) -> int:
         return publish(args)
     langs = [args.lang] if args.lang else scripts.languages(args.folder)
     try:
-        for lang in langs:
-            print(f"{args.folder.name} [{lang}]")
-            result = build(args.folder, lang=lang, out_dir=args.out,
-                           engine="silent" if args.silent else None, rerecord=args.rerecord)
+        print(f"{args.folder.name} [{', '.join(langs)}]")
+        results = build_languages(args.folder, langs, jobs=args.jobs, out_dir=args.out,
+                                  engine="silent" if args.silent else None, rerecord=args.rerecord)
+        for result in results:
             print(f"  -> {result.video} ({result.length:.1f}s)\n  -> {result.captions}")
             if result.description:
                 print(f"  -> {result.description}")

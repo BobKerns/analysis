@@ -10,8 +10,9 @@ among ``scenarios``. A scenario with no accounts is a valid compare point
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 
@@ -62,7 +63,48 @@ def comparability(
 
 # ---------- what differs: rules and calendar events ----------
 
-RULE_COMPARE_COLUMNS = ["amount_cents", "start", "end", "series", "cadence", "tax_character"]
+def _dollars(cents: Any) -> str:
+    return f"${int(cents) / 100:,.2f}"
+
+
+def _percent(micros: Any) -> str:
+    return f"{int(micros) / 10_000:g}%"
+
+
+def _whole(value: Any) -> str:
+    return str(int(value))
+
+
+RULE_COMPARE_COLUMNS: dict[str, tuple[str, Callable[[Any], str] | None]] = {
+    # column: (the field's name in the table, how a value shows)
+    "amount_rule_kind": ("kind", None),
+    "from_name": ("from", None),
+    "to_name": ("to", None),
+    "amount_cents": ("amount", _dollars),
+    "rate_micros": ("rate", _percent),
+    "claim_age": ("claim_age", _whole),
+    "person": ("person", None),
+    "series": ("series", None),
+    "base_date": ("base_date", None),
+    "inflation_cadence": ("inflation_cadence", None),
+    "cadence": ("cadence", None),
+    "month_of_year": ("month_of_year", _whole),
+    "start": ("start", None),
+    "end": ("end", None),
+    "tax_character": ("tax_character", None),
+    "tax_year": ("tax_year", _whole),
+    "priority": ("priority", _whole),
+    "ytd_amount": ("ytd_amount", _dollars),
+    "ytd_preroll": ("ytd_preroll", _whole),
+    "params_json": ("params", None),
+    "tags": ("tags", None),
+}
+"""Every scheduled-rule field a run's behavior follows, in the order the
+differences list them (#376: a changed claim age has to show)."""
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (not isinstance(value, str) and pd.isna(value)) or value == ""
 
 
 def rule_differences(
@@ -70,26 +112,31 @@ def rule_differences(
 ) -> pd.DataFrame:
     """Scheduled rules as they stand at the end of each run, rows (rule,
     field), one column per scenario, only where a variant differs from the
-    baseline; a rule a scenario lacks is missing there. A calendar event
+    baseline, each value as it reads (dollars, a percent); a rule a scenario
+    lacks, or a field it leaves blank, is missing there. A calendar event
     that edits a rule mid-run shows here as its end state."""
+    columns = list(RULE_COMPARE_COLUMNS)
     rules = {
         name: connections[name].items("scheduled")
-            .set_index("name").reindex(columns=RULE_COMPARE_COLUMNS)
+            .set_index("name").reindex(columns=columns)
         for name in scenarios
     }
     index = sorted(set().union(*(frame.index for frame in rules.values())))
     rules = {name: frame.reindex(index) for name, frame in rules.items()}
-    base_rules = rules[baseline]
-    differs = pd.DataFrame(False, index=index, columns=RULE_COMPARE_COLUMNS)
-    for name in scenarios:
-        if name != baseline:
-            other = rules[name]
-            differs |= (base_rules != other) & ~(base_rules.isna() & other.isna())
-    rows = [
-        {"rule": rule, "field": field, **{name: rules[name].at[rule, field] for name in scenarios}}
-        for rule in index if differs.loc[rule].any()
-        for field in RULE_COMPARE_COLUMNS if differs.at[rule, field]
-    ]
+
+    def shown(name: str, rule: str, column: str) -> Any:
+        value = rules[name].at[rule, column]
+        if _blank(value):
+            return None
+        formatter = RULE_COMPARE_COLUMNS[column][1]
+        return formatter(value) if formatter else str(value)
+
+    rows = []
+    for rule in index:
+        for column in columns:
+            values = {name: shown(name, rule, column) for name in scenarios}
+            if any(values[name] != values[baseline] for name in scenarios):
+                rows.append({"rule": rule, "field": RULE_COMPARE_COLUMNS[column][0], **values})
     if not rows:
         return pd.DataFrame(
             columns=list(scenarios),
@@ -539,3 +586,70 @@ def drift_by_scenario(
         if drift.has_table(con, "allocation_target") and target_set in drift.target_sets(con):
             out[name] = drift.drift_by_month(con, target_set, portfolio=portfolio)
     return out
+
+
+# ---------- spending against the plan (#408) ----------
+
+
+def uses_spending_strategies(connections: Mapping[str, RunConnection]) -> bool:
+    """Whether any run has a strategy owning scheduled rules: without one,
+    every run's spending is its plan and the section leaves no trace."""
+    from analysis.sim.flow_events import uses_spending_strategies as uses
+
+    return any(uses(rc) for rc in connections.values())
+
+
+type SpendingReport = tuple[pd.DataFrame, dict[str, float], list[int]]
+"""A run's ``reports.spending_report`` frame and summary, and its whole years."""
+
+
+def spending_by_scenario(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], mode: DollarMode,
+) -> dict[str, SpendingReport]:
+    """Each run's ``reports.spending_report`` and the years it covers whole,
+    by scenario, in ``mode`` dollars; a run that spent nothing is left out."""
+    from analysis.sim.reports import spending_by_year, spending_report, whole_years
+
+    out = {}
+    for name in scenarios:
+        rc = connections[name]
+        delivered, budgeted = spending_by_year(rc, mode=mode)
+        if not delivered.empty:
+            out[name] = (*spending_report(delivered, budgeted), whole_years(pd.DatetimeIndex(rc.cpi_index().index)))
+    return out
+
+
+def spending_comparison(
+    reports: Mapping[str, SpendingReport], baseline: str, variants: Sequence[str],
+) -> pd.DataFrame:
+    """Delivered spending by year: a column per scenario, then ``Δ name``,
+    each variant's less the baseline's (0 where either spent nothing)."""
+    frame = pd.DataFrame({name: report["delivered"] for name, (report, _summary, _years) in reports.items()})
+    frame.index.name = "year"
+    for name in variants:
+        if name in frame.columns and baseline in frame.columns:
+            frame[f"Δ {name}"] = frame[name].fillna(0) - frame[baseline].fillna(0)
+    return frame
+
+
+def spending_summaries(reports: Mapping[str, SpendingReport]) -> pd.DataFrame:
+    """Per scenario, over the whole run: delivered and budgeted in all,
+    ``of_plan``, the RMS of the yearly differences, the whole year spending
+    was lowest and how low (a part year would always be lowest), and the
+    share redirected on average."""
+    rows = {}
+    for name, (report, summary, years) in reports.items():
+        whole = report.loc[report.index.isin(years)]
+        lowest = whole if not whole.empty else report
+        rows[name] = {
+            "delivered": float(report["delivered"].sum()),
+            "budgeted": float(report["budgeted"].sum()),
+            "of_plan": summary["of_plan"],
+            "rms": summary["rms"],
+            "lowest_year": int(lowest["delivered"].idxmin()),
+            "lowest": float(lowest["delivered"].min()),
+            "redirected": summary["redirected_mean"],
+        }
+    frame = pd.DataFrame.from_dict(rows, orient="index")
+    frame.index.name = "scenario"
+    return frame

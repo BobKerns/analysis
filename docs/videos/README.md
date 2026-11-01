@@ -6,7 +6,7 @@ terminal sessions it records, its slides and the shared look. The pictures
 and sound are rebuilt from those, so a CLI change means re-running a build,
 not re-recording by hand, and fixing a sentence re-renders one scene.
 
-**You need Docker.** The recommended way to build a video is in the video
+**Docker is recommended.** The easiest way to build a video is in the video
 container, which has every tool and font the build uses, so the only
 thing to install is [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 (macOS, Windows) or Docker Engine (Linux); see
@@ -16,20 +16,17 @@ Publishing on YouTube needs only `uv`, on the machine whose browser can
 sign in to the channel.
 
 ```sh
-uv run python -m analysis.videos setup                     # once: voice model, VHS, ttyd
-uv run python -m analysis.videos build docs/videos/00-pilot
-uv run python -m analysis.videos check                     # every script parses, every slide renders
+analysis video build 00-pilot      # or a path: docs/videos/00-pilot
+analysis video check               # every script parses, every slide renders
 ```
 
-The result is `out/videos/00-pilot.en.mp4`, with its captions
-(`00-pilot.en.srt`) and thumbnail (`00-pilot.en.jpg`) beside it.
-
-Or build in a container that has all the tools, with only Docker installed
-(see [Building in a container](#building-in-a-container)):
-
-```sh
-scripts/videos/docker.sh build 00-pilot
-```
+`analysis video` builds and checks in the container when Docker is running
+here, and on this machine when it isn't (saying so); `--docker` or `--local`
+chooses. The result is `out/videos/00-pilot.en.mp4`, with its captions
+(`00-pilot.en.srt`) and thumbnail (`00-pilot.en.jpg`) beside it. A native
+build needs `analysis video setup` once first (voice model, VHS, ttyd).
+`python -m analysis.videos` and `scripts/videos/docker.sh` are the two
+halves underneath, and work on their own too.
 
 ## Layout
 
@@ -137,6 +134,16 @@ Only `FontSize` can be set this way, and only on the tape's first lines.
 
 The demo data's bytes are part of a tape's cache key, but the CLI's
 behavior isn't, so after a CLI change rebuild with `--rerecord`.
+
+A tape plays in real time, as fast as it was typed and slept, on any
+machine. VHS captures 4K slower than the theme's frame rate (about 10
+frames a second on 4 CPUs), so the theme sets `Set RealTime`, which
+[the VHS fork](https://github.com/BobKerns/vhs/releases) adds: while a frame comes late, the one before
+it stays up, and a busy machine makes a tape choppier, not faster. If the
+picture freezes for more than half a second (`render.FREEZE_SECONDS`), the
+build records the tape again, after 5 seconds, then 10, up to three tries in
+all; if every try froze, it keeps the best, says so, and the next build
+records it again.
 
 ### Setting up the demo
 
@@ -350,8 +357,21 @@ build prints what it made and what it reused:
   end                 4.9s  narration cached  visual cached  clip cached
 ```
 
+The work runs in parallel. Each scene's narration and visual are separate
+tasks; its clip starts when both are done, and the video is joined when every
+clip is. Every language of the video builds at once, on the same pool, each
+line tagged `[en]`, `[ja]`. `--jobs N` sets how many tasks run at once; the
+default is the CPUs less 4, at least 2 (`--jobs 1` builds one step at a
+time). Recordings (tapes and notebook scenes) run at one fixed path, so the
+paths the CLI prints read the same in every recording, so they take turns on a
+lane of their own, beside the pool, and get the 4 CPUs kept back: VHS and the
+notebook recorder capture through a browser in real time. Each narration and
+clip encode is held to its share of the other CPUs. A scene's line prints once
+it and every scene before it are done, so the lines stay in scene order.
+
 Requirements for a native build: `ffmpeg`, `uv`, Playwright's Chromium
-(`uv run playwright install chromium`), and for tapes VHS and ttyd (`setup`
+(`uv run playwright install chromium`, again after a Playwright upgrade;
+an installed Google Chrome stands in until then), and for tapes VHS and ttyd (`setup`
 downloads VHS, and ttyd on Linux; `brew install ttyd` on macOS). Japanese narration
 also needs a C++ compiler and `cmake` the first time the narration worker's
 environment is made, since OpenJTalk builds from source (Xcode's
@@ -363,14 +383,18 @@ all.
 `scripts/videos/docker.sh` builds videos in a container (the image is
 `docker/videos/Dockerfile`), so the only thing the host needs is Docker. The
 image has ffmpeg, VHS, ttyd, Playwright's Chromium, the Kokoro voice model,
-the project's Python and Node.js, and the theme's fonts. It builds for amd64
+the project's Python and Node.js, the theme's fonts, and the notebooks that
+notebook scenes record. It builds for amd64
 and arm64 (Docker Desktop on Apple silicon).
 
 ```sh
-scripts/videos/docker.sh build 00-pilot [--lang ja] [--silent] [--rerecord]
-scripts/videos/docker.sh check                 # every video, or name some
-scripts/videos/docker.sh shell 01-intro        # bash, with the video's data repo
+analysis video build 00-pilot [--lang ja] [--silent] [--rerecord] [--jobs N]
+analysis video check                 # every video, or name some
+analysis video shell 01-intro        # bash, with the video's data repo
 ```
+
+(`analysis video` runs `scripts/videos/docker.sh` for these when Docker is
+running; `shell` needs it.)
 
 Each run rebuilds the `analysis-videos` image from the checkout first. The
 first build takes several minutes (the model and Chromium are most of it);
@@ -422,9 +446,9 @@ the video and embeds it in the MP4 as cover art.
 and keeps its title and description up to date (#395):
 
 ```sh
-uv run python -m analysis.videos publish docs/videos/03-base-scenario --dry-run   # shows what it would send
-uv run python -m analysis.videos publish docs/videos/03-base-scenario [--lang ja]
-uv run python -m analysis.videos publish --refresh     # every published video's title and description
+analysis video publish 03-base-scenario --dry-run   # shows what it would send
+analysis video publish 03-base-scenario [--lang ja]
+analysis video publish --refresh     # every published video's title and description
 ```
 
 It works from the build in `out/videos` (`--out` for another), so build

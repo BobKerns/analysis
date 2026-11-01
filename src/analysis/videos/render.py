@@ -14,7 +14,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,9 +32,10 @@ _SILENT_WORDS_PER_SECOND = 2.6
 _SILENT_CJK_CHARS_PER_SECOND = 7.0
 _CONTAINER_CHROMIUM = "/opt/pw-browsers/chromium"
 # VHS from Bob's fork: upstream plus image-layer capture (charmbracelet/vhs#783,
-# `Set Sixel true`), so a picture a command draws in the terminal is recorded.
-# Upstream's releases drop it; back to them once #783 is released (#393).
-VHS_VERSION = "0.12.1-analysis.1"
+# `Set Sixel true`), so a picture a command draws in the terminal is recorded,
+# and `Set RealTime` with its timing report (VHS_TIMING_FILE), so a tape keeps
+# real time on a busy machine (#413). Upstream's releases have neither.
+VHS_VERSION = "0.12.1-analysis.2"
 VHS_RELEASE = f"https://github.com/BobKerns/vhs/releases/download/v{VHS_VERSION}"
 _VHS_HINT = "run `python -m analysis.videos setup`"
 
@@ -113,8 +116,13 @@ def silent_durations(sentences: Sequence[str]) -> list[float]:
     return out
 
 
-def synthesize(sentences: Sequence[str], voice: dict[str, Any], gap: float, out: Path, repo: Path) -> list[float]:
-    """Write the scene's narration to out (WAV); return each sentence's length."""
+def synthesize(sentences: Sequence[str], voice: dict[str, Any], gap: float, out: Path, repo: Path,
+               threads: int | None = None) -> list[float]:
+    """Write the scene's narration to out (WAV); return each sentence's length.
+
+    ``threads`` caps the voice model's CPU threads (default: all of them),
+    so narrations running beside a recording leave it room.
+    """
     engine = voice.get("engine", "kokoro")
     if engine == "silent":
         durations = silent_durations(sentences)
@@ -139,6 +147,7 @@ def synthesize(sentences: Sequence[str], voice: dict[str, Any], gap: float, out:
         "gap": gap,
         "sentences": list(sentences),
         "out": str(out),
+        **({"threads": threads} if threads else {}),
     }
     worker = repo / "scripts" / "videos" / "tts_kokoro.py"
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
@@ -174,18 +183,36 @@ def chromium_path() -> str | None:
     )
 
 
+def launch_chromium(pw: Any, args: Sequence[str] = ()) -> Any:
+    """A headless Chromium for slides and notebook scenes: ``chromium_path()``
+    when there is one, else Playwright's own download, else an installed
+    Google Chrome. A Playwright upgrade wants a new download, and a build
+    shouldn't fail for want of it while Chrome is there."""
+    from playwright.sync_api import Error
+
+    # A stale ANALYSIS_VIDEO_CHROMIUM falls through to the others, like a
+    # missing download.
+    chromium = chromium_path()
+    tries = [*([{"executable_path": chromium}] if chromium else []), {}, {"channel": "chrome"}]
+    for how in tries:
+        try:
+            return pw.chromium.launch(**how, args=list(args))
+        except Error:
+            continue
+    raise ToolMissing(
+        "no Chromium for slides and notebook scenes: run `uv run playwright install chromium`, "
+        "install Google Chrome, or set ANALYSIS_VIDEO_CHROMIUM")
+
+
 def render_slide(html: str, theme: Theme, out: Path) -> None:
     """Screenshot the slide's page at the video's size (Playwright's Chromium)."""
-    from playwright.sync_api import Error, sync_playwright
+    from playwright.sync_api import sync_playwright
 
     with tempfile.TemporaryDirectory() as tmp:
         page_file = Path(tmp) / "slide.html"
         page_file.write_text(html, encoding="utf-8")
         with sync_playwright() as pw:
-            try:
-                browser = pw.chromium.launch(executable_path=chromium_path())
-            except Error:
-                browser = pw.chromium.launch(channel="chrome")  # an installed Google Chrome
+            browser = launch_chromium(pw)
             try:
                 page = browser.new_page(
                     viewport={"width": theme.width, "height": theme.height}, device_scale_factor=theme.scale
@@ -249,6 +276,8 @@ def full_tape(tape: str, theme: Theme, rc: str, out: Path) -> str:
 # Every recording runs at this path, not a random temp name: the CLI prints
 # paths (run files), and they should read the same in every recording.
 DEMO_ROOT = Path(tempfile.gettempdir()) / "analysis-video-demo"
+# So only one thing uses DEMO_ROOT at a time: preparing a demo, or a recording.
+DEMO_LOCK = threading.RLock()
 # Fixed identity and dates for the demo data's commits, so its commit hashes
 # (which runs record) are the same on every build.
 _GIT_ENV = {
@@ -312,6 +341,11 @@ def prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> P
     Setup builds what the video shows without showing it being built:
     scenarios, edits, runs. Each tape then starts from a fresh copy.
     """
+    with DEMO_LOCK:
+        return _prepare_demo(data, setup, theme, store)
+
+
+def _prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> Path:
     root = DEMO_ROOT
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)
@@ -338,26 +372,69 @@ def prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> P
     return store
 
 
-def record_tape(tape: str, theme: Theme, prepared: Path, out: Path) -> None:
-    """Record a terminal scene with VHS, from a fresh copy of ``prepare_demo``'s state."""
+# A tape whose picture froze longer than this is recorded again. VHS keeps
+# real time (`Set RealTime`): when a frame comes late, the one before it
+# stays up meanwhile, so a busy machine makes a tape choppy, not fast. A
+# frozen picture shows once it's held this long (a few frames is normal: on
+# a 4-CPU machine VHS captures 4K at about 10 frames a second).
+FREEZE_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class Timing:
+    """How well a recording kept up with real time, from VHS's timing report."""
+
+    frames: int
+    held: int  # frames repeated while the next one was late
+    worst_gap: float  # the longest the picture froze, in seconds
+
+    @property
+    def lagged(self) -> bool:
+        return self.worst_gap > FREEZE_SECONDS
+
+    def describe(self) -> str:
+        return f"froze for {self.worst_gap:.2f}s ({self.held} of {self.frames} frames held)"
+
+    @classmethod
+    def read(cls, path: Path) -> Timing | None:
+        if not path.is_file():
+            return None
+        report = json.loads(path.read_text(encoding="utf-8"))
+        return cls(int(report["frames"]), int(report.get("held", 0)), float(report["worst_gap"]))
+
+    def write(self, path: Path) -> None:
+        path.write_text(json.dumps({"frames": self.frames, "held": self.held, "worst_gap": self.worst_gap}),
+                        encoding="utf-8")
+
+
+def record_tape(tape: str, theme: Theme, prepared: Path, out: Path) -> Timing | None:
+    """Record a terminal scene with VHS, from a fresh copy of ``prepare_demo``'s state.
+
+    Returns how the recording kept up with real time (None from a VHS
+    that doesn't report it).
+    """
     vhs = need_vhs()
     need("ttyd", "run `python -m analysis.videos setup` (Linux) or `brew install ttyd` (macOS)")
-    root = DEMO_ROOT
-    shutil.rmtree(root, ignore_errors=True)
-    shutil.copytree(prepared, root, symlinks=True)
-    try:
-        tape_file = root / "scene.tape"
-        # Recorded beside ``out`` and renamed once whole: an interrupted
-        # recording mustn't leave a truncated file the cache would reuse.
-        partial = out.with_name(f"{out.stem}.partial{out.suffix}")
-        tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), partial), encoding="utf-8")
-        env = {**os.environ, "PATH": tool_path()}
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
-            env["VHS_NO_SANDBOX"] = "true"  # Chromium refuses to sandbox as root (containers)
-        run([vhs, str(tape_file)], cwd=root, env=env)
-        partial.replace(out)
-    finally:
+    with DEMO_LOCK:
+        root = DEMO_ROOT
         shutil.rmtree(root, ignore_errors=True)
+        shutil.copytree(prepared, root, symlinks=True)
+        report = Path(tempfile.mkdtemp(prefix="analysis-video-timing-")) / "timing.json"
+        try:
+            tape_file = root / "scene.tape"
+            # Recorded beside ``out`` and renamed once whole: an interrupted
+            # recording mustn't leave a truncated file the cache would reuse.
+            partial = out.with_name(f"{out.stem}.partial{out.suffix}")
+            tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), partial), encoding="utf-8")
+            env = {**os.environ, "PATH": tool_path(), "VHS_TIMING_FILE": str(report)}
+            if hasattr(os, "geteuid") and os.geteuid() == 0:
+                env["VHS_NO_SANDBOX"] = "true"  # Chromium refuses to sandbox as root (containers)
+            run([vhs, str(tape_file)], cwd=root, env=env)
+            partial.replace(out)
+            return Timing.read(report)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(report.parent, ignore_errors=True)
 
 
 # --- assembly ----------------------------------------------------------------
@@ -375,12 +452,14 @@ def compose_args(
     out: Path,
     fade_in: bool = True,
     fade_out: bool = True,
+    threads: int | None = None,
 ) -> list[str]:
     """ffmpeg arguments for one scene: the picture held to ``length``, narration ``lead`` in.
 
     A still fades in and out through the background color, except that the
     video's first scene doesn't fade in (players use frame 0 as the preview)
     and its last doesn't fade out (the closing card is what stays on screen).
+    ``threads`` caps the encoder's threads (default: ffmpeg's, every core).
     """
     w, h, fps = theme.out_width, theme.out_height, theme.fps
     bg = theme.bg_hex()
@@ -409,6 +488,8 @@ def compose_args(
     )
     args += ["-filter_complex", f"{video};{sound}", "-map", "[v]", "-map", "[a]"]
     args += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-r", str(fps), "-pix_fmt", "yuv420p"]
+    if threads:
+        args += ["-threads", str(threads)]
     args += ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-t", f"{length:.3f}", str(out)]
     return args
 

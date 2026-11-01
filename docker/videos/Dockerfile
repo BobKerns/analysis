@@ -29,7 +29,7 @@ FROM ubuntu:24.04
 # fork, which records terminal images (render.VHS_VERSION says why).
 ARG NODE_VERSION=22.22.2
 ARG UV_VERSION=0.11.32
-ARG VHS_VERSION=0.12.1-analysis.1
+ARG VHS_VERSION=0.12.1-analysis.2
 ARG TTYD_VERSION=1.7.7
 ARG KOKORO_RELEASE=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0
 ARG TARGETARCH
@@ -118,6 +118,8 @@ RUN uv sync --quiet --frozen --no-dev --no-install-project \
 COPY historical_data/ historical_data/
 COPY prototype_data/ prototype_data/
 COPY templates/ templates/
+# notebooks/: the notebooks that `notebook` scenes open and record.
+COPY notebooks/ notebooks/
 COPY src/ src/
 RUN uv sync --quiet --frozen --no-dev \
  && ln -s /opt/venv .venv
