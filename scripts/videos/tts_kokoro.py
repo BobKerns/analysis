@@ -2,6 +2,7 @@
 # requires-python = ">=3.12,<3.14"
 # dependencies = ["kokoro-onnx==0.6.1", "soundfile>=0.13", "misaki[ja]==0.9.4"]
 # ///
+# cspell:ignore sess
 """Synthesize one scene's narration with Kokoro (run by analysis.videos, not by hand).
 
 Runs under `uv run --script`, in its own environment: kokoro-onnx doesn't
@@ -10,9 +11,11 @@ have to install it.
 
 Reads a JSON request on stdin:
     {"model": ..., "voices": ..., "voice": ..., "lang": ..., "speed": ...,
-     "gap": seconds, "sentences": [...], "out": "scene.wav"}
+     "gap": seconds, "sentences": [...], "out": "scene.wav", "threads": n}
 writes `out` (mono, the model's sample rate) with `gap` seconds of silence
 between sentences, and prints {"durations": [seconds per sentence]}.
+`threads` (optional) caps the model's CPU threads, for builds that run
+several narrations and a recording at once.
 
 A sentence may carry IPA phonemes between \u27e6 and \u27e7 (a script's
 {word|/phonemes/} respelling): the text around them is phonemized as usual
@@ -29,8 +32,10 @@ import re
 import sys
 
 import numpy as np
+import onnxruntime as rt
 import soundfile as sf
 from kokoro_onnx import Kokoro
+from kokoro_onnx.session import resolve_providers
 
 
 _IPA = re.compile("\u27e6([^\u27e7]*)\u27e7")
@@ -68,9 +73,20 @@ def phonemes(kokoro: Kokoro, sentence: str, lang: str) -> str:
     return " ".join(p.strip() for p in parts if p.strip())
 
 
+def _kokoro(req: dict) -> Kokoro:
+    threads = req.get("threads")
+    if not threads:
+        return Kokoro(req["model"], req["voices"])
+    options = rt.SessionOptions()
+    options.intra_op_num_threads = int(threads)
+    options.inter_op_num_threads = 1
+    session = rt.InferenceSession(req["model"], sess_options=options, providers=resolve_providers())
+    return Kokoro.from_session(session, req["voices"])
+
+
 def main() -> None:
     req = json.load(sys.stdin)
-    kokoro = Kokoro(req["model"], req["voices"])
+    kokoro = _kokoro(req)
     pieces = []
     durations = []
     rate = 24000
