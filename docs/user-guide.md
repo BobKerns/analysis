@@ -1582,6 +1582,7 @@ machine too small for a notebook comfortably.
 | realized vs. unrealized gains by year | `sim report gains [--start YEAR] [--end YEAR] [--chart]` |
 | federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--start YEAR] [--end YEAR] [--chart]` |
 | where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--start YEAR] [--end YEAR] [--chart]` |
+| spending against the plan by year: budgeted, delivered, the share of plan, and what was redirected | `sim report spending [--by category\|account\|tag:ROLE] [--start YEAR] [--end YEAR] [--chart]` |
 | a scenario's guard rails | `sim guard-rail list` |
 | an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--chart]` |
 
@@ -1607,7 +1608,8 @@ the pre-tax total dashed above it, so the gap is the tax still owed.
 carried down to the change in net worth; with `--year`, it draws a bar per
 group. `sim report tax --chart` stacks federal and state tax with the
 effective rate on its own axis (with `--reconciliation`, each April's balance
-due and refund). `sim allocation --chart` draws a pie of the asset classes, a
+due and refund). `sim report spending --chart` draws delivered spending as a
+bar per year with the plan as a dashed line over them. `sim allocation --chart` draws a pie of the asset classes, a
 bar per class split by the group with `--by`, and a line per class with
 `--drift`.
 

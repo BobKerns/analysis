@@ -44,7 +44,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | realized vs. unrealized gains (`net_worth.ipynb`) | `analysis sim report gains [--chart]` |
 | federal and state tax with their AGI, deduction and taxable income, and tax reconciliation (`net_worth.ipynb`) | `analysis sim report tax [--reconciliation] [--chart]` |
 | guard rails: each year's margin and the cumulative one, and a summary (`net_worth.ipynb`) | `analysis sim report guard-rails [--rail NAME] [--carried] [--chart]` |
-| spending against the plan: budgeted vs. delivered, redirected, filled (`net_worth.ipynb`) | `analysis sim report spending [--by category\|account\|tag:ROLE]`; no chart yet (#430) |
+| spending against the plan: budgeted vs. delivered, redirected, filled (`net_worth.ipynb`) | `analysis sim report spending [--by category\|account\|tag:ROLE] [--chart]` |
 | the portfolio's drift from its target allocation (`accounts.ipynb`) | `analysis sim allocation --drift [--targets SET] [--chart]` |
 | a scenario's guard rails, as defined | `analysis sim guard-rail list` |
 | every event, filtered by reason/tax/account/date | none yet (#189) |
