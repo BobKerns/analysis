@@ -1154,6 +1154,16 @@ Useful options:
   nominal` switches from today's (CPI-constant) dollars.
 - `--measure min_net_worth` looks at the lowest net worth up to each year
   ("how close do I get to running out") instead of net worth at year-end.
+- `--row NAME` shows one row on its own: its change in every year (or
+  `--years`), one column per quantile it was moved to. TAB completes the
+  rows the batch varied.
+- `--chart` draws the notebook's charts instead of the tables (`--table`
+  for both, `--chart-file` to write a .png or .svg): the share heatmap and
+  the tornado at the last reporting year; with `--row`, its change over time
+  and, for a quantile ladder, its response curve; with `--attribute`, where
+  its change comes from. On a Monte Carlo batch it draws R² by year and each
+  row's correlation with its interval. Pick the year with `--years`: the
+  charts use the last one.
 - `--attribute NAME` breaks one row's effect down exactly: by income/expense
   category (the default, e.g. salary vs. taxes vs. growth), by individual
   income/expense account (`--by flow_account`), or by where the money ends up

@@ -86,6 +86,7 @@ from analysis.sim.ensemble import (
     oat_plan,
     life_table_age,
     varying_names,
+    read_batch_manifest,
     resolve_member,
     risk_summary,
     summary_with_percentiles,
@@ -2598,7 +2599,12 @@ def _echo_ensemble_rail_deltas(
     help="Share below which a row is a pin candidate (in every year).",
 )
 @click.option(
-    "--attribute", "attribute", default=None, metavar="NAME",
+    "--row", "row", default=None, metavar="NAME", type=completion.SENSITIVITY_ROW,
+    help="Sensitivity batches: NAME's delta in every year (or --years), one column per "
+         "quantile it was moved to.",
+)
+@click.option(
+    "--attribute", "attribute", default=None, metavar="NAME", type=completion.SENSITIVITY_ROW,
     help="Sensitivity batches: break NAME's net-worth deltas down along --by, exactly.",
 )
 @click.option(
@@ -2606,10 +2612,12 @@ def _echo_ensemble_rail_deltas(
     show_default=True, help="With --attribute: income/expense category, flow account, or "
                             "holding account.",
 )
+@_graph_options("the notebook's charts for it", after="the tables")
 def ensemble_sensitivity(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     mode: str | None, dollars: str, relative: bool, measure: str, years: str | None,
-    negligible: float, attribute: str | None, by: str,
+    negligible: float, row: str | None, attribute: str | None, by: str, as_graph: bool,
+    graph_file: Path | None,
 ) -> None:
     """Which of SCENARIO_NAME's varying rows matter, and when (ADR-007).
 
@@ -2621,13 +2629,34 @@ def ensemble_sensitivity(
     correlated). A correlated batch also shows how closely its draws reproduce
     the specified correlations.
 
+    --row NAME shows one varying row of a sensitivity batch instead: its delta
+    by year and quantile. --attribute NAME breaks its net-worth delta down.
+
+    --chart draws what the notebook draws (#329). A sensitivity batch: the
+    share of each year's impact by row and year, and the tornado at the last
+    reporting year; with --row, the row's delta over time and, for a quantile
+    ladder, its response across its range at that year; with --attribute, where
+    its delta comes from that year. A Monte Carlo batch: R^2 by year, and each
+    row's correlation with its 95% interval at that year. --years picks the
+    year: its last.
+
     Without SCENARIO_NAME, an ensemble that has been run is asked for.
     """
+    if row is not None and attribute is not None:
+        raise click.UsageError("use one of --row and --attribute")
+    # One row's views need a sensitivity batch, so that's the one to find.
+    if mode is None and (row is not None or attribute is not None):
+        mode = "sensitivity"
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
+    _hold_tables()
+    draw = (
+        (lambda fig: _draw_figure(fig, graph_file, "sensitivity-"))
+        if as_graph or graph_file is not None else None
+    )
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
@@ -2649,6 +2678,14 @@ def ensemble_sensitivity(
     except ValueError:
         raise click.UsageError(f"--years: not a comma-separated list of years: {years!r}") from None
 
+    if row is not None:
+        if batch_mode(batch_dir) != "sensitivity":
+            raise click.UsageError("--row needs a sensitivity batch")
+        _report_row(
+            scenario_name, batch_dir, row, dollar_mode, relative=relative, measure=measure,
+            years=requested_years, draw=draw,
+        )
+        return
     if attribute is not None:
         if batch_mode(batch_dir) != "sensitivity":
             raise click.UsageError("--attribute needs a sensitivity batch")
@@ -2659,18 +2696,18 @@ def ensemble_sensitivity(
             )
         _report_attribution(
             scenario_name, batch_dir, attribute, by=by, dollar_mode=dollar_mode,
-            years=requested_years, relative=relative,
+            years=requested_years, relative=relative, draw=draw,
         )
         return
     if batch_mode(batch_dir) == "sensitivity":
         _report_oat(
             scenario_name, batch_dir, dollar_mode, relative=relative, measure=measure,
-            years=requested_years, negligible=negligible,
+            years=requested_years, negligible=negligible, draw=draw,
         )
     else:
         _report_correlation(
             scenario_name, batch_dir, dollar_mode, measure=measure,
-            years=requested_years, negligible=negligible,
+            years=requested_years, negligible=negligible, draw=draw,
         )
 
 
@@ -2882,6 +2919,11 @@ def _echo_node_draws(con: sqlite3.Connection, node: str) -> None:
         ])
 
 
+# Draws one of `sim ensemble sensitivity`'s figures (``_draw_figure``, bound
+# to the command's --chart or --chart-file).
+_Draw = Callable[[Any], None]
+
+
 def _report_years(batch_dir: Path, available: list[int], requested: list[int] | None) -> list[int]:
     """``--years`` checked against the batch's reporting years, or the
     default set (first full year, every fifth year, final year)."""
@@ -2898,21 +2940,36 @@ def _report_years(batch_dir: Path, available: list[int], requested: list[int] | 
 
 def _report_attribution(
     scenario_name: str, batch_dir: Path, row: str, *, by: str, dollar_mode: DollarMode,
-    years: list[int] | None, relative: bool = False,
+    years: list[int] | None, relative: bool = False, draw: _Draw | None = None,
 ) -> None:
     """ADR-007 §6.1: one table per reporting year, one line per key, one
     column per quantile ``row`` was perturbed to. ``relative`` divides each
-    year by the base's net worth that year (blank where it's near zero)."""
+    year by the base's net worth that year (blank where it's near zero).
+    ``draw`` gets the notebook's attribution bars at the last year."""
     try:
-        by_quantile = sensitivity.oat_attribution(batch_dir, row, by=by, dollars=dollar_mode)
-        if relative:
-            base = sensitivity.base_net_worth(batch_dir, dollar_mode).abs()
-            base = base.where(base >= sensitivity.RELATIVE_NEAR_ZERO_DOLLARS)
-            by_quantile = {q: t.div(base.reindex(t.index), axis=0) for q, t in by_quantile.items()}
+        dollars_by_quantile = sensitivity.oat_attribution(batch_dir, row, by=by, dollars=dollar_mode)
+        base_dollars = sensitivity.base_net_worth(batch_dir, dollar_mode)
     except EnsembleError as exc:
         raise click.ClickException(str(exc)) from None
+    by_quantile = dollars_by_quantile
+    if relative:
+        base = base_dollars.abs()
+        base = base.where(base >= sensitivity.RELATIVE_NEAR_ZERO_DOLLARS)
+        by_quantile = {q: t.div(base.reindex(t.index), axis=0) for q, t in by_quantile.items()}
     tables = list(by_quantile.values())
     years = _report_years(batch_dir, [int(y) for y in tables[0].index], years)
+    if draw is not None:
+        from analysis.sim.sensitivity_charts import attribution_figure
+
+        year = years[-1]
+        try:
+            fig, _numbers = attribution_figure(
+                dollars_by_quantile, row, year, scenario_name, relative=relative,
+                base=float(base_dollars[year]) if year in base_dollars.index else None,
+            )
+        except EnsembleError as exc:
+            raise click.ClickException(str(exc)) from None
+        draw(fig)
     unit = "% of base" if relative else (
         "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
     )
@@ -2939,7 +2996,7 @@ def _signed(value: float) -> str:
 
 def _report_correlation(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
-    measure: str, years: list[int] | None, negligible: float,
+    measure: str, years: list[int] | None, negligible: float, draw: _Draw | None = None,
 ) -> None:
     """ADR-007 §6.2: rho [interval], SRRC [interval] and PRCC per row and
     year, R^2 per year, each latent factor's rho, the achieved score
@@ -3014,6 +3071,11 @@ def _report_correlation(
     click.echo(f"\n  status ({by}^2 vs {negligible:.0%}, every year):")
     for name, value in status.items():
         click.echo(f"    {name:<24} {value}")
+    if draw is not None:
+        from analysis.sim.sensitivity_charts import correlation_figure
+
+        draw(correlation_figure(table, years[-1], negligible, scenario_name, by=by,
+                                measure=measure))
 
 
 def _fmt_delta(value: float, relative: bool) -> str:
@@ -3025,6 +3087,7 @@ def _fmt_delta(value: float, relative: bool) -> str:
 def _report_oat(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     relative: bool, measure: str, years: list[int] | None, negligible: float,
+    draw: _Draw | None = None,
 ) -> None:
     try:
         deltas = sensitivity.oat_deltas(batch_dir, dollar_mode)
@@ -3073,6 +3136,53 @@ def _report_oat(
         click.echo(f"\n  {len(failed)} failed member(s), excluded above:")
         for stem in failed:
             click.echo(f"    {stem}: {statuses[stem]}")
+    if draw is not None:
+        from analysis.sim.sensitivity_charts import oat_figure
+
+        draw(oat_figure(deltas, years[-1], scenario_name, relative=relative, measure=measure))
+
+
+def _report_row(
+    scenario_name: str, batch_dir: Path, row: str, dollar_mode: DollarMode, *,
+    relative: bool, measure: str, years: list[int] | None, draw: _Draw | None = None,
+) -> None:
+    """One varying row of an OAT batch (#329): its delta against the base in
+    every year (or ``years``), one column per quantile it was moved to.
+    ``draw`` gets its delta over time and, for a quantile ladder, its
+    response curve at the last year."""
+    try:
+        deltas = sensitivity.oat_deltas(batch_dir, dollar_mode)
+    except EnsembleError as exc:
+        raise click.ClickException(str(exc)) from None
+    known = list(dict.fromkeys(str(r) for r in deltas["row"]))
+    if row not in known:
+        raise click.ClickException(
+            f"{row!r} is not a row this batch varied; it varied: {', '.join(known)}")
+    mine = deltas[(deltas["row"] == row) & (deltas["measure"] == measure)]
+    all_years = sorted(int(y) for y in mine["year"].unique())
+    shown = all_years if years is None else _report_years(batch_dir, all_years, years)
+    column = "relative" if relative else "delta"
+    grid = mine.pivot_table(index="year", columns="quantile", values=column, dropna=False)
+    moved_to = mine.drop_duplicates("quantile").set_index("quantile")["value"].sort_index()
+    unit = "% of base" if relative else (
+        "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
+    )
+    label = sensitivity.row_label(row, sensitivity.factor_rows(deltas))
+    target = mine["target"].iloc[0]
+    click.echo(f"row {scenario_name} ({batch_dir.name}): {label} ({target}), "
+               f"{measure} vs. the base, {unit}")
+    click.echo("  moved to: " + ", ".join(f"q={q:g} {v}" for q, v in moved_to.items()))
+    click.echo(f"\n  {'year':<6}" + "".join(f"{'@' + format(q, 'g'):>14}" for q in moved_to.index))
+    for year in shown:
+        cells = (_fmt_delta(grid.at[year, q], relative) if year in grid.index else "-"
+                 for q in moved_to.index)
+        click.echo(f"  {year:<6}" + "".join(f"{c:>14}" for c in cells))
+    if draw is not None:
+        from analysis.sim.sensitivity_charts import row_figure
+
+        manifest = read_batch_manifest(batch_dir) or {}
+        draw(row_figure(deltas, row, shown[-1], scenario_name, relative=relative,
+                        measure=measure, ladder=len(manifest.get("quantiles", [])) >= 4))
 
 
 @sim_group_command.command(name="all")

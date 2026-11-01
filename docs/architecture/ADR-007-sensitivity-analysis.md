@@ -200,8 +200,11 @@ sim run <recipe> --sensitivity [--only a,b] [--quantiles 0.1,0.9] [--jobs N]
 sim ensemble sensitivity <recipe> [--batch B] [--mode sensitivity|monte_carlo]
                                   [--dollars cpi_constant|nominal] [--relative]
                                   [--years 2030,2040] [--negligible 0.05]
-                                  [--attribute NAME [--by category|flow_account|holding_account]]
+                                  [--row NAME | --attribute NAME [--by category|flow_account|holding_account]]
+                                  [--chart | --chart-file FILE] [--table]
 ```
+
+`--row NAME` prints one row's delta by year and quantile. `--chart` draws the §9 charts that fit what's reported, at the last reporting year: for a sensitivity batch the share heatmap and the tornado, with `--row` the delta over time and (for a ladder) the response curve, with `--attribute` the attribution bars; for a Monte Carlo batch the R² strip and the ρ (or SRRC) chart. The charts live in the widget-free `sim/sensitivity_charts.py`, which the notebook draws with too. `--row` and `--attribute` pick the latest sensitivity batch when `--mode` isn't given.
 
 `--sensitivity` on a scenario with no unresolved `vary_*` rows is an error ("nothing to perturb"), not a silent single run. Neither runs on a pool ([ADR-009](ADR-009-pooled-ensembles.md) §7): `--sensitivity` and `sim ensemble sensitivity` on a pool's batch are refused, pointing at its components, since a row only one component draws would be confounded with which world a member is in. `--sensitivity` together with `--ensemble-size` is also an error, because an OAT batch's size is always `1 + k × m`, where `k` counts the swept factors (§2) as well as the rows.
 
@@ -224,7 +227,7 @@ This is a separate notebook from `ensemble.ipynb`. It reuses existing pickers, a
 - **`HeatmapValuePicker`** (new, `ToggleButtons`): share / signed swing for the overview heatmap.
 - **`AttributionPicker`** (new, `ToggleButtons`): category / flow account / holding account (§6.1).
 
-Widgets (`notebook_ui/sensitivity_widgets.py`):
+Widgets (`notebook_ui/sensitivity_widgets.py`, drawing with `sim/sensitivity_charts.py`'s views):
 
 0. **Parameters** (first, for either kind of batch): `sensitivity.parameters` lists the batch's varying rows. For each it gives what the row acts on, which column varies, the distribution, range, center (the base case, its median), its shape (a truncated normal's SD and any skew or tail weight, a triangular's mode), the implied moments (mean, SD, skewness, excess kurtosis, #31), and the author's description. A sensitivity batch adds the value used at each quantile, and a Monte Carlo batch adds the range actually drawn. It's read from the batch's own member files, so it describes what was run, not the recipe as it stands now.
 1. **Overview heatmap** (the first chart): parameters × reporting years, latent factors labeled `(factor)` here and in the tornado, with rows sorted by peak share. A `HeatmapValuePicker` (new, `ToggleButtons`) chooses between share, which shows who dominates when, and signed swing, which uses a diverging scale centered on zero and responds to the units pickers. One glance shows which parameter matters when; the widgets below drill into one parameter or one year.
@@ -264,3 +267,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#222](https://github.com/BobKerns/analysis/issues/222): a `life_table` lifespan's parameters row gives its 1st to 99th percentile ages and its set-forward (§2).
 - [#281](https://github.com/BobKerns/analysis/issues/281): a `date_marker` is swept as one parameter, moving the rows dated from it (§2).
 - [#292](https://github.com/BobKerns/analysis/issues/292) ([ADR-009](ADR-009-pooled-ensembles.md)): sensitivity is refused on a pool, run on its components instead (§7).
+- [#329](https://github.com/BobKerns/analysis/issues/329): `sim ensemble sensitivity` draws the notebook's charts (`--chart`) and shows one row (`--row`); the views move to `sim/sensitivity_charts.py` (§7, §9).

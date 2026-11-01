@@ -27,9 +27,8 @@ from analysis.sim.draws_db import (
 )
 from analysis.sim.ensemble import EnsembleError
 from analysis.sim.notebook_ui.pickers import find_data_dir, find_runs_dir, note_picks
-from analysis.sim.notebook_ui.sensitivity_widgets import (
-    CATEGORICAL, GRID, INK, MUTED, list_batches, list_sensitivity_recipes,
-)
+from analysis.sim.notebook_ui.sensitivity_widgets import list_batches, list_sensitivity_recipes
+from analysis.sim.sensitivity_charts import CATEGORICAL, GRID, INK, MUTED
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = ["check_table", "draws_view", "pair_view", "pair_options", "draws_widget"]
