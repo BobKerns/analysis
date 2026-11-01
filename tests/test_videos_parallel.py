@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import threading
+from collections.abc import Iterator
 import time
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,17 @@ title = "並列"
 
 さようなら。
 """
+
+
+PLENTY = 2**50  # memory enough for any number of tasks
+
+
+@pytest.fixture(autouse=True)
+def _running_allowed() -> Iterator[None]:
+    """A failed build here stops render.run() for the rest of the process; let later tests run programs."""
+    render.allow_running()
+    yield
+    render.allow_running()
 
 
 def _video(videos_root: Path, *, ja: bool = False) -> Path:
@@ -155,13 +168,24 @@ class _Steps:
 
 @pytest.mark.parametrize(("cpus", "jobs"), [(1, 1), (2, 2), (4, 2), (6, 2), (8, 4), (16, 12)])
 def test_default_jobs_leave_cpus_to_the_recording(cpus: int, jobs: int) -> None:
-    assert default_jobs(cpus) == jobs
+    assert default_jobs(cpus, memory=PLENTY) == jobs
+
+
+@pytest.mark.parametrize(("gib", "jobs"), [(4, 1), (8, 2), (12, 4), (64, 12)])
+def test_default_jobs_fit_in_memory(gib: int, jobs: int) -> None:
+    """Docker Desktop's VM has 8 GB unless given more: 3 GB for recording, 2 GB a task."""
+    assert default_jobs(16, memory=gib * builds.GIB) == jobs
+
+
+def test_available_memory_is_known_here() -> None:
+    memory = builds.available_memory()
+    assert memory is None or memory > 0
 
 
 def test_one_job_is_one_task_at_a_time() -> None:
     with Workers(1, cpus=8) as serial:
         assert serial.recording is serial.general and serial.threads is None
-    with Workers(cpus=16) as parallel:
+    with Workers(cpus=16, memory=PLENTY) as parallel:
         assert parallel.jobs == 12 and parallel.recording is not parallel.general and parallel.threads == 1
     with Workers(2, cpus=16) as wide:
         assert wide.threads == 6  # the 12 CPUs not kept for the recording, shared by 2 tasks
@@ -309,3 +333,164 @@ def test_a_tape_that_keeps_freezing_keeps_its_best_try_and_is_redone_next_build(
     assert "kept the best of 3 tries" in lines[-1]
     assert not list(builder.cache.glob("*.best.mp4"))
     assert builder.plan_visual(scene).make is not None  # froze: not trusted from the cache
+
+
+# --- stopping, memory and first narrations ------------------------------------------
+
+
+def test_stop_running_kills_a_program_and_its_children() -> None:
+    errors: list[BaseException] = []
+
+    def go() -> None:
+        try:
+            render.run(["bash", "-c", "sleep 60 & wait"])
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=go)
+    worker.start()
+    time.sleep(0.3)
+    started = time.monotonic()
+    render.stop_running()
+    worker.join(10)
+    assert not worker.is_alive() and time.monotonic() - started < 5
+    assert errors and "bash failed (-15)" in str(errors[0])
+    with pytest.raises(RuntimeError, match="not started, the build is stopping"):
+        render.run(["true"])
+    render.allow_running()
+    render.run(["true"])
+
+
+def test_a_program_the_kernel_killed_says_so() -> None:
+    with pytest.raises(RuntimeError, match=r"failed \(-9: killed, most likely out of memory\)"):
+        render.run(["bash", "-c", "kill -9 $$"])
+
+
+def test_stop_running_kills_children_that_ignore_terminate(tmp_path: Path) -> None:
+    """The leader exits on TERM; a child that ignores it must still go."""
+    pid_file = tmp_path / "child.pid"
+    errors: list[BaseException] = []
+
+    def go() -> None:
+        try:
+            render.run(["bash", "-c", f"bash -c 'trap \"\" TERM; echo $$ > {pid_file}; sleep 60' & wait"])
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=go)
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not pid_file.exists() or not pid_file.read_text().strip():
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    child = int(pid_file.read_text())
+    render.stop_running()
+    worker.join(10)
+    assert errors and not worker.is_alive()
+    deadline = time.monotonic() + 5
+    while _alive(child):
+        assert time.monotonic() < deadline, "the child that ignored TERM is still running"
+        time.sleep(0.05)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A zombie is dead; only its parent (gone) or init would reap it.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:  # reaped since the kill above
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def test_the_memory_limit_comes_from_this_process_cgroup_and_those_above(tmp_path: Path) -> None:
+    def group(path: Path, limit: str, used: str, v1: bool = False) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        names = ("memory.limit_in_bytes", "memory.usage_in_bytes") if v1 else ("memory.max", "memory.current")
+        (path / names[0]).write_text(limit)
+        (path / names[1]).write_text(used)
+
+    group(tmp_path / "outer", str(8 * builds.GIB), str(2 * builds.GIB))
+    group(tmp_path / "outer" / "inner", "max", str(builds.GIB))
+    # v1, with a mount that starts at the container's own group: only the root has files.
+    group(tmp_path / "memory", str(4 * builds.GIB), str(builds.GIB), v1=True)
+    files = builds._cgroup_memory_files("4:memory:/docker/abc\n2:cpu:/x\n0::/outer/inner\n", tmp_path)
+    found = [(builds._read(limit), builds._read(usage)) for limit, usage in files]
+    assert files[0] == (tmp_path / "memory/docker/abc/memory.limit_in_bytes",
+                        tmp_path / "memory/docker/abc/memory.usage_in_bytes")
+    assert (str(4 * builds.GIB), str(builds.GIB)) in found  # the v1 mount root
+    assert ("max", str(builds.GIB)) in found and (str(8 * builds.GIB), str(2 * builds.GIB)) in found
+    assert len(files) == 3 + 3  # docker/abc, docker, root; outer/inner, outer, root
+
+
+def test_a_notebook_recording_stops_between_steps_when_the_build_stops() -> None:
+    from analysis.videos import notebook
+
+    render.stop_running()
+    with pytest.raises(RuntimeError, match="notebook line 1: stopped"):
+        notebook._play(None, notebook.parse("Open net_worth.ipynb\n"), None, None)  # ty: ignore[invalid-argument-type]
+
+
+def test_a_failure_stops_a_recording_that_would_never_finish(
+    videos_root: Path, repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recording whose browser died waits forever: the failure elsewhere mustn't wait for it."""
+    steps = _Steps(monkeypatch)
+
+    def plan_visual(builder: _Builder, scene: scripts.Scene) -> _Visual:
+        def make() -> None:
+            if scene.visual.kind == "tape":
+                render.run(["sleep", "60"])
+
+        return _Visual(builder.cache / f"{scene.id}.png", scene.visual.kind != "tape", scene.id, make,
+                       scene.visual.kind == "tape")
+
+    def narration(builder: _Builder, scene: scripts.Scene) -> Any:
+        time.sleep(0.3)
+        raise RuntimeError("ffmpeg failed (-9)")
+
+    monkeypatch.setattr(_Builder, "plan_visual", plan_visual)
+    monkeypatch.setattr(_Builder, "narration", narration)
+    lines: list[str] = []
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match=r"ffmpeg failed \(-9\)"):
+        build(_video(videos_root), out_dir=tmp_path / "out", repo=repo_root, log=lines.append, jobs=2)
+    assert time.monotonic() - started < 15
+    assert lines[0] == "  stopping: ffmpeg failed (-9)"
+    assert not steps.events
+
+
+def test_a_languages_first_narration_runs_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Japanese's first run downloads OpenJTalk's dictionary; two at once break it."""
+    for name in render.KOKORO_FILES:
+        (tmp_path / name).write_bytes(b"")
+    monkeypatch.setattr(render, "cache_home", lambda: tmp_path)
+    monkeypatch.setattr(render, "need", lambda tool, hint: tool)
+    monkeypatch.setattr(render, "_VOICED", set())
+    lock = threading.Lock()
+    running: list[int] = [0]
+    seen: list[int] = []  # how many ran at once, as each started
+
+    def run(argv: list[str], *, input: str, **kwargs: Any) -> Any:
+        with lock:
+            running[0] += 1
+            seen.append(running[0])
+        time.sleep(0.1)
+        with lock:
+            running[0] -= 1
+        return render.subprocess.CompletedProcess(argv, 0, '{"durations": [1.0]}', "")
+
+    monkeypatch.setattr(render, "run", run)
+    voice = {"engine": "kokoro", "voice": "jf_alpha", "lang": "ja"}
+    threads = [threading.Thread(target=render.synthesize, args=(["文。"], voice, 0.2, tmp_path / f"{i}.wav", tmp_path))
+               for i in range(4)]
+    for t in threads:
+        t.start()
+        time.sleep(0.02)
+    for t in threads:
+        t.join()
+    assert seen[0] == 1 and seen[1] == 1  # the second waited for the first
+    assert max(seen) > 1  # then the rest ran side by side

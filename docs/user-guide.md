@@ -1392,6 +1392,10 @@ The design is in
 
 ## 5. Looking at your results
 
+**Video.** *Looking at the results* walks through this section with Alice
+and Bill's base scenario: [English](https://www.youtube.com/watch?v=hCFPwthvFL4),
+[Japanese (日本語)](https://www.youtube.com/watch?v=EHjnXhMulQ0).
+
 A **run** is what happens when the simulator plays a scenario forward, month
 by month, from its start date to its end date. The result is a single, dated
 file under `state/runs/`. It holds every account balance, every money

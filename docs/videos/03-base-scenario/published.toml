@@ -1,0 +1,52 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "L6x_JUW5Q8M"
+uploaded = 2026-10-31T23:45:01Z
+scenes = [
+  ["title", 20.12],
+  ["contents", 26.82],
+  ["person", 18.42],
+  ["kinds", 28.81],
+  ["accounts", 41.53],
+  ["lots", 56.17],
+  ["more-accounts", 32.14],
+  ["rules", 26.89],
+  ["scheduled", 41.56],
+  ["more-scheduled", 30.65],
+  ["first-look", 39.45],
+  ["chains-card", 25.63],
+  ["chains", 41.96],
+  ["chains-graph", 26.78],
+  ["chains-run", 23.20],
+  ["calendar-card", 20.08],
+  ["calendar", 39.80],
+  ["last-run", 27.41],
+  ["end", 7.73],
+]
+
+[ja]
+video = "07QX5MY2txg"
+uploaded = 2026-10-31T23:45:20Z
+scenes = [
+  ["title", 27.23],
+  ["contents", 32.38],
+  ["person", 24.66],
+  ["kinds", 37.00],
+  ["accounts", 53.60],
+  ["lots", 71.60],
+  ["more-accounts", 39.99],
+  ["rules", 35.08],
+  ["scheduled", 46.03],
+  ["more-scheduled", 40.72],
+  ["first-look", 50.75],
+  ["chains-card", 36.33],
+  ["chains", 42.67],
+  ["chains-graph", 36.13],
+  ["chains-run", 29.10],
+  ["calendar-card", 22.54],
+  ["calendar", 44.43],
+  ["last-run", 34.02],
+  ["end", 7.47],
+]

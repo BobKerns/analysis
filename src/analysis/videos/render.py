@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -87,12 +88,117 @@ def tree_digest(root: Path) -> str:
     return h.hexdigest()[:20]
 
 
-def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(list(argv), text=True, capture_output=True, **kwargs)
+# The programs run() has going, so a failing parallel build can stop them all.
+_RUNNING: set[subprocess.Popen[str]] = set()
+_RUNNING_LOCK = threading.Lock()
+_stopped = False  # set by stop_running(), until allow_running()
+
+
+def run(argv: Sequence[str], *, input: str | None = None, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run a program to the end, raising with its last lines if it fails.
+
+    Each runs in its own process group, so stop_running() takes its children
+    with it (VHS's browser and ttyd), and so does an interrupt here.
+    """
+    proc = finish(spawn(argv, stdin=subprocess.PIPE if input is not None else None, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, **kwargs), input)
     if proc.returncode != 0:
         tail = "\n".join((proc.stderr or proc.stdout).splitlines()[-15:])
-        raise RuntimeError(f"{Path(argv[0]).name} failed ({proc.returncode}):\n{tail}")
+        raise RuntimeError(f"{Path(argv[0]).name} failed ({_exit_status(proc.returncode)}):\n{tail}")
     return proc
+
+
+def spawn(argv: Sequence[str], **kwargs: Any) -> subprocess.Popen[str]:
+    """Start a program in its own process group, one stop_running() will stop.
+
+    Hand it to finish() (or release() once it's stopped) when done with it.
+    """
+    with _RUNNING_LOCK:
+        if _stopped:
+            raise RuntimeError(f"{Path(argv[0]).name}: not started, the build is stopping")
+        proc = subprocess.Popen(list(argv), text=True, start_new_session=True, **kwargs)
+        _RUNNING.add(proc)
+    return proc
+
+
+def finish(proc: subprocess.Popen[str], input: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Wait for a spawn()ed program's output and exit, killing it if interrupted."""
+    try:
+        stdout, stderr = proc.communicate(input)
+    except BaseException:
+        _kill(proc)
+        raise
+    finally:
+        release(proc)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def release(proc: subprocess.Popen[str]) -> None:
+    """Forget a spawn()ed program: it has ended."""
+    with _RUNNING_LOCK:
+        _RUNNING.discard(proc)
+
+
+def stop(proc: subprocess.Popen[str]) -> None:
+    """Stop a spawn()ed program and its process group, and forget it."""
+    if proc.poll() is None:
+        _kill(proc)
+    else:
+        _signal_group(proc, signal.SIGKILL)  # stragglers it left behind
+    release(proc)
+
+
+def stopping() -> bool:
+    """Whether stop_running() has been called (a build failed or was interrupted)."""
+    return _stopped
+
+
+def allow_running() -> None:
+    """Let run() start programs again, after stop_running()."""
+    global _stopped
+    with _RUNNING_LOCK:
+        _stopped = False
+
+
+def _exit_status(code: int) -> str:
+    # A negative code is the signal that ended it; SIGKILL from nobody here
+    # is most likely the kernel's out-of-memory killer.
+    if code == -signal.SIGKILL:
+        return f"{code}: killed, most likely out of memory"
+    return str(code)
+
+
+def _kill(proc: subprocess.Popen[str]) -> None:
+    """Stop proc and its process group: politely, then not."""
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    # Always: the leader can exit on TERM and leave children that ignore it
+    # (or never saw it) running in the group.
+    _signal_group(proc, signal.SIGKILL)
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _signal_group(proc: subprocess.Popen[str], sig: int) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def stop_running() -> None:
+    """Stop every program run() has going, and start no more until allow_running() (a build failed)."""
+    global _stopped
+    with _RUNNING_LOCK:
+        _stopped = True
+        running = list(_RUNNING)
+    for proc in running:
+        _kill(proc)
 
 
 def duration(path: Path) -> float:
@@ -151,8 +257,25 @@ def synthesize(sentences: Sequence[str], voice: dict[str, Any], gap: float, out:
     }
     worker = repo / "scripts" / "videos" / "tts_kokoro.py"
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
-    proc = run([uv, "run", "--quiet", "--script", str(worker)], input=json.dumps(request), env=env)
+    argv = [uv, "run", "--quiet", "--script", str(worker)]
+    lang = str(request["lang"])
+    proc = None
+    if lang not in _VOICED:
+        # A language's first narration runs alone: it makes the worker's
+        # environment and, for Japanese, downloads OpenJTalk's dictionary,
+        # which several workers at once corrupt (its tokenizer then fails to start).
+        with _FIRST_VOICE:
+            if lang not in _VOICED:
+                proc = run(argv, input=json.dumps(request), env=env)
+                _VOICED.add(lang)
+    if proc is None:
+        proc = run(argv, input=json.dumps(request), env=env)
     return [float(d) for d in json.loads(proc.stdout.strip().splitlines()[-1])["durations"]]
+
+
+# Narration languages the worker has spoken this run (see synthesize).
+_VOICED: set[str] = set()
+_FIRST_VOICE = threading.Lock()
 
 
 # --- slides ------------------------------------------------------------------
@@ -354,8 +477,8 @@ def _prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> 
         if setup is not None:
             bash = need("bash", "install bash")
             script = f'set -euo pipefail\nsource {rc}\ncd "$ANALYSIS_DATA_DIR"\nset -x\nsource {setup.resolve()}\n'
-            proc = subprocess.run([bash, "-c", script], cwd=root, text=True, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, env={**os.environ, "PATH": tool_path()})
+            proc = finish(spawn([bash, "-c", script], cwd=root, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, env={**os.environ, "PATH": tool_path()}))
             if proc.returncode != 0:
                 tail = "\n".join(proc.stdout.splitlines()[-25:])
                 raise ScriptError(f"{setup} failed ({proc.returncode}):\n{tail}")

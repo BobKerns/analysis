@@ -338,6 +338,7 @@ supercentenarians
 suptitle
 SWVXX
 symlog
+sysconf
 tablink
 tailnet
 tailweight
