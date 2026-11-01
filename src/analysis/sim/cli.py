@@ -3305,7 +3305,7 @@ def _report_correlation(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     measure: str, years: list[int] | None, negligible: float, draw: _Draw | None = None,
 ) -> None:
-    """ADR-007 §6.2: rho [interval], SRRC [interval] and PRCC per row and
+    """ADR-007 §6.2: rho, SRRC and PRCC, each with its interval, per row and
     year, R^2 per year, each latent factor's rho, the achieved score
     correlations of a correlated batch, and each row's keep / pin_candidate /
     inconclusive status -- by rho, or by SRRC when rows are correlated."""
@@ -3367,7 +3367,8 @@ def _report_correlation(
             click.echo(
                 f"    {row['row']:<24} rho={_signed(row['rho'])} [{_signed(row['rho_low'])}, "
                 f"{_signed(row['rho_high'])}]  srrc={_signed(row['srrc'])} [{_signed(row['srrc_low'])}, "
-                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])}"
+                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])} [{_signed(row['prcc_low'])}, "
+                f"{_signed(row['prcc_high'])}]"
             )
         for _, row in at[at["factor"]].iterrows():
             click.echo(
@@ -9715,9 +9716,11 @@ def report_expenses_command(
 @click.option("--by", "by", default="category", show_default=True,
               help="Group by category (default), account, or tag:ROLE, as `sim report expenses` does.")
 @_year_range_options
+@_report_graph_options
 @_report_options
 def report_spending_command(
     by: str, first_year: int | None, last_year: int | None,
+    as_graph: bool, graph_file: Path | None,
     dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show spending against the plan by year: what spending strategies
@@ -9735,21 +9738,39 @@ def report_spending_command(
 
     --start and --end limit the years in the table; the lines below it
     still cover the whole run.
+
+    --chart draws delivered spending as a bar per year against the plan as
+    a line, over the years in the table, as the notebook's spending widget
+    does.
     """
     _check_by(by)
     years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
+        _hold_tables()
         try:
             delivered, budgeted = reports.spending_by_year(rc, by=by, mode=mode)
         except KeyError as exc:
             raise click.ClickException(exc.args[0]) from None
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     if delivered.empty and budgeted.empty:
         click.echo(f"no spending in {described}")
+        _graph_nothing(graph_file, "spending", "spending-")
         return
     frame, summary = reports.spending_report(delivered, budgeted)
     frame = _shown_years(frame, years)
-    _print_report(frame, f"spending against plan by {by.removeprefix('tag:')}", described, mode)
+    what = f"spending against plan by {by.removeprefix('tag:')}"
+    _print_report(frame, what, described, mode)
+
+    def figure():
+        from analysis.sim.spending_charts import spending_figure
+
+        return spending_figure(frame, f"{what.capitalize()}, {_DOLLAR_LABELS[mode]} ({described})",
+                               ylabel=_DOLLAR_LABELS[mode], deaths=deaths)
+
+    # Before the lines below the table, as a run with no strategy returns
+    # early there and still has a plan to draw.
+    _draw_report(as_graph, graph_file, figure, "spending-")
     if summary["of_plan"] == 1.0 and not any(k.startswith(reports.FILLED) for k in summary):
         click.echo("no spending strategy changed this run's spending: delivered is the plan")
         return

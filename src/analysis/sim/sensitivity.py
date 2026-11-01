@@ -48,9 +48,9 @@ __all__ = [
     "rank_by_year", "pin_candidates", "default_report_years", "months_per_year",
     "display_value", "ATTRIBUTION_AXES", "OPENING_BALANCES", "UNATTRIBUTED", "TOTAL",
     "attribution", "oat_attribution", "base_net_worth", "parameters", "R2_TRUST", "draws_frame", "outcomes_frame",
-    "rho_interval", "required_members", "correlation_table", "classify", "mc_correlation",
+    "rho_interval", "prcc_interval", "required_members", "correlation_table", "classify", "mc_correlation",
     "has_correlated_rows", "FACTOR_TARGET", "factor_rows", "row_label", "RANKING_MEASURES",
-    "score_correlations", "McReport", "mc_report",
+    "CORRELATION_MEASURES", "score_correlations", "McReport", "mc_report",
 ]
 
 MEASURES: tuple[str, ...] = ("net_worth", "min_net_worth")
@@ -646,6 +646,13 @@ def rho_interval(rho: float, n: int) -> tuple[float, float]:
     return _fisher_interval(rho, n, _SPEARMAN_VARIANCE)
 
 
+def prcc_interval(prcc: float, n: int, controlled: int) -> tuple[float, float]:
+    """95% interval on a partial rank correlation via the Fisher z-transform:
+    as rho's, with one degree of freedom less for each of the ``controlled``
+    rows regressed out (``n - 3 - controlled`` on the transformed scale)."""
+    return _fisher_interval(prcc, n - controlled, _SPEARMAN_VARIANCE)
+
+
 def required_members(negligible: float) -> int:
     """Members needed for rho's 95% half-width near zero to fall below
     ``sqrt(negligible)`` -- the smallest batch that can call a row with no
@@ -700,7 +707,8 @@ def correlation_table(
     """ADR-007 §6.2: per (row, year): Spearman ``rho`` with its 95% interval
     (``rho_low``/``rho_high``), the standardized rank-regression coefficient
     ``srrc`` with its 95% interval (``srrc_low``/``srrc_high``), the partial
-    rank correlation ``prcc``, and that year's adjusted regression ``r2``
+    rank correlation ``prcc`` with its 95% interval (``prcc_low``/
+    ``prcc_high``), and that year's adjusted regression ``r2``
     (repeated per row; NaN, so untrusted, when there are too few members for
     the number of rows). A year whose outcome doesn't vary across members has
     NaN throughout -- there's nothing to explain.
@@ -733,11 +741,13 @@ def correlation_table(
             for row in draws.columns:
                 records.append({"row": row, "year": year, "rho": nan, "rho_low": nan,
                                 "rho_high": nan, "srrc": nan, "srrc_low": nan, "srrc_high": nan,
-                                "prcc": nan, "r2": nan, "n": n, "factor": False})
+                                "prcc": nan, "prcc_low": nan, "prcc_high": nan, "r2": nan, "n": n,
+                                "factor": False})
             for row in factors.columns:
                 records.append({"row": row, "year": year, "rho": nan, "rho_low": nan,
                                 "rho_high": nan, "srrc": nan, "srrc_low": nan, "srrc_high": nan,
-                                "prcc": nan, "r2": nan, "n": n, "factor": True})
+                                "prcc": nan, "prcc_low": nan, "prcc_high": nan, "r2": nan, "n": n,
+                                "factor": True})
             continue
         y = (y - y.mean()) / y_spread
         coef, *_ = np.linalg.lstsq(x.to_numpy(), y.to_numpy(), rcond=None)
@@ -757,25 +767,34 @@ def correlation_table(
             # one only warns about dividing by its zero spread).
             rho = float(draws[row].rank().corr(outcomes[year].rank())) if varying[i] else nan
             rho_low, rho_high = rho_interval(rho, n)
+            # Every other varying row is held fixed.
+            prcc_low, prcc_high = prcc_interval(float(prcc[i]), n, k - 1)
             records.append({"row": row, "year": year, "rho": rho, "rho_low": rho_low,
                             "rho_high": rho_high,
                             # A row that never varies has no coefficient to
                             # report, and none is identifiable without full rank.
                             "srrc": float(coef[i]) if varying[i] and identifiable else nan,
                             "srrc_low": float(low[i]), "srrc_high": float(high[i]),
-                            "prcc": float(prcc[i]), "r2": r2, "n": n, "factor": False})
+                            "prcc": float(prcc[i]), "prcc_low": prcc_low,
+                            "prcc_high": prcc_high, "r2": r2, "n": n, "factor": False})
         for row in factors.columns:
             rho = float(factors[row].rank().corr(outcomes[year].rank()))
             rho_low, rho_high = rho_interval(rho, n)
             records.append({"row": row, "year": year, "rho": rho, "rho_low": rho_low,
                             "rho_high": rho_high, "srrc": nan, "srrc_low": nan,
-                            "srrc_high": nan, "prcc": nan, "r2": r2, "n": n, "factor": True})
+                            "srrc_high": nan, "prcc": nan, "prcc_low": nan, "prcc_high": nan,
+                            "r2": r2, "n": n, "factor": True})
     return pd.DataFrame(records)
 
 
 RANKING_MEASURES: tuple[str, ...] = ("rho", "srrc")
 """What ``classify`` ranks and pins by: marginal ``rho`` for independent
 inputs, ``srrc`` when rows are correlated (ADR-007 §6.2)."""
+
+CORRELATION_MEASURES: tuple[str, ...] = (*RANKING_MEASURES, "prcc")
+"""Every per-row measure ``correlation_table`` gives with a 95% interval:
+the ranking measures, and ``prcc``, shown but never pinned by (its square
+isn't a share of the outcome's variance; ADR-007 §6.2)."""
 
 
 def classify(

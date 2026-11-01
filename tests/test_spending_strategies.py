@@ -389,6 +389,39 @@ def test_spending_report_on_a_run_without_strategies(
     assert "no spending strategy changed this run's spending" in result.output
 
 
+def test_spending_report_chart_file(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+    run_strategy_scenario: Callable[[str], Path], tmp_path: Path,
+) -> None:
+    """#430: --chart-file writes the notebook's chart; the table only with --table."""
+    _strategy(strategy_csv, "threshold", minimum="900000.00")
+    run = str(run_strategy_scenario(SCENARIO))
+    chart = tmp_path / "spending.svg"
+    result = _cli(strategy_scenarios, "report", "spending", "--runfile", run,
+                  "--by", "tag:category", "--chart-file", str(chart))
+    assert result.exit_code == 0, result.output
+    assert "Spending against plan by category" in chart.read_text()
+    assert "redirected" not in result.output
+    chart.unlink()
+    result = _cli(strategy_scenarios, "report", "spending", "--runfile", run,
+                  "--chart-file", str(chart), "--table")
+    assert result.exit_code == 0, result.output
+    assert chart.stat().st_size > 0
+    assert "spending against plan by category" in result.output
+    assert "redirected:" in result.output
+
+
+def test_spending_report_chart_without_strategies(
+    strategy_scenarios: Path, run_strategy_scenario: Callable[[str], Path], tmp_path: Path,
+) -> None:
+    """The plan alone is still drawn when no strategy changed it."""
+    run = str(run_strategy_scenario("alice_rebalance"))
+    chart = tmp_path / "spending.png"
+    result = _cli(strategy_scenarios, "report", "spending", "--runfile", run, "--chart-file", str(chart))
+    assert result.exit_code == 0, result.output
+    assert chart.stat().st_size > 0
+
+
 def test_shape_measures() -> None:
     """The proposal's example: plan 60/30/10, delivered 70/20/10."""
     plan = pd.Series({"a": 60.0, "b": 30.0, "c": 10.0})

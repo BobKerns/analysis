@@ -947,6 +947,21 @@ class HeatmapValuePicker(widgets.ToggleButtons):
         self.value = heatmap_value
 
 
+class CorrelationMeasurePicker(widgets.ToggleButtons):
+    """Which per-row measure a Monte Carlo batch's correlation chart plots
+    (ADR-007 §6.2, §9): Spearman rho, the rank-regression coefficient
+    (SRRC), or the partial rank correlation (PRCC), as named in
+    ``sensitivity.CORRELATION_MEASURES``."""
+
+    def __init__(self, by: str = "rho"):
+        super().__init__(
+            options=[("rho", "rho"), ("SRRC", "srrc"), ("PRCC", "prcc")],
+            description="Measure:",
+            layout=widgets.Layout(**_TOGGLE_LAYOUT),
+        )
+        self.value = by
+
+
 class AttributionPicker(widgets.ToggleButtons):
     """How a sensitivity delta is decomposed (ADR-007 §6.1): by income/
     expense category, by income/expense account, or by holding account."""
