@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Iterator
 import time
@@ -363,6 +364,71 @@ def test_stop_running_kills_a_program_and_its_children() -> None:
 def test_a_program_the_kernel_killed_says_so() -> None:
     with pytest.raises(RuntimeError, match=r"failed \(-9: killed, most likely out of memory\)"):
         render.run(["bash", "-c", "kill -9 $$"])
+
+
+def test_stop_running_kills_children_that_ignore_terminate(tmp_path: Path) -> None:
+    """The leader exits on TERM; a child that ignores it must still go."""
+    pid_file = tmp_path / "child.pid"
+    errors: list[BaseException] = []
+
+    def go() -> None:
+        try:
+            render.run(["bash", "-c", f"bash -c 'trap \"\" TERM; echo $$ > {pid_file}; sleep 60' & wait"])
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=go)
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not pid_file.exists() or not pid_file.read_text().strip():
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    child = int(pid_file.read_text())
+    render.stop_running()
+    worker.join(10)
+    assert errors and not worker.is_alive()
+    deadline = time.monotonic() + 5
+    while _alive(child):
+        assert time.monotonic() < deadline, "the child that ignored TERM is still running"
+        time.sleep(0.05)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A zombie is dead; only its parent (gone) or init would reap it.
+    stat = Path(f"/proc/{pid}/stat")
+    return not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def test_the_memory_limit_comes_from_this_process_cgroup_and_those_above(tmp_path: Path) -> None:
+    def group(path: Path, limit: str, used: str, v1: bool = False) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        names = ("memory.limit_in_bytes", "memory.usage_in_bytes") if v1 else ("memory.max", "memory.current")
+        (path / names[0]).write_text(limit)
+        (path / names[1]).write_text(used)
+
+    group(tmp_path / "outer", str(8 * builds.GIB), str(2 * builds.GIB))
+    group(tmp_path / "outer" / "inner", "max", str(builds.GIB))
+    # v1, with a mount that starts at the container's own group: only the root has files.
+    group(tmp_path / "memory", str(4 * builds.GIB), str(builds.GIB), v1=True)
+    files = builds._cgroup_memory_files("4:memory:/docker/abc\n2:cpu:/x\n0::/outer/inner\n", tmp_path)
+    found = [(builds._read(limit), builds._read(usage)) for limit, usage in files]
+    assert files[0] == (tmp_path / "memory/docker/abc/memory.limit_in_bytes",
+                        tmp_path / "memory/docker/abc/memory.usage_in_bytes")
+    assert (str(4 * builds.GIB), str(builds.GIB)) in found  # the v1 mount root
+    assert ("max", str(builds.GIB)) in found and (str(8 * builds.GIB), str(2 * builds.GIB)) in found
+    assert len(files) == 3 + 3  # docker/abc, docker, root; outer/inner, outer, root
+
+
+def test_a_notebook_recording_stops_between_steps_when_the_build_stops() -> None:
+    from analysis.videos import notebook
+
+    render.stop_running()
+    with pytest.raises(RuntimeError, match="notebook line 1: stopped"):
+        notebook._play(None, notebook.parse("Open net_worth.ipynb\n"), None, None)  # ty: ignore[invalid-argument-type]
 
 
 def test_a_failure_stops_a_recording_that_would_never_finish(

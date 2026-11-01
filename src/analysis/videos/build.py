@@ -80,15 +80,13 @@ def default_jobs(cpus: int | None = None, memory: int | None = None) -> int:
     return max(1, min(by_cpu, (memory - RECORDING_MEMORY) // TASK_MEMORY))
 
 
-def available_memory() -> int | None:
+def available_memory(cgroup_root: Path = Path("/sys/fs/cgroup")) -> int | None:
     """Bytes a build can use: what's free, within the container's limit (None if unknown)."""
     found: list[int] = []
-    meminfo = _read("/proc/meminfo")
+    meminfo = _read(Path("/proc/meminfo"))
     if meminfo and (m := re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.MULTILINE)):
         found.append(int(m[1]) * 1024)
-    for limit, usage in (("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
-                         ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
-                          "/sys/fs/cgroup/memory/memory.usage_in_bytes")):
+    for limit, usage in _cgroup_memory_files(_read(Path("/proc/self/cgroup")) or "", cgroup_root):
         cap, used = _read(limit), _read(usage)
         # cgroup v2 says "max" with no limit; v1 a huge number.
         if cap and used and cap.strip().isdigit() and int(cap) < 2**60:
@@ -101,7 +99,32 @@ def available_memory() -> int | None:
     return max(0, min(found))
 
 
-def _read(path: str) -> str | None:
+def _cgroup_memory_files(cgroups: str, root: Path) -> list[tuple[Path, Path]]:
+    """(limit, usage) files for this process's memory cgroup and every one above it.
+
+    Any of them can hold the limit that binds. In a container the cgroup
+    mount often starts at the container's own group, so the path from
+    /proc/self/cgroup may not exist below it; its ancestors (down to the
+    mount itself) still do.
+    """
+    files: list[tuple[Path, Path]] = []
+    for line in cgroups.splitlines():
+        hierarchy, _, rest = line.partition(":")
+        controllers, _, path = rest.partition(":")
+        if hierarchy == "0" and not controllers:  # v2
+            base, limit, usage = root, "memory.max", "memory.current"
+        elif "memory" in controllers.split(","):  # v1
+            base, limit, usage = root / "memory", "memory.limit_in_bytes", "memory.usage_in_bytes"
+        else:
+            continue
+        parts = [p for p in path.split("/") if p]
+        for depth in range(len(parts), -1, -1):
+            group = base.joinpath(*parts[:depth])
+            files.append((group / limit, group / usage))
+    return files
+
+
+def _read(path: Path) -> str | None:
     try:
         return Path(path).read_text()
     except OSError:
@@ -191,25 +214,41 @@ class Workers:
         self.error: BaseException | None = None  # the first failure, which stopped the rest
         self._print = threading.Lock()
 
-    def submit(self, pool: ThreadPoolExecutor, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Future[Any]:
-        """``pool.submit``, for a task that doesn't start once a build has failed."""
+    def submit(self, pool: ThreadPoolExecutor, fn: Callable[..., Any], *args: Any,
+               log: Callable[[str], None] | None = None, **kwargs: Any) -> Future[Any]:
+        """``pool.submit``, for a task that doesn't start once a build has failed.
+
+        A task that fails stops the build at once, from its own thread, so
+        its error is the one recorded and nothing queued starts after it;
+        ``log`` says so if it's the first.
+        """
 
         def task() -> Any:
             if self.failed.is_set():
                 raise _Stopped()
-            return fn(*args, **kwargs)
+            try:
+                return fn(*args, **kwargs)
+            except BaseException as error:
+                if not isinstance(error, _Stopped):
+                    self.stop(error, log)
+                raise
 
         return pool.submit(task)
 
-    def stop(self, error: BaseException) -> None:
+    def stop(self, error: BaseException, log: Callable[[str], None] | None = None) -> None:
         """A task failed (or the build was interrupted): stop every build on these workers now.
 
         Running programs are killed rather than waited for: one may never
-        finish (a recording whose browser the kernel killed).
+        finish (a recording whose browser the kernel killed). The first
+        error is kept, and ``log`` (when given) says it's stopping for it.
         """
         with self._print:
-            if self.error is None:
+            first = self.error is None
+            if first:
                 self.error = error
+        if first and log is not None and not isinstance(error, KeyboardInterrupt):
+            lines = str(error).splitlines()
+            log(f"  stopping: {lines[0] if lines else type(error).__name__}")
         self.failed.set()
         render.stop_running()
 
@@ -489,7 +528,10 @@ def build(
         return _assemble(script, builder, workers, out_dir, log)
     except BaseException as error:
         if not isinstance(error, _Stopped):
-            _stop(workers, error, log)
+            workers.stop(error, log)
+        if workers.error is not None and workers.error is not error:
+            # The first failure, not what stopping the rest made of this build.
+            raise workers.error from None
         raise
 
 
@@ -517,7 +559,7 @@ def build_languages(
                 wait(futures)
             except BaseException as error:
                 # Stop the languages' builds before the pool waits for them (Ctrl-C).
-                workers.stop(error)
+                workers.stop(error, log)
                 raise
         if workers.error is not None:
             # The first failure, not what killing the rest made of them.
@@ -543,9 +585,9 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
             by_scene[i] = done
         else:
             pool = workers.recording if plan.records else workers.general
-            by_scene[i] = workers.submit(pool, _made, plan.make)
+            by_scene[i] = workers.submit(pool, _made, plan.make, log=log)
     visuals = [by_scene[i] for i in range(n)]
-    narrations = [workers.submit(workers.general, builder.narration, scene) for scene in scenes]
+    narrations = [workers.submit(workers.general, builder.narration, scene, log=log) for scene in scenes]
     clips: list[Future[SceneBuild] | None] = [None] * n
     results: list[SceneBuild] = []
     pending: set[Future[Any]] = {*narrations, *visuals}
@@ -559,7 +601,7 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
             for i in range(n):
                 if clips[i] is None and narrations[i].done() and visuals[i].done():
                     clip = workers.submit(workers.general, builder.clip, scenes[i], narrations[i].result(), plans[i],
-                                                  visuals[i].result(), first=i == 0, last=i == n - 1)
+                                          visuals[i].result(), first=i == 0, last=i == n - 1, log=log)
                     clips[i] = clip
                     pending.add(clip)
             # Each scene's line in scene order, as soon as it and every scene before it are done.
@@ -570,7 +612,7 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
                     f"visual {result.visual:<6}  clip {result.clip}")
     except BaseException as error:
         if not isinstance(error, _Stopped):
-            _stop(workers, error, log)  # before waiting: a running task may never finish on its own
+            workers.stop(error, log)  # before waiting: a running task may never finish on its own
         everything = [*narrations, *visuals, *(c for c in clips if c is not None)]
         for future in everything:
             future.cancel()
@@ -605,14 +647,6 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
         description = out_dir / f"{stem}.youtube.txt"
         description.write_text(youtube.preview(youtube.metadata(script, lengths)), encoding="utf-8")
     return VideoBuild(video=video, captions=srt, thumbnail=thumb, scenes=tuple(results), description=description)
-
-
-def _stop(workers: Workers, error: BaseException, log: Callable[[str], None]) -> None:
-    """Stop every build on ``workers`` for ``error``, saying so if it's the first failure."""
-    if workers.error is None and not isinstance(error, KeyboardInterrupt):
-        lines = str(error).splitlines()
-        log(f"  stopping: {lines[0] if lines else type(error).__name__}")
-    workers.stop(error)
 
 
 def _made(make: Callable[[], None]) -> str:
