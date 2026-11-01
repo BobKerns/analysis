@@ -570,7 +570,23 @@ Sources only: scripts, templates, assets, the theme, the builder. Videos,
 audio and the voice model stay out of git (`out/` is ignored, the model is
 in the tool cache).
 
-## Still to decide
+## Length, hosting and links
 
-- Target length: 5 to 10 minutes per video, as #373 suggests.
-- Background music.
+- **Length.** Aim for 5 to 10 minutes in English; a video that runs
+  longer is usually two. A short side trip (such as `02a-wsl`) may be
+  shorter. Japanese narration runs about a fifth longer, so a Japanese
+  video may pass 10 minutes. A built video's scene lengths are in its
+  `.scenes.json`, and a published one's in `published.toml`.
+- **Hosting.** YouTube, on the project's channel, one video per language,
+  each language in its own playlist (`youtube.toml`); see
+  [Publishing on YouTube](#publishing-on-youtube). The repository holds
+  the sources, never the MP4s.
+- **Where the docs link to them.** The [README](../../README.md)
+  and the [user guide](../user-guide.md)'s opening link the channel and both
+  playlists. A video that covers a guide section gets a **Video.** paragraph
+  at the top of that section, naming the video and linking each language's
+  copy (see *Looking at your results*), and a video about installing is
+  linked from [SETUP.md](../SETUP.md) the same way. Add the links once the
+  video is public, using the ids in its `published.toml`.
+
+Not decided yet: background music (none so far).
