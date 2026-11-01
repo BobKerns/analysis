@@ -59,8 +59,9 @@ EXPENSE_SUBKIND_TO_CATEGORY: dict[str, str] = {
     "living": "living",
     "food": "living",
     "business": "business",
+    "gift": "gifts",
 }
-EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "business", "other"]
+EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "business", "gifts", "other"]
 # depreciation is a book entry, not spending -- see ADR-002 gains/losses.
 NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
@@ -1052,7 +1053,9 @@ class RunConnection(Connection):
         Social Security is split into taxable/non-taxable by this run's own
         ``federal_taxable_ss`` (the provisional-income test), not a flat
         assumption. Also includes ``expenses``/``distribution_coverage``
-        (realized cash vs. that year's spending).
+        (realized cash vs. that year's spending). A run whose strategies
+        harvested gains (#421: sold and rebought, so no cash moved) adds a
+        ``harvested`` column, outside the realized cash total.
         """
 
         def _build() -> pd.DataFrame:
@@ -1068,18 +1071,24 @@ class RunConnection(Connection):
             is_taxable = reaches_cash & gains["tax_character"].isin(TAXABLE_GAIN_CHARS)
             is_nontaxable = reaches_cash & gains["tax_character"].isin(NONTAXABLE_GAIN_CHARS)
             is_ss = gains["tax_character"] == "ss_benefit"
+            is_harvest = (
+                (gains["reason_kind"] == "strategy") & (gains["from_lot"] == gains["to_lot"])
+                & (gains["from_account"] == gains["to_account"])
+                & gains["tax_character"].isin(["ltcg", "stcg"])
+            )
 
             gains["gain_category"] = pd.NA
             gains.loc[is_unrealized, "gain_category"] = "unrealized"
             gains.loc[is_taxable, "gain_category"] = "taxable"
             gains.loc[is_nontaxable, "gain_category"] = "non-taxable"
             gains.loc[is_ss, "gain_category"] = "social_security"
+            gains.loc[is_harvest, "gain_category"] = "harvested"
             gains = gains.dropna(subset=["gain_category"])
 
             gains_yearly = (
                 gains.groupby(["year", "gain_category"])["amount"].sum()
                 .unstack("gain_category", fill_value=0)
-                .reindex(columns=[*GAIN_CATEGORIES, "social_security"], fill_value=0)
+                .reindex(columns=[*GAIN_CATEGORIES, "social_security", "harvested"], fill_value=0)
                 / 100
             )
             gains_yearly.index.name = "year"
@@ -1100,6 +1109,7 @@ class RunConnection(Connection):
             gains_yearly["taxable"] += ss_taxable
             gains_yearly["non-taxable"] += ss_nontaxable
             gains_yearly = gains_yearly.drop(columns="social_security")
+            harvested = gains_yearly.pop("harvested")
 
             gains_yearly["realized_total"] = (
                 gains_yearly["taxable"] + gains_yearly["non-taxable"]
@@ -1113,6 +1123,8 @@ class RunConnection(Connection):
             gains_yearly["distribution_coverage"] = (
                 gains_yearly["realized_total"] - gains_yearly["expenses"]
             )
+            if harvested.any():
+                gains_yearly["harvested"] = harvested
             return gains_yearly
 
         return self._cached("gains_by_category", _build)

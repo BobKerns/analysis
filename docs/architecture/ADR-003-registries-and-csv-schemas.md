@@ -85,6 +85,7 @@ Money moved out of a traditional lot is `tax_deferred_out` (ordinary income), in
 | `taxes_state` | state income tax paid |
 | `taxes_property` | real estate tax |
 | `business` | a business's spending, paid out of a `business` account as `business_expense` (§2.6) |
+| `gift` | gifts out of the household, to family or charity; reports group them as `gifts` ([ADR-010](ADR-010-responsive-strategies.md) §6.3's `gift` gives into one) |
 | `other_expense` | catch-all |
 
 The expense vocabulary intentionally mixes categories (`housing`) with mechanisms (`interest_expense`); a future ADR is expected to refactor `housing` into finer-grained subkinds without disturbing the others.
@@ -934,14 +935,14 @@ Which responsive strategies the scenario runs ([ADR-010](ADR-010-responsive-stra
 | --- | --- | --- | --- |
 | `kind` | text | ✓ | a registered kind (`sim strategy kinds`) |
 | `chain` | text | | the interior chain it owns (§4.7): not an account's own leaf chain. A source chain needs a kind with a `draw` hook, a destination chain one with `place`. One enabled strategy per chain |
-| `rules` | tag | | a scheduled-rule tag (`role:name`, §4.6): the strategy owns every rule carrying it, and its `scale` hook decides what each posting spends ([ADR-010](ADR-010-responsive-strategies.md) §6.2). Only `fixed_amount` rules, each owned by one enabled strategy. A row gives `chain`, `rules` or both |
+| `rules` | tag | | a scheduled-rule tag (`role:name`, §4.6): the strategy owns every rule carrying it, and its `scale` hook decides what each posting spends ([ADR-010](ADR-010-responsive-strategies.md) §6.2). Only `fixed_amount` rules, each owned by one enabled strategy. A kind with a `draw`, `place` or `scale` hook needs `chain`, `rules` or both; a kind with only a `year_end` hook owns neither, and acts on the lots its parameters name |
 | `start` | YYYY-MM | | first month it decides; blank is the scenario's start |
 | `end` | YYYY-MM | | last month it decides; blank is the end. Outside `start`/`end` the chain's steps decide alone |
 | `enabled` | bool | | `true` (blank) or `false`. A disabled row is still checked; a child sets it `false` to run a parent's scenario without the strategy |
 | `params_json` | json | | an object of the kind's parameters, with percents (`"5%"`) and dollars (`"1200.00"`) written as in CSV cells; checked against the kind and stored in cents and millionths |
 | `description` | text | | |
 
-A kind that fails to import, an unknown kind, a chain that doesn't fit, a `rules` tag no rule carries or one carried by a rule of another kind, a parameter the kind rejects (a tag no account carries, a target set `targets.csv` lacks), or an unclassified lot in a tagged portfolio (§4.1b) is a load error naming the file, and so is a file with other than one row. `sim strategy add|edit|delete` edit the files through a staged edit (§7); editing an inherited strategy writes an override of the whole file, and deleting an inherited one is refused in favor of `--disable`. Deleting a strategy the scenario defines removes its `strategy_vary/` file too (§4.14). A chain rename (`sim chain rename`) rewrites `chain` in each strategy file.
+A kind that fails to import, an unknown kind, a chain that doesn't fit, a `rules` tag no rule carries or one carried by a rule of another kind, a parameter the kind rejects (a tag no account carries, a target set `targets.csv` lacks, an account the scenario doesn't define, or what the kind's own `check` rejects, such as a `harvest` of gains with no federal `tax_accumulator` rule), or an unclassified lot in a tagged portfolio (§4.1b) is a load error naming the file, and so is a file with other than one row. `sim strategy add|edit|delete` edit the files through a staged edit (§7); editing an inherited strategy writes an override of the whole file, and deleting an inherited one is refused in favor of `--disable`. Deleting a strategy the scenario defines removes its `strategy_vary/` file too (§4.14). A chain rename (`sim chain rename`) rewrites `chain` in each strategy file.
 
 #### 4.13 Per-scenario: `data_repo/scenarios/<name>/targets.csv` (optional)
 
@@ -1321,3 +1322,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#368](https://github.com/BobKerns/analysis/issues/368): the loader supplies the `joint` pseudo-person when `persons.csv` has no row for it (§4.1).
 - [#404](https://github.com/BobKerns/analysis/issues/404): the drawdown tax prices each share in the year it would be drawn, on that year's income less its own draws from the same money, not on the tax year's, and skips years with salary (§2.6).
 - [#408](https://github.com/BobKerns/analysis/issues/408): a strategy is one file, `strategies/<name>.csv`, replacing `strategies.csv`, and new `strategy_vary/<name>.csv` varies its parameters (§4.12, §4.14, §4.0).
+- [#421](https://github.com/BobKerns/analysis/issues/421): the expense subkind `gift` (§1); a strategy whose kind acts only at year end owns no chain or rules, an account parameter must name an account, and a kind may check its parameters against the scenario (§4.12).

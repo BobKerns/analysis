@@ -33,6 +33,7 @@ CATEGORY_COLORS: Mapping[str, str] = {
     "salary": "#1f77b4", "soc security": "#2ca02c", "investment": "#ff7f0e",
     # expenses
     "housing": "#9467bd", "healthcare": "#d62728", "taxes": "#e377c2", "living": "#17becf",
+    "gifts": "#bcbd22",
     # both sides
     "business": "#8c564b", "other": "#7f7f7f",
 }

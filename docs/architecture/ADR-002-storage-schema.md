@@ -234,7 +234,7 @@ CREATE TABLE account (
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
             'interest_expense','taxes_federal','taxes_state','taxes_property',
-            'business','other_expense'))
+            'business','gift','other_expense'))
     )
 );
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
@@ -734,7 +734,7 @@ CREATE TABLE transfer_event (
     tax_year        INTEGER,
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
-                        ('rule','initial','ytd','ytd_rule','refill','overflow')),
+                        ('rule','initial','ytd','ytd_rule','refill','overflow','strategy')),
     reason_id       INTEGER,
     -- The event this leg derives from: a multi-leg rule's primary leg, a
     -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
@@ -745,8 +745,9 @@ CREATE TABLE transfer_event (
     from_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
     to_lot_id       INTEGER NOT NULL REFERENCES account_lot(id),
     meta_json       TEXT NOT NULL DEFAULT '{}',
-    -- The strategy decision whose move posted this leg (ADR-010 §4); the
-    -- leg keeps its own reason_kind.
+    -- The strategy decision whose move posted this leg (ADR-010 §4). A draw's
+    -- or place's leg keeps its own reason_kind; a year_end move's legs have
+    -- reason_kind 'strategy' and reason_id this decision (#421).
     strategy_decision_id INTEGER REFERENCES strategy_decision(id)
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
@@ -764,7 +765,7 @@ CREATE TABLE strategy_decision (
     id             INTEGER PRIMARY KEY,
     step_id        INTEGER NOT NULL REFERENCES simulation_step(id),
     strategy_id    INTEGER NOT NULL REFERENCES strategy(id),
-    hook           TEXT NOT NULL CHECK (hook IN ('draw','place','year_start','scale')),
+    hook           TEXT NOT NULL CHECK (hook IN ('draw','place','year_start','scale','year_end')),
     chain_id       INTEGER REFERENCES chain(id),
     -- The owned rule a scale decision was about (#387).
     scheduled_transaction_id INTEGER REFERENCES scheduled_transaction(id),
@@ -882,7 +883,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, the rules carrying a tag, or both, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
 | `strategy_vary` | A strategy parameter an ensemble varies: its node `strategy:<name>.<param>`, authored value and distribution; a member writes its draw into `strategy.params_json` ([ADR-006](ADR-006-ensemble-scenarios.md) §3b). |
 | `allocation_target` | Named, dated sets of asset-class target weights (from `targets.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13). |
-| `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. A `scale` row names its rule; a `year_start` row moves nothing. |
+| `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. A `scale` row names its rule; a `year_start` row moves nothing; a `year_end` row's `chosen_cents` is what its moves moved. |
 | `spending_baseline` | Each posting of a rule a spending strategy owns: budgeted (what the rule would have posted) and delivered. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
@@ -1082,3 +1083,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies' `strategy`, `strategy_source` and `allocation_target` (Intent layer DDL), `strategy_decision` and `transfer_event.strategy_decision_id` (Ledger layer DDL; schema 51).
 - [#387](https://github.com/BobKerns/analysis/issues/387): spending strategies: `strategy.rule_tag` with `chain_id` optional (Intent layer DDL), `strategy_decision`'s `year_start` and `scale` hooks and `scheduled_transaction_id`, and the run table `spending_baseline` (Ledger layer DDL, glossary; schema 52).
 - [#408](https://github.com/BobKerns/analysis/issues/408): `strategy_vary`, a strategy's varied parameters (Intent layer DDL, glossary; schema 53); a strategy is one file, `strategies/<name>.csv` (data repo layout).
+- [#421](https://github.com/BobKerns/analysis/issues/421): year-end strategy moves: `transfer_event.reason_kind` `strategy` and `strategy_decision.hook` `year_end` (Ledger layer DDL, glossary), and the expense subkind `gift` (Intent layer DDL; schema 54).

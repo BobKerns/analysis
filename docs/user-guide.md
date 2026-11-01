@@ -1390,6 +1390,56 @@ side by side, and `ensemble.ipynb` across the members.
 The design is in
 [ADR-010 §6.2](architecture/ADR-010-responsive-strategies.md).
 
+### 4.18 Tax-aware moves each December (year-end strategies)
+
+Two built-in strategies act once a year, in December, after every rule has
+posted, on the year's income as the April tax settlement will see it. They
+own no chain and no rules: each works on the taxable lots of the accounts
+carrying a `portfolio` tag, such as `portfolio:invest`.
+
+- `harvest` sells and rebuys long-term gains until taxable income reaches
+  the top of the 0% long-term gains band (`band`), the lots with the most
+  gain per dollar first. The holdings stay as they were, and the basis
+  rises, so later sales owe less. It stops sooner when the next $100 of
+  gain would cost more than the band's rate, for example because the gain
+  makes more of Social Security taxable; `max_marginal_rate` sets a
+  different limit. With `losses`, a year in which a lot is down by at least
+  `loss_minimum` sells it at a loss instead (think of switching to a
+  similar fund, so there's no wash sale), and the loss carries forward as
+  usual. A harvested lot keeps its growth and its acquired date, so a gain
+  that was long-term stays long-term.
+- `gift` gives `amount` a year, raised with inflation, into an expense
+  account of subkind `gift` (`to`), but only from what the portfolio holds
+  above `minimum`. By default it gives shares (`in_kind`), the most
+  appreciated first: the recipient takes over their basis and Alice and
+  Bill owe no tax on the gain. With `in_kind` false it sells for cash,
+  least appreciated first, and `max_tax` caps how much the sale may add to
+  the year's federal tax.
+
+For example, Alice and Bill harvest their brokerage gains each year and
+give $10,000 in shares to their family once the portfolio is above
+$500,000:
+
+```sh
+sim account add Expense_Family expense gift
+sim strategy add harvest_gains --kind harvest --param portfolio=portfolio:invest
+sim strategy add family_gift --kind gift --param to=Expense_Family \
+    --param amount=10000 --param minimum=500000 --param portfolio=portfolio:invest
+```
+
+Each command asks for anything it still needs, offering what you gave as
+the answer.
+
+Harvesting gains, and a cash gift with `max_tax`, need the scenario's
+federal tax rule to estimate the year's tax; loading the scenario says so
+if it has none.
+`sim strategy log` gives each year's decision, such as
+`realized $26,112 of long-term gain into the 0% band (room $26,112)`.
+`sim report gains` shows the harvested gains in their own `harvested`
+column, `sim report expenses` shows gifts under `gifts`, and `sim explain`
+totals what each strategy moved and realized. The design is in
+[ADR-010 §6.3](architecture/ADR-010-responsive-strategies.md).
+
 ## 5. Looking at your results
 
 **Video.** *Looking at the results* walks through this section with Alice

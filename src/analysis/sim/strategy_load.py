@@ -22,7 +22,7 @@ from typing import Any, get_type_hints
 from analysis.sim import registries, units
 from analysis.sim.distributions import DistributionError, rewrite_outcomes
 from analysis.sim.asset_classes import UNCLASSIFIED, class_weights
-from analysis.sim.strategy_api import Strategy, param_units
+from analysis.sim.strategy_api import ScenarioView, Strategy, param_units
 from analysis.sim.strategy_code import StrategyKinds
 
 __all__ = ["PreparedStrategy", "PreparedVary", "parse_enabled", "prepare_strategies",
@@ -107,8 +107,13 @@ def validate_targets(located: Sequence[tuple[str, Mapping[str, str]]], issues: l
     return {name for name, _as_of in sums}
 
 
+OWNING_HOOKS = frozenset({"draw", "place", "scale"})
+"""Hooks that act on what a strategy owns: a chain, or rules by tag."""
+
+
 def _convert_param(
     unit: str | None, value: object, *, tags: Collection[str], target_sets: Collection[str],
+    accounts: Collection[str] | None = None,
 ) -> object:
     match unit:
         case "percent":
@@ -123,6 +128,12 @@ def _convert_param(
             if value not in tags:
                 raise ValueError(f"no account carries tag {value!r}")
             return value
+        case "account":
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{value!r} must be an account name")
+            if accounts is not None and value not in accounts:
+                raise ValueError(f"no account named {value!r}")
+            return value
         case "target_set":
             if value not in target_sets:
                 known = ", ".join(sorted(target_sets)) or "none in targets.csv"
@@ -134,7 +145,7 @@ def _convert_param(
 
 def convert_params(
     cls: type[Strategy], raw: Mapping[str, object], *,
-    tags: Collection[str], target_sets: Collection[str],
+    tags: Collection[str], target_sets: Collection[str], accounts: Collection[str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """``params_json`` in stored units, checked against ``cls.Params``; the
     converted values and the problems (one per bad field)."""
@@ -151,9 +162,13 @@ def convert_params(
                 problems.append(f"parameter '{key}' is required")
             continue
         unit = unit_of[key]
+        if raw[key] is None and f.default is None:
+            out[key] = None  # an optional parameter left unset
+            continue
         try:
             out[key] = _convert_param(
                 unit.name if unit else None, raw[key], tags=tags, target_sets=target_sets,
+                accounts=accounts,
             )
         except ValueError as e:
             problems.append(f"parameter '{key}': {e}")
@@ -192,6 +207,7 @@ def prepare_strategies(
     tags: Collection[str],
     target_sets: Collection[str],
     rules: Sequence[tuple[str, str, frozenset[str]]] = (),
+    scenario: ScenarioView | None = None,
     issues: list[str],
 ) -> list[PreparedStrategy]:
     """The enabled strategies, each checked: a known kind; an interior chain
@@ -200,7 +216,8 @@ def prepare_strategies(
     chain and rule owned by no other enabled strategy; a start no later than
     its end; and params its ``Params`` accepts. Disabled rows are checked
     too, except for ownership. ``rules`` is each scheduled rule's ``(name,
-    amount_rule_kind, tags)``."""
+    amount_rule_kind, tags)``. With ``scenario``, the kind's own
+    :meth:`Strategy.check` runs on params that passed (#421)."""
     prepared: list[PreparedStrategy] = []
     owner_of: dict[str, str] = {}
     rule_owner: dict[str, str] = {}
@@ -226,7 +243,8 @@ def prepare_strategies(
         role = chains.get(chain, (None, []))[0]
         owned_rules = _owned_rules(rule_tag, rules, kind, cls, problems) if rule_tag else []
         if not chain:
-            if not rule_tag:
+            if not rule_tag and cls is not None and cls.hooks & OWNING_HOOKS:
+                # A year_end kind acts on the lots its parameters name (#421).
                 problems.append("give a chain, a rules tag, or both")
         elif chain not in chains:
             problems.append(
@@ -263,8 +281,14 @@ def prepare_strategies(
         if raw is not None and not isinstance(raw, dict):
             problems.append("params_json must be a JSON object")
         elif raw is not None and cls is not None:
-            params, bad = convert_params(cls, raw, tags=tags, target_sets=target_sets)
+            params, bad = convert_params(
+                cls, raw, tags=tags, target_sets=target_sets, accounts=account_names)
             problems.extend(bad)
+            if not bad and scenario is not None:
+                try:
+                    problems.extend(cls.check(cls.Params(**params), scenario))
+                except Exception as e:  # a data-repo kind's check is its author's code
+                    problems.append(f"kind '{kind}' check failed: {type(e).__name__}: {e}")
         if enabled and chain in chains:
             if chain in owner_of:
                 problems.append(f"chain '{chain}' is already owned by strategy '{owner_of[chain]}'")

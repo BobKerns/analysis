@@ -34,7 +34,7 @@ __all__ = [
 @dataclass(frozen=True)
 class ParamInfo:
     """One ``Params`` field, for people: its unit, default (as written in
-    ``params_json``, or None when required) and docstring."""
+    ``params_json``; ``blank`` for an optional one, None when required) and docstring."""
 
     name: str
     unit: str | None
@@ -79,8 +79,10 @@ def kind_params(cls: type[Strategy]) -> list[ParamInfo]:
     for f in dataclasses.fields(cls.Params):
         found = unit_of[f.name]
         unit = found.name if found else None
-        if f.default is not dataclasses.MISSING:
-            default: str | None = written(unit, f.default)
+        if f.default is None:
+            default: str | None = "blank"  # an optional parameter (#421)
+        elif f.default is not dataclasses.MISSING:
+            default = written(unit, f.default)
         elif f.default_factory is not dataclasses.MISSING:
             default = written(unit, f.default_factory())
         else:
@@ -161,7 +163,8 @@ def summary(row: Mapping[str, str]) -> str:
     owns = " and ".join(
         part for part in (row.get("chain", ""), f"rules {row['rules']}" if row.get("rules") else "") if part
     )
-    return f"{row.get('kind', '')} on {owns}{when}{params}{off}"
+    on = f" on {owns}" if owns else ""  # a year-end kind owns nothing (#421)
+    return f"{row.get('kind', '')}{on}{when}{params}{off}"
 
 
 def target_sets(rows: Sequence[Mapping[str, str]]) -> dict[str, list[tuple[str, dict[str, str]]]]:
@@ -181,11 +184,12 @@ def has_rule_tags(con: sqlite3.Connection) -> bool:
 def owns_sql(con: sqlite3.Connection) -> str:
     """A SQL expression naming what strategy ``s`` owns, for a query that
     LEFT JOINs ``chain c ON c.id = s.chain_id``: the chain, ``rules <tag>``,
-    or both."""
+    or both; NULL for a year-end kind, which owns neither (#421)."""
     if not has_rule_tags(con):
         return "c.name"
     return (
-        "CASE WHEN s.rule_tag IS NULL THEN c.name "
+        "CASE WHEN s.rule_tag IS NULL AND c.name IS NULL THEN NULL "
+        "     WHEN s.rule_tag IS NULL THEN c.name "
         "     WHEN c.name IS NULL THEN 'rules ' || s.rule_tag "
         "     ELSE c.name || ' and rules ' || s.rule_tag END"
     )

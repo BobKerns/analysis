@@ -24,22 +24,28 @@ import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Annotated, Any, ClassVar, NamedTuple, get_args, get_origin, get_type_hints
+from types import UnionType
+from typing import (
+    Annotated, Any, ClassVar, NamedTuple, Union, get_args, get_origin, get_type_hints,
+)
 
 __all__ = [
-    "API_VERSION", "Allocation", "ChainView", "Context", "Decision", "Dollars", "LotRef",
-    "LotView", "Percent", "PersonView", "Put", "RuleView", "Spend", "StepView", "Strategy",
-    "StrategyError", "Tag", "Take", "TargetSet", "Unit", "is_registered", "param_units",
-    "percent", "register",
+    "API_VERSION", "Account", "Allocation", "ChainView", "Context", "Decision", "Dollars",
+    "LotRef", "LotView", "Percent", "PersonView", "Put", "Realize", "RuleView", "ScenarioView",
+    "Spend", "StepView", "Strategy", "StrategyError", "Tag", "Take", "TargetSet", "TaxEstimate",
+    "TaxView", "Transfer", "Unit", "is_long_term", "is_registered", "param_units", "percent",
+    "register", "sale_gain",
 ]
 
-API_VERSION = 2
+API_VERSION = 3
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
 is refused at load. 2 (#387) added ``year_start``, ``scale`` and
 :class:`Spend`, and the context's ``end``, ``cpi``, ``people``, ``budget``
-and ``annual_return``."""
+and ``annual_return``. 3 (#421) added ``year_end``, :class:`Transfer`,
+:class:`Realize`, ``ctx.tax``, :data:`Account`, optional parameters, and
+``LotView``'s ``acquired``, ``taxable_sale`` and ``gain``."""
 
 
 class StrategyError(Exception):
@@ -54,7 +60,8 @@ class Unit:
     """How a ``Params`` field is written in a strategy file's ``params_json``
     and what the strategy receives: ``percent`` ("5%" -> 50000 millionths),
     ``dollars`` ("1200.00" -> 120000 cents), ``tag`` (an account tag
-    ``role:name``), ``target_set`` (a set in ``targets.csv``)."""
+    ``role:name``), ``target_set`` (a set in ``targets.csv``), ``account``
+    (an account's name)."""
 
     name: str
 
@@ -67,6 +74,8 @@ Tag = Annotated[str, Unit("tag")]
 """An account tag ``role:name``; the loader checks some account carries it."""
 TargetSet = Annotated[str, Unit("target_set")]
 """A target set's name in ``targets.csv``; the loader checks it exists."""
+Account = Annotated[str, Unit("account")]
+"""An account's name; the loader checks the scenario defines it."""
 
 
 def percent(text: str) -> int:
@@ -78,7 +87,9 @@ def percent(text: str) -> int:
 
 
 def param_units(params: type) -> dict[str, Unit | None]:
-    """Each ``Params`` field's :class:`Unit`, or None for a plain JSON value."""
+    """Each ``Params`` field's :class:`Unit`, or None for a plain JSON value.
+    An optional field (``Dollars | None = None``) has its value's unit, and
+    takes ``null`` for "none"."""
     if not dataclasses.is_dataclass(params):
         raise StrategyError(f"Params must be a dataclass, not {params!r}")
     hints = get_type_hints(params, include_extras=True)
@@ -86,6 +97,8 @@ def param_units(params: type) -> dict[str, Unit | None]:
     for f in dataclasses.fields(params):
         hint = hints.get(f.name)
         unit = None
+        if get_origin(hint) in (Union, UnionType):
+            hint = next((a for a in get_args(hint) if get_origin(a) is Annotated), hint)
         if get_origin(hint) is Annotated:
             unit = next((a for a in get_args(hint)[1:] if isinstance(a, Unit)), None)
         out[f.name] = unit
@@ -121,10 +134,41 @@ class LotView:
     cost_basis: int | None
     minimum: int
     roth_qualified: bool | None = None
+    acquired: date | None = None
+    """When a lot that tracks basis was bought, for its holding period; None
+    is held long enough to be long-term (:func:`is_long_term`)."""
+    taxable_sale: bool = False
+    """A sale out of this lot realizes a taxable gain or loss: a taxable,
+    non-cash lot with a cost basis, the lots :class:`Realize` takes."""
 
     @property
     def available(self) -> int:
         return max(0, self.balance - self.minimum)
+
+    @property
+    def gain(self) -> int | None:
+        """Unrealized gain (negative: a loss), for a lot that tracks basis."""
+        return None if self.cost_basis is None else self.balance - self.cost_basis
+
+
+def is_long_term(acquired: date | None, sale: date) -> bool:
+    """Held more than a year (IRC §1222): ``sale`` falls after the first
+    anniversary of ``acquired``. A lot with no acquisition date is long-term."""
+    if acquired is None:
+        return True
+    try:
+        anniversary = acquired.replace(year=acquired.year + 1)
+    except ValueError:  # Feb 29
+        anniversary = date(acquired.year + 1, 2, 28)
+    return sale > anniversary
+
+
+def sale_gain(balance: int, basis: int, amount: int) -> int:
+    """The gain (negative: a loss) the engine realizes selling ``amount``
+    cents of a lot holding ``balance`` with ``basis``: the basis leaves pro
+    rata, rounded down, so a strategy can size a sale to the cent."""
+    basis_out = 0 if balance <= 0 else min(basis, basis * amount // balance)
+    return amount - basis_out
 
 
 @dataclass(frozen=True)
@@ -212,6 +256,114 @@ class Allocation:
         return Allocation(dollars, self.weights)
 
 
+@dataclass(frozen=True)
+class TaxEstimate:
+    """A tax year's income tax as the settlement would figure it, in cents."""
+
+    tax: int
+    taxable_income: int
+    ordinary_taxable: int
+    """The part of ``taxable_income`` that isn't long-term gain."""
+    agi: int
+    """Adjusted gross income, which is also IRMAA's MAGI (#253)."""
+
+
+class TaxView:
+    """``ctx.tax``: this year's income tax, from the transfers posted so far
+    and the same estimator the April settlement uses, so a strategy and the
+    settlement can't disagree. Each method asks about the year as it stands
+    when the hook is called, with more ordinary income or long-term gain on
+    top. Amounts are cents, rates millionths (``percent("22%")``)."""
+
+    def __init__(
+        self, *, year: int,
+        estimator: Callable[[str], Any],
+        ytd: Callable[[], Mapping[str, int]],
+        last_year: Callable[[], Mapping[str, int] | None],
+        irmaa_floors: Callable[[str], tuple[int, ...]],
+    ) -> None:
+        self._year = year
+        self._estimator = estimator
+        self._ytd = ytd
+        self._last_year = last_year
+        self._irmaa_floors = irmaa_floors
+        self._estimates: dict[str, Any] = {}
+
+    def _est(self, scope: str) -> Any:
+        if scope not in ("federal", "state"):
+            raise StrategyError(f"scope must be 'federal' or 'state', not {scope!r}")
+        if scope not in self._estimates:
+            self._estimates[scope] = self._estimator(scope)
+        return self._estimates[scope]
+
+    @property
+    def year(self) -> int:
+        return self._year
+
+    @property
+    def filing_status(self) -> str:
+        """This year's federal filing status (it changes after a death)."""
+        return str(self._est("federal").filing_status)
+
+    @property
+    def ytd(self) -> Mapping[str, int]:
+        """This year's income so far by tax character, in cents."""
+        return self._ytd()
+
+    @property
+    def last_year(self) -> Mapping[str, int] | None:
+        """Last year's ``tax_year_summary`` buckets, or None before it is settled."""
+        return self._last_year()
+
+    def estimate(self, ordinary: int = 0, ltcg: int = 0, scope: str = "federal") -> TaxEstimate:
+        """The year's tax with ``ordinary`` more ordinary income and ``ltcg``
+        more long-term gain."""
+        est = self._est(scope)
+        taxable, ordinary_taxable = est.taxable_with(ordinary, ltcg)
+        return TaxEstimate(
+            tax=est.tax_with(ordinary, ltcg), taxable_income=taxable,
+            ordinary_taxable=ordinary_taxable, agi=est.agi_with(ordinary, ltcg),
+        )
+
+    def marginal(
+        self, ordinary: int = 0, ltcg: int = 0, *, next: str = "ordinary",
+        scope: str = "federal", step: int = 10_000,
+    ) -> int:
+        """The tax on the next ``step`` cents as a rate (millionths), beyond
+        ``ordinary`` and ``ltcg`` more; ``next`` says whether those cents are
+        ``"ordinary"`` income or ``"ltcg"``. It counts what the bracket
+        tables alone don't show: gains pushed into a higher band, Social
+        Security made taxable."""
+        if next not in ("ordinary", "ltcg"):
+            raise StrategyError(f"next must be 'ordinary' or 'ltcg', not {next!r}")
+        est = self._est(scope)
+        more = (ordinary + step, ltcg) if next == "ordinary" else (ordinary, ltcg + step)
+        return (est.tax_with(*more) - est.tax_with(ordinary, ltcg)) * 1_000_000 // step
+
+    def bracket_top(self, rate: int, scope: str = "federal") -> int | None:
+        """The taxable ordinary income where this year's bracket taxed at
+        ``rate`` ends; None when no bracket has that rate, or it is the top."""
+        return _band_top(self._est(scope).brackets, rate)
+
+    def ltcg_band_top(self, rate: int) -> int | None:
+        """The taxable income (ordinary and gains together) where this year's
+        long-term gains band at ``rate`` ends: ``percent("0%")``'s is the most
+        taxable income a gain can be realized under tax-free."""
+        return _band_top(self._est("federal").ltcg_brackets, rate)
+
+    def irmaa_floors(self) -> tuple[int, ...]:
+        """This year's IRMAA tier floors (MAGI, cents) for the filing status,
+        lowest first: this year's MAGI sets the premiums two years out.
+        Empty without ``irmaa_tiers``."""
+        return self._irmaa_floors(self.filing_status)
+
+
+def _band_top(brackets: Sequence[tuple[int, int]], rate: int) -> int | None:
+    floors = [floor for floor, r in brackets if r == rate]
+    above = [floor for floor, _ in brackets if floors and floor > floors[0]]
+    return min(above) if above else None
+
+
 class Context:
     """What a strategy can read: the run's state as of the current month and
     nothing after it. The engine builds one per call; strategies never build
@@ -227,6 +379,7 @@ class Context:
         people: Mapping[str, PersonView] | None = None,
         budget: Callable[[], int] | None = None,
         annual_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
+        tax: TaxView | None = None,
     ) -> None:
         self._month = month
         self._lots = lots
@@ -237,6 +390,7 @@ class Context:
         self._people = people if people is not None else {}
         self._budget = budget
         self._annual_return = annual_return
+        self._tax = tax
         self.memory = memory
         """The strategy's own state, kept across calls. JSON values only."""
 
@@ -318,6 +472,13 @@ class Context:
             return None
         return self._annual_return(tuple(lots), year)
 
+    @property
+    def tax(self) -> TaxView:
+        """This year's income tax so far, and what more income would cost."""
+        if self._tax is None:
+            raise StrategyError("this context has no tax view")
+        return self._tax
+
 
 # ---------- what a strategy returns ----------
 
@@ -338,6 +499,32 @@ class Put:
 
 
 @dataclass(frozen=True)
+class Transfer:
+    """Move ``amount`` cents out of the asset lot ``source`` into ``to``
+    (``year_end``): another asset lot, or an expense account by name (a
+    gift). It posts as a ``one_off_transfer`` with a blank tax character
+    does: out of a taxable lot it is a sale, from a traditional lot into a
+    Roth lot a conversion, out of a Roth lot a distribution. ``in_kind``
+    (into an expense only, from a lot that tracks basis) gives the shares
+    themselves: their basis leaves with them and no gain is realized."""
+
+    source: LotRef
+    to: LotRef | str
+    amount: int
+    in_kind: bool = False
+
+
+@dataclass(frozen=True)
+class Realize:
+    """Sell and rebuy ``amount`` cents of a taxable lot (``year_end``): its
+    gain or loss (:func:`sale_gain`) is realized this year and its basis
+    moves to the sale value; the balance and holding period stay."""
+
+    lot: LotRef
+    amount: int
+
+
+@dataclass(frozen=True)
 class Spend:
     """Post ``amount`` cents of an owned rule's posting (``scale``): 0 skips
     it, and more than it asked raises it."""
@@ -351,7 +538,7 @@ class Decision:
     ``sim strategy log``, and ``detail`` (JSON values) with the numbers
     behind it."""
 
-    moves: Sequence[Take | Put | Spend]
+    moves: Sequence[Take | Put | Spend | Transfer | Realize]
     note: str = ""
     detail: Mapping[str, Any] = field(default_factory=dict)
 
@@ -413,8 +600,33 @@ class Strategy:
         :class:`Spend` to post that instead; None posts the budget."""
         return None
 
+    def year_end(self, ctx: Context) -> Decision | None:
+        """Asked each December, after every rule has posted and before the
+        month-end settlement: answer with :class:`Transfer` and
+        :class:`Realize` moves, posted in order (a later one sees the
+        balances an earlier one left). ``ctx.tax`` sees the year's income."""
+        return None
 
-_HOOKS = ("draw", "place", "year_start", "scale")
+
+    @classmethod
+    def check(cls, params: Any, scenario: ScenarioView) -> Sequence[str]:
+        """Problems with ``params`` (a ``Params``) in ``scenario``, found at
+        load, each a short phrase; none by default. For what a parameter's
+        unit can't say, such as a tax rule the kind needs (#421)."""
+        return ()
+
+
+@dataclass(frozen=True)
+class ScenarioView:
+    """What :meth:`Strategy.check` sees of the scenario at load (#421)."""
+
+    accounts: Mapping[str, tuple[str, str]]
+    """Each account's ``(kind, subkind)``."""
+    tax_rules: Mapping[str, int]
+    """How many ``tax_accumulator`` rules each scope (``federal``, ``state``) has."""
+
+
+_HOOKS = ("draw", "place", "year_start", "scale", "year_end")
 _REGISTERED = "__strategy_registered__"
 
 

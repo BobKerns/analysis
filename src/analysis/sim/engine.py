@@ -35,7 +35,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import registries, units
+from analysis.sim import registries, strategy_api, units
 from analysis.sim.runs import finalize_run, open_run_file
 from analysis.sim.schema import inserted_id
 from analysis.sim.strategy_runtime import StrategyRuntime
@@ -236,6 +236,7 @@ def run_scenario(
                 Txn._make(txn_by_id[tid]), on, aux, inflation_factor_cache, rule_lifespan, months[-1],
             ),
             growth_sources=growth_sources, opening_balances=balances, first_month=months[0],
+            acquired=acquired, roth_lots=roth,
         )
         refill_ctx.strategies = strategy_runtime or None
 
@@ -244,6 +245,13 @@ def run_scenario(
             prior_magi=_prior_magi(con), person_lifespan=person_lifespan,
             taxpayers=taxpayers, rules=[r for r in txns if r[6] == "irmaa"],
         )
+        if strategy_runtime:
+            # ctx.tax (#421): the estimator the settlement uses, as fill_bracket does.
+            strategy_runtime.tax = _StrategyTax(
+                con, [(r[0], r[1], json.loads(r[13]) if r[13] else {})
+                      for r in txns if r[6] == "tax_accumulator"],
+                aux=aux, person_lifespan=person_lifespan, taxpayers=taxpayers, irmaa=irmaa,
+            )
 
         step_ups = _basis_step_ups(con)
 
@@ -514,6 +522,18 @@ def run_scenario(
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
+
+            if strategy_runtime and month.month == 12:
+                # Year-end actions see the year's income complete (#421): every
+                # rule has posted, fill_bracket's conversion included.
+                strategy_runtime.year_end(
+                    con, step_id, month,
+                    lambda move, frm, to, cents, in_kind, decision_id, s=step_id, m=month_s:
+                    _post_strategy_move(
+                        con, balances, account_kinds, s, m, refill_ctx, move, frm, to, cents,
+                        in_kind=in_kind, decision_id=decision_id,
+                    ),
+                )
 
             _settle_accounts(
                 con, balances, account_kinds, account_subkind, account_tax_treatment,
@@ -1264,15 +1284,8 @@ def _record_purchase(
 
 
 def _is_long_term(acquired: date | None, sale: date) -> bool:
-    """Held more than a year (IRC §1222): the sale falls after the first
-    anniversary of the acquisition. A lot with no acquisition date is long-term."""
-    if acquired is None:
-        return True
-    try:
-        anniversary = acquired.replace(year=acquired.year + 1)
-    except ValueError:  # Feb 29
-        anniversary = date(acquired.year + 1, 2, 28)
-    return sale > anniversary
+    """Held more than a year (IRC §1222); shared with strategies' views."""
+    return strategy_api.is_long_term(acquired, sale)
 
 
 def _delta(kind: str, raw: int) -> int:
@@ -2870,6 +2883,7 @@ class _TaxEstimate:
     scope: str
     filing_status: str
     brackets: list[tuple[int, int]]
+    ltcg_brackets: list[tuple[int, int]]
     ordinary_income: int
     ltcg_income: int
     ss_income: int
@@ -3088,7 +3102,7 @@ def _year_tax_estimate(
         return ordinary + ltcg + taxable_ss_for(ordinary, ltcg)
 
     return _TaxEstimate(
-        scope=scope, filing_status=filing_status, brackets=brackets,
+        scope=scope, filing_status=filing_status, brackets=brackets, ltcg_brackets=ltcg_brackets,
         ordinary_income=ordinary_income, ltcg_income=ltcg_income, ss_income=ss_income,
         taxable_ss=taxable_ss, business=business, capital=capital,
         standard_deduction=standard_deduction, itemized_deduction=itemized_deduction,
@@ -3270,6 +3284,60 @@ FILL_BRACKET_STEP = 100_00
 """How far ``max_marginal_rate`` looks ahead (#252): the tax on the next
 $100 converted. Small enough to stop near a bracket edge, large enough that
 a whole IRA takes a few thousand steps at most."""
+
+
+class _StrategyTax:
+    """What ``ctx.tax`` reads (#421): a tax year's estimate by scope, from
+    the scope's one ``tax_accumulator`` rule; income so far by character;
+    the settled summary of a year; IRMAA's tier floors."""
+
+    def __init__(
+        self, con, rules: Sequence[tuple[int, str, dict[str, Any]]], *,
+        aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+        person_lifespan: dict[str, str], taxpayers: Collection[str], irmaa: IrmaaContext,
+    ) -> None:
+        self.con = con
+        self.rules = rules
+        self.aux = aux
+        self.person_lifespan = person_lifespan
+        self.taxpayers = taxpayers
+        self.irmaa = irmaa
+
+    def estimate(self, scope: str, year: int) -> _TaxEstimate:
+        matches = [(tid, params) for tid, _name, params in self.rules
+                   if str(params.get("scope", "federal")) == scope]
+        if len(matches) != 1:
+            raise strategy_api.StrategyError(
+                f"ctx.tax needs one {scope} tax_accumulator rule (the scenario has {len(matches)})")
+        tid, params = matches[0]
+        return _year_tax_estimate(
+            self.con, {**params, "scope": scope}, aux=self.aux, tax_year=year, tid=tid,
+            person_lifespan=self.person_lifespan, taxpayers=self.taxpayers,
+        )
+
+    def has_scope(self, scope: str) -> bool:
+        return any(str(params.get("scope", "federal")) == scope for _t, _n, params in self.rules)
+
+    def ytd(self, year: int) -> dict[str, int]:
+        return {
+            character: int(total) for character, total in self.con.execute(
+                "SELECT tax_character, SUM(amount) FROM transfer_event "
+                "WHERE COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ? "
+                "AND reason_kind != 'initial' GROUP BY tax_character ORDER BY tax_character",
+                (year,),
+            )
+        }
+
+    def summary(self, year: int) -> dict[str, int] | None:
+        rows = self.con.execute(
+            "SELECT bucket, amount FROM tax_year_summary WHERE year = ? ORDER BY bucket", (year,),
+        ).fetchall()
+        return {bucket: int(amount) for bucket, amount in rows} or None
+
+    def irmaa_floors(self, year: int, filing_status: str) -> tuple[int, ...]:
+        if (registries.IRMAA_TIERS, None) not in self.irmaa.aux:
+            return ()  # the table is optional; without it there are no floors
+        return tuple(t.floor for t in self.irmaa.tiers(year, filing_status, 0))
 
 
 def _fill_bracket_tax_rule(
@@ -4181,7 +4249,13 @@ def _calendar_tax_character(
     lot = ctx.graph.leaf_lot.get(from_chain)
     if lot is None:
         return "none"
-    to_lot = ctx.graph.leaf_lot.get(to_chain)
+    return _blank_move_character(ctx, lot, ctx.graph.leaf_lot.get(to_chain))
+
+
+def _blank_move_character(ctx: RefillContext, lot: int, to_lot: int | None) -> str | None:
+    """``_calendar_tax_character`` for money out of ``lot`` with no character
+    written: None (each leg decides) for a sale, a traditional or a Roth
+    lot's money, else ``none``. ``to_lot`` None is an interior chain."""
     if lot in ctx.roth and (to_lot is None or _leaves_roth(ctx, lot, to_lot)):
         # A Roth distribution, or money a chain may carry out of the wrapper:
         # _post_withdrawal applies the five-year rule to each leg that leaves.
@@ -4191,6 +4265,69 @@ def _calendar_tax_character(
             treatment, ctx.account_subkind.get(lot, "")) is None:
         return None
     return "none"
+
+
+def _post_strategy_move(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str, ctx: RefillContext, move: str,
+    from_id: int, to_id: int, amount: int, *, in_kind: bool, decision_id: int,
+) -> int:
+    """Post one ``year_end`` move (#421) and return the cents it moved: no
+    more than the lot holds. Its legs carry ``reason_kind='strategy'`` and the
+    decision's id.
+
+    A ``transfer`` posts as a ``one_off_transfer`` with a blank character
+    does (a sale, a conversion, a Roth distribution: ``_blank_move_character``);
+    ``in_kind`` gives a taxable lot's shares away instead, their basis leaving
+    pro rata with no gain. A ``realize`` sells and rebuys within the lot: a
+    basis leg and a gain leg from the lot to itself, which leave its balance
+    as it was, and its basis rises by the gain (a loss lowers it)."""
+    amount = min(amount, max(0, balances.get(from_id, 0)))
+    if amount <= 0:
+        return 0
+    common: dict[str, Any] = {"reason_kind": "strategy", "refill_ctx": ctx}
+    if move == "realize":
+        basis = ctx.cost_bases[from_id] or 0
+        basis_out = min(basis, basis * amount // balances[from_id])
+        character = (
+            "ltcg" if _is_long_term(ctx.acquired.get(from_id), _parse_date(month_s)) else "stcg"
+        )
+        basis_leg = _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, from_id, basis_out,
+            "return_of_capital", decision_id, net_effects=False, **common,
+        )
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, from_id,
+            amount - basis_out, character, decision_id, basis_leg, net_effects=False, **common,
+        )
+        ctx.cost_bases[from_id] = basis - basis_out + amount
+        return amount
+    if in_kind:
+        mark = _ensure_min_balance(
+            con, balances, account_kinds, step_id, month_s, ctx, from_id, amount,
+        )
+        basis = ctx.cost_bases[from_id] or 0
+        prior = balances.get(from_id, 0)
+        basis_out = 0 if prior <= 0 else min(basis, basis * amount // prior)
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, to_id, amount, "none",
+            decision_id, refill_mark=mark, **common,
+        )
+        ctx.cost_bases[from_id] = basis - basis_out
+        return amount
+    character = _blank_move_character(ctx, from_id, to_id)
+    if character is None:
+        _post_withdrawal(
+            con, balances, account_kinds, ctx.account_tax_treatment, ctx.account_subkind,
+            ctx.account_name, ctx.cost_bases, step_id, month_s, from_id, to_id, amount,
+            decision_id, **common,
+        )
+    else:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, to_id, amount, character,
+            decision_id, **common,
+        )
+    return amount
 
 
 def _split_rule_character(from_chain: int, ctx: RefillContext) -> str:

@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import (
-    asset_classes, guard_rails, life_table, registries, strategy_code, strategy_files, strategy_load,
-    units,
+    asset_classes, guard_rails, life_table, registries, strategy_api, strategy_code, strategy_files,
+    strategy_load, units,
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, is_marker_name, month_end_iso, parse_day,
@@ -4362,11 +4362,20 @@ def _validate_strategies(
         except ValueError:
             rule_tags = frozenset()  # reported with the scheduled rows
         rules.append((r.get("name", ""), r.get("amount_rule_kind", ""), rule_tags))
+    tax_scopes: dict[str, int] = {}
+    for r in scheduled_rows:
+        if r.get("amount_rule_kind") == "tax_accumulator":
+            scope = str((_safe_json(r.get("params_json")) or {}).get("scope", "federal"))
+            tax_scopes[scope] = tax_scopes.get(scope, 0) + 1
+    scenario = strategy_api.ScenarioView(
+        accounts={a["name"]: (a.get("kind", ""), a.get("subkind", "")) for a in accounts},
+        tax_rules=tax_scopes,
+    )
     prepared = strategy_load.prepare_strategies(
         list(_located(strategy_rows, registries.STRATEGIES_DIR)),
         kinds=kinds, chains=chains, account_names={a["name"] for a in accounts},
         tags=frozenset().union(*tags.values()), target_sets=target_sets, rules=rules,
-        issues=issues,
+        scenario=scenario, issues=issues,
     )
     by_account = {a["name"]: a for a in accounts}
     lots = [
