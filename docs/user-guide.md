@@ -1462,9 +1462,9 @@ the April payment. The table shows both deductions; `--pre-tax` shows the
 plain balance total instead. To change the ten years, or to leave gains out
 (a basis step-up at death would erase them), set `after_tax` in the
 scenario's `meta_json`, for example
-`{"after_tax": {"drawdown_years": 15, "step_up": true}}`. `sim compare`,
-`sim ensemble summary` and `sim ensemble compare` report after-tax net
-worth too, with the same `--pre-tax`, and the notebooks' net worth widgets
+`{"after_tax": {"drawdown_years": 15, "step_up": true}}`. `sim explain`,
+`sim compare`, `sim ensemble summary` and `sim ensemble compare` report
+after-tax net worth too, with the same `--pre-tax`, and the notebooks' net worth widgets
 have a Pre-tax/After-tax toggle. An account's balance is always before tax.
 After tax is what shows a Roth conversion's or a taxable sale's real effect.
 Before tax, tax paid now looks like a loss, while the tax a traditional
