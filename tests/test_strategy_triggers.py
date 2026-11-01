@@ -181,6 +181,12 @@ class Sweep(Strategy):
         if ctx.month.month == 1 and ctx.month.year > 2027:
             years = ctx.rail("tight")
             assert years.years[-1] == ctx.month.year - 1
+            try:
+                years.margin[0, -1] = 0.0
+            except ValueError:
+                pass  # read-only: the next January's breaches read these
+            else:
+                raise AssertionError("ctx.rail's arrays were writable")
         if balance <= self.params.cap:
             return None
         return Decision([Transfer(SAVINGS, CHECKING, balance - self.params.cap)],

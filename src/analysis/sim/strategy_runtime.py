@@ -13,6 +13,8 @@ nothing from later months: future rates and calendar rows aren't in its view.
 
 from __future__ import annotations
 
+import dataclasses
+
 import json
 import sqlite3
 from collections.abc import Callable, Collection, Iterator, Mapping
@@ -353,8 +355,10 @@ class StrategyRuntime:
         years = self._rail_years.get(name)
         if years is None:
             empty = np.empty((1, 0))
-            return RailYears(np.empty(0, dtype=np.int64), empty, empty, empty, empty, empty)
-        return years
+            years = RailYears(np.empty(0, dtype=np.int64), empty, empty, empty, empty, empty)
+        # Read-only copies: these arrays decide the next January's breaches,
+        # and the context is read-only.
+        return RailYears(*(_frozen(a) for a in dataclasses.astuple(years)))
 
     def _tax_view(self, month: date) -> TaxView | None:
         tax = self.tax
@@ -825,3 +829,10 @@ class StrategyRuntime:
             "WHERE id > ? AND from_lot_id = ? AND to_lot_id = ?",
             (decision_id, mark, from_lot, to_lot),
         )
+
+
+def _frozen(array: np.ndarray) -> np.ndarray:
+    """A copy of ``array`` that can't be written to."""
+    out = np.array(array, copy=True)
+    out.flags.writeable = False
+    return out
