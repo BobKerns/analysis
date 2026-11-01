@@ -114,14 +114,16 @@ def video_group_command() -> None:
               help="Where the videos land (default: out/videos).")
 @click.option("--silent", is_flag=True, help="Timed silence instead of a voice (fast drafts).")
 @click.option("--rerecord", is_flag=True, help="Re-record tapes and notebook scenes (after a code change).")
+@click.option("--jobs", type=click.IntRange(min=1), default=None,
+              help="Tasks at once, besides recordings (default: CPUs less 4, at least 2).")
 @_where_option
 def build_command(video: str, lang: str | None, out: Path | None, silent: bool, rerecord: bool,
-                  where: str | None) -> None:
+                  jobs: int | None, where: str | None) -> None:
     """Build VIDEO (a name like 04-results, or its folder): only what
     changed since the last build. In the container when Docker is running."""
     folder = _video_folder(video)
     flags = [*(["--lang", lang] if lang else []), *(["--silent"] if silent else []),
-             *(["--rerecord"] if rerecord else [])]
+             *(["--rerecord"] if rerecord else []), *(["--jobs", str(jobs)] if jobs else [])]
     if _use_docker(where):
         code = _docker(["build", folder.name, *flags], out)
     else:

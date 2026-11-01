@@ -677,11 +677,12 @@ def test_analysis_video_build_runs_in_docker_when_it_can(monkeypatch: pytest.Mon
     from analysis.videos import cli as video_cli
 
     monkeypatch.setattr(video_cli, "docker_running", lambda: running)
-    result = CliRunner().invoke(main, ["video", "build", "01-intro", "--lang", "ja", "--silent", *where])
+    result = CliRunner().invoke(main, ["video", "build", "01-intro", "--lang", "ja", "--silent", "--jobs", "3",
+                                         *where])
     assert result.exit_code == 0, result.output
     folder = str(Path.cwd() / "docs" / "videos" / "01-intro")
-    expected = (["build", "01-intro", "--lang", "ja", "--silent"] if ran == "docker"
-                else ["build", folder, "--lang", "ja", "--silent"])
+    expected = (["build", "01-intro", "--lang", "ja", "--silent", "--jobs", "3"] if ran == "docker"
+                else ["build", folder, "--lang", "ja", "--silent", "--jobs", "3"])
     assert video_runs[ran] == [expected]
     assert video_runs["docker" if ran == "local" else "local"] == []
     assert ("running locally" in result.output) == (not running and not where)

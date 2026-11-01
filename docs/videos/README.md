@@ -135,6 +135,16 @@ Only `FontSize` can be set this way, and only on the tape's first lines.
 The demo data's bytes are part of a tape's cache key, but the CLI's
 behavior isn't, so after a CLI change rebuild with `--rerecord`.
 
+A tape plays in real time, as fast as it was typed and slept, on any
+machine. VHS captures 4K slower than the theme's frame rate (about 10
+frames a second on 4 CPUs), so the theme sets `Set RealTime`, which
+[the VHS fork](https://github.com/BobKerns/vhs/releases) adds: while a frame comes late, the one before
+it stays up, and a busy machine makes a tape choppier, not faster. If the
+picture freezes for more than half a second (`render.FREEZE_SECONDS`), the
+build records the tape again, after 5 seconds, then 10, up to three tries in
+all; if every try froze, it keeps the best, says so, and the next build
+records it again.
+
 ### Setting up the demo
 
 A video that shows more than the prototype data's starting point (a
@@ -347,6 +357,18 @@ build prints what it made and what it reused:
   end                 4.9s  narration cached  visual cached  clip cached
 ```
 
+The work runs in parallel. Each scene's narration and visual are separate
+tasks; its clip starts when both are done, and the video is joined when every
+clip is. Every language of the video builds at once, on the same pool, each
+line tagged `[en]`, `[ja]`. `--jobs N` sets how many tasks run at once; the
+default is the CPUs less 4, at least 2 (`--jobs 1` builds one step at a
+time). Recordings (tapes and notebook scenes) run at one fixed path, so the
+paths the CLI prints read the same in every recording, so they take turns on a
+lane of their own, beside the pool, and get the 4 CPUs kept back: VHS and the
+notebook recorder capture through a browser in real time. Each narration and
+clip encode is held to its share of the other CPUs. A scene's line prints once
+it and every scene before it are done, so the lines stay in scene order.
+
 Requirements for a native build: `ffmpeg`, `uv`, Playwright's Chromium
 (`uv run playwright install chromium`, again after a Playwright upgrade;
 an installed Google Chrome stands in until then), and for tapes VHS and ttyd (`setup`
@@ -366,7 +388,7 @@ notebook scenes record. It builds for amd64
 and arm64 (Docker Desktop on Apple silicon).
 
 ```sh
-analysis video build 00-pilot [--lang ja] [--silent] [--rerecord]
+analysis video build 00-pilot [--lang ja] [--silent] [--rerecord] [--jobs N]
 analysis video check                 # every video, or name some
 analysis video shell 01-intro        # bash, with the video's data repo
 ```

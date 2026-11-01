@@ -409,13 +409,20 @@ def _drag(page: Any, label: str, low: int, high: int) -> None:
 
 def record(source: str, theme: Theme, prepared: Path, notebooks: Path, out: Path) -> None:
     """Record a notebook scene from a fresh copy of the prepared demo into ``out`` (MP4)."""
-    from playwright.sync_api import sync_playwright
-
     from analysis.videos import render
 
     plan = parse(source)
     check(plan, notebooks)
     ffmpeg = render.need("ffmpeg", "install ffmpeg")
+    with render.DEMO_LOCK:
+        _record(plan, theme, prepared, notebooks, out, ffmpeg)
+
+
+def _record(plan: Plan, theme: Theme, prepared: Path, notebooks: Path, out: Path, ffmpeg: str) -> None:
+    from playwright.sync_api import sync_playwright
+
+    from analysis.videos import render
+
     root = render.DEMO_ROOT
     shutil.rmtree(root, ignore_errors=True)
     shutil.copytree(prepared, root, symlinks=True)
