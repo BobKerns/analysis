@@ -73,16 +73,15 @@ from analysis.sim.series_db import (
     build_series_db,
     member_series,
     open_series,
-    pair_members,
     write_series_db,
 )
+from analysis.sim.ensemble_tables import RecipeTables
 from analysis.sim.locks import BUILDER_CHILD_ENV, LockHolder, build_lock, building, reserve_run_path
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
     latest_ensemble_batch,
     member_run_statuses,
-    comparison_deltas,
     oat_plan,
     life_table_age,
     varying_names,
@@ -1801,21 +1800,34 @@ def _echo_year_table(table: pd.DataFrame) -> None:
     """One header row over right-aligned columns, the same columns the
     notebook's table shows: with nine statistics a row, key=value fields
     made it hard to tell this was the same data (#155). Shares (a ``P(``
-    or ``_reserve`` column) print as percents, the rest as dollars."""
+    or ``_reserve`` column) print as percents, the rest as dollars, and a
+    missing value as a blank. A table indexed by (year, recipe) (#328)
+    leads with both, the recipe aligned left."""
 
     def cell(column: str, value: float) -> str:
+        if pd.isna(value):
+            return ""
         if column.startswith("P(") or column.endswith("_reserve"):
             return f"{value:.0%}"
         return f"{value:,.0f}"
 
-    header = ["year", *table.columns]
+    keys = (
+        [str(name) for name in table.index.names]
+        if isinstance(table.index, pd.MultiIndex) else ["year"]
+    )
+    header = [*keys, *table.columns]
     rows = [
-        [str(year), *(cell(c, v) for c, v in zip(table.columns, row, strict=True))]
-        for year, row in table.iterrows()
+        [*map(str, key if isinstance(key, tuple) else (key,)),
+         *(cell(c, v) for c, v in zip(table.columns, row, strict=True))]
+        for key, row in table.iterrows()
     ]
     widths = [max(len(cell) for cell in column) for column in zip(header, *rows, strict=True)]
+    left = len(keys) if len(keys) > 1 else 0
     for line in (header, *rows):
-        click.echo("  " + "  ".join(cell.rjust(width) for cell, width in zip(line, widths, strict=True)))
+        click.echo("  " + "  ".join(
+            cell.ljust(width) if i < left else cell.rjust(width)
+            for i, (cell, width) in enumerate(zip(line, widths, strict=True))
+        ).rstrip())
 
 
 def _close_all(connections: dict[str, RunConnection]) -> None:
@@ -2138,7 +2150,7 @@ def ensemble_summary(
 
 @ensemble_group_command.command("compare")
 @click.argument("baseline", required=False, type=completion.ENSEMBLE)
-@click.argument("variant", required=False, type=completion.ENSEMBLE)
+@click.argument("variants", nargs=-1, type=completion.ENSEMBLE)
 @_ENSEMBLE_RUNS_DIR_OPTION
 @_ENSEMBLE_DATA_DIR_OPTION
 @_ENSEMBLE_ACCOUNT_OPTION
@@ -2152,107 +2164,156 @@ def ensemble_summary(
 @_PRE_TAX_OPTION
 @_ENSEMBLE_GRAPH_OPTIONS
 def ensemble_compare(
-    baseline: str | None, variant: str | None, runs_dir: Path | None, data_dir: Path | None,
-    account: str | None, lot: str | None, reserve: str | None, dollars: str,
-    pre_tax: bool, as_graph: bool, graph_file: Path | None,
+    baseline: str | None, variants: tuple[str, ...], runs_dir: Path | None,
+    data_dir: Path | None, account: str | None, lot: str | None, reserve: str | None,
+    dollars: str, pre_tax: bool, as_graph: bool, graph_file: Path | None,
 ) -> None:
-    """Compare VARIANT's ensemble with BASELINE's on risk (#163), each from
-    its latest batch: by year end, each percentile breakpoint's delta, the
-    delta in the mean of the worst 5% and 20% of members (CVaR), and, when
-    the two recipes share a seed, the share of paired futures where VARIANT
-    comes out ahead. Then each recipe's tail means and, when a reserve is
-    set, the share of members below it.
+    """Compare each of VARIANTS' ensembles with BASELINE's on risk (#163),
+    each from its latest batch: by year end, each percentile breakpoint's
+    delta, the delta in the mean of the worst 5% and 20% of members (CVaR),
+    and, when a variant shares the baseline's seed, the share of paired
+    futures where it comes out ahead. Then each recipe's tail means and,
+    when a reserve is set, the share of members below it. With several
+    VARIANTS (#328), each table has a row per (year, recipe), as the
+    notebook's ensemble table does.
 
     --chart draws the notebook's comparison panels: each percentile's delta,
     the paired futures' deltas when the recipes pair, the CVaR deltas and,
-    with a reserve, the change in the shares below it. When only one recipe
-    has the account, it draws that recipe's fan chart instead.
+    with a reserve, the change in the shares below it; with several
+    VARIANTS (at most four), a column of panels each. When only one of a
+    baseline and one variant has the account, it draws that recipe's fan
+    chart instead.
 
-    Either ensemble left out is asked for, from those that have been run."""
+    Either ensemble left out is asked for, from those that have been run
+    (one variant)."""
     _check_lot_has_account(account, lot)
+    if (as_graph or graph_file is not None) and len(variants) > _COMPARE_MAX_GRAPHED:
+        raise click.UsageError(
+            f"--chart draws at most {_COMPARE_MAX_GRAPHED} variants; name fewer, "
+            "or leave --chart off for the tables")
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
-    if baseline is None or variant is None:
+    if baseline is None or not variants:
         if baseline is None:
-            baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline", exclude=variant)
-        if variant is None:
-            variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant", exclude=baseline)
-        known = _ask_again_once_known(baseline=baseline, variant=variant)
+            baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline",
+                                         exclude=variants[0] if variants else None)
+        if not variants:
+            variants = (_ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant",
+                                          exclude=baseline),)
+        known = _ask_again_once_known(baseline=baseline, variants=variants)
+        baseline, variants = known["baseline"], tuple(known["variants"])
         account, lot = known["account"], known["lot"]
+    # A recipe against itself is allowed, a check that its deltas are zero.
+    if len(set(variants)) < len(variants):
+        raise click.UsageError("name each variant once")
     after_tax = not pre_tax and account is None
-    _note_use(data_dir, baseline, variant)
+    _note_use(data_dir, baseline, *variants)
     _hold_tables()
     mode = DollarMode(dollars)
-    sides: dict[str, EnsembleSeries] = {}
-    for name in (baseline, variant):
-        sides[name] = _open_series(_ensemble_batch_dir(resolved_runs_dir, name, None))
-    base_conns, variant_conns = sides[baseline], sides[variant]
-    # An account only one recipe has gets that recipe's own tail table
-    # below, with no deltas: there is nothing to subtract it from.
-    frames: dict[str, pd.DataFrame] = {}
-    for name, store in sides.items():
-        try:
-            frames[name] = store.frame(account, mode, lot, after_tax=after_tax)
-        except EnsembleError:
-            pass
+    names = [baseline, *variants]
+    stores = {name: _open_series(_ensemble_batch_dir(resolved_runs_dir, name, None))
+              for name in names}
+    # An account only some recipes have gets those recipes' own tails, with
+    # no deltas for the rest: there is nothing to subtract.
+    tables = RecipeTables(stores, account, lot, mode,
+                          _reserve_dollars(reserve, stores[baseline], account),
+                          after_tax=after_tax)
     subject = _subject(account, lot, after_tax)
-    if not frames:
-        raise click.ClickException(f"no {subject} in {baseline} or {variant}")
-    reserve_dollars = _reserve_dollars(reserve, base_conns, account)
-    cpi_frames = {
-        name: (
-            frames[name] if mode == DollarMode.CPI_CONSTANT
-            else sides[name].frame(account, DollarMode.CPI_CONSTANT, lot, after_tax=after_tax)
-        )
-        for name in frames
-    } if reserve_dollars is not None else {}
-    mode_label = DollarMode(mode).label
+    if not tables.frames:
+        raise click.ClickException(f"no {subject} in {' or '.join(names)}")
+    if len(variants) == 1:
+        _echo_one_ensemble_comparison(tables, baseline, variants[0], subject)
+    else:
+        _echo_ensemble_comparisons(tables, baseline, list(variants), subject)
+    _echo_ensemble_rail_deltas(data_dir, baseline, variants, stores, mode)
+    if as_graph or graph_file is not None:
+        _draw_figure(_ensemble_compare_chart(tables, baseline, list(variants), subject),
+                     graph_file, "ensemble-")
+
+
+def _reserve_note(tables: RecipeTables) -> str:
+    return ("" if tables.reserve is None
+            else f"; reserve ${tables.reserve:,.0f} (CPI-constant)")
+
+
+def _echo_one_ensemble_comparison(
+    tables: RecipeTables, baseline: str, variant: str, subject: str,
+) -> None:
+    """``sim ensemble compare`` with one variant: the deltas, then each
+    recipe's tail table on its own."""
     click.echo(
-        f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
-        f"{len(base_conns)} and {len(variant_conns)} member(s)"
+        f"{variant} vs {baseline}: {subject}, {tables.mode.label} dollars; "
+        f"{len(tables.stores[baseline])} and {len(tables.stores[variant])} member(s)"
     )
-    pairs: list[tuple[str, str]] = []
-    if len(frames) == 2:
-        pairs, unpaired = pair_members(base_conns.member_ids(), variant_conns.member_ids())
+    if not tables.missing():
+        pairs, unpaired = tables.pairs(baseline, variant)
         click.echo(
             f"  paired: {len(pairs)} future(s)" if pairs else f"  not paired: {unpaired}"
         )
         click.echo(f"{variant} − {baseline}, year end:")
-        _echo_year_table(year_end_values(comparison_deltas(
-            frames[baseline], frames[variant], pairs, reserve_dollars,
-            (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
-        )))
+        _echo_year_table(tables.deltas(baseline, variant))
     else:
-        missing = variant if baseline in frames else baseline
-        click.echo(f"  only one side: {missing} has no {subject}")
+        click.echo(f"  only one side: {tables.missing()[0]} has no {subject}")
+    for name in tables.frames:
+        click.echo(f"{name} tail, year end{_reserve_note(tables)}:")
+        _echo_year_table(tables.tail(name))
 
-    reserve_note = (
-        "" if reserve_dollars is None
-        else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)"
+
+def _echo_ensemble_comparisons(
+    tables: RecipeTables, baseline: str, variants: list[str], subject: str,
+) -> None:
+    """``sim ensemble compare`` with several variants (#328): the
+    notebook's two tables, by (year, recipe)."""
+    click.echo(
+        f"{', '.join(variants)} vs {baseline}: {subject}, {tables.mode.label} dollars; "
+        + ", ".join(f"{name} {len(tables.stores[name])}" for name in [baseline, *variants])
+        + " member(s)"
     )
-    for name, frame in frames.items():
-        click.echo(f"{name} tail, year end{reserve_note}:")
-        _echo_year_table(year_end_values(
-            risk_summary(frame, reserve_dollars, cpi_frames.get(name))
-        ))
-    _echo_ensemble_rail_deltas(data_dir, baseline, variant, sides, mode)
-    if as_graph or graph_file is not None:
-        from analysis.sim.ensemble_plots import ensemble_compare_figure, ensemble_fan_figure
+    if missing := tables.missing():
+        click.echo(f"  no {subject} in {', '.join(missing)}")
+    compared = [name for name in variants if name in tables.frames]
+    if baseline in tables.frames:
+        for name in compared:
+            pairs, unpaired = tables.pairs(baseline, name)
+            click.echo(f"  {name}: paired, {len(pairs)} future(s)" if pairs
+                       else f"  {name}: not paired: {unpaired}")
+        if compared:
+            click.echo(f"Against {baseline}, by year end:")
+            _echo_year_table(tables.deltas_table(baseline, compared))
+    click.echo(f"Tail and reserve, by recipe, year end{_reserve_note(tables)}:")
+    _echo_year_table(tables.tails())
 
-        if len(frames) == 2:
-            figure = ensemble_compare_figure(
-                baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
-                reserve_dollars,
-                (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
-                deaths=base_conns.base_case_deaths(),
-            )
-        else:
-            (name, frame), = frames.items()
-            figure = ensemble_fan_figure(
-                summary_with_percentiles(frame), f"{subject} fan chart ({mode_label}) ({name})",
-                reserve=reserve_dollars if mode == DollarMode.CPI_CONSTANT else None,
-                deaths=sides[name].base_case_deaths(),
-            )
-        _draw_figure(figure, graph_file, "ensemble-")
+
+def _ensemble_compare_chart(
+    tables: RecipeTables, baseline: str, variants: list[str], subject: str,
+) -> Figure:
+    """``sim ensemble compare --chart``'s figure: the comparison panels for
+    each variant with the account, or, when only one of a baseline and one
+    variant has it, that recipe's fan chart."""
+    from analysis.sim.ensemble_plots import (
+        CompareSide,
+        ensemble_compare_grid_figure,
+        ensemble_fan_figure,
+    )
+
+    mode_label = tables.mode.label
+    compared = [name for name in variants if name in tables.frames]
+    if baseline in tables.frames and compared:
+        return ensemble_compare_grid_figure(
+            baseline, tables.frames[baseline],
+            {name: CompareSide(tables.frames[name], *tables.pairs(baseline, name),
+                               cpi_frame=tables.cpi_frames.get(name))
+             for name in compared},
+            mode_label, tables.reserve, tables.cpi_frames.get(baseline),
+            deaths=tables.stores[baseline].base_case_deaths(),
+        )
+    if len(tables.frames) != 1:
+        raise click.ClickException(f"no chart: {baseline} has no {subject} to compare with")
+    (name, frame), = tables.frames.items()
+    return ensemble_fan_figure(
+        summary_with_percentiles(frame), f"{subject} fan chart ({mode_label}) ({name})",
+        reserve=tables.reserve if tables.mode == DollarMode.CPI_CONSTANT else None,
+        deaths=tables.stores[name].base_case_deaths(),
+    )
 
 
 def _ensemble_guard_rails(
@@ -2535,25 +2596,29 @@ def ensemble_spending(
 
 
 def _echo_ensemble_rail_deltas(
-    data_dir: Path | None, baseline: str, variant: str,
+    data_dir: Path | None, baseline: str, variants: Sequence[str],
     sides: Mapping[str, EnsembleSeries], mode: DollarMode,
 ) -> None:
-    """``sim ensemble compare``'s guard rails (#305): per rail both recipes
-    have, matched by name, the variant's change in each share and RMS.
-    Nothing without a data repo, or when neither recipe has rails."""
+    """``sim ensemble compare``'s guard rails (#305): for each variant, per
+    rail it and the baseline have, matched by name, the variant's change in
+    each share and RMS. Nothing without a data repo, or when no recipe has
+    rails."""
     found = {name: _ensemble_guard_rails(data_dir, name, sides[name], mode, required=False)
-             for name in (baseline, variant)}
+             for name in dict.fromkeys((baseline, *variants))}
     if not any(found.values()):
         return
-    frames = guard_rails.ensemble_comparison_frames(found[baseline] or [], found[variant] or [])
-    if not frames:
-        click.echo("guard rails: none in both recipes")
-        return
-    click.echo(f"guard rails, {variant} − {baseline} ({_DOLLAR_LABELS[mode]}): Δ of each share "
-               "of members past and of the RMS overshoot")
-    for rail, frame in frames.items():
-        click.echo(f"{rail}:")
-        _echo_rail_share_table(frame)
+    for variant in variants:
+        frames = guard_rails.ensemble_comparison_frames(
+            found[baseline] or [], found[variant] or [])
+        if not frames:
+            click.echo(f"guard rails: none in both {baseline} and {variant}"
+                       if len(variants) > 1 else "guard rails: none in both recipes")
+            continue
+        click.echo(f"guard rails, {variant} − {baseline} ({_DOLLAR_LABELS[mode]}): Δ of each "
+                   "share of members past and of the RMS overshoot")
+        for rail, frame in frames.items():
+            click.echo(f"{rail}:")
+            _echo_rail_share_table(frame)
 
 
 @ensemble_group_command.command("sensitivity")
@@ -4592,7 +4657,7 @@ def _names_typed(ctx: click.Context) -> bool:
     return ctx.parent is not None and ctx.parent.invoked_subcommand is not None and _interactive()
 
 
-def _ask_again_once_known(**asked: str) -> dict[str, Any]:
+def _ask_again_once_known(**asked: str | tuple[str, ...]) -> dict[str, Any]:
     """The current command's params, with the ensembles just ``asked`` for,
     and at a terminal its other names checked against them: they waited
     for the ensembles (#240)."""

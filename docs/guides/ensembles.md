@@ -883,7 +883,7 @@ where you mainly want "is this even in the right ballpark," the default of
 report a specific number (a percentile, a probability of running out of
 money by some date) rather than just eyeballing a chart.
 
-## Comparing two ensembles on risk
+## Comparing ensembles on risk
 
 Comparing two recipes in `scenario_compare.ipynb` compares their member 0s,
 the central case. That's the right check that a recipe is set up as
@@ -898,6 +898,17 @@ sim run conservative          # a child that changes only the return row
 sim ensemble compare retire_alice conservative
 sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint
 sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint --lot a
+```
+
+Name more than one variant to set them all against the baseline at once,
+as the notebook's ensemble table does: one table of each variant's deltas
+and one of every recipe's tail means and reserve shares, each row one year
+and one recipe. A variant that doesn't pair with the baseline has a blank
+`P(ahead)`. Its `--chart` puts each variant's panels in a column of their
+own, side by side on a shared scale, for at most four variants:
+
+```sh
+sim ensemble compare retire_alice conservative aggressive --reserve 500000
 ```
 
 Add `--chart` to either `sim ensemble summary` or `sim ensemble compare` to
