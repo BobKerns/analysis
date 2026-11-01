@@ -409,13 +409,20 @@ def _drag(page: Any, label: str, low: int, high: int) -> None:
 
 def record(source: str, theme: Theme, prepared: Path, notebooks: Path, out: Path) -> None:
     """Record a notebook scene from a fresh copy of the prepared demo into ``out`` (MP4)."""
-    from playwright.sync_api import Error, sync_playwright
-
     from analysis.videos import render
 
     plan = parse(source)
     check(plan, notebooks)
     ffmpeg = render.need("ffmpeg", "install ffmpeg")
+    with render.DEMO_LOCK:
+        _record(plan, theme, prepared, notebooks, out, ffmpeg)
+
+
+def _record(plan: Plan, theme: Theme, prepared: Path, notebooks: Path, out: Path, ffmpeg: str) -> None:
+    from playwright.sync_api import sync_playwright
+
+    from analysis.videos import render
+
     root = render.DEMO_ROOT
     shutil.rmtree(root, ignore_errors=True)
     shutil.copytree(prepared, root, symlinks=True)
@@ -434,13 +441,7 @@ def record(source: str, theme: Theme, prepared: Path, notebooks: Path, out: Path
         ratio = out_w / view_w
         args = [f"--force-device-scale-factor={ratio}"]
         with sync_playwright() as p:
-            try:
-                browser = p.chromium.launch(args=args)
-            except Error:
-                chromium = render.chromium_path()
-                if not chromium:
-                    raise
-                browser = p.chromium.launch(executable_path=chromium, args=args)
+            browser = render.launch_chromium(p, args)
             try:
                 context = browser.new_context(viewport={"width": view_w, "height": view_h})
                 context.add_init_script(_POINTER_JS)

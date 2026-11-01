@@ -4,7 +4,7 @@ All take a :class:`~analysis.sim.connection.RunConnection` and pull their
 data from its cached derived-data methods and :mod:`analysis.sim.reports`
 -- no notebook-local pandas code. The charts are
 :mod:`analysis.sim.run_charts`' (#327), the ones ``sim networth`` and
-``sim report ... --graph`` draw.
+``sim report ... --chart`` draw.
 """
 
 from __future__ import annotations

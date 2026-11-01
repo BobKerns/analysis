@@ -25,10 +25,11 @@
 FROM ubuntu:24.04
 
 # Keep VHS_VERSION, TTYD_VERSION and KOKORO_RELEASE in step with
-# src/analysis/videos (tests/test_videos.py checks).
+# src/analysis/videos (tests/test_videos.py checks). VHS comes from Bob's
+# fork, which records terminal images (render.VHS_VERSION says why).
 ARG NODE_VERSION=22.22.2
 ARG UV_VERSION=0.11.32
-ARG VHS_VERSION=0.10.0
+ARG VHS_VERSION=0.12.1-analysis.2
 ARG TTYD_VERSION=1.7.7
 ARG KOKORO_RELEASE=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0
 ARG TARGETARCH
@@ -82,7 +83,7 @@ RUN set -eu; \
         | tar -xJ -C /opt/node --strip-components=1; \
     curl -fsSL "$gh/astral-sh/uv/releases/download/$UV_VERSION/uv-$uv-unknown-linux-gnu.tar.gz" \
         | tar -xz -C /usr/local/bin --strip-components=1; \
-    curl -fsSL "$gh/charmbracelet/vhs/releases/download/v$VHS_VERSION/vhs_${VHS_VERSION}_Linux_$vhs.tar.gz" \
+    curl -fsSL "$gh/BobKerns/vhs/releases/download/v$VHS_VERSION/vhs_${VHS_VERSION}_Linux_$vhs.tar.gz" \
         | tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/vhs'; \
     curl -fsSL -o /usr/local/bin/ttyd "$gh/tsl0922/ttyd/releases/download/$TTYD_VERSION/ttyd.$ttyd"; \
     chmod 755 /usr/local/bin/ttyd /usr/local/bin/vhs; \
@@ -117,6 +118,8 @@ RUN uv sync --quiet --frozen --no-dev --no-install-project \
 COPY historical_data/ historical_data/
 COPY prototype_data/ prototype_data/
 COPY templates/ templates/
+# notebooks/: the notebooks that `notebook` scenes open and record.
+COPY notebooks/ notebooks/
 COPY src/ src/
 RUN uv sync --quiet --frozen --no-dev \
  && ln -s /opt/venv .venv

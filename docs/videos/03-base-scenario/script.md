@@ -469,10 +469,20 @@ stop at an amount; the chains guide has recipes.
 
 ## Scene `chains-graph`: The chain as a picture
 
-```slide
-template = "figure"
-heading = "sim chain show spending --graph"
-demo_image = "home/spending-chain.png"
+```tape
+Hide
+Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
+Enter
+Type "git -C ~/retirement/data reset -q --hard stage/chains-graph && cd ~/retirement/data/sim && clear"
+Enter
+Sleep 2s
+Show
+Sleep 500ms
+Type "sim chain show spending --graph"
+Sleep 400ms
+Enter
+Wait
+Sleep 12s
 ```
 
 Add dash dash graph, and sim chain show draws the same chain as a

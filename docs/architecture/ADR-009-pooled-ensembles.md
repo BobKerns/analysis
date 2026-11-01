@@ -63,7 +63,7 @@ Member 0 is the base component's member 0, so the pool, like every ensemble, has
 
 ### 6. Reports
 
-A pool's batch is an ordinary batch of members, so `sim ensemble summary|compare`, their `--graph`, `sim compare` (member 0) and the notebook widgets read it as they read any ensemble. Two additions:
+A pool's batch is an ordinary batch of members, so `sim ensemble summary|compare`, their `--chart`, `sim compare` (member 0) and the notebook widgets read it as they read any ensemble. Two additions:
 
 - **The summary** prints, under its header, the pool's members by component with their weights and shared seed (`pool of 3, seed 7: e_great_inflation 36 (15%), ...`), and which components the worst 5% of members came from, ranked by each member's lowest CPI-constant net worth over the run (after-tax unless `--pre-tax`; net worth even with `--account`, since an account only some components have is 0 in the rest), the worst point of a lifetime rather than where it ends (`worst 5% (12) by lowest CPI-constant net worth: 6 e_pandemic_spike, 5 e_great_inflation, ...`). The pooled tail means rest on those members, so a small count from a component is a reason for more members. There is no other breakdown by component: each component's own report is one command away.
 - **The reserve** is the pool's own, when it sets one, else its base component's (`series_db._pool_meta`).

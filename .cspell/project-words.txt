@@ -119,6 +119,7 @@ fstat
 ftruncate
 FTSE
 GAAP
+getbasetemp
 geteuid
 gethostname
 getpid
@@ -310,6 +311,7 @@ Shiller
 sidefx
 signum
 Simons
+Sixel
 Smirnov
 SNSXX
 Sobol

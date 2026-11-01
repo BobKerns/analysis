@@ -328,7 +328,7 @@ def test_allocation_graph(
     chart = tmp_path / "allocation.svg"
     result = CliRunner().invoke(main, [
         "sim", "allocation", *by, "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
-        "--runfile", str(two_lot_run_file), "--graph-file", str(chart),
+        "--runfile", str(two_lot_run_file), "--chart-file", str(chart), "--table",
     ], env={"COLUMNS": "200"})
     assert result.exit_code == 0, result.output
     assert "asset allocation" in result.output

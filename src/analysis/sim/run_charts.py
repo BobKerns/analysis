@@ -2,7 +2,7 @@
 expenses, gains, economic income, tax and an account's balance history.
 ``net_worth.ipynb`` and ``accounts.ipynb`` show them inline, and ``sim
 networth``, ``sim report ...`` and ``sim account history`` draw them with
-``--graph``. Each takes the frame its report prints, so a chart and its table
+``--chart``. Each takes the frame its report prints, so a chart and its table
 can't disagree. No pyplot, as in ``compare_charts``: a CLI chart must not pick
 a GUI backend."""
 
@@ -64,7 +64,7 @@ def _nothing(fig: Figure, what: str) -> Figure:
 
 
 def nothing_figure(what: str) -> Figure:
-    """A chart saying there's no ``what`` to chart: what --graph-file writes
+    """A chart saying there's no ``what`` to chart: what --chart-file writes
     when a report has nothing to show, so the file it asked for exists."""
     return _nothing(Figure(figsize=_FIGSIZE), what)
 
@@ -207,7 +207,7 @@ def economic_income_figure(frame: pd.DataFrame, title: str, *,
 
 def income_figure(frame: pd.DataFrame, title: str, *, legend_title: str = "category",
                   deaths: Sequence[Death] = ()) -> Figure:
-    """``sim report income --graph``: the income groups stacked by year, over
+    """``sim report income --chart``: the income groups stacked by year, over
     the economic-income story when the report tells it (not when it shows
     only tagged flows)."""
     story = _story(frame)
@@ -406,7 +406,7 @@ def balance_history_figure(
 
 def account_history_figure(frame: pd.DataFrame, title: str, *,
                            deaths: Sequence[Death] = ()) -> Figure:
-    """``sim account history --graph``: the balance (``reports.account_history``,
+    """``sim account history --chart``: the balance (``reports.account_history``,
     by month or by year), and a lot's cost basis beside it when the run
     tracks one. A year is drawn at its Dec 31."""
     fig = Figure(figsize=_FIGSIZE)

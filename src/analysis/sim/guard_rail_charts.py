@@ -4,7 +4,7 @@ cumulative margin below (``net_worth.ipynb``). Across scenarios: each
 rail's annual and cumulative margins, a line per scenario
 (``scenario_compare.ipynb``). On an ensemble: each rail's
 share of members past it and their RMS overshoot, annual and cumulative
-(``ensemble.ipynb``, ``sim ensemble guard-rails --graph``). No pyplot, as in
+(``ensemble.ipynb``, ``sim ensemble guard-rails --chart``). No pyplot, as in
 ``compare_charts``: a CLI chart must not pick a GUI backend."""
 
 from __future__ import annotations

@@ -147,7 +147,7 @@ def test_sim_ensemble_drift_reports_by_year(
 ) -> None:
     result = CliRunner().invoke(main, [
         "sim", "ensemble", "drift", "alice_rebalance", "--data-dir", str(strategy_scenarios),
-        "--runs-dir", str(runs_dir), "--graph-file", str(tmp_path / "drift.png"),
+        "--runs-dir", str(runs_dir), "--chart-file", str(tmp_path / "drift.png"), "--table",
     ], terminal_width=200)
     assert result.exit_code == 0, result.output
     assert ("3 member(s); drift from target set main (accounts tagged portfolio:invest), "

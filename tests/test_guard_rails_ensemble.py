@@ -112,7 +112,7 @@ def test_sim_ensemble_guard_rails_reports_each_rail(
     mc_batch: Path, test_data_dir: Path, runs_dir: Path, tmp_path: Path,
 ) -> None:
     result = _ensemble("guard-rails", "retire_alice", "--data-dir", str(test_data_dir),
-                       "--runs-dir", str(runs_dir), "--graph-file", str(tmp_path / "rails.png"))
+                       "--runs-dir", str(runs_dir), "--chart-file", str(tmp_path / "rails.png"), "--table")
     assert result.exit_code == 0, result.output
     assert "8 member(s); guard rails, CPI-constant dollars" in result.output
     lines = result.output.splitlines()
