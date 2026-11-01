@@ -399,8 +399,11 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     # A zombie is dead; only its parent (gone) or init would reap it.
-    stat = Path(f"/proc/{pid}/stat")
-    return not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:  # reaped since the kill above
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
 
 
 def test_the_memory_limit_comes_from_this_process_cgroup_and_those_above(tmp_path: Path) -> None:
