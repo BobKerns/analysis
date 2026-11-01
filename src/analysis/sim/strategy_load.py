@@ -1,8 +1,9 @@
 """Validating a scenario's strategies and allocation targets at load (#326,
 ADR-010 §4), and writing them into the intent.
 
-The loader reads ``strategies.csv`` and ``targets.csv`` over the lineage and
-hands the merged rows here, each with where it was authored. Every problem
+The loader reads ``strategies/<name>.csv``, ``strategy_vary/<name>.csv`` and
+``targets.csv`` over the lineage and hands the merged rows here, each with
+where it was authored. Every problem
 is reported as a load error naming that row, as the loader does for the
 other files: a strategy that can't run must not wait for its month to fail.
 """
@@ -12,18 +13,20 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import sqlite3
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_type_hints
 
 from analysis.sim import registries, units
+from analysis.sim.distributions import DistributionError, rewrite_outcomes
 from analysis.sim.asset_classes import UNCLASSIFIED, class_weights
 from analysis.sim.strategy_api import Strategy, param_units
 from analysis.sim.strategy_code import StrategyKinds
 
-__all__ = ["PreparedStrategy", "parse_enabled", "prepare_strategies", "validate_targets",
-           "write_strategies"]
+__all__ = ["PreparedStrategy", "PreparedVary", "parse_enabled", "prepare_strategies",
+           "prepare_vary", "validate_targets", "write_strategies"]
 
 _TRUE = {"", "true", "yes", "1"}
 _FALSE = {"false", "no", "0"}
@@ -41,7 +44,7 @@ def parse_enabled(raw: str | None) -> bool:
 
 @dataclass(frozen=True)
 class PreparedStrategy:
-    """One enabled ``strategies.csv`` row, checked, with params in stored units."""
+    """One enabled strategy file's row, checked, with params in stored units."""
 
     name: str
     kind: str
@@ -51,6 +54,23 @@ class PreparedStrategy:
     end: str | None
     params: dict[str, Any]
     description: str
+
+
+@dataclass(frozen=True)
+class PreparedVary:
+    """One varied strategy parameter (#408), checked: its bounds in the
+    parameter's stored unit, as text, and its authored value, ``base``."""
+
+    strategy: str
+    param: str
+    base: float
+    unit: str  # its stored unit: cents, micros or number
+    whole: bool
+    columns: dict[str, str | None]  # vary_* cell -> stored-unit text, or None
+
+    @property
+    def node(self) -> str:
+        return f"{registries.STRATEGY_NODE_PREFIX}{self.strategy}.{self.param}"
 
 
 def validate_targets(located: Sequence[tuple[str, Mapping[str, str]]], issues: list[str]) -> set[str]:
@@ -320,7 +340,7 @@ def check_portfolio_classes(
                 )
                 if UNCLASSIFIED in weights:
                     issues.append(
-                        f"strategies.csv ({s.name}): lot {account}:{lot} in portfolio {tag} has no "
+                        f"strategies/{s.name}.csv: lot {account}:{lot} in portfolio {tag} has no "
                         f"asset class; add allocations.csv rows for "
                         f"{'symbol ' + symbol if symbol else repr(f'{account}:{lot}')}"
                     )
@@ -363,3 +383,239 @@ def write_strategies(
         )
     counts["allocation_target"] = len(target_rows)
     return counts
+
+
+_VARY_TEXT_COLUMNS = ("vary_low", "vary_high", "vary_mode", "vary_median", "vary_sd")
+_VARY_SHAPE_COLUMNS = ("vary_skew", "vary_tailweight")
+
+
+def _vary_unit(cls: type[Strategy], param: str) -> tuple[str | None, bool] | None:
+    """How ``cls``'s parameter ``param`` varies: its unit (``percent``,
+    ``dollars`` or None for a plain number) and whether it takes whole
+    numbers; None when it can't vary (a tag, a target set, a flag, text)."""
+    unit = param_units(cls.Params).get(param)
+    if unit is not None:
+        return (unit.name, True) if unit.name in ("percent", "dollars") else None
+    hint = get_type_hints(cls.Params).get(param)
+    if hint is bool:
+        return None
+    if hint is int:
+        return None, True
+    if hint is float:
+        return None, False
+    return None
+
+
+def _stored(unit: str | None, text: str) -> float:
+    """A bound written in the parameter's own unit, in its stored unit. A
+    spread (``vary_sd``) is written the same way: ``1%`` or ``500.00``."""
+    match unit:
+        case "percent":
+            return units.percent_to_micros(text)
+        case "dollars":
+            return units.dollars_to_cents(text)
+        case _:
+            value = float(text)
+            if not math.isfinite(value):
+                raise ValueError(f"{text!r} is not a finite number")
+            return value
+
+
+def _base_value(cls: type[Strategy], param: str, params: Mapping[str, Any]) -> float | None:
+    """The authored value of ``param``: params_json's, else the kind's default."""
+    if param in params:
+        value = params[param]
+    else:
+        field = next(f for f in dataclasses.fields(cls.Params) if f.name == param)
+        if field.default is not dataclasses.MISSING:
+            value = field.default
+        elif field.default_factory is not dataclasses.MISSING:
+            value = field.default_factory()
+        else:
+            return None
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def prepare_vary(
+    files: Mapping[str, tuple[str, Sequence[tuple[str, Mapping[str, str]]]]], *,
+    strategy_rows: Sequence[Mapping[str, str]],
+    prepared: Sequence[PreparedStrategy],
+    kinds: StrategyKinds,
+    issues: list[str],
+    unused: list[str],
+) -> tuple[list[PreparedVary], dict[str, tuple[str, str]]]:
+    """Each strategy's ``strategy_vary/<name>.csv`` rows (#408), checked: the
+    strategy is defined, the parameter is one its kind takes as a percent,
+    dollars or a number, each row's distribution is one ensembles know
+    with only the columns it reads, and the authored value (member 0's) lies
+    within its range. A blank ``vary_mode`` or ``vary_median`` is the
+    authored value. A disabled strategy's file is checked as far as its
+    kind allows and noted as unused. Returns the varied parameters and
+    their correlation links (node -> (parent or "", where)), for the
+    calendar's correlation check."""
+    from analysis.sim.ensemble import EnsembleError, build_distribution
+
+    defined = {row.get("name", ""): row for row in strategy_rows}
+    enabled = {s.name: s for s in prepared}
+    out: list[PreparedVary] = []
+    links: dict[str, tuple[str, str]] = {}
+    for strategy, (label, rows) in sorted(files.items()):
+        if strategy not in defined:
+            issues.append(f"{label}: no strategy '{strategy}' (strategies/{strategy}.csv)")
+            continue
+        if strategy not in enabled:
+            if rows:
+                unused.append(f"{label}: strategy '{strategy}' is disabled, so nothing varies")
+            continue
+        s = enabled[strategy]
+        cls = kinds.kinds[s.kind]
+        seen: set[str] = set()
+        for where, row in rows:
+            param = (row.get("param") or "").strip()
+            where = f"{where} ({param or '?'})"
+            stray = sorted(c for c in row if not c.startswith("\0")
+                           and c not in registries.STRATEGY_VARY_CSV_HEADER and (row[c] or "").strip())
+            if stray:
+                issues.append(f"{where}: unknown column(s) {', '.join(stray)}")
+                continue
+            if not param:
+                issues.append(f"{where}: missing param")
+                continue
+            if param in seen:
+                issues.append(f"{where}: {param} is varied twice")
+                continue
+            seen.add(param)
+            fields = {f.name for f in dataclasses.fields(cls.Params)}
+            if param not in fields:
+                issues.append(f"{where}: kind '{s.kind}' has no parameter '{param}' "
+                              f"(known: {', '.join(sorted(fields)) or 'none'})")
+                continue
+            how = _vary_unit(cls, param)
+            if how is None:
+                issues.append(f"{where}: '{param}' can't vary: only a percent, dollars or a number can")
+                continue
+            unit, whole = how
+            base = _base_value(cls, param, s.params)
+            if base is None:
+                issues.append(f"{where}: '{param}' has no value to vary around; set it in params_json")
+                continue
+            prepared_row = _vary_columns(row, unit, base, where, issues)
+            if prepared_row is None:
+                continue
+            stored = {"percent": "micros", "dollars": "cents"}.get(unit or "", "number")
+            vary = PreparedVary(strategy, param, base, stored, whole, prepared_row)
+            try:
+                dist = build_distribution({**prepared_row, "name": vary.node}, "amount")
+            except EnsembleError as e:
+                issues.append(f"{where}: {str(e).split(': ', 1)[-1]}")
+                continue
+            low, high = dist.quantile(0.0), dist.quantile(1.0)
+            if not low <= base <= high:
+                issues.append(
+                    f"{where}: the authored {param} must lie within the range it varies over: "
+                    "it is the base case, member 0"
+                )
+                continue
+            if whole and math.floor(high) < math.ceil(low):
+                issues.append(f"{where}: {param} takes whole numbers, and none lies in its range")
+                continue
+            parent = _link(row, vary.node, where, issues)
+            links[vary.node] = (parent, where)
+            vary.columns.update(
+                vary_correlate_with=parent or None,
+                vary_correlation=(row.get("vary_correlation") or "").strip() if parent else None,
+            )
+            out.append(vary)
+    return out, links
+
+
+def _vary_columns(
+    row: Mapping[str, str], unit: str | None, base: float, where: str, issues: list[str],
+) -> dict[str, str | None] | None:
+    """A strategy_vary row's distribution cells in stored units, or None
+    (with the problems in ``issues``)."""
+    distribution = (row.get("vary_distribution") or "").strip()
+    if distribution not in registries.ENSEMBLE_DISTRIBUTIONS:
+        issues.append(
+            f"{where}: vary_distribution must be one of {sorted(registries.ENSEMBLE_DISTRIBUTIONS)} "
+            f"(got '{distribution}')"
+        )
+        return None
+    allowed = registries.DISTRIBUTION_PARAMS[distribution]
+    out: dict[str, str | None] = {"vary_distribution": distribution}
+    ok = True
+    for col in (*_VARY_TEXT_COLUMNS, *_VARY_SHAPE_COLUMNS, "vary_outcomes"):
+        raw = (row.get(col) or "").strip()
+        out[col] = None
+        if not raw:
+            continue
+        if col not in allowed:
+            issues.append(f"{where}: {col} is not used by {distribution} (ignored by the draw)")
+            ok = False
+            continue
+        try:
+            if col == "vary_outcomes":
+                out[col] = rewrite_outcomes(raw, lambda text, _role: _number(_stored(unit, text)))
+            elif col in _VARY_SHAPE_COLUMNS:
+                out[col] = _number(float(raw))
+            else:
+                out[col] = _number(_stored(unit, raw))
+        except (ValueError, DistributionError) as e:
+            issues.append(f"{where}: {col} {e}")
+            ok = False
+    for col in registries.DISTRIBUTION_REQUIRED_PARAMS.get(distribution, ()):
+        if not (row.get(col) or "").strip():
+            issues.append(f"{where}: {distribution} requires {col}")
+            ok = False
+    if distribution == "triangular" and out["vary_mode"] is None:
+        out["vary_mode"] = _number(base)
+    if distribution == "truncated_normal" and out["vary_median"] is None:
+        out["vary_median"] = _number(base)
+    return out if ok else None
+
+
+def _number(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
+
+
+def _link(row: Mapping[str, str], node: str, where: str, issues: list[str]) -> str:
+    """A varied parameter's correlation parent, or "" (none, or a bad pair)."""
+    parent = (row.get("vary_correlate_with") or "").strip()
+    raw_rho = (row.get("vary_correlation") or "").strip()
+    if bool(parent) != bool(raw_rho):
+        issues.append(f"{where}: vary_correlate_with and vary_correlation go together")
+        return ""
+    if not raw_rho:
+        return ""
+    try:
+        rho = float(raw_rho)
+    except ValueError:
+        issues.append(f"{where}: vary_correlation '{raw_rho}' is not a number")
+        return ""
+    if not -1.0 <= rho <= 1.0:  # also rejects NaN
+        issues.append(f"{where}: vary_correlation must be between -1 and 1 (got {raw_rho})")
+        return ""
+    if parent == node:
+        issues.append(f"{where}: a parameter can't correlate with itself")
+        return ""
+    return parent
+
+
+def write_strategy_vary(con: sqlite3.Connection, varies: Sequence[PreparedVary]) -> dict[str, int]:
+    """Insert ``strategy_vary``, after ``write_strategies``."""
+    ids = dict(con.execute("SELECT name, id FROM strategy").fetchall())
+    for v in varies:
+        c = v.columns
+        con.execute(
+            "INSERT INTO strategy_vary(strategy_id, param, name, base, unit, whole, vary_distribution, "
+            "vary_low, vary_high, vary_mode, vary_median, vary_sd, vary_skew, vary_tailweight, "
+            "vary_outcomes, vary_correlate_with, vary_correlation) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (ids[v.strategy], v.param, v.node, v.base, v.unit, int(v.whole), c["vary_distribution"],
+             c["vary_low"], c["vary_high"], c["vary_mode"], c["vary_median"], c["vary_sd"],
+             None if c["vary_skew"] is None else float(c["vary_skew"]),
+             None if c["vary_tailweight"] is None else float(c["vary_tailweight"]),
+             c["vary_outcomes"], c["vary_correlate_with"],
+             None if c["vary_correlation"] is None else float(c["vary_correlation"])),
+        )
+    return {"strategy_vary": len(varies)}

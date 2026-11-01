@@ -36,7 +36,9 @@ from analysis.sim.ensemble import (
     load_ensemble,
     read_batch_manifest,
 )
-from analysis.sim.registries import LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET, format_calendar_amount
+from analysis.sim.registries import (
+    LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET, STRATEGY_NODE_PREFIX, format_calendar_amount,
+)
 from analysis.sim.types import DollarMode
 from analysis.sim.schema import connect_sim_file
 
@@ -119,7 +121,30 @@ def display_value(kind: str | None, target: str, raw: str) -> str:
         return f"age {float(raw):.1f}"
     if target == FACTOR_TARGET:
         return f"z={float(raw):+.2f}"
+    if kind and kind.startswith(STRATEGY_NODE_PREFIX):
+        return _strategy_number(kind, float(raw))
     return format_calendar_amount(kind or "", int(raw), cents=False, rate_places=2)
+
+
+def _strategy_number(kind: str, value: float) -> str:
+    """A strategy parameter's value (#408) in display units; ``kind`` is
+    ``strategy:<unit>``, from ``_strategy_kinds``."""
+    match kind.removeprefix(STRATEGY_NODE_PREFIX):
+        case "micros":
+            return f"{value / 10_000:.2f}%"
+        case "cents":
+            return f"${value / 100:,.0f}"
+        case _:
+            return f"{value:g}"
+
+
+def _strategy_kinds(con: sqlite3.Connection) -> dict[str, str]:
+    """Each varied strategy parameter's node and the ``kind`` it is displayed
+    by: ``strategy:<its stored unit>`` (#408). None in a file before schema 53."""
+    if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'strategy_vary'").fetchone() is None:
+        return {}
+    return {name: STRATEGY_NODE_PREFIX + unit
+            for name, unit in con.execute("SELECT name, unit FROM strategy_vary")}
 
 
 def oat_members(connections: dict[str, RunConnection]) -> list[OatMember]:
@@ -133,16 +158,19 @@ def oat_members(connections: dict[str, RunConnection]) -> list[OatMember]:
             row = con.execute(
                 "SELECT d.calendar_event_name, d.quantile, d.vary_target, d.drawn_value, c.kind "
                 "FROM ensemble_draw d "
-                # A lifespan's draw (#221) has no calendar row.
+                # A lifespan's draw (#221), or a strategy parameter's (#408),
+                # has no calendar row.
                 "LEFT JOIN calendar_event c ON c.name = d.calendar_event_name "
                 "WHERE d.quantile IS NOT NULL"
             ).fetchone()
+            strategy_kinds = _strategy_kinds(con)
         finally:
             con.close()
         if row is None:
             members.append(OatMember(stem, None, None, None, None))
         else:
             name, q, target, raw, kind = row
+            kind = strategy_kinds.get(name, kind)
             members.append(OatMember(stem, name, q, target, display_value(kind, target, raw)))
     return members
 
@@ -999,13 +1027,15 @@ def _display_number(kind: str, target: str, value: float) -> str:
     a date, a ``set_rate`` amount (micros) as a percent, cents as dollars."""
     if target == "date":
         return date.fromordinal(round(value)).isoformat()
-    if target == LIFESPAN_TARGET:
+    if target == LIFESPAN_TARGET or kind.startswith(STRATEGY_NODE_PREFIX):
         return display_value(kind, target, str(value))
     return display_value(kind, target, str(round(value)))
 
 
 def _spread(kind: str, target: str, sd: float) -> str:
     """A spread (SD or scale) in display units (a duration has no date form)."""
+    if kind.startswith(STRATEGY_NODE_PREFIX):
+        return _strategy_number(kind, sd)
     if kind == "set_rate":
         return f"{sd / 10_000:.2f}%"
     return f"${sd / 100:,.0f}"
@@ -1109,6 +1139,42 @@ def _lifespan_record(
     return record
 
 
+def _strategy_records(con: sqlite3.Connection, has_distribution: bool) -> list[dict[str, object]]:
+    """``parameters``' rows for the varied strategy parameters (#408): what
+    each acts on is its strategy, its center the authored value (the base
+    case, not the median)."""
+    from analysis.sim.ensemble import build_distribution, strategy_vary_rows
+
+    drawn = dict(con.execute(
+        f"SELECT calendar_event_name, {'distribution' if has_distribution else 'NULL'} "
+        "FROM ensemble_draw"
+    ).fetchall())
+    records: list[dict[str, object]] = []
+    for row in strategy_vary_rows(con, resolved=True):
+        if row["name"] not in drawn:
+            continue
+        kind = STRATEGY_NODE_PREFIX + row["unit"]
+        distribution = drawn[row["name"]] or ""
+        record: dict[str, object] = {
+            "name": row["name"], "kind": kind, "affects": row["strategy"], "target": row["param"],
+            "distribution": distribution, "range": "", "center": "", "shape": "", "moments": "",
+            "ramp_months": "", "process": "", "description": "",
+            "correlate_with": row["vary_correlate_with"] or "",
+            "rho": "" if row["vary_correlation"] is None else f"{row['vary_correlation']:+g}",
+            "nu": "",
+        }
+        if distribution:
+            try:
+                dist = build_distribution({**dict(row), "vary_distribution": distribution}, "amount")
+            except EnsembleError:
+                dist = None
+            if dist is not None:
+                record.update(_describe(dist, kind, row["param"]))
+                record["center"] = _strategy_number(kind, row["base"])
+        records.append(record)
+    return records
+
+
 def _base_ages(connections: dict[str, RunConnection]) -> dict[str, float]:
     """Each person's age at death on the batch's base (member 0), if run."""
     for rc in connections.values():
@@ -1172,6 +1238,7 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
             ).fetchall()
             base_ages = _base_ages(connections) if lifespans else {}
             records = [_lifespan_record(con, name, dist, base_ages) for name, dist in lifespans]
+            records += _strategy_records(con, has_distribution)
         finally:
             con.close()
         for row in rows:

@@ -97,7 +97,7 @@ def describe_kind(cls: type[Strategy]) -> str:
 # ---------- params_json and the command line ----------
 
 def params_text(params: Mapping[str, Any]) -> str:
-    """``params_json`` as written to strategies.csv: compact, keys in order given."""
+    """``params_json`` as written to a strategy file: compact, keys in order given."""
     return json.dumps(dict(params), separators=(",", ":")) if params else ""
 
 
@@ -152,7 +152,7 @@ def write_rows(path: Path, header: Sequence[str], rows: Sequence[Mapping[str, st
 
 
 def summary(row: Mapping[str, str]) -> str:
-    """One line for a strategies.csv row."""
+    """One line for a strategy file's row."""
     when = ""
     if row.get("start") or row.get("end"):
         when = f" {row.get('start') or '…'} to {row.get('end') or '…'}"

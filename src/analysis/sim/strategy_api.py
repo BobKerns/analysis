@@ -51,7 +51,7 @@ class StrategyError(Exception):
 
 @dataclass(frozen=True)
 class Unit:
-    """How a ``Params`` field is written in ``strategies.csv``'s ``params_json``
+    """How a ``Params`` field is written in a strategy file's ``params_json``
     and what the strategy receives: ``percent`` ("5%" -> 50000 millionths),
     ``dollars`` ("1200.00" -> 120000 cents), ``tag`` (an account tag
     ``role:name``), ``target_set`` (a set in ``targets.csv``)."""
@@ -367,7 +367,7 @@ class _NoParams:
 
 
 class Strategy:
-    """Base class. A subclass sets ``kind`` (its name in ``strategies.csv``),
+    """Base class. A subclass sets ``kind`` (its name in a strategy file's ``kind``),
     a frozen dataclass ``Params`` (fields typed with :data:`Percent`,
     :data:`Dollars`, :data:`Tag`, :data:`TargetSet`, or plain JSON types),
     a docstring (shown by ``sim strategy kinds``), and overrides the hooks it

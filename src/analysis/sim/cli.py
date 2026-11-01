@@ -40,7 +40,8 @@ from analysis.expenses.baseline import (
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
-    sensitivity, setup_listings, strategy_code, strategy_guide, symbols, units, working_set, ytd_guide,
+    sensitivity, setup_listings, strategy_code, strategy_files, strategy_guide, symbols, units, working_set,
+    ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -151,6 +152,7 @@ from analysis.sim.overlay import (
     Overlaid as _Overlaid,
     overlay_rows as _overlay_rows,
     scenario_calendar_rows as _scenario_calendar_rows,
+    strategy_rows as _strategy_rows,
 )
 from analysis.frames import index_years, named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, ItemType
@@ -5782,9 +5784,9 @@ def _guide_context(
             row_names=[
                 name for name in column(con, "SELECT name FROM calendar_event")
                 if name != own_name
-            ] + [  # a varying lifespan is a correlation parent too (#221)
+            ] + [  # a varying lifespan (#221) or strategy parameter (#408) is a parent too
                 name for name in varying_names(con)
-                if name.startswith(registries.LIFESPAN_NODE_PREFIX)
+                if name.startswith((registries.LIFESPAN_NODE_PREFIX, registries.STRATEGY_NODE_PREFIX))
             ],
             other_rows=other_rows,
             taken_names=frozenset(row["name"].strip() for row in others if row["name"].strip()),
@@ -15681,7 +15683,7 @@ def strategy_list_command(scenario: str | None, data_dir: Path | None) -> None:
     """List the scenario's strategies: kind, chain, dates, parameters, and
     the scenario each is inherited from."""
     folder, name = _strategy_dir(_resolve_data_dir(data_dir), scenario)
-    rows = _overlay_rows(folder, "strategies.csv")
+    rows = _strategy_rows(folder)
     if not rows:
         click.echo(f"no strategies in {name} (`sim strategy add` adds one)")
         return
@@ -15799,20 +15801,19 @@ def _ask_params(cls: type[Strategy], current: Mapping[str, Any]) -> dict[str, An
 
 
 def _write_strategy(
-    data: Path, scenario: str, folder: Path, row: dict[str, str] | None, *, replace: str | None,
+    data: Path, scenario: str, folder: Path, name: str, row: dict[str, str] | None, *,
+    drop_vary: bool = False,
 ) -> None:
-    """Write ``row`` into the scenario's own strategies.csv (replacing the
-    row named ``replace`` there, if it has one; ``row`` None removes it) as
-    one staged edit: the loader checks the result."""
-    header = registries.STRATEGIES_CSV_HEADER
+    """Write ``row`` as the scenario's own ``strategies/<name>.csv`` (#408),
+    or with ``row`` None remove it (and with ``drop_vary`` its
+    ``strategy_vary/<name>.csv`` too), as one staged edit: the loader checks
+    the result."""
     with _scenario_edit(data, scenario) as edit:
-        path = edit.path(folder / "strategies.csv")
-        rows = strategy_guide.read_rows(path, header)
-        kept = [r for r in rows if r["name"] != replace] if replace else rows
-        if row is not None:
-            at = next((i for i, r in enumerate(rows) if replace and r["name"] == replace), len(kept))
-            kept.insert(min(at, len(kept)), row)
-        strategy_guide.write_rows(path, header, kept)
+        path = edit.path(strategy_files.definition_path(folder, name))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        strategy_guide.write_rows(path, registries.STRATEGY_CSV_HEADER, [row] if row is not None else [])
+        if drop_vary:
+            edit.path(strategy_files.vary_path(folder, name)).unlink(missing_ok=True)
 
 
 @strategy_group_command.command("add")
@@ -15825,16 +15826,18 @@ def strategy_add_command(
     param_specs: tuple[str, ...], start: str | None, end: str | None, description: str | None,
     enabled: bool | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Add a strategy to the scenario's strategies.csv. Whatever is left out
+    """Add a strategy to the scenario, as strategies/NAME.csv. Whatever is left out
     is asked for: the kind, what it owns (a chain for a kind that draws or
     places, a rule tag for one that scales spending), and each parameter
     (with its default). The scenario must still load with it."""
     data = _resolve_data_dir(data_dir)
     folder, scenario_name = _strategy_dir(data, scenario)
-    existing = _overlay_rows(folder, "strategies.csv")
+    existing = _strategy_rows(folder)
     if name is None:
         name = _ask_new_name("name for the new strategy")
     name = name.strip()
+    if problem := strategy_files.name_problem(name):
+        raise click.ClickException(problem)
     if name in existing:
         raise click.ClickException(f"strategy {name!r} already exists (sim strategy edit)")
     kinds = _strategy_kinds(data)
@@ -15853,17 +15856,17 @@ def strategy_add_command(
     if guided:
         params.update(_ask_params(cls, {k: v for k, v in params.items() if v is not None}))
     row = {
-        "name": name, "kind": kind, "chain": (chain or "").strip(), "rules": (rules or "").strip(),
+        "kind": kind, "chain": (chain or "").strip(), "rules": (rules or "").strip(),
         "start": (start or "").strip(),
         "end": (end or "").strip(), "enabled": "" if enabled in (None, True) else "false",
         "params_json": _merge_params("", params), "description": (description or "").strip(),
     }
-    _write_strategy(data, scenario_name, folder, row, replace=None)
+    _write_strategy(data, scenario_name, folder, name, row)
     click.echo(f"added strategy {name}: {strategy_guide.summary(row)}")
 
 
 def _pick_strategy(folder: Path, scenario_name: str, name: str | None, prompt: str) -> _Overlaid:
-    rows = _overlay_rows(folder, "strategies.csv")
+    rows = _strategy_rows(folder)
     if name is None:
         name = _ask_name("strategy", sorted(rows), prompt=prompt, plural="strategies")
     found = rows.get(name.strip())
@@ -15888,18 +15891,19 @@ def strategy_edit_command(
     data = _resolve_data_dir(data_dir)
     folder, scenario_name = _strategy_dir(data, scenario)
     found = _pick_strategy(folder, scenario_name, name, "strategy to edit")
-    row = {c: found.row.get(c, "") for c in registries.STRATEGIES_CSV_HEADER}
+    strategy_name = found.row["name"]
+    row = {c: found.row.get(c, "") for c in registries.STRATEGY_CSV_HEADER}
     kinds = _strategy_kinds(data)
     cls = kinds.kinds.get(row["kind"])
     if cls is None:
-        raise click.ClickException(f"strategy {row['name']}'s kind {row['kind']!r} isn't defined")
+        raise click.ClickException(f"strategy {strategy_name}'s kind {row['kind']!r} isn't defined")
     guided = all(v is None for v in (chain, rules, start, end, description, enabled)) and not param_specs
     try:
         changes = strategy_guide.parse_param_specs(cls, param_specs)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
     if guided:
-        click.echo(f"{row['name']}: {strategy_guide.summary(row)}")
+        click.echo(f"{strategy_name}: {strategy_guide.summary(row)}")
         chain, rules = _ask_owned(data, scenario_name, cls, None, None, current=row)
         start = click.prompt("first month (blank: the start)", default=row["start"], show_default=False)
         end = click.prompt("last month (blank: the end)", default=row["end"], show_default=False)
@@ -15916,11 +15920,11 @@ def strategy_edit_command(
         new["enabled"] = "" if enabled else "false"
     new["params_json"] = _merge_params(row["params_json"], changes)
     if new == row:
-        click.echo(f"strategy {row['name']} unchanged")
+        click.echo(f"strategy {strategy_name} unchanged")
         return
-    _write_strategy(data, scenario_name, folder, new, replace=row["name"] if found.index is not None else None)
+    _write_strategy(data, scenario_name, folder, strategy_name, new)
     inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
-    click.echo(f"changed strategy {row['name']}{inherited}: {strategy_guide.summary(new)}")
+    click.echo(f"changed strategy {strategy_name}{inherited}: {strategy_guide.summary(new)}")
 
 
 @strategy_group_command.command("delete")
@@ -15930,10 +15934,12 @@ def strategy_edit_command(
               help="Scenario folder name (default: the current scenario).")
 @_LISTING_DATA_DIR_OPTION
 def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
-    """Delete a strategy from the scenario's strategies.csv; the chain's own
-    steps decide again. An inherited one is deleted where it is defined (or
-    switched off here with `sim strategy edit NAME --disable`); deleting
-    this scenario's override of one restores the inherited row."""
+    """Delete a strategy: its file in strategies/ and this scenario's
+    strategy_vary/ file for it. The chain's own steps decide again. An
+    inherited one is deleted where it is defined (or switched off here with
+    `sim strategy edit NAME --disable`); deleting this scenario's override
+    of one restores the inherited definition, varied as its own scenarios
+    vary it."""
     data = _resolve_data_dir(data_dir)
     folder, scenario_name = _strategy_dir(data, scenario)
     found = _pick_strategy(folder, scenario_name, name, "strategy to delete")
@@ -15944,8 +15950,10 @@ def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, d
             f"switch it off here with `sim strategy edit {strategy_name} --disable`")
     if not yes and not click.confirm(f"delete strategy {strategy_name} from {scenario_name}?", default=False):
         raise click.Abort()
-    _write_strategy(data, scenario_name, folder, None, replace=strategy_name)
-    click.echo(f"deleted strategy {strategy_name} from {scenario_name}")
+    varied = strategy_files.vary_path(folder, strategy_name).exists()
+    _write_strategy(data, scenario_name, folder, strategy_name, None, drop_vary=True)
+    click.echo(f"deleted strategy {strategy_name} from {scenario_name}"
+               + (f" (and {registries.STRATEGY_VARY_DIR}/{strategy_name}.csv)" if varied else ""))
 
 
 _has_table = drift.has_table

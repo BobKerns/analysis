@@ -402,8 +402,10 @@ flowchart LR
 (security_price__SYMBOL.csv)"]
     itemizations["itemizations/
 (@name.csv)"]
-    strategy_rows["strategies.csv
+    strategy_rows["strategies/*.csv
 (chain, kind, params_json)"]
+    strategy_vary["strategy_vary/*.csv
+(param, vary_correlate_with)"]
     targets["targets.csv
 (target_set)"]
     code["strategies/ (shared)
@@ -434,6 +436,8 @@ prior_year_end_balance = @name| itemizations
     strategy_rows -->|kind| code
     strategy_rows -->|params_json: target set| targets
     strategy_rows -->|params_json: tag| accounts
+    strategy_vary -->|file name| strategy_rows
+    strategy_vary -->|vary_correlate_with| calendar
 ```
 
 A chain's own file (`chains/<role>/<name>.csv`) is itself a list of `account_name` (+ `lot`)
@@ -922,23 +926,22 @@ A pool (§4.5, [ADR-009](ADR-009-pooled-ensembles.md) §6) reads its base compon
 
 `sim report guard-rails` prints each rail's margins by year, annual and cumulative side by side (`--carried` adds the carried ones, `--rail NAME` one rail's measure and threshold), past cells red for a `negative` rail and blue for a `positive` one, then per rail and form the years past, the worst margin and its year, the margin at the end, and the RMS overshoot (the root mean square of the margins past the rail, years inside counting as zero). `sim explain` lists each run of years past a rail, `sim compare --section guard-rails` each scenario's margins with each variant's change (rails matched by name), `net_worth.ipynb` charts them, and `scenario_compare.ipynb` charts and tables them across scenarios as `sim compare` does. On an ensemble, `sim ensemble guard-rails` and `ensemble.ipynb` give each rail's share of members past it, share ever past and RMS overshoot, and `sim ensemble compare` their changes (ADR-006 §8).
 
-#### 4.12 Per-scenario: `data_repo/scenarios/<name>/strategies.csv` (optional), and `data_repo/strategies/`
+#### 4.12 Per-scenario: `data_repo/scenarios/<name>/strategies/<strategy>.csv` (optional), and `data_repo/strategies/`
 
-Which responsive strategies the scenario runs ([ADR-010](ADR-010-responsive-strategies.md)). Merged down the lineage by `name`, a later scenario's row replacing the earlier one's whole. The code is a built-in kind (`analysis.sim.strategies`) or a module in the data repo's shared `strategies/` folder (`*.py`; a module whose name starts with `_` is a helper and registers nothing), which is inside the provenance scope and snapshotted into the intent when a data-repo kind is in use.
+Which responsive strategies the scenario runs ([ADR-010](ADR-010-responsive-strategies.md)): one file per strategy, holding one row. The file name is the strategy's name, so the file has no `name` column; a name is one word without `:`, `/`, `\` or `.`, and a file whose name starts with `_` is a template the loader skips. Like chains (§4.7), the files merge down the lineage whole: a later scenario's file for a strategy replaces the earlier one's. The scenario folder's `strategies/` holds these definitions; the data repo's top-level `strategies/` holds the code. The code is a built-in kind (`analysis.sim.strategies`) or a module in the data repo's shared `strategies/` folder (`*.py`; a module whose name starts with `_` is a helper and registers nothing), which is inside the provenance scope and snapshotted into the intent when a data-repo kind is in use.
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
-| `name` | text | ✓ | unique within the scenario's lineage |
 | `kind` | text | ✓ | a registered kind (`sim strategy kinds`) |
 | `chain` | text | | the interior chain it owns (§4.7): not an account's own leaf chain. A source chain needs a kind with a `draw` hook, a destination chain one with `place`. One enabled strategy per chain |
-| `rules` | tag | | a scheduled-rule tag (`role:name`, §4.6): the strategy owns every rule carrying it, and its `scale` hook decides what each posting spends ([ADR-010](ADR-010-responsive-strategies.md) §6.2). Only `fixed_amount` rules, each owned by one enabled strategy. A row gives `chain`, `rules` or both. A file written before the column loads unchanged |
+| `rules` | tag | | a scheduled-rule tag (`role:name`, §4.6): the strategy owns every rule carrying it, and its `scale` hook decides what each posting spends ([ADR-010](ADR-010-responsive-strategies.md) §6.2). Only `fixed_amount` rules, each owned by one enabled strategy. A row gives `chain`, `rules` or both |
 | `start` | YYYY-MM | | first month it decides; blank is the scenario's start |
 | `end` | YYYY-MM | | last month it decides; blank is the end. Outside `start`/`end` the chain's steps decide alone |
 | `enabled` | bool | | `true` (blank) or `false`. A disabled row is still checked; a child sets it `false` to run a parent's scenario without the strategy |
 | `params_json` | json | | an object of the kind's parameters, with percents (`"5%"`) and dollars (`"1200.00"`) written as in CSV cells; checked against the kind and stored in cents and millionths |
 | `description` | text | | |
 
-A kind that fails to import, an unknown kind, a chain that doesn't fit, a `rules` tag no rule carries or one carried by a rule of another kind, a parameter the kind rejects (a tag no account carries, a target set `targets.csv` lacks), or an unclassified lot in a tagged portfolio (§4.1b) is a load error naming the row. `sim strategy add|edit|delete` edit the file through a staged edit (§7); editing an inherited row writes an override of the whole row, and deleting an inherited one is refused in favor of `--disable`.
+A kind that fails to import, an unknown kind, a chain that doesn't fit, a `rules` tag no rule carries or one carried by a rule of another kind, a parameter the kind rejects (a tag no account carries, a target set `targets.csv` lacks), or an unclassified lot in a tagged portfolio (§4.1b) is a load error naming the file, and so is a file with other than one row. `sim strategy add|edit|delete` edit the files through a staged edit (§7); editing an inherited strategy writes an override of the whole file, and deleting an inherited one is refused in favor of `--disable`. Deleting a strategy the scenario defines removes its `strategy_vary/` file too (§4.14). A chain rename (`sim chain rename`) rewrites `chain` in each strategy file.
 
 #### 4.13 Per-scenario: `data_repo/scenarios/<name>/targets.csv` (optional)
 
@@ -952,6 +955,19 @@ Named sets of asset-class target weights a strategy steers by ([ADR-010](ADR-010
 | `weight` | percent | ✓ | `0%` to `100%`; one (`target_set`, `as_of`) must add up to 100%. A class a set leaves out has target 0% |
 
 `sim target set SET CLASS=PERCENT ... [--as-of]` writes one set (a class the scenario inherits in that set and the command leaves out is written as `0%`, since a child can't remove a parent's row), `sim target delete` removes the scenario's own rows, and `sim target list` shows the merged sets.
+
+#### 4.14 Per-scenario: `data_repo/scenarios/<name>/strategy_vary/<strategy>.csv` (optional)
+
+The parameters of a strategy that an ensemble varies ([ADR-006](ADR-006-ensemble-scenarios.md) §3b), one row per parameter. The file is named for its strategy, and merges down the lineage whole, like the strategy's own file: a later scenario's file for a strategy replaces every row of the earlier one's.
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `param` | text | ✓ | a parameter of the strategy's kind written as a percent, dollars or a plain number (`sim strategy kinds KIND`); a tag, target set or flag can't vary. Once per file |
+| `vary_distribution` | enum | ✓ | `uniform`, `truncated_normal`, `triangular` or `discrete`, as for a calendar row (ADR-006 §3) |
+| `vary_low`, `vary_high`, `vary_mode`, `vary_median`, `vary_sd`, `vary_skew`, `vary_tailweight`, `vary_outcomes` | | | the distribution's own columns, as for a calendar amount (ADR-006 §2), written in the parameter's unit: `"5%"` for a percent, `1200.00` for dollars, a number otherwise. A blank `vary_mode` (triangular) or `vary_median` (truncated_normal) is the authored value |
+| `vary_correlate_with`, `vary_correlation` | node, number | | a correlation parent (ADR-008): a varying calendar row, a latent factor, a lifespan (`lifespan:<person>`) or another parameter (`strategy:<name>.<param>`), and rho in [-1, 1], given together |
+
+The authored value (the strategy's `params_json`, else its kind's default) is the base case, member 0's, and must lie within the range the row varies over; a parameter taking whole numbers needs a whole number in it. A file for an undefined strategy is a load error; one for a disabled strategy is checked no further and noted by `sim check`. A calendar row's `name` can't start with `strategy:`.
 
 ### 5. Default priorities
 
@@ -1304,3 +1320,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#387](https://github.com/BobKerns/analysis/issues/387): `strategies.csv` gains `rules`, the scheduled-rule tag a spending strategy owns; `chain` is no longer required (§4.12).
 - [#368](https://github.com/BobKerns/analysis/issues/368): the loader supplies the `joint` pseudo-person when `persons.csv` has no row for it (§4.1).
 - [#404](https://github.com/BobKerns/analysis/issues/404): the drawdown tax prices each share in the year it would be drawn, on that year's income less its own draws from the same money, not on the tax year's, and skips years with salary (§2.6).
+- [#408](https://github.com/BobKerns/analysis/issues/408): a strategy is one file, `strategies/<name>.csv`, replacing `strategies.csv`, and new `strategy_vary/<name>.csv` varies its parameters (§4.12, §4.14, §4.0).

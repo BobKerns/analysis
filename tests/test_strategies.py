@@ -1,6 +1,6 @@
 # cspell:ignore nohooks nosuch
 """Responsive strategies (#326 stage 1a, ADR-010): the API, finding kinds,
-validating strategies.csv/targets.csv at load, and the engine asking a
+validating strategy files and targets.csv at load, and the engine asking a
 strategy at a refill draw.
 
 The persona scenarios come from the ``strategy_scenarios`` fixture:
@@ -236,10 +236,13 @@ def test_a_data_repo_kind_snapshots_every_module(
     assert modules == ["_helpers", "last_leaf"]
 
 
+_DRAW = "strategies/draw_by_allocation.csv"
+
+
 def _rewrite_strategy(strategy_csv: Callable[[str, str], Path], scenario: str, **changes: str) -> None:
     import csv
 
-    path = strategy_csv(scenario, "strategies.csv")
+    path = strategy_csv(scenario, _DRAW)
     with path.open(newline="") as f:
         rows = list(csv.DictReader(f))
     rows[0].update(changes)
@@ -266,7 +269,7 @@ def test_bad_strategy_rows_fail_the_load(
     _rewrite_strategy(strategy_csv, "alice_rebalance", **changes)
     errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
     assert message in errors
-    assert "strategies.csv" in errors and "draw_by_allocation" in errors
+    assert "strategies/draw_by_allocation.csv" in errors
 
 
 def test_targets_must_add_up_to_100(
@@ -282,9 +285,8 @@ def test_targets_must_add_up_to_100(
 def test_two_strategies_cannot_own_one_chain(
     strategy_scenarios: Path, intent_dir: Path, strategy_csv: Callable[[str, str], Path],
 ) -> None:
-    path = strategy_csv("alice_rebalance", "strategies.csv")
-    lines = path.read_text().splitlines()
-    path.write_text("\n".join([*lines, lines[1].replace("draw_by_allocation", "second", 1)]) + "\n")
+    path = strategy_csv("alice_rebalance", _DRAW)
+    path.with_name("second.csv").write_text(path.read_text())
     errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
     assert "chain 'portfolio_draw' is already owned by strategy 'draw_by_allocation'" in errors
 
@@ -292,16 +294,31 @@ def test_two_strategies_cannot_own_one_chain(
 def test_a_repeated_key_in_one_file_fails_the_load(
     strategy_scenarios: Path, intent_dir: Path, strategy_csv: Callable[[str, str], Path],
 ) -> None:
-    """Within one file the overlay merge would keep only the last row."""
-    path = strategy_csv("alice_rebalance", "strategies.csv")
+    """Within one file the overlay merge would keep only the last row; a
+    strategy file holds just one."""
+    path = strategy_csv("alice_rebalance", _DRAW)
     lines = path.read_text().splitlines()
     path.write_text("\n".join([*lines, lines[1]]) + "\n")
     strategy_csv("alice_rebalance", "targets.csv").write_text(
         "target_set,as_of,asset_class,weight\nmain,,stock_us,60%\nmain,,bond,40%\nmain,,bond,30%\n"
     )
     errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
-    assert "duplicate name draw_by_allocation" in errors
+    assert "a strategy file holds one row, its definition (found 2)" in errors
     assert "duplicate target_set, as_of, asset_class main//bond" in errors
+
+
+@pytest.mark.parametrize(("filename", "text", "message"), [
+    ("bad.name.csv", None, "a strategy name can't contain"),
+    ("named.csv", "name,kind\nnamed,last_leaf\n", "no name column: the file's name is the strategy's"),
+])
+def test_a_strategy_file_is_named_for_its_strategy(
+    strategy_scenarios: Path, intent_dir: Path, strategy_csv: Callable[[str, str], Path],
+    filename: str, text: str | None, message: str,
+) -> None:
+    path = strategy_csv("alice_rebalance", _DRAW)
+    path.with_name(filename).write_text(text or path.read_text())
+    errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
+    assert message in errors
 
 
 def test_a_destination_chain_with_a_nested_tax_step_is_refused(
@@ -316,9 +333,9 @@ def test_a_destination_chain_with_a_nested_tax_step_is_refused(
     (destination / "portfolio_place.csv").write_text(
         header + "inner,,,,,,,\nAsset_TraditionalIRA_Alice,default,,,,,,\n"
     )
-    path = strategy_csv("alice_rebalance", "strategies.csv")
-    path.write_text(path.read_text() + 'place_by_allocation,rebalance,portfolio_place,,,,'
-                    '"{""portfolio"":""portfolio:invest"",""targets"":""main""}",\n')
+    strategy_csv("alice_rebalance", "strategies/place_by_allocation.csv").write_text(
+        "kind,chain,start,end,enabled,params_json,description\n"
+        'rebalance,portfolio_place,,,,"{""portfolio"":""portfolio:invest"",""targets"":""main""}",\n')
     errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
     assert "chain 'portfolio_place' has steps with a tax_character or basis_of (through chain 'inner')" in errors
 
@@ -589,7 +606,7 @@ def test_a_strategy_follows_its_chain_rename(
 ) -> None:
     result = _sim(strategy_scenarios, "chain", "rename", "portfolio_draw", "refill_draw")
     assert result.exit_code == 0, result.output
-    assert ",refill_draw," in strategy_csv("alice_rebalance", "strategies.csv").read_text()
+    assert ",refill_draw," in strategy_csv("alice_rebalance", _DRAW).read_text()
     load_test_scenario("alice_rebalance")
 
 
@@ -632,7 +649,7 @@ def test_strategy_list_marks_inherited_rows(strategy_scenarios: Path) -> None:
 
 
 def _drop_strategies(data_dir: Path, strategy_csv: Callable[[str, str], Path]) -> None:
-    strategy_csv("alice_last_leaf", "strategies.csv").unlink()
+    strategy_csv("alice_last_leaf", _DRAW).unlink()
     result = _cli(data_dir, "strategy", "delete", "draw_by_allocation", "--yes", "--scenario", "alice_rebalance")
     assert result.exit_code == 0, result.output
 
@@ -646,8 +663,9 @@ def test_strategy_add_with_options_writes_a_checked_row(
                   "--param", "targets=main", "--param", "band=3%", "--start", "2027-01",
                   "--scenario", "alice_rebalance")
     assert result.exit_code == 0, result.output
-    text = strategy_csv("alice_rebalance", "strategies.csv").read_text()
-    assert 'steer,rebalance,portfolio_draw,,2027-01,,,"{""portfolio"":""portfolio:invest"",""targets"":' in text
+    assert not strategy_csv("alice_rebalance", _DRAW).exists()
+    text = strategy_csv("alice_rebalance", "strategies/steer.csv").read_text()
+    assert 'rebalance,portfolio_draw,,2027-01,,,"{""portfolio"":""portfolio:invest"",""targets"":' in text
     assert '""band"":""3%""' in text
 
 
@@ -659,25 +677,25 @@ def test_strategy_add_is_guided(strategy_scenarios: Path, strategy_csv: Callable
     assert result.exit_code == 0, result.output
     assert "chains: asset_checking_liquidity, portfolio_draw" in result.output
     assert ',"{""portfolio"":""portfolio:invest"",""targets"":""main""}",' in (
-        strategy_csv("alice_rebalance", "strategies.csv").read_text())
+        strategy_csv("alice_rebalance", "strategies/steer.csv").read_text())
 
 
 def test_a_bad_strategy_is_refused_with_nothing_written(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
 ) -> None:
-    before = strategy_csv("alice_rebalance", "strategies.csv").read_text()
+    before = strategy_csv("alice_rebalance", _DRAW).read_text()
     result = _cli(strategy_scenarios, "strategy", "edit", "draw_by_allocation", "--param", "targets=nope",
                   "--scenario", "alice_rebalance")
     assert result.exit_code != 0
     assert "no target set 'nope'" in result.output
-    assert strategy_csv("alice_rebalance", "strategies.csv").read_text() == before
+    assert strategy_csv("alice_rebalance", _DRAW).read_text() == before
 
 
 def test_editing_an_inherited_strategy_writes_an_override(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
     load_test_scenario: Callable[[str], Path],
 ) -> None:
-    child = strategy_csv("alice_last_leaf", "strategies.csv")
+    child = strategy_csv("alice_last_leaf", _DRAW)
     child.unlink()
     result = _cli(strategy_scenarios, "strategy", "edit", "draw_by_allocation", "--param", "band=2%",
                   "--scenario", "alice_last_leaf")
@@ -695,7 +713,7 @@ def test_editing_an_inherited_strategy_writes_an_override(
 def test_deleting_an_inherited_strategy_is_refused(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
 ) -> None:
-    strategy_csv("alice_last_leaf", "strategies.csv").unlink()
+    strategy_csv("alice_last_leaf", _DRAW).unlink()
     result = _cli(strategy_scenarios, "strategy", "delete", "draw_by_allocation", "--yes",
                   "--scenario", "alice_last_leaf")
     assert result.exit_code != 0
@@ -709,7 +727,7 @@ def test_disable_switches_a_strategy_off(
                   "--scenario", "alice_rebalance")
     assert result.exit_code == 0, result.output
     assert "(disabled)" in result.output
-    assert ",false," in strategy_csv("alice_rebalance", "strategies.csv").read_text()
+    assert ",false," in strategy_csv("alice_rebalance", _DRAW).read_text()
 
 
 def test_log_explain_and_drift_read_the_run(
@@ -811,9 +829,9 @@ def test_rebalance_places_overflow_into_the_underweight_class(
         "Asset_Checking,,,,,,,5000.00,,,2000.00,,portfolio_draw,,,,,",
         "Asset_Checking,,,,,,,5000.00,,,2000.00,6000.00,portfolio_draw,,,,portfolio_place,",
     ))
-    path = strategy_csv("alice_rebalance", "strategies.csv")
-    path.write_text(path.read_text() + 'place_by_allocation,rebalance,portfolio_place,,,,'
-                    '"{""portfolio"":""portfolio:invest"",""targets"":""main""}",\n')
+    strategy_csv("alice_rebalance", "strategies/place_by_allocation.csv").write_text(
+        "kind,chain,start,end,enabled,params_json,description\n"
+        'rebalance,portfolio_place,,,,"{""portfolio"":""portfolio:invest"",""targets"":""main""}",\n')
     run = run_strategy_scenario("alice_rebalance")
     places = [r for r in _decisions(run) if r[1] == "place"]
     assert places, "checking never overflowed"

@@ -22,7 +22,7 @@ SCENARIO = "alice_spending"
 
 def _strategy(strategy_csv: Callable[[str, str], Path], kind: str, **params: object) -> None:
     """Make alice_spending's ``flex`` strategy ``kind`` with ``params``."""
-    path = strategy_csv(SCENARIO, "strategies.csv")
+    path = strategy_csv(SCENARIO, "strategies/flex.csv")
     with path.open(newline="") as f:
         rows = list(csv.DictReader(f))
     rows[0].update(kind=kind, params_json=json.dumps({"portfolio": "portfolio:invest", **params}))
@@ -148,9 +148,10 @@ def test_compare_sets_spending_against_the_plan(
         "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
         "alice_spending_skip,,2026-05-31,2040-12-31,42,alice_spending,alice,{}\n")
     (child / "README.md").write_text("# alice_spending_skip\n\nBuilds on: alice_spending\n")
-    (child / "strategies.csv").write_text(
-        "name,kind,chain,rules,start,end,enabled,params_json,description\n"
-        'flex,threshold,,flex:optional,,,,"{""portfolio"":""portfolio:invest"",'
+    (child / "strategies").mkdir()
+    (child / "strategies" / "flex.csv").write_text(
+        "kind,chain,rules,start,end,enabled,params_json,description\n"
+        'threshold,,flex:optional,,,,"{""portfolio"":""portfolio:invest"",'
         '""minimum"":""5000000.00""}",never enough\n')
     for name in (SCENARIO, "alice_spending_skip"):
         result = _cli(strategy_scenarios, "run", name, "--allow-dirty-data", "--allow-dirty-code")
