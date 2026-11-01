@@ -254,14 +254,18 @@ def ensemble_compare_grid_figure(
     if columns == 1:
         # One variant: the paired fan across the top, the two delta panels
         # side by side under it, so the whole fits a screen (#369).
-        mosaic = ([["fan", "fan"]] if paired_row else []) + [["cvar", "pct"]] + (
-            [["reserve", "reserve"]] if reserve is not None else [])
-        named = fig.subplot_mosaic(mosaic)
-        order = (["fan"] if paired_row else []) + ["cvar", "pct"] + (
-            ["reserve"] if reserve is not None else [])
-        grid = np.array([[named[key]] for key in order], dtype=object)
-        for key in order[1:]:
-            named[key].sharex(named[order[0]])
+        spec = fig.add_gridspec(panels - 1, 2)
+        row = 0
+        order: list[Axes] = []
+        if paired_row:
+            order.append(fig.add_subplot(spec[0, :]))
+            row = 1
+        order += [fig.add_subplot(spec[row, 0]), fig.add_subplot(spec[row, 1])]
+        if reserve is not None:
+            order.append(fig.add_subplot(spec[row + 1, :]))
+        for ax in order[1:]:
+            ax.sharex(order[0])
+        grid = np.array([[ax] for ax in order], dtype=object)
     else:
         grid = fig.subplots(panels, columns, sharex=True, sharey="row", squeeze=False)
     for column, (variant, side) in enumerate(variants.items()):
