@@ -147,7 +147,7 @@ is unchanged.
 ## Scene `varying`: A row of their own
 
 ```tape
-Set FontSize 22
+Set FontSize 18
 Hide
 Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
 Enter
