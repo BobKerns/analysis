@@ -12,7 +12,9 @@ next = "03-base-scenario"
 summary = """
 Alice gets the simulator running on her own computer, and starts a folder \
 for her household's data. Setup guide, with the one-line installer: \
-https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md"""
+https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md
+
+On Windows, set up WSL first: https://youtu.be/ABq0vnGIwlk"""
 contents = [
   "Installing with one line, on a Mac, Linux, or Windows under WSL",
   "What the installer does",
