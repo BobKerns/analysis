@@ -2698,15 +2698,24 @@ def ensemble_sensitivity(
     help="List one node's draws (a varying row, lifespan:<person> or a latent factor).",
 )
 @click.option(
+    "--pair", default=None, type=completion.DRAW_PAIR, metavar="A,B",
+    help="One correlated pair: its implied and achieved rho, and each member's "
+         "values and scores.",
+)
+@click.option(
     "--csv", "csv_file", type=click.Path(dir_okay=False, path_type=Path), default=None,
     help="Write the drawn members' values (member x node, display units) to this CSV.",
 )
 @click.option("--rebuild", is_flag=True, default=False,
               help="Gather the batch's draws database again from its member files.")
+@_graph_options("--node's draws and --pair's scores as the notebook's charts",
+                written="the chart (one --node or one --pair; in a pool, the first component's)",
+                after="the tables")
 def ensemble_draws(
     scenario_name: str | None, runs_dir: Path | None, intent_dir: Path | None,
     data_dir: Path | None, batch: str | None, mode: str | None, node: str | None,
-    csv_file: Path | None, rebuild: bool,
+    pair: str | None, csv_file: Path | None, rebuild: bool,
+    as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Every draw of an ensemble batch, and what it depends on (#261).
 
@@ -2717,9 +2726,20 @@ def ensemble_draws(
     then each correlated pair's implied and achieved rho. A batch run before
     the database existed gets one gathered from what its member files hold.
 
+    --node lists one node's draws and --pair one correlated pair's; --chart
+    draws them as the notebook does (#330): the node's values and u
+    histograms, the pair's scores against each other.
+
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
     from analysis.sim.draws_db import build_draws_db, draws_db_current, draws_db_path, open_draws_db
 
+    charted = as_graph or graph_file is not None
+    if charted and node is None and pair is None:
+        raise click.UsageError("--chart and --chart-file draw --node's draws or --pair's scores; "
+                               "name one")
+    if graph_file is not None and node is not None and pair is not None:
+        raise click.UsageError("--chart-file writes one chart: --node or --pair, not both")
+    pair_names = _parse_pair(pair) if pair is not None else None
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
@@ -2736,17 +2756,70 @@ def ensemble_draws(
             build_draws_db(batch_dir, resolved_intent_dir / scenario_name / batch_dir.name)
         except EnsembleError as exc:
             raise click.ClickException(str(exc)) from None
+    _hold_tables()
     with open_draws_db(batch_dir) as con:
         con.row_factory = sqlite3.Row
         if node is not None:
             _echo_node_draws(con, node)
-        else:
+        if pair_names is not None:
+            _echo_pair_draws(con, *pair_names)
+        if node is None and pair_names is None:
             _echo_draws_summary(con, path)
         if csv_file is not None:
             frame = pd.read_sql_query("SELECT * FROM draws_wide_display", con)
             frame.to_csv(csv_file, index=False)
             nodes = len(frame.columns) - len({"member_index", "component"} & set(frame.columns))
             click.echo(f"wrote {len(frame)} member(s) x {nodes} node(s) to {csv_file}")
+    if charted:
+        _draw_draws_charts(batch_dir, node, pair_names, graph_file)
+
+
+def _parse_pair(pair: str) -> tuple[str, str]:
+    """``--pair A,B`` as its two node names."""
+    a, comma, b = pair.partition(",")
+    a, b = a.strip(), b.strip()
+    if not comma or not a or not b or "," in b:
+        raise click.UsageError(f"--pair takes two nodes, A,B; got {pair!r}")
+    if a == b:
+        raise click.UsageError(f"--pair names {a!r} twice; name two nodes")
+    return a, b
+
+
+def _draw_draws_charts(
+    batch_dir: Path, node: str | None, pair: tuple[str, str] | None, graph_file: Path | None,
+) -> None:
+    """--node's and --pair's charts, one per pool component that drew them.
+    A component with nothing drawn (in a pool, one whose only member is the
+    base case) is skipped; only when none has a chart is that an error."""
+    from analysis.sim.draws_charts import draws_figure, pair_figure, pair_row
+    from analysis.sim.draws_db import component_frames, components, draws_frames
+    from analysis.sim.plotting import INK
+
+    frames = draws_frames(batch_dir)
+    names = components(frames)
+    pooled = len(names) > 1
+    drawn: list[Any] = []
+    refusals: list[str] = []
+    for component in names:
+        mine = component_frames(frames, component) if pooled else frames
+        charts = []
+        if node is not None and (mine["draw"]["node"] == node).any():
+            charts.append(lambda mine=mine: draws_figure(mine, node))
+        if pair is not None and pair_row(mine, *pair) is not None:
+            charts.append(lambda mine=mine: pair_figure(mine, *pair))
+        for chart in charts:
+            try:
+                figure = chart()
+            except EnsembleError as exc:
+                refusals.append(f"{exc}" + (f" in {component}" if pooled else ""))
+                continue
+            if pooled:
+                figure.suptitle(component, x=0.01, ha="left", color=INK)
+            drawn.append(figure)
+    if not drawn:
+        raise click.ClickException("; ".join(refusals) or "nothing to draw")
+    for figure in drawn[:1] if graph_file is not None else drawn:
+        _draw_figure(figure, graph_file, "draws-")  # a file holds one chart: the first
 
 
 def _draw_cell(unit: str, value: Any, *, spread: bool = False) -> str:
@@ -2879,6 +2952,47 @@ def _echo_node_draws(con: sqlite3.Connection, node: str) -> None:
             for r in con.execute(
                 "SELECT * FROM draw_display WHERE node = ? AND component = ? ORDER BY member_index",
                 (node, n["component"]))
+        ])
+
+
+def _echo_pair_draws(con: sqlite3.Connection, a: str, b: str) -> None:
+    """--pair: the pair's implied and achieved rho, then each member's
+    values and scores, per pool component that correlates them."""
+    found = con.execute(
+        "SELECT * FROM node_pair WHERE (a = ? AND b = ?) OR (a = ? AND b = ?) ORDER BY component",
+        (a, b, b, a)).fetchall()
+    if not found:
+        drawn = {name for (name,) in con.execute("SELECT DISTINCT name FROM node")}
+        missing = [n for n in (a, b) if n not in drawn]
+        if missing:
+            raise click.UsageError(f"--pair: {missing[0]!r} isn't drawn in this batch")
+        partners = [y for (y,) in con.execute(
+            "SELECT DISTINCT CASE WHEN a = ? THEN b ELSE a END AS other FROM node_pair "
+            "WHERE a = ? OR b = ? ORDER BY kind = 'implied', other", (a, a, a))]
+        hint = f"; {a} pairs with {', '.join(partners)}" if partners else f"; {a} pairs with nothing"
+        raise click.UsageError(f"--pair: {a!r} and {b!r} aren't a correlated pair in this batch{hint}")
+    pooled = con.execute("SELECT count(DISTINCT component) FROM member").fetchone()[0] > 1
+    units = {r["name"]: r["unit"] for r in con.execute("SELECT name, unit FROM node_display")}
+    for p in found:
+        where = f" ({p['component']})" if pooled else ""
+        achieved = ("" if p["achieved_rho"] is None else
+                    f", achieved {p['achieved_rho']:+.2f} "
+                    f"(95% interval {p['achieved_low']:+.2f} to {p['achieved_high']:+.2f})")
+        click.echo(f"{a} ~ {b}{where}: {p['kind']}, implied rho {p['implied_rho']:+.2f}{achieved}")
+        rows = con.execute(
+            "SELECT member_index, max(is_base) AS is_base, "
+            "max(CASE WHEN node = ? THEN value END) AS a_value, "
+            "max(CASE WHEN node = ? THEN z END) AS a_z, "
+            "max(CASE WHEN node = ? THEN value END) AS b_value, "
+            "max(CASE WHEN node = ? THEN z END) AS b_z "
+            "FROM draw_display WHERE component = ? AND node IN (?, ?) "
+            "GROUP BY member_index ORDER BY member_index",
+            (a, a, b, b, p["component"], a, b)).fetchall()
+        _echo_table(["member", a, b, f"{a} score", f"{b} score"], [
+            [f"{r['member_index']}{' (base)' if r['is_base'] else ''}",
+             _draw_cell(units.get(a, ""), r["a_value"]), _draw_cell(units.get(b, ""), r["b_value"]),
+             *("—" if r[c] is None else f"{r[c]:+.4f}" for c in ("a_z", "b_z"))]
+            for r in rows
         ])
 
 
