@@ -401,7 +401,9 @@ def _alive(pid: int) -> bool:
     # A zombie is dead; only its parent (gone) or init would reap it.
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
-    except FileNotFoundError:  # reaped since the kill above
+    # Reaped since the kill above: the open raises FileNotFoundError, and a
+    # read after the open raises ProcessLookupError.
+    except (FileNotFoundError, ProcessLookupError):
         return False
     return stat.rsplit(")", 1)[1].split()[0] != "Z"
 

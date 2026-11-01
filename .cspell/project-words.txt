@@ -167,6 +167,7 @@ Kolmogorov
 kstest
 labelbottom
 labelcolor
+labelleft
 labelrotation
 LABSTAT
 lastrowid
@@ -309,6 +310,7 @@ setopt
 setp
 setpts
 sharex
+sharey
 SHASUMS
 shellcheck
 Shiller

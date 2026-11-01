@@ -13,18 +13,17 @@ import ipywidgets as widgets
 import pandas as pd
 from IPython.display import clear_output, display
 
-from analysis.frames import by_year_and_label
 from analysis.sim import registries, reports, units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
-    comparison_deltas,
     latest_ensemble_batch,
     member_run_statuses,
     risk_summary,
     summary_with_percentiles,
 )
 from analysis.sim.loader import is_ensemble_batch, read_disabled_scenarios
+from analysis.sim.ensemble_tables import RecipeTables
 from analysis.sim.ensemble_plots import (
     band_edges,
     ensemble_compare_figure,
@@ -48,7 +47,6 @@ from analysis.sim.readme import description_view
 from analysis.sim.series_db import (
     EnsembleSeries,
     build_series_db,
-    pair_members,
     series_db_current,
     series_db_path,
 )
@@ -933,40 +931,23 @@ def ensemble_spending_widget(*_,
     ])
 
 
-class _Sides:
-    """The recipes a comparison shows, opened: each one's store, and its
-    frames in the dollars shown and, for a reserve, CPI-constant. A recipe
-    without the account shown has no frame."""
+class _Sides(RecipeTables):
+    """The recipes a comparison shows, opened from their latest batches, as
+    the widget's controls ask (see ``RecipeTables``)."""
 
     def __init__(self, runs_dir: Path, names: Sequence[str], controls: EnsembleControls,
                  lot: str | None, reserve_field: widgets.Text, loading: LoadingIndicator):
-        self.stores: dict[str, EnsembleSeries] = {}
+        stores: dict[str, EnsembleSeries] = {}
         for name in names:
             opened = _open_recipe(runs_dir, name, loading)
             assert opened is not None  # listed recipes all have a batch
-            self.stores[name] = opened[1]
-        baseline = names[0]
-        self.account, self.lot = controls.account, lot
-        self.after_tax = controls.after_tax
-        self.subject = _subject(self.account, lot, self.after_tax)
-        self.mode = controls.dollar_picker.value
-        self.mode_label = DollarMode(self.mode).label
-        self.reserve = _reserve(reserve_field, self.stores[baseline], self.account)
-        self.frames: dict[str, pd.DataFrame] = {}
-        for name, store in self.stores.items():
-            try:
-                self.frames[name] = store.frame(
-                    self.account, self.mode, lot, after_tax=self.after_tax)
-            except EnsembleError:
-                pass
-        self.cpi_frames: dict[str, pd.DataFrame] = {
-            name: (
-                frame if self.mode == DollarMode.CPI_CONSTANT
-                else self.stores[name].frame(
-                    self.account, DollarMode.CPI_CONSTANT, lot, after_tax=self.after_tax)
-            )
-            for name, frame in self.frames.items()
-        } if self.reserve is not None else {}
+            stores[name] = opened[1]
+        account = controls.account
+        super().__init__(
+            stores, account, lot, controls.dollar_picker.value,
+            _reserve(reserve_field, stores[names[0]], account), after_tax=controls.after_tax)
+        self.subject = _subject(account, lot, self.after_tax)
+        self.mode_label = self.mode.label
 
     def heading(self, baseline: str) -> str:
         heading = (
@@ -976,32 +957,6 @@ class _Sides:
         if self.reserve is not None:
             heading += f"; reserve ${self.reserve:,.0f} (CPI-constant)"
         return heading
-
-    def pairs(self, baseline: str, variant: str) -> tuple[list[tuple[str, str]], str | None]:
-        return pair_members(self.stores[baseline].member_ids(),
-                            self.stores[variant].member_ids())
-
-    def cpi_pair(self, baseline: str, variant: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-        return (self.cpi_frames[baseline], self.cpi_frames[variant]) if self.cpi_frames else None
-
-    def deltas(self, baseline: str, variant: str, clip: Callable[[pd.DataFrame], pd.DataFrame],
-               ) -> pd.DataFrame:
-        """``variant`` against ``baseline`` by year end, in the years shown."""
-        pairs, _unpaired = self.pairs(baseline, variant)
-        table = year_end_values(clip(comparison_deltas(
-            self.frames[baseline], self.frames[variant], pairs, self.reserve,
-            self.cpi_pair(baseline, variant),
-        )))
-        table.index.name = "year"
-        return table
-
-    def tails(self, clip: Callable[[pd.DataFrame], pd.DataFrame]) -> pd.DataFrame:
-        """Each recipe's tail means and reserve shares, by year end."""
-        return by_year_and_label({
-            name: year_end_values(clip(risk_summary(frame, self.reserve,
-                                                    self.cpi_frames.get(name))))
-            for name, frame in self.frames.items()
-        })
 
     def missing_note(self, names: Sequence[str]) -> StyledMarkdown | None:
         """Which of ``names`` lack the account shown, or None."""
@@ -1215,8 +1170,7 @@ def ensemble_table_widget(*_,
             outputs.append(note)
         compared = [name for name in others if name in sides.frames]
         if baseline in sides.frames and compared:
-            deltas = by_year_and_label({
-                name: sides.deltas(baseline, name, time_range.clip) for name in compared})
+            deltas = sides.deltas_table(baseline, compared, time_range.clip)
             outputs.append(StyledMarkdown(f"### Against {baseline}, by year end"))
             outputs.append(deltas.style.format(_share_format(deltas.columns)))
         if sides.frames:
