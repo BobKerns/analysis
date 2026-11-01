@@ -10,7 +10,8 @@ from __future__ import annotations
 from matplotlib.axes import Axes
 
 import io
-from collections.abc import Callable, Sequence, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import matplotlib
@@ -23,7 +24,10 @@ from analysis.sim.ensemble import comparison_deltas, paired_deltas, summary_with
 from analysis.sim.plotting import FRAME_ALPHA, mark_deaths
 from analysis.sim.types import Death
 
-__all__ = ["band_edges", "ensemble_compare_figure", "ensemble_fan_chart", "ensemble_fan_figure", "figure_bytes"]
+__all__ = [
+    "CompareSide", "band_edges", "ensemble_compare_figure", "ensemble_compare_grid_figure",
+    "ensemble_fan_chart", "ensemble_fan_figure", "figure_bytes",
+]
 
 
 def band_edges(monthly_summary: pd.DataFrame) -> list[str]:
@@ -196,49 +200,96 @@ def ensemble_compare_figure(
     are taken over the whole run: the share ever below the reserve looks
     back to the start. ``deaths`` are red lines on every panel, the
     baseline's member 0's (``ensemble.base_case_deaths``)."""
+    return ensemble_compare_grid_figure(
+        baseline, baseline_frame,
+        {variant: CompareSide(variant_frame, pairs,
+                              cpi_frame=cpi_frames[1] if cpi_frames else None)},
+        mode_label, reserve, cpi_frames[0] if cpi_frames else None,
+        log_scale=log_scale, clip=clip, deaths=deaths,
+    )
+
+
+@dataclass(frozen=True)
+class CompareSide:
+    """One variant in ``ensemble_compare_grid_figure``: its members' frame,
+    the members it pairs with the baseline's or, when none, why not
+    (``pair_members``), and, for a reserve on nominal frames, its frame in
+    CPI-constant dollars."""
+
+    frame: pd.DataFrame
+    pairs: list[tuple[str, str]]
+    unpaired: str | None = None
+    cpi_frame: pd.DataFrame | None = None
+
+
+def ensemble_compare_grid_figure(
+    baseline: str, baseline_frame: pd.DataFrame, variants: Mapping[str, CompareSide],
+    mode_label: str, reserve: float | None = None,
+    baseline_cpi_frame: pd.DataFrame | None = None, *,
+    log_scale: bool = False,
+    clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    deaths: Sequence[Death] = (),
+) -> Figure:
+    """``ensemble_compare_figure``'s panels for each of ``variants`` against
+    ``baseline`` (#328), one column a variant, side by side. A row's panels
+    share a y scale, so the columns read against each other; the paired
+    fan's row is there when any variant pairs, and blank for one that
+    doesn't."""
     clip = clip or (lambda frame: frame)
-    deltas = clip(comparison_deltas(
-        baseline_frame, variant_frame, reserve=reserve, cpi_frames=cpi_frames,
-    ))
-    panels = 2 + bool(pairs) + (reserve is not None)
-    fig = Figure(figsize=(10, 4 * panels),
-                 layout="tight")
-    all_axes: list[Axes] = list(fig.subplots(panels, 1, sharex=True))
-    axes: Iterator[Axes] = iter(all_axes)
-    if pairs:
-        ax = next(axes)
-        paired = clip(summary_with_percentiles(
-            paired_deltas(baseline_frame, variant_frame, pairs),
+    paired_row = any(side.pairs for side in variants.values())
+    panels = 2 + paired_row + (reserve is not None)
+    columns = len(variants)
+    fig = Figure(figsize=(10 if columns == 1 else 6.5 * columns, 4 * panels), layout="tight")
+    grid = fig.subplots(panels, columns, sharex=True, sharey="row", squeeze=False)
+    for column, (variant, side) in enumerate(variants.items()):
+        cpi_frames = (
+            (baseline_cpi_frame, side.cpi_frame)
+            if baseline_cpi_frame is not None and side.cpi_frame is not None else None)
+        deltas = clip(comparison_deltas(
+            baseline_frame, side.frame, reserve=reserve, cpi_frames=cpi_frames,
         ))
-        if log_scale:
-            _symlog(ax, paired)
-        ensemble_fan_chart(paired, ax=ax)
-        mark_deaths(ax, deaths)
-        ax.set_title(
-            f"{variant} − {baseline}, future by future ({len(pairs)} paired members)"
-        )
-        ax.set_xlabel("")
-    ax = next(axes)
-    _delta_lines(
-        deltas, [c for c in deltas.columns if c.startswith("Δcvar")], ax,
-        f"{variant} − {baseline}: mean of the worst 5% and 20% (CVaR)",
-        log_scale=log_scale, deaths=deaths,
-    )
-    ax = next(axes)
-    _delta_lines(
-        deltas, [c for c in deltas.columns if c.startswith("Δp")], ax,
-        f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
-        log_scale=log_scale, deaths=deaths,
-    )
-    if reserve is not None:
+        axes: Iterator[Axes] = iter(grid[:, column])
+        if paired_row:
+            ax = next(axes)
+            if side.pairs:
+                paired = clip(summary_with_percentiles(
+                    paired_deltas(baseline_frame, side.frame, side.pairs),
+                ))
+                if log_scale:
+                    _symlog(ax, paired)
+                ensemble_fan_chart(paired, ax=ax)
+                mark_deaths(ax, deaths)
+                ax.set_title(
+                    f"{variant} − {baseline}, future by future ({len(side.pairs)} paired members)"
+                )
+                ax.set_xlabel("")
+            else:
+                ax.set_title(f"{variant} − {baseline}: no paired futures"
+                             + (f"\n({side.unpaired})" if side.unpaired else ""))
+                ax.axis("off")
         ax = next(axes)
         _delta_lines(
-            deltas, ["Δbelow_reserve", "Δever_below_reserve"], ax,
-            f"{variant} − {baseline}: share of members below the ${reserve:,.0f} reserve",
-            shares=True, deaths=deaths,
+            deltas, [c for c in deltas.columns if c.startswith("Δcvar")], ax,
+            f"{variant} − {baseline}: mean of the worst 5% and 20% (CVaR)",
+            log_scale=log_scale, deaths=deaths,
         )
-    # sharex=True hides the x tick labels on all but the bottom panel;
-    # each panel is read on its own, so put them back.
-    for ax in all_axes:
+        ax = next(axes)
+        _delta_lines(
+            deltas, [c for c in deltas.columns if c.startswith("Δp")], ax,
+            f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
+            log_scale=log_scale, deaths=deaths,
+        )
+        if reserve is not None:
+            ax = next(axes)
+            _delta_lines(
+                deltas, ["Δbelow_reserve", "Δever_below_reserve"], ax,
+                f"{variant} − {baseline}: share of members below the ${reserve:,.0f} reserve",
+                shares=True, deaths=deaths,
+            )
+    # sharex=True hides the x tick labels on all but the bottom panel, and
+    # sharey the y labels on all but the first column; each panel is read
+    # on its own, so put them back.
+    for ax in grid.flat:
         ax.tick_params(axis="x", labelbottom=True, labelrotation=90)
+        ax.tick_params(axis="y", labelleft=True)
     return fig

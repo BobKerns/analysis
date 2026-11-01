@@ -212,13 +212,13 @@ def test_sim_ensemble_compare_log_chart_uses_symmetric_log(
     from analysis.sim import ensemble_plots
 
     figures: list = []
-    real = ensemble_plots.ensemble_compare_figure
+    real = ensemble_plots.ensemble_compare_grid_figure
 
     def spy(*args, **kwargs):
         figures.append(real(*args, **kwargs))
         return figures[-1]
 
-    monkeypatch.setattr(ensemble_plots, "ensemble_compare_figure", spy)
+    monkeypatch.setattr(ensemble_plots, "ensemble_compare_grid_figure", spy)
     seeded_ensemble_batch("baseline", 1)
     seeded_ensemble_batch("child", 1)
     result = _sim("ensemble", "compare", "baseline", "child", "--runs-dir", str(runs_dir),
@@ -295,3 +295,17 @@ def test_sim_compare_refuses_a_range_outside_the_runs_whatever_the_section(
                   "--start", "2200", "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir))
     assert result.exit_code == 1, result.output
     assert "nothing to show from 2200 on" in result.output
+
+
+@pytest.mark.slow
+def test_sim_ensemble_compare_several_variants_shows_only_the_years_asked_for(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path,
+) -> None:
+    for name in ("baseline", "child", "other"):
+        seeded_ensemble_batch(name, 1)
+    result = _sim("ensemble", "compare", "baseline", "child", "other", "--runs-dir",
+                  str(runs_dir), "--start", "2029", "--end", "2030")
+    assert result.exit_code == 0, result.output
+    years = {line.split()[0] for line in result.output.splitlines()
+             if line.startswith("  ") and line.split()[0].isdigit()}
+    assert years == {"2029", "2030"}
