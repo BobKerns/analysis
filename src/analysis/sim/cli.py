@@ -3154,16 +3154,26 @@ def _report_row(
         deltas = sensitivity.oat_deltas(batch_dir, dollar_mode)
     except EnsembleError as exc:
         raise click.ClickException(str(exc)) from None
-    known = list(dict.fromkeys(str(r) for r in deltas["row"]))
-    if row not in known:
+    # The manifest says what the batch varied; the deltas hold only the
+    # members that succeeded, so a row (or a quantile) can be missing there.
+    manifest = read_batch_manifest(batch_dir) or {}
+    succeeded = list(dict.fromkeys(str(r) for r in deltas["row"]))
+    varied = list(manifest.get("rows") or succeeded)
+    if row not in varied:
         raise click.ClickException(
-            f"{row!r} is not a row this batch varied; it varied: {', '.join(known)}")
+            f"{row!r} is not a row this batch varied; it varied: {', '.join(varied)}")
+    if row not in succeeded:
+        raise click.ClickException(f"every member that moved {row!r} failed; nothing to show")
     mine = deltas[(deltas["row"] == row) & (deltas["measure"] == measure)]
     all_years = sorted(int(y) for y in mine["year"].unique())
     shown = all_years if years is None else _report_years(batch_dir, all_years, years)
     column = "relative" if relative else "delta"
+    quantiles = sorted(deltas.attrs.get("quantiles") or mine["quantile"].unique())
     grid = mine.pivot_table(index="year", columns="quantile", values=column, dropna=False)
-    moved_to = mine.drop_duplicates("quantile").set_index("quantile")["value"].sort_index()
+    grid = grid.reindex(columns=quantiles)
+    # A quantile whose member failed keeps its column, blank, as oat_table does.
+    moved_to = (mine.drop_duplicates("quantile").set_index("quantile")["value"]
+                .reindex(quantiles).fillna("(failed)"))
     unit = "% of base" if relative else (
         "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
     )
@@ -3180,7 +3190,6 @@ def _report_row(
     if draw is not None:
         from analysis.sim.sensitivity_charts import row_figure
 
-        manifest = read_batch_manifest(batch_dir) or {}
         draw(row_figure(deltas, row, shown[-1], scenario_name, relative=relative,
                         measure=measure, ladder=len(manifest.get("quantiles", [])) >= 4))
 

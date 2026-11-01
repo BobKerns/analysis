@@ -212,7 +212,7 @@ def _sensitivity_rows(ctx: click.Context, data_dir: Path) -> list[str]:
     from analysis.sim.loader import DEFAULT_RUNS_DIR, DEFAULT_STATE_DIR, find_state_dir, latest_ensemble_batch
 
     scenario = _scenario(ctx, data_dir)
-    if scenario is None:
+    if scenario is None or _given(ctx, "mode") == "monte_carlo":
         return []
     given = _given(ctx, "runs_dir")
     runs = Path(given) if given else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR

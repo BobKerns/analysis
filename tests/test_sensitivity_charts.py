@@ -125,6 +125,39 @@ def test_row_refusals(oat_batch: Path, runs_dir: Path, args: tuple[str, ...], me
     assert message in result.output
 
 
+def _drop_members(batch: Path, row: str, quantiles: set[float]) -> None:
+    """Remove the run files of ``row``'s members at ``quantiles``, as if
+    they had failed before writing one."""
+    from analysis.sim.ensemble import load_ensemble
+
+    connections = load_ensemble(batch)
+    try:
+        members = sensitivity.oat_members(connections)
+    finally:
+        for rc in connections.values():
+            rc.close()
+    for m in members:
+        if m.row == row and m.quantile in quantiles:
+            (batch / f"{m.stem}.sqlite3").unlink()
+
+
+def test_row_keeps_a_failed_quantile_blank(oat_batch: Path, runs_dir: Path) -> None:
+    _drop_members(oat_batch, "gift", {0.9})
+    result = _sensitivity(runs_dir, "--row", "gift", "--years", "2030")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[1].endswith("q=0.9 (failed)")
+    assert lines[3].split() == ["year", "@0.1", "@0.9"]
+    assert lines[4].split()[2] == "-"
+
+
+def test_row_whose_members_all_failed(oat_batch: Path, runs_dir: Path) -> None:
+    _drop_members(oat_batch, "gift", {0.1, 0.9})
+    result = _sensitivity(runs_dir, "--row", "gift")
+    assert result.exit_code != 0
+    assert "every member that moved 'gift' failed" in result.output
+
+
 def test_row_needs_a_sensitivity_batch(mc_batch: Path, runs_dir: Path) -> None:
     result = _sensitivity(runs_dir, "--row", "gift", "--mode", "monte_carlo")
     assert result.exit_code == 2
