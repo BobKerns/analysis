@@ -1332,7 +1332,16 @@ spend that year.
      down year.
    - `ceiling_floor` aims at a share of the portfolio but never lets
      spending rise more than 5% or fall more than 2.5% in a year, after
-     inflation.
+     inflation. A `rate` you give is the share for the tagged rules alone,
+     so if you tag only the optional ones, leave it at 0% to start from
+     your plan.
+
+A cut is shared proportionally across the rules a strategy owns: a 10% cut
+makes a $5,000 trip $4,500. If that isn't how you'd cut, for example a trip
+you'd skip rather than shorten, give each such item its own tag and its own
+strategy (a `threshold` skips its rules whole), or write a strategy of your
+own whose `scale` decides rule by rule. A strategy changes only what carries
+its tag, so a Medicare premium or a tax payment is never cut by surprise.
 
 Each rule still says what you planned, and the run keeps both: what the
 plan would have spent and what was spent.
@@ -1345,7 +1354,13 @@ each year's decision, such as
 `cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`.
 
 Compare against the plan as written the same way as above: a child
-scenario with the strategy switched off, run both, and `sim compare` them.
+scenario with the strategy switched off, run both, and `sim compare` them;
+its spending section sets each run's spending, and its plan, side by side.
+For an ensemble, `sim ensemble spending` shows the spread of spending across
+the members by year, the average of the worst 5% and 20% (CVaR), how often
+members had to cut, and each member's worst full year. The notebooks draw
+the same: `net_worth.ipynb` for one run, `scenario_compare.ipynb` for runs
+side by side, and `ensemble.ipynb` across the members.
 The design is in
 [ADR-010 §6.2](architecture/ADR-010-responsive-strategies.md).
 

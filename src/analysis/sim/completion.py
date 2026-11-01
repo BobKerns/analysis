@@ -292,6 +292,17 @@ OWNER = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), 
 RULE_PERSON = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), "person")  # noqa: ARG005
 # A lot may hold a symbol nothing names yet, and prices can fetch one.
 SYMBOL = NameType(lambda ctx, data_dir: names.symbols(data_dir), "symbol", check=False)  # noqa: ARG005
+
+
+def _expense_categories(ctx: click.Context | None, data_dir: Path | None) -> list[str]:  # noqa: ARG001
+    from analysis.sim.connection import EXPENSE_CATEGORIES
+
+    return list(EXPENSE_CATEGORIES)
+
+
+# Unchecked: a batch may hold a category outside the fixed list, which the
+# command checks against the batch itself.
+EXPENSE_CATEGORY = NameType(_expense_categories, "expense category", check=False)
 AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS), "aux kind")  # noqa: ARG005
 
 
