@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 SERIES_DB_FILENAME = "series.sqlite3"
 # Bump when the stored layout changes. A change to how a series is derived
 # needs no bump: the store records a hash of the modules that derive them.
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 
 NET_WORTH = "net_worth"
 AFTER_TAX = "after_tax"
@@ -137,6 +137,16 @@ CREATE TABLE flow (
     member_id  INTEGER NOT NULL REFERENCES member(id),
     cents      BLOB NOT NULL,
     PRIMARY KEY (flow_id, member_id)
+) WITHOUT ROWID;
+-- Spending dated outside the member's months (a year-to-date catch-up
+-- dated before the run), kept by its own month so it stays in its own year.
+CREATE TABLE spending_outside (
+    member_id  INTEGER NOT NULL REFERENCES member(id),
+    category   TEXT NOT NULL,
+    lot        TEXT NOT NULL,
+    month      TEXT NOT NULL,
+    cents      INTEGER NOT NULL,
+    PRIMARY KEY (member_id, category, lot, month)
 ) WITHOUT ROWID;
 CREATE TABLE allocation_target (
     target_set     TEXT NOT NULL,
@@ -238,6 +248,9 @@ class MemberSeries:
     # allocation_target rows, and the strategies steering to them (#359)
     targets: list[tuple[str, str, str, int]] = field(default_factory=list)
     watches: list[Watch] = field(default_factory=list)
+    # (category, DELIVERED or BUDGETED, month, cents) for spending dated
+    # outside ``months``
+    spending_outside: list[tuple[str, str, str, int]] = field(default_factory=list)
 
 
 def member_series(run_path: Path) -> MemberSeries:
@@ -335,20 +348,25 @@ def _add_classes(out: MemberSeries, con: sqlite3.Connection, months: pd.Datetime
 def _add_spending(out: MemberSeries, con: RunConnection, months: pd.DatetimeIndex) -> None:
     """Each expense category's delivered and budgeted cents by month
     (``reports.spending_by_month``). A month outside ``months`` (a
-    year-to-date catch-up dated before the run) is added to the nearest end:
-    it is in the same year, and converts at that end's CPI, as the report
-    converts it."""
+    year-to-date catch-up dated before the run) is kept apart, by its own
+    month, so it stays in its own year as the report keeps it."""
     from analysis.sim.reports import spending_by_month
 
     delivered, budgeted = spending_by_month(con)
     if delivered.empty:
         return
-    position = np.clip(months.searchsorted(pd.DatetimeIndex(delivered.index)), 0, len(months) - 1)
+    at = pd.Series(np.arange(len(months)), index=months)
+    position = at.reindex(pd.DatetimeIndex(delivered.index)).to_numpy()
+    inside = ~np.isnan(position)
+    outside = pd.DatetimeIndex(delivered.index)[~inside].strftime("%Y-%m-%d")
     for lot, frame in ((DELIVERED, delivered), (BUDGETED, budgeted)):
         for category in frame.columns:
+            spent = np.rint(frame[category].to_numpy(dtype=float) * 100).astype(np.int64)
             cents = np.zeros(len(months), dtype=np.int64)
-            np.add.at(cents, position, np.rint(frame[category].to_numpy(dtype=float) * 100).astype(np.int64))
+            cents[position[inside].astype(np.int64)] = spent[inside]
             out.subjects[(SPENDING, str(category), lot)] = ("expense", cents)
+            out.spending_outside += [(str(category), lot, month, int(c))
+                                     for month, c in zip(outside, spent[~inside], strict=True) if c]
 
 
 def _add_flows(out: MemberSeries, flows: pd.DataFrame, months: pd.DatetimeIndex) -> None:
@@ -419,6 +437,8 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
                  json.dumps({name: when.isoformat() for name, when in member.markers.items()}),
                  json.dumps(member.accounts)),
             )
+            con.executemany("INSERT INTO spending_outside VALUES (?, ?, ?, ?, ?)",
+                            [(member_id, *row) for row in member.spending_outside])
             for key, cents in member.flows.items():
                 if key not in flow_ids:
                     flow_ids[key] = len(flow_ids) + 1
@@ -686,9 +706,13 @@ class EnsembleSeries:
         """Each member's yearly spending, delivered and budgeted: a column
         per member, by year, in ``mode`` dollars, for one expense category
         or (None) all of them. A member that spent nothing has zeros, and a
-        batch without a strategy has budgeted equal to delivered."""
+        batch without a strategy has budgeted equal to delivered. Spending
+        dated before the run (a year-to-date catch-up) is its own year,
+        converted at the run's first month's CPI, as ``spending_by_year``
+        has it."""
         def build() -> tuple[pd.DataFrame, pd.DataFrame]:
             categories = [category] if category is not None else self.spending_categories()
+            outside = self._spending_outside(categories)
             out = []
             for lot in (DELIVERED, BUDGETED):
                 values = [self._nominal((SPENDING, c, lot)) for c in categories]
@@ -698,6 +722,9 @@ class EnsembleSeries:
                     for by_member in values:
                         if member_id in by_member:
                             monthly = monthly + by_member[member_id]
+                    extra = outside.get((member_id, lot))
+                    if extra is not None:
+                        monthly = pd.concat([extra, monthly]).sort_index()
                     if mode == DollarMode.CPI_CONSTANT:
                         monthly = to_cpi_constant(monthly, member.cpi_index)
                     columns[member.stem] = monthly.groupby(index_years(monthly)).sum()
@@ -706,6 +733,23 @@ class EnsembleSeries:
                 out.append(frame)
             return out[0], out[1]
         return self.memo(("spending", mode, category), build)
+
+    def _spending_outside(self, categories: list[str]) -> dict[tuple[int, str], pd.Series]:
+        """(member id, lot) -> dollars by month dated outside the member's
+        months, summed over ``categories``. Every such month of the member's
+        is there, zero if none of ``categories`` spent in it, as a member's
+        report has a row for it in every category."""
+        with self._connect() as con:
+            rows = pd.read_sql_query("SELECT member_id, lot, month, category, cents FROM spending_outside", con)
+        if rows.empty:
+            return {}
+        rows["month"] = pd.to_datetime(rows["month"])
+        rows["cents"] = rows["cents"].where(rows["category"].isin(categories), 0)
+        summed = rows.groupby(["member_id", "lot", "month"])["cents"].sum()
+        return {(int(member_id), str(lot)): pd.Series(
+                    group.to_numpy(dtype=np.int64) / 100,
+                    index=pd.DatetimeIndex(group.index.get_level_values("month")))
+                for (member_id, lot), group in summed.groupby(level=["member_id", "lot"])}
 
     def _nominal(self, key: tuple[str, str, str]) -> dict[int, np.ndarray]:
         subject = self._subjects.get(key)

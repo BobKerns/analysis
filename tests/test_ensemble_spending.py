@@ -40,21 +40,48 @@ def cut_batch(strategy_csv: Callable[[str, str], Path], strategy_ensemble: Calla
     return strategy_ensemble(SCENARIO)
 
 
+def _assert_store_matches_members(batch: Path) -> None:
+    """The store's yearly spending is each member file's, to the bit, by
+    category: what ``sim report spending`` shows for the member."""
+    store = open_series(batch)
+    for category in store.spending_categories():
+        delivered, budgeted = store.spending(DollarMode.CPI_CONSTANT, category)
+        assert len(delivered.columns) == 3
+        for stem in delivered.columns:
+            rc = RunConnection(batch / f"{stem}.sqlite3")
+            try:
+                want_d, want_b = spending_by_year(rc)
+            finally:
+                rc.close()
+            pd.testing.assert_series_equal(delivered[stem], want_d[category], check_names=False,
+                                           check_exact=True)
+            pd.testing.assert_series_equal(budgeted[stem], want_b[category], check_names=False,
+                                           check_exact=True)
+
+
 def test_the_store_keeps_each_members_spending(cut_batch: Path) -> None:
+    _assert_store_matches_members(cut_batch)
     store = open_series(cut_batch)
     delivered, budgeted = store.spending(DollarMode.CPI_CONSTANT)
-    assert len(delivered.columns) == 3
-    for stem in delivered.columns:
-        rc = RunConnection(cut_batch / f"{stem}.sqlite3")
-        try:
-            want_d, want_b = spending_by_year(rc)
-        finally:
-            rc.close()
-        pd.testing.assert_series_equal(delivered[stem], want_d.sum(axis=1), check_names=False, atol=0.01)
-        pd.testing.assert_series_equal(budgeted[stem], want_b.sum(axis=1), check_names=False, atol=0.01)
     assert (budgeted - delivered).max().max() > 0
     other_d, other_b = store.spending(DollarMode.NOMINAL, "other")
     assert (other_d <= other_b + 0.01).all().all() and (other_d < other_b).any().any()
+
+
+@pytest.mark.slow
+def test_the_store_keeps_spending_dated_before_the_run_in_its_own_year(
+    strategy_csv: Callable[[str, str], Path], strategy_ensemble: Callable[[str], Path],
+) -> None:
+    """A catch-up for a fully prior year stays in that year, and one for the
+    run's own first year in that, as the member's report has them."""
+    strategy_csv(SCENARIO, "year_to_date.csv").write_text(
+        "name,from_account,from_lot,to_account,to_lot,amount,tax_character,year,description\n"
+        "last_year,Asset_Checking,,Expense_Travel,,9000.00,none,2025,\n"
+        "this_year,Asset_Checking,,Expense_Gifts,,700.00,none,,\n")
+    batch = strategy_ensemble(SCENARIO)
+    _assert_store_matches_members(batch)
+    delivered, _budgeted = open_series(batch).spending(DollarMode.NOMINAL)
+    assert delivered.loc[2025].tolist() == [9000.0] * 3
 
 
 def test_ensemble_spending_table_and_summary() -> None:
@@ -69,6 +96,16 @@ def test_ensemble_spending_table_and_summary() -> None:
     assert summary["members_ever_cut"] == pytest.approx(2 / 3)
     assert summary["years_cut_mean"] == pytest.approx(1 / 3)
     assert summary["of_plan_worst"] == pytest.approx(0.75)
+
+
+def test_a_small_cut_still_counts_as_cut() -> None:
+    """Cut is measured in dollars: $320 short of $80,000 (0.4%) is a cut,
+    and half a cent of rounding isn't."""
+    budgeted = pd.DataFrame({"a": [80_000.0], "b": [80_000.0]}, index=pd.Index([2030], name="year"))
+    delivered = pd.DataFrame({"a": [79_680.0], "b": [79_999.996]}, index=budgeted.index)
+    assert ensemble_spending_table(delivered, budgeted).loc[2030, "cut"] == pytest.approx(0.5)
+    summary = ensemble_spending_summary(delivered, budgeted)
+    assert summary["members_ever_cut"] == pytest.approx(0.5)
 
 
 def test_sim_ensemble_spending(cut_batch: Path, tmp_path: Path) -> None:

@@ -591,8 +591,14 @@ def spending_report(
 
 
 # A member-year's spending counts as cut when it is below plan by more
-# than rounding: a strategy's factor is applied to cents.
+# than half a cent: a strategy's factor is applied to cents, so any whole
+# cent short is a cut, however small beside the year's budget.
 _CUT_TOLERANCE = 0.005
+
+
+def _cut(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> pd.DataFrame:
+    """True where a member-year's delivered spending is below its plan."""
+    return (budgeted - delivered) > _CUT_TOLERANCE
 
 
 def ensemble_spending_table(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> pd.DataFrame:
@@ -616,7 +622,7 @@ def ensemble_spending_table(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> 
     out = out.join(tail_means(delivered))
     out["budgeted"] = budgeted.median(axis=1)
     out["of_plan"] = of_plan.median(axis=1)
-    out["cut"] = (of_plan < 1 - _CUT_TOLERANCE).mean(axis=1)
+    out["cut"] = _cut(delivered, budgeted).mean(axis=1)
     return out
 
 
@@ -643,8 +649,7 @@ def ensemble_spending_summary(
         return {}
     counted = delivered if years is None else delivered.loc[delivered.index.isin(list(years))]
     worst = (counted if not counted.empty else delivered).min(axis=0)
-    of_plan = (delivered / budgeted.where(budgeted != 0)).fillna(1.0)
-    years_cut = (of_plan < 1 - _CUT_TOLERANCE).mean(axis=0)
+    years_cut = _cut(delivered, budgeted).mean(axis=0)
     whole = delivered.sum(axis=0) / budgeted.sum(axis=0).where(budgeted.sum(axis=0) != 0)
     tails = tail_means(worst.to_frame().T).iloc[0]
     return {
