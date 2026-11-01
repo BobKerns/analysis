@@ -280,13 +280,13 @@ def test_sim_ensemble_compare_graph_draws_every_panel_the_options_ask_for(
     from analysis.sim import ensemble_plots
 
     figures: list = []
-    real_figure = ensemble_plots.ensemble_compare_figure
+    real_figure = ensemble_plots.ensemble_compare_grid_figure
 
     def _spy(*args, **kwargs):
         figures.append(real_figure(*args, **kwargs))
         return figures[-1]
 
-    monkeypatch.setattr(ensemble_plots, "ensemble_compare_figure", _spy)
+    monkeypatch.setattr(ensemble_plots, "ensemble_compare_grid_figure", _spy)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     seeded_ensemble_batch("baseline", 1)
     seeded_ensemble_batch("child", 1)
@@ -357,3 +357,104 @@ def test_figure_dpi_matches_the_terminal_text_height() -> None:
     assert _figure_dpi((10.0, 24.0)) == pytest.approx(144.0)
     assert _figure_dpi(None) == 200.0
     assert _figure_dpi((1.0, 2.0)) == 72.0  # never below matplotlib's point size
+
+
+# Several variants (#328)
+
+
+def test_sim_ensemble_compare_with_several_variants_prints_the_notebooks_two_tables(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("child", 1)
+    seeded_ensemble_batch("other", 2)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "other",
+        "--runs-dir", str(runs_dir), "--reserve", "1000000",
+    ])
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0] == (
+        "child, other vs baseline: after-tax net worth, CPI-constant dollars; "
+        "baseline 3, child 3, other 3 member(s)")
+    assert lines[1] == "  child: paired, 3 future(s)"
+    assert lines[2].startswith("  other: not paired: the recipes have different seeds")
+    assert lines[3] == "Against baseline, by year end:"
+    assert lines[4].split() == [
+        "year", "recipe", "Δp05", "Δp20", "Δp40", "Δp60", "Δp80", "Δp95", "Δcvar05",
+        "Δcvar20", "Δbelow_reserve", "Δever_below_reserve", "P(ahead)",
+    ]
+    tail_at = lines.index("Tail and reserve, by recipe, year end; reserve $1,000,000 (CPI-constant):")
+    deltas = lines[5:tail_at]
+    assert [row.split()[1] for row in deltas[:2]] == ["child", "other"]
+    # Only the paired variant has a share ahead; the other's cell is blank.
+    assert len(deltas[0].split()) == len(lines[4].split())
+    assert len(deltas[1].split()) == len(lines[4].split()) - 1
+    assert lines[tail_at + 1].split() == [
+        "year", "recipe", "cvar05", "cvar20", "below_reserve", "ever_below_reserve",
+    ]
+    assert [row.split()[1] for row in lines[tail_at + 2:tail_at + 5]] == [
+        "baseline", "child", "other"]
+    # The same tables as the notebook's widget.
+    from analysis.sim.ensemble_tables import RecipeTables
+    from analysis.sim.series_db import open_series
+
+    tables = RecipeTables(
+        {name: open_series(runs_dir / name / "2026-01-01T000000Z")
+         for name in ("baseline", "child", "other")},
+        None, None, DollarMode.CPI_CONSTANT, 1_000_000.0, after_tax=True)
+    assert len(deltas) == len(tables.deltas_table("baseline", ["child", "other"]))
+
+
+def test_sim_ensemble_compare_names_the_recipes_without_the_account(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("child", 1)
+    _rename_account(seeded_ensemble_batch("renamed", 1), "Asset_Checking", "Asset_Renamed")
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "renamed",
+        "--runs-dir", str(runs_dir), "--account", "Asset_Checking",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "  no account Asset_Checking in renamed" in result.output
+    assert "  child: paired, 3 future(s)" in result.output
+    assert "renamed:" not in result.output
+
+
+def test_sim_ensemble_compare_refuses_a_variant_named_twice(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "child", "--runs-dir", str(runs_dir),
+    ])
+    assert result.exit_code == 2 and "name each variant once" in result.output
+
+
+def test_sim_ensemble_compare_graph_draws_a_column_for_each_variant(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path, tmp_path: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("child", 1)
+    seeded_ensemble_batch("other", 2)
+    chart = tmp_path / "grid.svg"
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "other",
+        "--runs-dir", str(runs_dir), "--chart-file", str(chart),
+    ])
+    assert result.exit_code == 0, result.output
+    svg = chart.read_text()
+    assert "child − baseline, future by future (3 paired members)" in svg
+    assert "other − baseline: no paired futures (different seeds)" in svg
+    assert "other − baseline: mean of the worst 5% and 20% (CVaR)" in svg
+
+
+def test_sim_ensemble_compare_graph_refuses_more_variants_than_it_draws(
+    runs_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "e0", "a", "b", "c", "d", "e",
+        "--runs-dir", str(runs_dir), "--chart",
+    ])
+    assert result.exit_code == 2
+    assert "--chart draws at most 4 variants" in result.output
