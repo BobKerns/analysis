@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 54
+SCHEMA_VERSION = 55
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -437,6 +437,18 @@ CREATE TABLE strategy (
     description TEXT NOT NULL DEFAULT ''
 );
 
+-- The guard rails a strategy's trigger names (#441), one row per rail and
+-- margin kind ('annual' or 'cumulative'). rail_json is the rail's
+-- guard_rails.csv row as merged down the lineage, so the engine evaluates
+-- the rail as `sim report guard-rails` does without the data repo.
+CREATE TABLE strategy_trigger (
+    strategy_id INTEGER NOT NULL REFERENCES strategy(id),
+    rail        TEXT NOT NULL,
+    margin_kind TEXT NOT NULL CHECK (margin_kind IN ('annual','cumulative')),
+    rail_json   TEXT NOT NULL,
+    PRIMARY KEY (strategy_id, rail, margin_kind)
+);
+
 -- A strategy parameter an ensemble varies (#408, strategy_vary/<name>.csv).
 -- name is its node, strategy:<strategy>.<param>; bounds are in the
 -- parameter's stored unit (cents, millionths, or a plain number), and base
@@ -671,7 +683,8 @@ CREATE TABLE strategy_decision (
     id             INTEGER PRIMARY KEY,
     step_id        INTEGER NOT NULL REFERENCES simulation_step(id),
     strategy_id    INTEGER NOT NULL REFERENCES strategy(id),
-    hook           TEXT NOT NULL CHECK (hook IN ('draw','place','year_start','scale','year_end')),
+    hook           TEXT NOT NULL CHECK (hook IN ('draw','place','year_start','scale','year_end',
+                                                 'month_start','on_breach')),
     chain_id       INTEGER REFERENCES chain(id),
     -- The owned rule a scale decision was about (#387).
     scheduled_transaction_id INTEGER REFERENCES scheduled_transaction(id),
@@ -681,9 +694,31 @@ CREATE TABLE strategy_decision (
     note           TEXT NOT NULL DEFAULT '',
     detail_json    TEXT NOT NULL DEFAULT '{}',
     -- The strategy's memory after the call, only when the call changed it.
-    memory_json    TEXT
+    memory_json    TEXT,
+    -- The breach an on_breach decision answered (#441).
+    breach_event_id INTEGER REFERENCES breach_event(id)
 );
 CREATE INDEX idx_decision_step ON strategy_decision(step_id);
+
+-- A triggered rail past its line, or back from it, in the year before the
+-- January step it was found in (#441): one row per strategy, rail and
+-- margin kind told. Money in CPI-constant cents, as `sim report
+-- guard-rails` shows it; margin is the margin kind's (negative is past).
+-- state: 'entered', 'continued' or 'left'.
+CREATE TABLE breach_event (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    strategy_id     INTEGER NOT NULL REFERENCES strategy(id),
+    rail            TEXT NOT NULL,
+    margin_kind     TEXT NOT NULL,
+    year            INTEGER NOT NULL,
+    state           TEXT NOT NULL CHECK (state IN ('entered','continued','left')),
+    years_past      INTEGER NOT NULL,
+    measure_cents   INTEGER NOT NULL,
+    threshold_cents INTEGER NOT NULL,
+    margin_cents    INTEGER NOT NULL
+);
+CREATE INDEX idx_breach_step ON breach_event(step_id);
 
 -- Each posting of a rule a strategy owns (#387, ADR-010 §4): what the rule
 -- would have posted (budgeted) and what it did post (delivered), so reports
@@ -882,6 +917,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "calendar_event_tag",
     "strategy_source",
     "strategy",
+    "strategy_trigger",
     "strategy_vary",
     "allocation_target",
     "ensemble_manifest",

@@ -320,9 +320,20 @@ def run_scenario(
                 con, step_id, month_s, aux, inflation_indexes,
             )
             if strategy_runtime:
-                # A spending strategy sets the year's course before any rule posts (#387).
+                def post_move(move, frm, to, cents, in_kind, decision_id, s=step_id, m=month_s):
+                    return _post_strategy_move(
+                        con, balances, account_kinds, s, m, refill_ctx, move, frm, to, cents,
+                        in_kind=in_kind, decision_id=decision_id,
+                    )
+
                 strategy_runtime.note_cpi(month, inflation_indexes.get("cpi"))
+                # Triggered rails are judged on the year just ended, and a
+                # strategy answers before year_start, so what it sets in
+                # memory steers the year (#441).
+                strategy_runtime.breaches(con, step_id, month, post_move)
+                # A spending strategy sets the year's course before any rule posts (#387).
                 strategy_runtime.year_start(con, step_id, month)
+                strategy_runtime.month_start(con, step_id, month, post_move)
 
             opening_balances = dict(balances)
 
@@ -526,14 +537,7 @@ def run_scenario(
             if strategy_runtime and month.month == 12:
                 # Year-end actions see the year's income complete (#421): every
                 # rule has posted, fill_bracket's conversion included.
-                strategy_runtime.year_end(
-                    con, step_id, month,
-                    lambda move, frm, to, cents, in_kind, decision_id, s=step_id, m=month_s:
-                    _post_strategy_move(
-                        con, balances, account_kinds, s, m, refill_ctx, move, frm, to, cents,
-                        in_kind=in_kind, decision_id=decision_id,
-                    ),
-                )
+                strategy_runtime.year_end(con, step_id, month, post_move)
 
             _settle_accounts(
                 con, balances, account_kinds, account_subkind, account_tax_treatment,
