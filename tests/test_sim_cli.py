@@ -153,7 +153,7 @@ def test_sim_explain_dumps_provenance_and_yearly_nw(tmp_path: Path) -> None:
     out = result.output
     assert "scenario:       retire_alice" in out
     assert "status:         succeeded" in out
-    assert "year-end net worth:" in out
+    assert "year-end net worth, after tax" in out
     assert "  2026  " in out
     assert "  2040  " in out
 
@@ -286,21 +286,28 @@ def test_sim_networth_says_when_a_run_has_no_cpi_index(
     assert nominal.exit_code == 0, nominal.output
 
 
-def test_sim_explain_year_end_net_worth_has_both_dollar_modes(
-    retire_alice_run_file: Path,
-) -> None:
-    """explain's year-end rows carry nominal and CPI-constant values, the
-    same figures `sim networth` prints in each mode."""
-    runner = CliRunner()
-    explain = runner.invoke(main, ["sim", "explain", str(retire_alice_run_file)]).output
-    lines = explain.split("year-end net worth:", 1)[1].splitlines()
+def _explain_last_year(runner: CliRunner, *args: str) -> tuple[str, str]:
+    """The nominal and CPI-constant figures on explain's last year-end row."""
+    explain = runner.invoke(main, ["sim", "explain", *args])
+    assert explain.exit_code == 0, explain.output
+    lines = explain.output.split("year-end net worth, ", 1)[1].splitlines()
     last_year = [line for line in lines if line.startswith("  20")][-1]
     nominal, real = last_year.split("$")[1:]
+    return nominal.strip(), real.strip()
+
+
+def test_sim_explain_pre_tax_year_end_net_worth_has_both_dollar_modes(
+    retire_alice_run_file: Path,
+) -> None:
+    """explain --pre-tax's year-end rows carry nominal and CPI-constant
+    values, the same figures `sim networth --pre-tax` prints in each mode."""
+    runner = CliRunner()
+    nominal, real = _explain_last_year(runner, str(retire_alice_run_file), "--pre-tax")
     args = ["sim", "networth", "--pre-tax", "--runfile", str(retire_alice_run_file)]
     expected_nominal = runner.invoke(main, [*args, "--dollars", "nominal"]).output
     expected_real = runner.invoke(main, args).output
-    assert expected_nominal.splitlines()[-1].split("$")[1].strip() == nominal.strip()
-    assert expected_real.splitlines()[-1].split("$")[1].strip() == real.strip()
+    assert expected_nominal.splitlines()[-1].split("$")[1].strip() == nominal
+    assert expected_real.splitlines()[-1].split("$")[1].strip() == real
 
 
 def test_sim_networth_refuses_a_scenario_and_runfile_together(

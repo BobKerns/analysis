@@ -3302,14 +3302,16 @@ def _resolve_run_target(
 
 @sim_group_command.command()
 @click.argument("target", type=completion.SCENARIO_OR_RUNFILE, metavar="[SCENARIO | RUNFILE]", required=False)
+@_PRE_TAX_OPTION
 @_run_target_options
 def explain(
-    target: str | None, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
+    target: str | None, pre_tax: bool, runfile: Path | None, data_dir: Path | None,
+    runs_dir: Path | None,
 ) -> None:
-    """Dump scenario name, versions, counts, lots, year-end net worth,
-    negative-balance warnings and basis step-ups at a death for a run: the
-    scenario's latest (the current scenario's by default), or a run file.
-    Sanity dump."""
+    """Dump scenario name, versions, counts, lots, year-end net worth (after
+    tax unless --pre-tax), negative-balance warnings and basis step-ups at a
+    death for a run: the scenario's latest (the current scenario's by
+    default), or a run file. Sanity dump."""
     runfile = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
     try:
@@ -3365,17 +3367,12 @@ def explain(
                 )
 
         click.echo("")
-        click.echo(f"year-end net worth:  {'nominal':>18}  {'CPI-constant':>18}")
-        rows = con.execute(
-            "WITH year_end AS ("
-            "  SELECT substr(month,1,4) AS year, MAX(month) AS m "
-            "  FROM simulation_step GROUP BY substr(month,1,4)"
-            ") "
-            "SELECT y.year, nw.net_worth, cpi.constant_cents "
-            "FROM year_end y JOIN net_worth nw ON nw.month = y.m "
-            "LEFT JOIN net_worth_constant_cpi cpi ON cpi.month = y.m "
-            "ORDER BY y.year"
-        ).fetchall()
+        # Labelled either way, so a pasted dump says which figure it shows.
+        click.echo("year-end net worth, before tax:" if pre_tax
+                   else "year-end net worth, after tax (--pre-tax for before):")
+        click.echo(f"{'':21}{'nominal':>18}  {'CPI-constant':>18}")
+        rows = (_year_end_pre_tax_net_worth(con) if pre_tax
+                else _year_end_after_tax_net_worth(con, runfile))
         for year, nw, real in rows:
             click.echo(f"  {year}  {'':13}{_fmt_cents(nw)}  {_fmt_cents(real):>18}")
 
@@ -3386,6 +3383,41 @@ def explain(
     finally:
         con.close()
     _echo_guard_rail_episodes(runfile, data_dir)
+
+
+def _year_end_pre_tax_net_worth(con: sqlite3.Connection) -> list[tuple[str, int, int | None]]:
+    """Each year's (year, nominal, CPI-constant) net worth in cents at its
+    last simulated month: the sum of the balances, from the run's views."""
+    return con.execute(
+        "WITH year_end AS ("
+        "  SELECT substr(month,1,4) AS year, MAX(month) AS m "
+        "  FROM simulation_step GROUP BY substr(month,1,4)"
+        ") "
+        "SELECT y.year, nw.net_worth, cpi.constant_cents "
+        "FROM year_end y JOIN net_worth nw ON nw.month = y.m "
+        "LEFT JOIN net_worth_constant_cpi cpi ON cpi.month = y.m "
+        "ORDER BY y.year"
+    ).fetchall()
+
+
+def _year_end_after_tax_net_worth(
+    con: sqlite3.Connection, runfile: Path,
+) -> list[tuple[str, int, int | None]]:
+    """``_year_end_pre_tax_net_worth``'s rows after tax (#251, #332), the
+    figures ``sim networth`` prints. The tax is taken from the pre-tax cents,
+    so a year that owes none shows the same figure either way."""
+    with RunConnection(runfile) as rc:
+        frame = rc.after_tax_net_worth_frame()
+        tax = frame["deferred_tax"] + frame["unpaid_tax"]
+        taxes = pd.DataFrame({"nominal": tax, "cpi_constant": rc.to_cpi_constant(tax)})
+    # Later months overwrite earlier ones, leaving each year's last month.
+    by_year = dict(zip(index_years(taxes), taxes.itertuples(index=False), strict=True))
+    rows = []
+    for year, nominal, real in _year_end_pre_tax_net_worth(con):
+        nominal_tax, real_tax = by_year.get(int(year), (0.0, 0.0))
+        rows.append((year, nominal - round(nominal_tax * 100),
+                     None if real is None else real - round(real_tax * 100)))
+    return rows
 
 
 def _echo_guard_rail_episodes(runfile: Path, data_dir: Path | None) -> None:
