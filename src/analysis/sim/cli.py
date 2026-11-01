@@ -9736,7 +9736,7 @@ def report_spending_command(
     def figure():
         from analysis.sim.spending_charts import spending_figure
 
-        return spending_figure(frame, f"{what.capitalize()}, {_DOLLAR_LABELS[mode]} ({described})",
+        return spending_figure(frame, f"{what[0].upper()}{what[1:]}, {_DOLLAR_LABELS[mode]} ({described})",
                                ylabel=_DOLLAR_LABELS[mode], deaths=deaths)
 
     # Before the lines below the table, as a run with no strategy returns
