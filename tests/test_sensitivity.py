@@ -429,6 +429,23 @@ def test_prcc_is_the_partial_rank_correlation() -> None:
     assert table.loc["x1", "prcc"] == pytest.approx(expected, abs=1e-9)
 
 
+def test_prcc_interval_is_fisher_z_less_a_degree_per_controlled_row() -> None:
+    """#438: PRCC's 95% interval is rho's Fisher-z interval with one degree
+    of freedom less for each other varying row held fixed (here x2), and a
+    row with no PRCC has no interval."""
+    import numpy as np
+
+    draws, outcomes = _correlated(200, rho=0.5)
+    table = sensitivity.correlation_table(draws.assign(x3=1.0), outcomes).set_index("row")
+    prcc = table.loc["x1", "prcc"]
+    half = 1.959963984540054 * np.sqrt(1.06 / (200 - 3 - 1))
+    assert table.loc["x1", "prcc_low"] == pytest.approx(np.tanh(np.arctanh(prcc) - half))
+    assert table.loc["x1", "prcc_high"] == pytest.approx(np.tanh(np.arctanh(prcc) + half))
+    assert sensitivity.prcc_interval(prcc, 200, 1) == pytest.approx(
+        (table.loc["x1", "prcc_low"], table.loc["x1", "prcc_high"]))
+    assert pd.isna(table.loc["x3", "prcc_low"]) and pd.isna(table.loc["x3", "prcc_high"])
+
+
 def test_srrc_interval_is_undefined_for_a_row_that_never_varies() -> None:
     draws, outcomes = _correlated(100)
     table = sensitivity.correlation_table(draws.assign(x3=1.0), outcomes).set_index("row")
@@ -446,7 +463,7 @@ def test_a_row_that_never_varies_costs_no_degree_of_freedom() -> None:
     padded = sensitivity.correlation_table(
         draws.assign(c1=1.0, c2=2.0, c3=3.0), outcomes,
     ).set_index("row")
-    for column in ("srrc_low", "srrc_high", "prcc", "r2"):
+    for column in ("srrc_low", "srrc_high", "prcc", "prcc_low", "prcc_high", "r2"):
         assert padded.loc["x1", column] == pytest.approx(plain.loc["x1", column])
 
 

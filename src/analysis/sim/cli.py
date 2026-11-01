@@ -3305,7 +3305,7 @@ def _report_correlation(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     measure: str, years: list[int] | None, negligible: float, draw: _Draw | None = None,
 ) -> None:
-    """ADR-007 §6.2: rho [interval], SRRC [interval] and PRCC per row and
+    """ADR-007 §6.2: rho, SRRC and PRCC, each with its interval, per row and
     year, R^2 per year, each latent factor's rho, the achieved score
     correlations of a correlated batch, and each row's keep / pin_candidate /
     inconclusive status -- by rho, or by SRRC when rows are correlated."""
@@ -3367,7 +3367,8 @@ def _report_correlation(
             click.echo(
                 f"    {row['row']:<24} rho={_signed(row['rho'])} [{_signed(row['rho_low'])}, "
                 f"{_signed(row['rho_high'])}]  srrc={_signed(row['srrc'])} [{_signed(row['srrc_low'])}, "
-                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])}"
+                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])} [{_signed(row['prcc_low'])}, "
+                f"{_signed(row['prcc_high'])}]"
             )
         for _, row in at[at["factor"]].iterrows():
             click.echo(
