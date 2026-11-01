@@ -202,7 +202,8 @@ def ensemble_compare_figure(
     baseline's member 0's (``ensemble.base_case_deaths``)."""
     return ensemble_compare_grid_figure(
         baseline, baseline_frame,
-        {variant: CompareSide(variant_frame, pairs, cpi_frames[1] if cpi_frames else None)},
+        {variant: CompareSide(variant_frame, pairs,
+                              cpi_frame=cpi_frames[1] if cpi_frames else None)},
         mode_label, reserve, cpi_frames[0] if cpi_frames else None,
         log_scale=log_scale, clip=clip, deaths=deaths,
     )
@@ -211,11 +212,13 @@ def ensemble_compare_figure(
 @dataclass(frozen=True)
 class CompareSide:
     """One variant in ``ensemble_compare_grid_figure``: its members' frame,
-    the members it pairs with the baseline's, and, for a reserve on nominal
-    frames, its frame in CPI-constant dollars."""
+    the members it pairs with the baseline's or, when none, why not
+    (``pair_members``), and, for a reserve on nominal frames, its frame in
+    CPI-constant dollars."""
 
     frame: pd.DataFrame
     pairs: list[tuple[str, str]]
+    unpaired: str | None = None
     cpi_frame: pd.DataFrame | None = None
 
 
@@ -261,7 +264,8 @@ def ensemble_compare_grid_figure(
                 )
                 ax.set_xlabel("")
             else:
-                ax.set_title(f"{variant} − {baseline}: no paired futures (different seeds)")
+                ax.set_title(f"{variant} − {baseline}: no paired futures"
+                             + (f"\n({side.unpaired})" if side.unpaired else ""))
                 ax.axis("off")
         ax = next(axes)
         _delta_lines(

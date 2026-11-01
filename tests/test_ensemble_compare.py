@@ -445,7 +445,8 @@ def test_sim_ensemble_compare_graph_draws_a_column_for_each_variant(
     assert result.exit_code == 0, result.output
     svg = chart.read_text()
     assert "child − baseline, future by future (3 paired members)" in svg
-    assert "other − baseline: no paired futures (different seeds)" in svg
+    assert "other − baseline: no paired futures" in svg
+    assert "(the recipes have different seeds" in svg
     assert "other − baseline: mean of the worst 5% and 20% (CVaR)" in svg
 
 

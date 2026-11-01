@@ -2300,8 +2300,8 @@ def _ensemble_compare_chart(
     if baseline in tables.frames and compared:
         return ensemble_compare_grid_figure(
             baseline, tables.frames[baseline],
-            {name: CompareSide(tables.frames[name], tables.pairs(baseline, name)[0],
-                               tables.cpi_frames.get(name))
+            {name: CompareSide(tables.frames[name], *tables.pairs(baseline, name),
+                               cpi_frame=tables.cpi_frames.get(name))
              for name in compared},
             mode_label, tables.reserve, tables.cpi_frames.get(baseline),
             deaths=tables.stores[baseline].base_case_deaths(),
@@ -2604,7 +2604,7 @@ def _echo_ensemble_rail_deltas(
     each share and RMS. Nothing without a data repo, or when no recipe has
     rails."""
     found = {name: _ensemble_guard_rails(data_dir, name, sides[name], mode, required=False)
-             for name in (baseline, *variants)}
+             for name in dict.fromkeys((baseline, *variants))}
     if not any(found.values()):
         return
     for variant in variants:
