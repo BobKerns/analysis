@@ -266,7 +266,7 @@ def test_sim_ensemble_summary_chart_file_writes_an_svg_before_the_tables(
     assert result.stdout.splitlines()[0] == f"wrote {chart}"  # the chart comes first (#393)
     assert result.stdout.splitlines()[2].split()[0] == "year"
     svg = chart.read_text()
-    assert "<svg" in svg and "net worth fan chart (nominal) (baseline)" in svg
+    assert "<svg" in svg and "net worth fan chart (CPI-constant) (baseline)" in svg
 
 
 def test_sim_ensemble_compare_graph_draws_every_panel_the_options_ask_for(

@@ -907,6 +907,16 @@ kitty, Ghostty, WezTerm, VS Code's) draws them in place; any other gets a
 PNG file and its path. `--chart-file chart.svg` (or `.png`) writes the
 chart to a file instead. Add `--table` for both, the chart first.
 
+The notebook's other controls have options too. `--dollars nominal` shows
+inflated dollars instead of today's (both commands; CPI-constant is the
+default). `--start YEAR` and `--end YEAR` limit the years the tables and
+charts show; every figure is still worked out over the whole run, so the
+share of members ever below the reserve looks back to the start. `--log`
+puts the chart on a log scale, which spreads out the lower bands; a fan
+that reaches zero or below is drawn linear instead, with a warning, since
+a log scale can't show the members that ran out. On `compare`, whose
+deltas run both ways, `--log` uses a symmetric log scale.
+
 `--lot` narrows an account to one of its lots. In the notebook, a Lot
 dropdown appears under Account when the account has more than one, and
 the widgets share their scale, dollars, account and reserve controls, so
