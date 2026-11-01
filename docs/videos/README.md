@@ -351,7 +351,8 @@ build prints what it made and what it reused:
 ```
 
 Requirements for a native build: `ffmpeg`, `uv`, Playwright's Chromium
-(`uv run playwright install chromium`), and for tapes VHS and ttyd (`setup`
+(`uv run playwright install chromium`, again after a Playwright upgrade;
+an installed Google Chrome stands in until then), and for tapes VHS and ttyd (`setup`
 downloads VHS, and ttyd on Linux; `brew install ttyd` on macOS). Japanese narration
 also needs a C++ compiler and `cmake` the first time the narration worker's
 environment is made, since OpenJTalk builds from source (Xcode's
@@ -363,7 +364,8 @@ all.
 `scripts/videos/docker.sh` builds videos in a container (the image is
 `docker/videos/Dockerfile`), so the only thing the host needs is Docker. The
 image has ffmpeg, VHS, ttyd, Playwright's Chromium, the Kokoro voice model,
-the project's Python and Node.js, and the theme's fonts. It builds for amd64
+the project's Python and Node.js, the theme's fonts, and the notebooks that
+notebook scenes record. It builds for amd64
 and arm64 (Docker Desktop on Apple silicon).
 
 ```sh

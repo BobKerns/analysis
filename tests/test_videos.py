@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -606,3 +607,42 @@ def test_vhs_url_names_the_forks_archive_for_each_platform() -> None:
     assert vhs_url("Linux", "x86_64") == f"{render.VHS_RELEASE}/vhs_{render.VHS_VERSION}_Linux_x86_64.tar.gz"
     assert vhs_url("Darwin", "arm64") == f"{render.VHS_RELEASE}/vhs_{render.VHS_VERSION}_Darwin_arm64.tar.gz"
     assert vhs_url("Windows", "AMD64") is None
+
+
+class _FakeChromium:
+    """Stands in for Playwright's ``pw.chromium``: each launch kind either
+    fails (as a missing download does) or returns a label."""
+
+    def __init__(self, works: set[str]) -> None:
+        self.works = works
+        self.tried: list[str] = []
+
+    def launch(self, *, executable_path: str | None = None, channel: str | None = None,
+               args: list[str] | None = None) -> str:
+        from playwright.sync_api import Error
+
+        kind = "path" if executable_path else channel or "own"
+        self.tried.append(kind)
+        if kind not in self.works:
+            raise Error(f"{kind} isn't there")
+        return kind
+
+
+@pytest.mark.parametrize(("env_path", "works", "expected", "tried"), [
+    (None, {"own", "chrome"}, "own", ["own"]),
+    (None, {"chrome"}, "chrome", ["own", "chrome"]),
+    ("/opt/chromium", {"path"}, "path", ["path"]),
+])
+def test_launch_chromium_falls_back_to_an_installed_chrome(monkeypatch: pytest.MonkeyPatch, env_path: str | None,
+                                                           works: set[str], expected: str,
+                                                           tried: list[str]) -> None:
+    monkeypatch.setattr(render, "chromium_path", lambda: env_path)
+    chromium = _FakeChromium(works)
+    assert render.launch_chromium(SimpleNamespace(chromium=chromium)) == expected
+    assert chromium.tried == tried
+
+
+def test_launch_chromium_says_how_to_get_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(render, "chromium_path", lambda: None)
+    with pytest.raises(render.ToolMissing, match="playwright install chromium"):
+        render.launch_chromium(SimpleNamespace(chromium=_FakeChromium(set())))
