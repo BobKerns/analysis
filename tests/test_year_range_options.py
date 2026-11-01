@@ -267,3 +267,31 @@ def test_sim_compare_shows_only_the_years_asked_for(
     assert _first_column(result.output, "year") == ["2029", "2030"]
     # Break-even is a whole-run result: the range doesn't change it.
     assert whole.output.splitlines()[-2:] == result.output.splitlines()[-2:]
+
+
+def test_sim_report_guard_rails_shows_the_years_and_refuses_none(
+    retire_alice_run_file: Path, data_dir: Path,
+) -> None:
+    where = ["--runfile", str(retire_alice_run_file), "--data-dir", str(data_dir)]
+    result = _sim("report", "guard-rails", "--start", "2032", "--end", "2033", *where)
+    assert result.exit_code == 0, result.output
+    assert _report_years(result.output.split("\n\n")[0]) == ["2032", "2033"]
+    outside = _sim("report", "guard-rails", "--start", "2200", *where)
+    assert outside.exit_code == 1
+    assert "nothing to show from 2200 on: the run covers" in outside.output
+
+
+@pytest.mark.slow
+def test_sim_compare_refuses_a_range_outside_the_runs_whatever_the_section(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+    derive_scenario: Callable[..., Path],
+) -> None:
+    derive_scenario("same", "retire_alice", {})
+    for name in ("retire_alice", "same"):
+        ran = _sim("run", name, "--data-dir", str(test_data_dir), "--intent-dir",
+                   str(intent_dir), "--runs-dir", str(runs_dir), "--allow-dirty-data")
+        assert ran.exit_code == 0, ran.output
+    result = _sim("compare", "retire_alice", "same", "--section", "strategies",
+                  "--start", "2200", "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir))
+    assert result.exit_code == 1, result.output
+    assert "nothing to show from 2200 on" in result.output

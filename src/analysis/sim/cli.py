@@ -1894,6 +1894,18 @@ def _shown_years[T: pd.DataFrame | pd.Series](data: T, years: tuple[int, int] | 
     return shown
 
 
+def _check_years_in_runs(runs: Iterable[RunConnection], years: tuple[int, int] | None) -> None:
+    """Refuse ``years`` when no run has a month in them: for a command whose
+    tables may each cover only some of the run (a rail's own years, say),
+    so that no one table can tell a range outside the run from a quiet one."""
+    if years is None:
+        return
+    have = sorted({year for rc in runs for year in row_years(rc.net_worth_frame())})
+    if have and not any(years[0] <= year <= years[1] for year in have):
+        raise click.ClickException(
+            f"nothing to show {_years_text(years)}: the run covers {have[0]} to {have[-1]}")
+
+
 def _years_text(years: tuple[int, int]) -> str:
     first, last = years
     return (f"from {first} to {last}" if first > 1 and last < 9999
@@ -3874,6 +3886,9 @@ def compare_command(
                     f"no runs for {name!r} in {ref.runs_dir}; run `sim run {name}` first")
             connections[name] = stack.enter_context(
                 open_run(run_path, name, scenarios_dir=ref.scenarios_dir, data_dir=data))
+        # Every section clips on its own, and some (strategies, guard rails)
+        # cover only part of a run: check the range against the runs once.
+        _check_years_in_runs(connections.values(), years)
         click.echo(f"{', '.join(variants)} vs {baseline}, {mode_label} dollars")
 
         if "runs" in shown:
@@ -9596,6 +9611,8 @@ def report_guard_rails_command(
             raise click.ClickException(
                 f"{described} has no 'cpi' inflation index, so no CPI-constant dollars; "
                 "pass --dollars nominal")
+        # A rail covers only its own years, so check the range against the run.
+        _check_years_in_runs([rc], years)
         results = guard_rails.evaluate_run(rc, rails, mode)
         deaths = _chart_deaths(rc, as_graph, graph_file)
         name = rc.label
