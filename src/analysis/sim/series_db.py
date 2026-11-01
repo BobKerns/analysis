@@ -173,11 +173,11 @@ def _code_hash() -> str:
     store written by different code is rebuilt, not trusted."""
     import analysis.sim.asset_classes as asset_classes
     import analysis.sim.connection as connection
-    import analysis.sim.reports as reports
+    import analysis.sim.flow_events as flow_events
 
     digest = hashlib.sha256(str(FORMAT_VERSION).encode())
     for module_file in (connection.__file__, __file__, allocation_drift.__file__, asset_classes.__file__,
-                        reports.__file__):
+                        flow_events.__file__):
         digest.update(Path(module_file).read_bytes())
     return digest.hexdigest()
 
@@ -347,10 +347,10 @@ def _add_classes(out: MemberSeries, con: sqlite3.Connection, months: pd.Datetime
 
 def _add_spending(out: MemberSeries, con: RunConnection, months: pd.DatetimeIndex) -> None:
     """Each expense category's delivered and budgeted cents by month
-    (``reports.spending_by_month``). A month outside ``months`` (a
+    (``flow_events.spending_by_month``). A month outside ``months`` (a
     year-to-date catch-up dated before the run) is kept apart, by its own
     month, so it stays in its own year as the report keeps it."""
-    from analysis.sim.reports import spending_by_month
+    from analysis.sim.flow_events import spending_by_month
 
     delivered, budgeted = spending_by_month(con)
     if delivered.empty:
@@ -705,13 +705,16 @@ class EnsembleSeries:
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Each member's yearly spending, delivered and budgeted: a column
         per member, by year, in ``mode`` dollars, for one expense category
-        or (None) all of them. A member that spent nothing has zeros, and a
-        batch without a strategy has budgeted equal to delivered. Spending
+        or (None) all of them. Both are empty when no member spent in
+        ``category`` (or at all); otherwise a member that spent nothing has
+        zeros. A batch without a strategy has budgeted equal to delivered. Spending
         dated before the run (a year-to-date catch-up) is its own year,
         converted at the run's first month's CPI, as ``spending_by_year``
         has it."""
         def build() -> tuple[pd.DataFrame, pd.DataFrame]:
             categories = [category] if category is not None else self.spending_categories()
+            if not any((SPENDING, c, DELIVERED) in self._subjects for c in categories):
+                return pd.DataFrame(), pd.DataFrame()
             outside = self._spending_outside(categories)
             out = []
             for lot in (DELIVERED, BUDGETED):

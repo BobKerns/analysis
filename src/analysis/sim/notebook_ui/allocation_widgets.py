@@ -161,7 +161,7 @@ def allocation_drift_widget(
         with table:
             clear_output(wait=True)
             rows = drift.year_end_rows(frame)
-            rows = rows[[low <= int(str(m)[:4]) <= high for m in rows.index]]
+            rows = time_range.clip(rows)
             display(rows.style.format("{:+.1f}"))
             if mine:
                 display(StyledMarkdown(

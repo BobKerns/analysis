@@ -170,18 +170,28 @@ def spending_widget(rc: RunConnection,
                           value="category", description="By:")
     chart_out = widgets.Output()
     table_out = widgets.Output()
+    # Only the grouping and the dollars change the numbers; a new time range
+    # only clips them, so it reads nothing again.
+    reports_by: dict[tuple[str, DollarMode], tuple[pd.DataFrame, dict[str, float]] | None] = {}
+
+    def _report(by_value: str, mode: DollarMode) -> tuple[pd.DataFrame, dict[str, float]] | None:
+        if (by_value, mode) not in reports_by:
+            delivered, budgeted = reports.spending_by_year(rc, by=by_value, mode=mode)
+            reports_by[by_value, mode] = (None if delivered.empty
+                                          else reports.spending_report(delivered, budgeted))
+        return reports_by[by_value, mode]
 
     def _redraw(*_):
         mode = DollarMode(dollar_mode.value)
-        delivered, budgeted = reports.spending_by_year(rc, by=by.value, mode=mode)
-        if delivered.empty:
+        found = _report(by.value, mode)
+        if found is None:
             with chart_out:
                 clear_output(wait=True)
                 print(f"No spending in this run ({rc.label}).")
             with table_out:
                 clear_output(wait=True)
             return
-        frame, summary = reports.spending_report(delivered, budgeted)
+        frame, summary = found
         unit = f"{mode.label} dollars"
         with chart_out:
             clear_output(wait=True)

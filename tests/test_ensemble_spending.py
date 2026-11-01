@@ -117,6 +117,20 @@ def test_sim_ensemble_spending(cut_batch: Path, tmp_path: Path) -> None:
     assert "3 member(s)" in result.output and "cvar05" in result.output
     assert "members ever cut 100%" in result.output
     assert graph.stat().st_size > 0
+    runs = ["--runs-dir", str(cut_batch.parent.parent)]
+    result = CliRunner().invoke(main, ["sim", "ensemble", "spending", SCENARIO, *runs,
+                                       "--category", "business"])
+    assert result.exit_code == 0, result.output
+    assert "(no spending in the members)" in result.output
+    result = CliRunner().invoke(main, ["sim", "ensemble", "spending", SCENARIO, *runs,
+                                       "--category", "no_such"])
+    assert result.exit_code != 0 and "'no_such' is not one of: housing" in result.output
+
+
+def test_whole_dollars_never_shows_minus_zero() -> None:
+    from analysis.sim.cli import _whole_dollars
+
+    assert [_whole_dollars(v) for v in (-0.4, 0.4, -12.6, 1234.5)] == ["$0", "$0", "-$13", "$1,234"]
 
 
 def _cli(data_dir: Path, *args: str):

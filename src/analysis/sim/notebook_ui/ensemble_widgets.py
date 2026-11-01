@@ -812,7 +812,7 @@ def ensemble_drift_widget(*_,
                                      band=band, years=(low, high), deaths=store.base_case_deaths()))
         table = drift.ensemble_drift_table(members, band=band if column == drift.MAX_ABS else None)
         if not table.empty:
-            table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
+            table = time_range.clip(table)
             shares = [c for c in ("past_band", "ever_past") if c in table.columns]
             display(table.style.format({**{c: "{:+.1f}" for c in table.columns if c not in shares},
                                         **dict.fromkeys(shares, "{:.0%}")}))
@@ -908,7 +908,7 @@ def ensemble_spending_widget(*_,
             delivered, budgeted, f"{what.capitalize()} against the plan ({recipe})", ylabel=unit,
             years=(low, high), deaths=store.base_case_deaths()))
         table = reports.ensemble_spending_table(delivered, budgeted)
-        table = table[[low <= int(y) <= high for y in table.index]]
+        table = time_range.clip(table)
         shares = ("of_plan", "cut")
         display(table.style.format({**{c: "${:,.0f}" for c in table.columns if c not in shares},
                                     **dict.fromkeys(shares, "{:.0%}")}))

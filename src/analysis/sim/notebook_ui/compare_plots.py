@@ -298,7 +298,7 @@ def strategy_compare_widget(
                 years=(low, high), deaths=compare.scenario_deaths(connections, scenarios))
             show_figure(fig)
             table = pd.DataFrame({name: year_end_rows(frame)[MAX_ABS] for name, frame in frames.items()})
-            table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
+            table = time_range.clip(table)
             display(StyledMarkdown("**Largest drift either way at year end**, percentage points"
                                    + (f" (band ±{band:g})" if band is not None else "")))
             display(table.style.format("{:.1f}", na_rep="—"))
@@ -331,12 +331,16 @@ def spending_compare_widget(
     time_range = _time_range(time_range, container)
     output = widgets.Output()
     connections, scenarios = container.connections, container.scenarios
+    # Only the dollars change the numbers; a new time range only clips them.
+    by_mode: dict[DollarMode, dict[str, compare.SpendingReport]] = {}
 
     def _redraw(*_):
         with output:
             clear_output(wait=True)
             mode = DollarMode(dollar_mode.value)
-            found = compare.spending_by_scenario(connections, scenarios, mode)
+            if mode not in by_mode:
+                by_mode[mode] = compare.spending_by_scenario(connections, scenarios, mode)
+            found = by_mode[mode]
             if not found:
                 display(StyledMarkdown("_No spending in these runs._"))
                 return
@@ -348,7 +352,7 @@ def spending_compare_widget(
                 deaths=compare.scenario_deaths(connections, scenarios)))
             baseline, variants = scenarios[0], list(scenarios[1:])
             table = compare.spending_comparison(found, baseline, variants)
-            table = table[[low <= int(y) <= high for y in table.index]]
+            table = time_range.clip(table)
             display(StyledMarkdown(f"**Spending delivered by year** ({unit})"))
             display(table.style.format("${:,.0f}", na_rep="—"))
             summary = compare.spending_summaries(found)

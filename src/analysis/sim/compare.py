@@ -547,12 +547,9 @@ def drift_by_scenario(
 def uses_spending_strategies(connections: Mapping[str, RunConnection]) -> bool:
     """Whether any run has a strategy owning scheduled rules: without one,
     every run's spending is its plan and the section leaves no trace."""
-    from analysis.sim.drift import has_table
+    from analysis.sim.flow_events import uses_spending_strategies as uses
 
-    return any(
-        has_table(rc._con, "spending_baseline")
-        and rc._con.execute("SELECT 1 FROM spending_baseline LIMIT 1").fetchone()
-        for rc in connections.values())
+    return any(uses(rc) for rc in connections.values())
 
 
 type SpendingReport = tuple[pd.DataFrame, dict[str, float], list[int]]

@@ -41,6 +41,23 @@ def index_months(data: pd.DataFrame | pd.Series) -> pd.Index:
     return datetime_index(data).month  # ty: ignore[unresolved-attribute]
 
 
+def clip_years[T: pd.DataFrame | pd.Series](data: T, years: tuple[int, int] | None) -> T:
+    """The rows of ``data`` in ``years`` (first, last; None keeps every row).
+
+    ``data`` is indexed by month (a ``DatetimeIndex`` or ``PeriodIndex``, or
+    ISO month strings) or by year (integers, or their strings). The
+    notebooks' time-range picker and the widget-free charts clip with this,
+    so they agree on which rows a range keeps."""
+    if years is None or data.empty:
+        return data
+    index = data.index
+    if isinstance(index, (pd.DatetimeIndex, pd.PeriodIndex)):
+        year = pd.Index([moment.year for moment in index])
+    else:
+        year = pd.Index([int(str(value)[:4]) for value in index])
+    return data[(year >= years[0]) & (year <= years[1])]
+
+
 def by_year_and_label(tables: Mapping[str, pd.DataFrame], label: str = "recipe") -> pd.DataFrame:
     """Year-indexed ``tables``, one per ``label`` (a recipe, say), as one
     table indexed by (year, label), the labels in the order given within

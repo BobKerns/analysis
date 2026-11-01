@@ -2469,8 +2469,9 @@ def ensemble_drift(
     "--batch", default=None,
     help="Which generated batch (a 'sim run' timestamp) to report on; default: the latest.",
 )
-@click.option("--category", type=click.Choice(list(EXPENSE_CATEGORIES)), default=None,
-              help="One expense category's spending instead of all of it.")
+@click.option("--category", default=None, type=completion.EXPENSE_CATEGORY,
+              help="One expense category's spending instead of all of it: any category the "
+                   "members spent on.")
 @click.option(
     "--dollars", type=click.Choice([m.value for m in DollarMode]),
     default=DollarMode.CPI_CONSTANT.value, show_default=True,
@@ -2500,6 +2501,10 @@ def ensemble_spending(
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     store = _open_series(batch_dir)
     mode = DollarMode(dollars)
+    offered = [*EXPENSE_CATEGORIES, *(c for c in store.spending_categories() if c not in EXPENSE_CATEGORIES)]
+    if category is not None and category not in offered:
+        raise click.BadParameter(f"{category!r} is not one of: {', '.join(offered)}",
+                                 param_hint="'--category'")
     delivered, budgeted = store.spending(mode, category)
     what = f"{category} spending" if category else "spending"
     click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); "
@@ -3909,7 +3914,8 @@ def _echo_strategy_comparison(
 
 def _whole_dollars(value: float) -> str:
     """``$1,235``, ``-$12``: whole dollars, the sign before the dollar sign."""
-    return f"-${-value:,.0f}" if round(value) < 0 else f"${value:,.0f}"
+    dollars = round(value)
+    return f"-${-dollars:,}" if dollars < 0 else f"${dollars:,}"
 
 
 def _echo_spending_comparison(
@@ -9345,7 +9351,7 @@ def _render_rail_summary(summary: pd.DataFrame):
         table.add_column(column, justify=justify, no_wrap=True)
 
     def money(value: float) -> str:
-        return f"-${-value:,.0f}" if round(value) < 0 else f"${value:,.0f}"
+        return _whole_dollars(value)
 
     for row in named_rows(summary):
         style = _PAST_STYLES[str(row.sense)]

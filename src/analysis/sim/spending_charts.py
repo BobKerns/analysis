@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 
+from analysis.frames import clip_years
 from analysis.sim.plotting import dollar_formatter, include_zero, mark_deaths
 from analysis.sim.types import Death
 
@@ -24,13 +25,6 @@ _DELIVERED = "#2a78d6"
 
 def _plan(ax, x, values, label: str, **extra) -> None:
     ax.plot(x, values, color="black", linewidth=1.4, linestyle="--", label=label, **extra)
-
-
-def _clip(frame: pd.DataFrame, years: tuple[int, int] | None) -> pd.DataFrame:
-    if years is None or frame.empty:
-        return frame
-    year = np.array([int(y) for y in frame.index])
-    return frame[(year >= years[0]) & (year <= years[1])]
 
 
 def _finish(ax, title: str, labels: Sequence[object], ylabel: str, deaths: Sequence[Death]) -> None:
@@ -58,7 +52,7 @@ def spending_figure(
     a bar per year, the plan (budgeted) as a dashed line over them."""
     fig = Figure(figsize=(11, 5), layout="constrained")
     ax = fig.add_subplot()
-    shown = _clip(frame, years)
+    shown = clip_years(frame, years)
     if shown.empty:
         return _empty(fig, ax)
     x = np.arange(len(shown))
@@ -76,7 +70,7 @@ def spending_compare_figure(
     plan dashed in the same colour where a strategy moved it off the plan."""
     fig = Figure(figsize=(11, 5), layout="constrained")
     ax = fig.add_subplot()
-    clipped = {name: _clip(frame, years) for name, frame in frames.items()}
+    clipped = {name: clip_years(frame, years) for name, frame in frames.items()}
     labels = sorted({int(y) for frame in clipped.values() for y in frame.index})
     if not labels:
         return _empty(fig, ax)
@@ -103,10 +97,10 @@ def ensemble_spending_figure(
     plan dashed."""
     fig = Figure(figsize=(11, 5), layout="constrained")
     ax = fig.add_subplot()
-    shown = _clip(delivered, years)
+    shown = clip_years(delivered, years)
     if shown.empty:
         return _empty(fig, ax)
-    plan = _clip(budgeted, years).reindex(shown.index)
+    plan = clip_years(budgeted, years).reindex(shown.index)
     x = np.arange(len(shown))
     qs = sorted(quantiles)
     values = shown.quantile(qs, axis=1).T
