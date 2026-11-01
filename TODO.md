@@ -25,8 +25,6 @@ Known CLI gaps (last reviewed 2026-11-01; each has an issue):
 - events (`notebooks/events.ipynb`): filtering the full `transfer_event` ledger by reason
   kind/tax character/account/date range; `sim items` covers one account and a date range
   only (#189)
-- spending against the plan has a chart in `net_worth.ipynb`; `sim report spending` has
-  no `--chart` (#430)
 - auxiliary tools: summaries for `amazon.ipynb` and `expense_baseline.ipynb` (#333)
 
 Scenario editing still missing from the CLI: `sim symbol edit|delete` (#191) and
