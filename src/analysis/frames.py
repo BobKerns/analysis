@@ -50,12 +50,18 @@ def clip_years[T: pd.DataFrame | pd.Series](data: T, years: tuple[int, int] | No
     so they agree on which rows a range keeps."""
     if years is None or data.empty:
         return data
+    year = row_years(data)
+    return data[(year >= years[0]) & (year <= years[1])]
+
+
+def row_years(data: pd.DataFrame | pd.Series) -> pd.Index:
+    """The calendar year of each row of ``data``, indexed as ``clip_years``
+    takes it: by month (a ``DatetimeIndex`` or ``PeriodIndex``, or ISO month
+    strings) or by year (integers, or their strings)."""
     index = data.index
     if isinstance(index, (pd.DatetimeIndex, pd.PeriodIndex)):
-        year = pd.Index([moment.year for moment in index])
-    else:
-        year = pd.Index([int(str(value)[:4]) for value in index])
-    return data[(year >= years[0]) & (year <= years[1])]
+        return pd.Index([moment.year for moment in index])
+    return pd.Index([int(str(value)[:4]) for value in index])
 
 
 def by_year_and_label(tables: Mapping[str, pd.DataFrame], label: str = "recipe") -> pd.DataFrame:

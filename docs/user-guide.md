@@ -1525,18 +1525,25 @@ machine too small for a notebook comfortably.
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
-| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--chart]` |
-| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly] [--chart]` |
-| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged] [--chart]` |
-| economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax] [--chart]` |
-| realized vs. unrealized gains by year | `sim report gains [--chart]` |
-| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--chart]` |
-| where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--chart]` |
+| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--start YEAR] [--end YEAR] [--chart]` |
+| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH\|YEAR] [--end MONTH\|YEAR] [--yearly] [--chart]` |
+| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged] [--start YEAR] [--end YEAR] [--chart]` |
+| economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax] [--start YEAR] [--end YEAR] [--chart]` |
+| realized vs. unrealized gains by year | `sim report gains [--start YEAR] [--end YEAR] [--chart]` |
+| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--start YEAR] [--end YEAR] [--chart]` |
+| where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--start YEAR] [--end YEAR] [--chart]` |
 | a scenario's guard rails | `sim guard-rail list` |
 | an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--chart]` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.
+
+`--start YEAR` and `--end YEAR` limit the years shown, as the notebooks'
+Years slider does, on `sim networth`, every `sim report`, `sim compare` and
+`sim ensemble summary|compare`. They cut only what is shown: a result over
+the whole run, such as `sim compare`'s break-even, a guard rail's summary or
+cumulative margin, or an ensemble's share ever below the reserve, still
+covers the whole run. `sim account history` takes a month or a bare year.
 
 `--chart` shows the notebook's chart of the view instead of its table: drawn
 in the terminal when it shows images (iTerm2, kitty, Ghostty and others),
