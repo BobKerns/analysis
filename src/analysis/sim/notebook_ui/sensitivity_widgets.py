@@ -39,7 +39,7 @@ from analysis.sim.notebook_ui.pickers import (
     find_runs_dir,
     note_picks,
 )
-from analysis.sim.plotting import FRAME_ALPHA
+from analysis.sim.plotting import CATEGORICAL, FRAME_ALPHA, GRID, INK, MUTED
 from analysis.sim.types import DeltaScale, DollarMode, HeatmapValue
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
@@ -49,12 +49,9 @@ __all__ = [
     "response_curve_view", "correlation_view", "r2_view", "sensitivity_widget",
 ]
 
-# Validated categorical order (dataviz reference palette; CVD-checked).
-CATEGORICAL = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948")
 LOW_ARM, HIGH_ARM = "#eb6834", "#2a78d6"  # quantiles below / above the center
 LOSS, NEUTRAL, GAIN = "#e34948", "#f0efec", "#2a78d6"  # diverging pair, gray midpoint
 CRITICAL = "#d03b3b"  # status color: reserved for "unattributed", never a series
-INK, MUTED, GRID = "#0b0b0b", "#898781", "#e1e0d9"
 _SHARE_CMAP = LinearSegmentedColormap.from_list("share", ["#fcfcfb", "#86b6ef", "#184f95"])
 _SWING_CMAP = LinearSegmentedColormap.from_list("swing", [LOSS, NEUTRAL, GAIN])
 _MAX_KEYS = len(CATEGORICAL) - 1  # the last slot is "other"
