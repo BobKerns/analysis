@@ -3,13 +3,17 @@ as scenario_compare.ipynb compares them."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 from click.testing import CliRunner, Result
+import pandas as pd
 
 from analysis.cli import main
+from analysis.sim import compare
+from analysis.sim.connection import RunConnection
 
 
 @pytest.fixture
@@ -231,7 +235,6 @@ def test_sim_compare_refuses_a_cpi_constant_balance_without_a_cpi_index(
 ) -> None:
     """A run with no CPI index has an all-NaN CPI-constant balance: an error
     naming the cause, not a balance of zero."""
-    import pandas as pd
 
     from analysis.sim.connection import RunConnection
     from analysis.sim.types import DollarMode
@@ -369,3 +372,30 @@ def test_sim_compare_guard_rails_refuses_cpi_constant_without_a_cpi_index(
                            "--dollars", "nominal")
     assert nominal.exit_code == 0, nominal.output
     assert "gk_upper:" in nominal.output  # a share of the portfolio needs no CPI
+
+
+class _Rules:
+    """A run's scheduled rules, enough for ``compare.rule_differences``."""
+
+    def __init__(self, **ss_fields: object) -> None:
+        self.frame = pd.DataFrame([{
+            "name": "ss_bill", "from_name": "Income_SS_Bill", "to_name": "Asset_Checking",
+            "amount_rule_kind": "ss_benefit", "amount_cents": 320000.0, "claim_age": 70.0,
+            "rate_micros": None, "start": "2026-01-31", "end": None, **ss_fields,
+        }])
+
+    def items(self, kind: str) -> pd.DataFrame:
+        assert kind == "scheduled"
+        return self.frame
+
+
+def test_rule_differences_show_every_field_as_it_reads() -> None:
+    """#376: a claim age (or a rate) a variant changes shows, in its units."""
+    runs = cast(Mapping[str, RunConnection],
+                {"base": _Rules(), "early": _Rules(claim_age=67.0, rate_micros=25_000)})
+    rules = compare.rule_differences(runs, ["base", "early"], "base")
+    assert rules.fillna("—").to_dict("index") == {
+        ("ss_bill", "rate"): {"base": "—", "early": "2.5%"},
+        ("ss_bill", "claim_age"): {"base": "70", "early": "67"},
+    }
+    assert compare.rule_differences(runs, ["base", "base"], "base").empty
