@@ -34,7 +34,8 @@ def compact_cents(cents: int | None) -> str:
     if cents is None:
         return "-"
     sign = "-" if cents < 0 else ""
-    return f"{sign}${abs(int(cents)) / 100:,.2f}"
+    dollars, rem = divmod(abs(int(cents)), 100)
+    return f"{sign}${dollars:,}.{rem:02d}"
 
 
 @dataclass(frozen=True)

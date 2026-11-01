@@ -913,8 +913,10 @@ class RunConnection(Connection):
         lists them: see ``shortfalls.negative_balances``."""
         from analysis.sim import shortfalls
 
+        # Its own read-only connection, opened on the calling thread: a
+        # widget redraw can come from a kernel subshell (see _read_sql).
         return self._cached("negative_balances",
-                            lambda: shortfalls.negative_balances(self._con))
+                            lambda: shortfalls.run_negative_balances(self.run_path))
 
     def deaths(self) -> list[Death]:
         """Each person's death in this run (#255), from ``lifespan.csv``: the

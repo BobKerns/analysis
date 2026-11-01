@@ -149,3 +149,8 @@ def test_scenario_picker_shows_the_banner_under_the_picker(
         assert len(banners) == 1
     finally:
         container.close()
+
+
+def test_compact_cents_stays_exact_for_huge_balances() -> None:
+    assert shortfalls.compact_cents(-(2**60 + 1)) == "-$11,529,215,046,068,469.77"
+    assert shortfalls.compact_cents(5) == "$0.05"

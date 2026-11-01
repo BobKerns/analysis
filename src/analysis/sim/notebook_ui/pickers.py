@@ -107,7 +107,12 @@ def shortfall_banner(rc: RunConnection | None, scenario: str | None = None) -> s
     if not found:
         return None
     lines = shortfalls.warning_lines(found)
-    explain = f"sim explain {scenario}" if scenario else "sim explain"
+    # An ensemble member's run is named by its file: `sim explain RECIPE`
+    # reads member 0.
+    if rc.ensemble_member() is not None:
+        explain = f"sim explain --runfile {rc.run_path}"
+    else:
+        explain = f"sim explain {scenario}" if scenario else "sim explain"
     if len(lines) > SHORTFALL_LINES:
         lines = [*lines[:SHORTFALL_LINES],
                  f"... and {len(lines) - SHORTFALL_LINES} more; `{explain}` lists them all"]
