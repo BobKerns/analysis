@@ -176,3 +176,83 @@ def test_row_completes_over_the_rows_the_batch_varied(
     assert result.exit_code == 0, result.output
     offered = [item.split(",", 1)[1] for item in result.output.splitlines() if item]
     assert set(offered) == {"gift", "retire_bill_vary"}
+
+
+# --- --top (#452) -------------------------------------------------------------
+
+
+def test_oat_figure_top_keeps_each_panels_most_important_rows(oat_batch: Path) -> None:
+    deltas = sensitivity.oat_deltas(oat_batch)
+    fig = sc.oat_figure(deltas, 2040, "retire_alice", top=1, width=8)
+    heatmap, tornado = fig.axes[:2]
+    assert _titles(fig) == ["retire_alice: which parameter matters when (top 1 of 2)",
+                            "Effect on net worth in 2040 (top 1 of 2)"]
+    assert [t.get_text() for t in heatmap.get_yticklabels()] == ["gift"]  # 100% in 2029
+    assert [t.get_text() for t in tornado.get_yticklabels()] == ["retire_bill_vary"]
+    assert fig.get_size_inches()[0] == 8
+    assert "top" not in _titles(sc.oat_figure(deltas, 2040, "retire_alice", top=5))[0]
+
+
+def test_correlation_figure_top_keeps_the_largest_correlations(mc_batch: Path) -> None:
+    report = sensitivity.mc_report(mc_batch)
+    year = int(report.table["year"].max())
+    fig = sc.correlation_figure(report.table, year, 0.05, "retire_alice", top=1)
+    assert _titles(fig)[1].endswith("(top 1 of 2)")
+    assert [t.get_text() for t in fig.axes[1].get_yticklabels()] == ["retire_bill_vary"]
+
+
+def test_rows_fitting_fill_the_height_given() -> None:
+    assert sc.oat_rows_fitting(3.2 + 1.05 * 7 + 0.5) == 7
+    assert sc.oat_rows_fitting(1.0) == 1  # always at least one
+
+
+def test_top_without_n_fills_the_terminal_else_draws_the_default() -> None:
+    from analysis.sim import cli
+
+    drawn: list[tuple[int | None, float]] = []
+
+    def figure(top: int | None = None, width: float = 11) -> tuple[int | None, float]:
+        drawn.append((top, width))
+        return top, width
+
+    calls: list[tuple] = []
+    cli._draw_top(lambda fig, fit=None: calls.append((fig, fit)), 0, figure, lambda h: int(h))
+    (fig, fit), = calls
+    assert fig == (cli._DEFAULT_TOP, 11)  # no terminal size: the default
+    assert fit((20.0, 9.5)) == (9, 20.0)
+    calls.clear()
+    cli._draw_top(lambda fig, fit=None: calls.append((fig, fit)), 3, figure, lambda h: int(h))
+    assert calls == [((3, 11), None)]
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (("--top", "2"), "--top needs --chart or --chart-file"),
+    (("--row", "gift", "--chart", "--top", "2"), "--row and --attribute show one row"),
+])
+def test_top_is_refused_where_it_picks_nothing(
+    oat_batch: Path, runs_dir: Path, args: tuple[str, ...], message: str,
+) -> None:
+    result = _sensitivity(runs_dir, *args)
+    assert result.exit_code == 2 and message in result.output, result.output
+
+
+@pytest.mark.parametrize(("top", "drawn"), [
+    (("--top", "1"), 1),
+    (("--top",), 10),  # no terminal to fill: the default
+    ((), None),
+])
+def test_chart_file_with_top(
+    oat_batch: Path, runs_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    top: tuple[str, ...], drawn: int | None,
+) -> None:
+    asked: list[int | None] = []
+    figure = sc.oat_figure
+
+    def recording(*args, **kwargs):
+        asked.append(kwargs.get("top"))
+        return figure(*args, **kwargs)
+
+    monkeypatch.setattr(sc, "oat_figure", recording)
+    result = _sensitivity(runs_dir, "--chart-file", str(tmp_path / "top.png"), *top)
+    assert result.exit_code == 0, result.output
+    assert asked == [drawn]

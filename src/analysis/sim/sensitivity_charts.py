@@ -29,10 +29,10 @@ from analysis.sim.plotting import CATEGORICAL, FRAME_ALPHA, GRID, INK, MUTED
 from analysis.sim.types import DeltaScale, HeatmapValue
 
 __all__ = [
-    "attribution_figure", "attribution_view", "correlation_figure", "correlation_title",
-    "correlation_view",
-    "delta_over_time_view", "heatmap_view", "oat_figure", "r2_view", "response_curve_view",
-    "row_figure", "signed_dollars", "tornado_view",
+    "attribution_figure", "attribution_view", "correlation_figure", "correlation_rows_fitting",
+    "correlation_title", "correlation_view", "delta_over_time_view", "heatmap_view",
+    "oat_figure", "oat_rows_fitting", "r2_view", "response_curve_view", "row_figure",
+    "signed_dollars", "tornado_view",
 ]
 
 LOW_ARM, HIGH_ARM = "#eb6834", "#2a78d6"  # quantiles below / above the center
@@ -403,21 +403,44 @@ def _stacked(heights: list[float], width: float = 11) -> tuple[Figure, list[Any]
     return fig, [row[0] for row in axes]
 
 
+def _of(shown: int, total: int) -> str:
+    """A title's note that only the top ``shown`` of ``total`` rows are drawn."""
+    return f" (top {shown} of {total})" if shown < total else ""
+
+
+# oat_figure's panels: the heatmap's and the tornado's inches per row, and
+# what each takes beyond its rows (title, year labels, axis).
+_OAT_ROW_INCHES, _OAT_FIXED_INCHES = 0.5 + 0.55, 1.8 + 1.4
+
+
+def oat_rows_fitting(height: float) -> int:
+    """How many rows ``oat_figure`` can draw in each panel within ``height``
+    inches: what ``--top`` without a number shows in the terminal."""
+    return max(1, int((height - _OAT_FIXED_INCHES) / _OAT_ROW_INCHES))
+
+
 def oat_figure(
     deltas: pd.DataFrame, year: int, title: str, *, relative: bool = False,
-    measure: str = "net_worth",
+    measure: str = "net_worth", top: int | None = None, width: float = 11,
 ) -> Figure:
     """A sensitivity batch's overview, as the notebook shows it: which
     parameter matters when (each one's share of the year's total impact, by
-    year), above the tornado at ``year``."""
+    year), above the tornado at ``year``. ``top`` keeps each panel's most
+    important rows: the heatmap's by peak share, the tornado's by impact at
+    ``year``; shares stay shares of every row's total."""
     scale = _scale(relative)
     grid = sensitivity.rank_by_year(deltas, measure=measure, relative=relative, value="share")
     table = sensitivity.oat_table(deltas, year, measure=measure, relative=relative)
-    fig, (top, bottom) = _stacked([0.5 * len(grid) + 1.8, 0.55 * len(table) + 1.4])
-    heatmap_view(grid, HeatmapValue.SHARE, scale, ax=top)
-    top.set_title(f"{title}: which parameter matters when", loc="left")
-    tornado_view(table, scale, ax=bottom)
-    bottom.set_title(f"Effect on {_words(measure)} in {year}", loc="left")
+    total = len(table)
+    if top is not None:
+        factors = grid.attrs.get("factors", set())
+        grid, table = grid.head(top), table.head(top)
+        grid.attrs["factors"] = factors
+    fig, (upper, lower) = _stacked([0.5 * len(grid) + 1.8, 0.55 * len(table) + 1.4], width)
+    heatmap_view(grid, HeatmapValue.SHARE, scale, ax=upper)
+    upper.set_title(f"{title}: which parameter matters when{_of(len(grid), total)}", loc="left")
+    tornado_view(table, scale, ax=lower)
+    lower.set_title(f"Effect on {_words(measure)} in {year}{_of(len(table), total)}", loc="left")
     return fig
 
 
@@ -452,17 +475,39 @@ def attribution_figure(
     return fig, numbers
 
 
+def _factor_count(table: pd.DataFrame, year: int) -> int:
+    at = table[table["year"] == year]
+    return int(at["factor"].astype(bool).sum()) if "factor" in at.columns else 0
+
+
+def correlation_rows_fitting(table: pd.DataFrame, year: int, height: float) -> int:
+    """How many rows (latent factors, always drawn, aside) ``correlation_figure``
+    can draw within ``height`` inches: what ``--top`` without a number shows
+    in the terminal."""
+    return max(1, int((height - 2.6 - 1.6) / 0.5) - _factor_count(table, year))
+
+
 def correlation_figure(
     table: pd.DataFrame, year: int, negligible: float, title: str, *, by: str = "rho",
-    measure: str = "net_worth",
+    measure: str = "net_worth", top: int | None = None, width: float = 11,
 ) -> Figure:
     """A Monte Carlo batch's panels, as the notebook shows them: R^2 by year
     (how far per-row numbers can be trusted) above each row's ``by`` (rho,
-    SRRC or PRCC) at ``year`` with its 95% interval."""
-    rows = int((table["year"] == year).sum())
-    fig, (top, bottom) = _stacked([2.6, 0.5 * rows + 1.6])
-    r2_view(table, ax=top)
-    top.set_title(f"{title}: how much per-parameter effects explain, by year", loc="left")
-    correlation_view(table, year, negligible, ax=bottom, by=by, measure=measure)
-    bottom.set_title(correlation_title(by, year, measure), loc="left")
+    SRRC or PRCC) at ``year`` with its 95% interval. ``top`` keeps the rows
+    with the largest ``|by|`` at ``year``, and every latent factor."""
+    at = table[table["year"] == year]
+    is_factor = at["factor"].astype(bool) if "factor" in at.columns else pd.Series(False, at.index)
+    total = int((~is_factor).sum())
+    shown = total
+    if top is not None:
+        rows = at[~is_factor]
+        keep = set(rows.loc[rows[by].abs().sort_values(ascending=False).index[:top], "row"])
+        keep |= set(at.loc[is_factor, "row"])
+        table = table[table["row"].isin(keep)]
+        shown = min(top, total)
+    fig, (upper, lower) = _stacked([2.6, 0.5 * int((table["year"] == year).sum()) + 1.6], width)
+    r2_view(table, ax=upper)
+    upper.set_title(f"{title}: how much per-parameter effects explain, by year", loc="left")
+    correlation_view(table, year, negligible, ax=lower, by=by, measure=measure)
+    lower.set_title(correlation_title(by, year, measure) + _of(shown, total), loc="left")
     return fig
