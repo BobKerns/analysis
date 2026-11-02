@@ -396,3 +396,62 @@ def test_a_query_from_a_different_thread_falls_back_to_a_temporary_connection(
     (frame, caught), = results
     assert not frame.empty
     assert any("not the thread that opened" in str(w.message) for w in caught) == warns
+
+
+def test_live_reader_reads_through_the_given_connection(retire_alice_run_file: Path) -> None:
+    """``RunConnection.live`` skips __init__; it still reads (#448 review)."""
+    from analysis.sim.schema import connect_sim_file
+
+    con = connect_sim_file(retire_alice_run_file)
+    try:
+        assert not RunConnection.live(con).net_worth_frame().empty
+    finally:
+        con.close()
+
+
+def test_handle_budget_never_exceeds_its_limit(
+    retire_alice_run_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member makes room before it opens, so at no moment are more than
+    ``limit`` handles open: at the descriptor limit, opening first would
+    fail before eviction could free one (#448)."""
+    import analysis.sim.connection as connection
+    from analysis.sim.connection import HandleBudget
+
+    budget = HandleBudget(2)
+    live: set[int] = set()
+    peak = 0
+    real_connect = connection.connect_sim_file
+
+    class _Counted:
+        def __init__(self, con) -> None:  # noqa: ANN001
+            self._con = con
+            live.add(id(self))
+
+        def close(self) -> None:
+            live.discard(id(self))
+            self._con.close()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._con, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name == "_con":
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._con, name, value)
+
+    def counting_connect(path, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal peak
+        con = _Counted(real_connect(path, **kwargs))
+        peak = max(peak, len(live))
+        return con
+
+    monkeypatch.setattr(connection, "connect_sim_file", counting_connect)
+    members = [RunConnection(retire_alice_run_file, handles=budget) for _ in range(5)]
+    for rc in [*members, *members]:
+        rc._con.execute("SELECT 1")
+    assert peak == 2 and budget.open_count == 2
+    for rc in members:
+        rc.close()
+    assert not live and budget.open_count == 0

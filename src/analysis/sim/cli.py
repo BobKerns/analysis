@@ -1777,6 +1777,29 @@ def ensemble_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     _list_scenarios(data_dir, verbose, ensembles_only=True, templates=all_)
 
 
+def _no_batch_error(
+    recipe_runs_dir: Path, scenario_name: str, mode: str | None, batch: str | None,
+) -> click.ClickException:
+    """Why no batch was found for ``scenario_name``, and how to make one: a
+    recipe run only one way has no batch of the other mode, which is not the
+    same as having no runs at all (#448)."""
+    if batch:
+        return click.ClickException(f"no ensemble batch {batch} under {recipe_runs_dir}")
+    make = f"'sim run {scenario_name}{' --sensitivity' if mode == 'sensitivity' else ''}'"
+    if mode is not None and recipe_runs_dir.is_dir():
+        others = sorted({
+            batch_mode(p) for p in recipe_runs_dir.iterdir() if is_ensemble_batch(p)
+        } - {mode})
+        if others:
+            names = {"monte_carlo": "Monte Carlo", "sensitivity": "sensitivity (OAT)"}
+            have = " and ".join(names.get(m, m) for m in others)
+            return click.ClickException(
+                f"{scenario_name} has no {names.get(mode, mode)} batch, only {have} "
+                f"runs; {make} makes one"
+            )
+    return click.ClickException(f"no ensemble runs found under {recipe_runs_dir}; {make} makes one")
+
+
 def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -> Path:
     """The Monte Carlo batch ``sim ensemble summary``/``compare`` report on."""
     recipe_runs_dir = runs_dir / scenario_name
@@ -1785,7 +1808,7 @@ def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -
         else latest_ensemble_batch(recipe_runs_dir, mode="monte_carlo")
     )
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, "monte_carlo", batch)
     if batch_mode(batch_dir) != "monte_carlo":
         # ADR-007 §5: a fan-chart summary over an OAT batch is meaningless.
         raise click.ClickException(
@@ -2885,7 +2908,7 @@ def ensemble_sensitivity(
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
     from analysis.sim.pool import pool_record
 
     if (record := pool_record(batch_dir)) is not None:
@@ -3011,7 +3034,7 @@ def ensemble_draws(
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
     path = draws_db_path(batch_dir)
     if rebuild or not draws_db_current(batch_dir):
         resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)

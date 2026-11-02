@@ -29,7 +29,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from analysis.sim.connection import RunConnection
+from analysis.sim.connection import HandleBudget, RunConnection
 from analysis.sim.distributions import (
     Discrete,
     Distribution,
@@ -1368,7 +1368,8 @@ def load_ensemble(batch_dir: Path) -> dict[str, RunConnection]:
     connection. A failed member (see ``member_run_statuses``) is excluded --
     it would otherwise distort the mean/range with a partial run -- so
     reporting the failure count/detail alongside a summary means calling
-    ``member_run_statuses`` too.
+    ``member_run_statuses`` too. The connections share a ``HandleBudget``, so
+    only a few dozen hold an open file at once, whatever the batch's size.
     """
     statuses = member_run_statuses(batch_dir)
     if not statuses:
@@ -1379,7 +1380,13 @@ def load_ensemble(batch_dir: Path) -> dict[str, RunConnection]:
             f"no succeeded member run files found under {batch_dir} "
             f"({len(statuses)} present, none succeeded: {statuses})"
         )
-    return {stem: RunConnection(Path(batch_dir) / f"{stem}.sqlite3") for stem in succeeded}
+    # Opened on demand, at most HandleBudget.DEFAULT_LIMIT at a time: a
+    # thousand-member batch would run out of file descriptors (#448).
+    handles = HandleBudget()
+    return {
+        stem: RunConnection(Path(batch_dir) / f"{stem}.sqlite3", handles=handles)
+        for stem in succeeded
+    }
 
 
 def _each_member(
