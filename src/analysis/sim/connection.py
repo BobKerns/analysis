@@ -595,18 +595,22 @@ class HandleBudget:
             raise ValueError(f"limit must be at least 1, not {limit}")
         self.limit = limit
         self._open: dict[int, RunConnection] = {}  # insertion order = recency
+        self._lock = threading.Lock()
 
     def touch(self, rc: RunConnection) -> None:
-        """Mark ``rc``'s handle as just used, closing the least recently used
-        others' handles while more than ``limit`` are open."""
-        self._open.pop(id(rc), None)
-        self._open[id(rc)] = rc
-        while len(self._open) > self.limit:
-            oldest = next(iter(self._open))
-            self._open.pop(oldest)._release()
+        """Count ``rc``'s handle as open and just used, closing the least
+        recently used others' handles while more than ``limit`` are counted.
+        Called before ``rc`` opens one, so the limit holds at every moment."""
+        with self._lock:
+            self._open.pop(id(rc), None)
+            self._open[id(rc)] = rc
+            while len(self._open) > self.limit:
+                oldest = next(iter(self._open))
+                self._open.pop(oldest)._release()
 
     def forget(self, rc: RunConnection) -> None:
-        self._open.pop(id(rc), None)
+        with self._lock:
+            self._open.pop(id(rc), None)
 
     @property
     def open_count(self) -> int:
@@ -669,12 +673,19 @@ class RunConnection(Connection):
 
         self.run_path = Path(run_path)
         self._handles = handles
-        self._handle: sqlite3.Connection | None = None
         if handles is None:
             self._open()
 
+    # Class defaults, so ``live()``, which skips __init__, has them too.
+    _handles: HandleBudget | None = None
+    _handle: sqlite3.Connection | None = None
+
     def _open(self) -> sqlite3.Connection:
-        con = connect_sim_file(self.run_path)
+        # A budgeted handle may be closed by another member's read, which in a
+        # notebook can come from a widget's subshell thread (#375), so it isn't
+        # tied to the thread that opened it.
+        kwargs = {} if self._handles is None else {"check_same_thread": False}
+        con = connect_sim_file(self.run_path, **kwargs)
         con.row_factory = sqlite3.Row
         self._handle = con
         return con
@@ -684,10 +695,19 @@ class RunConnection(Connection):
         """The run file's SQLite handle. Under a ``HandleBudget`` it opens on
         first use and may be closed again to make room for another member's,
         then reopens here the next time it's needed; the read caches survive."""
-        con = self._handle if self._handle is not None else self._open()
-        if self._handles is not None:
-            self._handles.touch(self)
-        return con
+        if self._handles is None:
+            if self._handle is None:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+            return self._handle
+        # Make room before opening, so no more than the limit are ever open.
+        self._handles.touch(self)
+        if self._handle is not None:
+            return self._handle
+        try:
+            return self._open()
+        except BaseException:
+            self._handles.forget(self)
+            raise
 
     @_con.setter
     def _con(self, con: sqlite3.Connection) -> None:
