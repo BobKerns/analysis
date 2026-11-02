@@ -344,13 +344,15 @@ def test_strategy_add_asks_for_the_rule_tag(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
 ) -> None:
     strategy_csv(SCENARIO, FLEX).unlink()
+    # alice_triggers, built on alice_spending, owns the same rules (#441).
+    strategy_csv("alice_triggers", "strategies/respond.csv").unlink()
     # kind, rule tag, then portfolio, minimum and skip_after_loss (defaults)
     result = _cli(strategy_scenarios, "strategy", "add", "trim", "--scenario", SCENARIO,
                   input="threshold\nflex:optional\nportfolio:invest\n\n\n")
     assert result.exit_code == 0, result.output
     assert "rule tags: category:gifts, category:travel, flex:optional" in result.output
     text = strategy_csv(SCENARIO, "strategies/trim.csv").read_text()
-    assert 'threshold,,flex:optional,,,,"{""portfolio"":""portfolio:invest""}",' in text
+    assert 'threshold,,flex:optional,,,,,"{""portfolio"":""portfolio:invest""}",' in text
     result = _cli(strategy_scenarios, "strategy", "list", SCENARIO)
     assert "trim                threshold on rules flex:optional" in result.output
 

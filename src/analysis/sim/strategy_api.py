@@ -26,18 +26,23 @@ from dataclasses import dataclass, field
 from datetime import date
 from types import UnionType
 from typing import (
-    Annotated, Any, ClassVar, NamedTuple, Union, get_args, get_origin, get_type_hints,
+    TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Union, get_args, get_origin, get_type_hints,
 )
 
+if TYPE_CHECKING:
+    import numpy as np
+
+    from analysis.sim.measures import RailYears
+
 __all__ = [
-    "API_VERSION", "Account", "Allocation", "ChainView", "Context", "Decision", "Dollars",
-    "LotRef", "LotView", "Percent", "PersonView", "Put", "Realize", "RuleView", "ScenarioView",
+    "API_VERSION", "Account", "Allocation", "BreachView", "ChainView", "Context", "Decision", "Dollars",
+    "History", "LotRef", "LotView", "Percent", "PersonView", "Put", "Realize", "RuleView", "ScenarioView",
     "Spend", "StepView", "Strategy", "StrategyError", "Tag", "Take", "TargetSet", "TaxEstimate",
     "TaxView", "Transfer", "Unit", "is_long_term", "is_registered", "param_units", "percent",
     "register", "sale_gain",
 ]
 
-API_VERSION = 3
+API_VERSION = 4
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
@@ -45,7 +50,9 @@ is refused at load. 2 (#387) added ``year_start``, ``scale`` and
 :class:`Spend`, and the context's ``end``, ``cpi``, ``people``, ``budget``
 and ``annual_return``. 3 (#421) added ``year_end``, :class:`Transfer`,
 :class:`Realize`, ``ctx.tax``, :data:`Account`, optional parameters, and
-``LotView``'s ``acquired``, ``taxable_sale`` and ``gain``."""
+``LotView``'s ``acquired``, ``taxable_sale`` and ``gain``. 4 (#441) added
+``month_start``, ``on_breach`` and :class:`BreachView`, ``ctx.history``
+and ``ctx.rail``."""
 
 
 class StrategyError(Exception):
@@ -364,6 +371,58 @@ def _band_top(brackets: Sequence[tuple[int, int]], rate: int) -> int | None:
     return min(above) if above else None
 
 
+@dataclass(frozen=True)
+class BreachView:
+    """A guard rail a strategy's ``trigger`` names, past its line or back
+    from it (#441), as ``on_breach`` is told each January about the year
+    just ended. Money is in CPI-constant cents, as ``sim report
+    guard-rails`` shows it: dollars of the run's first month.
+
+    ``margin`` is the distance from the line for ``margin_kind``: the year's
+    own (``annual``) or the sum since the rail began (``cumulative``).
+    Negative is past it, whichever way the rail faces."""
+
+    rail: str
+    description: str
+    margin_kind: str
+    """``annual`` or ``cumulative``."""
+    year: int
+    measure: int
+    """The year's spending or withdrawals."""
+    threshold: int
+    """The year's line."""
+    margin: int
+    sense: str
+    """``negative`` (a line to stay inside) or ``positive`` (room to use)."""
+    state: str
+    """``entered`` (past it, not the year before), ``continued`` or ``left``
+    (back inside after being past)."""
+    years_past: int
+    """Consecutive years past it, this one included; 0 when ``left``."""
+
+
+class History:
+    """Month-end balances from the run's first month to last month (#441):
+    nothing from this month or later."""
+
+    def __init__(
+        self, months: Callable[[], tuple[date, ...]],
+        balances: Callable[[tuple[LotRef, ...]], np.ndarray],
+    ) -> None:
+        self._months = months
+        self._balances = balances
+
+    @property
+    def months(self) -> tuple[date, ...]:
+        """The month ends, oldest first."""
+        return self._months()
+
+    def balances(self, lots: Iterable[LotRef]) -> np.ndarray:
+        """``lots``' total balance at each of :attr:`months`, in cents
+        (an int64 array of the same length)."""
+        return self._balances(tuple(lots))
+
+
 class Context:
     """What a strategy can read: the run's state as of the current month and
     nothing after it. The engine builds one per call; strategies never build
@@ -380,6 +439,8 @@ class Context:
         budget: Callable[[], int] | None = None,
         annual_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
         tax: TaxView | None = None,
+        history: History | None = None,
+        rail: Callable[[str], RailYears] | None = None,
     ) -> None:
         self._month = month
         self._lots = lots
@@ -391,6 +452,8 @@ class Context:
         self._budget = budget
         self._annual_return = annual_return
         self._tax = tax
+        self._history = history
+        self._rail = rail
         self.memory = memory
         """The strategy's own state, kept across calls. JSON values only."""
 
@@ -479,6 +542,22 @@ class Context:
             raise StrategyError("this context has no tax view")
         return self._tax
 
+    @property
+    def history(self) -> History:
+        """Month-end balances before this month."""
+        if self._history is None:
+            raise StrategyError("this context has no history")
+        return self._history
+
+    def rail(self, name: str) -> RailYears:
+        """A triggered rail's years so far (``measures.RailYears``, one row,
+        CPI-constant dollars), as last evaluated in January: through the
+        year before the current one. Only rails some strategy's ``trigger``
+        names are evaluated during a run."""
+        if self._rail is None:
+            raise StrategyError(f"no rail {name!r} is triggered in this run")
+        return self._rail(name)
+
 
 # ---------- what a strategy returns ----------
 
@@ -501,7 +580,7 @@ class Put:
 @dataclass(frozen=True)
 class Transfer:
     """Move ``amount`` cents out of the asset lot ``source`` into ``to``
-    (``year_end``): another asset lot, or an expense account by name (a
+    (``year_end``, ``month_start``, ``on_breach``): another asset lot, or an expense account by name (a
     gift). It posts as a ``one_off_transfer`` with a blank tax character
     does: out of a taxable lot it is a sale, from a traditional lot into a
     Roth lot a conversion, out of a Roth lot a distribution. ``in_kind``
@@ -516,7 +595,8 @@ class Transfer:
 
 @dataclass(frozen=True)
 class Realize:
-    """Sell and rebuy ``amount`` cents of a taxable lot (``year_end``): its
+    """Sell and rebuy ``amount`` cents of a taxable lot (``year_end``,
+    ``month_start``, ``on_breach``): its
     gain or loss (:func:`sale_gain`) is realized this year and its basis
     moves to the sale value; the balance and holding period stay."""
 
@@ -607,6 +687,20 @@ class Strategy:
         balances an earlier one left). ``ctx.tax`` sees the year's income."""
         return None
 
+    def month_start(self, ctx: Context) -> Decision | None:
+        """Asked each month, after its calendar events, inflation and (in
+        January) ``year_start``, before any rule posts (#441): answer with
+        :class:`Transfer` and :class:`Realize` moves, as ``year_end`` does.
+        Where a balance condition lives: ``ctx.lots`` is the month's start."""
+        return None
+
+    def on_breach(self, ctx: Context, breach: BreachView) -> Decision | None:
+        """Asked each January about a rail the strategy's ``trigger`` names
+        (#441): when the year just ended was past it, and once more the year
+        it comes back. Before ``year_start``, so memory set here steers the
+        year; it may move money as ``month_start`` does."""
+        return None
+
 
     @classmethod
     def check(cls, params: Any, scenario: ScenarioView) -> Sequence[str]:
@@ -626,7 +720,7 @@ class ScenarioView:
     """How many ``tax_accumulator`` rules each scope (``federal``, ``state``) has."""
 
 
-_HOOKS = ("draw", "place", "year_start", "scale", "year_end")
+_HOOKS = ("draw", "place", "year_start", "scale", "year_end", "month_start", "on_breach")
 _REGISTERED = "__strategy_registered__"
 
 

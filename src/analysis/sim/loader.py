@@ -1255,10 +1255,12 @@ def load_scenario(
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
+    rail_rows = _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
+                                      calendar_rows, issues)
     strategy_kinds, strategies = _validate_strategies(
         strategy_rows, target_rows, strategy_sources,
         accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
-        scheduled_rows=scheduled_rows,
+        scheduled_rows=scheduled_rows, rails=rail_rows,
         start=scenario_row.get("start", ""), issues=issues, unused=unused,
     )
     strategy_varies, strategy_links = strategy_load.prepare_vary(
@@ -1267,8 +1269,6 @@ def load_scenario(
     )
     _validate_calendar_correlation(
         calendar_rows, issues, unused, {**lifespan_links, **strategy_links})
-    _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
-                          calendar_rows, issues)
 
     for account, replacing, replaced in account_clashes:
         if any(f"({account})" in issue or f"({account} /" in issue for issue in issues):
@@ -1328,7 +1328,7 @@ def load_scenario(
         )
         counts.update(strategy_load.write_strategies(
             con, strategies, kinds=strategy_kinds, sources=strategy_sources,
-            target_rows=target_rows,
+            target_rows=target_rows, rail_rows=rail_rows,
         ))
         counts.update(strategy_load.write_strategy_vary(con, strategy_varies))
         _write_manifest(
@@ -3254,15 +3254,19 @@ def _validate_guard_rails(
     scenarios_dir: Path, scenario_name: str, accounts: list[dict[str, str]],
     scheduled_rows: list[dict[str, str]], calendar_rows: list[dict[str, str]],
     issues: list[str],
-) -> None:
-    """guard_rails.csv (#305). Only reports read the rails, and nothing of them
-    goes into the intent, but a bad one fails the load like any other row, so
-    `sim check` and every edit command catch it."""
+) -> dict[str, dict[str, str]]:
+    """guard_rails.csv (#305). Reports read the rails, and a strategy's
+    trigger (#441) takes the ones it names into the intent; a bad one fails
+    the load like any other row, so `sim check` and every edit command
+    catch it. Returns each good rail's merged row by name."""
     rows, problems = guard_rails.read_rows(scenarios_dir, scenario_name)
     rails, more = guard_rails.parse_rows(rows)
     issues.extend(problems + more)
     issues.extend(guard_rails.check_references(
         rails, guard_rails.references_from_rows(accounts, scheduled_rows, calendar_rows)))
+    good = {rail.name for rail in rails}
+    return {row.cells.get("name", ""): dict(row.cells) for row in rows
+            if row.cells.get("name", "") in good}
 
 
 def _validate_year_to_date(
@@ -4337,6 +4341,7 @@ def _validate_strategies(
     allocations: list[dict[str, str]],
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     scheduled_rows: list[dict[str, str]],
+    rails: Mapping[str, Mapping[str, str]],
     start: str,
     issues: list[str],
     unused: list[str],
@@ -4375,7 +4380,7 @@ def _validate_strategies(
         list(_located(strategy_rows, registries.STRATEGIES_DIR)),
         kinds=kinds, chains=chains, account_names={a["name"] for a in accounts},
         tags=frozenset().union(*tags.values()), target_sets=target_sets, rules=rules,
-        scenario=scenario, issues=issues,
+        scenario=scenario, rails=frozenset(rails), issues=issues,
     )
     by_account = {a["name"]: a for a in accounts}
     lots = [
