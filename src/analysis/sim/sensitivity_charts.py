@@ -41,9 +41,9 @@ CRITICAL = "#d03b3b"  # status color: reserved for "unattributed", never a serie
 _SHARE_CMAP = LinearSegmentedColormap.from_list("share", ["#fcfcfb", "#86b6ef", "#184f95"])
 _SWING_CMAP = LinearSegmentedColormap.from_list("swing", [LOSS, NEUTRAL, GAIN])
 _MAX_KEYS = len(CATEGORICAL) - 1  # the last slot is "other"
-# Tick labels in ink, two points above matplotlib's 10: a batch with dozens of
-# parameters is drawn small to fit a terminal, and muted labels were hard to
-# read there (#452). Ticks and gridlines stay muted.
+# Tick and axis labels in ink, two points above matplotlib's 10: a batch
+# with dozens of parameters is drawn small to fit a terminal, and muted
+# labels were hard to read there (#452). Ticks and gridlines stay muted.
 _LABEL_SIZE = 12
 _CELL_SIZE = 9  # the heatmap's in-cell percentages
 
@@ -137,7 +137,7 @@ def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax:
                     ax.text(j, i, text[i][j], ha="center", va="center", fontsize=_CELL_SIZE,
                             color="white" if dark[i, j] else INK)
     colorbar = ax.figure.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-    colorbar.set_label(label, color=MUTED)
+    colorbar.set_label(label, color=INK, fontsize=_LABEL_SIZE)
     if value == HeatmapValue.SWING:
         _format_value_axis(colorbar.ax.yaxis, scale)
     else:
@@ -191,7 +191,7 @@ def delta_over_time_view(deltas: pd.DataFrame, row: str, scale: DeltaScale, ax: 
         ax.plot(line["year"], line[column], color=_quantile_color(q, quantiles), linewidth=2,
                 marker="o", markersize=4, label=f"q={q:g} ({line['value'].iloc[0]})")
     ax.axhline(0, color=MUTED, linewidth=0.8)
-    ax.set_xlabel("year", color=MUTED)
+    ax.set_xlabel("year", color=INK, fontsize=_LABEL_SIZE)
     _format_value_axis(ax.yaxis, scale)
     _recessive(ax)
     ax.legend(framealpha=FRAME_ALPHA)
@@ -294,7 +294,7 @@ def response_curve_view(deltas: pd.DataFrame, row: str, year: int, scale: DeltaS
                     xytext=(0, 8), ha="center", fontsize=8, color=MUTED)
     ax.axhline(0, color=MUTED, linewidth=0.8)
     ax.set_xlim(0, 1)
-    ax.set_xlabel("quantile of the parameter's range", color=MUTED)
+    ax.set_xlabel("quantile of the parameter's range", color=INK, fontsize=_LABEL_SIZE)
     _format_value_axis(ax.yaxis, scale)
     _recessive(ax)
     ax.legend(framealpha=FRAME_ALPHA)
@@ -344,7 +344,7 @@ def correlation_view(
     reach = max(1.0, float(np.nanmax(np.abs(rows[[f"{by}_low", f"{by}_high", by]].to_numpy()),
                                      initial=0.0)))
     ax.set_xlim(-reach, reach)
-    ax.set_xlabel(_CORRELATION_AXIS[by].format(_words(measure)), color=MUTED)
+    ax.set_xlabel(_CORRELATION_AXIS[by].format(_words(measure)), color=INK, fontsize=_LABEL_SIZE)
     _recessive(ax, grid_axis="x")
     ax.legend(framealpha=FRAME_ALPHA, loc="lower right")
     return ax
