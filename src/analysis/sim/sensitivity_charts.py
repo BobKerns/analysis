@@ -41,11 +41,11 @@ CRITICAL = "#d03b3b"  # status color: reserved for "unattributed", never a serie
 _SHARE_CMAP = LinearSegmentedColormap.from_list("share", ["#fcfcfb", "#86b6ef", "#184f95"])
 _SWING_CMAP = LinearSegmentedColormap.from_list("swing", [LOSS, NEUTRAL, GAIN])
 _MAX_KEYS = len(CATEGORICAL) - 1  # the last slot is "other"
-# Tick labels in ink, a point above matplotlib's 10: a batch with dozens of
+# Tick labels in ink, two points above matplotlib's 10: a batch with dozens of
 # parameters is drawn small to fit a terminal, and muted labels were hard to
 # read there (#452). Ticks and gridlines stay muted.
-_LABEL_SIZE = 11
-_CELL_SIZE = 8  # the heatmap's in-cell percentages
+_LABEL_SIZE = 12
+_CELL_SIZE = 9  # the heatmap's in-cell percentages
 
 
 def _delta_column(scale: DeltaScale) -> str:
