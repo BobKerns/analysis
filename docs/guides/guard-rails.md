@@ -8,7 +8,7 @@ A **guard rail** is a line a scenario's spending, or its withdrawals from
 its savings, should stay on one side of. The best-known ones are rules of
 thumb for retirement: "take no more than 4% a year", "cut back when the
 withdrawal rate climbs 20% past where it started". A rail doesn't change
-what the simulation does. It is a way to read a run: for each year, how far
+what the simulation does, unless a strategy is set to respond to it. It is a way to read a run: for each year, how far
 inside the line the plan stayed, or how far past it went, and how that adds
 up over the years.
 
@@ -134,7 +134,10 @@ sim guard-rail delete budget
 ```
 
 Rails aren't part of a run, so changing one reruns nothing: the next
-report reads the rail as it is now.
+report reads the rail as it is now. The exception is a rail a strategy
+answers: a strategy's `trigger` makes the run check that rail each January
+and respond when it is crossed, so then a rail edit reruns the scenario
+([user guide §4.19](../user-guide.md)).
 
 ## Reading the results
 

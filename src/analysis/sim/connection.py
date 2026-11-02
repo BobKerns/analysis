@@ -635,6 +635,19 @@ class RunConnection(Connection):
         self._con = connect_sim_file(self.run_path)
         self._con.row_factory = sqlite3.Row
 
+    @classmethod
+    def live(cls, con: sqlite3.Connection) -> RunConnection:
+        """A reader on a run the engine is still writing, through the
+        engine's own connection (#441): it sees the months settled so far.
+        Each call starts with empty caches; never close it (the engine
+        does)."""
+        self = cls.__new__(cls)
+        self._scenario_name = None
+        self._scenario = None
+        self.run_path = Path("")
+        self._con = con
+        return self
+
     @property
     def _db_path(self) -> Path:
         return self.run_path
