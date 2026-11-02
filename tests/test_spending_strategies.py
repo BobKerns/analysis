@@ -344,13 +344,15 @@ def test_strategy_add_asks_for_the_rule_tag(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
 ) -> None:
     strategy_csv(SCENARIO, FLEX).unlink()
+    # alice_triggers, built on alice_spending, owns the same rules (#441).
+    strategy_csv("alice_triggers", "strategies/respond.csv").unlink()
     # kind, rule tag, then portfolio, minimum and skip_after_loss (defaults)
     result = _cli(strategy_scenarios, "strategy", "add", "trim", "--scenario", SCENARIO,
                   input="threshold\nflex:optional\nportfolio:invest\n\n\n")
     assert result.exit_code == 0, result.output
     assert "rule tags: category:gifts, category:travel, flex:optional" in result.output
     text = strategy_csv(SCENARIO, "strategies/trim.csv").read_text()
-    assert 'threshold,,flex:optional,,,,"{""portfolio"":""portfolio:invest""}",' in text
+    assert 'threshold,,flex:optional,,,,,"{""portfolio"":""portfolio:invest""}",' in text
     result = _cli(strategy_scenarios, "strategy", "list", SCENARIO)
     assert "trim                threshold on rules flex:optional" in result.output
 
@@ -385,6 +387,39 @@ def test_spending_report_on_a_run_without_strategies(
     result = _cli(strategy_scenarios, "report", "spending", "--runfile", run)
     assert result.exit_code == 0, result.output
     assert "no spending strategy changed this run's spending" in result.output
+
+
+def test_spending_report_chart_file(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+    run_strategy_scenario: Callable[[str], Path], tmp_path: Path,
+) -> None:
+    """#430: --chart-file writes the notebook's chart; the table only with --table."""
+    _strategy(strategy_csv, "threshold", minimum="900000.00")
+    run = str(run_strategy_scenario(SCENARIO))
+    chart = tmp_path / "spending.svg"
+    result = _cli(strategy_scenarios, "report", "spending", "--runfile", run,
+                  "--by", "tag:category", "--chart-file", str(chart))
+    assert result.exit_code == 0, result.output
+    assert "Spending against plan by category" in chart.read_text()
+    assert "redirected" not in result.output
+    chart.unlink()
+    result = _cli(strategy_scenarios, "report", "spending", "--runfile", run,
+                  "--chart-file", str(chart), "--table")
+    assert result.exit_code == 0, result.output
+    assert chart.stat().st_size > 0
+    assert "spending against plan by category" in result.output
+    assert "redirected:" in result.output
+
+
+def test_spending_report_chart_without_strategies(
+    strategy_scenarios: Path, run_strategy_scenario: Callable[[str], Path], tmp_path: Path,
+) -> None:
+    """The plan alone is still drawn when no strategy changed it."""
+    run = str(run_strategy_scenario("alice_rebalance"))
+    chart = tmp_path / "spending.png"
+    result = _cli(strategy_scenarios, "report", "spending", "--runfile", run, "--chart-file", str(chart))
+    assert result.exit_code == 0, result.output
+    assert chart.stat().st_size > 0
 
 
 def test_shape_measures() -> None:

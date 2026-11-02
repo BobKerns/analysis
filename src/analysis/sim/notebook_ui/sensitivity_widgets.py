@@ -4,8 +4,8 @@ rows matter, and when.
 For a sensitivity (OAT) batch: an overview heatmap (parameters x reporting
 years), a tornado at one year, each parameter's delta over time, an exact
 attribution of a delta, and -- for a quantile ladder -- a response curve.
-For a Monte Carlo batch: R^2 by year and per-row rank correlations with
-their 95% intervals.
+For a Monte Carlo batch: R^2 by year and each row's rho, SRRC or PRCC
+with its 95% interval.
 
 Each chart is a ``*_view`` function in ``analysis.sim.sensitivity_charts``,
 shared with ``sim ensemble sensitivity --chart``; ``sensitivity_widget`` wires
@@ -27,6 +27,7 @@ from analysis.sim.ensemble import EnsembleError, read_batch_manifest
 from analysis.sim.loader import batch_mode, read_disabled_scenarios
 from analysis.sim.notebook_ui.pickers import (
     AttributionPicker,
+    CorrelationMeasurePicker,
     DeltaScalePicker,
     DollarModePicker,
     HeatmapValuePicker,
@@ -38,7 +39,7 @@ from analysis.sim.notebook_ui.pickers import (
 )
 from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 from analysis.sim.sensitivity_charts import (
-    attribution_view, correlation_view, delta_over_time_view, heatmap_view, r2_view,
+    attribution_view, correlation_title, correlation_view, delta_over_time_view, heatmap_view, r2_view,
     response_curve_view, signed_dollars, tornado_view,
 )
 from analysis.sim.types import DeltaScale, DollarMode
@@ -152,6 +153,7 @@ def sensitivity_widget(*,
     attribution_picker = AttributionPicker()
     parameter_picker = ParameterPicker()
     year_picker = ReportYearPicker()
+    by_picker = CorrelationMeasurePicker()
     body = widgets.VBox()
     cache: dict[tuple[Path, DollarMode], pd.DataFrame] = {}
 
@@ -240,17 +242,21 @@ def sensitivity_widget(*,
         def draw_rho() -> None:
             report = _report()
             table = report.table
-            ax = correlation_view(table, year_picker.value, negligible, by=report.by)
-            ax.set_title(
-                f"Rank correlation with net worth in {year_picker.value}" if report.by == "rho"
-                else f"Effect on net worth in {year_picker.value}, others held fixed", loc="left",
-            )
+            ax = correlation_view(table, year_picker.value, negligible, by=by_picker.value)
+            ax.set_title(correlation_title(by_picker.value, year_picker.value), loc="left")
             show_figure(ax.figure)
             if report.correlated:
                 display(StyledMarkdown(
                     "_This batch's rows are correlated, so a row's rank correlation includes its "
                     "correlates' effects. Rows are ranked and pinned by their rank-regression "
                     "coefficient (SRRC), which holds the others fixed._"
+                ))
+            if by_picker.value != report.by:
+                # As in the CLI, the status doesn't follow the chart.
+                never = (" PRCC is never pinned by: its square isn't a share of net worth's "
+                         "variance." if by_picker.value == "prcc" else "")
+                display(StyledMarkdown(
+                    f"_The status below is by {report.by}, what this batch is ranked by.{never}_"
                 ))
             status = sensitivity.classify(table, negligible, by=report.by)
             n = int(table["n"].iloc[0])
@@ -307,7 +313,7 @@ def sensitivity_widget(*,
 
     mc_sections = [
         _section("Can per-parameter numbers be trusted?", [], outs["r2"]),
-        _section("Which rows could be pinned?", [year_picker], outs["rho"]),
+        _section("Which rows could be pinned?", [year_picker, by_picker], outs["rho"]),
     ]
     state: dict[str, Any] = {"mode": None, "ladder": False, "loading": False}
 
@@ -348,6 +354,8 @@ def sensitivity_widget(*,
                 state["loading"] = True
                 try:
                     year_picker.set_years(sorted(int(y) for y in table["year"].unique()))
+                    # Each batch opens on what it's ranked by.
+                    by_picker.value = _report().by
                 finally:
                     state["loading"] = False
                 body.children = [parameters_section, *mc_sections]
@@ -380,6 +388,10 @@ def sensitivity_widget(*,
         elif state["mode"] == "monte_carlo":
             _draw_correlation()
 
+    def _on_by(*_: object) -> None:
+        if not state["loading"] and state["mode"] == "monte_carlo":
+            _draw_correlation()
+
     def _on_parameter(*_: object) -> None:
         if state["loading"]:
             return
@@ -401,6 +413,7 @@ def sensitivity_widget(*,
     attribution_picker.observe(_draw_attribution, names="value")
     year_picker.observe(_on_year, names="value")
     parameter_picker.observe(_on_parameter, names="value")
+    by_picker.observe(_on_by, names="value")
     return widgets.VBox([
         widgets.HBox([recipe, batch]),
         widgets.HBox([dollar_picker, scale_picker]),

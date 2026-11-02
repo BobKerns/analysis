@@ -1442,6 +1442,74 @@ column, `sim report expenses` shows gifts under `gifts`, and `sim explain`
 totals what each strategy moved and realized. The design is in
 [ADR-010 §6.3](architecture/ADR-010-responsive-strategies.md).
 
+### 4.19 Respond when a guard rail is crossed (strategy triggers)
+
+A guard rail (§4.15) only reads a run, unless a strategy's `trigger` names
+it. Then the simulator checks that rail every January, on the run so far,
+exactly as `sim report guard-rails` would show last year: was it past the
+line, still past it, or back inside? It tells the strategy, which can
+change what it does from then on, or move money right away.
+
+A trigger names a rail and which margin to watch: `RAIL:annual` (last
+year's own) or `RAIL:cumulative` (everything since the rail began). Only a
+strategy whose kind has an `on_breach` hook can have one; `sim strategy
+kinds` lists each kind's hooks. None of the built-in kinds has one yet, so
+a trigger needs a kind of your own in the data repo's `strategies/`
+folder. For example, a kind that halves the travel and gift rules it owns
+for every year after one past the line, until a year comes back inside:
+
+```python
+from dataclasses import dataclass
+from analysis.sim.strategy_api import Decision, Percent, Spend, Strategy, percent, register
+
+
+@register
+class CutOnBreach(Strategy):
+    """Cut the owned rules by ``cut`` in the years after one past the line."""
+
+    kind = "cut_on_breach"
+
+    @dataclass(frozen=True)
+    class Params:
+        cut: Percent = percent("50%")
+
+    def on_breach(self, ctx, breach):
+        ctx.memory["cutting"] = breach.state != "left"
+        return Decision([], note=f"{breach.rail} {breach.state}")
+
+    def scale(self, ctx, rule, amount):
+        if not ctx.memory.get("cutting"):
+            return None
+        return Decision([Spend(amount * (1_000_000 - self.params.cut) // 1_000_000)])
+```
+
+Alice and Bill want to hold spending to $60,000 a year in today's
+dollars, and trim the extras when they go over:
+
+```sh
+sim guard-rail add tight --measure spending --side above --threshold 60000 --basis cpi_constant
+sim strategy add respond --kind cut_on_breach --rules flex:optional --trigger tight:annual
+```
+
+`sim strategy log --breaches` lists every January's finding: the year, the
+state (`entered`, `continued` or `left`), how many years in a row it has
+been past, and the margin. `sim strategy log` starts each answer's note
+with the breach it answered, `sim explain` counts how often each rail was
+past and how often it came back inside, and `sim report guard-rails` adds,
+below its summary, each stretch of years past a triggered rail and how
+long it took to come back.
+
+A strategy can also look back at the run itself: `ctx.history` gives the
+month-end balances so far, and `ctx.rail("tight")` the rail's margins
+through last year. A kind with a `month_start` hook is asked at the start
+of every month, after any January breach and `year_start`, and can move
+money then, as a year-end strategy does in December (§4.18).
+
+A scenario with a trigger reads its guard rails, so editing a rail in its
+lineage reruns it; elsewhere a rail stays a lens and editing it reruns
+nothing. The design is in
+[ADR-010 §3.3](architecture/ADR-010-responsive-strategies.md).
+
 ## 5. Looking at your results
 
 **Video.** *Looking at the results* walks through this section with Alice
@@ -1584,6 +1652,7 @@ machine too small for a notebook comfortably.
 | realized vs. unrealized gains by year | `sim report gains [--start YEAR] [--end YEAR] [--chart]` |
 | federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--start YEAR] [--end YEAR] [--chart]` |
 | where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--start YEAR] [--end YEAR] [--chart]` |
+| spending against the plan by year: budgeted, delivered, the share of plan, and what was redirected | `sim report spending [--by category\|account\|tag:ROLE] [--start YEAR] [--end YEAR] [--chart]` |
 | a scenario's guard rails | `sim guard-rail list` |
 | an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--chart]` |
 
@@ -1609,7 +1678,8 @@ the pre-tax total dashed above it, so the gap is the tax still owed.
 carried down to the change in net worth; with `--year`, it draws a bar per
 group. `sim report tax --chart` stacks federal and state tax with the
 effective rate on its own axis (with `--reconciliation`, each April's balance
-due and refund). `sim allocation --chart` draws a pie of the asset classes, a
+due and refund). `sim report spending --chart` draws delivered spending as a
+bar per year with the plan as a dashed line over them. `sim allocation --chart` draws a pie of the asset classes, a
 bar per class split by the group with `--by`, and a line per class with
 `--drift`.
 

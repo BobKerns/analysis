@@ -11,29 +11,34 @@ it needs no kernel or browser, works over SSH and in scripts, and is what to sug
 machine too small for a notebook. Every so often (say after each batch of notebook work),
 walk the notebooks and `analysis.sim.notebook_ui`, check each view against `analysis sim
 --help`, and add the missing command or note why there isn't one. Charts count too: a
-notebook chart wants a `--graph`/`--graph-file` on its terminal equivalent, with the
+notebook chart wants a `--chart`/`--chart-file` on its terminal equivalent, with the
 plot in a widget-free module both share (as `ensemble_plots.py` and `compare_charts.py`
 are). Update the table in [notebooks/README.md](notebooks/README.md) when a command is
 added.
 
-Known gaps (last reviewed 2026-10-28; each has an issue):
+Check the other direction at the same time: information a read-only `sim` command shows
+(a warning, a table, a setup fact) that no notebook makes visible. Commands that create
+or change data are out of scope there; the notebooks only view.
+
+Known CLI gaps (last reviewed 2026-11-01; each has an issue):
 
 - events (`notebooks/events.ipynb`): filtering the full `transfer_event` ledger by reason
   kind/tax character/account/date range; `sim items` covers one account and a date range
   only (#189)
-- charts for plain-run results: net worth, income, expenses, gains, economic income,
-  guard rails, account balance history and the allocation pie are tables only in the
-  CLI (#327)
-- several ensembles against one baseline in one table (`ensemble_table_widget`);
-  `sim ensemble compare` takes one variant (#328)
-- sensitivity charts (heatmap, tornado, attribution, correlation, R², one row's delta
-  over time and response curve) (#329)
-- draws charts: a node's histogram and u-plot, a correlated pair's scatter (#330)
-- the notebooks' shared Years, Dollars and Scale controls: `--start/--end` on networth,
-  report, compare and ensemble commands, `--dollars` on `ensemble summary`, `--log` on
-  the ensemble charts (#331)
-- `sim explain` still shows pre-tax net worth (#332)
 - auxiliary tools: summaries for `amazon.ipynb` and `expense_baseline.ipynb` (#333)
 
 Scenario editing still missing from the CLI: `sim symbol edit|delete` (#191) and
 `sim series list|show|set` (#194). Machine-readable `--csv`/`--json` output is #196.
+
+Known notebook gaps, shown by the CLI only (last reviewed 2026-11-01; each has an issue):
+
+- a run's negative-balance warnings (`sim explain`) (#431)
+- load warnings and not-yet-read definitions (`sim check`, `sim load`) (#432)
+- where each row is defined, and the scenario's lineage, seed, size and reserve
+  (`calendar list`, `chain list`, `scenario show`) (#433)
+- basis step-ups at a death (`sim explain`) (#434)
+- year-to-date rows, itemizations and tags in `scenario_overview.ipynb` (`ytd list`,
+  `itemization list|show`, `sim tags`) (#435)
+- stored prices, the price check and symbols (`prices show|check`, `symbol list`) (#436)
+- which run file is open, and a newer failed run (`sim list`) (#437)
+- partial rank correlations on a Monte Carlo batch (`ensemble sensitivity`) (#438)

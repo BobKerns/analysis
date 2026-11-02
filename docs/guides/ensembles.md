@@ -1254,9 +1254,9 @@ other rows held fixed, using its own confidence interval. That interval
 narrows as R² rises, so there's no fixed member count to warn about: read
 the intervals and statuses instead. It also shows:
 
-- **prcc**, the partial rank correlation, as another view of the same
-  "holding the others fixed" effect. It grows with R², so it isn't used for
-  pinning.
+- **prcc**, the partial rank correlation, with its interval, as another
+  view of the same "holding the others fixed" effect. It grows with R², so
+  it isn't used for pinning.
 - A line for each **latent factor**, labeled "(factor)": the correlation of
   the factor with the outcome, which is how much its whole family matters.
   A factor never gets a status, since you can't pin one.
@@ -1269,6 +1269,11 @@ the intervals and statuses instead. It also shows:
 Rows correlated very strongly are hard to tell apart, so they often come
 out inconclusive. If that happens, pin them together, or sweep their factor
 one at a time (above) to see what the family does.
+
+In `sensitivity.ipynb`, the **Measure** toggle beside the year slider
+switches the chart between rho, srrc and prcc, each with its interval. It
+opens on what the batch is ranked by; the status table below the chart
+always stays with that.
 
 ## Checking the draws themselves
 

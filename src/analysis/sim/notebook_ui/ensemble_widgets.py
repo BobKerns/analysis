@@ -13,7 +13,7 @@ import ipywidgets as widgets
 import pandas as pd
 from IPython.display import clear_output, display
 
-from analysis.sim import registries, reports, units
+from analysis.sim import registries, reports, shortfalls, units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
@@ -38,6 +38,7 @@ from analysis.sim.notebook_ui.pickers import (
     LotPicker,
     LogLinearModePicker,
     TimeRangePicker,
+    display_warning,
     find_data_dir,
     find_runs_dir,
     note_picks,
@@ -58,7 +59,7 @@ __all__ = [
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
     "ensemble_table_widget", "ensemble_guard_rails_widget", "ensemble_guard_rails_table_widget",
     "ensemble_drift_widget", "ensemble_spending_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
-    "RecipeSeeds", "LoadingIndicator",
+    "RecipeSeeds", "LoadingIndicator", "batch_shortfalls",
 ]
 
 
@@ -409,6 +410,34 @@ def _open_recipe(
     return batch_dir, store, len(statuses) - succeeded
 
 
+# Each batch's members' negative-balance warnings, by batch and members
+# read: a member's run file doesn't change once it has succeeded, and a new
+# run of a recipe is a new batch.
+_SHORTFALLS: dict[tuple[Path, tuple[str, ...]], shortfalls.MemberShortfalls] = {}
+
+
+def batch_shortfalls(batch_dir: Path, stems: Sequence[str]) -> shortfalls.MemberShortfalls:
+    """``shortfalls.member_shortfalls`` over ``batch_dir``'s members
+    ``stems`` (#431), read once per batch."""
+    key = (Path(batch_dir).resolve(), tuple(stems))
+    if key not in _SHORTFALLS:
+        _SHORTFALLS[key] = shortfalls.member_shortfalls(
+            batch_dir / f"{stem}.sqlite3" for stem in stems)
+    return _SHORTFALLS[key]
+
+
+def shortfall_message(found: shortfalls.MemberShortfalls) -> str | None:
+    """The ensemble widget's line on its members' negative balances, or
+    None when no member had any."""
+    if not found.with_warnings or found.worst is None:
+        return None
+    worst = found.worst
+    return (f"**{found.with_warnings} of {found.members} members went negative at least "
+            f"once.** Lowest: {found.worst_member}'s {worst.label}, "
+            f"{shortfalls.compact_cents(worst.lowest_cents)} at {worst.lowest_month}. "
+            "A shortfall doesn't stop a run; `sim explain --runfile <member>` lists a member's.")
+
+
 AFTER_TAX_NET_WORTH = "After-tax net worth"
 
 
@@ -557,8 +586,12 @@ def ensemble_widget(*_,
         if show_description:
             with RunConnection(batch_dir / f"{store.stems[0]}.sqlite3") as con:
                 description = description_view(con, data_dir=resolved_data_dir)
+        loading.note(f"Reading {recipe}'s negative balances")
+        shortfall = shortfall_message(batch_shortfalls(batch_dir, store.stems))
         clear_output(wait=True)
         display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
+        if shortfall is not None:
+            display_warning(shortfall)
         if description is not None:
             display(description)
         # A pyplot-free Figure, rendered to a PNG here: pyplot's

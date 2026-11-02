@@ -29,7 +29,8 @@ from analysis.sim.plotting import CATEGORICAL, FRAME_ALPHA, GRID, INK, MUTED
 from analysis.sim.types import DeltaScale, HeatmapValue
 
 __all__ = [
-    "attribution_figure", "attribution_view", "correlation_figure", "correlation_view",
+    "attribution_figure", "attribution_view", "correlation_figure", "correlation_title",
+    "correlation_view",
     "delta_over_time_view", "heatmap_view", "oat_figure", "r2_view", "response_curve_view",
     "row_figure", "signed_dollars", "tornado_view",
 ]
@@ -299,11 +300,13 @@ def correlation_view(
     table: pd.DataFrame, year: int, negligible: float, ax: Any = None, by: str = "rho", *,
     measure: str = "net_worth",
 ) -> Any:
-    """Per row at one year: ``by`` (Spearman rho, or SRRC for a correlated
-    batch) with its 95% interval, against the band inside which its square is
-    negligible. Latent factors, if the table has them, show their rho as
-    hollow markers labeled "(factor)": their whole family's effect, which has
-    no pin status."""
+    """Per row at one year: ``by`` (Spearman rho, SRRC -- what a correlated
+    batch is ranked by -- or PRCC) with its 95% interval, against the band
+    inside which its square is negligible. Latent factors, if the table has
+    them, show their rho as hollow markers labeled "(factor)": their whole
+    family's effect, which has no pin status."""
+    if by not in sensitivity.CORRELATION_MEASURES:
+        raise ValueError(f"by must be one of {sensitivity.CORRELATION_MEASURES} (got {by!r})")
     at = table[table["year"] == year].set_index("row")
     is_factor = at["factor"].astype(bool) if "factor" in at.columns else pd.Series(False, at.index)
     rows, factor_rows = at[~is_factor], at[is_factor]
@@ -336,13 +339,29 @@ def correlation_view(
     reach = max(1.0, float(np.nanmax(np.abs(rows[[f"{by}_low", f"{by}_high", by]].to_numpy()),
                                      initial=0.0)))
     ax.set_xlim(-reach, reach)
-    ax.set_xlabel(
-        f"Spearman rank correlation with {_words(measure)}" if by == "rho"
-        else "standardized rank-regression coefficient (others held fixed)", color=MUTED,
-    )
+    ax.set_xlabel(_CORRELATION_AXIS[by].format(_words(measure)), color=MUTED)
     _recessive(ax, grid_axis="x")
     ax.legend(framealpha=FRAME_ALPHA, loc="lower right")
     return ax
+
+
+# How each of sensitivity.CORRELATION_MEASURES is named on correlation_view's
+# axis, and in a panel title above it; {} is the outcome measure in words.
+_CORRELATION_AXIS = {
+    "rho": "Spearman rank correlation with {}",
+    "srrc": "standardized rank-regression coefficient (others held fixed)",
+    "prcc": "partial rank correlation with {} (others held fixed)",
+}
+_CORRELATION_TITLE = {
+    "rho": "Rank correlation with {} in {}",
+    "srrc": "Effect on {} in {}, others held fixed",
+    "prcc": "Partial rank correlation with {} in {}, others held fixed",
+}
+
+
+def correlation_title(by: str, year: int, measure: str = "net_worth") -> str:
+    """The title over ``correlation_view`` of ``by`` at ``year``."""
+    return _CORRELATION_TITLE[by].format(_words(measure), year)
 
 
 def r2_view(table: pd.DataFrame, ax: Any = None) -> Any:
@@ -434,14 +453,11 @@ def correlation_figure(
 ) -> Figure:
     """A Monte Carlo batch's panels, as the notebook shows them: R^2 by year
     (how far per-row numbers can be trusted) above each row's ``by`` (rho,
-    or SRRC for a correlated batch) at ``year`` with its 95% interval."""
+    SRRC or PRCC) at ``year`` with its 95% interval."""
     rows = int((table["year"] == year).sum())
     fig, (top, bottom) = _stacked([2.6, 0.5 * rows + 1.6])
     r2_view(table, ax=top)
     top.set_title(f"{title}: how much per-parameter effects explain, by year", loc="left")
     correlation_view(table, year, negligible, ax=bottom, by=by, measure=measure)
-    bottom.set_title(
-        f"Rank correlation with {_words(measure)} in {year}" if by == "rho"
-        else f"Effect on {_words(measure)} in {year}, others held fixed", loc="left",
-    )
+    bottom.set_title(correlation_title(by, year, measure), loc="left")
     return fig
