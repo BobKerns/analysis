@@ -11807,9 +11807,11 @@ def _draw_figure(
     """Draw the matplotlib figure ``fig`` as ``_draw_chain_graph`` draws a
     chart: into ``graph_file``, else in the terminal, else into a PNG file
     named with ``prefix``. For the terminal, at the resolution that makes the
-    figure's text the size of the terminal's own; and when ``fit`` is given
-    and the terminal reports its size, the figure ``fit`` draws at the
-    terminal's size in inches instead (``_terminal_figure_size``)."""
+    figure's text the size of the terminal's own, but never wider than the
+    terminal or larger than a terminal will decode (``_terminal_dpi``); and
+    when ``fit`` is given and the terminal reports its size, the figure
+    ``fit`` draws at the terminal's size in inches instead
+    (``_terminal_figure_size``)."""
     from analysis.sim import chain_graph
     from analysis.sim.ensemble_plots import figure_bytes
 
@@ -11821,11 +11823,32 @@ def _draw_figure(
     cell = chain_graph.cell_size() if protocol else None
     if fit is not None and cell is not None:
         fig = fit(_terminal_figure_size(cell))
+    dpi = _figure_dpi(cell)
+    if protocol is not None:
+        dpi = _terminal_dpi(tuple(fig.get_size_inches()), dpi, cell)
     try:
-        image = figure_bytes(fig, _graph_format(graph_file), dpi=_figure_dpi(cell))
+        image = figure_bytes(fig, _graph_format(graph_file), dpi=dpi)
     except (OSError, ValueError) as error:
         raise click.ClickException(f"couldn't draw the chart: {error}") from error
     _show_image(image, graph_file, protocol, cell, prefix)
+
+
+# The most pixels an image sent to the terminal may have. Terminals refuse a
+# larger one and show a broken-image icon instead (#452): VS Code's (xterm.js)
+# stops at 16 million by default; this leaves room for bbox_inches="tight".
+_MAX_TERMINAL_PIXELS = 8_000_000
+
+
+def _terminal_dpi(size: tuple[float, float], dpi: float, cell: tuple[float, float] | None) -> float:
+    """``dpi``, lowered for a figure of ``size`` inches shown in the
+    terminal: to the terminal's width, since the image is shrunk to fit it
+    anyway (so the pixels above that show nothing), and to
+    ``_MAX_TERMINAL_PIXELS``, so a tall figure (one row per varying
+    parameter) still decodes."""
+    width, height = size
+    if cell is not None:
+        dpi = min(dpi, shutil.get_terminal_size().columns * cell[0] / width)
+    return min(dpi, math.sqrt(_MAX_TERMINAL_PIXELS / (width * height)))
 
 
 # Matplotlib's text is 10pt; a terminal cell is about 1.2 times its font's height.
