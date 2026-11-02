@@ -169,6 +169,7 @@ labelbottom
 labelcolor
 labelleft
 labelrotation
+labelsize
 LABSTAT
 lastrowid
 lavfi

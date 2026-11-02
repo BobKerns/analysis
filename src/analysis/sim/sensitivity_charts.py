@@ -41,6 +41,11 @@ CRITICAL = "#d03b3b"  # status color: reserved for "unattributed", never a serie
 _SHARE_CMAP = LinearSegmentedColormap.from_list("share", ["#fcfcfb", "#86b6ef", "#184f95"])
 _SWING_CMAP = LinearSegmentedColormap.from_list("swing", [LOSS, NEUTRAL, GAIN])
 _MAX_KEYS = len(CATEGORICAL) - 1  # the last slot is "other"
+# Tick labels in ink, a point above matplotlib's 10: a batch with dozens of
+# parameters is drawn small to fit a terminal, and muted labels were hard to
+# read there (#452). Ticks and gridlines stay muted.
+_LABEL_SIZE = 11
+_CELL_SIZE = 8  # the heatmap's in-cell percentages
 
 
 def _delta_column(scale: DeltaScale) -> str:
@@ -71,7 +76,7 @@ def _recessive(ax: Any, grid_axis: str = "y") -> None:
     ax.set_axisbelow(True)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
-    ax.tick_params(colors=MUTED)
+    ax.tick_params(colors=MUTED, labelcolor=INK, labelsize=_LABEL_SIZE)
 
 
 def _quantile_color(q: float, quantiles: list[float]) -> str | tuple[float, ...]:
@@ -129,7 +134,7 @@ def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax:
         for i in range(data.shape[0]):
             for j in range(data.shape[1]):
                 if text[i][j]:
-                    ax.text(j, i, text[i][j], ha="center", va="center", fontsize=7,
+                    ax.text(j, i, text[i][j], ha="center", va="center", fontsize=_CELL_SIZE,
                             color="white" if dark[i, j] else INK)
     colorbar = ax.figure.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
     colorbar.set_label(label, color=MUTED)
@@ -137,7 +142,7 @@ def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax:
         _format_value_axis(colorbar.ax.yaxis, scale)
     else:
         colorbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0%}"))
-    ax.tick_params(colors=MUTED, length=0)
+    ax.tick_params(colors=MUTED, labelcolor=INK, labelsize=_LABEL_SIZE, length=0)
     for spine in ax.spines.values():
         spine.set_visible(False)
     return ax
