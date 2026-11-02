@@ -3041,6 +3041,88 @@ def ensemble_draws(
         _draw_draws_charts(batch_dir, node, pair_names, graph_file)
 
 
+@ensemble_group_command.command("factors")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@click.option("--varying", "with_varying", is_flag=True,
+              help="Also list the varying rows under each factor, with their ρ to it.")
+@click.option("--mermaid", "as_mermaid", is_flag=True,
+              help="Print the tree's Mermaid source (to paste into markdown) instead.")
+@_graph_options("the factor tree", written="the factor tree", after="the table")
+@_ENSEMBLE_DATA_DIR_OPTION
+def ensemble_factors(
+    scenario: str | None, with_varying: bool, as_mermaid: bool,
+    as_graph: bool, graph_file: Path | None, data_dir: Path | None,
+) -> None:
+    """The latent factors that tie a scenario's varying values together
+    (ADR-008), as the trees they form.
+
+    Each factor shows its ρ to its parent and how many varying rows hang
+    from it; --varying lists those rows too, each with the ρ the tree gives
+    it to its factor, and the rows that vary on their own. --chart draws the
+    tree left to right, each link labeled with the child's ρ; --mermaid
+    prints it as a Mermaid flowchart, for a README.
+
+    Without SCENARIO, the current scenario."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    from analysis.sim import factor_tree as ft
+
+    if as_mermaid and (as_graph or graph_file is not None):
+        raise click.UsageError("use one of --mermaid, --chart and --chart-file")
+    if as_mermaid and with_varying:
+        raise click.UsageError("--varying lists rows in a table; --mermaid prints only the tree")
+    data = _resolve_data_dir(data_dir)
+    with _intent_db(data, scenario) as (con, name):
+        tree = ft.factor_tree(con)
+    if not tree.factors and not (with_varying and tree.varying):
+        click.echo(f"no latent factors in {name}")
+        return
+    if as_mermaid:
+        click.echo(ft.mermaid(tree))
+        return
+    _hold_tables()
+    if as_graph or graph_file is not None:
+        title = f"Latent factors in {name}"
+        _draw_figure(ft.factor_tree_figure(tree, title), graph_file, "factors-",
+                     fit=lambda size: ft.factor_tree_figure(tree, title, _reasonable_chart_size(size)))
+    under: dict[str | None, list[ft.Varying]] = {}
+    for node in tree.varying:
+        under.setdefault(tree.factor_of(node.name), []).append(node)
+    table = Table(title=f"Factors in {escape(name)}", title_justify="left")
+    for column in ("Factor", "ρ", "Rows", "Description"):
+        table.add_column(column, justify="right" if column in ("ρ", "Rows") else "left")
+    for factor, depth in tree.walk():
+        table.add_row(escape("  " * depth + factor.name),
+                      "" if factor.rho is None else f"{factor.rho:g}",
+                      str(len(under.get(factor.name, []))) if factor.name in under else "",
+                      escape(factor.description))
+    _print_wide(table)
+    if not with_varying:
+        return
+    rows = Table(title=f"Varying rows in {escape(name)}", title_justify="left")
+    for column in ("Tree", "Factor", "Row", "ρ to factor", "ρ to tree", "Varies", "Distribution"):
+        rows.add_column(column, justify="right" if column.startswith("ρ") else "left")
+    # One section per tree, its root named once; the rows that vary on
+    # their own come last.
+    trees = [(root.name, [f.name for f, _ in tree.walk() if tree.root(f.name) == root.name])
+             for root in tree.children(None)] + [(None, [None])]
+    for root, owners in trees:
+        listed = [(owner, node) for owner in owners for node in under.get(owner, [])]
+        for i, (owner, node) in enumerate(listed):
+            link = tree.links.get(node.name)
+            via = "" if link is None or link.parent == owner else f" (via {link.parent})"
+            rows.add_row("" if i else escape(root or "(none)"), escape(owner or "—"),
+                         escape(node.name + via),
+                         "—" if owner is None else f"{tree.rho(node.name, owner):.2f}",
+                         "—" if root is None else f"{tree.rho(node.name, root):.2f}",
+                         escape(node.varies), escape(node.distribution))
+        if listed and root is not None:
+            rows.add_section()
+    click.echo()
+    _print_wide(rows)
+
+
 def _parse_pair(pair: str) -> tuple[str, str]:
     """``--pair A,B`` as its two node names."""
     a, comma, b = pair.partition(",")

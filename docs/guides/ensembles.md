@@ -370,6 +370,18 @@ tabulates the correlations, medians and spreads of inflation categories and
 returns over the past century and in named episodes, and has a script to
 compute them for other series and years.
 
+To see a scenario's trees, `sim ensemble factors` lists each factor under
+its parent with the link's ρ, and how many varying rows hang from it;
+`--varying` adds those rows, each with the ρ the tree gives it to its
+factor and to the tree's root, and `--chart` draws the trees:
+
+```sh
+sim ensemble factors markets            # the factors, nested, with each ρ
+sim ensemble factors markets --varying  # and the rows under each factor
+sim ensemble factors markets --chart    # the trees, drawn
+sim ensemble factors markets --mermaid  # as a Mermaid flowchart, for a README
+```
+
 A factor nothing depends on yet loads without error, and `sim check` notes
 it with a `WARN:` line. That's fine for work in progress, or for a factor defined in a
 parent scenario for its child scenarios to use.
@@ -874,14 +886,20 @@ sequential run; only the order of the progress lines changes. Divide the
 estimate above by roughly the number of cores in use.
 
 **A quick way to tell if you need more:** run the ensemble, look at
-`notebooks/ensemble.ipynb`'s fan chart, then rerun it with a bigger
-`--ensemble-size`. If the bands move noticeably, the first count wasn't
+`notebooks/ensemble.ipynb`'s fan chart, then rerun it with a bigger size
+(`sim ensemble edit NAME --size N`). If the bands move noticeably, the first count wasn't
 enough yet to settle down; if they barely change, you've already got
 enough members for what you're looking at. For a fast exploratory check
 where you mainly want "is this even in the right ballpark," the default of
 30 is usually enough; save a bigger, slower run for when you're ready to
 report a specific number (a percentile, a probability of running out of
 money by some date) rather than just eyeballing a chart.
+
+A recipe with many varying rows (the templates' year-by-year paths
+alone vary every inflation series and market rate) can stay noisy well past
+400 members. Doubling to 800 would do; 1000 has the advantage that every
+member is a tenth of a percent, so "12 futures ran out" reads directly as
+1.2%.
 
 ## Comparing ensembles on risk
 

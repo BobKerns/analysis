@@ -1586,6 +1586,7 @@ machine too small for a notebook comfortably.
 | where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--start YEAR] [--end YEAR] [--chart]` |
 | a scenario's guard rails | `sim guard-rail list` |
 | an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--chart]` |
+| the latent factors that tie varying rows together, as trees with each link's ρ, and the rows under each factor | `sim ensemble factors [scenario] [--varying] [--chart] [--mermaid]` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.
