@@ -18,7 +18,7 @@ contents = [
   "The supplied templates: long-run rates, year-by-year paths, today's rates",
   "Making an ensemble: sim ensemble create",
   "Making a row vary: a range for the new car (sim calendar edit)",
-  "Factors: why inflation and interest rates move together (sim ensemble draws --pair)",
+  "Factors: why inflation and interest rates move together (sim ensemble factors, sim ensemble draws --pair)",
   "Running it, and reading the fan chart (sim ensemble summary)",
   "Comparing a what-if across the same futures (sim ensemble compare)",
   "The ensemble notebook",
@@ -81,7 +81,7 @@ body = [
   "Each member is a whole run of the plan",
   "Each draws its own markets and inflation, year by year",
   "Member 0 is the middle case: every value at its median",
-  "Eighty members: a quick look. Four hundred: to be sure",
+  "Eighty members: a quick look. Hundreds, or a thousand: to be sure",
   "The answer is the range, not one line",
 ]
 speaker = "alice"
@@ -92,7 +92,8 @@ running the plan once, run it many times. Each run, called a member,
 draws its own future: a good decade for stocks, or a bad one; inflation
 that runs hot, or cool. Member zero is the exception: it takes the middle
 value of everything, so there's always one ordinary case to check. Eighty
-members is enough for a first look; four hundred, to be sure of a number.
+members is enough for a first look; to be sure of a number, hundreds, or
+even a thousand.
 And the answer is no longer one line, but the spread of all of them.
 
 ## Scene `templates`: The supplied templates
@@ -177,26 +178,43 @@ plain forty thousand.
 
 ## Scene `factors`: What moves together
 
-```slide
-template = "card"
-heading = "Factors: what moves together"
-body = [
-  "A factor is a shared influence, not a value of its own",
-  "core inflation → interest rates → the cash yield",
-  "core inflation → the CPI → prices",
-  "So high inflation tends to come with high rates",
-  "The templates' tree comes from a century of history",
-]
-speaker = "alice"
+```tape
+Set FontSize 18
+Hide
+Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
+Enter
+Type "git -C ~/retirement/data reset -q --hard stage/run && cd ~/retirement/data/sim && clear"
+Enter
+Sleep 2s
+Show
+Sleep 500ms
+Type "sim ensemble factors markets --chart"
+Sleep 400ms
+Enter
+Wait
+Sleep 24s
+Type "clear && sim ensemble factors markets --varying"
+Sleep 400ms
+Enter
+Wait
+Sleep 20s
 ```
 
 If every value were drawn on its own, the futures would be strange: high
 inflation with rock bottom interest rates, year after year. In real life,
 they tend to move together. The templates tie them with factors: shared
-influences that aren't values themselves. Core inflation sits at the top;
-the consumer price index hangs under it, and so do interest rates, with
-the cash yield under those. How tightly each one follows was measured
-from a century of history.
+influences that aren't values themselves. Sim ensemble factors, with dash
+dash chart, draws them. Core inflation sits at the top. The consumer price
+index hangs under it, and so do interest rates, with the cash yield under
+those. Each number is how closely a factor follows the one above it,
+measured from a century of history. The market, for stocks, is a tree of
+its own.
+
+With dash dash varying, it lists the rows that hang from each factor:
+here, a path for every inflation series and market rate. Rho to tree is
+how closely a row follows the top of its tree: the cash yield follows core
+inflation at point eight five. And at the bottom, the rows that vary on
+their own, among them Alice and Bill's car.
 
 ## Scene `pair`: Seeing it in the draws
 
@@ -243,8 +261,17 @@ Sleep 5s
 
 Sim run sees that markets is an ensemble, and runs every member, as many
 at once as the computer has processors. Eighty whole runs of the plan take
-about half a minute here. Each member keeps its own run file, in one
-folder for the batch. And look: in five of the eighty futures, an account
+about half a minute here.
+
+While it runs: how many members is enough? Eighty is plenty for a first
+look. To trust a number, run more, and see whether it moves. A recipe with
+many varying rows, like this one, stays noisy longer: even four hundred
+members may not settle it. Doubling to eight hundred would do, but a
+thousand has an advantage: every member is a tenth of a percent, so twelve
+futures that run out is simply one point two percent. Sim ensemble edit,
+with dash dash size, changes it.
+
+Each member keeps its own run file, in one folder for the batch. And look: in five of the eighty futures, an account
 went negative. In those, the money ran out.
 
 > Production note: the count is live; how long it takes depends on the
