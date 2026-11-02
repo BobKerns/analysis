@@ -594,11 +594,8 @@ def _announce_current(name: str | None, previous: str | None) -> None:
 def _note_use(data_dir: Path | None, *names: str | None) -> None:
     """Record use of ``names`` (#322) by a command that reads only runs, so
     may have no data repo (``--runs-dir``): then there is nothing to record."""
-    try:
-        data = _resolve_data_dir(data_dir)
-    except click.ClickException:
-        return
-    working_set.use(data, *names)
+    if (data := _current_data_dir(data_dir)) is not None:
+        working_set.use(data, *names)
 
 
 def _resolve_data_dir(data_dir: Path | None) -> Path:
@@ -2059,10 +2056,13 @@ _report_graph_options = _graph_options("it as the notebook's chart", after="the 
 
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
-                      batch: str | None = None, exclude: str | None = None) -> str:
+                      batch: str | None = None, exclude: str | None = None, *,
+                      data_dir: Path | None = None, current: bool = True) -> str:
     """An ensemble with a run batch of ``mode`` (any, when None) under
-    ``runs_dir`` asked for: the batch named ``batch`` when given; never
-    ``exclude``."""
+    ``runs_dir``: the current scenario when it is one (#449), announced as
+    `_resolve_scenario` announces it, else one asked for; the batch named
+    ``batch`` when given; never ``exclude``. ``current=False`` always asks,
+    for a second ensemble such as a comparison's variant."""
     def has_runs(recipe: Path) -> bool:
         if batch:
             return is_ensemble_batch(recipe / batch, mode)
@@ -2073,7 +2073,27 @@ def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble"
         if p.is_dir() and p.name != exclude and has_runs(p)
     )
     plural = f"ensembles with a batch {batch}" if batch else "ensembles with runs"
+    data = _current_data_dir(data_dir) if current else None
+    name = read_current_scenario(data) if data is not None else None
+    if name is not None and name in recipes:
+        ctx = click.get_current_context(silent=True)
+        if ctx is None or not ctx.meta.get(_SCENARIO_ANNOUNCED):
+            click.echo(f"Using scenario {name}", err=True)
+            if ctx is not None:
+                ctx.meta[_SCENARIO_ANNOUNCED] = True
+        return name
+    if name is not None:
+        click.echo(f"The current scenario, {name}, is not among them.", err=True)
     return _ask_name("ensemble", recipes, prompt=prompt, plural=plural)
+
+
+def _current_data_dir(data_dir: Path | None) -> Path | None:
+    """The data repo, when there is one: a command that reads only runs
+    (``--runs-dir``) may have none, and then has no current scenario."""
+    try:
+        return _resolve_data_dir(data_dir)
+    except click.ClickException:
+        return None
 
 
 def _resolve_runs_dir(runs_dir: Path | None, data_dir: Path | None) -> Path:
@@ -2166,13 +2186,15 @@ def ensemble_summary(
     --start and --end limit the years shown; the share ever below the
     reserve still looks back to the start of the run.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     _check_lot_has_account(account, lot)
     _check_log(log_scale, as_graph, graph_file)
     years = _year_range(first_year, last_year)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
         known = _ask_again_once_known(scenario_name=scenario_name)
         account, lot = known["account"], known["lot"]
     after_tax = not pre_tax and account is None
@@ -2299,8 +2321,9 @@ def ensemble_compare(
     over the whole run, so the share ever below the reserve looks back to
     its start.
 
-    Either ensemble left out is asked for, from those that have been run
-    (one variant)."""
+    Without BASELINE, the current scenario when it is an ensemble that has
+    been run; otherwise either ensemble left out is asked for, from those
+    that have been run (one variant)."""
     _check_lot_has_account(account, lot)
     _check_log(log_scale, as_graph, graph_file)
     years = _year_range(first_year, last_year)
@@ -2312,10 +2335,11 @@ def ensemble_compare(
     if baseline is None or not variants:
         if baseline is None:
             baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline",
-                                         exclude=variants[0] if variants else None)
+                                         exclude=variants[0] if variants else None,
+                                         data_dir=data_dir)
         if not variants:
             variants = (_ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant",
-                                          exclude=baseline),)
+                                          exclude=baseline, current=False),)
         known = _ask_again_once_known(baseline=baseline, variants=variants)
         baseline, variants = known["baseline"], tuple(known["variants"])
         account, lot = known["account"], known["lot"]
@@ -2542,10 +2566,12 @@ def ensemble_guard_rails(
     The rails are the recipe's guard_rails.csv as it is now, read from the
     data repo: editing one reruns nothing. --chart draws the shares and RMS.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     mode = DollarMode(dollars)
@@ -2617,10 +2643,12 @@ def ensemble_drift(
     instead (signed: above zero is overweight). --chart draws the spread
     over every month.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
@@ -2684,10 +2712,12 @@ def ensemble_spending(
     plan delivered, the years cut on average and the members ever cut.
     --chart draws the spread of spending by year against the plan.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
@@ -2834,7 +2864,8 @@ def ensemble_sensitivity(
     row's correlation with its 95% interval at that year. --years picks the
     year: its last.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for.
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for.
     """
     if row is not None and attribute is not None:
         raise click.UsageError("use one of --row and --attribute")
@@ -2845,7 +2876,7 @@ def ensemble_sensitivity(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
     _hold_tables()
     draw = (
         (lambda fig: _draw_figure(fig, graph_file, "sensitivity-"))
@@ -2961,7 +2992,8 @@ def ensemble_draws(
     draws them as the notebook does (#330): the node's values and u
     histograms, the pair's scores against each other.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     from analysis.sim.draws_db import build_draws_db, draws_db_current, draws_db_path, open_draws_db
 
     charted = as_graph or graph_file is not None
@@ -2975,7 +3007,7 @@ def ensemble_draws(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
