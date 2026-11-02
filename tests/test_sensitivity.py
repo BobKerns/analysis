@@ -370,6 +370,47 @@ def test_draws_frame_excludes_member_zero(mc_batch: Path) -> None:
     assert list(draws.columns) == ["gift", "retire_bill_vary"]
 
 
+def test_mc_report_holds_few_member_files_open(
+    mc_batch: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch's members share a handle budget: a thousand-member batch
+    used to open a file per member and run out (#448). With a budget of two
+    the 8-member report still reads every member, reopening as it goes, and
+    matches the report read with them all open."""
+    from analysis.sim.connection import HandleBudget
+    from analysis.sim.ensemble import load_ensemble
+
+    expected = sensitivity.mc_report(mc_batch).table
+    monkeypatch.setattr(HandleBudget, "DEFAULT_LIMIT", 2)
+    connections = load_ensemble(mc_batch)
+    try:
+        budget = next(iter(connections.values()))._handles
+        assert budget is not None and budget.open_count == 0
+        outcomes = sensitivity.outcomes_frame(connections, list(connections))
+        assert budget.open_count == 2
+        assert len(outcomes) == 8
+        # The first member's handle was closed to make room; it reopens.
+        assert not next(iter(connections.values())).net_worth_frame().empty
+        assert budget.open_count == 2
+    finally:
+        for rc in connections.values():
+            rc.close()
+    assert budget.open_count == 0
+    pd.testing.assert_frame_equal(sensitivity.mc_report(mc_batch).table, expected)
+
+
+def test_cli_names_the_missing_batch_mode(mc_batch: Path, runs_dir: Path) -> None:
+    """A recipe run only as Monte Carlo has runs, just no sensitivity batch:
+    say so and how to make one, not 'no ensemble runs found' (#448)."""
+    for command in (["sensitivity", "--row", "gift"], ["draws", "--mode", "sensitivity"]):
+        result = CliRunner().invoke(main, [
+            "sim", "ensemble", *command, "retire_alice", "--runs-dir", str(runs_dir),
+        ])
+        assert result.exit_code != 0
+        assert ("retire_alice has no sensitivity (OAT) batch, only Monte Carlo runs; "
+                "'sim run retire_alice --sensitivity' makes one") in result.output, command
+
+
 # --- #38: correlated inputs -------------------------------------------------------
 
 
