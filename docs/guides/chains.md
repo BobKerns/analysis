@@ -424,7 +424,9 @@ step a `maximum` instead of a `percent`.
   refill chain gave nothing. Every step was at or below its own minimum, or
   the chain names the wrong lot. `sim chain show X` shows each step's lot
   and the minimum it keeps. `sim explain` lists every such warning from the
-  latest run, read back from the run file's `negative_balance_warnings`.
+  latest run, read back from the run file's `negative_balance_warnings`,
+  with the lowest balance the account reached; the notebooks list the same
+  under the scenario picker.
 - **Money never drawn.** The last step has a `percent` or a `maximum`
   (section 3). Make the last step a plain one, or add a step after it.
 - **A step never used.** An earlier plain step took everything. Steps after

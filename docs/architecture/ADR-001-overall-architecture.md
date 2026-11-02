@@ -139,7 +139,7 @@ The existing `analysis.storage` module contains item-import schemas specific to 
 - `analysis sim load <scenario>` — build/refresh `state/intent/<scenario>.sqlite3` from the data repo. Silently rebuilds when the source CSV hash or `data_version` no longer matches; `--force` always rebuilds. Intent files are a derived cache and may be deleted at any time.
 - `analysis sim run <scenario>` — execute against the (auto-loaded) intent file, write a new run file at `state/runs/<isoZ>_<scenario>_<dataSHA>.sqlite3`.
 - `analysis sim list` — list run files with status, versions, who, when.
-- `analysis sim explain [<scenario> | <runfile>]` — scenario name, versions, year-end net worth (nominal and CPI-constant; after tax unless `--pre-tax`), lots at the final step, and the recorded negative-balance warnings, for the scenario's latest run (the current scenario's by default) or a named run file. Sanity dump.
+- `analysis sim explain [<scenario> | <runfile>]` — scenario name, versions, year-end net worth (nominal and CPI-constant; after tax unless `--pre-tax`), lots at the final step, and the recorded negative-balance warnings (each with the lowest balance its account reached before its next warning), for the scenario's latest run (the current scenario's by default) or a named run file. Sanity dump.
 - `analysis sim networth [<scenario>] [--monthly | --yearly] [--dollars cpi_constant|nominal]` — net worth by year (or month) from the scenario's latest run, or `--runfile`, in CPI-constant dollars unless `--dollars nominal`.
 - `analysis sim compare <runfile_a> <runfile_b> [--by subkind|account|owner]` — `ATTACH`es both files, prints net-worth table + matplotlib chart; flags version skew in the report header.
 - `analysis sim query "<sql>" <runfile>` — read-only SQL passthrough, pretty-printed. Entry point for AI-assisted exploration.
@@ -183,3 +183,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#186](https://github.com/BobKerns/analysis/issues/186): `sim explain` takes a scenario and lists negative-balance warnings; `sim networth` added (CLI surface).
 - [#214](https://github.com/BobKerns/analysis/issues/214): the prompt shows the current scenario (Activation).
 - [#332](https://github.com/BobKerns/analysis/issues/332): `sim explain`'s year-end net worth is after tax unless `--pre-tax`, like the other reports (CLI surface).
+- [#431](https://github.com/BobKerns/analysis/issues/431): the notebooks show a run's negative-balance warnings as `sim explain` lists them, each with its lowest balance (principle 7, CLI surface).

@@ -40,7 +40,7 @@ from analysis.expenses.baseline import (
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
-    sensitivity, setup_listings, strategy_code, strategy_files, strategy_guide, symbols, units, working_set,
+    sensitivity, setup_listings, shortfalls, strategy_code, strategy_files, strategy_guide, symbols, units, working_set,
     ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
@@ -65,7 +65,8 @@ from analysis.sim.distributions import (
     resolve_truncated_normal_bounds,
     rewrite_outcomes,
 )
-from analysis.sim.engine import describe_negative_balance_event, run_scenario
+from analysis.sim.engine import run_scenario
+from analysis.sim.shortfalls import account_with_lot as _account_with_lot
 from analysis.sim.strategy_api import Strategy
 from analysis.sim.series_db import (
     EnsembleSeries,
@@ -3424,7 +3425,7 @@ def _report_correlation(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     measure: str, years: list[int] | None, negligible: float, draw: _Draw | None = None,
 ) -> None:
-    """ADR-007 §6.2: rho [interval], SRRC [interval] and PRCC per row and
+    """ADR-007 §6.2: rho, SRRC and PRCC, each with its interval, per row and
     year, R^2 per year, each latent factor's rho, the achieved score
     correlations of a correlated batch, and each row's keep / pin_candidate /
     inconclusive status -- by rho, or by SRRC when rows are correlated."""
@@ -3486,7 +3487,8 @@ def _report_correlation(
             click.echo(
                 f"    {row['row']:<24} rho={_signed(row['rho'])} [{_signed(row['rho_low'])}, "
                 f"{_signed(row['rho_high'])}]  srrc={_signed(row['srrc'])} [{_signed(row['srrc_low'])}, "
-                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])}"
+                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])} [{_signed(row['prcc_low'])}, "
+                f"{_signed(row['prcc_high'])}]"
             )
         for _, row in at[at["factor"]].iterrows():
             click.echo(
@@ -3998,8 +4000,9 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
     """The run's strategies (#326): each one's kind and chain, how many
     decisions it made, and how much it moved against what it was asked; a
     year-end strategy (#421), what its moves moved and the gain they
-    realized (a harvest's, or a cash gift's sale). Says nothing for a run
-    with none, or one from before them."""
+    realized (a harvest's, or a cash gift's sale); a triggered one (#441),
+    how often each rail was past, answered and back inside. Says nothing
+    for a run with none, or one from before them."""
     if not _has_table(con, "strategy_decision"):
         return
     rows = con.execute(
@@ -4022,6 +4025,16 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
                 "FROM strategy_decision d JOIN strategy s ON s.id = d.strategy_id "
                 "WHERE d.hook = 'year_end' GROUP BY s.id")
         }
+    breach_lines: dict[str, list[str]] = {}
+    told = strategy_guide.breaches(con)
+    for key in sorted(set(zip(told["strategy"], told["rail"], told["margin_kind"], strict=True))):
+        name, rail, kind = key
+        group = told[(told["strategy"] == name) & (told["rail"] == rail) & (told["margin_kind"] == kind)]
+        states = group["state"]
+        breach_lines.setdefault(str(name), []).append(
+            f"{rail}:{kind}: past {int((states == 'entered').sum())} time(s), "
+            f"{int((states != 'left').sum())} year(s) in all, answered {int(group['answered'].sum())} "
+            f"of {len(group)}, back inside {int((states == 'left').sum())} time(s)")
     click.echo(f"strategies ({len(rows)}; `sim strategy log` lists the decisions):")
     for name, kind, chain, count, asked, chosen, fallback in rows:
         owns = f" on {chain}" if chain else ""
@@ -4033,6 +4046,8 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
             moved, gain = year_end[name]
             line += f", year end moved ${moved / 100:,.2f} realizing ${gain / 100:,.2f} of gain"
         click.echo(line)
+        for rail_line in breach_lines.get(name, []):
+            click.echo(f"    {rail_line}")
 
 
 def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
@@ -4069,24 +4084,16 @@ def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
 
 def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
     """The run's recorded negative-balance warnings (ADR-003 §4.7): the
-    month each asset account went negative, its balance then, and what its
-    refill chain did, worded as the run's warning was."""
-    (raw,) = con.execute(
-        "SELECT json_extract(run_args_json, '$.negative_balance_warnings') "
-        "FROM simulation_run WHERE id = 1"
-    ).fetchone()
-    events = json.loads(raw) if raw else []
-    if not events:
+    month each asset account went negative, its balance then, the lowest it
+    reached, and what its refill chain did, worded as the run's warning was.
+    The notebooks list them the same way (#431)."""
+    found = shortfalls.negative_balances(con)
+    if not found:
         click.echo("negative-balance warnings: none")
         return
-    click.echo(f"negative-balance warnings ({len(events)}):")
-    width = max(len(str(e.get("account", ""))) for e in events)
-    for event in events:
-        click.echo(
-            f"  {event.get('month', '-')}  {str(event.get('account', '-')):<{width}}"
-            f"  {_compact_cents(event.get('balance_cents'))}"
-            f"  {describe_negative_balance_event(event)}"
-        )
+    click.echo(f"negative-balance warnings ({len(found)}):")
+    for line in shortfalls.warning_lines(found):
+        click.echo(f"  {line}")
 
 
 @sim_group_command.command("networth")
@@ -5585,15 +5592,6 @@ def _write_calendar_row(
             staged, registries.CALENDAR_HEADER, _keep_unexpressed(row, chosen), replace=index,
         )
     return "updated"
-
-
-def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
-    """``name``, plus ``(lot)`` where the lot is worth showing."""
-    if not name:
-        return ""
-    if lot and (subkind in INVESTMENT_ASSET_SUBKINDS or lot != registries.DEFAULT_LOT):
-        return f"{name} ({lot})"
-    return name
 
 
 def _lot_info(con: sqlite3.Connection) -> dict[str, tuple[bool, list[str]]]:
@@ -9821,9 +9819,11 @@ def report_expenses_command(
 @click.option("--by", "by", default="category", show_default=True,
               help="Group by category (default), account, or tag:ROLE, as `sim report expenses` does.")
 @_year_range_options
+@_report_graph_options
 @_report_options
 def report_spending_command(
     by: str, first_year: int | None, last_year: int | None,
+    as_graph: bool, graph_file: Path | None,
     dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show spending against the plan by year: what spending strategies
@@ -9841,21 +9841,39 @@ def report_spending_command(
 
     --start and --end limit the years in the table; the lines below it
     still cover the whole run.
+
+    --chart draws delivered spending as a bar per year against the plan as
+    a line, over the years in the table, as the notebook's spending widget
+    does.
     """
     _check_by(by)
     years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
+        _hold_tables()
         try:
             delivered, budgeted = reports.spending_by_year(rc, by=by, mode=mode)
         except KeyError as exc:
             raise click.ClickException(exc.args[0]) from None
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     if delivered.empty and budgeted.empty:
         click.echo(f"no spending in {described}")
+        _graph_nothing(graph_file, "spending", "spending-")
         return
     frame, summary = reports.spending_report(delivered, budgeted)
     frame = _shown_years(frame, years)
-    _print_report(frame, f"spending against plan by {by.removeprefix('tag:')}", described, mode)
+    what = f"spending against plan by {by.removeprefix('tag:')}"
+    _print_report(frame, what, described, mode)
+
+    def figure():
+        from analysis.sim.spending_charts import spending_figure
+
+        return spending_figure(frame, f"{what.capitalize()}, {_DOLLAR_LABELS[mode]} ({described})",
+                               ylabel=_DOLLAR_LABELS[mode], deaths=deaths)
+
+    # Before the lines below the table, as a run with no strategy returns
+    # early there and still has a plan to draw.
+    _draw_report(as_graph, graph_file, figure, "spending-")
     if summary["of_plan"] == 1.0 and not any(k.startswith(reports.FILLED) for k in summary):
         click.echo("no spending strategy changed this run's spending: delivered is the plan")
         return
@@ -10091,6 +10109,8 @@ def report_guard_rails_command(
         results = guard_rails.evaluate_run(rc, rails, mode)
         deaths = _chart_deaths(rc, as_graph, graph_file)
         name = rc.label
+        spells = (strategy_guide.breach_episodes(rc._con)
+                  if _has_table(rc._con, "breach_event") else [])
     shown = [r for r in results if r.applies]
     for r in results:
         if not r.applies:
@@ -10122,6 +10142,7 @@ def report_guard_rails_command(
                                                      cell_style=style))
     click.echo("")
     _print_unclipped(_render_rail_summary(guard_rails.summary_frame(shown)))
+    _echo_rail_responses(spells, {r.rail.name for r in shown})
 
     def figure():
         from analysis.sim.guard_rail_charts import guard_rail_figure
@@ -10131,6 +10152,28 @@ def report_guard_rails_command(
                                  years=years, deaths=deaths)
 
     _draw_report(as_graph, graph_file, figure, "guard-rails-")
+
+
+def _echo_rail_responses(
+    spells: Sequence[tuple[str, str, str, int, int | None, int]], rails: Collection[str],
+) -> None:
+    """Where a strategy's trigger (#441) watched one of ``rails``: each
+    spell past it (``strategy_guide.breach_episodes``), when it began, how
+    many of its years a decision answered, and how long until the margin
+    was back inside. The run saw each year's margin in the January after
+    it; the table above re-reads the whole run, which agrees, since a
+    rail's measure is causal."""
+    spells = [s for s in spells if s[1] in rails]
+    if not spells:
+        return
+    click.echo("")
+    click.echo("responses (`sim strategy log --breaches` lists each one):")
+    for strategy, rail, kind, first, back, answered in spells:
+        if back is None:
+            end = "not back inside"
+        else:
+            end = f"back inside {back} ({back - first} year{'s' if back - first != 1 else ''})"
+        click.echo(f"  {rail}:{kind} past from {first}, {strategy} answered {answered}, {end}")
 
 
 @account_group_command.group(name="tag")
@@ -16382,6 +16425,9 @@ _STRATEGY_OPTIONS = (
     click.option("--rules", type=completion.RULE_TAG, default=None,
                  help="The scheduled rules it scales: those carrying this tag, e.g. spending:travel "
                       "('' for none)."),
+    click.option("--trigger", type=completion.TRIGGER, default=None,
+                 help="Guard rails it answers, space-separated RAIL:annual or RAIL:cumulative, for a "
+                      "kind with on_breach ('' for none)."),
     click.option("--param", "param_specs", multiple=True, metavar="NAME=VALUE",
                  help="A parameter (repeatable), e.g. --param band=5%; NAME= restores its default. "
                       "`sim strategy kinds KIND` lists them."),
@@ -16447,6 +16493,21 @@ def _ask_owned(
     return chain.strip(), rules.strip()
 
 
+def _ask_trigger(data: Path, scenario: str, cls: type[Strategy], current: str = "") -> str:
+    """The guard rails a kind with an ``on_breach`` hook answers (#441),
+    blank for none; nothing is asked for any other kind."""
+    if "on_breach" not in cls.hooks:
+        return current
+    rails = names.guard_rail_names(data, scenario)
+    if rails:
+        click.echo(f"guard rails: {', '.join(rails)}")
+    choices = [f"{rail}:{kind}" for rail in rails for kind in registries.TRIGGER_MARGIN_KINDS]
+    return _prompt_with_completion(
+        "rails it answers (RAIL:annual or RAIL:cumulative, space-separated; blank: none)",
+        choices=choices, default=current,
+    ).strip()
+
+
 def _merge_params(current: str, changes: Mapping[str, Any]) -> str:
     params = json.loads(current) if current.strip() else {}
     if not isinstance(params, dict):
@@ -16504,7 +16565,7 @@ def _write_strategy(
               help="What it does (`sim strategy kinds`).")
 @_strategy_options
 def strategy_add_command(
-    name: str | None, kind: str | None, chain: str | None, rules: str | None,
+    name: str | None, kind: str | None, chain: str | None, rules: str | None, trigger: str | None,
     param_specs: tuple[str, ...], start: str | None, end: str | None, description: str | None,
     enabled: bool | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
@@ -16531,6 +16592,8 @@ def strategy_add_command(
     cls = kinds.kinds[kind]
     if guided:
         chain, rules = _ask_owned(data, scenario_name, cls, chain, rules)
+        if trigger is None:
+            trigger = _ask_trigger(data, scenario_name, cls)
     try:
         params = strategy_guide.parse_param_specs(cls, param_specs)
     except ValueError as exc:
@@ -16539,7 +16602,7 @@ def strategy_add_command(
         params.update(_ask_params(cls, {k: v for k, v in params.items() if v is not None}))
     row = {
         "kind": kind, "chain": (chain or "").strip(), "rules": (rules or "").strip(),
-        "start": (start or "").strip(),
+        "trigger": " ".join((trigger or "").split()), "start": (start or "").strip(),
         "end": (end or "").strip(), "enabled": "" if enabled in (None, True) else "false",
         "params_json": _merge_params("", params), "description": (description or "").strip(),
     }
@@ -16562,7 +16625,7 @@ def _pick_strategy(folder: Path, scenario_name: str, name: str | None, prompt: s
 @click.argument("name", required=False, type=completion.STRATEGY)
 @_strategy_options
 def strategy_edit_command(
-    name: str | None, chain: str | None, rules: str | None, param_specs: tuple[str, ...],
+    name: str | None, chain: str | None, rules: str | None, trigger: str | None, param_specs: tuple[str, ...],
     start: str | None, end: str | None, description: str | None, enabled: bool | None,
     scenario: str | None, data_dir: Path | None,
 ) -> None:
@@ -16579,7 +16642,8 @@ def strategy_edit_command(
     cls = kinds.kinds.get(row["kind"])
     if cls is None:
         raise click.ClickException(f"strategy {strategy_name}'s kind {row['kind']!r} isn't defined")
-    guided = all(v is None for v in (chain, rules, start, end, description, enabled)) and not param_specs
+    guided = (all(v is None for v in (chain, rules, trigger, start, end, description, enabled))
+              and not param_specs)
     try:
         changes = strategy_guide.parse_param_specs(cls, param_specs)
     except ValueError as exc:
@@ -16587,6 +16651,7 @@ def strategy_edit_command(
     if guided:
         click.echo(f"{strategy_name}: {strategy_guide.summary(row)}")
         chain, rules = _ask_owned(data, scenario_name, cls, None, None, current=row)
+        trigger = _ask_trigger(data, scenario_name, cls, row["trigger"])
         start = click.prompt("first month (blank: the start)", default=row["start"], show_default=False)
         end = click.prompt("last month (blank: the end)", default=row["end"], show_default=False)
         enabled = click.confirm("enabled", default=row["enabled"].strip().lower() not in ("false", "no", "0"))
@@ -16598,6 +16663,8 @@ def strategy_edit_command(
                           ("description", description)):
         if value is not None:
             new[column] = value.strip()
+    if trigger is not None:
+        new["trigger"] = " ".join(trigger.split())
     if enabled is not None:
         new["enabled"] = "" if enabled else "false"
     new["params_json"] = _merge_params(row["params_json"], changes)
@@ -16646,19 +16713,39 @@ _has_table = drift.has_table
 @click.option("--strategy", "strategy_name", type=completion.STRATEGY, default=None,
               help="Only this strategy's decisions.")
 @click.option("--year", type=int, default=None, help="Only this year's decisions.")
+@click.option("--breaches", is_flag=True, default=False,
+              help="List the guard-rail breaches strategies were told of instead (#441).")
 @_run_target_options
 def strategy_log_command(
-    target: str | None, strategy_name: str | None, year: int | None, runfile: Path | None,
-    data_dir: Path | None, runs_dir: Path | None,
+    target: str | None, strategy_name: str | None, year: int | None, breaches: bool,
+    runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """List a run's strategy decisions (the latest run by default): each
     month a strategy decided, what it was asked, what its own moves paid or
-    placed, what the chain's steps covered after it, and its note."""
+    placed, what the chain's steps covered after it, and its note. An
+    on_breach decision's note starts with the breach it answered.
+
+    --breaches lists each breach of a rail a strategy's trigger names
+    instead: the year, entered, continued or left, the measure, line and
+    margin in CPI-constant dollars, and whether the strategy answered."""
     path = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
     try:
         if not _has_table(con, "strategy_decision"):
             click.echo(f"no strategies in {path.name} (a run from before them)")
+            return
+        if breaches:
+            told = strategy_guide.breaches(con, strategy=strategy_name)
+            if year is not None:
+                told = told[told["year"] == year]
+            if told.empty:
+                click.echo(f"no breaches in {path.name}")
+                return
+            for column in ("measure", "threshold", "margin"):
+                told[column] = told[column].map(lambda d: f"{'-' if d < 0 else ''}${abs(d):,.0f}")
+            told["answered"] = told["answered"].map({True: "yes", False: "no"})
+            click.echo(told.rename(columns={"margin_kind": "margin of", "years_past": "years past"})
+                       .to_string(index=False))
             return
         frame = strategy_guide.decision_log(con, strategy=strategy_name, year=year)
     finally:

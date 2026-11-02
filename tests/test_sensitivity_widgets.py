@@ -18,6 +18,7 @@ from analysis.sim import sensitivity_charts as sc
 from analysis.sim.notebook_ui import sensitivity_widgets as sw
 from analysis.sim.notebook_ui.pickers import (
     AttributionPicker,
+    CorrelationMeasurePicker,
     DeltaScalePicker,
     HeatmapValuePicker,
     ParameterPicker,
@@ -34,6 +35,9 @@ def test_toggle_pickers_offer_their_enums() -> None:
     assert [v for _label, v in HeatmapValuePicker().options] == list(HeatmapValue)
     assert [v for _label, v in AttributionPicker().options] == list(AttributionAxis)
     assert AttributionPicker(AttributionAxis.HOLDING_ACCOUNT).value == AttributionAxis.HOLDING_ACCOUNT
+    assert [v for _label, v in CorrelationMeasurePicker().options] == list(
+        sensitivity.CORRELATION_MEASURES)
+    assert CorrelationMeasurePicker("srrc").value == "srrc"
 
 
 def test_parameter_picker_selects_first_when_nothing_to_keep() -> None:
@@ -205,6 +209,28 @@ def test_correlation_view_plots_srrc_and_labels_factors() -> None:
     plt.close("all")
 
 
+def test_correlation_view_plots_prcc() -> None:
+    """#438: PRCC is a third measure, ranked by its own magnitude, with its
+    interval and its own axis label and title."""
+    table = pd.DataFrame([
+        {"row": "a", "year": 2030, "rho": 0.8, "rho_low": 0.7, "rho_high": 0.9, "srrc": 0.8,
+         "srrc_low": 0.7, "srrc_high": 0.9, "prcc": 0.2, "prcc_low": 0.1, "prcc_high": 0.3,
+         "r2": 0.9, "n": 100, "factor": False},
+        {"row": "b", "year": 2030, "rho": 0.1, "rho_low": 0.0, "rho_high": 0.2, "srrc": 0.1,
+         "srrc_low": 0.0, "srrc_high": 0.2, "prcc": 0.6, "prcc_low": 0.5, "prcc_high": 0.7,
+         "r2": 0.9, "n": 100, "factor": False},
+    ])
+    ax = sc.correlation_view(table, 2030, 0.05, by="prcc")
+    assert [t.get_text() for t in ax.get_yticklabels()] == ["a", "b"]
+    assert "partial rank correlation" in ax.get_xlabel()
+    assert sc.correlation_title("prcc", 2030).startswith("Partial rank correlation with net worth")
+    fig = sc.correlation_figure(table, 2030, 0.05, "recipe", by="prcc")
+    assert fig.axes[1].get_title(loc="left") == sc.correlation_title("prcc", 2030)
+    with pytest.raises(ValueError, match="by must be one of"):
+        sc.correlation_view(table, 2030, 0.05, by="r2")
+    plt.close("all")
+
+
 # --- the widget on real batches -------------------------------------------------
 
 
@@ -268,8 +294,14 @@ def test_sensitivity_widget_monte_carlo_batch(mc_batch: Path, runs_dir: Path,
     assert "Monte Carlo" in batch.label
     assert _titles(_body(box))[0] == "<h4>Parameters</h4>"
     assert len(_body(box).children) == 3
-    year_picker = _body(box).children[2].children[1].children[0]
+    year_picker, by_picker = _body(box).children[2].children[1].children
     year_picker.value = year_picker.options[0]
+    assert by_picker.value == "rho"  # an independent batch opens on what it's ranked by
+    shown = _quiet(monkeypatch)
+    by_picker.value = "prcc"  # #438
+    notes = [str(s.data) for s in shown if isinstance(s, sw.StyledMarkdown)]
+    assert any("status below is by rho" in note and "PRCC is never pinned" in note
+               for note in notes)
 
 
 def test_list_batches_labels_mode(oat_batch: Path, runs_dir: Path) -> None:
