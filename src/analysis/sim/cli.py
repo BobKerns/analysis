@@ -1287,9 +1287,9 @@ def _reserve_batch(
     disambiguating suffix covers two runs within the same wall-clock second,
     whatever their modes: ``--batch NAME`` looks in both folders, so a name
     stays unique per recipe; ``locks.naming_lock`` keeps that check and the
-    mkdirs together. Reserved by exclusive mkdir, so two concurrent `sim run`
-    processes can never both win the same batch name and race on the same
-    member files.
+    folders it makes together. Reserved by exclusive mkdir, so two
+    concurrent `sim run` processes can never both win the same batch name
+    and race on the same member files.
     """
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
     with naming_lock(runs_dir, scenario_name):

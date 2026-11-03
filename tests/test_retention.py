@@ -164,7 +164,7 @@ def test_a_pin_written_before_454_still_holds_its_moved_batch(
     assert {batch, intents}.isdisjoint(planned)
 
 
-def test_legacy_intents_move_with_their_run_batchs_mode(
+def test_legacy_intents_move_with_the_mode_of_their_run_batch(
     fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
 ) -> None:
     oat = fake_state("batch", "alice", "2026-10-01T120000Z", mode="sensitivity")
