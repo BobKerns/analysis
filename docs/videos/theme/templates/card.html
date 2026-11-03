@@ -5,11 +5,11 @@
   left, optional).
 #}
 {% block style %}
-.card { position: absolute; left: {{ 560 if speaker else 160 }}px; right: 160px; top: 260px; }
+.card { position: absolute; left: {{ 470 if speaker else 140 }}px; right: 100px; top: 140px; }
 h2 { margin: 24px 0 0; font-family: var(--font-heading); font-weight: 800; font-size: 92px; line-height: 1.05; }
 .body { margin-top: 36px; font-size: 46px; line-height: 1.35; color: var(--muted); }
 .body .line + .line { margin-top: 14px; }
-.speaker { position: absolute; left: 120px; bottom: -45px; width: 380px; }
+.speaker { position: absolute; left: 40px; bottom: -45px; width: 380px; }
 {% endblock %}
 {% block body %}
 <div class="ground"></div>

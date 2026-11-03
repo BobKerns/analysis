@@ -2959,7 +2959,7 @@ def ensemble_sensitivity(
 )
 @click.option(
     "--mode", "mode", type=click.Choice(registries.ENSEMBLE_MODES), default=None,
-    help="Which kind of batch to pick when --batch isn't given; default: the latest of either.",
+    help="Which kind of batch to pick when --batch isn't given; default: monte_carlo.",
 )
 @click.option(
     "--node", default=None, type=completion.DRAW_NODE,
@@ -2979,7 +2979,9 @@ def ensemble_sensitivity(
 @_graph_options("--node's draws and --pair's scores as the notebook's charts",
                 written="the chart (one --node or one --pair; in a pool, the first component's)",
                 after="the tables")
+@click.pass_context
 def ensemble_draws(
+    ctx: click.Context,
     scenario_name: str | None, runs_dir: Path | None, intent_dir: Path | None,
     data_dir: Path | None, batch: str | None, mode: str | None, node: str | None,
     pair: str | None, csv_file: Path | None, rebuild: bool,
@@ -2998,9 +3000,19 @@ def ensemble_draws(
     draws them as the notebook does (#330): the node's values and u
     histograms, the pair's scores against each other.
 
+    The latest Monte Carlo batch is read unless --batch names one or
+    --mode sensitivity asks for a sensitivity batch: a sensitivity batch's
+    few members each move one row, so its draws say little about the
+    distributions or how they correlate.
+
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
     from analysis.sim.draws_db import build_draws_db, draws_db_current, draws_db_path, open_draws_db
 
+    if batch in registries.ENSEMBLE_MODES:
+        raise click.UsageError(f"--batch takes a batch's timestamp (a folder under the ensemble's "
+                               f"runs); for the latest {batch} batch, use --mode {batch}")
+    if batch is None and mode is None:
+        mode = "monte_carlo"
     charted = as_graph or graph_file is not None
     if charted and node is None and pair is None:
         raise click.UsageError("--chart and --chart-file draw --node's draws or --pair's scores; "
@@ -3015,8 +3027,24 @@ def ensemble_draws(
         scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
+    if (batch_dir is None and mode == "monte_carlo" and resolved_data_dir is not None
+            and sc.ensemble_settings(resolved_data_dir, scenario_name)[1] is not None):
+        # An ensemble with no Monte Carlo batch yet gets one (Bob, #369):
+        # asking for its draws is asking for it to be run.
+        click.echo(f"{scenario_name} has no Monte Carlo batch yet; running it", err=True)
+        ctx.invoke(run, scenario_name=scenario_name, data_dir=data_dir, intent_dir=intent_dir,
+                   runs_dir=runs_dir)
+        batch_dir = latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise click.ClickException(f"no ensemble runs found under {_shown(recipe_runs_dir)}")
+    if charted and batch_mode(batch_dir) == "sensitivity":
+        # Each sensitivity member pins one row at a chosen percentile and holds
+        # the rest at their base case, so a histogram or scatter of its draws
+        # shows those few percentiles, not the distribution (#369).
+        raise click.UsageError(
+            "--chart draws a Monte Carlo batch: a sensitivity batch's members each pin one row "
+            "at a chosen percentile, so its charts would show only those few points. "
+            "Its tables (--node, --pair without --chart) still list what each member used")
     path = draws_db_path(batch_dir)
     if rebuild or not draws_db_current(batch_dir):
         resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)

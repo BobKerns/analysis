@@ -1311,6 +1311,16 @@ sim ensemble draws my_recipe --pair core_inflation,fuel_factor  # one pair's sco
 sim ensemble draws my_recipe --csv draws.csv # member x row, for a spreadsheet
 ```
 
+It reads the ensemble's latest Monte Carlo batch, even when a sensitivity
+batch is newer: a sensitivity batch's few members each move one row, so
+their draws say little about distributions or correlations. `--mode
+sensitivity` reads the latest sensitivity batch instead, and `--batch`
+names one batch by its timestamp. An ensemble that hasn't been run yet is
+run first. `--chart` won't draw a sensitivity batch, since its charts would
+show only the few percentiles it chose; its tables still list what each
+member drew. On a large ensemble the pair chart's dots are smaller and
+translucent, so the cloud's shape shows through where they overlap.
+
 The check sets each row's median and SD beside the drawn members' (member
 0, the base case, is left out), with a **KS p(u)** column. Each draw records
 **u**, where its value sits in its distribution, from 0 to 1. Draws that
