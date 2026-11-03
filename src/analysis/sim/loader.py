@@ -4437,6 +4437,7 @@ def _validate_strategies(
     life_tables = {row.get("person", ""): (row.get("life_table") or "").strip() or None for row in lifespan_rows}
     class_sets = _allocation_class_sets(allocations)
     portfolio_classes: dict[str, set[str]] = {}
+    portfolio_lots: dict[str, list[dict[str, float]]] = {}
     for m in value_rows:
         account = by_account.get(m.get("account_name", ""))
         if account is None or account.get("kind") != "asset":
@@ -4448,6 +4449,7 @@ def _validate_strategies(
         )
         for tag in tags.get(account["name"], frozenset()):
             portfolio_classes.setdefault(tag, set()).update(c for c, w in weights.items() if w > 0)
+            portfolio_lots.setdefault(tag, []).append(dict(weights))
     scenario = strategy_api.ScenarioView(
         accounts={a["name"]: (a.get("kind", ""), a.get("subkind", "")) for a in accounts},
         tax_rules=tax_scopes,
@@ -4456,6 +4458,7 @@ def _validate_strategies(
                 for p in persons},
         aux=aux_kinds,
         portfolio_classes={tag: frozenset(classes) for tag, classes in portfolio_classes.items()},
+        portfolio_lots={tag: tuple(lots) for tag, lots in portfolio_lots.items()},
     )
     prepared = strategy_load.prepare_strategies(
         list(_located(strategy_rows, registries.STRATEGIES_DIR)),

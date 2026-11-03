@@ -1519,6 +1519,53 @@ lineage reruns it; elsewhere a rail stays a lens and editing it reruns
 nothing. The design is in
 [ADR-010 §3.3](architecture/ADR-010-responsive-strategies.md).
 
+### 4.20 Don't sell after a bad year (down markets and buckets)
+
+A draw from your portfolio sells whatever the chain names first, even what
+just fell. Two built-in strategies choose where the money comes from in a
+bad market instead. Both own the chain checking refills from, as
+`rebalance` does (§4.16).
+
+- `down_market` is Guyton's withdrawal rule: each draw skips any lot whose
+  return over the last year is below 0% (`threshold`) and takes from the
+  others in the chain's order. If they can't cover it, the chain's own
+  steps pay the rest, so a fallen lot is sold last rather than never.
+  `lookback: 2` judges by the last two years, which also spares a lot that
+  fell, rose a little, and is still under water.
+- `buckets` keeps a cash reserve. Every lot in the `portfolio` tag is in a
+  bucket by what it holds: cash and CDs, bonds, or stocks. Draws take cash
+  first, then bonds, then stocks. The strategy keeps cash topped up to two
+  years (`cash_years`) of `need`, the yearly spending you expect from the
+  portfolio in today's dollars (it rises with inflation), selling stocks
+  when they gained over the last year and bonds when they didn't. When
+  stocks gained it also tops bonds up to five years (`bond_years`) from
+  stocks. With no bond funds, set `bond_years` to 0.
+
+A refill never crosses accounts: Alice's Roth sells its stock fund into the
+Roth's money-market lot, untaxed, and the brokerage sells into its own cash
+sweep, a sale whose gain is taxed. So each account that should refill needs
+a cash lot (a lot whose symbol is `CASH`), and a bond lot for bonds to be
+refilled there; the note says when an account has none.
+
+Both look at the market every month by default (`cadence: monthly`), over
+the twelve months just finished, so nothing changes all at once at New
+Year. With `cadence: annual` they look at the last calendar year instead,
+and `buckets` refills once, each January, the way many households review
+their portfolio.
+
+```sh
+sim strategy add buckets --kind buckets --chain portfolio_draw
+```
+
+asks for the rest. `sim strategy log` shows notes such as
+`took $4,169 from Asset_Brokerage_Joint:sweep (cash)` and
+`stocks -18.4% over 12 months, bonds not refilled: refilled cash to $98,709 (2 years): $6,652 from bonds`.
+To see what the plan costs or gains, compare it with `rebalance` or with no
+strategy, as in §4.16: a bucket plan holds more cash than a fixed
+allocation would, which helps after a crash that recovers slowly and costs
+growth when markets rise. The design is in
+[ADR-010 §6.5](architecture/ADR-010-responsive-strategies.md).
+
 ## 5. Looking at your results
 
 **Video.** *Looking at the results* walks through this section with Alice

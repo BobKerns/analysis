@@ -18,13 +18,14 @@ import dataclasses
 import json
 import sqlite3
 from collections.abc import Callable, Collection, Iterator, Mapping
-from datetime import date
+from datetime import date, timedelta
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
 import numpy as np
 
 from analysis.sim import guard_rails, life_table, registries
+from analysis.sim.dates import add_month_ends
 from analysis.sim.asset_classes import class_weights, weight_sets, weights_at
 from analysis.sim.measures import RailYears
 from analysis.sim.strategy_api import (
@@ -401,6 +402,7 @@ class StrategyRuntime:
             people=self._people_at(month),
             budget=lambda: self._budget(owned, month),
             annual_return=self._annual_return,
+            trailing_return=lambda refs, months: self._trailing_return(refs, months, month),
             tax=self._tax_view(month),
             history=History(lambda: self._history_months(month),
                             lambda refs: self._history_balances(refs, month)),
@@ -510,12 +512,45 @@ class StrategyRuntime:
         growth = self._growth(ids, year)
         return growth / base
 
+    def _trailing_return(self, refs: tuple[LotRef, ...], months: int, month: date) -> float | None:
+        """Growth posted to ``refs`` in the ``months`` months before ``month``
+        over their balance at the end of the month before that window (#463)."""
+        first = self._first_month
+        if first is None or month <= first:
+            return None
+        ids = [self.lot_id[ref] for ref in refs if ref in self.lot_id]
+        if not ids:
+            return None
+        last = add_month_ends(month, -1)
+        since = add_month_ends(month, -months - 1)
+        if since < first:
+            base = sum(self._opening.get(i, 0) for i in ids)
+            lo = date(first.year, first.month, 1)
+        else:
+            marks = ",".join("?" * len(ids))
+            row = self._con.execute(
+                f"SELECT COALESCE(SUM(ls.balance), 0) FROM lot_state ls "
+                f"JOIN simulation_step s ON s.id = ls.step_id "
+                f"WHERE s.month = ? AND ls.lot_id IN ({marks})",
+                (since.isoformat(), *ids),
+            ).fetchone()
+            base = row[0]
+            lo = since + timedelta(days=1)
+        if base <= 0:
+            return None
+        return self._growth_between(ids, lo, last) / base
+
     def _growth(self, ids: list[int], year: int) -> int:
+        return self._growth_between(ids, date(year, 1, 1), date(year, 12, 31))
+
+    def _growth_between(self, ids: list[int], start: date, end: date) -> int:
+        """Growth posted to ``ids`` dated ``start`` through ``end``: what the
+        growth sources paid them, less what they paid back (a loss)."""
         if not self._growth_sources:
             return 0
         marks = ",".join("?" * len(ids))
         sources = ",".join("?" * len(self._growth_sources))
-        lo, hi = f"{year}-01-01", f"{year}-12-31"
+        lo, hi = start.isoformat(), end.isoformat()
         src = sorted(self._growth_sources)
         row = self._con.execute(
             f"SELECT "
