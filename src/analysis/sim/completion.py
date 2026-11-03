@@ -29,7 +29,8 @@ from analysis.sim.loader import read_current_scenario
 __all__ = [
     "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
-    "RULE_TAG", "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "STRATEGY",
+    "RULE_TAG", "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES",
+    "SENSITIVITY_ROW", "STRATEGY",
     "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET",
     "TARGET_SET_OR_NEW", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
 ]
@@ -196,10 +197,30 @@ class PoolComponent(NameType):
 
 
 def _correlate_with(data_dir: Path, scenario: str) -> list[str]:
-    """What a ``vary_correlate_with`` can name: a calendar row, or a
-    person's lifespan node."""
+    """What a ``vary_correlate_with`` can name: a calendar row, a person's
+    lifespan node, or a varied strategy parameter's (#408)."""
     lifespans = [f"{registries.LIFESPAN_NODE_PREFIX}{p}" for p in names.person_ids(data_dir)]
-    return [*names.calendar_row_names(data_dir, scenario), *lifespans]
+    return [*names.calendar_row_names(data_dir, scenario), *lifespans,
+            *names.strategy_vary_nodes(data_dir, scenario)]
+
+
+def _sensitivity_rows(ctx: click.Context, data_dir: Path) -> list[str]:
+    """The rows a sensitivity batch varied (#329): the line's --batch of its
+    ensemble, else its latest sensitivity batch, under --runs-dir or the
+    data repo's state/runs."""
+    from analysis.sim.ensemble import read_batch_manifest
+    from analysis.sim.loader import DEFAULT_RUNS_DIR, DEFAULT_STATE_DIR, find_state_dir, latest_ensemble_batch
+
+    scenario = _scenario(ctx, data_dir)
+    if scenario is None or _given(ctx, "mode") == "monte_carlo":
+        return []
+    given = _given(ctx, "runs_dir")
+    runs = Path(given) if given else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
+    batch = _given(ctx, "batch")
+    batch_dir = (runs / scenario / batch if batch
+                 else latest_ensemble_batch(runs / scenario, mode="sensitivity", wait=False))
+    manifest = read_batch_manifest(batch_dir) if batch_dir is not None else None
+    return list((manifest or {}).get("rows", []))
 
 
 def _scenarios(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
@@ -248,6 +269,16 @@ TARGET_SET = NameType(_in_scenario(names.target_set_names), "target set")
 TARGET_SET_OR_NEW = NameType(_in_scenario(names.target_set_names), "target set", check=False)
 STRATEGY_KIND = NameType(lambda ctx, data_dir: names.strategy_kind_names(data_dir), "strategy kind")  # noqa: ARG005
 GUARD_RAIL = NameType(_in_scenario(names.guard_rail_names), "guard rail")
+
+
+def _rail_triggers(ctx: click.Context, data_dir: Path) -> list[str]:
+    """Each guard rail's two margins, as a strategy's ``trigger`` names them (#441)."""
+    rails = _in_scenario(names.guard_rail_names)(ctx, data_dir)
+    return [f"{rail}:{kind}" for rail in rails for kind in ("annual", "cumulative")]
+
+
+# Several, space-separated, so a whole value is never one of the choices.
+TRIGGER = NameType(_rail_triggers, "trigger", check=False)
 # A row may also be picked by its number or by text in it, so any value goes.
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
 # A calendar date: a literal one, or relative to a date marker (#281), whose
@@ -255,9 +286,31 @@ CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", 
 CALENDAR_DATE = NameType(_in_scenario(names.date_marker_names), "date", check=False)
 CORRELATE_WITH = NameType(_in_scenario(_correlate_with), "calendar row or lifespan",
                           plural="calendar rows and lifespans")
+# `sim ensemble sensitivity --row|--attribute`: what the batch varied, which
+# the command checks against the batch itself.
+SENSITIVITY_ROW = NameType(_sensitivity_rows, "varying row", check=False)
 # `sim ensemble draws --node`: a batch draws whatever it drew when it ran,
 # which the command checks against its draws database, not the scenario now.
 DRAW_NODE = NameType(_in_scenario(_correlate_with), "draw node", check=False)
+
+
+class NodePair(NameType):
+    """``--pair A,B``: TAB completes the node after the comma, never the
+    one before it (#330). Not re-asked as one name, which it isn't."""
+
+    def shell_complete(
+        self, ctx: click.Context, param: click.Parameter, incomplete: str,
+    ) -> list[CompletionItem]:
+        first, comma, last = incomplete.partition(",")
+        if not comma:
+            return [CompletionItem(f"{c},") for c in self.choices(ctx)
+                    if c.lower().startswith(first.lower())]
+        return [CompletionItem(f"{first},{c}") for c in self.choices(ctx)
+                if c.lower().startswith(last.lower()) and c != first]
+
+
+# `sim ensemble draws --pair`: two draw nodes, comma-separated.
+DRAW_PAIR = NodePair(_in_scenario(_correlate_with), "draw node", check=False)
 
 
 def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:
@@ -292,6 +345,17 @@ OWNER = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), 
 RULE_PERSON = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), "person")  # noqa: ARG005
 # A lot may hold a symbol nothing names yet, and prices can fetch one.
 SYMBOL = NameType(lambda ctx, data_dir: names.symbols(data_dir), "symbol", check=False)  # noqa: ARG005
+
+
+def _expense_categories(ctx: click.Context | None, data_dir: Path | None) -> list[str]:  # noqa: ARG001
+    from analysis.sim.connection import EXPENSE_CATEGORIES
+
+    return list(EXPENSE_CATEGORIES)
+
+
+# Unchecked: a batch may hold a category outside the fixed list, which the
+# command checks against the batch itself.
+EXPENSE_CATEGORY = NameType(_expense_categories, "expense category", check=False)
 AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS), "aux kind")  # noqa: ARG005
 
 

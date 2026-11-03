@@ -883,7 +883,7 @@ where you mainly want "is this even in the right ballpark," the default of
 report a specific number (a percentile, a probability of running out of
 money by some date) rather than just eyeballing a chart.
 
-## Comparing two ensembles on risk
+## Comparing ensembles on risk
 
 Comparing two recipes in `scenario_compare.ipynb` compares their member 0s,
 the central case. That's the right check that a recipe is set up as
@@ -900,12 +900,33 @@ sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint
 sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint --lot a
 ```
 
+Name more than one variant to set them all against the baseline at once,
+as the notebook's ensemble table does: one table of each variant's deltas
+and one of every recipe's tail means and reserve shares, each row one year
+and one recipe. A variant that doesn't pair with the baseline has a blank
+`P(ahead)`. Its `--chart` puts each variant's panels in a column of their
+own, side by side on a shared scale, for at most four variants:
+
+```sh
+sim ensemble compare retire_alice conservative aggressive --reserve 500000
+```
+
 Add `--chart` to either `sim ensemble summary` or `sim ensemble compare` to
 see the notebook's charts instead of the tables: the fan chart, or the
 comparison's panels described below. A terminal that shows images (iTerm2,
 kitty, Ghostty, WezTerm, VS Code's) draws them in place; any other gets a
 PNG file and its path. `--chart-file chart.svg` (or `.png`) writes the
 chart to a file instead. Add `--table` for both, the chart first.
+
+The notebook's other controls have options too. `--dollars nominal` shows
+inflated dollars instead of today's (both commands; CPI-constant is the
+default). `--start YEAR` and `--end YEAR` limit the years the tables and
+charts show; every figure is still worked out over the whole run, so the
+share of members ever below the reserve looks back to the start. `--log`
+puts the chart on a log scale, which spreads out the lower bands; a fan
+that reaches zero or below is drawn linear instead, with a warning, since
+a log scale can't show the members that ran out. On `compare`, whose
+deltas run both ways, `--log` uses a symmetric log scale.
 
 `--lot` narrows an account to one of its lots. In the notebook, a Lot
 dropdown appears under Account when the account has more than one, and
@@ -1154,6 +1175,16 @@ Useful options:
   nominal` switches from today's (CPI-constant) dollars.
 - `--measure min_net_worth` looks at the lowest net worth up to each year
   ("how close do I get to running out") instead of net worth at year-end.
+- `--row NAME` shows one row on its own: its change in every year (or
+  `--years`), one column per quantile it was moved to. TAB completes the
+  rows the batch varied.
+- `--chart` draws the notebook's charts instead of the tables (`--table`
+  for both, `--chart-file` to write a .png or .svg): the share heatmap and
+  the tornado at the last reporting year; with `--row`, its change over time
+  and, for a quantile ladder, its response curve; with `--attribute`, where
+  its change comes from. On a Monte Carlo batch it draws R² by year and each
+  row's correlation with its interval. Pick the year with `--years`: the
+  charts use the last one.
 - `--attribute NAME` breaks one row's effect down exactly: by income/expense
   category (the default, e.g. salary vs. taxes vs. growth), by individual
   income/expense account (`--by flow_account`), or by where the money ends up
@@ -1223,9 +1254,9 @@ other rows held fixed, using its own confidence interval. That interval
 narrows as R² rises, so there's no fixed member count to warn about: read
 the intervals and statuses instead. It also shows:
 
-- **prcc**, the partial rank correlation, as another view of the same
-  "holding the others fixed" effect. It grows with R², so it isn't used for
-  pinning.
+- **prcc**, the partial rank correlation, with its interval, as another
+  view of the same "holding the others fixed" effect. It grows with R², so
+  it isn't used for pinning.
 - A line for each **latent factor**, labeled "(factor)": the correlation of
   the factor with the outcome, which is how much its whole family matters.
   A factor never gets a status, since you can't pin one.
@@ -1239,6 +1270,11 @@ Rows correlated very strongly are hard to tell apart, so they often come
 out inconclusive. If that happens, pin them together, or sweep their factor
 one at a time (above) to see what the family does.
 
+In `sensitivity.ipynb`, the **Measure** toggle beside the year slider
+switches the chart between rho, srrc and prcc, each with its interval. It
+opens on what the batch is ranked by; the status table below the chart
+always stays with that.
+
 ## Checking the draws themselves
 
 Every batch keeps what it drew, and what each draw depends on, in one
@@ -1251,6 +1287,7 @@ you specified?
 ```sh
 sim ensemble draws my_recipe                 # the check, per row and factor
 sim ensemble draws my_recipe --node growth   # one row's draw in each member
+sim ensemble draws my_recipe --pair core_inflation,fuel_factor  # one pair's scores
 sim ensemble draws my_recipe --csv draws.csv # member x row, for a spreadsheet
 ```
 
@@ -1263,10 +1300,17 @@ p-value under 0.05 turns up now and then by chance, about one row in
 twenty. Correlated pairs follow, with the correlation each achieved, as in
 the Monte Carlo report above.
 
+`--chart` draws what `--node` or `--pair` lists, as the notebook does (or
+`--chart-file growth.png` writes it; add `--table` for the table too). A
+node's chart is a histogram of its drawn values, with the distribution's
+median and 5th and 95th percentiles marked, beside a histogram of its
+**u**, which should come out flat. A pair's is a scatter of the two rows'
+scores, titled with the correlation asked for and the one achieved.
+
 The file holds more than the command prints: every row's parameters, each
 tree node's own random noise before its tree mixes it in, its score, each
 future's turbulence scale under a t copula, and each year's shock on a
 process path. Values are stored as the simulator stores them (cents,
 micros, day numbers); the views ending in `_display` show dollars, percent
 and dates. Any SQLite tool opens it, and `sensitivity.ipynb`'s Draws section
-charts one row's draws and one pair's scores.
+charts one row's draws and one pair's scores, as `--chart` does.

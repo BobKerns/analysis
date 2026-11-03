@@ -1,0 +1,2 @@
+kind,chain,rules,start,end,enabled,params_json,description
+harvest,,,,,,"{""portfolio"":""portfolio:invest""}",Fill the 0% long-term gains band each December

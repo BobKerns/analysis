@@ -60,7 +60,7 @@ from analysis.sim.ensemble import (
 from analysis.sim.life_table import LifeTableAge
 from analysis.sim.registries import (
     DATE_MARKER_KIND, LATENT_FACTOR_KIND, LIFE_TABLE_DISTRIBUTION, LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET,
-    RATE_MICROS_CALENDAR_KINDS,
+    RATE_MICROS_CALENDAR_KINDS, STRATEGY_NODE_PREFIX,
 )
 from analysis.sim.schema import SCHEMA_VERSION, connect_sim_file
 
@@ -112,12 +112,13 @@ CREATE TABLE member (
 CREATE TABLE node (
     component       TEXT NOT NULL,
     name            TEXT NOT NULL,
-    node_kind       TEXT NOT NULL,      -- row | lifespan | factor
+    node_kind       TEXT NOT NULL,      -- row | lifespan | factor | strategy
     calendar_kind   TEXT,               -- a row's calendar kind
-    affects         TEXT,               -- the series, transfer or person it moves
-    target          TEXT NOT NULL,      -- amount | date | age_at_death | factor
+    affects         TEXT,               -- the series, transfer, person or strategy it moves
+    -- amount | date | age_at_death | factor, or a strategy parameter's name
+    target          TEXT NOT NULL,
     -- the stored unit of value and every bound below:
-    -- cents | micros | day_ordinal | years | score
+    -- cents | micros | day_ordinal | years | score | number
     unit            TEXT NOT NULL,
     distribution    TEXT,
     low             REAL,               -- truncated_normal: its clip bounds
@@ -467,6 +468,20 @@ def _node_records(
                 if distribution:
                     try:
                         dist = lifespan_distribution({**dict(row), "vary_distribution": distribution}, con)
+                    except EnsembleError:
+                        dist = None
+        elif name.startswith(STRATEGY_NODE_PREFIX):
+            row = cur.execute(
+                "SELECT v.*, s.name AS strategy FROM strategy_vary v "
+                "JOIN strategy s ON s.id = v.strategy_id WHERE v.name = ?", (name,),
+            ).fetchone() if _columns(con, "strategy_vary") else None
+            record.update(node_kind="strategy", affects=row["strategy"] if row else None,
+                          unit=row["unit"] if row else "number")
+            if row is not None:
+                record["outcomes"] = row["vary_outcomes"]
+                if distribution:
+                    try:
+                        dist = build_distribution({**dict(row), "vary_distribution": distribution}, "amount")
                     except EnsembleError:
                         dist = None
         elif target == FACTOR_TARGET:

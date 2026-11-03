@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -55,11 +56,79 @@ RECORDING_CPUS = 4
 RECORD_ATTEMPTS = 3
 RETRY_WAIT = 5.0
 
+GIB = 2**30
+# Memory a build plans for (measured at 4K): a clip encode or a slide's
+# browser takes up to about 2 GB, and the recording lane (VHS's browser and
+# its own 4K encode, or JupyterLab and its browser) about 3 GB. Docker
+# Desktop's VM has 8 GB unless you give it more; past that, the kernel kills
+# a task (ffmpeg "failed (-9)").
+TASK_MEMORY = 2 * GIB
+RECORDING_MEMORY = 3 * GIB
 
-def default_jobs(cpus: int | None = None) -> int:
-    """The CPUs less RECORDING_CPUS, at least 2 (1 on a single CPU)."""
+
+def default_jobs(cpus: int | None = None, memory: int | None = None) -> int:
+    """How many tasks run at once, besides recordings.
+
+    The CPUs less RECORDING_CPUS, at least 2 (1 on a single CPU), and no
+    more than ``memory`` (default: available_memory()) holds, at least 1.
+    """
     cpus = cpus or os.process_cpu_count() or 1
-    return 1 if cpus <= 1 else max(2, cpus - RECORDING_CPUS)
+    by_cpu = 1 if cpus <= 1 else max(2, cpus - RECORDING_CPUS)
+    memory = memory if memory is not None else available_memory()
+    if memory is None:
+        return by_cpu
+    return max(1, min(by_cpu, (memory - RECORDING_MEMORY) // TASK_MEMORY))
+
+
+def available_memory(cgroup_root: Path = Path("/sys/fs/cgroup")) -> int | None:
+    """Bytes a build can use: what's free, within the container's limit (None if unknown)."""
+    found: list[int] = []
+    meminfo = _read(Path("/proc/meminfo"))
+    if meminfo and (m := re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.MULTILINE)):
+        found.append(int(m[1]) * 1024)
+    for limit, usage in _cgroup_memory_files(_read(Path("/proc/self/cgroup")) or "", cgroup_root):
+        cap, used = _read(limit), _read(usage)
+        # cgroup v2 says "max" with no limit; v1 a huge number.
+        if cap and used and cap.strip().isdigit() and int(cap) < 2**60:
+            found.append(int(cap) - int(used))
+    if not found:
+        try:
+            found.append(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))  # macOS: the whole machine
+        except (ValueError, OSError, AttributeError):
+            return None
+    return max(0, min(found))
+
+
+def _cgroup_memory_files(cgroups: str, root: Path) -> list[tuple[Path, Path]]:
+    """(limit, usage) files for this process's memory cgroup and every one above it.
+
+    Any of them can hold the limit that binds. In a container the cgroup
+    mount often starts at the container's own group, so the path from
+    /proc/self/cgroup may not exist below it; its ancestors (down to the
+    mount itself) still do.
+    """
+    files: list[tuple[Path, Path]] = []
+    for line in cgroups.splitlines():
+        hierarchy, _, rest = line.partition(":")
+        controllers, _, path = rest.partition(":")
+        if hierarchy == "0" and not controllers:  # v2
+            base, limit, usage = root, "memory.max", "memory.current"
+        elif "memory" in controllers.split(","):  # v1
+            base, limit, usage = root / "memory", "memory.limit_in_bytes", "memory.usage_in_bytes"
+        else:
+            continue
+        parts = [p for p in path.split("/") if p]
+        for depth in range(len(parts), -1, -1):
+            group = base.joinpath(*parts[:depth])
+            files.append((group / limit, group / usage))
+    return files
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return Path(path).read_text()
+    except OSError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -132,16 +201,56 @@ class Workers:
     use, so the pool doesn't crowd out the recording.
     """
 
-    def __init__(self, jobs: int | None = None, *, cpus: int | None = None):
+    def __init__(self, jobs: int | None = None, *, cpus: int | None = None, memory: int | None = None):
         cpus = cpus or os.process_cpu_count() or 1
-        self.jobs = max(1, jobs or default_jobs(cpus))
+        self.jobs = max(1, jobs or default_jobs(cpus, memory))
         self.threads: int | None = None if self.jobs == 1 else max(1, max(1, cpus - RECORDING_CPUS) // self.jobs)
         self.general = ThreadPoolExecutor(self.jobs, thread_name_prefix="video")
         self.recording = (self.general if self.jobs == 1
                           else ThreadPoolExecutor(1, thread_name_prefix="video-record"))
         self.demos = _Demos()
+        render.allow_running()  # a build that failed before this one stopped them
         self.failed = threading.Event()
+        self.error: BaseException | None = None  # the first failure, which stopped the rest
         self._print = threading.Lock()
+
+    def submit(self, pool: ThreadPoolExecutor, fn: Callable[..., Any], *args: Any,
+               log: Callable[[str], None] | None = None, **kwargs: Any) -> Future[Any]:
+        """``pool.submit``, for a task that doesn't start once a build has failed.
+
+        A task that fails stops the build at once, from its own thread, so
+        its error is the one recorded and nothing queued starts after it;
+        ``log`` says so if it's the first.
+        """
+
+        def task() -> Any:
+            if self.failed.is_set():
+                raise _Stopped()
+            try:
+                return fn(*args, **kwargs)
+            except BaseException as error:
+                if not isinstance(error, _Stopped):
+                    self.stop(error, log)
+                raise
+
+        return pool.submit(task)
+
+    def stop(self, error: BaseException, log: Callable[[str], None] | None = None) -> None:
+        """A task failed (or the build was interrupted): stop every build on these workers now.
+
+        Running programs are killed rather than waited for: one may never
+        finish (a recording whose browser the kernel killed). The first
+        error is kept, and ``log`` (when given) says it's stopping for it.
+        """
+        with self._print:
+            first = self.error is None
+            if first:
+                self.error = error
+        if first and log is not None and not isinstance(error, KeyboardInterrupt):
+            lines = str(error).splitlines()
+            log(f"  stopping: {lines[0] if lines else type(error).__name__}")
+        self.failed.set()
+        render.stop_running()
 
     def log(self, log: Callable[[str], None]) -> Callable[[str], None]:
         """``log``, one line at a time from any thread."""
@@ -160,7 +269,9 @@ class Workers:
     def __enter__(self) -> Workers:
         return self
 
-    def __exit__(self, kind: object, *_: object) -> None:
+    def __exit__(self, kind: type[BaseException] | None, error: BaseException | None, _: object) -> None:
+        if error is not None:
+            self.stop(error)
         self.close(cancel=kind is not None)
 
 
@@ -417,7 +528,10 @@ def build(
         return _assemble(script, builder, workers, out_dir, log)
     except BaseException as error:
         if not isinstance(error, _Stopped):
-            workers.failed.set()
+            workers.stop(error, log)
+        if workers.error is not None and workers.error is not error:
+            # The first failure, not what stopping the rest made of this build.
+            raise workers.error from None
         raise
 
 
@@ -441,11 +555,15 @@ def build_languages(
             futures = [each.submit(build, folder, lang=lang, workers=workers, **options,
                                    log=lambda line, lang=lang: log(f"[{lang}] {line.lstrip()}"))
                        for lang in langs]
-            wait(futures)
-        errors = [f.exception() for f in futures]
-        real = [e for e in errors if e is not None and not isinstance(e, _Stopped)]
-        if real:
-            raise real[0]
+            try:
+                wait(futures)
+            except BaseException as error:
+                # Stop the languages' builds before the pool waits for them (Ctrl-C).
+                workers.stop(error, log)
+                raise
+        if workers.error is not None:
+            # The first failure, not what killing the rest made of them.
+            raise workers.error
         return [f.result() for f in futures]
 
 
@@ -467,9 +585,9 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
             by_scene[i] = done
         else:
             pool = workers.recording if plan.records else workers.general
-            by_scene[i] = pool.submit(_made, plan.make)
+            by_scene[i] = workers.submit(pool, _made, plan.make, log=log)
     visuals = [by_scene[i] for i in range(n)]
-    narrations = [workers.general.submit(builder.narration, scene) for scene in scenes]
+    narrations = [workers.submit(workers.general, builder.narration, scene, log=log) for scene in scenes]
     clips: list[Future[SceneBuild] | None] = [None] * n
     results: list[SceneBuild] = []
     pending: set[Future[Any]] = {*narrations, *visuals}
@@ -482,8 +600,8 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
                 future.result()  # raises the task's error
             for i in range(n):
                 if clips[i] is None and narrations[i].done() and visuals[i].done():
-                    clip = workers.general.submit(builder.clip, scenes[i], narrations[i].result(), plans[i],
-                                                  visuals[i].result(), first=i == 0, last=i == n - 1)
+                    clip = workers.submit(workers.general, builder.clip, scenes[i], narrations[i].result(), plans[i],
+                                          visuals[i].result(), first=i == 0, last=i == n - 1, log=log)
                     clips[i] = clip
                     pending.add(clip)
             # Each scene's line in scene order, as soon as it and every scene before it are done.
@@ -492,7 +610,9 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
                 results.append(result)
                 log(f"  {result.id:<16} {result.length:6.1f}s  narration {result.narration:<6}  "
                     f"visual {result.visual:<6}  clip {result.clip}")
-    except BaseException:
+    except BaseException as error:
+        if not isinstance(error, _Stopped):
+            workers.stop(error, log)  # before waiting: a running task may never finish on its own
         everything = [*narrations, *visuals, *(c for c in clips if c is not None)]
         for future in everything:
             future.cancel()

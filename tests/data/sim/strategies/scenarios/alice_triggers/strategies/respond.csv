@@ -1,0 +1,2 @@
+kind,chain,rules,trigger,start,end,enabled,params_json,description
+cut_on_breach,,flex:optional,tight:annual,,,,,Cut optional spending after a year past the tight line

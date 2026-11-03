@@ -40,11 +40,12 @@ from analysis.expenses.baseline import (
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
-    sensitivity, setup_listings, strategy_code, strategy_guide, symbols, units, working_set, ytd_guide,
+    sensitivity, setup_listings, shortfalls, strategy_code, strategy_files, strategy_guide, symbols, units, working_set,
+    ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
-    open_run, open_scenario, year_end_values, Connection, RunConnection,
+    EXPENSE_CATEGORIES, open_run, open_scenario, year_end_values, Connection, RunConnection,
 )
 from analysis.sim.holdings import (
     account_holdings,
@@ -64,7 +65,8 @@ from analysis.sim.distributions import (
     resolve_truncated_normal_bounds,
     rewrite_outcomes,
 )
-from analysis.sim.engine import describe_negative_balance_event, run_scenario
+from analysis.sim.engine import run_scenario
+from analysis.sim.shortfalls import account_with_lot as _account_with_lot
 from analysis.sim.strategy_api import Strategy
 from analysis.sim.series_db import (
     EnsembleSeries,
@@ -72,19 +74,19 @@ from analysis.sim.series_db import (
     build_series_db,
     member_series,
     open_series,
-    pair_members,
     write_series_db,
 )
+from analysis.sim.ensemble_tables import RecipeTables
 from analysis.sim.locks import BUILDER_CHILD_ENV, LockHolder, build_lock, building, reserve_run_path
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
     latest_ensemble_batch,
     member_run_statuses,
-    comparison_deltas,
     oat_plan,
     life_table_age,
     varying_names,
+    read_batch_manifest,
     resolve_member,
     risk_summary,
     summary_with_percentiles,
@@ -151,8 +153,9 @@ from analysis.sim.overlay import (
     Overlaid as _Overlaid,
     overlay_rows as _overlay_rows,
     scenario_calendar_rows as _scenario_calendar_rows,
+    strategy_rows as _strategy_rows,
 )
-from analysis.frames import index_years, named_rows
+from analysis.frames import clip_years, index_years, named_rows, row_years
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, ItemType
 from analysis.sim.retention import RetentionError, prune_state
 from analysis.sim.schema import connect_sim_file
@@ -591,11 +594,8 @@ def _announce_current(name: str | None, previous: str | None) -> None:
 def _note_use(data_dir: Path | None, *names: str | None) -> None:
     """Record use of ``names`` (#322) by a command that reads only runs, so
     may have no data repo (``--runs-dir``): then there is nothing to record."""
-    try:
-        data = _resolve_data_dir(data_dir)
-    except click.ClickException:
-        return
-    working_set.use(data, *names)
+    if (data := _current_data_dir(data_dir)) is not None:
+        working_set.use(data, *names)
 
 
 def _resolve_data_dir(data_dir: Path | None) -> Path:
@@ -1777,6 +1777,29 @@ def ensemble_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     _list_scenarios(data_dir, verbose, ensembles_only=True, templates=all_)
 
 
+def _no_batch_error(
+    recipe_runs_dir: Path, scenario_name: str, mode: str | None, batch: str | None,
+) -> click.ClickException:
+    """Why no batch was found for ``scenario_name``, and how to make one: a
+    recipe run only one way has no batch of the other mode, which is not the
+    same as having no runs at all (#448)."""
+    if batch:
+        return click.ClickException(f"no ensemble batch {batch} under {recipe_runs_dir}")
+    make = f"'sim run {scenario_name}{' --sensitivity' if mode == 'sensitivity' else ''}'"
+    if mode is not None and recipe_runs_dir.is_dir():
+        others = sorted({
+            batch_mode(p) for p in recipe_runs_dir.iterdir() if is_ensemble_batch(p)
+        } - {mode})
+        if others:
+            names = {"monte_carlo": "Monte Carlo", "sensitivity": "sensitivity (OAT)"}
+            have = " and ".join(names.get(m, m) for m in others)
+            return click.ClickException(
+                f"{scenario_name} has no {names.get(mode, mode)} batch, only {have} "
+                f"runs; {make} makes one"
+            )
+    return click.ClickException(f"no ensemble runs found under {recipe_runs_dir}; {make} makes one")
+
+
 def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -> Path:
     """The Monte Carlo batch ``sim ensemble summary``/``compare`` report on."""
     recipe_runs_dir = runs_dir / scenario_name
@@ -1785,7 +1808,7 @@ def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -
         else latest_ensemble_batch(recipe_runs_dir, mode="monte_carlo")
     )
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, "monte_carlo", batch)
     if batch_mode(batch_dir) != "monte_carlo":
         # ADR-007 §5: a fan-chart summary over an OAT batch is meaningless.
         raise click.ClickException(
@@ -1799,21 +1822,34 @@ def _echo_year_table(table: pd.DataFrame) -> None:
     """One header row over right-aligned columns, the same columns the
     notebook's table shows: with nine statistics a row, key=value fields
     made it hard to tell this was the same data (#155). Shares (a ``P(``
-    or ``_reserve`` column) print as percents, the rest as dollars."""
+    or ``_reserve`` column) print as percents, the rest as dollars, and a
+    missing value as a blank. A table indexed by (year, recipe) (#328)
+    leads with both, the recipe aligned left."""
 
     def cell(column: str, value: float) -> str:
+        if pd.isna(value):
+            return ""
         if column.startswith("P(") or column.endswith("_reserve"):
             return f"{value:.0%}"
         return f"{value:,.0f}"
 
-    header = ["year", *table.columns]
+    keys = (
+        [str(name) for name in table.index.names]
+        if isinstance(table.index, pd.MultiIndex) else ["year"]
+    )
+    header = [*keys, *table.columns]
     rows = [
-        [str(year), *(cell(c, v) for c, v in zip(table.columns, row, strict=True))]
-        for year, row in table.iterrows()
+        [*map(str, key if isinstance(key, tuple) else (key,)),
+         *(cell(c, v) for c, v in zip(table.columns, row, strict=True))]
+        for key, row in table.iterrows()
     ]
     widths = [max(len(cell) for cell in column) for column in zip(header, *rows, strict=True)]
+    left = len(keys) if len(keys) > 1 else 0
     for line in (header, *rows):
-        click.echo("  " + "  ".join(cell.rjust(width) for cell, width in zip(line, widths, strict=True)))
+        click.echo("  " + "  ".join(
+            cell.ljust(width) if i < left else cell.rjust(width)
+            for i, (cell, width) in enumerate(zip(line, widths, strict=True))
+        ).rstrip())
 
 
 def _close_all(connections: dict[str, RunConnection]) -> None:
@@ -1853,6 +1889,63 @@ _PRE_TAX_OPTION = click.option(
          "drawdown of traditional balances and taxable gains would owe, and any tax "
          "due but not yet paid. An account's balance is always before tax.",
 )
+
+
+def _year_range_options(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """``--start`` and ``--end`` (#331): the years a report or chart shows,
+    as the notebooks' Years slider (#245). They cut only what is shown;
+    whole-run results (break-even, ever below the reserve, a run's
+    summary) still look at the whole run."""
+    for option in reversed([
+        click.option("--start", "first_year", type=click.IntRange(1, 9999), default=None,
+                     metavar="YEAR", help="First year shown (default: the run's first). "
+                     "Whole-run results such as break-even still cover the whole run."),
+        click.option("--end", "last_year", type=click.IntRange(1, 9999), default=None,
+                     metavar="YEAR", help="Last year shown (default: the run's last)."),
+    ]):
+        fn = option(fn)
+    return fn
+
+
+def _year_range(first: int | None, last: int | None) -> tuple[int, int] | None:
+    """``--start``/``--end`` as ``clip_years`` takes them: None for the whole run."""
+    if first is None and last is None:
+        return None
+    if first is not None and last is not None and last < first:
+        raise click.UsageError("--end must be on or after --start")
+    return (1 if first is None else first, 9999 if last is None else last)
+
+
+def _shown_years[T: pd.DataFrame | pd.Series](data: T, years: tuple[int, int] | None) -> T:
+    """``data``'s rows in ``years``, refusing a range that leaves none of a
+    table that had some, rather than printing an empty table."""
+    shown = clip_years(data, years)
+    if years is not None and shown.empty and not data.empty:
+        have = row_years(data)
+        raise click.ClickException(
+            f"nothing to show {_years_text(years)}: the run covers "
+            f"{min(have)} to {max(have)}")
+    return shown
+
+
+def _check_years_in_runs(runs: Iterable[RunConnection], years: tuple[int, int] | None) -> None:
+    """Refuse ``years`` when no run has a month in them: for a command whose
+    tables may each cover only some of the run (a rail's own years, say),
+    so that no one table can tell a range outside the run from a quiet one."""
+    if years is None:
+        return
+    have = sorted({year for rc in runs for year in row_years(rc.net_worth_frame())})
+    if have and not any(years[0] <= year <= years[1] for year in have):
+        raise click.ClickException(
+            f"nothing to show {_years_text(years)}: the run covers {have[0]} to {have[-1]}")
+
+
+def _years_text(years: tuple[int, int]) -> str:
+    first, last = years
+    return (f"from {first} to {last}" if first > 1 and last < 9999
+            else f"from {first} on" if first > 1 else f"up to {last}")
+
+
 def _graph_options(
     drawn: str, *, after: str | None = None, written: str = "the chart", how: str = "",
     file_note: str = "",
@@ -1966,6 +2059,12 @@ def _hold_tables() -> None:
 
 
 _ENSEMBLE_GRAPH_OPTIONS = _graph_options("them as the notebook's chart", after="the tables")
+_LOG_OPTION = click.option(
+    "--log", "log_scale", is_flag=True,
+    help="With --chart: dollars on a log scale, as the notebook's Scale toggle; "
+         "deltas, which run both ways, on a symmetric log scale. A fan that "
+         "reaches zero or below is drawn linear, with a warning.",
+)
 
 
 def _check_graph_options(as_graph: bool, graph_file: Path | None,
@@ -1980,10 +2079,13 @@ _report_graph_options = _graph_options("it as the notebook's chart", after="the 
 
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
-                      batch: str | None = None, exclude: str | None = None) -> str:
+                      batch: str | None = None, exclude: str | None = None, *,
+                      data_dir: Path | None = None, current: bool = True) -> str:
     """An ensemble with a run batch of ``mode`` (any, when None) under
-    ``runs_dir`` asked for: the batch named ``batch`` when given; never
-    ``exclude``."""
+    ``runs_dir``: the current scenario when it is one (#449), announced as
+    `_resolve_scenario` announces it, else one asked for; the batch named
+    ``batch`` when given; never ``exclude``. ``current=False`` always asks,
+    for a second ensemble such as a comparison's variant."""
     def has_runs(recipe: Path) -> bool:
         if batch:
             return is_ensemble_batch(recipe / batch, mode)
@@ -1994,7 +2096,27 @@ def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble"
         if p.is_dir() and p.name != exclude and has_runs(p)
     )
     plural = f"ensembles with a batch {batch}" if batch else "ensembles with runs"
+    data = _current_data_dir(data_dir) if current else None
+    name = read_current_scenario(data) if data is not None else None
+    if name is not None and name in recipes:
+        ctx = click.get_current_context(silent=True)
+        if ctx is None or not ctx.meta.get(_SCENARIO_ANNOUNCED):
+            click.echo(f"Using scenario {name}", err=True)
+            if ctx is not None:
+                ctx.meta[_SCENARIO_ANNOUNCED] = True
+        return name
+    if name is not None:
+        click.echo(f"The current scenario, {name}, is not among them.", err=True)
     return _ask_name("ensemble", recipes, prompt=prompt, plural=plural)
+
+
+def _current_data_dir(data_dir: Path | None) -> Path | None:
+    """The data repo, when there is one: a command that reads only runs
+    (``--runs-dir``) may have none, and then has no current scenario."""
+    try:
+        return _resolve_data_dir(data_dir)
+    except click.ClickException:
+        return None
 
 
 def _resolve_runs_dir(runs_dir: Path | None, data_dir: Path | None) -> Path:
@@ -2064,46 +2186,69 @@ def _subject(account: str | None, lot: str | None, after_tax: bool = False) -> s
 @_ENSEMBLE_ACCOUNT_OPTION
 @_ENSEMBLE_LOT_OPTION
 @_ENSEMBLE_RESERVE_OPTION
+@click.option(
+    "--dollars", type=click.Choice([m.value for m in DollarMode]),
+    default=DollarMode.CPI_CONSTANT.value, show_default=True,
+    help="Dollars the statistics are reported in.",
+)
 @_PRE_TAX_OPTION
+@_year_range_options
 @_ENSEMBLE_GRAPH_OPTIONS
+@_LOG_OPTION
 def ensemble_summary(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
-    account: str | None, lot: str | None, reserve: str | None, pre_tax: bool,
-    as_graph: bool, graph_file: Path | None,
+    account: str | None, lot: str | None, reserve: str | None, dollars: str, pre_tax: bool,
+    first_year: int | None, last_year: int | None,
+    as_graph: bool, graph_file: Path | None, log_scale: bool,
 ) -> None:
     """Mean/median/SD, 5th/20th/.../95th percentiles and the mean of the
     worst 5% and 20% (CVaR) of year-end net worth (or --account's balance,
     or one --lot of it) across SCENARIO_NAME's members, and the share below
     the reserve when one is set. --chart draws the members' fan chart.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    --start and --end limit the years shown; the share ever below the
+    reserve still looks back to the start of the run.
+
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     _check_lot_has_account(account, lot)
+    _check_log(log_scale, as_graph, graph_file)
+    years = _year_range(first_year, last_year)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
         known = _ask_again_once_known(scenario_name=scenario_name)
         account, lot = known["account"], known["lot"]
     after_tax = not pre_tax and account is None
+    mode = DollarMode(dollars)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
     store = _open_series(batch_dir)
-    frame = _member_frame(store, account, DollarMode.NOMINAL, lot, after_tax=after_tax)
+    frame = _member_frame(store, account, mode, lot, after_tax=after_tax)
+    if mode == DollarMode.CPI_CONSTANT and frame.isna().all().any():
+        raise click.ClickException(
+            f"a member of {scenario_name!r} has no 'cpi' inflation index, so no "
+            "CPI-constant figures; pass --dollars nominal")
     reserve_dollars = _reserve_dollars(reserve, store, account)
     cpi_frame = (
         None if reserve_dollars is None
+        else frame if mode == DollarMode.CPI_CONSTANT
         else _member_frame(store, account, DollarMode.CPI_CONSTANT, lot,
                            after_tax=after_tax)
     )
+    # Every statistic is taken over the whole run before the years are cut,
+    # so ever_below_reserve still looks back to the start.
     monthly_summary = summary_with_percentiles(frame)
-    table = year_end_values(pd.concat(
+    table = _shown_years(year_end_values(pd.concat(
         [monthly_summary, risk_summary(frame, reserve_dollars, cpi_frame)], axis=1,
-    ))
+    )), years)
     click.echo(
         f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} succeeded "
-        f"member(s), {len(failed)} failed"
+        f"member(s), {len(failed)} failed; {_DOLLAR_LABELS[mode]}"
         + (f"; {_subject(account, lot, after_tax)}" if account or after_tax else "")
         + ("" if reserve_dollars is None
            else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)")
@@ -2125,18 +2270,40 @@ def ensemble_summary(
     if as_graph or graph_file is not None:
         from analysis.sim.ensemble_plots import ensemble_fan_figure
 
-        # Nominal, as the table is, so no reserve line: the reserve is
-        # in CPI-constant dollars, and the notebook draws it only there.
+        shown = clip_years(monthly_summary, years)
+        subject = _subject(account, lot, after_tax)
+        # The reserve is in CPI-constant dollars: a line only on that chart.
         _draw_figure(ensemble_fan_figure(
-            monthly_summary,
-            f"{_subject(account, lot, after_tax)} fan chart (nominal) ({scenario_name})",
+            shown, f"{subject} fan chart ({mode.label}) ({scenario_name})",
+            reserve=reserve_dollars if mode == DollarMode.CPI_CONSTANT else None,
+            log_scale=log_scale and _fan_can_log(shown, subject),
             deaths=store.base_case_deaths(),
         ), graph_file, "ensemble-")
 
 
+def _check_log(log_scale: bool, as_graph: bool, graph_file: Path | None) -> None:
+    if log_scale and not as_graph and graph_file is None:
+        raise click.UsageError("--log needs --chart or --chart-file")
+
+
+def _fan_can_log(monthly_summary: pd.DataFrame, subject: str) -> bool:
+    """Whether a fan chart of ``monthly_summary`` can take a log scale, saying
+    why not when it can't: as the notebook does, a fan that reaches zero or
+    below is drawn linear, since a log scale would hide exactly the tail the
+    chart exists to show."""
+    from analysis.sim.ensemble_plots import band_edges
+
+    plotted = [band_edges(monthly_summary)[0], "mean", "median"]
+    if (monthly_summary[plotted] <= 0).any().any():
+        click.echo(f"warning: a log scale can't show {subject} that reaches zero or below; "
+                   "drawing it linear", err=True)
+        return False
+    return True
+
+
 @ensemble_group_command.command("compare")
 @click.argument("baseline", required=False, type=completion.ENSEMBLE)
-@click.argument("variant", required=False, type=completion.ENSEMBLE)
+@click.argument("variants", nargs=-1, type=completion.ENSEMBLE)
 @_ENSEMBLE_RUNS_DIR_OPTION
 @_ENSEMBLE_DATA_DIR_OPTION
 @_ENSEMBLE_ACCOUNT_OPTION
@@ -2148,109 +2315,181 @@ def ensemble_summary(
     help="Dollars the percentiles and tail means are reported in.",
 )
 @_PRE_TAX_OPTION
+@_year_range_options
 @_ENSEMBLE_GRAPH_OPTIONS
+@_LOG_OPTION
 def ensemble_compare(
-    baseline: str | None, variant: str | None, runs_dir: Path | None, data_dir: Path | None,
-    account: str | None, lot: str | None, reserve: str | None, dollars: str,
-    pre_tax: bool, as_graph: bool, graph_file: Path | None,
+    baseline: str | None, variants: tuple[str, ...], runs_dir: Path | None,
+    data_dir: Path | None, account: str | None, lot: str | None, reserve: str | None,
+    dollars: str, pre_tax: bool, first_year: int | None, last_year: int | None,
+    as_graph: bool, graph_file: Path | None, log_scale: bool,
 ) -> None:
-    """Compare VARIANT's ensemble with BASELINE's on risk (#163), each from
-    its latest batch: by year end, each percentile breakpoint's delta, the
-    delta in the mean of the worst 5% and 20% of members (CVaR), and, when
-    the two recipes share a seed, the share of paired futures where VARIANT
-    comes out ahead. Then each recipe's tail means and, when a reserve is
-    set, the share of members below it.
+    """Compare each of VARIANTS' ensembles with BASELINE's on risk (#163),
+    each from its latest batch: by year end, each percentile breakpoint's
+    delta, the delta in the mean of the worst 5% and 20% of members (CVaR),
+    and, when a variant shares the baseline's seed, the share of paired
+    futures where it comes out ahead. Then each recipe's tail means and,
+    when a reserve is set, the share of members below it. With several
+    VARIANTS (#328), each table has a row per (year, recipe), as the
+    notebook's ensemble table does.
 
     --chart draws the notebook's comparison panels: each percentile's delta,
     the paired futures' deltas when the recipes pair, the CVaR deltas and,
-    with a reserve, the change in the shares below it. When only one recipe
-    has the account, it draws that recipe's fan chart instead.
+    with a reserve, the change in the shares below it; with several
+    VARIANTS (at most four), a column of panels each. When only one of a
+    baseline and one variant has the account, it draws that recipe's fan
+    chart instead.
 
-    Either ensemble left out is asked for, from those that have been run."""
+    --start and --end limit the years shown; the deltas are still taken
+    over the whole run, so the share ever below the reserve looks back to
+    its start.
+
+    Without BASELINE, the current scenario when it is an ensemble that has
+    been run; otherwise either ensemble left out is asked for, from those
+    that have been run (one variant)."""
     _check_lot_has_account(account, lot)
+    _check_log(log_scale, as_graph, graph_file)
+    years = _year_range(first_year, last_year)
+    if (as_graph or graph_file is not None) and len(variants) > _COMPARE_MAX_GRAPHED:
+        raise click.UsageError(
+            f"--chart draws at most {_COMPARE_MAX_GRAPHED} variants; name fewer, "
+            "or leave --chart off for the tables")
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
-    if baseline is None or variant is None:
+    if baseline is None or not variants:
         if baseline is None:
-            baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline", exclude=variant)
-        if variant is None:
-            variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant", exclude=baseline)
-        known = _ask_again_once_known(baseline=baseline, variant=variant)
+            baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline",
+                                         exclude=variants[0] if variants else None,
+                                         data_dir=data_dir)
+        if not variants:
+            variants = (_ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant",
+                                          exclude=baseline, current=False),)
+        known = _ask_again_once_known(baseline=baseline, variants=variants)
+        baseline, variants = known["baseline"], tuple(known["variants"])
         account, lot = known["account"], known["lot"]
+    # A recipe against itself is allowed, a check that its deltas are zero.
+    if len(set(variants)) < len(variants):
+        raise click.UsageError("name each variant once")
     after_tax = not pre_tax and account is None
-    _note_use(data_dir, baseline, variant)
+    _note_use(data_dir, baseline, *variants)
     _hold_tables()
     mode = DollarMode(dollars)
-    sides: dict[str, EnsembleSeries] = {}
-    for name in (baseline, variant):
-        sides[name] = _open_series(_ensemble_batch_dir(resolved_runs_dir, name, None))
-    base_conns, variant_conns = sides[baseline], sides[variant]
-    # An account only one recipe has gets that recipe's own tail table
-    # below, with no deltas: there is nothing to subtract it from.
-    frames: dict[str, pd.DataFrame] = {}
-    for name, store in sides.items():
-        try:
-            frames[name] = store.frame(account, mode, lot, after_tax=after_tax)
-        except EnsembleError:
-            pass
+    names = [baseline, *variants]
+    stores = {name: _open_series(_ensemble_batch_dir(resolved_runs_dir, name, None))
+              for name in names}
+    # An account only some recipes have gets those recipes' own tails, with
+    # no deltas for the rest: there is nothing to subtract.
+    tables = RecipeTables(stores, account, lot, mode,
+                          _reserve_dollars(reserve, stores[baseline], account),
+                          after_tax=after_tax)
     subject = _subject(account, lot, after_tax)
-    if not frames:
-        raise click.ClickException(f"no {subject} in {baseline} or {variant}")
-    reserve_dollars = _reserve_dollars(reserve, base_conns, account)
-    cpi_frames = {
-        name: (
-            frames[name] if mode == DollarMode.CPI_CONSTANT
-            else sides[name].frame(account, DollarMode.CPI_CONSTANT, lot, after_tax=after_tax)
-        )
-        for name in frames
-    } if reserve_dollars is not None else {}
-    mode_label = DollarMode(mode).label
+    if not tables.frames:
+        raise click.ClickException(f"no {subject} in {' or '.join(names)}")
+    _shown_years(next(iter(tables.frames.values())), years)  # refuses a range outside the run
+
+    def clip(frame: pd.DataFrame) -> pd.DataFrame:
+        return clip_years(frame, years)
+
+    if len(variants) == 1:
+        _echo_one_ensemble_comparison(tables, baseline, variants[0], subject, clip)
+    else:
+        _echo_ensemble_comparisons(tables, baseline, list(variants), subject, clip)
+    _echo_ensemble_rail_deltas(data_dir, baseline, variants, stores, mode, years)
+    if as_graph or graph_file is not None:
+        _draw_figure(_ensemble_compare_chart(tables, baseline, list(variants), subject,
+                                             clip=clip, log_scale=log_scale),
+                     graph_file, "ensemble-")
+
+
+def _reserve_note(tables: RecipeTables) -> str:
+    return ("" if tables.reserve is None
+            else f"; reserve ${tables.reserve:,.0f} (CPI-constant)")
+
+
+def _echo_one_ensemble_comparison(
+    tables: RecipeTables, baseline: str, variant: str, subject: str,
+    clip: Callable[[pd.DataFrame], pd.DataFrame],
+) -> None:
+    """``sim ensemble compare`` with one variant: the deltas, then each
+    recipe's tail table on its own."""
     click.echo(
-        f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
-        f"{len(base_conns)} and {len(variant_conns)} member(s)"
+        f"{variant} vs {baseline}: {subject}, {tables.mode.label} dollars; "
+        f"{len(tables.stores[baseline])} and {len(tables.stores[variant])} member(s)"
     )
-    pairs: list[tuple[str, str]] = []
-    if len(frames) == 2:
-        pairs, unpaired = pair_members(base_conns.member_ids(), variant_conns.member_ids())
+    if not tables.missing():
+        pairs, unpaired = tables.pairs(baseline, variant)
         click.echo(
             f"  paired: {len(pairs)} future(s)" if pairs else f"  not paired: {unpaired}"
         )
         click.echo(f"{variant} − {baseline}, year end:")
-        _echo_year_table(year_end_values(comparison_deltas(
-            frames[baseline], frames[variant], pairs, reserve_dollars,
-            (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
-        )))
+        _echo_year_table(tables.deltas(baseline, variant, clip))
     else:
-        missing = variant if baseline in frames else baseline
-        click.echo(f"  only one side: {missing} has no {subject}")
+        click.echo(f"  only one side: {tables.missing()[0]} has no {subject}")
+    for name in tables.frames:
+        click.echo(f"{name} tail, year end{_reserve_note(tables)}:")
+        _echo_year_table(tables.tail(name, clip))
 
-    reserve_note = (
-        "" if reserve_dollars is None
-        else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)"
+
+def _echo_ensemble_comparisons(
+    tables: RecipeTables, baseline: str, variants: list[str], subject: str,
+    clip: Callable[[pd.DataFrame], pd.DataFrame],
+) -> None:
+    """``sim ensemble compare`` with several variants (#328): the
+    notebook's two tables, by (year, recipe)."""
+    click.echo(
+        f"{', '.join(variants)} vs {baseline}: {subject}, {tables.mode.label} dollars; "
+        + ", ".join(f"{name} {len(tables.stores[name])}" for name in [baseline, *variants])
+        + " member(s)"
     )
-    for name, frame in frames.items():
-        click.echo(f"{name} tail, year end{reserve_note}:")
-        _echo_year_table(year_end_values(
-            risk_summary(frame, reserve_dollars, cpi_frames.get(name))
-        ))
-    _echo_ensemble_rail_deltas(data_dir, baseline, variant, sides, mode)
-    if as_graph or graph_file is not None:
-        from analysis.sim.ensemble_plots import ensemble_compare_figure, ensemble_fan_figure
+    if missing := tables.missing():
+        click.echo(f"  no {subject} in {', '.join(missing)}")
+    compared = [name for name in variants if name in tables.frames]
+    if baseline in tables.frames:
+        for name in compared:
+            pairs, unpaired = tables.pairs(baseline, name)
+            click.echo(f"  {name}: paired, {len(pairs)} future(s)" if pairs
+                       else f"  {name}: not paired: {unpaired}")
+        if compared:
+            click.echo(f"Against {baseline}, by year end:")
+            _echo_year_table(tables.deltas_table(baseline, compared, clip))
+    click.echo(f"Tail and reserve, by recipe, year end{_reserve_note(tables)}:")
+    _echo_year_table(tables.tails(clip))
 
-        if len(frames) == 2:
-            figure = ensemble_compare_figure(
-                baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
-                reserve_dollars,
-                (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
-                deaths=base_conns.base_case_deaths(),
-            )
-        else:
-            (name, frame), = frames.items()
-            figure = ensemble_fan_figure(
-                summary_with_percentiles(frame), f"{subject} fan chart ({mode_label}) ({name})",
-                reserve=reserve_dollars if mode == DollarMode.CPI_CONSTANT else None,
-                deaths=sides[name].base_case_deaths(),
-            )
-        _draw_figure(figure, graph_file, "ensemble-")
+
+def _ensemble_compare_chart(
+    tables: RecipeTables, baseline: str, variants: list[str], subject: str, *,
+    clip: Callable[[pd.DataFrame], pd.DataFrame], log_scale: bool = False,
+) -> Figure:
+    """``sim ensemble compare --chart``'s figure: the comparison panels for
+    each variant with the account, or, when only one of a baseline and one
+    variant has it, that recipe's fan chart."""
+    from analysis.sim.ensemble_plots import (
+        CompareSide,
+        ensemble_compare_grid_figure,
+        ensemble_fan_figure,
+    )
+
+    mode_label = tables.mode.label
+    compared = [name for name in variants if name in tables.frames]
+    if baseline in tables.frames and compared:
+        return ensemble_compare_grid_figure(
+            baseline, tables.frames[baseline],
+            {name: CompareSide(tables.frames[name], *tables.pairs(baseline, name),
+                               cpi_frame=tables.cpi_frames.get(name))
+             for name in compared},
+            mode_label, tables.reserve, tables.cpi_frames.get(baseline),
+            log_scale=log_scale, clip=clip,
+            deaths=tables.stores[baseline].base_case_deaths(),
+        )
+    if len(tables.frames) != 1:
+        raise click.ClickException(f"no chart: {baseline} has no {subject} to compare with")
+    (name, frame), = tables.frames.items()
+    shown = clip(summary_with_percentiles(frame))
+    return ensemble_fan_figure(
+        shown, f"{subject} fan chart ({mode_label}) ({name})",
+        reserve=tables.reserve if tables.mode == DollarMode.CPI_CONSTANT else None,
+        log_scale=log_scale and _fan_can_log(shown, subject),
+        deaths=tables.stores[name].base_case_deaths(),
+    )
 
 
 def _ensemble_guard_rails(
@@ -2350,10 +2589,12 @@ def ensemble_guard_rails(
     The rails are the recipe's guard_rails.csv as it is now, read from the
     data repo: editing one reruns nothing. --chart draws the shares and RMS.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     mode = DollarMode(dollars)
@@ -2425,10 +2666,12 @@ def ensemble_drift(
     instead (signed: above zero is overweight). --chart draws the spread
     over every month.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
@@ -2461,26 +2704,104 @@ def ensemble_drift(
             deaths=store.base_case_deaths()), graph_file, "ensemble-")
 
 
-def _echo_ensemble_rail_deltas(
-    data_dir: Path | None, baseline: str, variant: str,
-    sides: Mapping[str, EnsembleSeries], mode: DollarMode,
+@ensemble_group_command.command("spending")
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
+@_ENSEMBLE_RUNS_DIR_OPTION
+@_ENSEMBLE_DATA_DIR_OPTION
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to report on; default: the latest.",
+)
+@click.option("--category", default=None, type=completion.EXPENSE_CATEGORY,
+              help="One expense category's spending instead of all of it: any category the "
+                   "members spent on.")
+@click.option(
+    "--dollars", type=click.Choice([m.value for m in DollarMode]),
+    default=DollarMode.CPI_CONSTANT.value, show_default=True,
+    help="Dollars the spending is reported in.",
+)
+@_ENSEMBLE_GRAPH_OPTIONS
+def ensemble_spending(
+    scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    category: str | None, dollars: str, as_graph: bool, graph_file: Path | None,
 ) -> None:
-    """``sim ensemble compare``'s guard rails (#305): per rail both recipes
-    have, matched by name, the variant's change in each share and RMS.
-    Nothing without a data repo, or when neither recipe has rails."""
+    """Spending against the plan across an ensemble's members (#408).
+
+    Per year, across members: delivered spending's 5th, 50th and 95th
+    percentiles and the mean of its worst 5% and 20% (CVaR), the median
+    plan, the median share of plan delivered, and the share of members
+    whose spending strategies cut that year. Below it, over the whole run:
+    each member's worst year (median and CVaR across members), its share of
+    plan delivered, the years cut on average and the members ever cut.
+    --chart draws the spread of spending by year against the plan.
+
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
+    resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
+    _note_use(data_dir, scenario_name)
+    _hold_tables()
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    store = _open_series(batch_dir)
+    mode = DollarMode(dollars)
+    offered = [*EXPENSE_CATEGORIES, *(c for c in store.spending_categories() if c not in EXPENSE_CATEGORIES)]
+    if category is not None and category not in offered:
+        raise click.BadParameter(f"{category!r} is not one of: {', '.join(offered)}",
+                                 param_hint="'--category'")
+    delivered, budgeted = store.spending(mode, category)
+    what = f"{category} spending" if category else "spending"
+    click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); "
+               f"{what} against the plan, {_DOLLAR_LABELS[mode]}")
+    table = reports.ensemble_spending_table(delivered, budgeted)
+    if table.empty:
+        click.echo("(no spending in the members)")
+        return
+    shares = ("of_plan", "cut")
+    click.echo(table.to_string(formatters={
+        **{c: (lambda v: f"{v:,.0f}") for c in table.columns if c not in shares},
+        **{c: (lambda v: f"{v:.0%}") for c in shares},
+    }))
+    summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years())
+    click.echo(f"worst whole year per member: median ${summary['worst_year_median']:,.0f}, "
+               f"CVaR 5% ${summary['worst_year_cvar05']:,.0f}, 20% ${summary['worst_year_cvar20']:,.0f}")
+    click.echo(f"of plan over the run: median {summary['of_plan_median']:.1%}, "
+               f"worst member {summary['of_plan_worst']:.1%}; years cut {summary['years_cut_mean']:.0%} "
+               f"on average; members ever cut {summary['members_ever_cut']:.0%}")
+    if as_graph or graph_file is not None:
+        from analysis.sim.spending_charts import ensemble_spending_figure
+
+        _draw_figure(ensemble_spending_figure(
+            delivered, budgeted, f"{what.capitalize()} against the plan ({scenario_name})",
+            ylabel=_DOLLAR_LABELS[mode], deaths=store.base_case_deaths()), graph_file, "ensemble-")
+
+
+def _echo_ensemble_rail_deltas(
+    data_dir: Path | None, baseline: str, variants: Sequence[str],
+    sides: Mapping[str, EnsembleSeries], mode: DollarMode,
+    years: tuple[int, int] | None = None,
+) -> None:
+    """``sim ensemble compare``'s guard rails (#305): for each variant, per
+    rail it and the baseline have, matched by name, the variant's change in
+    each share and RMS, in ``years`` (all of them for None). Nothing without
+    a data repo, or when no recipe has rails."""
     found = {name: _ensemble_guard_rails(data_dir, name, sides[name], mode, required=False)
-             for name in (baseline, variant)}
+             for name in dict.fromkeys((baseline, *variants))}
     if not any(found.values()):
         return
-    frames = guard_rails.ensemble_comparison_frames(found[baseline] or [], found[variant] or [])
-    if not frames:
-        click.echo("guard rails: none in both recipes")
-        return
-    click.echo(f"guard rails, {variant} − {baseline} ({_DOLLAR_LABELS[mode]}): Δ of each share "
-               "of members past and of the RMS overshoot")
-    for rail, frame in frames.items():
-        click.echo(f"{rail}:")
-        _echo_rail_share_table(frame)
+    for variant in variants:
+        frames = guard_rails.ensemble_comparison_frames(
+            found[baseline] or [], found[variant] or [])
+        if not frames:
+            click.echo(f"guard rails: none in both {baseline} and {variant}"
+                       if len(variants) > 1 else "guard rails: none in both recipes")
+            continue
+        click.echo(f"guard rails, {variant} − {baseline} ({_DOLLAR_LABELS[mode]}): Δ of each "
+                   "share of members past and of the RMS overshoot")
+        for rail, frame in frames.items():
+            click.echo(f"{rail}:")
+            _echo_rail_share_table(clip_years(frame, years))
 
 
 @ensemble_group_command.command("sensitivity")
@@ -2525,7 +2846,12 @@ def _echo_ensemble_rail_deltas(
     help="Share below which a row is a pin candidate (in every year).",
 )
 @click.option(
-    "--attribute", "attribute", default=None, metavar="NAME",
+    "--row", "row", default=None, metavar="NAME", type=completion.SENSITIVITY_ROW,
+    help="Sensitivity batches: NAME's delta in every year (or --years), one column per "
+         "quantile it was moved to.",
+)
+@click.option(
+    "--attribute", "attribute", default=None, metavar="NAME", type=completion.SENSITIVITY_ROW,
     help="Sensitivity batches: break NAME's net-worth deltas down along --by, exactly.",
 )
 @click.option(
@@ -2533,10 +2859,12 @@ def _echo_ensemble_rail_deltas(
     show_default=True, help="With --attribute: income/expense category, flow account, or "
                             "holding account.",
 )
+@_graph_options("the notebook's charts for it", after="the tables")
 def ensemble_sensitivity(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     mode: str | None, dollars: str, relative: bool, measure: str, years: str | None,
-    negligible: float, attribute: str | None, by: str,
+    negligible: float, row: str | None, attribute: str | None, by: str, as_graph: bool,
+    graph_file: Path | None,
 ) -> None:
     """Which of SCENARIO_NAME's varying rows matter, and when (ADR-007).
 
@@ -2548,17 +2876,39 @@ def ensemble_sensitivity(
     correlated). A correlated batch also shows how closely its draws reproduce
     the specified correlations.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for.
+    --row NAME shows one varying row of a sensitivity batch instead: its delta
+    by year and quantile. --attribute NAME breaks its net-worth delta down.
+
+    --chart draws what the notebook draws (#329). A sensitivity batch: the
+    share of each year's impact by row and year, and the tornado at the last
+    reporting year; with --row, the row's delta over time and, for a quantile
+    ladder, its response across its range at that year; with --attribute, where
+    its delta comes from that year. A Monte Carlo batch: R^2 by year, and each
+    row's correlation with its 95% interval at that year. --years picks the
+    year: its last.
+
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for.
     """
+    if row is not None and attribute is not None:
+        raise click.UsageError("use one of --row and --attribute")
+    # One row's views need a sensitivity batch, so that's the one to find.
+    if mode is None and (row is not None or attribute is not None):
+        mode = "sensitivity"
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
+    _hold_tables()
+    draw = (
+        (lambda fig: _draw_figure(fig, graph_file, "sensitivity-"))
+        if as_graph or graph_file is not None else None
+    )
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
     from analysis.sim.pool import pool_record
 
     if (record := pool_record(batch_dir)) is not None:
@@ -2576,6 +2926,14 @@ def ensemble_sensitivity(
     except ValueError:
         raise click.UsageError(f"--years: not a comma-separated list of years: {years!r}") from None
 
+    if row is not None:
+        if batch_mode(batch_dir) != "sensitivity":
+            raise click.UsageError("--row needs a sensitivity batch")
+        _report_row(
+            scenario_name, batch_dir, row, dollar_mode, relative=relative, measure=measure,
+            years=requested_years, draw=draw,
+        )
+        return
     if attribute is not None:
         if batch_mode(batch_dir) != "sensitivity":
             raise click.UsageError("--attribute needs a sensitivity batch")
@@ -2586,18 +2944,18 @@ def ensemble_sensitivity(
             )
         _report_attribution(
             scenario_name, batch_dir, attribute, by=by, dollar_mode=dollar_mode,
-            years=requested_years, relative=relative,
+            years=requested_years, relative=relative, draw=draw,
         )
         return
     if batch_mode(batch_dir) == "sensitivity":
         _report_oat(
             scenario_name, batch_dir, dollar_mode, relative=relative, measure=measure,
-            years=requested_years, negligible=negligible,
+            years=requested_years, negligible=negligible, draw=draw,
         )
     else:
         _report_correlation(
             scenario_name, batch_dir, dollar_mode, measure=measure,
-            years=requested_years, negligible=negligible,
+            years=requested_years, negligible=negligible, draw=draw,
         )
 
 
@@ -2625,15 +2983,24 @@ def ensemble_sensitivity(
     help="List one node's draws (a varying row, lifespan:<person> or a latent factor).",
 )
 @click.option(
+    "--pair", default=None, type=completion.DRAW_PAIR, metavar="A,B",
+    help="One correlated pair: its implied and achieved rho, and each member's "
+         "values and scores.",
+)
+@click.option(
     "--csv", "csv_file", type=click.Path(dir_okay=False, path_type=Path), default=None,
     help="Write the drawn members' values (member x node, display units) to this CSV.",
 )
 @click.option("--rebuild", is_flag=True, default=False,
               help="Gather the batch's draws database again from its member files.")
+@_graph_options("--node's draws and --pair's scores as the notebook's charts",
+                written="the chart (one --node or one --pair; in a pool, the first component's)",
+                after="the tables")
 def ensemble_draws(
     scenario_name: str | None, runs_dir: Path | None, intent_dir: Path | None,
     data_dir: Path | None, batch: str | None, mode: str | None, node: str | None,
-    csv_file: Path | None, rebuild: bool,
+    pair: str | None, csv_file: Path | None, rebuild: bool,
+    as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Every draw of an ensemble batch, and what it depends on (#261).
 
@@ -2644,18 +3011,30 @@ def ensemble_draws(
     then each correlated pair's implied and achieved rho. A batch run before
     the database existed gets one gathered from what its member files hold.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    --node lists one node's draws and --pair one correlated pair's; --chart
+    draws them as the notebook does (#330): the node's values and u
+    histograms, the pair's scores against each other.
+
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     from analysis.sim.draws_db import build_draws_db, draws_db_current, draws_db_path, open_draws_db
 
+    charted = as_graph or graph_file is not None
+    if charted and node is None and pair is None:
+        raise click.UsageError("--chart and --chart-file draw --node's draws or --pair's scores; "
+                               "name one")
+    if graph_file is not None and node is not None and pair is not None:
+        raise click.UsageError("--chart-file writes one chart: --node or --pair, not both")
+    pair_names = _parse_pair(pair) if pair is not None else None
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
     path = draws_db_path(batch_dir)
     if rebuild or not draws_db_current(batch_dir):
         resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
@@ -2663,17 +3042,70 @@ def ensemble_draws(
             build_draws_db(batch_dir, resolved_intent_dir / scenario_name / batch_dir.name)
         except EnsembleError as exc:
             raise click.ClickException(str(exc)) from None
+    _hold_tables()
     with open_draws_db(batch_dir) as con:
         con.row_factory = sqlite3.Row
         if node is not None:
             _echo_node_draws(con, node)
-        else:
+        if pair_names is not None:
+            _echo_pair_draws(con, *pair_names)
+        if node is None and pair_names is None:
             _echo_draws_summary(con, path)
         if csv_file is not None:
             frame = pd.read_sql_query("SELECT * FROM draws_wide_display", con)
             frame.to_csv(csv_file, index=False)
             nodes = len(frame.columns) - len({"member_index", "component"} & set(frame.columns))
             click.echo(f"wrote {len(frame)} member(s) x {nodes} node(s) to {csv_file}")
+    if charted:
+        _draw_draws_charts(batch_dir, node, pair_names, graph_file)
+
+
+def _parse_pair(pair: str) -> tuple[str, str]:
+    """``--pair A,B`` as its two node names."""
+    a, comma, b = pair.partition(",")
+    a, b = a.strip(), b.strip()
+    if not comma or not a or not b or "," in b:
+        raise click.UsageError(f"--pair takes two nodes, A,B; got {pair!r}")
+    if a == b:
+        raise click.UsageError(f"--pair names {a!r} twice; name two nodes")
+    return a, b
+
+
+def _draw_draws_charts(
+    batch_dir: Path, node: str | None, pair: tuple[str, str] | None, graph_file: Path | None,
+) -> None:
+    """--node's and --pair's charts, one per pool component that drew them.
+    A component with nothing drawn (in a pool, one whose only member is the
+    base case) is skipped; only when none has a chart is that an error."""
+    from analysis.sim.draws_charts import draws_figure, pair_figure, pair_row
+    from analysis.sim.draws_db import component_frames, components, draws_frames
+    from analysis.sim.plotting import INK
+
+    frames = draws_frames(batch_dir)
+    names = components(frames)
+    pooled = len(names) > 1
+    drawn: list[Any] = []
+    refusals: list[str] = []
+    for component in names:
+        mine = component_frames(frames, component) if pooled else frames
+        charts = []
+        if node is not None and (mine["draw"]["node"] == node).any():
+            charts.append(lambda mine=mine: draws_figure(mine, node))
+        if pair is not None and pair_row(mine, *pair) is not None:
+            charts.append(lambda mine=mine: pair_figure(mine, *pair))
+        for chart in charts:
+            try:
+                figure = chart()
+            except EnsembleError as exc:
+                refusals.append(f"{exc}" + (f" in {component}" if pooled else ""))
+                continue
+            if pooled:
+                figure.suptitle(component, x=0.01, ha="left", color=INK)
+            drawn.append(figure)
+    if not drawn:
+        raise click.ClickException("; ".join(refusals) or "nothing to draw")
+    for figure in drawn[:1] if graph_file is not None else drawn:
+        _draw_figure(figure, graph_file, "draws-")  # a file holds one chart: the first
 
 
 def _draw_cell(unit: str, value: Any, *, spread: bool = False) -> str:
@@ -2809,6 +3241,52 @@ def _echo_node_draws(con: sqlite3.Connection, node: str) -> None:
         ])
 
 
+def _echo_pair_draws(con: sqlite3.Connection, a: str, b: str) -> None:
+    """--pair: the pair's implied and achieved rho, then each member's
+    values and scores, per pool component that correlates them."""
+    found = con.execute(
+        "SELECT * FROM node_pair WHERE (a = ? AND b = ?) OR (a = ? AND b = ?) ORDER BY component",
+        (a, b, b, a)).fetchall()
+    if not found:
+        drawn = {name for (name,) in con.execute("SELECT DISTINCT name FROM node")}
+        missing = [n for n in (a, b) if n not in drawn]
+        if missing:
+            raise click.UsageError(f"--pair: {missing[0]!r} isn't drawn in this batch")
+        partners = [y for (y,) in con.execute(
+            "SELECT DISTINCT CASE WHEN a = ? THEN b ELSE a END AS other FROM node_pair "
+            "WHERE a = ? OR b = ? ORDER BY kind = 'implied', other", (a, a, a))]
+        hint = f"; {a} pairs with {', '.join(partners)}" if partners else f"; {a} pairs with nothing"
+        raise click.UsageError(f"--pair: {a!r} and {b!r} aren't a correlated pair in this batch{hint}")
+    pooled = con.execute("SELECT count(DISTINCT component) FROM member").fetchone()[0] > 1
+    units = {r["name"]: r["unit"] for r in con.execute("SELECT name, unit FROM node_display")}
+    for p in found:
+        where = f" ({p['component']})" if pooled else ""
+        achieved = ("" if p["achieved_rho"] is None else
+                    f", achieved {p['achieved_rho']:+.2f} "
+                    f"(95% interval {p['achieved_low']:+.2f} to {p['achieved_high']:+.2f})")
+        click.echo(f"{a} ~ {b}{where}: {p['kind']}, implied rho {p['implied_rho']:+.2f}{achieved}")
+        rows = con.execute(
+            "SELECT member_index, max(is_base) AS is_base, "
+            "max(CASE WHEN node = ? THEN value END) AS a_value, "
+            "max(CASE WHEN node = ? THEN z END) AS a_z, "
+            "max(CASE WHEN node = ? THEN value END) AS b_value, "
+            "max(CASE WHEN node = ? THEN z END) AS b_z "
+            "FROM draw_display WHERE component = ? AND node IN (?, ?) "
+            "GROUP BY member_index ORDER BY member_index",
+            (a, a, b, b, p["component"], a, b)).fetchall()
+        _echo_table(["member", a, b, f"{a} score", f"{b} score"], [
+            [f"{r['member_index']}{' (base)' if r['is_base'] else ''}",
+             _draw_cell(units.get(a, ""), r["a_value"]), _draw_cell(units.get(b, ""), r["b_value"]),
+             *("—" if r[c] is None else f"{r[c]:+.4f}" for c in ("a_z", "b_z"))]
+            for r in rows
+        ])
+
+
+# Draws one of `sim ensemble sensitivity`'s figures (``_draw_figure``, bound
+# to the command's --chart or --chart-file).
+_Draw = Callable[[Any], None]
+
+
 def _report_years(batch_dir: Path, available: list[int], requested: list[int] | None) -> list[int]:
     """``--years`` checked against the batch's reporting years, or the
     default set (first full year, every fifth year, final year)."""
@@ -2825,21 +3303,36 @@ def _report_years(batch_dir: Path, available: list[int], requested: list[int] | 
 
 def _report_attribution(
     scenario_name: str, batch_dir: Path, row: str, *, by: str, dollar_mode: DollarMode,
-    years: list[int] | None, relative: bool = False,
+    years: list[int] | None, relative: bool = False, draw: _Draw | None = None,
 ) -> None:
     """ADR-007 §6.1: one table per reporting year, one line per key, one
     column per quantile ``row`` was perturbed to. ``relative`` divides each
-    year by the base's net worth that year (blank where it's near zero)."""
+    year by the base's net worth that year (blank where it's near zero).
+    ``draw`` gets the notebook's attribution bars at the last year."""
     try:
-        by_quantile = sensitivity.oat_attribution(batch_dir, row, by=by, dollars=dollar_mode)
-        if relative:
-            base = sensitivity.base_net_worth(batch_dir, dollar_mode).abs()
-            base = base.where(base >= sensitivity.RELATIVE_NEAR_ZERO_DOLLARS)
-            by_quantile = {q: t.div(base.reindex(t.index), axis=0) for q, t in by_quantile.items()}
+        dollars_by_quantile = sensitivity.oat_attribution(batch_dir, row, by=by, dollars=dollar_mode)
+        base_dollars = sensitivity.base_net_worth(batch_dir, dollar_mode)
     except EnsembleError as exc:
         raise click.ClickException(str(exc)) from None
+    by_quantile = dollars_by_quantile
+    if relative:
+        base = base_dollars.abs()
+        base = base.where(base >= sensitivity.RELATIVE_NEAR_ZERO_DOLLARS)
+        by_quantile = {q: t.div(base.reindex(t.index), axis=0) for q, t in by_quantile.items()}
     tables = list(by_quantile.values())
     years = _report_years(batch_dir, [int(y) for y in tables[0].index], years)
+    if draw is not None:
+        from analysis.sim.sensitivity_charts import attribution_figure
+
+        year = years[-1]
+        try:
+            fig, _numbers = attribution_figure(
+                dollars_by_quantile, row, year, scenario_name, relative=relative,
+                base=float(base_dollars[year]) if year in base_dollars.index else None,
+            )
+        except EnsembleError as exc:
+            raise click.ClickException(str(exc)) from None
+        draw(fig)
     unit = "% of base" if relative else (
         "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
     )
@@ -2866,9 +3359,9 @@ def _signed(value: float) -> str:
 
 def _report_correlation(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
-    measure: str, years: list[int] | None, negligible: float,
+    measure: str, years: list[int] | None, negligible: float, draw: _Draw | None = None,
 ) -> None:
-    """ADR-007 §6.2: rho [interval], SRRC [interval] and PRCC per row and
+    """ADR-007 §6.2: rho, SRRC and PRCC, each with its interval, per row and
     year, R^2 per year, each latent factor's rho, the achieved score
     correlations of a correlated batch, and each row's keep / pin_candidate /
     inconclusive status -- by rho, or by SRRC when rows are correlated."""
@@ -2930,7 +3423,8 @@ def _report_correlation(
             click.echo(
                 f"    {row['row']:<24} rho={_signed(row['rho'])} [{_signed(row['rho_low'])}, "
                 f"{_signed(row['rho_high'])}]  srrc={_signed(row['srrc'])} [{_signed(row['srrc_low'])}, "
-                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])}"
+                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])} [{_signed(row['prcc_low'])}, "
+                f"{_signed(row['prcc_high'])}]"
             )
         for _, row in at[at["factor"]].iterrows():
             click.echo(
@@ -2941,6 +3435,11 @@ def _report_correlation(
     click.echo(f"\n  status ({by}^2 vs {negligible:.0%}, every year):")
     for name, value in status.items():
         click.echo(f"    {name:<24} {value}")
+    if draw is not None:
+        from analysis.sim.sensitivity_charts import correlation_figure
+
+        draw(correlation_figure(table, years[-1], negligible, scenario_name, by=by,
+                                measure=measure))
 
 
 def _fmt_delta(value: float, relative: bool) -> str:
@@ -2952,6 +3451,7 @@ def _fmt_delta(value: float, relative: bool) -> str:
 def _report_oat(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     relative: bool, measure: str, years: list[int] | None, negligible: float,
+    draw: _Draw | None = None,
 ) -> None:
     try:
         deltas = sensitivity.oat_deltas(batch_dir, dollar_mode)
@@ -3000,6 +3500,62 @@ def _report_oat(
         click.echo(f"\n  {len(failed)} failed member(s), excluded above:")
         for stem in failed:
             click.echo(f"    {stem}: {statuses[stem]}")
+    if draw is not None:
+        from analysis.sim.sensitivity_charts import oat_figure
+
+        draw(oat_figure(deltas, years[-1], scenario_name, relative=relative, measure=measure))
+
+
+def _report_row(
+    scenario_name: str, batch_dir: Path, row: str, dollar_mode: DollarMode, *,
+    relative: bool, measure: str, years: list[int] | None, draw: _Draw | None = None,
+) -> None:
+    """One varying row of an OAT batch (#329): its delta against the base in
+    every year (or ``years``), one column per quantile it was moved to.
+    ``draw`` gets its delta over time and, for a quantile ladder, its
+    response curve at the last year."""
+    try:
+        deltas = sensitivity.oat_deltas(batch_dir, dollar_mode)
+    except EnsembleError as exc:
+        raise click.ClickException(str(exc)) from None
+    # The manifest says what the batch varied; the deltas hold only the
+    # members that succeeded, so a row (or a quantile) can be missing there.
+    manifest = read_batch_manifest(batch_dir) or {}
+    succeeded = list(dict.fromkeys(str(r) for r in deltas["row"]))
+    varied = list(manifest.get("rows") or succeeded)
+    if row not in varied:
+        raise click.ClickException(
+            f"{row!r} is not a row this batch varied; it varied: {', '.join(varied)}")
+    if row not in succeeded:
+        raise click.ClickException(f"every member that moved {row!r} failed; nothing to show")
+    mine = deltas[(deltas["row"] == row) & (deltas["measure"] == measure)]
+    all_years = sorted(int(y) for y in mine["year"].unique())
+    shown = all_years if years is None else _report_years(batch_dir, all_years, years)
+    column = "relative" if relative else "delta"
+    quantiles = sorted(deltas.attrs.get("quantiles") or mine["quantile"].unique())
+    grid = mine.pivot_table(index="year", columns="quantile", values=column, dropna=False)
+    grid = grid.reindex(columns=quantiles)
+    # A quantile whose member failed keeps its column, blank, as oat_table does.
+    moved_to = (mine.drop_duplicates("quantile").set_index("quantile")["value"]
+                .reindex(quantiles).fillna("(failed)"))
+    unit = "% of base" if relative else (
+        "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
+    )
+    label = sensitivity.row_label(row, sensitivity.factor_rows(deltas))
+    target = mine["target"].iloc[0]
+    click.echo(f"row {scenario_name} ({batch_dir.name}): {label} ({target}), "
+               f"{measure} vs. the base, {unit}")
+    click.echo("  moved to: " + ", ".join(f"q={q:g} {v}" for q, v in moved_to.items()))
+    click.echo(f"\n  {'year':<6}" + "".join(f"{'@' + format(q, 'g'):>14}" for q in moved_to.index))
+    for year in shown:
+        cells = (_fmt_delta(grid.at[year, q], relative) if year in grid.index else "-"
+                 for q in moved_to.index)
+        click.echo(f"  {year:<6}" + "".join(f"{c:>14}" for c in cells))
+    if draw is not None:
+        from analysis.sim.sensitivity_charts import row_figure
+
+        draw(row_figure(deltas, row, shown[-1], scenario_name, relative=relative,
+                        measure=measure, ladder=len(manifest.get("quantiles", [])) >= 4))
 
 
 @sim_group_command.command(name="all")
@@ -3229,14 +3785,16 @@ def _resolve_run_target(
 
 @sim_group_command.command()
 @click.argument("target", type=completion.SCENARIO_OR_RUNFILE, metavar="[SCENARIO | RUNFILE]", required=False)
+@_PRE_TAX_OPTION
 @_run_target_options
 def explain(
-    target: str | None, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
+    target: str | None, pre_tax: bool, runfile: Path | None, data_dir: Path | None,
+    runs_dir: Path | None,
 ) -> None:
-    """Dump scenario name, versions, counts, lots, year-end net worth,
-    negative-balance warnings and basis step-ups at a death for a run: the
-    scenario's latest (the current scenario's by default), or a run file.
-    Sanity dump."""
+    """Dump scenario name, versions, counts, lots, year-end net worth (after
+    tax unless --pre-tax), negative-balance warnings and basis step-ups at a
+    death for a run: the scenario's latest (the current scenario's by
+    default), or a run file. Sanity dump."""
     runfile = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
     try:
@@ -3292,17 +3850,12 @@ def explain(
                 )
 
         click.echo("")
-        click.echo(f"year-end net worth:  {'nominal':>18}  {'CPI-constant':>18}")
-        rows = con.execute(
-            "WITH year_end AS ("
-            "  SELECT substr(month,1,4) AS year, MAX(month) AS m "
-            "  FROM simulation_step GROUP BY substr(month,1,4)"
-            ") "
-            "SELECT y.year, nw.net_worth, cpi.constant_cents "
-            "FROM year_end y JOIN net_worth nw ON nw.month = y.m "
-            "LEFT JOIN net_worth_constant_cpi cpi ON cpi.month = y.m "
-            "ORDER BY y.year"
-        ).fetchall()
+        # Labelled either way, so a pasted dump says which figure it shows.
+        click.echo("year-end net worth, before tax:" if pre_tax
+                   else "year-end net worth, after tax (--pre-tax for before):")
+        click.echo(f"{'':21}{'nominal':>18}  {'CPI-constant':>18}")
+        rows = (_year_end_pre_tax_net_worth(con) if pre_tax
+                else _year_end_after_tax_net_worth(con, runfile))
         for year, nw, real in rows:
             click.echo(f"  {year}  {'':13}{_fmt_cents(nw)}  {_fmt_cents(real):>18}")
 
@@ -3313,6 +3866,41 @@ def explain(
     finally:
         con.close()
     _echo_guard_rail_episodes(runfile, data_dir)
+
+
+def _year_end_pre_tax_net_worth(con: sqlite3.Connection) -> list[tuple[str, int, int | None]]:
+    """Each year's (year, nominal, CPI-constant) net worth in cents at its
+    last simulated month: the sum of the balances, from the run's views."""
+    return con.execute(
+        "WITH year_end AS ("
+        "  SELECT substr(month,1,4) AS year, MAX(month) AS m "
+        "  FROM simulation_step GROUP BY substr(month,1,4)"
+        ") "
+        "SELECT y.year, nw.net_worth, cpi.constant_cents "
+        "FROM year_end y JOIN net_worth nw ON nw.month = y.m "
+        "LEFT JOIN net_worth_constant_cpi cpi ON cpi.month = y.m "
+        "ORDER BY y.year"
+    ).fetchall()
+
+
+def _year_end_after_tax_net_worth(
+    con: sqlite3.Connection, runfile: Path,
+) -> list[tuple[str, int, int | None]]:
+    """``_year_end_pre_tax_net_worth``'s rows after tax (#251, #332), the
+    figures ``sim networth`` prints. The tax is taken from the pre-tax cents,
+    so a year that owes none shows the same figure either way."""
+    with RunConnection(runfile) as rc:
+        frame = rc.after_tax_net_worth_frame()
+        tax = frame["deferred_tax"] + frame["unpaid_tax"]
+        taxes = pd.DataFrame({"nominal": tax, "cpi_constant": rc.to_cpi_constant(tax)})
+    # Later months overwrite earlier ones, leaving each year's last month.
+    by_year = dict(zip(index_years(taxes), taxes.itertuples(index=False), strict=True))
+    rows = []
+    for year, nominal, real in _year_end_pre_tax_net_worth(con):
+        nominal_tax, real_tax = by_year.get(int(year), (0.0, 0.0))
+        rows.append((year, nominal - round(nominal_tax * 100),
+                     None if real is None else real - round(real_tax * 100)))
+    return rows
 
 
 def _echo_guard_rail_episodes(runfile: Path, data_dir: Path | None) -> None:
@@ -3346,8 +3934,11 @@ def _echo_guard_rail_episodes(runfile: Path, data_dir: Path | None) -> None:
 
 def _echo_strategies(con: sqlite3.Connection) -> None:
     """The run's strategies (#326): each one's kind and chain, how many
-    decisions it made, and how much it moved against what it was asked.
-    Says nothing for a run with none, or one from before them."""
+    decisions it made, and how much it moved against what it was asked; a
+    year-end strategy (#421), what its moves moved and the gain they
+    realized (a harvest's, or a cash gift's sale); a triggered one (#441),
+    how often each rail was past, answered and back inside. Says nothing
+    for a run with none, or one from before them."""
     if not _has_table(con, "strategy_decision"):
         return
     rows = con.execute(
@@ -3359,12 +3950,40 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
     ).fetchall()
     if not rows:
         return
+    year_end: dict[str, tuple[int, int]] = {}
+    if "'year_end'" in (con.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'strategy_decision'").fetchone() or ("",))[0]:
+        year_end = {
+            name: (moved, gain) for name, moved, gain in con.execute(
+                "SELECT s.name, SUM(d.chosen_cents), COALESCE(SUM(("
+                "  SELECT SUM(t.amount) FROM transfer_event t WHERE t.strategy_decision_id = d.id "
+                "  AND t.tax_character IN ('ltcg', 'stcg'))), 0) "
+                "FROM strategy_decision d JOIN strategy s ON s.id = d.strategy_id "
+                "WHERE d.hook = 'year_end' GROUP BY s.id")
+        }
+    breach_lines: dict[str, list[str]] = {}
+    told = strategy_guide.breaches(con)
+    for key in sorted(set(zip(told["strategy"], told["rail"], told["margin_kind"], strict=True))):
+        name, rail, kind = key
+        group = told[(told["strategy"] == name) & (told["rail"] == rail) & (told["margin_kind"] == kind)]
+        states = group["state"]
+        breach_lines.setdefault(str(name), []).append(
+            f"{rail}:{kind}: past {int((states == 'entered').sum())} time(s), "
+            f"{int((states != 'left').sum())} year(s) in all, answered {int(group['answered'].sum())} "
+            f"of {len(group)}, back inside {int((states == 'left').sum())} time(s)")
     click.echo(f"strategies ({len(rows)}; `sim strategy log` lists the decisions):")
     for name, kind, chain, count, asked, chosen, fallback in rows:
-        click.echo(
-            f"  {name} ({kind} on {chain}): {count} decision{'' if count == 1 else 's'}, "
-            f"asked ${asked / 100:,.2f}, chose ${chosen / 100:,.2f}, chain steps ${fallback / 100:,.2f}"
-        )
+        owns = f" on {chain}" if chain else ""
+        line = f"  {name} ({kind}{owns}): {count} decision{'' if count == 1 else 's'}"
+        if chain:
+            line += (f", asked ${asked / 100:,.2f}, chose ${chosen / 100:,.2f}, "
+                     f"chain steps ${fallback / 100:,.2f}")
+        if name in year_end:
+            moved, gain = year_end[name]
+            line += f", year end moved ${moved / 100:,.2f} realizing ${gain / 100:,.2f} of gain"
+        click.echo(line)
+        for rail_line in breach_lines.get(name, []):
+            click.echo(f"    {rail_line}")
 
 
 def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
@@ -3401,24 +4020,16 @@ def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
 
 def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
     """The run's recorded negative-balance warnings (ADR-003 §4.7): the
-    month each asset account went negative, its balance then, and what its
-    refill chain did, worded as the run's warning was."""
-    (raw,) = con.execute(
-        "SELECT json_extract(run_args_json, '$.negative_balance_warnings') "
-        "FROM simulation_run WHERE id = 1"
-    ).fetchone()
-    events = json.loads(raw) if raw else []
-    if not events:
+    month each asset account went negative, its balance then, the lowest it
+    reached, and what its refill chain did, worded as the run's warning was.
+    The notebooks list them the same way (#431)."""
+    found = shortfalls.negative_balances(con)
+    if not found:
         click.echo("negative-balance warnings: none")
         return
-    click.echo(f"negative-balance warnings ({len(events)}):")
-    width = max(len(str(e.get("account", ""))) for e in events)
-    for event in events:
-        click.echo(
-            f"  {event.get('month', '-')}  {str(event.get('account', '-')):<{width}}"
-            f"  {_compact_cents(event.get('balance_cents'))}"
-            f"  {describe_negative_balance_event(event)}"
-        )
+    click.echo(f"negative-balance warnings ({len(found)}):")
+    for line in shortfalls.warning_lines(found):
+        click.echo(f"  {line}")
 
 
 @sim_group_command.command("networth")
@@ -3432,10 +4043,12 @@ def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
               help="cpi_constant (deflated by the run's CPI series, so decades "
                    "compare at a glance), or nominal.")
 @_PRE_TAX_OPTION
+@_year_range_options
 @_report_graph_options
 @_run_target_options
 def networth_command(
     scenario: str | None, period: str, dollars: str, pre_tax: bool,
+    first_year: int | None, last_year: int | None,
     as_graph: bool, graph_file: Path | None,
     runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
@@ -3444,24 +4057,28 @@ def networth_command(
     It is after the tax still owed on it (#251) unless --pre-tax.
 
     --chart draws it month by month, after tax with the pre-tax net worth
-    dashed beside it (the gap is the tax still owed), or pre-tax alone."""
+    dashed beside it (the gap is the tax still owed), or pre-tax alone.
+    --start and --end limit the years shown."""
+    years = _year_range(first_year, last_year)
     runfile = _resolve_run_target(scenario, runfile, data_dir, runs_dir)
     mode = DollarMode(dollars)
     if pre_tax and not (as_graph or graph_file is not None):
-        _echo_pre_tax_networth(runfile, period, dollars)  # reads the run's views itself
+        _echo_pre_tax_networth(runfile, period, dollars, years)  # reads the run's views itself
         return
     # One connection for the table and the chart: the after-tax frame is
     # cached on it, and is the slow part of a large run.
     _hold_tables()
     with RunConnection(runfile) as rc:
         if not pre_tax:
-            _echo_after_tax_networth(rc, runfile, period, mode)
+            _echo_after_tax_networth(rc, runfile, period, mode, years)
         else:
-            _echo_pre_tax_networth(runfile, period, dollars)
-        _draw_report(as_graph, graph_file, lambda: _networth_figure(rc, mode, pre_tax), "networth-")
+            _echo_pre_tax_networth(runfile, period, dollars, years)
+        _draw_report(as_graph, graph_file, lambda: _networth_figure(rc, mode, pre_tax, years),
+                     "networth-")
 
 
-def _networth_figure(rc: RunConnection, mode: DollarMode, pre_tax: bool) -> Figure:
+def _networth_figure(rc: RunConnection, mode: DollarMode, pre_tax: bool,
+                     years: tuple[int, int] | None = None) -> Figure:
     from analysis.sim.run_charts import net_worth_figure
 
     pre = rc.net_worth_series(mode).rename("pre-tax" if not pre_tax else "net worth")
@@ -3469,12 +4086,14 @@ def _networth_figure(rc: RunConnection, mode: DollarMode, pre_tax: bool) -> Figu
         lines = pre.to_frame()
     else:
         lines = pd.DataFrame({"after tax": rc.net_worth_series(mode, after_tax=True), "pre-tax": pre})
+    lines = clip_years(lines, years)
     title = (f"{'Net' if pre_tax else 'After-tax net'} worth, "
              f"{_DOLLAR_LABELS[mode]} ({rc.name})")
     return net_worth_figure(lines, title, deaths=rc.deaths())
 
 
-def _echo_pre_tax_networth(runfile: Path, period: str, dollars: str) -> None:
+def _echo_pre_tax_networth(runfile: Path, period: str, dollars: str,
+                           years: tuple[int, int] | None = None) -> None:
     """``sim networth --pre-tax``: the sum of the balances, read from the run's views."""
     # Nominal reads net_worth itself, so a run without a CPI series still has it.
     view, column = (("net_worth_constant_cpi", "constant_cents")
@@ -3504,6 +4123,14 @@ def _echo_pre_tax_networth(runfile: Path, period: str, dollars: str) -> None:
             )
     finally:
         con.close()
+    if years is not None:
+        shown = [(month, cents) for month, cents in rows
+                 if years[0] <= int(month[:4]) <= years[1]]
+        if rows and not shown:
+            raise click.ClickException(
+                f"nothing to show {_years_text(years)}: the run covers "
+                f"{rows[0][0][:4]} to {rows[-1][0][:4]}")
+        rows = shown
     label = DollarMode(dollars).label
     click.echo(f"net worth, {label} dollars ({name}, run {runfile.name}):")
     for month, cents in rows:
@@ -3511,7 +4138,8 @@ def _echo_pre_tax_networth(runfile: Path, period: str, dollars: str) -> None:
         click.echo(f"  {when}  {_fmt_cents(cents)}")
 
 
-def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode: DollarMode) -> None:
+def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode: DollarMode,
+                             years: tuple[int, int] | None = None) -> None:
     """``sim networth`` without --pre-tax: net worth, the deferred and unpaid tax
     taken from it, and what's left, from the run's RunConnection."""
     name = rc.name
@@ -3531,6 +4159,7 @@ def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode
     })
     if period != "monthly":
         table = table.groupby(index_years(table)).tail(1)
+    table = _shown_years(table, years)
     label = DollarMode(mode).label
     click.echo(f"after-tax net worth, {label} dollars ({name}, run {runfile.name}):")
     _echo_table(
@@ -3541,7 +4170,9 @@ def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode
     )
 
 
-COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "account")
+COMPARE_SECTIONS = (
+    "runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "spending", "account",
+)
 """``sim compare``'s sections, in the order it prints them (#188)."""
 
 _COMPARE_MAX_GRAPHED = 4
@@ -3603,6 +4234,7 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
               help="Also compare this account's balance (a section of its own).")
 @click.option("--lot", type=completion.LotName("account"), default=None,
               help="With --account: one lot of the account instead of its total.")
+@_year_range_options
 @_graph_options("net worth (or --account's balance) and each variant's difference",
                 after="the tables", written="that chart")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3611,7 +4243,8 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
               default=None, help="Directory to find each scenario's latest run in.")
 def compare_command(
     baseline: str | None, variants: tuple[str, ...], sections: tuple[str, ...], dollars: str,
-    pre_tax: bool, account: str | None, lot: str | None, as_graph: bool, graph_file: Path | None,
+    pre_tax: bool, account: str | None, lot: str | None,
+    first_year: int | None, last_year: int | None, as_graph: bool, graph_file: Path | None,
     data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """Compare VARIANTS with BASELINE (#188), each from its latest run (an
@@ -3623,12 +4256,17 @@ def compare_command(
     scenario's strategies and its largest allocation drift by year end
     (#359) when any has strategies or targets (a strategy on vs off: compare
     with a child where `sim strategy edit NAME --disable` switches it off),
-    and with --account, that account's balance.
+    each scenario's spending against its plan by year (#408) when any has a
+    spending strategy, and with --account, that account's balance.
+
+    --start and --end limit the years the tables and chart show. Break-even
+    and the spending summary over the run still cover the whole run.
 
     BASELINE left out is the current scenario; with no VARIANTS, one is
     asked for. A scenario with no accounts is a valid compare point."""
     from analysis.sim import compare
 
+    years = _year_range(first_year, last_year)
     if lot is not None and account is None:
         raise click.UsageError("--lot needs --account")
     if "account" in sections and account is None:
@@ -3666,6 +4304,9 @@ def compare_command(
                     f"no runs for {name!r} in {ref.runs_dir}; run `sim run {name}` first")
             connections[name] = stack.enter_context(
                 open_run(run_path, name, scenarios_dir=ref.scenarios_dir, data_dir=data))
+        # Every section clips on its own, and some (strategies, guard rails)
+        # cover only part of a run: check the range against the runs once.
+        _check_years_in_runs(connections.values(), years)
         click.echo(f"{', '.join(variants)} vs {baseline}, {mode_label} dollars")
 
         if "runs" in shown:
@@ -3724,7 +4365,8 @@ def compare_command(
         if "net-worth" in shown:
             click.echo(f"\n{'After-tax net worth' if after_tax else 'Net worth'} "
                        f"at year end ({mode_label}):")
-            _echo_frame(compare.year_end_comparison(nw, baseline, variants).map(_cell))
+            _echo_frame(_shown_years(compare.year_end_comparison(nw, baseline, variants),
+                                     years).map(_cell))
 
         if "break-even" in shown:
             delta = compare.variant_delta(nw, baseline, variants)
@@ -3735,9 +4377,13 @@ def compare_command(
 
         if "guard-rails" in shown:
             _echo_guard_rail_comparison(connections, ref.scenarios_dir, baseline, variants,
-                                        mode, asked="guard-rails" in sections)
+                                        mode, asked="guard-rails" in sections, years=years)
         if "strategies" in shown:
-            _echo_strategy_comparison(connections, scenarios, asked="strategies" in sections)
+            _echo_strategy_comparison(connections, scenarios, asked="strategies" in sections,
+                                      years=years)
+        if "spending" in shown:
+            _echo_spending_comparison(connections, scenarios, mode, asked="spending" in sections,
+                                      years=years)
 
         balances = None
         if account is not None and ("account" in shown or graphed):
@@ -3753,7 +4399,8 @@ def compare_command(
                     "CPI-constant balance; pass --dollars nominal")
             if "account" in shown:
                 click.echo(f"\n{subject} at year end ({mode_label}):")
-                _echo_frame(compare.year_end_comparison(balances, baseline, variants).map(_cell))
+                _echo_frame(_shown_years(compare.year_end_comparison(balances, baseline, variants),
+                                         years).map(_cell))
 
         if graphed:
             from analysis.sim.compare_charts import comparison_figure
@@ -3761,11 +4408,12 @@ def compare_command(
             deaths = compare.scenario_deaths(connections, scenarios)
             if balances is not None:
                 figure = comparison_figure(
-                    balances, baseline, list(variants), f"{subject}, {mode_label}",
-                    ylabel="balance (USD)", deaths=deaths)
+                    clip_years(balances, years), baseline, list(variants),
+                    f"{subject}, {mode_label}", ylabel="balance (USD)", deaths=deaths)
             else:
                 figure = comparison_figure(
-                    nw, baseline, list(variants), f"Net worth, {mode_label}", deaths=deaths)
+                    clip_years(nw, years), baseline, list(variants), f"Net worth, {mode_label}",
+                    deaths=deaths)
             _draw_figure(figure, graph_file, "compare-")
 
 
@@ -3794,6 +4442,7 @@ def _echo_strategy_differences(
 
 def _echo_strategy_comparison(
     connections: Mapping[str, RunConnection], scenarios: Sequence[str], *, asked: bool,
+    years: tuple[int, int] | None = None,
 ) -> None:
     """``sim compare``'s strategies section (#359): each scenario's
     strategies and what they moved, then each run's largest allocation drift
@@ -3828,12 +4477,50 @@ def _echo_strategy_comparison(
     table = pd.DataFrame({name: drift.year_end_rows(frame)[drift.MAX_ABS]
                           for name, frame in by_scenario.items()})
     table.index.name = "month"
+    table = clip_years(table, years)
     _echo_frame(table.map(lambda v: _cell(v if pd.isna(v) else f"{v:.1f}")))
+
+
+def _whole_dollars(value: float) -> str:
+    """``$1,235``, ``-$12``: whole dollars, the sign before the dollar sign."""
+    dollars = round(value)
+    return f"-${-dollars:,}" if dollars < 0 else f"${dollars:,}"
+
+
+def _echo_spending_comparison(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], mode: DollarMode, *,
+    asked: bool, years: tuple[int, int] | None = None,
+) -> None:
+    """``sim compare``'s spending section (#408): each scenario's delivered
+    spending by year with each variant's difference, then each one's whole
+    run against its plan. Shown by default only when a run has a spending
+    strategy, and said to be empty only when ``asked`` for."""
+    from analysis.sim import compare
+
+    if not asked and not compare.uses_spending_strategies(connections):
+        return
+    found = compare.spending_by_scenario(connections, scenarios, mode)
+    if not found:
+        click.echo("\nSpending: none in these runs")
+        return
+    baseline, variants = scenarios[0], scenarios[1:]
+    click.echo(f"\nSpending delivered by year ({DollarMode(mode).label}):")
+    table = clip_years(compare.spending_comparison(found, baseline, variants), years)
+    _echo_frame(table.map(lambda v: _cell(v if pd.isna(v) else _whole_dollars(v))))
+    click.echo("\nSpending against each scenario's plan over the run:")
+    summary = compare.spending_summaries(found)
+    money = ("delivered", "budgeted", "rms", "lowest")
+    shares = ("of_plan", "redirected")
+    _echo_frame(summary.astype(object).assign(
+        **{c: summary[c].map(_whole_dollars) for c in money},
+        **{c: summary[c].map(lambda v: f"{v:.1%}") for c in shares},
+    ).map(_cell))
 
 
 def _echo_guard_rail_comparison(
     connections: Mapping[str, RunConnection], scenarios_dir: Path, baseline: str,
     variants: Sequence[str], mode: DollarMode, *, asked: bool,
+    years: tuple[int, int] | None = None,
 ) -> None:
     """``sim compare``'s guard-rails section (#305): per rail, each scenario's
     margins by year and each variant's change, annual then cumulative. Each
@@ -3863,7 +4550,7 @@ def _echo_guard_rail_comparison(
                "so far summed")
     for rail, frame in frames.items():
         click.echo(f"\n{rail}:")
-        _echo_frame(frame.map(_cell))
+        _echo_frame(clip_years(frame, years).map(_cell))
 
 
 @sim_group_command.command("commit")
@@ -4364,7 +5051,7 @@ def _names_typed(ctx: click.Context) -> bool:
     return ctx.parent is not None and ctx.parent.invoked_subcommand is not None and _interactive()
 
 
-def _ask_again_once_known(**asked: str) -> dict[str, Any]:
+def _ask_again_once_known(**asked: str | tuple[str, ...]) -> dict[str, Any]:
     """The current command's params, with the ensembles just ``asked`` for,
     and at a terminal its other names checked against them: they waited
     for the ensembles (#240)."""
@@ -4841,15 +5528,6 @@ def _write_calendar_row(
             staged, registries.CALENDAR_HEADER, _keep_unexpressed(row, chosen), replace=index,
         )
     return "updated"
-
-
-def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
-    """``name``, plus ``(lot)`` where the lot is worth showing."""
-    if not name:
-        return ""
-    if lot and (subkind in INVESTMENT_ASSET_SUBKINDS or lot != registries.DEFAULT_LOT):
-        return f"{name} ({lot})"
-    return name
 
 
 def _lot_info(con: sqlite3.Connection) -> dict[str, tuple[bool, list[str]]]:
@@ -5670,9 +6348,9 @@ def _guide_context(
             row_names=[
                 name for name in column(con, "SELECT name FROM calendar_event")
                 if name != own_name
-            ] + [  # a varying lifespan is a correlation parent too (#221)
+            ] + [  # a varying lifespan (#221) or strategy parameter (#408) is a parent too
                 name for name in varying_names(con)
-                if name.startswith(registries.LIFESPAN_NODE_PREFIX)
+                if name.startswith((registries.LIFESPAN_NODE_PREFIX, registries.STRATEGY_NODE_PREFIX))
             ],
             other_rows=other_rows,
             taken_names=frozenset(row["name"].strip() for row in others if row["name"].strip()),
@@ -8834,8 +9512,10 @@ def _print_report(frame: pd.DataFrame, what: str, described: str, mode: DollarMo
 @click.argument("account", required=False, type=completion.ACCOUNT)
 @click.option("--lot", type=completion.LotName("account"), default=None,
               help="One lot of the account: adds its basis, unrealized gain and quantity.")
-@click.option("--start", default=None, help="First month (YYYY-MM or YYYY-MM-DD).")
-@click.option("--end", default=None, help="Last month (YYYY-MM or YYYY-MM-DD).")
+@click.option("--start", default=None,
+              help="First month (YYYY-MM or YYYY-MM-DD), or year (YYYY: its January).")
+@click.option("--end", default=None,
+              help="Last month (YYYY-MM or YYYY-MM-DD), or year (YYYY: its December).")
 @click.option("--yearly", is_flag=True, default=False, help="Year-end rows instead of month-end.")
 @_report_graph_options
 @_report_options
@@ -8854,8 +9534,9 @@ def account_history_command(
     Without ACCOUNT, it is asked for. --chart draws the balance (and a lot's
     cost basis) over the rows shown.
     """
-    start_iso = month_end_iso(_validate_month_date(start)) if start else None
-    end_iso = month_end_iso(_validate_month_date(end)) if end else None
+    # A bare year, as every other report's --start/--end takes (#331).
+    start_iso = month_end_iso(_validate_month_date(_year_month(start, 1))) if start else None
+    end_iso = month_end_iso(_validate_month_date(_year_month(end, 12))) if end else None
     if start_iso and end_iso and end_iso < start_iso:
         raise click.ClickException("--end must be on or after --start")
     mode = DollarMode(dollars)
@@ -8883,6 +9564,12 @@ def account_history_command(
             frame, f"{subject}, {_DOLLAR_LABELS[mode]} ({described})", deaths=deaths)
 
     _draw_report(as_graph, graph_file, figure, "history-")
+
+
+def _year_month(text: str, month: int) -> str:
+    """``text``, or ``month`` of it when it is a bare year (``2030``)."""
+    text = text.strip()
+    return f"{text}-{month:02d}" if len(text) == 4 and text.isdigit() else text
 
 
 def _graph_nothing(graph_file: Path | None, what: str, prefix: str) -> None:
@@ -8923,8 +9610,11 @@ def _check_by(by: str) -> None:
 def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bool,
                  dollars: str, runfile: Path | None, scenario: str | None,
                  data_dir: Path | None, *, pre_tax: bool = False,
+                 years: tuple[int, int] | None = None,
                  as_graph: bool = False, graph_file: Path | None = None) -> None:
     _check_by(by)
+    if year is not None and years is not None:
+        raise click.UsageError("--year shows one year; leave out --start and --end with it")
     if untagged and not by.startswith("tag:"):
         raise click.ClickException("--untagged needs --by tag:ROLE")
     mode = DollarMode(dollars)
@@ -8953,7 +9643,8 @@ def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bo
         # A column with nothing in any year (no business, no inheritance)
         # only widens the table; the totals stay, whatever they hold.
         frame = reports.without_empty_groups(
-            frame, keep={"total", reports.ECONOMIC_INCOME, reports.NET_WORTH_CHANGE})
+            _shown_years(frame, years),
+            keep={"total", reports.ECONOMIC_INCOME, reports.NET_WORTH_CHANGE})
     what = f"{side}{period} by {by.removeprefix('tag:')}"
     _print_report(frame, what, described, mode, total_row=year is not None)
 
@@ -8987,10 +9678,12 @@ _UNTAGGED_HELP = ("With --by tag:ROLE, also show flows with no tag in ROLE as (u
          "paid in the year. By default it is after tax (#251): the year's tax liability "
          "and the change in tax owed later.",
 )
+@_year_range_options
 @_report_graph_options
 @_report_options
 def report_income_command(
     year: int | None, by: str, untagged: bool, pre_tax: bool,
+    first_year: int | None, last_year: int | None,
     as_graph: bool, graph_file: Path | None, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
@@ -9027,17 +9720,20 @@ def report_income_command(
     down to the change in net worth; with --year, a bar per group.
     """
     _flow_report("income", year, by, untagged, dollars, runfile, scenario, data_dir,
-                 pre_tax=pre_tax, as_graph=as_graph, graph_file=graph_file)
+                 pre_tax=pre_tax, years=_year_range(first_year, last_year),
+                 as_graph=as_graph, graph_file=graph_file)
 
 
 @report_group_command.command("expenses")
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
 @click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
+@_year_range_options
 @_report_graph_options
 @_report_options
 def report_expenses_command(
-    year: int | None, by: str, untagged: bool, as_graph: bool, graph_file: Path | None,
+    year: int | None, by: str, untagged: bool,
+    first_year: int | None, last_year: int | None, as_graph: bool, graph_file: Path | None,
     dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show expenses by year: what was paid into each expense account.
@@ -9051,15 +9747,20 @@ def report_expenses_command(
     --chart draws the groups stacked by year; with --year, a bar per group.
     """
     _flow_report("expenses", year, by, untagged, dollars, runfile, scenario, data_dir,
+                 years=_year_range(first_year, last_year),
                  as_graph=as_graph, graph_file=graph_file)
 
 
 @report_group_command.command("spending")
 @click.option("--by", "by", default="category", show_default=True,
               help="Group by category (default), account, or tag:ROLE, as `sim report expenses` does.")
+@_year_range_options
+@_report_graph_options
 @_report_options
 def report_spending_command(
-    by: str, dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
+    by: str, first_year: int | None, last_year: int | None,
+    as_graph: bool, graph_file: Path | None,
+    dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show spending against the plan by year: what spending strategies
     delivered against the budget their rules set (#387).
@@ -9073,19 +9774,42 @@ def report_spending_command(
     the yearly differences, redirected on average and at its worst, and the
     cosine similarity of the two mixes (near 1 for most mixes, so read it
     beside redirected, never instead of the level).
+
+    --start and --end limit the years in the table; the lines below it
+    still cover the whole run.
+
+    --chart draws delivered spending as a bar per year against the plan as
+    a line, over the years in the table, as the notebook's spending widget
+    does.
     """
     _check_by(by)
+    years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
+        _hold_tables()
         try:
             delivered, budgeted = reports.spending_by_year(rc, by=by, mode=mode)
         except KeyError as exc:
             raise click.ClickException(exc.args[0]) from None
+        deaths = _chart_deaths(rc, as_graph, graph_file)
     if delivered.empty and budgeted.empty:
         click.echo(f"no spending in {described}")
+        _graph_nothing(graph_file, "spending", "spending-")
         return
     frame, summary = reports.spending_report(delivered, budgeted)
-    _print_report(frame, f"spending against plan by {by.removeprefix('tag:')}", described, mode)
+    frame = _shown_years(frame, years)
+    what = f"spending against plan by {by.removeprefix('tag:')}"
+    _print_report(frame, what, described, mode)
+
+    def figure():
+        from analysis.sim.spending_charts import spending_figure
+
+        return spending_figure(frame, f"{what[0].upper()}{what[1:]}, {_DOLLAR_LABELS[mode]} ({described})",
+                               ylabel=_DOLLAR_LABELS[mode], deaths=deaths)
+
+    # Before the lines below the table, as a run with no strategy returns
+    # early there and still has a plan to draw.
+    _draw_report(as_graph, graph_file, figure, "spending-")
     if summary["of_plan"] == 1.0 and not any(k.startswith(reports.FILLED) for k in summary):
         click.echo("no spending strategy changed this run's spending: delivered is the plan")
         return
@@ -9101,10 +9825,11 @@ def report_spending_command(
 
 
 @report_group_command.command("gains")
+@_year_range_options
 @_report_graph_options
 @_report_options
 def report_gains_command(
-    as_graph: bool, graph_file: Path | None,
+    first_year: int | None, last_year: int | None, as_graph: bool, graph_file: Path | None,
     dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show realized vs. unrealized gains by year, against that year's expenses.
@@ -9115,10 +9840,11 @@ def report_gains_command(
     a negative year spent principal. --chart draws the gains stacked by
     year, with the expenses as a line.
     """
+    years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         _hold_tables()
-        frame = reports.gains_by_year(rc, mode)
+        frame = _shown_years(reports.gains_by_year(rc, mode), years)
         deaths = _chart_deaths(rc, as_graph, graph_file)
     _print_report(frame, "realized vs. unrealized gains", described, mode)
 
@@ -9134,10 +9860,12 @@ def report_gains_command(
 @report_group_command.command("tax")
 @click.option("--reconciliation", is_flag=True, default=False,
               help="Each year's liability, what was paid during it, and the April balance due or refund.")
+@_year_range_options
 @_report_graph_options
 @_report_options
 def report_tax_command(
-    reconciliation: bool, as_graph: bool, graph_file: Path | None, dollars: str,
+    reconciliation: bool, first_year: int | None, last_year: int | None,
+    as_graph: bool, graph_file: Path | None, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show federal and state tax by year, and the income each was figured on.
@@ -9151,11 +9879,12 @@ def report_tax_command(
     --chart draws federal and state tax stacked by year with the effective
     rate; with --reconciliation, each April's balance due and refund.
     """
+    years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         _hold_tables()
-        frame = (reports.tax_reconciliation(rc, mode) if reconciliation
-                 else reports.tax_by_year(rc, mode))
+        frame = _shown_years(reports.tax_reconciliation(rc, mode) if reconciliation
+                             else reports.tax_by_year(rc, mode), years)
         deaths = _chart_deaths(rc, as_graph, graph_file)
     if frame.empty:
         click.echo(f"no tax was computed in this run ({described})")
@@ -9234,7 +9963,7 @@ def _render_rail_summary(summary: pd.DataFrame):
         table.add_column(column, justify=justify, no_wrap=True)
 
     def money(value: float) -> str:
-        return f"-${-value:,.0f}" if round(value) < 0 else f"${value:,.0f}"
+        return _whole_dollars(value)
 
     for row in named_rows(summary):
         style = _PAST_STYLES[str(row.sense)]
@@ -9254,10 +9983,12 @@ def _render_rail_summary(summary: pd.DataFrame):
                    "measure and threshold.")
 @click.option("--carried", is_flag=True,
               help="Add each rail's cumulative margin carried at the portfolio's return.")
+@_year_range_options
 @_report_graph_options
 @_report_options
 def report_guard_rails_command(
-    rail_names: tuple[str, ...], carried: bool, as_graph: bool, graph_file: Path | None,
+    rail_names: tuple[str, ...], carried: bool, first_year: int | None, last_year: int | None,
+    as_graph: bool, graph_file: Path | None,
     dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show where a run stands against its scenario's guard rails, year by year.
@@ -9284,7 +10015,11 @@ def report_guard_rails_command(
     --chart draws, per measure, the year's measure against each rail above
     its cumulative margin, as net_worth.ipynb does (with --carried, the
     carried line dotted).
+
+    --start and --end limit the years in the table and chart; the summary,
+    and the cumulative margins, still count from each rail's start.
     """
+    years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         _hold_tables()
@@ -9305,9 +10040,13 @@ def report_guard_rails_command(
             raise click.ClickException(
                 f"{described} has no 'cpi' inflation index, so no CPI-constant dollars; "
                 "pass --dollars nominal")
+        # A rail covers only its own years, so check the range against the run.
+        _check_years_in_runs([rc], years)
         results = guard_rails.evaluate_run(rc, rails, mode)
         deaths = _chart_deaths(rc, as_graph, graph_file)
         name = rc.label
+        spells = (strategy_guide.breach_episodes(rc._con)
+                  if _has_table(rc._con, "breach_event") else [])
     shown = [r for r in results if r.applies]
     for r in results:
         if not r.applies:
@@ -9329,23 +10068,48 @@ def report_guard_rails_command(
 
         click.echo(f"guard rail {r.rail.name}, {_DOLLAR_LABELS[mode]} ({described})")
         _echo_rails([r])
-        _print_unclipped(reports.render_report_table(frame, cell_style=one_style))
+        _print_unclipped(reports.render_report_table(clip_years(frame, years),
+                                                     cell_style=one_style))
     else:
         click.echo(f"guard rail margins, {_DOLLAR_LABELS[mode]} ({described})")
         _echo_rails(shown)
         frame = guard_rails.margins_frame(shown, carried=carried)
-        _print_unclipped(reports.render_report_table(frame, cell_style=style))
+        _print_unclipped(reports.render_report_table(clip_years(frame, years),
+                                                     cell_style=style))
     click.echo("")
     _print_unclipped(_render_rail_summary(guard_rails.summary_frame(shown)))
+    _echo_rail_responses(spells, {r.rail.name for r in shown})
 
     def figure():
         from analysis.sim.guard_rail_charts import guard_rail_figure
 
         unit = DollarMode(mode).label
         return guard_rail_figure(shown, f"Guard rails ({name})", unit=unit, carried=carried,
-                                 deaths=deaths)
+                                 years=years, deaths=deaths)
 
     _draw_report(as_graph, graph_file, figure, "guard-rails-")
+
+
+def _echo_rail_responses(
+    spells: Sequence[tuple[str, str, str, int, int | None, int]], rails: Collection[str],
+) -> None:
+    """Where a strategy's trigger (#441) watched one of ``rails``: each
+    spell past it (``strategy_guide.breach_episodes``), when it began, how
+    many of its years a decision answered, and how long until the margin
+    was back inside. The run saw each year's margin in the January after
+    it; the table above re-reads the whole run, which agrees, since a
+    rail's measure is causal."""
+    spells = [s for s in spells if s[1] in rails]
+    if not spells:
+        return
+    click.echo("")
+    click.echo("responses (`sim strategy log --breaches` lists each one):")
+    for strategy, rail, kind, first, back, answered in spells:
+        if back is None:
+            end = "not back inside"
+        else:
+            end = f"back inside {back} ({back - first} year{'s' if back - first != 1 else ''})"
+        click.echo(f"  {rail}:{kind} past from {first}, {strategy} answered {answered}, {end}")
 
 
 @account_group_command.group(name="tag")
@@ -15569,7 +16333,7 @@ def strategy_list_command(scenario: str | None, data_dir: Path | None) -> None:
     """List the scenario's strategies: kind, chain, dates, parameters, and
     the scenario each is inherited from."""
     folder, name = _strategy_dir(_resolve_data_dir(data_dir), scenario)
-    rows = _overlay_rows(folder, "strategies.csv")
+    rows = _strategy_rows(folder)
     if not rows:
         click.echo(f"no strategies in {name} (`sim strategy add` adds one)")
         return
@@ -15586,6 +16350,9 @@ _STRATEGY_OPTIONS = (
     click.option("--rules", type=completion.RULE_TAG, default=None,
                  help="The scheduled rules it scales: those carrying this tag, e.g. spending:travel "
                       "('' for none)."),
+    click.option("--trigger", type=completion.TRIGGER, default=None,
+                 help="Guard rails it answers, space-separated RAIL:annual or RAIL:cumulative, for a "
+                      "kind with on_breach ('' for none)."),
     click.option("--param", "param_specs", multiple=True, metavar="NAME=VALUE",
                  help="A parameter (repeatable), e.g. --param band=5%; NAME= restores its default. "
                       "`sim strategy kinds KIND` lists them."),
@@ -15651,6 +16418,21 @@ def _ask_owned(
     return chain.strip(), rules.strip()
 
 
+def _ask_trigger(data: Path, scenario: str, cls: type[Strategy], current: str = "") -> str:
+    """The guard rails a kind with an ``on_breach`` hook answers (#441),
+    blank for none; nothing is asked for any other kind."""
+    if "on_breach" not in cls.hooks:
+        return current
+    rails = names.guard_rail_names(data, scenario)
+    if rails:
+        click.echo(f"guard rails: {', '.join(rails)}")
+    choices = [f"{rail}:{kind}" for rail in rails for kind in registries.TRIGGER_MARGIN_KINDS]
+    return _prompt_with_completion(
+        "rails it answers (RAIL:annual or RAIL:cumulative, space-separated; blank: none)",
+        choices=choices, default=current,
+    ).strip()
+
+
 def _merge_params(current: str, changes: Mapping[str, Any]) -> str:
     params = json.loads(current) if current.strip() else {}
     if not isinstance(params, dict):
@@ -15687,20 +16469,19 @@ def _ask_params(cls: type[Strategy], current: Mapping[str, Any]) -> dict[str, An
 
 
 def _write_strategy(
-    data: Path, scenario: str, folder: Path, row: dict[str, str] | None, *, replace: str | None,
+    data: Path, scenario: str, folder: Path, name: str, row: dict[str, str] | None, *,
+    drop_vary: bool = False,
 ) -> None:
-    """Write ``row`` into the scenario's own strategies.csv (replacing the
-    row named ``replace`` there, if it has one; ``row`` None removes it) as
-    one staged edit: the loader checks the result."""
-    header = registries.STRATEGIES_CSV_HEADER
+    """Write ``row`` as the scenario's own ``strategies/<name>.csv`` (#408),
+    or with ``row`` None remove it (and with ``drop_vary`` its
+    ``strategy_vary/<name>.csv`` too), as one staged edit: the loader checks
+    the result."""
     with _scenario_edit(data, scenario) as edit:
-        path = edit.path(folder / "strategies.csv")
-        rows = strategy_guide.read_rows(path, header)
-        kept = [r for r in rows if r["name"] != replace] if replace else rows
-        if row is not None:
-            at = next((i for i, r in enumerate(rows) if replace and r["name"] == replace), len(kept))
-            kept.insert(min(at, len(kept)), row)
-        strategy_guide.write_rows(path, header, kept)
+        path = edit.path(strategy_files.definition_path(folder, name))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        strategy_guide.write_rows(path, registries.STRATEGY_CSV_HEADER, [row] if row is not None else [])
+        if drop_vary:
+            edit.path(strategy_files.vary_path(folder, name)).unlink(missing_ok=True)
 
 
 @strategy_group_command.command("add")
@@ -15709,20 +16490,22 @@ def _write_strategy(
               help="What it does (`sim strategy kinds`).")
 @_strategy_options
 def strategy_add_command(
-    name: str | None, kind: str | None, chain: str | None, rules: str | None,
+    name: str | None, kind: str | None, chain: str | None, rules: str | None, trigger: str | None,
     param_specs: tuple[str, ...], start: str | None, end: str | None, description: str | None,
     enabled: bool | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Add a strategy to the scenario's strategies.csv. Whatever is left out
+    """Add a strategy to the scenario, as strategies/NAME.csv. Whatever is left out
     is asked for: the kind, what it owns (a chain for a kind that draws or
     places, a rule tag for one that scales spending), and each parameter
     (with its default). The scenario must still load with it."""
     data = _resolve_data_dir(data_dir)
     folder, scenario_name = _strategy_dir(data, scenario)
-    existing = _overlay_rows(folder, "strategies.csv")
+    existing = _strategy_rows(folder)
     if name is None:
         name = _ask_new_name("name for the new strategy")
     name = name.strip()
+    if problem := strategy_files.name_problem(name):
+        raise click.ClickException(problem)
     if name in existing:
         raise click.ClickException(f"strategy {name!r} already exists (sim strategy edit)")
     kinds = _strategy_kinds(data)
@@ -15734,6 +16517,8 @@ def strategy_add_command(
     cls = kinds.kinds[kind]
     if guided:
         chain, rules = _ask_owned(data, scenario_name, cls, chain, rules)
+        if trigger is None:
+            trigger = _ask_trigger(data, scenario_name, cls)
     try:
         params = strategy_guide.parse_param_specs(cls, param_specs)
     except ValueError as exc:
@@ -15741,17 +16526,17 @@ def strategy_add_command(
     if guided:
         params.update(_ask_params(cls, {k: v for k, v in params.items() if v is not None}))
     row = {
-        "name": name, "kind": kind, "chain": (chain or "").strip(), "rules": (rules or "").strip(),
-        "start": (start or "").strip(),
+        "kind": kind, "chain": (chain or "").strip(), "rules": (rules or "").strip(),
+        "trigger": " ".join((trigger or "").split()), "start": (start or "").strip(),
         "end": (end or "").strip(), "enabled": "" if enabled in (None, True) else "false",
         "params_json": _merge_params("", params), "description": (description or "").strip(),
     }
-    _write_strategy(data, scenario_name, folder, row, replace=None)
+    _write_strategy(data, scenario_name, folder, name, row)
     click.echo(f"added strategy {name}: {strategy_guide.summary(row)}")
 
 
 def _pick_strategy(folder: Path, scenario_name: str, name: str | None, prompt: str) -> _Overlaid:
-    rows = _overlay_rows(folder, "strategies.csv")
+    rows = _strategy_rows(folder)
     if name is None:
         name = _ask_name("strategy", sorted(rows), prompt=prompt, plural="strategies")
     found = rows.get(name.strip())
@@ -15765,7 +16550,7 @@ def _pick_strategy(folder: Path, scenario_name: str, name: str | None, prompt: s
 @click.argument("name", required=False, type=completion.STRATEGY)
 @_strategy_options
 def strategy_edit_command(
-    name: str | None, chain: str | None, rules: str | None, param_specs: tuple[str, ...],
+    name: str | None, chain: str | None, rules: str | None, trigger: str | None, param_specs: tuple[str, ...],
     start: str | None, end: str | None, description: str | None, enabled: bool | None,
     scenario: str | None, data_dir: Path | None,
 ) -> None:
@@ -15776,19 +16561,22 @@ def strategy_edit_command(
     data = _resolve_data_dir(data_dir)
     folder, scenario_name = _strategy_dir(data, scenario)
     found = _pick_strategy(folder, scenario_name, name, "strategy to edit")
-    row = {c: found.row.get(c, "") for c in registries.STRATEGIES_CSV_HEADER}
+    strategy_name = found.row["name"]
+    row = {c: found.row.get(c, "") for c in registries.STRATEGY_CSV_HEADER}
     kinds = _strategy_kinds(data)
     cls = kinds.kinds.get(row["kind"])
     if cls is None:
-        raise click.ClickException(f"strategy {row['name']}'s kind {row['kind']!r} isn't defined")
-    guided = all(v is None for v in (chain, rules, start, end, description, enabled)) and not param_specs
+        raise click.ClickException(f"strategy {strategy_name}'s kind {row['kind']!r} isn't defined")
+    guided = (all(v is None for v in (chain, rules, trigger, start, end, description, enabled))
+              and not param_specs)
     try:
         changes = strategy_guide.parse_param_specs(cls, param_specs)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
     if guided:
-        click.echo(f"{row['name']}: {strategy_guide.summary(row)}")
+        click.echo(f"{strategy_name}: {strategy_guide.summary(row)}")
         chain, rules = _ask_owned(data, scenario_name, cls, None, None, current=row)
+        trigger = _ask_trigger(data, scenario_name, cls, row["trigger"])
         start = click.prompt("first month (blank: the start)", default=row["start"], show_default=False)
         end = click.prompt("last month (blank: the end)", default=row["end"], show_default=False)
         enabled = click.confirm("enabled", default=row["enabled"].strip().lower() not in ("false", "no", "0"))
@@ -15800,15 +16588,17 @@ def strategy_edit_command(
                           ("description", description)):
         if value is not None:
             new[column] = value.strip()
+    if trigger is not None:
+        new["trigger"] = " ".join(trigger.split())
     if enabled is not None:
         new["enabled"] = "" if enabled else "false"
     new["params_json"] = _merge_params(row["params_json"], changes)
     if new == row:
-        click.echo(f"strategy {row['name']} unchanged")
+        click.echo(f"strategy {strategy_name} unchanged")
         return
-    _write_strategy(data, scenario_name, folder, new, replace=row["name"] if found.index is not None else None)
+    _write_strategy(data, scenario_name, folder, strategy_name, new)
     inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
-    click.echo(f"changed strategy {row['name']}{inherited}: {strategy_guide.summary(new)}")
+    click.echo(f"changed strategy {strategy_name}{inherited}: {strategy_guide.summary(new)}")
 
 
 @strategy_group_command.command("delete")
@@ -15818,10 +16608,12 @@ def strategy_edit_command(
               help="Scenario folder name (default: the current scenario).")
 @_LISTING_DATA_DIR_OPTION
 def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
-    """Delete a strategy from the scenario's strategies.csv; the chain's own
-    steps decide again. An inherited one is deleted where it is defined (or
-    switched off here with `sim strategy edit NAME --disable`); deleting
-    this scenario's override of one restores the inherited row."""
+    """Delete a strategy: its file in strategies/ and this scenario's
+    strategy_vary/ file for it. The chain's own steps decide again. An
+    inherited one is deleted where it is defined (or switched off here with
+    `sim strategy edit NAME --disable`); deleting this scenario's override
+    of one restores the inherited definition, varied as its own scenarios
+    vary it."""
     data = _resolve_data_dir(data_dir)
     folder, scenario_name = _strategy_dir(data, scenario)
     found = _pick_strategy(folder, scenario_name, name, "strategy to delete")
@@ -15832,8 +16624,10 @@ def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, d
             f"switch it off here with `sim strategy edit {strategy_name} --disable`")
     if not yes and not click.confirm(f"delete strategy {strategy_name} from {scenario_name}?", default=False):
         raise click.Abort()
-    _write_strategy(data, scenario_name, folder, None, replace=strategy_name)
-    click.echo(f"deleted strategy {strategy_name} from {scenario_name}")
+    varied = strategy_files.vary_path(folder, strategy_name).exists()
+    _write_strategy(data, scenario_name, folder, strategy_name, None, drop_vary=True)
+    click.echo(f"deleted strategy {strategy_name} from {scenario_name}"
+               + (f" (and {registries.STRATEGY_VARY_DIR}/{strategy_name}.csv)" if varied else ""))
 
 
 _has_table = drift.has_table
@@ -15844,19 +16638,39 @@ _has_table = drift.has_table
 @click.option("--strategy", "strategy_name", type=completion.STRATEGY, default=None,
               help="Only this strategy's decisions.")
 @click.option("--year", type=int, default=None, help="Only this year's decisions.")
+@click.option("--breaches", is_flag=True, default=False,
+              help="List the guard-rail breaches strategies were told of instead (#441).")
 @_run_target_options
 def strategy_log_command(
-    target: str | None, strategy_name: str | None, year: int | None, runfile: Path | None,
-    data_dir: Path | None, runs_dir: Path | None,
+    target: str | None, strategy_name: str | None, year: int | None, breaches: bool,
+    runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """List a run's strategy decisions (the latest run by default): each
     month a strategy decided, what it was asked, what its own moves paid or
-    placed, what the chain's steps covered after it, and its note."""
+    placed, what the chain's steps covered after it, and its note. An
+    on_breach decision's note starts with the breach it answered.
+
+    --breaches lists each breach of a rail a strategy's trigger names
+    instead: the year, entered, continued or left, the measure, line and
+    margin in CPI-constant dollars, and whether the strategy answered."""
     path = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
     try:
         if not _has_table(con, "strategy_decision"):
             click.echo(f"no strategies in {path.name} (a run from before them)")
+            return
+        if breaches:
+            told = strategy_guide.breaches(con, strategy=strategy_name)
+            if year is not None:
+                told = told[told["year"] == year]
+            if told.empty:
+                click.echo(f"no breaches in {path.name}")
+                return
+            for column in ("measure", "threshold", "margin"):
+                told[column] = told[column].map(lambda d: f"{'-' if d < 0 else ''}${abs(d):,.0f}")
+            told["answered"] = told["answered"].map({True: "yes", False: "no"})
+            click.echo(told.rename(columns={"margin_kind": "margin of", "years_past": "years past"})
+                       .to_string(index=False))
             return
         frame = strategy_guide.decision_log(con, strategy=strategy_name, year=year)
     finally:

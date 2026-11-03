@@ -401,7 +401,7 @@ def test_explain_lists_each_lot_with_its_symbol_and_quantity(two_lot_run_file: P
 
     result = CliRunner().invoke(main, ["sim", "explain", str(two_lot_run_file)])
     assert result.exit_code == 0, result.output
-    section = result.output.split("lots at the final step:")[1].split("year-end net worth:")[0]
+    section = result.output.split("lots at the final step:")[1].split("year-end net worth, ")[0]
     a = next(line for line in section.splitlines() if "Asset_Brokerage_Joint (a)" in line)
     b = next(line for line in section.splitlines() if "Asset_Brokerage_Joint (b)" in line)
     assert "AAA" in a and "110,000.00" in a  # basis: $60,000 plus the $50,000 inheritance

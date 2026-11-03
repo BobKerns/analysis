@@ -19,6 +19,13 @@ from analysis.sim.types import Death
 FRAME_ALPHA = 0.8
 """Alpha transparency for legend frames."""
 
+# The ensemble-analysis charts' palette (sensitivity and draws), here so the
+# widget-free chart modules and the widgets share it.
+CATEGORICAL = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948")
+"""Validated categorical order (dataviz reference palette; CVD-checked)."""
+INK, MUTED, GRID = "#0b0b0b", "#898781", "#e1e0d9"
+"""Text and marks; secondary text and axes; gridlines."""
+
 
 def dollar_formatter() -> FuncFormatter:
     """A matplotlib tick formatter rendering values as ``$1,234``."""

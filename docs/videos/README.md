@@ -362,7 +362,13 @@ tasks; its clip starts when both are done, and the video is joined when every
 clip is. Every language of the video builds at once, on the same pool, each
 line tagged `[en]`, `[ja]`. `--jobs N` sets how many tasks run at once; the
 default is the CPUs less 4, at least 2 (`--jobs 1` builds one step at a
-time). Recordings (tapes and notebook scenes) run at one fixed path, so the
+time), and no more than memory holds: a 4K clip encode or a slide's browser
+takes up to 2 GB, and the recordings 3 GB, so 8 GB (Docker Desktop's default;
+raise it under Settings > Resources > Memory) runs 2 tasks. The build prints
+how many it runs. A program the kernel kills for memory fails with
+`-9: killed, most likely out of memory`. When any task fails, or on Ctrl-C, the
+build stops at once: it kills what's running, starts nothing more, and
+reports the first failure. Recordings (tapes and notebook scenes) run at one fixed path, so the
 paths the CLI prints read the same in every recording, so they take turns on a
 lane of their own, beside the pool, and get the 4 CPUs kept back: VHS and the
 notebook recorder capture through a browser in real time. Each narration and
@@ -564,7 +570,23 @@ Sources only: scripts, templates, assets, the theme, the builder. Videos,
 audio and the voice model stay out of git (`out/` is ignored, the model is
 in the tool cache).
 
-## Still to decide
+## Length, hosting and links
 
-- Target length: 5 to 10 minutes per video, as #373 suggests.
-- Background music.
+- **Length.** Aim for 5 to 10 minutes in English; a video that runs
+  longer is usually two. A short side trip (such as `02a-wsl`) may be
+  shorter. Japanese narration runs about a fifth longer, so a Japanese
+  video may pass 10 minutes. A built video's scene lengths are in its
+  `.scenes.json`, and a published one's in `published.toml`.
+- **Hosting.** YouTube, on the project's channel, one video per language,
+  each language in its own playlist (`youtube.toml`); see
+  [Publishing on YouTube](#publishing-on-youtube). The repository holds
+  the sources, never the MP4s.
+- **Where the docs link to them.** The [README](../../README.md)
+  and the [user guide](../user-guide.md)'s opening link the channel and both
+  playlists. A video that covers a guide section gets a **Video.** paragraph
+  at the top of that section, naming the video and linking each language's
+  copy (see *Looking at your results*), and a video about installing is
+  linked from [SETUP.md](../SETUP.md) the same way. Add the links once the
+  video is public, using the ids in its `published.toml`.
+
+Not decided yet: background music (none so far).

@@ -14,6 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.frames import index_years
 from analysis.sim import compare
 from analysis.sim.connection import RunConnection
 from analysis.sim.engine import _drawdown_tax, run_scenario
@@ -231,3 +232,41 @@ def test_sim_networth_is_after_tax_unless_pre_tax(report_run_file: Path) -> None
     ])
     assert pre.output.splitlines()[0].startswith("net worth, nominal dollars")
 
+
+
+def _explain_year_end(run_file: Path, *extra: str) -> dict[str, tuple[str, str]]:
+    """explain's year-end rows: each year's nominal and CPI-constant figure."""
+    result = CliRunner().invoke(main, ["sim", "explain", str(run_file), *extra])
+    assert result.exit_code == 0, result.output
+    lines = result.output.split("year-end net worth, ", 1)[1].splitlines()
+    rows = {}
+    for line in lines[2:]:
+        if not line.startswith("  20"):
+            break
+        year, nominal, real = line.split()[0], *line.split("$")[1:]
+        rows[year] = (nominal.strip(), real.strip())
+    return rows
+
+
+def test_sim_explain_year_end_net_worth_is_after_tax_unless_pre_tax(
+    report_run_file: Path,
+) -> None:
+    """#332: like `sim networth`, explain's year-end net worth is after tax
+    unless --pre-tax, and says which; its after-tax figure is networth's."""
+    result = CliRunner().invoke(main, ["sim", "explain", str(report_run_file)])
+    assert "year-end net worth, after tax (--pre-tax for before):" in result.output
+    pre = CliRunner().invoke(main, ["sim", "explain", str(report_run_file), "--pre-tax"])
+    assert "year-end net worth, before tax:" in pre.output
+
+    after, before = _explain_year_end(report_run_file), _explain_year_end(report_run_file, "--pre-tax")
+    assert after.keys() == before.keys()
+    assert all(after[year] != before[year] for year in after)
+    with RunConnection(report_run_file) as rc:
+        frame = rc.after_tax_net_worth_frame()
+    year_end = frame.groupby(index_years(frame)).tail(1)
+    for year, nominal, real in zip(index_years(year_end), year_end["nominal"],
+                                   year_end["cpi_constant"], strict=True):
+        shown = after[str(year)]
+        # explain rounds the pre-tax figure and the tax apart: a cent either way.
+        assert abs(float(shown[0].replace(",", "")) - nominal) < 0.02
+        assert abs(float(shown[1].replace(",", "")) - real) < 0.02

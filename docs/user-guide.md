@@ -1303,6 +1303,32 @@ shows how far the members stray and how many end up past the band.
 The same strategy can own a destination chain: an overflow then goes to
 whatever is underweight.
 
+Each strategy is one file in the scenario's `strategies/` folder, named for
+it (`strategies/draw_by_allocation.csv`), as a chain is. A scenario built on
+another inherits its strategies; its own file for one replaces the
+inherited one whole, which is what `sim strategy edit` writes.
+
+**Varying a strategy across an ensemble.** How wide a band or how deep a cut
+should be is rarely certain, so an ensemble can draw a strategy's
+parameters as it draws any other uncertain value. Beside the strategy's
+file, `strategy_vary/<name>.csv` lists the parameters that vary, one row
+each, in the parameter's own unit:
+
+```csv
+param,vary_distribution,vary_low,vary_high,vary_mode,vary_correlate_with,vary_correlation
+band,triangular,3%,8%,,,
+step,uniform,0.5%,2%,,,
+```
+
+Any percent, dollar or number parameter can vary, with the same
+distributions as a calendar row. Member 0 keeps the values the strategy's
+own file gives, which must lie within each range (and a blank `vary_mode`
+is that value). Each parameter is a node named `strategy:<name>.<param>`
+(`strategy:draw_by_allocation.band`), so it can be correlated with another
+parameter, a lifespan or a calendar row, and the sensitivity notebook
+sweeps it like the rest. See
+[ADR-006 §3b](architecture/ADR-006-ensemble-scenarios.md).
+
 You can write your own in Python, in your data repo's `strategies/` folder.
 `sim strategy kinds` lists what's available, with each parameter, and
 `sim strategy check` runs a scenario twice to make sure your strategy
@@ -1332,7 +1358,16 @@ spend that year.
      down year.
    - `ceiling_floor` aims at a share of the portfolio but never lets
      spending rise more than 5% or fall more than 2.5% in a year, after
-     inflation.
+     inflation. A `rate` you give is the share for the tagged rules alone,
+     so if you tag only the optional ones, leave it at 0% to start from
+     your plan.
+
+A cut is shared proportionally across the rules a strategy owns: a 10% cut
+makes a $5,000 trip $4,500. If that isn't how you'd cut, for example a trip
+you'd skip rather than shorten, give each such item its own tag and its own
+strategy (a `threshold` skips its rules whole), or write a strategy of your
+own whose `scale` decides rule by rule. A strategy changes only what carries
+its tag, so a Medicare premium or a tax payment is never cut by surprise.
 
 Each rule still says what you planned, and the run keeps both: what the
 plan would have spent and what was spent.
@@ -1345,9 +1380,133 @@ each year's decision, such as
 `cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`.
 
 Compare against the plan as written the same way as above: a child
-scenario with the strategy switched off, run both, and `sim compare` them.
+scenario with the strategy switched off, run both, and `sim compare` them;
+its spending section sets each run's spending, and its plan, side by side.
+For an ensemble, `sim ensemble spending` shows the spread of spending across
+the members by year, the average of the worst 5% and 20% (CVaR), how often
+members had to cut, and each member's worst full year. The notebooks draw
+the same: `net_worth.ipynb` for one run, `scenario_compare.ipynb` for runs
+side by side, and `ensemble.ipynb` across the members.
 The design is in
 [ADR-010 §6.2](architecture/ADR-010-responsive-strategies.md).
+
+### 4.18 Tax-aware moves each December (year-end strategies)
+
+Two built-in strategies act once a year, in December, after every rule has
+posted, on the year's income as the April tax settlement will see it. They
+own no chain and no rules: each works on the taxable lots of the accounts
+carrying a `portfolio` tag, such as `portfolio:invest`.
+
+- `harvest` sells and rebuys long-term gains until taxable income reaches
+  the top of the 0% long-term gains band (`band`), the lots with the most
+  gain per dollar first. The holdings stay as they were, and the basis
+  rises, so later sales owe less. It stops sooner when the next $100 of
+  gain would cost more than the band's rate, for example because the gain
+  makes more of Social Security taxable; `max_marginal_rate` sets a
+  different limit. With `losses`, a year in which a lot is down by at least
+  `loss_minimum` sells it at a loss instead (think of switching to a
+  similar fund, so there's no wash sale), and the loss carries forward as
+  usual. A harvested lot keeps its growth and its acquired date, so a gain
+  that was long-term stays long-term.
+- `gift` gives `amount` a year, raised with inflation, into an expense
+  account of subkind `gift` (`to`), but only from what the portfolio holds
+  above `minimum`. By default it gives shares (`in_kind`), the most
+  appreciated first: the recipient takes over their basis and Alice and
+  Bill owe no tax on the gain. With `in_kind` false it sells for cash,
+  least appreciated first, and `max_tax` caps how much the sale may add to
+  the year's federal tax.
+
+For example, Alice and Bill harvest their brokerage gains each year and
+give $10,000 in shares to their family once the portfolio is above
+$500,000:
+
+```sh
+sim account add Expense_Family expense gift
+sim strategy add harvest_gains --kind harvest --param portfolio=portfolio:invest
+sim strategy add family_gift --kind gift --param to=Expense_Family \
+    --param amount=10000 --param minimum=500000 --param portfolio=portfolio:invest
+```
+
+Each command asks for anything it still needs, offering what you gave as
+the answer.
+
+Harvesting gains, and a cash gift with `max_tax`, need the scenario's
+federal tax rule to estimate the year's tax; loading the scenario says so
+if it has none.
+`sim strategy log` gives each year's decision, such as
+`realized $26,112 of long-term gain into the 0% band (room $26,112)`.
+`sim report gains` shows the harvested gains in their own `harvested`
+column, `sim report expenses` shows gifts under `gifts`, and `sim explain`
+totals what each strategy moved and realized. The design is in
+[ADR-010 §6.3](architecture/ADR-010-responsive-strategies.md).
+
+### 4.19 Respond when a guard rail is crossed (strategy triggers)
+
+A guard rail (§4.15) only reads a run, unless a strategy's `trigger` names
+it. Then the simulator checks that rail every January, on the run so far,
+exactly as `sim report guard-rails` would show last year: was it past the
+line, still past it, or back inside? It tells the strategy, which can
+change what it does from then on, or move money right away.
+
+A trigger names a rail and which margin to watch: `RAIL:annual` (last
+year's own) or `RAIL:cumulative` (everything since the rail began). Only a
+strategy whose kind has an `on_breach` hook can have one; `sim strategy
+kinds` lists each kind's hooks. None of the built-in kinds has one yet, so
+a trigger needs a kind of your own in the data repo's `strategies/`
+folder. For example, a kind that halves the travel and gift rules it owns
+for every year after one past the line, until a year comes back inside:
+
+```python
+from dataclasses import dataclass
+from analysis.sim.strategy_api import Decision, Percent, Spend, Strategy, percent, register
+
+
+@register
+class CutOnBreach(Strategy):
+    """Cut the owned rules by ``cut`` in the years after one past the line."""
+
+    kind = "cut_on_breach"
+
+    @dataclass(frozen=True)
+    class Params:
+        cut: Percent = percent("50%")
+
+    def on_breach(self, ctx, breach):
+        ctx.memory["cutting"] = breach.state != "left"
+        return Decision([], note=f"{breach.rail} {breach.state}")
+
+    def scale(self, ctx, rule, amount):
+        if not ctx.memory.get("cutting"):
+            return None
+        return Decision([Spend(amount * (1_000_000 - self.params.cut) // 1_000_000)])
+```
+
+Alice and Bill want to hold spending to $60,000 a year in today's
+dollars, and trim the extras when they go over:
+
+```sh
+sim guard-rail add tight --measure spending --side above --threshold 60000 --basis cpi_constant
+sim strategy add respond --kind cut_on_breach --rules flex:optional --trigger tight:annual
+```
+
+`sim strategy log --breaches` lists every January's finding: the year, the
+state (`entered`, `continued` or `left`), how many years in a row it has
+been past, and the margin. `sim strategy log` starts each answer's note
+with the breach it answered, `sim explain` counts how often each rail was
+past and how often it came back inside, and `sim report guard-rails` adds,
+below its summary, each stretch of years past a triggered rail and how
+long it took to come back.
+
+A strategy can also look back at the run itself: `ctx.history` gives the
+month-end balances so far, and `ctx.rail("tight")` the rail's margins
+through last year. A kind with a `month_start` hook is asked at the start
+of every month, after any January breach and `year_start`, and can move
+money then, as a year-end strategy does in December (§4.18).
+
+A scenario with a trigger reads its guard rails, so editing a rail in its
+lineage reruns it; elsewhere a rail stays a lens and editing it reruns
+nothing. The design is in
+[ADR-010 §3.3](architecture/ADR-010-responsive-strategies.md).
 
 ## 5. Looking at your results
 
@@ -1421,13 +1580,18 @@ the April payment. The table shows both deductions; `--pre-tax` shows the
 plain balance total instead. To change the ten years, or to leave gains out
 (a basis step-up at death would erase them), set `after_tax` in the
 scenario's `meta_json`, for example
-`{"after_tax": {"drawdown_years": 15, "step_up": true}}`. `sim compare`,
-`sim ensemble summary` and `sim ensemble compare` report after-tax net
-worth too, with the same `--pre-tax`, and the notebooks' net worth widgets
+`{"after_tax": {"drawdown_years": 15, "step_up": true}}`. `sim explain`,
+`sim compare`, `sim ensemble summary` and `sim ensemble compare` report
+after-tax net worth too, with the same `--pre-tax`, and the notebooks' net worth widgets
 have a Pre-tax/After-tax toggle. An account's balance is always before tax.
 After tax is what shows a Roth conversion's or a taxable sale's real effect.
 Before tax, tax paid now looks like a loss, while the tax a traditional
 balance still owes doesn't show at all.
+
+**Video.** *Comparing what-ifs* builds two what-ifs on Alice and Bill's
+base scenario, runs them, and compares them with `sim compare` and
+`scenario_compare.ipynb`: [English](https://www.youtube.com/watch?v=z-HLIqsKTZg),
+[Japanese (日本語)](https://www.youtube.com/watch?v=_9xq98dz6kw).
 
 `sim compare BASELINE VARIANT` puts two or more scenarios' latest runs side
 by side, as `scenario_compare.ipynb` does: whether the runs came from the same
@@ -1479,18 +1643,26 @@ machine too small for a notebook comfortably.
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
-| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--chart]` |
-| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly] [--chart]` |
-| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged] [--chart]` |
-| economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax] [--chart]` |
-| realized vs. unrealized gains by year | `sim report gains [--chart]` |
-| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--chart]` |
-| where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--chart]` |
+| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--start YEAR] [--end YEAR] [--chart]` |
+| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH\|YEAR] [--end MONTH\|YEAR] [--yearly] [--chart]` |
+| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged] [--start YEAR] [--end YEAR] [--chart]` |
+| economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax] [--start YEAR] [--end YEAR] [--chart]` |
+| realized vs. unrealized gains by year | `sim report gains [--start YEAR] [--end YEAR] [--chart]` |
+| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--start YEAR] [--end YEAR] [--chart]` |
+| where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--start YEAR] [--end YEAR] [--chart]` |
+| spending against the plan by year: budgeted, delivered, the share of plan, and what was redirected | `sim report spending [--by category\|account\|tag:ROLE] [--start YEAR] [--end YEAR] [--chart]` |
 | a scenario's guard rails | `sim guard-rail list` |
 | an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--chart]` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.
+
+`--start YEAR` and `--end YEAR` limit the years shown, as the notebooks'
+Years slider does, on `sim networth`, every `sim report`, `sim compare` and
+`sim ensemble summary|compare`. They cut only what is shown: a result over
+the whole run, such as `sim compare`'s break-even, a guard rail's summary or
+cumulative margin, or an ensemble's share ever below the reserve, still
+covers the whole run. `sim account history` takes a month or a bare year.
 
 `--chart` shows the notebook's chart of the view instead of its table: drawn
 in the terminal when it shows images (iTerm2, kitty, Ghostty and others),
@@ -1504,7 +1676,8 @@ the pre-tax total dashed above it, so the gap is the tax still owed.
 carried down to the change in net worth; with `--year`, it draws a bar per
 group. `sim report tax --chart` stacks federal and state tax with the
 effective rate on its own axis (with `--reconciliation`, each April's balance
-due and refund). `sim allocation --chart` draws a pie of the asset classes, a
+due and refund). `sim report spending --chart` draws delivered spending as a
+bar per year with the plan as a dashed line over them. `sim allocation --chart` draws a pie of the asset classes, a
 bar per class split by the group with `--by`, and a line per class with
 `--drift`.
 

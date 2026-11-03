@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim.correlation import probability, tail_scale
 from analysis.sim.distributions import Uniform, tail_rng
+from analysis.sim.draws_charts import pair_options
 from analysis.sim.draws_db import build_draws_db, draws_db_path, draws_frames, ks_uniform
 from analysis.sim.ensemble import build_distribution, resolve_member, write_batch_manifest
 from analysis.sim.loader import LoadResult
@@ -326,3 +327,60 @@ def test_a_draws_database_from_before_pools_is_gathered_again(mc_batch: Path) ->
     assert result.exit_code == 0, result.output
     assert draws_db_current(mc_batch)
     assert "component" not in result.output  # one component: no per-component headings
+
+
+def test_sim_ensemble_draws_lists_a_pair(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    """#330: --pair, in either order, prints the pair's rho and its members."""
+    a, b = pair_options(draws_frames(mc_batch))[0][1]
+    output = _draws_cli(runs_dir, intent_dir, "--pair", f"{b},{a}")
+    first = output.splitlines()[0]
+    assert first.startswith(f"{b} ~ {a}: link, implied rho") and "achieved" in first
+    assert "0 (base)" in output and f"{a} score" in output
+    assert "draws database" not in output  # the summary is for neither --node nor --pair
+
+
+@pytest.mark.parametrize(("pair", "message"), [
+    ("gift", "--pair takes two nodes, A,B"),
+    ("gift,gift", "names 'gift' twice"),
+    ("gift,nope", "'nope' isn't drawn in this batch"),
+    ("gift,core_inflation", "aren't a correlated pair in this batch; gift pairs with nothing"),
+    ("apparel_factor,gift", "aren't a correlated pair in this batch; apparel_factor pairs with core_inflation"),
+])
+def test_sim_ensemble_draws_rejects_a_bad_pair(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path, pair: str, message: str,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), "--pair", pair,
+    ])
+    assert result.exit_code == 2 and message in result.output
+
+
+def test_sim_ensemble_draws_charts_a_node_and_a_pair(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path, tmp_path: Path,
+) -> None:
+    """#330: --chart-file writes the notebook's chart; the tables only with --table."""
+    a, b = pair_options(draws_frames(mc_batch))[0][1]
+    png = tmp_path / "gift.png"
+    output = _draws_cli(runs_dir, intent_dir, "--node", "gift", "--chart-file", str(png))
+    assert png.read_bytes()[:4] == b"\x89PNG" and output.strip() == f"wrote {png}"
+    svg = tmp_path / "pair.svg"
+    output = _draws_cli(runs_dir, intent_dir, "--pair", f"{a},{b}", "--chart-file", str(svg), "--table")
+    assert svg.read_text().lstrip().startswith("<?xml")
+    assert output.startswith(f"wrote {svg}") and f"{a} ~ {b}" in output
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (["--chart"], "name one"),
+    (["--node", "gift", "--pair", "gift,x", "--chart-file", "x.png"], "--node or --pair, not both"),
+])
+def test_sim_ensemble_draws_chart_needs_one_subject(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path, args: list[str], message: str,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), *args,
+    ])
+    assert result.exit_code == 2 and message in result.output

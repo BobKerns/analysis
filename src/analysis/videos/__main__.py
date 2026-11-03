@@ -15,7 +15,7 @@ from analysis.videos import notebook, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
 from analysis.videos import youtube
-from analysis.videos.build import build_languages, default_jobs, repo_root
+from analysis.videos.build import GIB, available_memory, build_languages, default_jobs, repo_root
 
 # VHS archives by (platform.system(), platform.machine()), named as upstream's.
 _VHS_PLATFORMS = {
@@ -135,6 +135,14 @@ def _video_folders(args: list[Path]) -> list[Path]:
     return sorted(p for p in root.iterdir() if (p / "script.md").is_file())
 
 
+def _memory_note(asked: int | None) -> str:
+    """Why the default is lower than the CPUs allow, if memory is why."""
+    if asked is not None or default_jobs(memory=1 << 60) == default_jobs():
+        return ""
+    free = available_memory() or 0
+    return f" (fewer for memory: {free / GIB:.1f} GB free; Docker Desktop: Settings > Resources > Memory)"
+
+
 def _positive(text: str) -> int:
     value = int(text)
     if value < 1:
@@ -152,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--silent", action="store_true", help="timed silence instead of a voice (fast drafts)")
     b.add_argument("--rerecord", action="store_true", help="re-record tapes and notebook scenes (after a code change)")
     b.add_argument("--jobs", type=_positive, default=None,
-                   help=f"tasks at once, besides recordings (default: CPUs less 4, at least 2: {default_jobs()} here)")
+                   help="tasks at once, besides recordings (default: CPUs less 4, at least 2, "
+                        f"and what memory holds: {default_jobs()} here)")
     c = sub.add_parser("check", help="check scripts parse and slides render (no media)")
     c.add_argument("folders", type=Path, nargs="*", help="video folders (default: all in docs/videos)")
     p = sub.add_parser("publish", help="upload built videos to YouTube, or update what's there")
@@ -176,7 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     langs = [args.lang] if args.lang else scripts.languages(args.folder)
     try:
         print(f"{args.folder.name} [{', '.join(langs)}]")
-        results = build_languages(args.folder, langs, jobs=args.jobs, out_dir=args.out,
+        jobs = args.jobs or default_jobs()
+        print(f"  {jobs} task{'s' if jobs > 1 else ''} at once, besides recordings{_memory_note(args.jobs)}")
+        results = build_languages(args.folder, langs, jobs=jobs, out_dir=args.out,
                                   engine="silent" if args.silent else None, rerecord=args.rerecord)
         for result in results:
             print(f"  -> {result.video} ({result.length:.1f}s)\n  -> {result.captions}")

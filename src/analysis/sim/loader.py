@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import (
-    asset_classes, guard_rails, life_table, registries, strategy_code, strategy_load, units,
+    asset_classes, guard_rails, life_table, registries, strategy_api, strategy_code, strategy_files,
+    strategy_load, units,
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, is_marker_name, month_end_iso, parse_day,
@@ -1166,9 +1167,8 @@ def load_scenario(
     if description is not None:
         scenario_row["description"] = description
     chains = _read_chain_files(data_dir, scenario_name, issues)
-    strategy_rows = _read_lineage_overlay(
-        data_dir, scenarios_dir, scenario_name, "strategies.csv", ("name",), issues,
-    )
+    strategy_rows = _read_strategy_files(data_dir, scenarios_dir, scenario_name, issues)
+    vary_files = _read_strategy_vary_files(data_dir, scenarios_dir, scenario_name, issues)
     target_rows = _read_lineage_overlay(
         data_dir, scenarios_dir, scenario_name, "targets.csv",
         ("target_set", "as_of", "asset_class"), issues,
@@ -1214,7 +1214,6 @@ def load_scenario(
         lifespan_rows, persons, scenario_row.get("start", ""), issues,
         life_tables=life_tables if life_tables_ok else None,
     )
-    _validate_calendar_correlation(calendar_rows, issues, unused, lifespan_links)
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
@@ -1256,14 +1255,20 @@ def load_scenario(
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
+    rail_rows = _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
+                                      calendar_rows, issues)
     strategy_kinds, strategies = _validate_strategies(
         strategy_rows, target_rows, strategy_sources,
         accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
-        scheduled_rows=scheduled_rows,
+        scheduled_rows=scheduled_rows, rails=rail_rows,
         start=scenario_row.get("start", ""), issues=issues, unused=unused,
     )
-    _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
-                          calendar_rows, issues)
+    strategy_varies, strategy_links = strategy_load.prepare_vary(
+        vary_files, strategy_rows=strategy_rows, prepared=strategies, kinds=strategy_kinds,
+        issues=issues, unused=unused,
+    )
+    _validate_calendar_correlation(
+        calendar_rows, issues, unused, {**lifespan_links, **strategy_links})
 
     for account, replacing, replaced in account_clashes:
         if any(f"({account})" in issue or f"({account} /" in issue for issue in issues):
@@ -1323,8 +1328,9 @@ def load_scenario(
         )
         counts.update(strategy_load.write_strategies(
             con, strategies, kinds=strategy_kinds, sources=strategy_sources,
-            target_rows=target_rows,
+            target_rows=target_rows, rail_rows=rail_rows,
         ))
+        counts.update(strategy_load.write_strategy_vary(con, strategy_varies))
         _write_manifest(
             con,
             scenario_name=scenario_name,
@@ -1444,7 +1450,7 @@ _MONTH_COLUMNS: dict[str, tuple[str, ...]] = {
     "scheduled.csv": ("start", "end", "base_date"),
     "calendar.csv": ("date", "param_date", "vary_resume"),
     "allocations.csv": ("as_of",),
-    "strategies.csv": ("start", "end"),
+    "strategies": ("start", "end"),
     "targets.csv": ("as_of",),
 }
 """Per-file columns that name a month (#34): ``YYYY-MM`` or ``YYYY-MM-DD``,
@@ -3248,15 +3254,19 @@ def _validate_guard_rails(
     scenarios_dir: Path, scenario_name: str, accounts: list[dict[str, str]],
     scheduled_rows: list[dict[str, str]], calendar_rows: list[dict[str, str]],
     issues: list[str],
-) -> None:
-    """guard_rails.csv (#305). Only reports read the rails, and nothing of them
-    goes into the intent, but a bad one fails the load like any other row, so
-    `sim check` and every edit command catch it."""
+) -> dict[str, dict[str, str]]:
+    """guard_rails.csv (#305). Reports read the rails, and a strategy's
+    trigger (#441) takes the ones it names into the intent; a bad one fails
+    the load like any other row, so `sim check` and every edit command
+    catch it. Returns each good rail's merged row by name."""
     rows, problems = guard_rails.read_rows(scenarios_dir, scenario_name)
     rails, more = guard_rails.parse_rows(rows)
     issues.extend(problems + more)
     issues.extend(guard_rails.check_references(
         rails, guard_rails.references_from_rows(accounts, scheduled_rows, calendar_rows)))
+    good = {rail.name for rail in rails}
+    return {row.cells.get("name", ""): dict(row.cells) for row in rows
+            if row.cells.get("name", "") in good}
 
 
 def _validate_year_to_date(
@@ -3756,9 +3766,10 @@ def _validate_calendar_correlation(
     root nothing depends on it is a warning, for the same reasons.
 
     ``lifespan_links`` (#221) are the varying lifespans' nodes
-    (``lifespan:<person>``), each mapped to its parent (or "") and where to
-    report it: they join the same forest, so a lifespan and a calendar row
-    can name each other."""
+    (``lifespan:<person>``), and the varied strategy parameters'
+    (``strategy:<name>.<param>``, #408), each mapped to its parent (or "")
+    and where to report it: they join the same forest, so a lifespan, a
+    strategy parameter and a calendar row can name each other."""
     lifespan_links = lifespan_links or {}
     nodes: dict[str, int] = {}
     parents: dict[str, str] = {}
@@ -3771,11 +3782,12 @@ def _validate_calendar_correlation(
         where = f"{_where(row, 'calendar.csv', i)} ({name or '?'})"
         is_factor = kind == registries.LATENT_FACTOR_KIND
         varying = bool((row.get("vary_distribution") or "").strip())
-        if name.startswith(registries.LIFESPAN_NODE_PREFIX):
-            issues.append(
-                f"{where}: a calendar row's name can't start with "
-                f"'{registries.LIFESPAN_NODE_PREFIX}', which names a lifespan (#221)"
-            )
+        for prefix, what in ((registries.LIFESPAN_NODE_PREFIX, "a lifespan (#221)"),
+                             (registries.STRATEGY_NODE_PREFIX, "a strategy parameter (#408)")):
+            if name.startswith(prefix):
+                issues.append(
+                    f"{where}: a calendar row's name can't start with '{prefix}', which names {what}"
+                )
         if is_factor:
             if not name:
                 issues.append(f"{where}: a latent_factor row needs a name")
@@ -4279,6 +4291,46 @@ def _read_lineage_overlay(
     return rows
 
 
+def _read_strategy_files(
+    data_dir: Path, scenarios_dir: Path, scenario_name: str, issues: list[str],
+) -> list[dict[str, str]]:
+    """Each strategy's definition, ``strategies/<name>.csv`` (#408), as the
+    load order leaves it: one row, its ``name`` the file's."""
+    rows: list[dict[str, str]] = []
+    files = strategy_files.lineage_files(
+        scenarios_dir, scenario_name, registries.STRATEGIES_DIR, strict=True)
+    for name, found in sorted(files.items()):
+        label = _data_label(found.path, data_dir)
+        own = _read_csv(found.path, issues, label=label)
+        if problem := strategy_files.name_problem(name):
+            issues.append(f"{label}: {problem}")
+            continue
+        if len(own) != 1:
+            issues.append(f"{label}: a strategy file holds one row, its definition (found {len(own)})")
+            continue
+        if "name" in own[0]:
+            issues.append(f"{label}: no name column: the file's name is the strategy's")
+            continue
+        _normalize_month_columns(own, registries.STRATEGIES_DIR, issues)
+        rows.append({"name": name, **own[0]})
+    return rows
+
+
+def _read_strategy_vary_files(
+    data_dir: Path, scenarios_dir: Path, scenario_name: str, issues: list[str],
+) -> dict[str, tuple[str, list[tuple[str, dict[str, str]]]]]:
+    """Each strategy's varied parameters, ``strategy_vary/<name>.csv`` (#408),
+    as the load order leaves them: a later scenario's file replaces the
+    earlier one's whole. Each is its label and its rows, located."""
+    files = strategy_files.lineage_files(
+        scenarios_dir, scenario_name, registries.STRATEGY_VARY_DIR, strict=True)
+    out: dict[str, tuple[str, list[tuple[str, dict[str, str]]]]] = {}
+    for name, found in sorted(files.items()):
+        label = _data_label(found.path, data_dir)
+        out[name] = (label, list(_located(_read_csv(found.path, issues, label=label), label)))
+    return out
+
+
 def _validate_strategies(
     strategy_rows: list[dict[str, str]],
     target_rows: list[dict[str, str]],
@@ -4289,11 +4341,12 @@ def _validate_strategies(
     allocations: list[dict[str, str]],
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     scheduled_rows: list[dict[str, str]],
+    rails: Mapping[str, Mapping[str, str]],
     start: str,
     issues: list[str],
     unused: list[str],
 ) -> tuple[strategy_code.StrategyKinds, list[strategy_load.PreparedStrategy]]:
-    """``strategies.csv`` and ``targets.csv`` (#326, ADR-003 §4.12-4.13).
+    """``strategies/<name>.csv`` and ``targets.csv`` (#326, ADR-003 §4.12-4.13).
 
     The data repo's strategy modules are imported for every load, so a broken
     one is found at once; it fails only the loads of scenarios that have
@@ -4314,11 +4367,20 @@ def _validate_strategies(
         except ValueError:
             rule_tags = frozenset()  # reported with the scheduled rows
         rules.append((r.get("name", ""), r.get("amount_rule_kind", ""), rule_tags))
+    tax_scopes: dict[str, int] = {}
+    for r in scheduled_rows:
+        if r.get("amount_rule_kind") == "tax_accumulator":
+            scope = str((_safe_json(r.get("params_json")) or {}).get("scope", "federal"))
+            tax_scopes[scope] = tax_scopes.get(scope, 0) + 1
+    scenario = strategy_api.ScenarioView(
+        accounts={a["name"]: (a.get("kind", ""), a.get("subkind", "")) for a in accounts},
+        tax_rules=tax_scopes,
+    )
     prepared = strategy_load.prepare_strategies(
-        list(_located(strategy_rows, "strategies.csv")),
+        list(_located(strategy_rows, registries.STRATEGIES_DIR)),
         kinds=kinds, chains=chains, account_names={a["name"] for a in accounts},
         tags=frozenset().union(*tags.values()), target_sets=target_sets, rules=rules,
-        issues=issues,
+        scenario=scenario, rails=frozenset(rails), issues=issues,
     )
     by_account = {a["name"]: a for a in accounts}
     lots = [

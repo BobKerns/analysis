@@ -517,7 +517,7 @@ def test_a_component_name_with_spaces_around_it_is_refused(
 
 @pytest.mark.slow
 def test_draws_say_when_a_pool_component_holds_only_the_base_case(
-    pool_batch: Path, test_data_dir: Path, pool_scenarios: str,
+    pool_batch: Path, test_data_dir: Path, pool_scenarios: str, tmp_path: Path,
 ) -> None:
     pooled = _sim("ensemble", "draws", pool_scenarios, "--data-dir", str(test_data_dir))
     assert pooled.exit_code == 0, pooled.output
@@ -525,6 +525,12 @@ def test_draws_say_when_a_pool_component_holds_only_the_base_case(
     own = _sim("ensemble", "draws", "e_a", "--data-dir", str(test_data_dir))
     assert own.exit_code == 0, own.output
     assert "base case" not in own.output
+    # #330: the chart skips e_a, which drew nothing, and draws e_b's.
+    png = tmp_path / "rate.png"
+    charted = _sim("ensemble", "draws", pool_scenarios, "--data-dir", str(test_data_dir),
+                   "--node", "checking_rate_vary", "--chart-file", str(png))
+    assert charted.exit_code == 0, charted.output
+    assert png.read_bytes()[:4] == b"\x89PNG"
 
 
 @pytest.mark.slow

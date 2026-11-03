@@ -19,7 +19,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     },
     "expense": {
         "living", "healthcare", "housing", "interest_expense", "taxes_federal",
-        "taxes_state", "taxes_property", "business", "other_expense",
+        "taxes_state", "taxes_property", "business", "gift", "other_expense",
     },
 }
 
@@ -232,8 +232,11 @@ RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_40
 
 # transfer_event.reason_kind (schema.py CHECK), in a sensible display order:
 # a rule firing, the run's opening balances, partial-first-year catch-up
-# facts, a refill draw, or a month-end overflow sweep.
-REASON_KINDS: tuple[str, ...] = ("rule", "initial", "ytd", "ytd_rule", "refill", "overflow")
+# facts, a refill draw, a month-end overflow sweep, or a strategy's year-end
+# move (#421; reason_id is its strategy_decision row).
+REASON_KINDS: tuple[str, ...] = (
+    "rule", "initial", "ytd", "ytd_rule", "refill", "overflow", "strategy",
+)
 
 type AssetClass = Literal[
     "stock_us",
@@ -256,11 +259,27 @@ from bonds).
 
 ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "weight")
 
-# Per-scenario strategies.csv and targets.csv (#326, ADR-003 §4.12, §4.13).
-STRATEGIES_CSV_HEADER: tuple[str, ...] = (
-    "name", "kind", "chain", "rules", "start", "end", "enabled", "params_json", "description",
+# Per-scenario strategies and targets.csv (#326, ADR-003 §4.12, §4.13). A
+# strategy is one file, strategies/<name>.csv, of one row (#408): the file
+# name is the strategy's name.
+STRATEGIES_DIR = "strategies"
+STRATEGY_CSV_HEADER: tuple[str, ...] = (
+    "kind", "chain", "rules", "trigger", "start", "end", "enabled", "params_json", "description",
 )
+# #441: a strategy's `trigger` names guard rails, each `<rail>:<margin kind>`.
+TRIGGER_MARGIN_KINDS: tuple[str, ...] = ("annual", "cumulative")
 TARGETS_CSV_HEADER: tuple[str, ...] = ("target_set", "as_of", "asset_class", "weight")
+# #408: strategy_vary/<strategy>.csv, one file per strategy, one row per
+# parameter an ensemble varies (ADR-003 §4.14). Bounds are in the parameter's
+# own unit, as params_json writes it. Its node in correlation trees,
+# sensitivity sweeps and ensemble_draw is `strategy:<strategy>.<param>`, a
+# name no calendar row may take; the draw's target is the parameter's name.
+STRATEGY_VARY_DIR = "strategy_vary"
+STRATEGY_VARY_CSV_HEADER: tuple[str, ...] = (
+    "param", "vary_distribution", "vary_low", "vary_high", "vary_mode", "vary_median", "vary_sd",
+    "vary_skew", "vary_tailweight", "vary_outcomes", "vary_correlate_with", "vary_correlation",
+)
+STRATEGY_NODE_PREFIX = "strategy:"
 CASH_SYMBOL = "CASH"
 # Symbols that mean an asset class without any allocations.csv row: `CASH` on cash lots,
 # `CD` on certificates of deposit (no ticker; a CD is reinvested at maturity, so it
