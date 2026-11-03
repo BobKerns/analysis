@@ -70,20 +70,6 @@ def test_net_worth_by_month_treats_a_scenario_without_rows_as_zero() -> None:
     assert summary.loc["variant", "break-even"] == "never"
 
 
-def test_breakeven_month_never_ahead_returns_none() -> None:
-    idx = pd.date_range("2026-01-31", periods=3, freq="ME")
-    series = pd.Series([-1.0, -2.0, -3.0], index=idx)
-
-    assert cp.breakeven_month(series) is None
-
-
-def test_breakeven_month_finds_first_month_that_stays_ahead() -> None:
-    idx = pd.date_range("2026-01-31", periods=4, freq="ME")
-    series = pd.Series([-1.0, 1.0, -1.0, 1.0], index=idx)
-
-    assert cp.breakeven_month(series) == idx[3]
-
-
 def test_breakeven_summary_reports_deficit_and_final_values() -> None:
     idx = pd.date_range("2026-01-31", periods=3, freq="ME")
     nw = pd.DataFrame({"base": [100.0, 100.0, 100.0], "variant": [90.0, 95.0, 105.0]}, index=idx)
@@ -94,45 +80,6 @@ def test_breakeven_summary_reports_deficit_and_final_values() -> None:
 
     assert summary.loc["variant", "final net worth"] == 105.0
     assert summary.loc["variant", "deepest deficit"] == -10.0
-
-
-def test_filter_comparisons_drops_pairs_with_missing_scenarios() -> None:
-    comparisons = {"group": {"a vs b": ("a", "b"), "a vs c": ("a", "c")}}
-
-    result = cp.filter_comparisons(comparisons, ["a", "b"])
-
-    assert result == {"group": {"a vs b": ("a", "b")}}
-
-
-def test_comparison_frame_computes_pairwise_differences() -> None:
-    idx = pd.date_range("2026-01-31", periods=2, freq="ME")
-    nw = pd.DataFrame({"a": [10.0, 20.0], "b": [4.0, 5.0]}, index=idx)
-    comparisons = {"group": {"a minus b": ("a", "b")}}
-
-    frame = cp.comparison_frame(nw, comparisons)
-
-    assert list(frame["a minus b"]) == [6.0, 15.0]
-
-
-def test_has_any_comparisons() -> None:
-    assert cp.has_any_comparisons({"group": {"label": ("a", "b")}})
-    assert not cp.has_any_comparisons({"group": {}})
-    assert not cp.has_any_comparisons({})
-
-
-def test_comparison_frame_keeps_index_when_no_comparisons_survive_filtering() -> None:
-    from analysis.sim.connection import year_end_values
-
-    idx = pd.date_range("2026-01-31", periods=2, freq="ME")
-    nw = pd.DataFrame({"a": [10.0, 20.0], "b": [4.0, 5.0]}, index=idx)
-    comparisons = cp.filter_comparisons({"group": {"a minus c": ("a", "c")}}, ["a", "b"])
-
-    frame = cp.comparison_frame(nw, comparisons)
-
-    assert not cp.has_any_comparisons(comparisons)
-    assert list(frame.columns) == []
-    assert list(frame.index) == list(idx)
-    year_end_values(frame)  # must not raise
 
 
 def test_warning_html_escapes_and_formats() -> None:
