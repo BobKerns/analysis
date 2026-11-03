@@ -567,7 +567,7 @@ def scenario_picker(
             container.member = 0
             return
         ref = container.scenario_ref
-        batch = latest_ensemble_batch(ref.runs_dir / ref.name)
+        batch = latest_ensemble_batch(ref.runs_dir / ref.name, mode="monte_carlo")
         assert batch is not None  # the member dropdown lists only an existing batch's members
         old_run = container.run
         run_path = batch / f"{change['new']}.sqlite3"
@@ -590,7 +590,7 @@ def scenario_picker(
         regardless of member, since member resolution happens in each
         member's own *run*, not in the shared scenario-level intent)."""
         ref = container.scenario_ref
-        batch = latest_ensemble_batch(ref.runs_dir / ref.name) if require_run else None
+        batch = latest_ensemble_batch(ref.runs_dir / ref.name, mode="monte_carlo") if require_run else None
         if batch is None:
             member_dropdown.layout.display = "none"
             member_dropdown.options = ()

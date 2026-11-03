@@ -49,7 +49,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | a scenario's guard rails, as defined | `analysis sim guard-rail list` |
 | every event, filtered by reason/tax/account/date | none yet (#189) |
 | an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot, and its fan chart | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]] [--log] [--chart]` |
-| two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, guard rails, strategies, spending, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--section SECTION] [--account NAME [--lot LOT]] [--chart]` |
+| two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, guard rails, strategies, spending, Social Security, tax, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--section SECTION] [--account NAME [--lot LOT]] [--chart]` |
 | an ensemble's members against its guard rails: share past, ever past, RMS overshoot (`ensemble.ipynb`) | `analysis sim ensemble guard-rails <recipe> [--rail NAME] [--chart]` |
 | an ensemble's spending against the plan across members (`ensemble.ipynb`) | `analysis sim ensemble spending <recipe> [--category NAME] [--chart]` |
 | how far an ensemble's portfolios stray from a target set (`ensemble.ipynb`) | `analysis sim ensemble drift <recipe> [--targets SET] [--asset-class CLASS] [--chart]` |

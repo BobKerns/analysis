@@ -251,7 +251,7 @@ def test_scenario_ref_falls_back_to_ensemble_member_zero(tmp_path: Path) -> None
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
     ref = resolve_scenario_name(repo, "retire_alice")
-    batch_dir = ref.runs_dir / "retire_alice" / "2026-01-01T000000Z"
+    batch_dir = ref.runs_dir / "retire_alice" / "monte-carlo" / "2026-01-01T000000Z"
     batch_dir.mkdir(parents=True)
     (batch_dir / "member_0000.sqlite3").touch()
     (batch_dir / "member_0001.sqlite3").touch()

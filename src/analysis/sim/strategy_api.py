@@ -36,13 +36,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "API_VERSION", "Account", "Allocation", "BreachView", "ChainView", "Context", "Decision", "Dollars",
-    "History", "LotRef", "LotView", "Percent", "PersonView", "Put", "Realize", "RuleView", "ScenarioView",
+    "History", "LotRef", "LotView", "Mortality", "Percent", "PersonView", "Put", "Realize", "RuleView", "ScenarioView",
     "Spend", "StepView", "Strategy", "StrategyError", "Tag", "Take", "TargetSet", "TaxEstimate",
     "TaxView", "Transfer", "Unit", "is_long_term", "is_registered", "param_units", "percent",
     "register", "sale_gain",
 ]
 
-API_VERSION = 4
+API_VERSION = 6
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
@@ -52,7 +52,10 @@ and ``annual_return``. 3 (#421) added ``year_end``, :class:`Transfer`,
 :class:`Realize`, ``ctx.tax``, :data:`Account`, optional parameters, and
 ``LotView``'s ``acquired``, ``taxable_sale`` and ``gain``. 4 (#441) added
 ``month_start``, ``on_breach`` and :class:`BreachView`, ``ctx.history``
-and ``ctx.rail``."""
+and ``ctx.rail``. 5 (#459) added ``ctx.survival_years``,
+``ctx.life_expectancy`` and ``ctx.rmd_divisor``, and :class:`ScenarioView`'s
+``people``, ``aux`` and ``portfolio_classes``. 6 (#463) added
+``ctx.trailing_return`` and :class:`ScenarioView`'s ``portfolio_lots``."""
 
 
 class StrategyError(Exception):
@@ -438,9 +441,11 @@ class Context:
         people: Mapping[str, PersonView] | None = None,
         budget: Callable[[], int] | None = None,
         annual_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
+        trailing_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
         tax: TaxView | None = None,
         history: History | None = None,
         rail: Callable[[str], RailYears] | None = None,
+        mortality: Mortality | None = None,
     ) -> None:
         self._month = month
         self._lots = lots
@@ -451,9 +456,11 @@ class Context:
         self._people = people if people is not None else {}
         self._budget = budget
         self._annual_return = annual_return
+        self._trailing_return = trailing_return
         self._tax = tax
         self._history = history
         self._rail = rail
+        self._mortality = mortality
         self.memory = memory
         """The strategy's own state, kept across calls. JSON values only."""
 
@@ -535,6 +542,19 @@ class Context:
             return None
         return self._annual_return(tuple(lots), year)
 
+    def trailing_return(self, lots: Iterable[LotRef], months: int) -> float | None:
+        """The investment return on ``lots`` over the ``months`` finished
+        months before this one (#463): the growth posted to them in those
+        months over their balance at the window's start. A window reaching
+        back before the run starts with the run (its opening balance), so it
+        is shorter. None when no month has finished yet, or they held
+        nothing at the window's start."""
+        if not isinstance(months, int) or isinstance(months, bool) or months < 1:
+            raise StrategyError(f"trailing_return needs a whole number of months >= 1, not {months!r}")
+        if self._trailing_return is None:
+            return None
+        return self._trailing_return(tuple(lots), months)
+
     @property
     def tax(self) -> TaxView:
         """This year's income tax so far, and what more income would cost."""
@@ -557,6 +577,59 @@ class Context:
         if self._rail is None:
             raise StrategyError(f"no rail {name!r} is triggered in this run")
         return self._rail(name)
+
+    def _household(self, people: Iterable[str] | None) -> tuple[str, ...]:
+        if people is not None:
+            return tuple(people)
+        return tuple(pid for pid, p in self._people.items() if p.alive and p.role in _PERSON_ROLES)
+
+    def _need_mortality(self, what: str) -> Mortality:
+        if self._mortality is None:
+            raise StrategyError(f"{what}: this context has no life or RMD tables")
+        return self._mortality
+
+    def survival_years(self, probability: float, people: Iterable[str] | None = None) -> int:
+        """Whole years from now until the chance that at least one of
+        ``people`` (default: the living primary and secondary persons) is
+        still alive falls below ``probability`` (0.1 for 10%), from each one's
+        life table at their age this month (#459). The table is the one their
+        ``lifespan.csv`` row names, read with its set-forward, else
+        ``life_table.csv``: the household's stated mortality, never the
+        lifespan an ensemble member drew. At least 1."""
+        if not 0 < probability < 1:
+            raise StrategyError(f"survival_years({probability}): a probability between 0 and 1")
+        who = self._household(people)
+        if not who:
+            raise StrategyError("survival_years: nobody in the household is alive")
+        return self._need_mortality("survival_years").survival_years(probability, who, self._month)
+
+    def life_expectancy(self, person: str) -> float:
+        """``person``'s remaining life expectancy in years at this month, from
+        the same table as :meth:`survival_years` (#459)."""
+        return self._need_mortality("life_expectancy").life_expectancy(person, self._month)
+
+    def rmd_divisor(self, person: str) -> float | None:
+        """This year's ``rmd_factors`` divisor (the IRS Uniform Lifetime
+        Table) at ``person``'s age at the end of the year, or None where the
+        table has no row for that age (below its first) (#459)."""
+        return self._need_mortality("rmd_divisor").rmd_divisor(person, self._month)
+
+
+_PERSON_ROLES = frozenset({"primary", "secondary"})
+
+
+class Mortality:
+    """What ``ctx.survival_years``, ``life_expectancy`` and ``rmd_divisor``
+    read: the engine's life and RMD tables. Strategies don't build one."""
+
+    def survival_years(self, probability: float, people: tuple[str, ...], month: date) -> int:
+        raise NotImplementedError
+
+    def life_expectancy(self, person: str, month: date) -> float:
+        raise NotImplementedError
+
+    def rmd_divisor(self, person: str, month: date) -> float | None:
+        raise NotImplementedError
 
 
 # ---------- what a strategy returns ----------
@@ -718,6 +791,19 @@ class ScenarioView:
     """Each account's ``(kind, subkind)``."""
     tax_rules: Mapping[str, int]
     """How many ``tax_accumulator`` rules each scope (``federal``, ``state``) has."""
+    people: Mapping[str, tuple[str | None, str | None, str | None]] = field(default_factory=dict)
+    """Each person's ``(role, sex, life table)`` from persons.csv and
+    lifespan.csv, blank as None: the table is the name a lifespan row gives
+    (``life_table__<name>.csv``), None for ``life_table.csv`` (#459)."""
+    aux: frozenset[str] = frozenset()
+    """The aux files the scenario has, by file name without ``.csv``
+    (``rmd_factors``, ``life_table``, ``life_table__jp``, ...)."""
+    portfolio_classes: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """Each account tag's asset classes: those its asset lots hold in the
+    scenario's first month (#459)."""
+    portfolio_lots: Mapping[str, tuple[Mapping[str, float], ...]] = field(default_factory=dict)
+    """Each account tag's asset lots, as each lot's class weights in the
+    scenario's first month (#463)."""
 
 
 _HOOKS = ("draw", "place", "year_start", "scale", "year_end", "month_start", "on_breach")

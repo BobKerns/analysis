@@ -69,11 +69,13 @@ from analysis.sim.schema import SCHEMA_VERSION, apply_run_schema, inserted_id, c
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
-    "BATCH_MANIFEST_FILENAME",
+    "BATCH_MANIFEST_FILENAME", "BATCH_MODE_DIRS",
     "CURRENT_SCENARIO_FILE", "KEEP_SCENARIO_ENV", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
     "LoadError", "LoadResult", "DataDirtyRefused", "PendingRun", "ScenarioRef",
-    "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
+    "batch_mode", "batch_recipe", "batches_dir", "ensemble_batches", "find_batch",
+    "intent_batch_dir", "is_ensemble_batch", "latest_ensemble_batch",
+    "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
     "set_scenario_enabled", "template_aux_copies", "write_current_scenario",
@@ -292,41 +294,95 @@ def batch_mode(batch_dir: Path) -> str:
     return "monte_carlo"
 
 
-def _await_fresh(runs_dir: Path, scenario: str) -> None:
+def _await_fresh(runs_dir: Path, scenario: str, mode: str | None = "monte_carlo") -> None:
+    """Wait for a pending background build of ``scenario``'s results of
+    ``mode`` (a single run's too, for Monte Carlo; every kind when None)."""
     from analysis.sim.builder import await_fresh
 
-    await_fresh(runs_dir, scenario)
+    await_fresh(runs_dir, scenario, mode=mode)
+
+
+# #454: each mode's batches in a folder of their own under the recipe's,
+# so the latest of a mode is the newest name there, with no batch opened.
+BATCH_MODE_DIRS: dict[str, str] = {"monte_carlo": "monte-carlo", "sensitivity": "sensitivity"}
+
+
+def batches_dir(recipe_dir: Path | str, mode: str) -> Path:
+    """Where ``mode``'s batches of a recipe live (#454):
+    ``<recipe_dir>/monte-carlo/`` or ``<recipe_dir>/sensitivity/``. The same
+    under ``state/runs/<recipe>`` and ``state/intent/<recipe>``."""
+    return Path(recipe_dir) / BATCH_MODE_DIRS[mode]
+
+
+def batch_recipe(batch_dir: Path | str) -> str:
+    """The recipe a batch folder belongs to: ``<recipe>/<mode dir>/<batch>``."""
+    return Path(batch_dir).parent.parent.name
+
+
+def ensemble_batches(recipe_dir: Path | str, mode: str | None = None) -> list[Path]:
+    """A recipe's run batches of ``mode`` (both modes when None), oldest
+    first: folders holding a member run file or a batch manifest. With both
+    modes, ordered by when they were made (``locks.run_name_key``)."""
+    from analysis.sim.locks import run_name_key
+
+    recipe_dir = Path(recipe_dir)
+    if not recipe_dir.is_dir():
+        return []
+    found: list[Path] = []
+    for each in (mode,) if mode is not None else registries.ENSEMBLE_MODES:
+        folder = batches_dir(recipe_dir, each)
+        if folder.is_dir():
+            found.extend(p for p in folder.iterdir() if is_ensemble_batch(p))
+    return sorted(found, key=lambda p: run_name_key(p.name))
+
+
+def find_batch(recipe_dir: Path | str, name: str, mode: str | None = None) -> Path | None:
+    """A recipe's batch named ``name`` (a ``sim run`` stamp), of ``mode``
+    (either, when None), or None when there is no such batch."""
+    recipe_dir = Path(recipe_dir)
+    if not recipe_dir.is_dir():
+        return None
+    for each in (mode,) if mode is not None else registries.ENSEMBLE_MODES:
+        path = batches_dir(recipe_dir, each) / name
+        if is_ensemble_batch(path):
+            return path
+    return None
+
+
+def intent_batch_dir(intent_dir: Path | str, batch_dir: Path | str) -> Path:
+    """The member intents of the run batch ``batch_dir``: the folder of the
+    same name, recipe and mode under ``intent_dir`` (#454)."""
+    batch_dir = Path(batch_dir)
+    recipe = Path(intent_dir) / batch_recipe(batch_dir)
+    return batches_dir(recipe, batch_mode(batch_dir)) / batch_dir.name
 
 
 def latest_ensemble_batch(
     recipe_dir: Path, mode: str | None = None, *, wait: bool = True,
 ) -> Path | None:
-    """The most recently generated batch subfolder under ``recipe_dir`` that
-    holds at least one member run file or a batch manifest, or ``None`` if
-    there isn't one.
+    """The most recently generated batch under ``recipe_dir`` that holds at
+    least one member run file or a batch manifest, or ``None`` if there
+    isn't one.
 
-    A recipe's members live under ``<recipe_dir>/<timestamp>/member_NNNN.sqlite3``
-    -- one subfolder per ``sim run`` invocation, timestamp-named so reruns
-    never collide and every batch's history is kept (matching how an
-    ordinary, non-ensemble run file is never overwritten either). The
-    manifest check covers the batch where every member failed to resolve:
-    no member file was ever created for any of them, but the batch itself
-    (and its recorded failures) still needs to be discoverable, not silently
-    invisible.
+    A recipe's members live under
+    ``<recipe_dir>/<mode dir>/<timestamp>/member_NNNN.sqlite3`` (#454:
+    :func:`batches_dir`) -- one subfolder per ``sim run`` invocation,
+    timestamp-named so reruns never collide and every batch's history is
+    kept (matching how an ordinary, non-ensemble run file is never
+    overwritten either). The manifest check covers the batch where every
+    member failed to resolve: no member file was ever created for any of
+    them, but the batch itself (and its recorded failures) still needs to
+    be discoverable, not silently invisible.
 
     ``mode`` (ADR-007 §5) restricts the search to ``"monte_carlo"`` or
     ``"sensitivity"`` batches; ``None`` accepts either. Unless ``wait`` is
-    False, first waits for a pending background build of the recipe (#300).
+    False, first waits for a pending background build of that mode (#300,
+    #454).
     """
     recipe_dir = Path(recipe_dir)
     if wait:
-        _await_fresh(recipe_dir.parent, recipe_dir.name)
-    if not recipe_dir.is_dir():
-        return None
-    from analysis.sim.locks import run_name_key
-
-    batches = sorted((p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode)),
-                     key=lambda p: run_name_key(p.name))
+        _await_fresh(recipe_dir.parent, recipe_dir.name, mode)
+    batches = ensemble_batches(recipe_dir, mode)
     return batches[-1] if batches else None
 
 
@@ -348,7 +404,7 @@ def _latest_ensemble_member_zero(
     so it stands in for "the" run the same way any other scenario's one run
     file would.
     """
-    batch = latest_ensemble_batch(Path(runs_dir) / name, wait=wait)
+    batch = latest_ensemble_batch(Path(runs_dir) / name, mode="monte_carlo", wait=wait)
     if batch is None:
         return None
     member = batch / "member_0000.sqlite3"
@@ -1262,6 +1318,8 @@ def load_scenario(
         accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
         scheduled_rows=scheduled_rows, rails=rail_rows,
         start=scenario_row.get("start", ""), issues=issues, unused=unused,
+        persons=persons, lifespan_rows=lifespan_rows,
+        aux_kinds=frozenset(f"{kind}__{table}" if table else kind for kind, table, _p, _e in aux_rows),
     )
     strategy_varies, strategy_links = strategy_load.prepare_vary(
         vary_files, strategy_rows=strategy_rows, prepared=strategies, kinds=strategy_kinds,
@@ -4345,6 +4403,9 @@ def _validate_strategies(
     start: str,
     issues: list[str],
     unused: list[str],
+    persons: list[dict[str, str]],
+    lifespan_rows: list[dict[str, str]],
+    aux_kinds: frozenset[str],
 ) -> tuple[strategy_code.StrategyKinds, list[strategy_load.PreparedStrategy]]:
     """``strategies/<name>.csv`` and ``targets.csv`` (#326, ADR-003 §4.12-4.13).
 
@@ -4372,9 +4433,32 @@ def _validate_strategies(
         if r.get("amount_rule_kind") == "tax_accumulator":
             scope = str((_safe_json(r.get("params_json")) or {}).get("scope", "federal"))
             tax_scopes[scope] = tax_scopes.get(scope, 0) + 1
+    by_account = {a["name"]: a for a in accounts}
+    life_tables = {row.get("person", ""): (row.get("life_table") or "").strip() or None for row in lifespan_rows}
+    class_sets = _allocation_class_sets(allocations)
+    portfolio_classes: dict[str, set[str]] = {}
+    portfolio_lots: dict[str, list[dict[str, float]]] = {}
+    for m in value_rows:
+        account = by_account.get(m.get("account_name", ""))
+        if account is None or account.get("kind") != "asset":
+            continue
+        weights = asset_classes.class_weights(
+            symbol=m.get("symbol") or None, account=account["name"],
+            lot=m.get("lot") or registries.DEFAULT_LOT, subkind=account.get("subkind", ""),
+            sets=class_sets, date=start,
+        )
+        for tag in tags.get(account["name"], frozenset()):
+            portfolio_classes.setdefault(tag, set()).update(c for c, w in weights.items() if w > 0)
+            portfolio_lots.setdefault(tag, []).append(dict(weights))
     scenario = strategy_api.ScenarioView(
         accounts={a["name"]: (a.get("kind", ""), a.get("subkind", "")) for a in accounts},
         tax_rules=tax_scopes,
+        people={p.get("id", ""): ((p.get("role") or "").strip() or None, (p.get("sex") or "").strip() or None,
+                                  life_tables.get(p.get("id", "")))
+                for p in persons},
+        aux=aux_kinds,
+        portfolio_classes={tag: frozenset(classes) for tag, classes in portfolio_classes.items()},
+        portfolio_lots={tag: tuple(lots) for tag, lots in portfolio_lots.items()},
     )
     prepared = strategy_load.prepare_strategies(
         list(_located(strategy_rows, registries.STRATEGIES_DIR)),
@@ -4382,7 +4466,6 @@ def _validate_strategies(
         tags=frozenset().union(*tags.values()), target_sets=target_sets, rules=rules,
         scenario=scenario, rails=frozenset(rails), issues=issues,
     )
-    by_account = {a["name"]: a for a in accounts}
     lots = [
         (m["account_name"], m.get("lot") or registries.DEFAULT_LOT, m.get("symbol") or None,
          by_account[m["account_name"]].get("kind", ""), by_account[m["account_name"]].get("subkind", ""),
@@ -4390,7 +4473,7 @@ def _validate_strategies(
         for m in value_rows if m.get("account_name") in by_account
     ]
     strategy_load.check_portfolio_classes(
-        prepared, kinds=kinds, lots=lots, sets=_allocation_class_sets(allocations),
+        prepared, kinds=kinds, lots=lots, sets=class_sets,
         start=start, issues=issues,
     )
     known_lots = {(account, lot) for account, lot, *_ in lots}

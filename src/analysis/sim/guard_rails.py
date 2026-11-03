@@ -413,7 +413,9 @@ def run_scenario_name(rc: RunConnection) -> str:
 
     batch = Path(rc.run_path).parent
     if pool_record(batch) is not None:
-        return batch.parent.name
+        from analysis.sim.loader import batch_recipe
+
+        return batch_recipe(batch)
     return str(rc.items("scenario")["name"].iloc[0])
 
 

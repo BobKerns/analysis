@@ -1350,7 +1350,7 @@ spend that year.
    `sim scheduled tag add travel flex:optional`, and the same for gifts.
    Only `fixed_amount` rules can be owned.
 2. `sim strategy add` asks for the kind, the rule tag (`flex:optional`) and
-   its parameters. Three are built in:
+   its parameters. Four are built in:
    - `threshold` spends the tagged rules only in a year that starts with
      the portfolio above a minimum (and, if you like, not after a year it
      lost money).
@@ -1363,6 +1363,17 @@ spend that year.
      inflation. A `rate` you give is the share for the tagged rules alone,
      so if you tag only the optional ones, leave it at 0% to start from
      your plan.
+   - `amortize` is VPW (variable percentage withdrawal) and the RMD
+     method. Each January it works out what the portfolio could pay every
+     year, the same after inflation, if it were spent down by the time the
+     younger of Alice and Bill is 100 (`horizon`, default `age:100`), at
+     VPW's real returns (5% for stocks, 1.9% for bonds; or `real_return`).
+     The first year spends your plan; after that the tagged spending takes
+     the whole change in that payment, in today's dollars, so the rest of
+     your spending is paid as planned. `horizon` can also be `survival:10%`
+     (until the chance either of them is alive falls to 10%, from the life
+     table) or `rmd` (the portfolio over the IRS divisor). `ceiling` and
+     `floor` limit how much the tagged spending changes in a year.
 
 A cut is shared proportionally across the rules a strategy owns: a 10% cut
 makes a $5,000 trip $4,500. If that isn't how you'd cut, for example a trip
@@ -1390,7 +1401,7 @@ members had to cut, and each member's worst full year. The notebooks draw
 the same: `net_worth.ipynb` for one run, `scenario_compare.ipynb` for runs
 side by side, and `ensemble.ipynb` across the members.
 The design is in
-[ADR-010 §6.2](architecture/ADR-010-responsive-strategies.md).
+[ADR-010 §6.2 and §6.4](architecture/ADR-010-responsive-strategies.md).
 
 ### 4.18 Tax-aware moves each December (year-end strategies)
 
@@ -1510,6 +1521,53 @@ lineage reruns it; elsewhere a rail stays a lens and editing it reruns
 nothing. The design is in
 [ADR-010 §3.3](architecture/ADR-010-responsive-strategies.md).
 
+### 4.20 Don't sell after a bad year (down markets and buckets)
+
+A draw from your portfolio sells whatever the chain names first, even what
+just fell. Two built-in strategies choose where the money comes from in a
+bad market instead. Both own the chain checking refills from, as
+`rebalance` does (§4.16).
+
+- `down_market` is Guyton's withdrawal rule: each draw skips any lot whose
+  return over the last year is below 0% (`threshold`) and takes from the
+  others in the chain's order. If they can't cover it, the chain's own
+  steps pay the rest, so a fallen lot is sold last rather than never.
+  `lookback: 2` judges by the last two years, which also spares a lot that
+  fell, rose a little, and is still under water.
+- `buckets` keeps a cash reserve. Every lot in the `portfolio` tag is in a
+  bucket by what it holds: cash and CDs, bonds, or stocks. Draws take cash
+  first, then bonds, then stocks. The strategy keeps cash topped up to two
+  years (`cash_years`) of `need`, the yearly spending you expect from the
+  portfolio in today's dollars (it rises with inflation), selling stocks
+  when they gained over the last year and bonds when they didn't. When
+  stocks gained it also tops bonds up to five years (`bond_years`) from
+  stocks. With no bond funds, set `bond_years` to 0.
+
+A refill never crosses accounts: Alice's Roth sells its stock fund into the
+Roth's money-market lot, untaxed, and the brokerage sells into its own cash
+sweep, a sale whose gain is taxed. So each account that should refill needs
+a cash lot (a lot whose symbol is `CASH`), and a bond lot for bonds to be
+refilled there; the note says when an account has none.
+
+Both look at the market every month by default (`cadence: monthly`), over
+the twelve months just finished, so nothing changes all at once at New
+Year. With `cadence: annual` they look at the last calendar year instead,
+and `buckets` refills once, each January, the way many households review
+their portfolio.
+
+```sh
+sim strategy add buckets --kind buckets --chain portfolio_draw
+```
+
+asks for the rest. `sim strategy log` shows notes such as
+`took $4,169 from Asset_Brokerage_Joint:sweep (cash)` and
+`stocks -18.4% over 12 months, bonds not refilled: refilled cash to $98,709 (2 years): $6,652 from bonds`.
+To see what the plan costs or gains, compare it with `rebalance` or with no
+strategy, as in §4.16: a bucket plan holds more cash than a fixed
+allocation would, which helps after a crash that recovers slowly and costs
+growth when markets rise. The design is in
+[ADR-010 §6.5](architecture/ADR-010-responsive-strategies.md).
+
 ## 5. Looking at your results
 
 **Video.** *Looking at the results* walks through this section with Alice
@@ -1600,10 +1658,15 @@ by side, as `scenario_compare.ipynb` does: whether the runs came from the same
 code and data, the rules, calendar events, accounts and lots each defines
 differently, net worth at each year end with each variant's difference, and
 the month after which each variant stays ahead (break-even), and each
-scenario's guard rail margins when any has rails. `--account NAME`
+scenario's guard rail margins when any has rails. When they differ, it adds
+gross Social Security by year and over the run (comparing claim ages), and
+total tax by year, the `total_tax` `sim report tax` prints, with each run's
+lifetime tax, Social Security and final net worth (what a Roth conversion
+plan costs in tax, and what it buys). `--account NAME`
 adds that account's balance, `--section` prints only the parts you name, and
 `--chart` draws net worth (or the account) over time in the terminal instead of
-the tables (`--table` too for both). Leave
+the tables (`--table` too for both); with `--section social-security` or
+`--section tax`, it draws that section's chart. Leave
 out BASELINE to start from the current scenario.
 
 ### The notebooks
@@ -1616,7 +1679,7 @@ None of them need you to write any code.
 | `scenario_overview.ipynb` | The scenario's setup, without needing a run: people, accounts, chains, scheduled rules, calendar events. Good for checking a scenario is set up the way you intended, before running it. |
 | `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, and the portfolio by asset class. |
 | `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, economic income down to the change in net worth, tax by year with its effective rate, and where the run stands against its guard rails. |
-| `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
+| `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, where they cross over (break-even), gross Social Security, and tax by year. |
 | `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range, with a running balance for one account and each refill linked to the debit that triggered it — good for auditing "why did this happen." |
 | `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the 5th–95th percentiles, plus a year-end table of mean/median/SD and the 5th, 20th, ... 95th percentiles, and the share of members past each guard rail. |
 

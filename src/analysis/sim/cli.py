@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv as _csv
 import contextvars
 import functools
@@ -77,7 +78,14 @@ from analysis.sim.series_db import (
     write_series_db,
 )
 from analysis.sim.ensemble_tables import RecipeTables
-from analysis.sim.locks import BUILDER_CHILD_ENV, LockHolder, build_lock, building, reserve_run_path
+from analysis.sim.locks import (
+    BUILDER_CHILD_ENV,
+    LockHolder,
+    build_lock,
+    building,
+    naming_lock,
+    reserve_run_path,
+)
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
@@ -101,11 +109,15 @@ from analysis.sim.loader import (
     LoadResult,
     ScenarioRef,
     batch_mode,
+    batch_recipe,
+    batches_dir,
+    intent_batch_dir,
+    ensemble_batches,
+    find_batch,
     DISABLE_FILE,
     KEEP_SCENARIO_ENV,
     calendar_row_key,
     current_scenario_path,
-    is_ensemble_batch,
     list_scenario_names,
     template_aux_copies,
     load_scenario,
@@ -770,6 +782,18 @@ def _load_and_run(
     from the data repo when there is one, then run it."""
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
     with _build_lock(resolved_intent_dir, scenario_name):
+        if sensitivity and resolved_data_dir is not None and os.environ.get(BUILDER_CHILD_ENV):
+            # A background build that waited for this lock: a command just
+            # made the sensitivity batch it was going to (#454, as for
+            # `sim load`'s run, #308).
+            from analysis.sim.freshness import code_tree, unchanged_run
+
+            fresh = unchanged_run(resolved_data_dir, resolved_runs_dir, scenario_name,
+                                  code_tree(), mode="sensitivity")
+            if fresh is not None:
+                click.echo(f"{scenario_name}: sensitivity unchanged since {fresh.path.name}; "
+                           "nothing to build")
+                return
         if resolved_data_dir is not None:
             try:
                 _echo_load_warnings(load_scenario(
@@ -1008,7 +1032,8 @@ def _run_ensemble(
             f"{scenario_name}: {source} must be a positive integer (got {member_count})"
         )
 
-    batch, member_intent_dir, member_runs_dir = _reserve_batch(scenario_name, intent_dir, runs_dir)
+    batch, member_intent_dir, member_runs_dir = _reserve_batch(
+        scenario_name, intent_dir, runs_dir, "monte_carlo")
     # Provisional, so an interrupted batch is still recognizable; rewritten
     # with the real failures below.
     write_batch_manifest(member_runs_dir, member_count=member_count, failures=[])
@@ -1087,7 +1112,7 @@ def _run_pool(
             f"`sim commit` or --commit, or pass --allow-dirty-data): "
             f"{', '.join(stamps.dirty_paths)}")
     with _build_lock(intent_dir, pool_name):
-        batch, intent_batch, runs_batch = _reserve_batch(pool_name, intent_dir, runs_dir)
+        batch, intent_batch, runs_batch = _reserve_batch(pool_name, intent_dir, runs_dir, "monte_carlo")
         try:
             failures = pl.build_pool_batch(
                 pool, size, {c: b for c, b in sources.items() if b is not None},
@@ -1174,7 +1199,8 @@ def _run_sensitivity(
         raise click.ClickException(f"{scenario_name}: {exc}") from None
     perturbed = sorted({name for overrides in plan for name in overrides})
 
-    batch, member_intent_dir, member_runs_dir = _reserve_batch(scenario_name, intent_dir, runs_dir)
+    batch, member_intent_dir, member_runs_dir = _reserve_batch(
+        scenario_name, intent_dir, runs_dir, "sensitivity")
     # Provisional (ADR-007 §5): if this run is interrupted, the partial batch
     # must still read as a sensitivity batch, never as Monte Carlo draws.
     write_batch_manifest(
@@ -1248,35 +1274,46 @@ def _unresolved_vary_names(intent_path: Path) -> list[str]:
         con.close()
 
 
-def _reserve_batch(scenario_name: str, intent_dir: Path, runs_dir: Path) -> tuple[str, Path, Path]:
-    """Reserve a fresh timestamped batch: (batch name, member intent dir,
-    member runs dir).
+def _reserve_batch(
+    scenario_name: str, intent_dir: Path, runs_dir: Path, mode: str,
+) -> tuple[str, Path, Path]:
+    """Reserve a fresh timestamped batch of ``mode``: (batch name, member
+    intent dir, member runs dir), each in its mode's folder (#454,
+    ``loader.batches_dir``).
 
     One timestamped batch subfolder per invocation -- like an ordinary run
     file, a batch is never overwritten, so rerunning a recipe (more members,
     a tweaked distribution, ...) keeps every previous batch's history. A
-    disambiguating suffix covers two runs within the same wall-clock second.
-    Reserved by exclusive mkdir (no separate existence check first), so two
+    disambiguating suffix covers two runs within the same wall-clock second,
+    whatever their modes: ``--batch NAME`` looks in both folders, so a name
+    stays unique per recipe; ``locks.naming_lock`` keeps that check and the
+    folders it makes together. Reserved by exclusive mkdir, so two
     concurrent `sim run` processes can never both win the same batch name
     and race on the same member files.
     """
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    suffix = 1
-    while True:
-        batch = stamp if suffix == 1 else f"{stamp}-{suffix}"
-        member_intent_dir = intent_dir / scenario_name / batch
-        member_runs_dir = runs_dir / scenario_name / batch
-        try:
-            member_intent_dir.mkdir(parents=True, exist_ok=False)
-        except FileExistsError:
-            suffix += 1
-            continue
-        try:
-            member_runs_dir.mkdir(parents=True, exist_ok=False)
-        except FileExistsError:
-            suffix += 1
-            continue
-        return batch, member_intent_dir, member_runs_dir
+    with naming_lock(runs_dir, scenario_name):
+        suffix = 1
+        while True:
+            batch = stamp if suffix == 1 else f"{stamp}-{suffix}"
+            member_intent_dir = batches_dir(intent_dir / scenario_name, mode) / batch
+            member_runs_dir = batches_dir(runs_dir / scenario_name, mode) / batch
+            if any((batches_dir(root / scenario_name, other) / batch).exists()
+                   for root in (intent_dir, runs_dir)
+                   for other in registries.ENSEMBLE_MODES if other != mode):
+                suffix += 1
+                continue
+            try:
+                member_intent_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                suffix += 1
+                continue
+            try:
+                member_runs_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                suffix += 1
+                continue
+            return batch, member_intent_dir, member_runs_dir
 
 
 def _run_members(
@@ -1809,6 +1846,9 @@ def ensemble_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     _list_scenarios(data_dir, verbose, ensembles_only=True, templates=all_)
 
 
+_MODE_NAMES = {"monte_carlo": "Monte Carlo", "sensitivity": "sensitivity (OAT)"}
+
+
 def _no_batch_error(
     recipe_runs_dir: Path, scenario_name: str, mode: str | None, batch: str | None,
 ) -> click.ClickException:
@@ -1818,29 +1858,92 @@ def _no_batch_error(
     if batch:
         return click.ClickException(f"no ensemble batch {batch} under {recipe_runs_dir}")
     make = f"'sim run {scenario_name}{' --sensitivity' if mode == 'sensitivity' else ''}'"
-    if mode is not None and recipe_runs_dir.is_dir():
-        others = sorted({
-            batch_mode(p) for p in recipe_runs_dir.iterdir() if is_ensemble_batch(p)
-        } - {mode})
+    if mode is not None:
+        others = [m for m in registries.ENSEMBLE_MODES
+                  if m != mode and ensemble_batches(recipe_runs_dir, m)]
         if others:
-            names = {"monte_carlo": "Monte Carlo", "sensitivity": "sensitivity (OAT)"}
-            have = " and ".join(names.get(m, m) for m in others)
+            have = " and ".join(_MODE_NAMES.get(m, m) for m in others)
             return click.ClickException(
-                f"{scenario_name} has no {names.get(mode, mode)} batch, only {have} "
+                f"{scenario_name} has no {_MODE_NAMES.get(mode, mode)} batch, only {have} "
                 f"runs; {make} makes one"
             )
     return click.ClickException(f"no ensemble runs found under {recipe_runs_dir}; {make} makes one")
 
 
-def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -> Path:
-    """The Monte Carlo batch ``sim ensemble summary``/``compare`` report on."""
+def _batch_to_read(
+    runs_dir: Path, scenario_name: str, mode: str | None, batch: str | None,
+    *, data_dir: Path | None, make: str | None = None,
+) -> Path:
+    """The batch of ``mode`` (either, when None) an ensemble report reads:
+    ``batch`` when named, else the latest, once a pending background build of
+    it is done (#300). With none at all, one of ``make`` (default: ``mode``)
+    is run here when the data repo is at hand (#454)."""
     recipe_runs_dir = runs_dir / scenario_name
-    batch_dir = (
-        recipe_runs_dir / batch if batch
-        else latest_ensemble_batch(recipe_runs_dir, mode="monte_carlo")
-    )
-    if batch_dir is None or not batch_dir.is_dir():
-        raise _no_batch_error(recipe_runs_dir, scenario_name, "monte_carlo", batch)
+    if batch:
+        found = find_batch(recipe_runs_dir, batch)
+        if found is None:
+            raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
+        return found
+    found = latest_ensemble_batch(recipe_runs_dir, mode=mode)
+    make = make or mode
+    if found is None and make is not None \
+            and _build_missing_batch(runs_dir, scenario_name, make, data_dir):
+        found = latest_ensemble_batch(recipe_runs_dir, mode=mode, wait=False)
+    if found is None:
+        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
+    return found
+
+
+def _build_missing_batch(
+    runs_dir: Path, scenario_name: str, mode: str, data_dir: Path | None,
+) -> bool:
+    """Run ``scenario_name``'s first batch of ``mode`` here (#454), when its
+    data repo is at hand, ``runs_dir`` is that repo's, and it is an
+    ensemble. Returns whether it ran."""
+    data = _current_data_dir(data_dir)
+    if data is None or _resolve_state_dir(None, DEFAULT_RUNS_DIR, data) != runs_dir.resolve():
+        return False
+    if scenario_name not in list_scenario_names(data) or not _is_ensemble(data, scenario_name):
+        return False
+    sensitivity = mode == "sensitivity"
+    if sensitivity and is_pool(data / "scenarios", scenario_name):
+        return False  # ADR-009: refused; the report says so
+    kind = _MODE_NAMES[mode]
+    click.echo(f"{scenario_name} has no {kind} batch yet; running one now", err=True)
+    intent_dir = _resolve_state_dir(None, DEFAULT_INTENT_DIR, data)
+    # Its output goes to stderr, apart from the report's.
+    try:
+        with contextlib.redirect_stdout(sys.stderr), building():
+            if is_pool(data / "scenarios", scenario_name):
+                _run_pool(scenario_name, data, intent_dir, runs_dir, run_by=_run_by(None),
+                          allow_dirty_data=False, allow_dirty_code=False, ensemble_size=None,
+                          jobs=_available_cpus())
+            else:
+                _load_and_run(
+                    scenario_name, data, intent_dir, runs_dir, run_by=None,
+                    allow_dirty_data=False, allow_dirty_code=False, ensemble_size=None,
+                    sensitivity=sensitivity, jobs=_available_cpus(),
+                )
+    finally:
+        with contextlib.redirect_stdout(sys.stderr):
+            _prune_state(data, intent_dir, runs_dir)
+    return True
+
+
+def _is_ensemble(data_dir: Path, name: str) -> bool:
+    """Whether ``name``'s merged ensemble_size is positive."""
+    return sc.ensemble_settings(data_dir, name)[1] is not None
+
+
+def _run_by(run_by: str | None) -> str:
+    return run_by or os.environ.get("USER") or "unknown"
+
+
+def _ensemble_batch_dir(
+    runs_dir: Path, scenario_name: str, batch: str | None, *, data_dir: Path | None = None,
+) -> Path:
+    """The Monte Carlo batch ``sim ensemble summary``/``compare`` report on."""
+    batch_dir = _batch_to_read(runs_dir, scenario_name, "monte_carlo", batch, data_dir=data_dir)
     if batch_mode(batch_dir) != "monte_carlo":
         # ADR-007 §5: a fan-chart summary over an OAT batch is meaningless.
         raise click.ClickException(
@@ -2116,22 +2219,35 @@ _report_graph_options = _graph_options("it as the notebook's chart", after="the 
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
                       batch: str | None = None, exclude: str | None = None, *,
-                      data_dir: Path | None = None, current: bool = True) -> str:
-    """An ensemble with a run batch of ``mode`` (any, when None) under
-    ``runs_dir``: the current scenario when it is one (#449), announced as
-    `_resolve_scenario` announces it, else one asked for; the batch named
-    ``batch`` when given; never ``exclude``. ``current=False`` always asks,
-    for a second ensemble such as a comparison's variant."""
+                      data_dir: Path | None = None, current: bool = True,
+                      make: str | None = None) -> str:
+    """An ensemble to report on: the current scenario when it is one (#449),
+    announced as `_resolve_scenario` announces it, else one asked for; never
+    ``exclude``. ``current=False`` always asks, for a second ensemble such
+    as a comparison's variant.
+
+    The choices are the data repo's ensembles (#454: a report on one with no
+    batch of ``mode`` yet waits for the builder or makes one of ``make``,
+    default ``mode``), not counting pools when that is a sensitivity batch,
+    and any other recipe with a batch of
+    ``mode`` (any, when None) under ``runs_dir``; with ``batch``, only those
+    with a batch of that name."""
     def has_runs(recipe: Path) -> bool:
         if batch:
-            return is_ensemble_batch(recipe / batch, mode)
+            return find_batch(recipe, batch, mode) is not None
         return latest_ensemble_batch(recipe, mode=mode, wait=False) is not None
 
-    recipes = sorted(
+    found = {
         p.name for p in (runs_dir.iterdir() if runs_dir.is_dir() else ())
-        if p.is_dir() and p.name != exclude and has_runs(p)
-    )
-    plural = f"ensembles with a batch {batch}" if batch else "ensembles with runs"
+        if p.is_dir() and has_runs(p)
+    }
+    repo = _current_data_dir(data_dir)
+    if batch is None and repo is not None \
+            and _resolve_state_dir(None, DEFAULT_RUNS_DIR, repo) == runs_dir.resolve():
+        found.update(n for n in _ensemble_names(repo)
+                     if (make or mode) == "monte_carlo" or not is_pool(repo / "scenarios", n))
+    recipes = sorted(found - {exclude} if exclude else found)
+    plural = f"ensembles with a batch {batch}" if batch else "ensembles"
     data = _current_data_dir(data_dir) if current else None
     name = read_current_scenario(data) if data is not None else None
     if name is not None and name in recipes:
@@ -2191,7 +2307,7 @@ def _open_series(batch_dir: Path) -> EnsembleSeries:
     from analysis.sim.series_db import series_db_current
 
     if not series_db_current(batch_dir):
-        click.echo(f"building the series store for {batch_dir.parent.name} "
+        click.echo(f"building the series store for {batch_recipe(batch_dir)} "
                    f"({batch_dir.name}); later reads are quick", err=True)
     try:
         return open_series(batch_dir)
@@ -2260,7 +2376,7 @@ def ensemble_summary(
     mode = DollarMode(dollars)
     _note_use(data_dir, scenario_name)
     _hold_tables()
-    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch, data_dir=data_dir)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
     store = _open_series(batch_dir)
@@ -2398,7 +2514,7 @@ def ensemble_compare(
                                          data_dir=data_dir)
         if not variants:
             variants = (_ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant",
-                                          exclude=baseline, current=False),)
+                                          exclude=baseline, data_dir=data_dir, current=False),)
         known = _ask_again_once_known(baseline=baseline, variants=variants)
         baseline, variants = known["baseline"], tuple(known["variants"])
         account, lot = known["account"], known["lot"]
@@ -2410,7 +2526,7 @@ def ensemble_compare(
     _hold_tables()
     mode = DollarMode(dollars)
     names = [baseline, *variants]
-    stores = {name: _open_series(_ensemble_batch_dir(resolved_runs_dir, name, None))
+    stores = {name: _open_series(_ensemble_batch_dir(resolved_runs_dir, name, None, data_dir=data_dir))
               for name in names}
     # An account only some recipes have gets those recipes' own tails, with
     # no deltas for the rest: there is nothing to subtract.
@@ -2639,7 +2755,7 @@ def ensemble_guard_rails(
     _note_use(data_dir, scenario_name)
     _hold_tables()
     mode = DollarMode(dollars)
-    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch, data_dir=data_dir)
     store = _open_series(batch_dir)
     results = _ensemble_guard_rails(data_dir, scenario_name, store, mode, rail_names)
     if not results:
@@ -2715,7 +2831,7 @@ def ensemble_drift(
                                           data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
-    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch, data_dir=data_dir)
     store = _open_series(batch_dir)
     try:
         target_set, portfolio, band = drift.pick(store.watches(), sorted(store.target_sets()),
@@ -2784,7 +2900,7 @@ def ensemble_spending(
                                           data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
-    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch, data_dir=data_dir)
     store = _open_series(batch_dir)
     mode = DollarMode(dollars)
     offered = [*EXPENSE_CATEGORIES, *(c for c in store.spending_categories() if c not in EXPENSE_CATEGORIES)]
@@ -2954,16 +3070,15 @@ def ensemble_sensitivity(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir,
+                                          make=mode or "sensitivity")
     _hold_tables()
     draw: _Draw | None = (
         (lambda fig, fit=None: _draw_figure(fig, graph_file, "sensitivity-", fit))
         if as_graph or graph_file is not None else None
     )
-    recipe_runs_dir = resolved_runs_dir / scenario_name
-    batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
-    if batch_dir is None or not batch_dir.is_dir():
-        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
+    batch_dir = _batch_to_read(resolved_runs_dir, scenario_name, mode, batch, data_dir=data_dir,
+                               make=mode or "sensitivity")
     from analysis.sim.pool import pool_record
 
     if (record := pool_record(batch_dir)) is not None:
@@ -3051,9 +3166,7 @@ def ensemble_sensitivity(
 @_graph_options("--node's draws and --pair's scores as the notebook's charts",
                 written="the chart (one --node or one --pair; in a pool, the first component's)",
                 after="the tables")
-@click.pass_context
 def ensemble_draws(
-    ctx: click.Context,
     scenario_name: str | None, runs_dir: Path | None, intent_dir: Path | None,
     data_dir: Path | None, batch: str | None, mode: str | None, node: str | None,
     pair: str | None, csv_file: Path | None, rebuild: bool,
@@ -3097,19 +3210,10 @@ def ensemble_draws(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
-    recipe_runs_dir = resolved_runs_dir / scenario_name
-    batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
-    if (batch_dir is None and mode == "monte_carlo" and resolved_data_dir is not None
-            and sc.ensemble_settings(resolved_data_dir, scenario_name)[1] is not None):
-        # An ensemble with no Monte Carlo batch yet gets one (Bob, #369):
-        # asking for its draws is asking for it to be run.
-        click.echo(f"{scenario_name} has no Monte Carlo batch yet; running it", err=True)
-        ctx.invoke(run, scenario_name=scenario_name, data_dir=data_dir, intent_dir=intent_dir,
-                   runs_dir=runs_dir)
-        batch_dir = latest_ensemble_batch(recipe_runs_dir, mode=mode)
-    if batch_dir is None or not batch_dir.is_dir():
-        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir,
+                                          make=mode or "monte_carlo")
+    batch_dir = _batch_to_read(resolved_runs_dir, scenario_name, mode, batch, data_dir=data_dir,
+                               make=mode or "monte_carlo")
     if charted and batch_mode(batch_dir) == "sensitivity":
         # Each sensitivity member pins one row at a chosen percentile and holds
         # the rest at their base case, so a histogram or scatter of its draws
@@ -3122,7 +3226,7 @@ def ensemble_draws(
     if rebuild or not draws_db_current(batch_dir):
         resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
         try:
-            build_draws_db(batch_dir, resolved_intent_dir / scenario_name / batch_dir.name)
+            build_draws_db(batch_dir, intent_batch_dir(resolved_intent_dir, batch_dir))
         except EnsembleError as exc:
             raise click.ClickException(str(exc)) from None
     _hold_tables()
@@ -4364,7 +4468,8 @@ def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode
 
 
 COMPARE_SECTIONS = (
-    "runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "spending", "account",
+    "runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "spending",
+    "social-security", "tax", "account",
 )
 """``sim compare``'s sections, in the order it prints them (#188)."""
 
@@ -4428,8 +4533,9 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
 @click.option("--lot", type=completion.LotName("account"), default=None,
               help="With --account: one lot of the account instead of its total.")
 @_year_range_options
-@_graph_options("net worth (or --account's balance) and each variant's difference",
-                after="the tables", written="that chart")
+@_graph_options("net worth (or --account's balance) and each variant's difference, or with "
+                "--section social-security or tax, that section's chart",
+                after="the tables", written="that chart (one chart only)")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 @click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
@@ -4450,10 +4556,18 @@ def compare_command(
     (#359) when any has strategies or targets (a strategy on vs off: compare
     with a child where `sim strategy edit NAME --disable` switches it off),
     each scenario's spending against its plan by year (#408) when any has a
-    spending strategy, and with --account, that account's balance.
+    spending strategy, gross Social Security by year and over the run (#335)
+    when it differs, total tax (federal and state, as `sim report tax`
+    prints it) in the years it differs and over the run, with lifetime
+    Social Security and final net worth (#336), when it differs, and with
+    --account, that account's balance.
+
+    --chart draws net worth (or --account's balance); --section
+    social-security and --section tax draw their own charts instead, unless
+    net-worth, break-even or account is asked for too, when it draws each.
 
     --start and --end limit the years the tables and chart show. Break-even
-    and the spending summary over the run still cover the whole run.
+    and the summaries over the run still cover the whole run.
 
     BASELINE left out is the current scenario; with no VARIANTS, one is
     asked for. A scenario with no accounts is a valid compare point."""
@@ -4477,6 +4591,11 @@ def compare_command(
         raise click.UsageError(
             f"--chart draws at most {_COMPARE_MAX_GRAPHED} variants; name fewer, "
             "or leave --chart off for the tables")
+    charts = _compare_charts(sections, account) if as_graph or graph_file is not None else []
+    if graph_file is not None and len(charts) > 1:
+        raise click.UsageError(
+            f"--chart-file writes one chart, and these sections draw {len(charts)} "
+            f"({', '.join(charts)}); ask for fewer, or use --chart")
     _hold_tables()
     after_tax = not pre_tax
     shown = set(sections) or {*COMPARE_SECTIONS[:-1], *(["account"] if account else [])}
@@ -4549,7 +4668,7 @@ def compare_command(
         nw = pd.DataFrame()
         # Only the sections that use it read net worth, so --section runs, say,
         # still works on a run with no CPI series.
-        if shown & {"net-worth", "break-even"} or (graphed and account is None):
+        if shown & {"net-worth", "break-even", "tax"} or "net-worth" in charts:
             nw = compare.net_worth_by_month(connections, scenarios, mode, after_tax=after_tax)
             if no_cpi := compare.all_nan_columns(nw):
                 raise click.ClickException(
@@ -4577,9 +4696,17 @@ def compare_command(
         if "spending" in shown:
             _echo_spending_comparison(connections, scenarios, mode, asked="spending" in sections,
                                       years=years)
+        if shown & {"social-security", "tax"} or {"social-security", "tax"} & set(charts):
+            _refuse_cpi_without_index(connections, mode, "Social Security and tax")
+        if "social-security" in shown:
+            _echo_ss_comparison(connections, scenarios, mode,
+                                asked="social-security" in sections, years=years)
+        if "tax" in shown:
+            _echo_tax_comparison(connections, scenarios, mode, nw, after_tax=after_tax,
+                                 asked="tax" in sections, years=years)
 
         balances = None
-        if account is not None and ("account" in shown or graphed):
+        if account is not None and ("account" in shown or "account" in charts):
             balances = compare.balance_by_month(connections, scenarios, account, lot, mode)
             subject = f"{account}" + (f", lot {lot}" if lot else "")
             if balances.empty:  # a balance of zero throughout is still a balance
@@ -4596,18 +4723,128 @@ def compare_command(
                                          years).map(_cell))
 
         if graphed:
-            from analysis.sim.compare_charts import comparison_figure
+            from analysis.sim.compare_charts import comparison_figure, ss_figure, tax_figure
 
             deaths = compare.scenario_deaths(connections, scenarios)
-            if balances is not None:
-                figure = comparison_figure(
-                    clip_years(balances, years), baseline, list(variants),
-                    f"{subject}, {mode_label}", ylabel="balance (USD)", deaths=deaths)
-            else:
-                figure = comparison_figure(
-                    clip_years(nw, years), baseline, list(variants), f"Net worth, {mode_label}",
-                    deaths=deaths)
-            _draw_figure(figure, graph_file, "compare-")
+            for chart in charts:
+                if chart == "account":
+                    assert balances is not None
+                    figure = comparison_figure(
+                        clip_years(balances, years), baseline, list(variants),
+                        f"{subject}, {mode_label}", ylabel="balance (USD)", deaths=deaths)
+                elif chart == "social-security":
+                    ss = compare.ss_gross_by_month(connections, scenarios, mode)
+                    figure = ss_figure(
+                        clip_years(ss, years), clip_years(ss.cumsum(), years), baseline,
+                        list(variants), f"Gross Social Security, {mode_label}", deaths=deaths)
+                elif chart == "tax":
+                    tax = compare.tax_by_scenario(connections, scenarios, mode)
+                    figure = tax_figure(
+                        clip_years(compare.tax_comparison(tax, baseline, variants), years),
+                        baseline, list(variants), f"Total tax, {mode_label}", deaths=deaths)
+                else:
+                    figure = comparison_figure(
+                        clip_years(nw, years), baseline, list(variants),
+                        f"Net worth, {mode_label}", deaths=deaths)
+                _draw_figure(figure, graph_file,
+                             f"compare-{chart}-" if len(charts) > 1 else "compare-")
+
+
+def _compare_charts(sections: Sequence[str], account: str | None) -> list[str]:
+    """The charts ``sim compare --chart`` draws, in order: net worth, or
+    --account's balance; Social Security's and tax's (#335, #336) instead
+    when those sections are asked for and no section of the first is."""
+    first = "account" if account is not None else "net-worth"
+    own = [chart for chart in ("social-security", "tax") if chart in sections]
+    if not own:
+        return [first]
+    if set(sections) & {"net-worth", "break-even", "account"}:
+        return [first, *own]
+    return own
+
+
+def _refuse_cpi_without_index(
+    connections: Mapping[str, RunConnection], mode: DollarMode, what: str,
+) -> None:
+    """Refuse CPI-constant ``what`` when a run has no 'cpi' inflation index."""
+    if mode != DollarMode.CPI_CONSTANT:
+        return
+    if missing := [name for name, rc in connections.items() if rc.cpi_index().isna().all()]:
+        raise click.ClickException(
+            f"no 'cpi' inflation index in the run of {', '.join(missing)}, so no "
+            f"CPI-constant {what}; pass --dollars nominal")
+
+
+def _whole_dollars_cell(value: Any) -> str:
+    """A table cell in whole dollars, missing as an em dash."""
+    return _cell(value if pd.isna(value) else _whole_dollars(value))
+
+
+def _echo_ss_comparison(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], mode: DollarMode, *,
+    asked: bool, years: tuple[int, int] | None = None,
+) -> None:
+    """``sim compare``'s social-security section (#335): each scenario's gross
+    Social Security by year (the years any has some) with each variant's
+    difference, then each one's lifetime total. Shown by default only when
+    the benefits differ, and said to be empty only when ``asked`` for."""
+    from analysis.sim import compare
+
+    ss = compare.ss_gross_by_month(connections, scenarios, mode)
+    if not asked and not compare.ss_differs(ss):
+        return
+    baseline, variants = scenarios[0], scenarios[1:]
+    yearly = compare.ss_by_year(ss, baseline, variants)
+    yearly = yearly[yearly[list(scenarios)].fillna(0).ne(0).any(axis=1)]
+    if yearly.empty:
+        click.echo("\nSocial Security: none in these runs")
+        return
+    label = DollarMode(mode).label
+    click.echo(f"\nGross Social Security by year ({label}):")
+    table = clip_years(yearly, years)
+    if table.empty:
+        click.echo("  none in these years")
+    else:
+        _echo_frame(table.map(_whole_dollars_cell))
+    click.echo(f"\nGross Social Security over the run ({label}), Δ against {baseline}:")
+    _echo_frame(compare.ss_summary(ss, baseline).map(_whole_dollars_cell))
+
+
+def _echo_tax_comparison(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], mode: DollarMode,
+    nw: pd.DataFrame, *, after_tax: bool, asked: bool, years: tuple[int, int] | None = None,
+) -> None:
+    """``sim compare``'s tax section (#336): each scenario's total tax
+    (federal and state liability, as ``sim report tax`` prints it) in the tax
+    years where some variant's differs, with each variant's difference, then
+    each one's lifetime tax, gross Social Security and final net worth
+    against the baseline. Shown by default only when the tax differs, and
+    said to be empty only when ``asked`` for."""
+    from analysis.sim import compare
+
+    tax = compare.tax_by_scenario(connections, scenarios, mode)
+    if all(table.empty for table in tax.values()):
+        if asked:
+            click.echo("\nTax: none in these runs (no tax rule)")
+        return
+    baseline, variants = scenarios[0], scenarios[1:]
+    comparison = compare.tax_comparison(tax, baseline, variants)
+    if not asked and not compare.tax_differs(comparison).any():
+        return
+    label = DollarMode(mode).label
+    shown = clip_years(comparison, years)
+    moved = shown[compare.tax_differs(shown)]
+    click.echo(f"\nTotal tax by tax year ({label}), the {len(moved)} of {len(shown)} years "
+               f"where a variant's differs from {baseline}'s (a negative Δ owes less):")
+    if moved.empty:
+        click.echo("  none")
+    else:
+        _echo_frame(moved.map(_whole_dollars_cell))
+    ss = compare.ss_gross_by_month(connections, scenarios, mode)
+    summary = compare.tax_summary(tax, ss, nw, baseline)
+    click.echo(f"\nTax over the run ({label}), Δ against {baseline}; final net worth "
+               f"{'after tax' if after_tax else 'pre-tax'}:")
+    _echo_frame(summary.map(_whole_dollars_cell))
 
 
 def _echo_strategy_differences(
@@ -16407,6 +16644,31 @@ def builder_run(data_dir: Path | None) -> None:
     ))
 
 
+@builder_group.command(name="series", hidden=True)
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
+@_BUILDER_DATA_DIR
+def builder_series(scenario_name: str | None, data_dir: Path | None) -> None:
+    """Build the series store of SCENARIO_NAME's latest Monte Carlo batch
+    when it has no current one (#454): the builder's step after a run."""
+    from analysis.sim.series_db import build_series_db, series_db_current
+
+    resolved = _builder_data_dir(data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_name("ensemble", _ensemble_names(resolved))
+    runs_dir = _resolve_state_dir(None, DEFAULT_RUNS_DIR, resolved)
+    batch_dir = latest_ensemble_batch(runs_dir / scenario_name, mode="monte_carlo", wait=False)
+    if batch_dir is None:
+        raise click.ClickException(f"{scenario_name} has no Monte Carlo batch")
+    if series_db_current(batch_dir):
+        click.echo(f"{scenario_name} ({batch_dir.name}): series store already current")
+        return
+    try:
+        build_series_db(batch_dir)
+    except EnsembleError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"built the series store for {scenario_name} ({batch_dir.name})")
+
+
 @builder_group.command(name="status")
 @_BUILDER_DATA_DIR
 def builder_status(data_dir: Path | None) -> None:
@@ -16434,7 +16696,7 @@ def builder_status(data_dir: Path | None) -> None:
         current = status.get("current")
         if current:
             started = datetime.fromtimestamp(current["started"], UTC).strftime("%H:%M:%SZ")
-            click.echo(f"building: {current['scenario']} (since {started})")
+            click.echo(f"building: {current.get('job') or current['scenario']} (since {started})")
         queue = status.get("queue") or []
         click.echo(f"queue: {', '.join(queue) if queue else '(empty)'}")
     for name, why in sorted((status.get("waiting") or {}).items()):
