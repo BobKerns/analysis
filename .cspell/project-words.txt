@@ -179,6 +179,7 @@ libedit
 libx
 lifetable
 linalg
+linespacing
 linestyle
 linthresh
 lognormal

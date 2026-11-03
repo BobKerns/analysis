@@ -373,12 +373,14 @@ compute them for other series and years.
 To see a scenario's trees, `sim ensemble factors` lists each factor under
 its parent with the link's ρ, and how many varying rows hang from it;
 `--varying` adds those rows, each with the ρ the tree gives it to its
-factor and to the tree's root, and `--chart` draws the trees:
+factor and to the tree's root, and `--chart` draws the trees (with
+`--varying`, the rows too, as boxes on dotted links from their factors):
 
 ```sh
 sim ensemble factors markets            # the factors, nested, with each ρ
 sim ensemble factors markets --varying  # and the rows under each factor
 sim ensemble factors markets --chart    # the trees, drawn
+sim ensemble factors markets --chart --varying  # and the rows on each factor
 sim ensemble factors markets --mermaid  # as a Mermaid flowchart, for a README
 ```
 

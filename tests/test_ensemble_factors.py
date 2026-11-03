@@ -187,3 +187,22 @@ def test_a_factor_hung_from_a_row_stays_in_its_tree(
     assert lines.index(next(line for line in lines if line.startswith("cpi_factor "))) < \
         lines.index(next(line for line in lines if line.startswith("under_cpi ")))
     assert '-.->|"0.8 via cpi_path"|' in source.output
+
+
+def test_the_varying_chart_adds_each_row_and_grows_to_fit_them() -> None:
+    tree = _tree()
+
+    plain = ft.factor_tree_figure(tree)
+    with_rows = ft.factor_tree_figure(tree, varying=True, size=(12, 1))
+    texts = [t.get_text() for t in with_rows.axes[0].texts]
+
+    assert "set_rate x\nuniform" not in [t.get_text() for t in plain.axes[0].texts]
+    assert texts.count("set_rate x\nuniform") == 3  # row, follower (under b) and loner
+    assert "on their own" in texts
+    assert with_rows.get_size_inches()[1] > 1  # two-line boxes need the room
+
+
+def test_a_row_label_is_short() -> None:
+    node = ft.Varying("cpi_path", "set_rate cpi", "truncated_normal, ar1 path")
+
+    assert ft._row_label(node) == "set_rate cpi\ntrunc_normal (ar1)"

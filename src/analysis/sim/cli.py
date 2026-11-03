@@ -3045,7 +3045,8 @@ def ensemble_draws(
 @ensemble_group_command.command("factors")
 @click.argument("scenario", required=False, type=completion.SCENARIO)
 @click.option("--varying", "with_varying", is_flag=True,
-              help="Also list the varying rows under each factor, with their ρ to it.")
+              help="Also show the varying rows under each factor, with their ρ to it: "
+                   "in a table, and in the chart as dotted boxes.")
 @click.option("--mermaid", "as_mermaid", is_flag=True,
               help="Print the tree's Mermaid source (to paste into markdown) instead.")
 @_graph_options("the factor tree", written="the factor tree", after="the table")
@@ -3060,8 +3061,9 @@ def ensemble_factors(
     Each factor shows its ρ to its parent and how many varying rows hang
     from it; --varying lists those rows too, each with the ρ the tree gives
     it to its factor, and the rows that vary on their own. --chart draws the
-    tree left to right, each link labeled with the child's ρ; --mermaid
-    prints it as a Mermaid flowchart, for a README.
+    tree left to right, each link labeled with the child's ρ, and with
+    --varying, each row as a box on a dotted link from its factor; --mermaid
+    prints the factors as a Mermaid flowchart, for a README.
 
     Without SCENARIO, the current scenario."""
     from rich.markup import escape
@@ -3085,8 +3087,9 @@ def ensemble_factors(
     _hold_tables()
     if as_graph or graph_file is not None:
         title = f"Latent factors in {name}"
-        _draw_figure(ft.factor_tree_figure(tree, title), graph_file, "factors-",
-                     fit=lambda size: ft.factor_tree_figure(tree, title, _reasonable_chart_size(size)))
+        _draw_figure(ft.factor_tree_figure(tree, title, varying=with_varying), graph_file, "factors-",
+                     fit=lambda size: ft.factor_tree_figure(
+                         tree, title, _reasonable_chart_size(size), varying=with_varying))
     under: dict[str | None, list[ft.Varying]] = {}
     for node in tree.varying:
         under.setdefault(tree.factor_of(node.name), []).append(node)

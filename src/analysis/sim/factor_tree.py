@@ -183,66 +183,128 @@ _SPINE = 0.22
 
 def factor_tree_figure(
     tree: FactorTree, title: str | None = None, size: tuple[float, float] | None = None,
+    *, varying: bool = False,
 ) -> Figure:
     """The factors drawn left to right, each root at the left and its
-    children to its right, each arrow labeled with the child's ρ to its
+    children to its right, each link labeled with the child's ρ to its
     parent. Mermaid's layout crosses arrows on a tree this shape, and its
     top-down chart runs six times wider than tall; a left-to-right tree
     stacks its leaves, so it fits 16:9 with the text still readable.
-    ``size`` is the figure's in inches (default 12 wide, 16:9)."""
+    ``size`` is the figure's in inches (default 12 wide, 16:9).
+
+    With ``varying``, each factor's varying rows hang from it too, each a
+    plain box saying what it moves and how it is drawn, on a dotted link
+    labeled with its ρ to the factor; the rows in no tree hang from an
+    unboxed "on their own", with no ρ. Those boxes are two lines each, so
+    the figure grows taller than ``size`` when they need the room."""
     from matplotlib.figure import Figure
 
     from analysis.sim.plotting import GRID, INK, MUTED
 
-    width, height = size or (12.0, 12.0 * 9 / 16)
-    fig = Figure(figsize=(width, height))
-    ax = fig.subplots()
-    ax.set_axis_off()
+    under: dict[str | None, list[Varying]] = {}
+    if varying:
+        for node in tree.varying:
+            under.setdefault(tree.factor_of(node.name), []).append(node)
+
+    # Nodes are ("factor", name), ("row", name) or ("alone", ""), the
+    # unboxed parent of the rows in no tree.
+    Node = tuple[str, str]
+
+    def children(node: Node) -> list[Node]:
+        if node[0] == "factor":
+            return ([("factor", f.name) for f in tree.children(node[1])]
+                    + [("row", v.name) for v in under.get(node[1], [])])
+        if node[0] == "alone":
+            return [("row", v.name) for v in under.get(None, [])]
+        return []
+
     # A tidy tree: leaves take the next row down, each parent sits midway
     # between its first and last child, and a blank row parts two trees.
-    place: dict[str, tuple[float, float]] = {}
+    place: dict[Node, tuple[float, float]] = {}
     row = 0.0
 
-    def lay(factor: Factor, depth: int) -> float:
+    def lay(node: Node, depth: int) -> float:
         nonlocal row
-        children = tree.children(factor.name)
-        if children:
-            ys = [lay(child, depth + 1) for child in children]
+        kids = children(node)
+        if kids:
+            ys = [lay(kid, depth + 1) for kid in kids]
             y = (ys[0] + ys[-1]) / 2
         else:
             y, row = row, row + 1
-        place[factor.name] = (depth, y)
+        place[node] = (depth, y)
         return y
 
-    for root in tree.children(None):
+    roots: list[Node] = [("factor", f.name) for f in tree.children(None)]
+    roots += [("alone", "")] if under.get(None) else []
+    for root in roots:
         lay(root, 0)
         row += 1
+    width, height = size or (12.0, 12.0 * 9 / 16)
+    if varying:
+        height = max(height, (row - 1) * _ROW_INCHES)
+    fig = Figure(figsize=(width, height))
+    ax = fig.subplots()
+    ax.set_axis_off()
     depth = max((x for x, _ in place.values()), default=0)
     ax.set_xlim(-0.05, depth + 0.85)
     ax.set_ylim(max(row - 1.5, 0.5), -0.6)
-    for name, (x, y) in place.items():
-        factor = tree.factors[name]
-        label = name if factor.nu is None else f"{name} (t copula, ν {factor.nu:g})"
-        ax.text(x, y, label, ha="left", va="center", fontsize=10, color=INK, zorder=3,
-                bbox={"boxstyle": "round,pad=0.35,rounding_size=0.8", "facecolor": "#eef1fb",
-                      "edgecolor": "#7d8fd6"})
-        children = tree.children(name)
-        if not children:
+    rows = {v.name: v for v in tree.varying}
+    for node, (x, y) in place.items():
+        kind, name = node
+        if kind == "factor":
+            factor = tree.factors[name]
+            label = name if factor.nu is None else f"{name} (t copula, ν {factor.nu:g})"
+            ax.text(x, y, label, ha="left", va="center", fontsize=10, color=INK, zorder=3,
+                    bbox={"boxstyle": "round,pad=0.35,rounding_size=0.8",
+                          "facecolor": "#eef1fb", "edgecolor": "#7d8fd6"})
+        elif kind == "row":
+            ax.text(x, y, _row_label(rows[name]), ha="left", va="center", fontsize=8,
+                    color=INK, zorder=3, linespacing=1.15,
+                    bbox={"boxstyle": "square,pad=0.35", "facecolor": "white",
+                          "edgecolor": MUTED, "linestyle": ":"})
+        else:
+            ax.text(x, y, "on their own", ha="left", va="center", fontsize=10,
+                    color=MUTED, style="italic", zorder=3,
+                    bbox={"boxstyle": "square,pad=0.35", "facecolor": "white", "edgecolor": "none"})
+        kids = children(node)
+        if not kids:
             continue
         # Elbows: right from the parent to a spine just short of its
         # children, then across to each; each child's ρ sits on its own
         # arm, so a parent with many children doesn't stack them up.
         spine = x + 1 - _SPINE
-        ys = [place[child.name][1] for child in children]
+        ys = [place[kid][1] for kid in kids]
         ax.plot([x, spine], [y, y], color=MUTED, lw=1, zorder=1)
         ax.plot([spine, spine], [min(ys + [y]), max(ys + [y])], color=MUTED, lw=1, zorder=1)
-        for child, cy in zip(children, ys, strict=True):
-            # A link through varying rows is dashed: its ρ is the product.
-            ax.plot([spine, x + 1], [cy, cy], color=MUTED, lw=1, zorder=1,
-                    linestyle="--" if child.via else "-")
-            ax.text(spine + _SPINE / 2, cy, f"{child.rho:.3g}", ha="center", va="center",
-                    fontsize=9, color=INK, zorder=2,
-                    bbox={"boxstyle": "square,pad=0.15", "facecolor": GRID, "edgecolor": "none"})
+        for kid, cy in zip(kids, ys, strict=True):
+            # A row's link is dotted, and a factor's link through varying
+            # rows dashed: its ρ is the product.
+            if kid[0] == "row":
+                style = ":"
+                rho = None if kind == "alone" else tree.rho(kid[1], name)
+            else:
+                style = "--" if tree.factors[kid[1]].via else "-"
+                rho = tree.factors[kid[1]].rho
+            ax.plot([spine, x + 1], [cy, cy], color=MUTED, lw=1, zorder=1, linestyle=style)
+            if rho is not None:
+                ax.text(spine + _SPINE / 2, cy, f"{rho:.3g}", ha="center", va="center",
+                        fontsize=9, color=INK, zorder=2,
+                        bbox={"boxstyle": "square,pad=0.15", "facecolor": GRID,
+                              "edgecolor": "none"})
     if title:
         ax.set_title(title, loc="left", color=INK, fontsize=11)
     return fig
+
+
+_ROW_INCHES = 0.6
+"""The height a two-line varying row's box needs, so the chart grows to fit them."""
+
+
+def _row_label(node: Varying) -> str:
+    """What a varying row moves, over how it is drawn, in short: a
+    ``truncated_normal`` is ``trunc_normal``, and a process is in parentheses."""
+    distribution = node.distribution.replace("truncated_normal", "trunc_normal")
+    head, comma, process = distribution.partition(", ")
+    if comma:
+        distribution = f"{head} ({process.removesuffix(' path')})"
+    return f"{node.varies}\n{distribution}"
