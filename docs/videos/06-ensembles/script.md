@@ -408,8 +408,8 @@ Sleep 18s
 
 With dash dash chart, the comparison is drawn. On top, the difference in
 each future, as a fan: a little behind before 2031, for the tax reasons
-video five explained, then well ahead. Below, the change in the worst
-five and twenty percent, and the change at each percentile.
+video five explained, then well ahead. Below, the change in the average
+of the worst five and twenty percent.
 
 ## Scene `nb-ensemble`: The ensemble notebook
 

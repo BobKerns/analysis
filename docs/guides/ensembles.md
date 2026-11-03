@@ -967,6 +967,9 @@ raises the floor and gives up the top; lines spreading apart mean the
 variant widens the range of outcomes, lines closing in that it narrows
 it. The members at a breakpoint are different futures on each side, so
 this compares the two distributions, not what happens to any one future.
+They're in the table only, not charted: one percentile minus another
+subtracts two noisy numbers, so the noise grows relative to the change,
+where the CVaR deltas below average over a range of members and settle it.
 
 **Future by future.** When the two recipes share a seed, which a child
 inherits from its parent, member *i* of each drew the same value for

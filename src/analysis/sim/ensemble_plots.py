@@ -193,7 +193,7 @@ def ensemble_compare_figure(
 ) -> Figure:
     """The comparison's panels, top to bottom (#163): the fan of paired
     per-future deltas when the recipes pair; the delta in each tail mean
-    (CVaR); each percentile breakpoint's delta; and, given a
+    (CVaR); and, given a
     ``reserve``, the change in the shares below it (see
     ``comparison_deltas`` for ``cpi_frames``). ``log_scale`` puts the dollar
     panels on a symmetric log scale (#171), since deltas run both ways.
@@ -243,26 +243,23 @@ def ensemble_compare_grid_figure(
     share a y scale, so the columns read against each other; the paired
     fan's row is there when any variant pairs, and blank for one that
     doesn't. One variant puts its fan across the top and the delta panels
-    side by side below. ``size`` is the figure's (width, height) in inches,
+    side by side below. The percentile deltas aren't drawn: one percentile
+    minus another amplifies their noise (#369); the tables keep them.
+    ``size`` is the figure's (width, height) in inches,
     16:9 when not given (#369)."""
     clip = clip or (lambda frame: frame)
     paired_row = any(side.pairs for side in variants.values())
-    panels = 2 + paired_row + (reserve is not None)
+    panels = 1 + paired_row + (reserve is not None)
     columns = len(variants)
     width, height = size or _default_compare_size(columns)
     fig = Figure(figsize=(width, height), layout="tight")
     if columns == 1:
-        # One variant: the paired fan across the top, the two delta panels
-        # side by side under it, so the whole fits a screen (#369).
-        spec = fig.add_gridspec(panels - 1, 2)
-        row = 0
-        order: list[Axes] = []
-        if paired_row:
-            order.append(fig.add_subplot(spec[0, :]))
-            row = 1
-        order += [fig.add_subplot(spec[row, 0]), fig.add_subplot(spec[row, 1])]
-        if reserve is not None:
-            order.append(fig.add_subplot(spec[row + 1, :]))
+        # One variant: the paired fan across the top, the CVaR and reserve
+        # panels side by side under it, so the whole fits a screen (#369).
+        below = 1 + (reserve is not None)
+        spec = fig.add_gridspec(1 + paired_row, below)
+        order: list[Axes] = [fig.add_subplot(spec[0, :])] if paired_row else []
+        order += [fig.add_subplot(spec[paired_row, i]) for i in range(below)]
         for ax in order[1:]:
             ax.sharex(order[0])
         grid = np.array([[ax] for ax in order], dtype=object)
@@ -300,13 +297,7 @@ def ensemble_compare_grid_figure(
         ax = next(axes)
         _delta_lines(
             deltas, [c for c in deltas.columns if c.startswith("Δcvar")], ax,
-            f"{prefix}mean of the worst 5% and 20% (CVaR)",
-            log_scale=log_scale, deaths=deaths,
-        )
-        ax = next(axes)
-        _delta_lines(
-            deltas, [c for c in deltas.columns if c.startswith("Δp")], ax,
-            f"{prefix}each percentile vs the same percentile ({mode_label})",
+            f"{prefix}mean of the worst 5% and 20% (CVaR, {mode_label})",
             log_scale=log_scale, deaths=deaths,
         )
         if reserve is not None:

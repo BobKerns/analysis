@@ -109,26 +109,28 @@ def test_ensemble_compare_figure_skips_the_paired_panel_when_unpaired() -> None:
     paired = ensemble_compare_figure("a", "b", baseline, baseline + 1,
                                      [("member_0000", "member_0000")], "nominal")
     unpaired = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal")
-    assert (len(paired.axes), len(unpaired.axes)) == (3, 2)
+    assert (len(paired.axes), len(unpaired.axes)) == (2, 1)
     with_reserve = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal", 2.5)
-    assert len(with_reserve.axes) == 3
+    assert len(with_reserve.axes) == 2
     assert "reserve" in with_reserve.axes[-1].get_title()
 
 
 def test_one_comparison_fits_16_9_with_its_fan_across_the_top() -> None:
     """#369: one variant's panels fit a screen: the paired fan across the
-    top, the two delta panels side by side under it."""
+    top, the CVaR and reserve panels side by side under it; no panel of
+    percentile deltas."""
     months = pd.date_range("2027-01-31", periods=3, freq="ME")
     baseline = pd.DataFrame({"member_0000": [1.0, 2.0, 3.0]}, index=months)
     fig = ensemble_compare_figure("a", "b", baseline, baseline + 1,
-                                  [("member_0000", "member_0000")], "nominal")
+                                  [("member_0000", "member_0000")], "nominal", 2.5)
     width, height = fig.get_size_inches()
     assert width / height == pytest.approx(16 / 9)
-    fan, cvar, pct = fig.axes
+    fan, cvar, reserve = fig.axes
     fig.canvas.draw()
     assert fan.get_position().width > 1.5 * cvar.get_position().width
-    assert cvar.get_position().y0 == pytest.approx(pct.get_position().y0)
-    assert cvar.get_position().x1 < pct.get_position().x0
+    assert cvar.get_position().y0 == pytest.approx(reserve.get_position().y0)
+    assert cvar.get_position().x1 < reserve.get_position().x0
+    assert not any("percentile" in ax.get_title() for ax in fig.axes)
     # Under a fan that names the pair, the side by side titles leave it out.
     assert cvar.get_title().startswith("mean of the worst")
 
@@ -141,7 +143,7 @@ def test_several_comparisons_fit_16_9_unless_given_a_size() -> None:
     fig = ensemble_compare_grid_figure("a", baseline, sides, "nominal")
     width, height = fig.get_size_inches()
     assert width / height == pytest.approx(16 / 9)
-    assert len(fig.axes) == 6
+    assert len(fig.axes) == 4
     sized = ensemble_compare_grid_figure("a", baseline, sides, "nominal", size=(20, 8))
     assert tuple(sized.get_size_inches()) == (20, 8)
 

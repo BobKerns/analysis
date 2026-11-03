@@ -2320,9 +2320,9 @@ def ensemble_compare(
     VARIANTS (#328), each table has a row per (year, recipe), as the
     notebook's ensemble table does.
 
-    --chart draws the notebook's comparison panels: each percentile's delta,
-    the paired futures' deltas when the recipes pair, the CVaR deltas and,
-    with a reserve, the change in the shares below it; with several
+    --chart draws the notebook's comparison panels: the paired futures'
+    deltas when the recipes pair, the CVaR deltas and, with a reserve, the
+    change in the shares below it; with several
     VARIANTS (at most four), a column of panels each. When only one of a
     baseline and one variant has the account, it draws that recipe's fan
     chart instead.
