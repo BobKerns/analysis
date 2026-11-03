@@ -282,6 +282,20 @@ def test_breakeven_of_no_months_is_none() -> None:
     assert breakeven_month(pd.Series([], dtype=float)) is None
 
 
+def test_breakeven_month_never_ahead_returns_none() -> None:
+    idx = pd.date_range("2026-01-31", periods=3, freq="ME")
+    series = pd.Series([-1.0, -2.0, -3.0], index=idx)
+
+    assert compare.breakeven_month(series) is None
+
+
+def test_breakeven_month_finds_first_month_that_stays_ahead() -> None:
+    idx = pd.date_range("2026-01-31", periods=4, freq="ME")
+    series = pd.Series([-1.0, 1.0, -1.0, 1.0], index=idx)
+
+    assert compare.breakeven_month(series) == idx[3]
+
+
 def test_scenario_run_path_matches_the_whole_scenario_name(runs_dir: Path) -> None:
     """``base``'s run is never ``higher_base``'s, though the file names share
     a ``_base_`` segment."""

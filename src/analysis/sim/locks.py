@@ -38,6 +38,7 @@ __all__ = [
     "is_building",
     "lock_holder",
     "lock_path",
+    "naming_lock",
     "reserve_run_path",
     "run_name_key",
 ]
@@ -77,6 +78,23 @@ def reserve_run_path(
             continue
         os.close(fd)
         return path
+
+
+@contextmanager
+def naming_lock(runs_dir: Path, scenario: str) -> Generator[None]:
+    """Hold while picking a new batch name for ``scenario`` (#454): its
+    Monte Carlo and sensitivity batches live in separate folders, and a
+    name must stay unique across both, so the check and the mkdir go
+    together. Kept in ``runs_dir``, which every batch of the recipe shares
+    even when runs use different intent dirs."""
+    folder = runs_dir / LOCK_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    fd = os.open(folder / f"{scenario}.names", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def run_name_key(name: str) -> tuple[str, int, str]:

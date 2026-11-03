@@ -73,10 +73,16 @@ def _trees(repo: Repo, commit: str) -> tuple[str, ...] | None:
     return tuple(out)
 
 
-def _latest(runs_dir: Path, scenario: str) -> tuple[Path, list[Path]] | None:
+def _latest(
+    runs_dir: Path, scenario: str, mode: str = "monte_carlo",
+) -> tuple[Path, list[Path]] | None:
     """The scenario's newest run: a run file, or a Monte Carlo batch, with
-    the run files that make it up."""
+    the run files that make it up; or with ``mode`` sensitivity, its newest
+    sensitivity batch (#454)."""
     # Never waits on the background builder (#300), which asks this itself.
+    if mode == "sensitivity":
+        batch = latest_ensemble_batch(runs_dir / scenario, mode=mode, wait=False)
+        return (batch, sorted(batch.glob("member_*.sqlite3"))) if batch is not None else None
     run = latest_run_path(runs_dir, scenario, wait=False)
     batch = latest_ensemble_batch(runs_dir / scenario, mode="monte_carlo", wait=False)
     # Both names start with `<stamp>[-N]`, ordered by locks.run_name_key.
@@ -105,22 +111,26 @@ class Unchanged:
 
 def unchanged_run(
     data_dir: Path, runs_dir: Path, scenario: str, code: CodeTree,
-    *, known: Mapping[str, Unchanged | None] | None = None,
+    *, known: Mapping[str, Unchanged | None] | None = None, mode: str = "monte_carlo",
 ) -> Unchanged | None:
     """``scenario``'s latest run if rerunning it couldn't change it: it
     finished, and the code trees, Python version and data tree are what it
     ran with, all clean then and now. Otherwise None. ``known`` is a pool's
-    components' answers, already found (see :func:`unchanged_pool`)."""
+    components' answers, already found (see :func:`unchanged_pool`). With
+    ``mode`` sensitivity, its latest sensitivity batch instead (#454): any
+    quantiles, every member it planned finished."""
     if code.repo is None or code.trees is None:
         return None
     from analysis.sim.lineage import is_pool
 
     if is_pool(Path(data_dir) / "scenarios", scenario):
+        if mode == "sensitivity":
+            return None  # ADR-009: a pool has none
         return unchanged_pool(data_dir, runs_dir, scenario, code, known=known)
     from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
 
     try:
-        latest = _latest(runs_dir, scenario)
+        latest = _latest(runs_dir, scenario, mode)
         if latest is None or not latest[1]:
             return None
         path, files = latest
@@ -133,7 +143,8 @@ def unchanged_run(
     if path.is_dir():
         # A batch of another size (`sim run --ensemble-size N`) isn't the
         # one `sim all` would make.
-        if not len(statuses) == manifest.get("member_count") == _ensemble_size(files[0]):
+        size = manifest.get("member_count") if mode == "sensitivity" else _ensemble_size(files[0])
+        if not len(statuses) == manifest.get("member_count") == size:
             return None
         if any(status not in _FINISHED for status in statuses.values()):
             return None

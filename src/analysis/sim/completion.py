@@ -209,7 +209,9 @@ def _sensitivity_rows(ctx: click.Context, data_dir: Path) -> list[str]:
     ensemble, else its latest sensitivity batch, under --runs-dir or the
     data repo's state/runs."""
     from analysis.sim.ensemble import read_batch_manifest
-    from analysis.sim.loader import DEFAULT_RUNS_DIR, DEFAULT_STATE_DIR, find_state_dir, latest_ensemble_batch
+    from analysis.sim.loader import (
+        DEFAULT_RUNS_DIR, DEFAULT_STATE_DIR, find_batch, find_state_dir, latest_ensemble_batch,
+    )
 
     scenario = _scenario(ctx, data_dir)
     if scenario is None or _given(ctx, "mode") == "monte_carlo":
@@ -217,7 +219,7 @@ def _sensitivity_rows(ctx: click.Context, data_dir: Path) -> list[str]:
     given = _given(ctx, "runs_dir")
     runs = Path(given) if given else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
     batch = _given(ctx, "batch")
-    batch_dir = (runs / scenario / batch if batch
+    batch_dir = (find_batch(runs / scenario, batch) if batch
                  else latest_ensemble_batch(runs / scenario, mode="sensitivity", wait=False))
     manifest = read_batch_manifest(batch_dir) if batch_dir is not None else None
     return list((manifest or {}).get("rows", []))

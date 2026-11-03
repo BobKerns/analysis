@@ -188,7 +188,7 @@ def test_the_parameters_table_and_draws_db_describe_a_strategy_node(
 
     _vary(strategy_csv, "upper,triangular,10%,30%,,,\n")
     recipe = _load(strategy_scenarios, intent_dir).intent_path
-    batch = runs_dir / SCENARIO / "2026-01-01T000000Z"
+    batch = runs_dir / SCENARIO / "monte-carlo" / "2026-01-01T000000Z"
     for i in range(3):
         member = resolve_member(recipe, intent_dir / f"m{i}.sqlite3", seed=5, member_index=i,
                                 member_count=3, recipe_tree_id="t")
