@@ -1513,8 +1513,8 @@ nothing. The design is in
 ## 5. Looking at your results
 
 **Video.** *Looking at the results* walks through this section with Alice
-and Bill's base scenario: [English](https://www.youtube.com/watch?v=hCFPwthvFL4),
-[Japanese (日本語)](https://www.youtube.com/watch?v=EHjnXhMulQ0).
+and Bill's base scenario: [English](https://www.youtube.com/watch?v=8byMoioSYH8),
+[Japanese (日本語)](https://www.youtube.com/watch?v=SDzC49sCXqM).
 
 A **run** is what happens when the simulator plays a scenario forward, month
 by month, from its start date to its end date. The result is a single, dated
@@ -1592,8 +1592,8 @@ balance still owes doesn't show at all.
 
 **Video.** *Comparing what-ifs* builds two what-ifs on Alice and Bill's
 base scenario, runs them, and compares them with `sim compare` and
-`scenario_compare.ipynb`: [English](https://www.youtube.com/watch?v=z-HLIqsKTZg),
-[Japanese (日本語)](https://www.youtube.com/watch?v=_9xq98dz6kw).
+`scenario_compare.ipynb`: [English](https://www.youtube.com/watch?v=gq3mAFwscMI),
+[Japanese (日本語)](https://www.youtube.com/watch?v=5RbOMWhtU8c).
 
 `sim compare BASELINE VARIANT` puts two or more scenarios' latest runs side
 by side, as `scenario_compare.ipynb` does: whether the runs came from the same

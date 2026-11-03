@@ -11,7 +11,7 @@ summary = """
 入れるフォルダーを作ります。1行インストーラーのあるセットアップガイド(英語): \
 https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md
 
-Windowsでは、先にWSLを準備してください: https://youtu.be/Yo0Z5DRmMNE"""
+Windowsでは、先にWSLを準備してください: https://youtu.be/MOE2uIAkIRA"""
 contents = [
   "1行でインストール。Mac、Linux、WindowsのWSLで",
   "インストーラーがすること",

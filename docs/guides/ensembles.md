@@ -19,6 +19,12 @@ explains seeds, per-row random streams, copulas and the statistics behind
 them first. Any unfamiliar word is in the
 [glossary](../user-guide.md#2-glossary).
 
+**Video.** *Ensembles* turns Alice and Bill's base scenario into an
+ensemble, shows its factors, runs it, reads the fan chart, and compares a
+what-if across the same futures:
+[English](https://www.youtube.com/watch?v=Q825lq05EvQ),
+[Japanese (日本語)](https://www.youtube.com/watch?v=ug5Mv7g9quM).
+
 ## Setting one up
 
 **1. Create the recipe**, derived from an existing scenario (usually your
