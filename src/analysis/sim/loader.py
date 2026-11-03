@@ -1318,6 +1318,8 @@ def load_scenario(
         accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
         scheduled_rows=scheduled_rows, rails=rail_rows,
         start=scenario_row.get("start", ""), issues=issues, unused=unused,
+        persons=persons, lifespan_rows=lifespan_rows,
+        aux_kinds=frozenset(f"{kind}__{table}" if table else kind for kind, table, _p, _e in aux_rows),
     )
     strategy_varies, strategy_links = strategy_load.prepare_vary(
         vary_files, strategy_rows=strategy_rows, prepared=strategies, kinds=strategy_kinds,
@@ -4401,6 +4403,9 @@ def _validate_strategies(
     start: str,
     issues: list[str],
     unused: list[str],
+    persons: list[dict[str, str]],
+    lifespan_rows: list[dict[str, str]],
+    aux_kinds: frozenset[str],
 ) -> tuple[strategy_code.StrategyKinds, list[strategy_load.PreparedStrategy]]:
     """``strategies/<name>.csv`` and ``targets.csv`` (#326, ADR-003 §4.12-4.13).
 
@@ -4428,9 +4433,29 @@ def _validate_strategies(
         if r.get("amount_rule_kind") == "tax_accumulator":
             scope = str((_safe_json(r.get("params_json")) or {}).get("scope", "federal"))
             tax_scopes[scope] = tax_scopes.get(scope, 0) + 1
+    by_account = {a["name"]: a for a in accounts}
+    life_tables = {row.get("person", ""): (row.get("life_table") or "").strip() or None for row in lifespan_rows}
+    class_sets = _allocation_class_sets(allocations)
+    portfolio_classes: dict[str, set[str]] = {}
+    for m in value_rows:
+        account = by_account.get(m.get("account_name", ""))
+        if account is None or account.get("kind") != "asset":
+            continue
+        weights = asset_classes.class_weights(
+            symbol=m.get("symbol") or None, account=account["name"],
+            lot=m.get("lot") or registries.DEFAULT_LOT, subkind=account.get("subkind", ""),
+            sets=class_sets, date=start,
+        )
+        for tag in tags.get(account["name"], frozenset()):
+            portfolio_classes.setdefault(tag, set()).update(c for c, w in weights.items() if w > 0)
     scenario = strategy_api.ScenarioView(
         accounts={a["name"]: (a.get("kind", ""), a.get("subkind", "")) for a in accounts},
         tax_rules=tax_scopes,
+        people={p.get("id", ""): ((p.get("role") or "").strip() or None, (p.get("sex") or "").strip() or None,
+                                  life_tables.get(p.get("id", "")))
+                for p in persons},
+        aux=aux_kinds,
+        portfolio_classes={tag: frozenset(classes) for tag, classes in portfolio_classes.items()},
     )
     prepared = strategy_load.prepare_strategies(
         list(_located(strategy_rows, registries.STRATEGIES_DIR)),
@@ -4438,7 +4463,6 @@ def _validate_strategies(
         tags=frozenset().union(*tags.values()), target_sets=target_sets, rules=rules,
         scenario=scenario, rails=frozenset(rails), issues=issues,
     )
-    by_account = {a["name"]: a for a in accounts}
     lots = [
         (m["account_name"], m.get("lot") or registries.DEFAULT_LOT, m.get("symbol") or None,
          by_account[m["account_name"]].get("kind", ""), by_account[m["account_name"]].get("subkind", ""),
@@ -4446,7 +4470,7 @@ def _validate_strategies(
         for m in value_rows if m.get("account_name") in by_account
     ]
     strategy_load.check_portfolio_classes(
-        prepared, kinds=kinds, lots=lots, sets=_allocation_class_sets(allocations),
+        prepared, kinds=kinds, lots=lots, sets=class_sets,
         start=start, issues=issues,
     )
     known_lots = {(account, lot) for account, lot, *_ in lots}

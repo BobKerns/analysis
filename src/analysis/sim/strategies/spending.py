@@ -1,4 +1,5 @@
-"""Spending strategies (#387): ``threshold``, ``guardrail``, ``ceiling_floor``.
+"""Spending strategies (#387): ``threshold``, ``guardrail``, ``ceiling_floor``,
+and amortization, ``amortize`` (#459).
 
 Each owns the scheduled rules carrying its ``rules`` tag (the household's
 plan for that spending) and moves their level by one yearly factor, set in
@@ -10,11 +11,14 @@ set what was spent against what was budgeted.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+from collections.abc import Sequence
 from datetime import date
+from typing import Any
 
 from analysis.sim.strategy_api import (
-    Context, Decision, Dollars, Percent, RuleView, Spend, Strategy, StrategyError, Tag, percent,
-    register,
+    Context, Decision, Dollars, Percent, RuleView, ScenarioView, Spend, Strategy, StrategyError, Tag,
+    percent, register,
 )
 
 
@@ -221,4 +225,216 @@ class CeilingFloor(_Spending):
         memory.update(spend=spend, since=ctx.month.isoformat(), factor=factor)
         return Decision([], note=f"{note} ({factor:.0%} of plan)", detail={
             "portfolio": balance, "budget": budget, "spend": spend, "factor": factor,
+        })
+
+
+def annuity_rate(rate: float, years: int) -> float:
+    """The share of a portfolio that pays the same real amount at the start
+    of each of ``years`` years and spends it all, at real return ``rate``:
+    an annuity-due's payment per dollar. ``1/years`` at a zero return."""
+    if years < 1:
+        raise StrategyError(f"annuity_rate needs at least one year, not {years}")
+    if rate <= -1:
+        raise StrategyError(f"annuity_rate needs a real return above -100%, not {rate:.2%}")
+    if abs(rate) < 1e-12:
+        return 1 / years
+    # In logs, so a return near zero keeps its precision and a return near
+    # -100% over many years doesn't overflow: for a negative return the
+    # growth factor is written with positive powers, which only shrink.
+    growth = math.log1p(rate)
+    if rate > 0:
+        return rate / -math.expm1(-years * growth) / (1 + rate)
+    return rate * math.exp((years - 1) * growth) / math.expm1(years * growth)
+
+
+# The asset classes each class return parameter covers (VPW's two figures,
+# and cash). real_estate and other have no published figure.
+_RETURN_OF = {
+    "stock": "stock_return", "stock_us": "stock_return", "stock_intl": "stock_return",
+    "bond": "bond_return", "cd": "bond_return", "cash": "cash_return",
+}
+
+
+def parse_horizon(text: str) -> tuple[str, float] | str:
+    """``age:N`` -> ("age", N), ``survival:P%`` -> ("survival", P/100),
+    ``rmd`` -> ("rmd", 0); otherwise the problem, as a phrase."""
+    kind, _, arg = text.strip().partition(":")
+    if kind == "rmd" and not arg:
+        return ("rmd", 0.0)
+    if kind == "age":
+        try:
+            age = int(arg)
+        except ValueError:
+            return f"horizon {text!r}: age:N needs a whole age, such as age:100"
+        return ("age", float(age)) if 0 < age <= 130 else f"horizon {text!r}: an age from 1 to 130"
+    if kind == "survival":
+        try:
+            p = percent(arg) / 1_000_000
+        except ValueError:
+            return f"horizon {text!r}: survival:P needs a percent, such as survival:10%"
+        return ("survival", p) if 0 < p < 1 else f"horizon {text!r}: a percent above 0% and below 100%"
+    return f"horizon {text!r}: age:N, survival:P% or rmd"
+
+
+@register
+class Amortize(_Spending):
+    """Amortization spending: VPW (Bogleheads variable percentage
+    withdrawal) and the RMD method. Each January the portfolio is priced as
+    an annuity: what it could pay each year, the same in real terms, if it
+    were spent down over the ``horizon`` at a real return. That payment
+    rises and falls with the portfolio. The first year starts on plan (the
+    owned rules post their budget); after that the owned rules take the
+    change in the payment since then, in today's dollars, dollar for dollar
+    and never below zero, so the spending the strategy doesn't own is paid
+    as planned and the optional spending is what moves. ``ceiling`` and
+    ``floor`` limit the owned spending's real change from one year to the
+    next. The horizon reads ages and life tables, never a lifespan an
+    ensemble member drew."""
+
+    kind = "amortize"
+
+    @dataclass(frozen=True)
+    class Params:
+        portfolio: Tag
+        """Account tag whose asset lots are amortized."""
+        horizon: str = "age:100"
+        """age:N (until the youngest living primary person is N; VPW uses 100), survival:P% (until
+        the chance anyone in the household is alive falls to P), or rmd (the IRS divisor)."""
+        real_return: Percent | None = None
+        """One real return for the portfolio; blank blends the class returns by its allocation."""
+        stock_return: Percent = percent("5%")
+        """Real return for stock classes (VPW's figure)."""
+        bond_return: Percent = percent("1.9%")
+        """Real return for bonds and CDs (VPW's figure)."""
+        cash_return: Percent = 0
+        """Real return for cash."""
+        ceiling: Percent | None = None
+        """The most the owned spending may rise in a year, after inflation; blank for no limit."""
+        floor: Percent | None = None
+        """The most the owned spending may fall in a year, after inflation; blank for no limit."""
+
+    @classmethod
+    def check(cls, params: Any, scenario: ScenarioView) -> Sequence[str]:
+        problems: list[str] = []
+        horizon = parse_horizon(params.horizon)
+        if isinstance(horizon, str):
+            return [horizon]
+        kind = horizon[0]
+        if kind == "rmd":
+            if params.real_return is not None:
+                problems.append("the rmd horizon takes no real_return (the IRS divisor is the whole rule)")
+            if "rmd_factors" not in scenario.aux:
+                problems.append("the rmd horizon needs aux rmd_factors.csv")
+        if kind in ("rmd", "survival"):
+            household = {pid: person for pid, person in scenario.people.items()
+                         if person[0] in ("primary", "secondary")}
+            missing = sorted(pid for pid, (_role, sex, _table) in household.items() if not sex)
+            if missing:
+                problems.append(f"the {kind} horizon needs a sex in persons.csv for {', '.join(missing)}")
+            tables = sorted({f"life_table__{table}" if table else "life_table"
+                             for _role, _sex, table in household.values()} - scenario.aux)
+            if tables:
+                problems.append(f"the {kind} horizon needs aux {', '.join(t + '.csv' for t in tables)}")
+        for name in ("real_return", "stock_return", "bond_return", "cash_return"):
+            value = getattr(params, name)
+            if value is not None and value <= -1_000_000:
+                problems.append(f"{name} must be above -100%")
+        if params.real_return is None and kind != "rmd":
+            odd = sorted(scenario.portfolio_classes.get(params.portfolio, frozenset()) - set(_RETURN_OF))
+            if odd:
+                problems.append(f"portfolio {params.portfolio} holds {', '.join(odd)}, which has no "
+                                f"class return: give real_return")
+        return problems
+
+    def _return(self, ctx: Context) -> float:
+        p = self.params
+        if p.real_return is not None:
+            return p.real_return / 1_000_000
+        allocation = ctx.allocation(ctx.tagged(p.portfolio))
+        # Blend what is held: a lot overdrawn below zero (a shortfall the run
+        # carries on past) isn't a holding with a return.
+        held = {c: cents for c, cents in allocation.dollars.items() if cents > 0}
+        total = sum(held.values())
+        if total <= 0:
+            return 0.0
+        blended = 0.0
+        for asset_class, cents in held.items():
+            field_name = _RETURN_OF.get(asset_class)
+            if field_name is None:
+                raise StrategyError(
+                    f"portfolio {p.portfolio} holds {asset_class}, which has no class return: "
+                    f"give real_return")
+            blended += cents / total * getattr(p, field_name) / 1_000_000
+        return blended
+
+    def _rate(self, ctx: Context) -> tuple[float, str, dict[str, Any]] | None:
+        """This year's payment rate, a phrase saying how, and the detail."""
+        horizon = parse_horizon(self.params.horizon)
+        if isinstance(horizon, str):
+            raise StrategyError(horizon)
+        kind, arg = horizon
+        living = [v for v in ctx.people.values()
+                  if v.alive and v.role in ("primary", "secondary") and v.age is not None]
+        if not living:
+            return None
+        if kind == "rmd":
+            oldest = min(living, key=lambda v: (v.birthdate or date.max, v.id))
+            divisor = ctx.rmd_divisor(oldest.id)
+            source = "rmd_factors"
+            if divisor is None:
+                divisor, source = ctx.life_expectancy(oldest.id), "life expectancy"
+            divisor = max(divisor, 1.0)
+            return 1 / divisor, f"{source} {divisor:.1f} at {oldest.id}'s {oldest.age}", {"divisor": divisor}
+        r = self._return(ctx)
+        if kind == "age":
+            youngest = min(v.age for v in living if v.age is not None)
+            years = max(1, int(arg) - youngest)
+        else:
+            years = ctx.survival_years(arg)
+        how = f"{self.params.horizon}, {years} years at {r:.2%}"
+        return annuity_rate(r, years), how, {"years": years, "real_return": r}
+
+    def year_start(self, ctx: Context) -> Decision | None:
+        p = self.params
+        memory = ctx.memory
+        balance = self._portfolio(ctx, p.portfolio)
+        budget = ctx.budget()
+        found = self._rate(ctx)
+        if found is None:
+            return None  # nobody left to plan for
+        rate, how, detail = found
+        # An empty portfolio pays nothing; that is a payment of zero once
+        # the strategy has started, so the owned spending falls with it.
+        payment = round(rate * balance) if balance > 0 else 0
+        first = "first_payment" not in memory
+        if first:
+            if budget <= 0 or balance <= 0:
+                return None
+            spend = budget
+            memory.update(first_payment=payment, first_since=ctx.month.isoformat())
+            held = ""
+            note_tail = "on plan"
+        else:
+            then = memory["first_payment"] * _cpi_since(ctx, memory["first_since"])
+            target = max(0.0, budget + payment - then)
+            last = memory["spend"] * _cpi_since(ctx, memory["since"])
+            high = last * (1 + p.ceiling / 1_000_000) if p.ceiling is not None else None
+            low = last * (1 - p.floor / 1_000_000) if p.floor is not None else None
+            spend_f = target
+            held = ""
+            if high is not None and spend_f > high:
+                spend_f, held = high, " (held to the ceiling)"
+            elif low is not None and spend_f < low:
+                spend_f, held = low, " (held to the floor)"
+            spend = round(spend_f)
+            change = payment - then
+            note_tail = (f"payment {'up' if change >= 0 else 'down'} {_dollars(abs(change))} "
+                         f"since the first year, in today's dollars")
+        factor = spend / budget if budget > 0 else memory.get("factor", 1.0)
+        memory.update(spend=spend, since=ctx.month.isoformat(), factor=factor)
+        note = (f"pay {_dollars(payment)}: {rate:.2%} of {_dollars(balance)} ({how}); "
+                f"spend {_dollars(spend)}{held}, {note_tail} ({factor:.0%} of plan)")
+        return Decision([], note=note, detail={
+            **detail, "portfolio": balance, "rate": rate, "payment": payment,
+            "first_payment": memory["first_payment"], "budget": budget, "spend": spend, "factor": factor,
         })

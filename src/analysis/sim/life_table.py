@@ -35,7 +35,7 @@ from analysis.sim.distributions import DistributionError
 __all__ = [
     "LifeTable", "LifeTableAge", "LifeTableError", "life_table_from_rows",
     "life_table_for", "life_table_in", "months_since_birth", "person_table", "table_file",
-    "solve_set_forward", "equivalent_multiplier",
+    "solve_set_forward", "equivalent_multiplier", "survival_curve",
 ]
 
 LIFE_TABLE_KIND = "life_table"
@@ -162,6 +162,13 @@ def _build_curve(table: LifeTable, start: int, set_forward: float) -> _Curve:
         cdf.append(1.0 - alive)
     cdf.append(1.0)
     return _Curve(start, cdf)
+
+
+def survival_curve(table: LifeTable, start: int, set_forward: float = 0.0) -> list[float]:
+    """The chance of being alive after each month from ``start`` (months
+    since birth): element ``k`` is alive after ``k + 1`` months, given alive
+    now. Ends at ``registries.MAX_AGE_AT_DEATH`` (#459)."""
+    return [1.0 - f for f in _build_curve(table, start, set_forward).cdf]
 
 
 def _median_months(curve: _Curve) -> float:

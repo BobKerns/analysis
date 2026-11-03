@@ -1348,7 +1348,7 @@ spend that year.
    `sim scheduled tag add travel flex:optional`, and the same for gifts.
    Only `fixed_amount` rules can be owned.
 2. `sim strategy add` asks for the kind, the rule tag (`flex:optional`) and
-   its parameters. Three are built in:
+   its parameters. Four are built in:
    - `threshold` spends the tagged rules only in a year that starts with
      the portfolio above a minimum (and, if you like, not after a year it
      lost money).
@@ -1361,6 +1361,17 @@ spend that year.
      inflation. A `rate` you give is the share for the tagged rules alone,
      so if you tag only the optional ones, leave it at 0% to start from
      your plan.
+   - `amortize` is VPW (variable percentage withdrawal) and the RMD
+     method. Each January it works out what the portfolio could pay every
+     year, the same after inflation, if it were spent down by the time the
+     younger of Alice and Bill is 100 (`horizon`, default `age:100`), at
+     VPW's real returns (5% for stocks, 1.9% for bonds; or `real_return`).
+     The first year spends your plan; after that the tagged spending takes
+     the whole change in that payment, in today's dollars, so the rest of
+     your spending is paid as planned. `horizon` can also be `survival:10%`
+     (until the chance either of them is alive falls to 10%, from the life
+     table) or `rmd` (the portfolio over the IRS divisor). `ceiling` and
+     `floor` limit how much the tagged spending changes in a year.
 
 A cut is shared proportionally across the rules a strategy owns: a 10% cut
 makes a $5,000 trip $4,500. If that isn't how you'd cut, for example a trip
@@ -1388,7 +1399,7 @@ members had to cut, and each member's worst full year. The notebooks draw
 the same: `net_worth.ipynb` for one run, `scenario_compare.ipynb` for runs
 side by side, and `ensemble.ipynb` across the members.
 The design is in
-[ADR-010 §6.2](architecture/ADR-010-responsive-strategies.md).
+[ADR-010 §6.2 and §6.4](architecture/ADR-010-responsive-strategies.md).
 
 ### 4.18 Tax-aware moves each December (year-end strategies)
 
