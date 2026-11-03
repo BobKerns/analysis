@@ -16,6 +16,7 @@ from typing import Any
 
 import matplotlib
 import matplotlib.colors as mcolors
+import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
@@ -192,7 +193,7 @@ def ensemble_compare_figure(
 ) -> Figure:
     """The comparison's panels, top to bottom (#163): the fan of paired
     per-future deltas when the recipes pair; the delta in each tail mean
-    (CVaR); each percentile breakpoint's delta; and, given a
+    (CVaR); and, given a
     ``reserve``, the change in the shares below it (see
     ``comparison_deltas`` for ``cpi_frames``). ``log_scale`` puts the dollar
     panels on a symmetric log scale (#171), since deltas run both ways.
@@ -222,6 +223,12 @@ class CompareSide:
     cpi_frame: pd.DataFrame | None = None
 
 
+def _default_compare_size(columns: int) -> tuple[float, float]:
+    """A 16:9 figure, wide enough that each variant's column reads."""
+    width = 12.0 if columns == 1 else 6.5 * columns
+    return width, width * 9 / 16
+
+
 def ensemble_compare_grid_figure(
     baseline: str, baseline_frame: pd.DataFrame, variants: Mapping[str, CompareSide],
     mode_label: str, reserve: float | None = None,
@@ -229,18 +236,35 @@ def ensemble_compare_grid_figure(
     log_scale: bool = False,
     clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     deaths: Sequence[Death] = (),
+    size: tuple[float, float] | None = None,
 ) -> Figure:
     """``ensemble_compare_figure``'s panels for each of ``variants`` against
     ``baseline`` (#328), one column a variant, side by side. A row's panels
     share a y scale, so the columns read against each other; the paired
     fan's row is there when any variant pairs, and blank for one that
-    doesn't."""
+    doesn't. One variant puts its fan across the top and the delta panels
+    side by side below. The percentile deltas aren't drawn: one percentile
+    minus another amplifies their noise (#369); the tables keep them.
+    ``size`` is the figure's (width, height) in inches,
+    16:9 when not given (#369)."""
     clip = clip or (lambda frame: frame)
     paired_row = any(side.pairs for side in variants.values())
-    panels = 2 + paired_row + (reserve is not None)
+    panels = 1 + paired_row + (reserve is not None)
     columns = len(variants)
-    fig = Figure(figsize=(10 if columns == 1 else 6.5 * columns, 4 * panels), layout="tight")
-    grid = fig.subplots(panels, columns, sharex=True, sharey="row", squeeze=False)
+    width, height = size or _default_compare_size(columns)
+    fig = Figure(figsize=(width, height), layout="tight")
+    if columns == 1:
+        # One variant: the paired fan across the top, the CVaR and reserve
+        # panels side by side under it, so the whole fits a screen (#369).
+        below = 1 + (reserve is not None)
+        spec = fig.add_gridspec(1 + paired_row, below)
+        order: list[Axes] = [fig.add_subplot(spec[0, :])] if paired_row else []
+        order += [fig.add_subplot(spec[paired_row, i]) for i in range(below)]
+        for ax in order[1:]:
+            ax.sharex(order[0])
+        grid = np.array([[ax] for ax in order], dtype=object)
+    else:
+        grid = fig.subplots(panels, columns, sharex=True, sharey="row", squeeze=False)
     for column, (variant, side) in enumerate(variants.items()):
         cpi_frames = (
             (baseline_cpi_frame, side.cpi_frame)
@@ -249,6 +273,9 @@ def ensemble_compare_grid_figure(
             baseline_frame, side.frame, reserve=reserve, cpi_frames=cpi_frames,
         ))
         axes: Iterator[Axes] = iter(grid[:, column])
+        # Side by side under a fan that names the two, the pair would only
+        # crowd the delta panels' titles into each other.
+        prefix = "" if columns == 1 and paired_row else f"{variant} − {baseline}: "
         if paired_row:
             ax = next(axes)
             if side.pairs:
@@ -270,13 +297,7 @@ def ensemble_compare_grid_figure(
         ax = next(axes)
         _delta_lines(
             deltas, [c for c in deltas.columns if c.startswith("Δcvar")], ax,
-            f"{variant} − {baseline}: mean of the worst 5% and 20% (CVaR)",
-            log_scale=log_scale, deaths=deaths,
-        )
-        ax = next(axes)
-        _delta_lines(
-            deltas, [c for c in deltas.columns if c.startswith("Δp")], ax,
-            f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
+            f"{prefix}mean of the worst 5% and 20% (CVaR, {mode_label})",
             log_scale=log_scale, deaths=deaths,
         )
         if reserve is not None:

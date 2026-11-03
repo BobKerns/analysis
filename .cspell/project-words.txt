@@ -39,6 +39,7 @@ blockifying
 blockquotes
 Bogleheads
 BONDX
+boxstyle
 BPOS
 BUILDKIT
 businesswire
@@ -181,6 +182,7 @@ libedit
 libx
 lifetable
 linalg
+linespacing
 linestyle
 linthresh
 lognormal

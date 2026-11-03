@@ -26,16 +26,16 @@ pass the answers as options, `... | sh -s -- --yes --id alice --display
 "Alice Example" --birthdate 1960-05-01 --filing-status MFJ`; the comment at
 the top of [`scripts/install.sh`](../scripts/install.sh) lists them all.
 
-Video: [Setup and install](https://youtu.be/A3kdE7Gav0o) walks through the
+Video: [Setup and install](https://youtu.be/qnug-0zzlqA) walks through the
 install, a new data repo, activating it, and saving your work
-([日本語](https://youtu.be/ZTyvpf6obSQ)).
+([日本語](https://youtu.be/Eu0r0Hk1ghM)).
 
 ## Windows: set up WSL first
 
 The simulator runs on Linux and macOS. On Windows it runs in WSL, the Windows
 Subsystem for Linux, which runs Ubuntu inside Windows 11, or Windows 10
-version 2004 or later. The video [WSL for Windows](https://youtu.be/ABq0vnGIwlk)
-walks through this ([日本語](https://youtu.be/Yo0Z5DRmMNE)).
+version 2004 or later. The video [WSL for Windows](https://youtu.be/16j-Qz7Tfq8)
+walks through this ([日本語](https://youtu.be/MOE2uIAkIRA)).
 
 1. Right-click Start and choose **Terminal (Admin)** (on Windows 10,
    **Windows PowerShell (Admin)**), then run `wsl --install`. Restart when

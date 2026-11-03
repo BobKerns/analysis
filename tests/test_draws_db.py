@@ -281,6 +281,63 @@ def test_sim_ensemble_draws_on_a_sensitivity_batch(
     assert "KS p(u)" not in output
 
 
+def test_sim_ensemble_draws_will_not_chart_a_sensitivity_batch(
+    oat_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), "--mode", "sensitivity", "--node", "early", "--chart",
+    ])
+    assert result.exit_code == 2
+    assert "--chart draws a Monte Carlo batch" in result.output
+
+
+def test_sim_ensemble_draws_reads_the_monte_carlo_batch_over_a_newer_sensitivity_one(
+    mc_batch: Path, oat_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    # The sensitivity batch is the newer one, whatever the fixtures named them.
+    newest = oat_batch.with_name("9999-12-31T235959Z")
+    oat_batch.rename(newest)
+
+    output = _draws_cli(runs_dir, intent_dir)
+
+    assert f"retire_alice ({mc_batch.name}): monte_carlo" in output
+
+
+def test_sim_ensemble_draws_points_a_mode_given_to_batch_at_mode(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), "--batch", "monte_carlo",
+    ])
+    assert result.exit_code == 2
+    assert "use --mode monte_carlo" in result.output
+
+
+def test_sim_ensemble_draws_runs_an_ensemble_with_no_monte_carlo_batch(
+    test_data_dir: Path, derive_scenario: Callable[..., Path], append_calendar_row: Callable[..., None],
+    commit_test_data: Callable[[], Path], runs_dir: Path, intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2029-06-30", kind="one_off_transfer", name="gift",
+        account_1="Income_Inheritance", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="20000.00", tax_character="none",
+        vary_target="amount", vary_distribution="uniform", vary_low="10000.00", vary_high="30000.00",
+    )
+    derive_scenario("paths", "retire_alice", meta_json='{"ensemble_size": 2, "seed": 3}')
+    commit_test_data()
+
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "paths", "--data-dir", str(test_data_dir),
+        "--runs-dir", str(runs_dir), "--intent-dir", str(intent_dir),
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "paths has no Monte Carlo batch yet; running one now" in result.output
+    assert "): monte_carlo, 2 member(s), 2 succeeded" in result.output
+
+
 def test_a_batch_whose_every_member_failed_still_lists_them(tmp_path: Path) -> None:
     batch = tmp_path / "runs" / "retire_alice" / "monte-carlo" / "b"
     batch.mkdir(parents=True)

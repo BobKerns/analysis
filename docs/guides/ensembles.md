@@ -19,6 +19,12 @@ explains seeds, per-row random streams, copulas and the statistics behind
 them first. Any unfamiliar word is in the
 [glossary](../user-guide.md#2-glossary).
 
+**Video.** *Ensembles* turns Alice and Bill's base scenario into an
+ensemble, shows its factors, runs it, reads the fan chart, and compares a
+what-if across the same futures:
+[English](https://www.youtube.com/watch?v=Q825lq05EvQ),
+[Japanese (日本語)](https://www.youtube.com/watch?v=ug5Mv7g9quM).
+
 ## Setting one up
 
 **1. Create the recipe**, derived from an existing scenario (usually your
@@ -370,6 +376,20 @@ For what ρ to use, [Historical calibration](historical-calibration.md)
 tabulates the correlations, medians and spreads of inflation categories and
 returns over the past century and in named episodes, and has a script to
 compute them for other series and years.
+
+To see a scenario's trees, `sim ensemble factors` lists each factor under
+its parent with the link's ρ, and how many varying rows hang from it;
+`--varying` adds those rows, each with the ρ the tree gives it to its
+factor and to the tree's root, and `--chart` draws the trees (with
+`--varying`, the rows too, as boxes on dotted links from their factors):
+
+```sh
+sim ensemble factors markets            # the factors, nested, with each ρ
+sim ensemble factors markets --varying  # and the rows under each factor
+sim ensemble factors markets --chart    # the trees, drawn
+sim ensemble factors markets --chart --varying  # and the rows on each factor
+sim ensemble factors markets --mermaid  # as a Mermaid flowchart, for a README
+```
 
 A factor nothing depends on yet loads without error, and `sim check` notes
 it with a `WARN:` line. That's fine for work in progress, or for a factor defined in a
@@ -875,14 +895,20 @@ sequential run; only the order of the progress lines changes. Divide the
 estimate above by roughly the number of cores in use.
 
 **A quick way to tell if you need more:** run the ensemble, look at
-`notebooks/ensemble.ipynb`'s fan chart, then rerun it with a bigger
-`--ensemble-size`. If the bands move noticeably, the first count wasn't
+`notebooks/ensemble.ipynb`'s fan chart, then rerun it with a bigger size
+(`sim ensemble edit NAME --size N`). If the bands move noticeably, the first count wasn't
 enough yet to settle down; if they barely change, you've already got
 enough members for what you're looking at. For a fast exploratory check
 where you mainly want "is this even in the right ballpark," the default of
 30 is usually enough; save a bigger, slower run for when you're ready to
 report a specific number (a percentile, a probability of running out of
 money by some date) rather than just eyeballing a chart.
+
+A recipe with many varying rows (the templates' year-by-year paths
+alone vary every inflation series and market rate) can stay noisy well past
+400 members. Doubling to 800 would do; 1000 has the advantage that every
+member is a tenth of a percent, so "12 futures ran out" reads directly as
+1.2%.
 
 ## Comparing ensembles on risk
 
@@ -948,6 +974,9 @@ raises the floor and gives up the top; lines spreading apart mean the
 variant widens the range of outcomes, lines closing in that it narrows
 it. The members at a breakpoint are different futures on each side, so
 this compares the two distributions, not what happens to any one future.
+They're in the table only, not charted: one percentile minus another
+subtracts two noisy numbers, so the noise grows relative to the change,
+where the CVaR deltas below average over a range of members and settle it.
 
 **Future by future.** When the two recipes share a seed, which a child
 inherits from its parent, member *i* of each drew the same value for
@@ -1299,6 +1328,16 @@ sim ensemble draws my_recipe --node growth   # one row's draw in each member
 sim ensemble draws my_recipe --pair core_inflation,fuel_factor  # one pair's scores
 sim ensemble draws my_recipe --csv draws.csv # member x row, for a spreadsheet
 ```
+
+It reads the ensemble's latest Monte Carlo batch, even when a sensitivity
+batch is newer: a sensitivity batch's few members each move one row, so
+their draws say little about distributions or correlations. `--mode
+sensitivity` reads the latest sensitivity batch instead, and `--batch`
+names one batch by its timestamp. An ensemble that hasn't been run yet is
+run first. `--chart` won't draw a sensitivity batch, since its charts would
+show only the few percentiles it chose; its tables still list what each
+member drew. On a large ensemble the pair chart's dots are smaller and
+translucent, so the cloud's shape shows through where they overlap.
 
 The check sets each row's median and SD beside the drawn members' (member
 0, the base case, is left out), with a **KS p(u)** column. Each draw records

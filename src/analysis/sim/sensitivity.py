@@ -28,6 +28,7 @@ from analysis.frames import index_years
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau, tree_root
 from analysis.sim.distributions import Discrete, Distribution, Triangular, TruncatedNormal, moments
+from analysis.sim.draws_db import row_affects
 from analysis.sim.life_table import LifeTableAge
 from analysis.sim.ensemble import (
     EnsembleError,
@@ -1060,13 +1061,6 @@ def _spread(kind: str, target: str, sd: float) -> str:
     return f"${sd / 100:,.0f}"
 
 
-def _affects(row: sqlite3.Row) -> str:
-    """What a varying calendar row acts on, in the author's own names."""
-    if row["kind"] in ("one_off_transfer", "transfer_balance"):
-        return f"{row['account_1']} → {row['account_2']}"
-    return row["series"] or row["scheduled_name"] or ""
-
-
 def _row_distribution(row: sqlite3.Row, target: str) -> Distribution | None:
     """The distribution a member file's resolved row was drawn from, or
     ``None`` if its stored parameters don't describe a valid one."""
@@ -1263,7 +1257,7 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
         for row in rows:
             kind, target = row["kind"], row["target"]
             record: dict[str, object] = {
-                "name": row["name"], "kind": kind, "affects": _affects(row), "target": target,
+                "name": row["name"], "kind": kind, "affects": row_affects(row), "target": target,
                 "distribution": row["distribution"] or "", "range": "", "center": "",
                 "shape": "", "moments": "", "ramp_months": row["vary_ramp_months"] or "",
                 "process": _describe_process(row),

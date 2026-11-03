@@ -1351,18 +1351,33 @@ def _run_members(
         for i, overrides in specs
     ]
     failures: list[tuple[int, Path, str]] = []
+    # A counter at a terminal, not a line per member (#369): eighty paths
+    # bury the result. A sensitivity member's line says what it moved, so it
+    # stays, by file name; the folder is printed once at the end.
+    counting = sys.stdout.isatty() and mode != "sensitivity"
+    done = 0
+    short = 0
 
     def _report(i: int, overrides: dict[str, float] | None, intent_path: Path,
-                run_path: Path, result: tuple[str | None, MemberSeries | None]) -> None:
-        error, rows = result
+                run_path: Path, result: tuple[str | None, MemberSeries | None, bool]) -> None:
+        nonlocal done, short
+        done += 1
+        error, rows, went_negative = result
+        short += went_negative
         if rows is not None and series is not None:
             series.append(rows)
         if error is not None:
             failures.append((i, intent_path, error))
-            click.echo(f"  member {i}: FAILED ({error}) -- intent: {intent_path}", err=True)
-        else:
-            label = "" if not overrides else " " + ", ".join(f"{k}@{q:g}" for k, q in overrides.items())
-            click.echo(f"  member {i}:{label} {run_path}")
+            if counting:
+                click.echo("\r\033[K", nl=False)
+            click.echo(f"  member {i}: FAILED ({error}) -- intent: {_shown(intent_path)}", err=True)
+        elif overrides:
+            label = ", ".join(f"{k}@{q:g}" for k, q in overrides.items())
+            click.echo(f"  member {i}: {label} {run_path.name}")
+        elif not counting:
+            click.echo(f"  member {i}: {run_path.name}")
+        if counting:
+            click.echo(f"\r\033[K  {done}/{len(tasks)} members run", nl=done == len(tasks))
 
     if jobs <= 1 or len(tasks) <= 1:
         for task in tasks:
@@ -1377,8 +1392,12 @@ def _run_members(
                 try:
                     result = future.result()
                 except Exception as exc:  # the worker process itself died
-                    result = (f"worker failed: {exc}", None)
+                    result = (f"worker failed: {exc}", None, False)
                 _report(task[3], task[4], task[1], task[2], result)
+    click.echo(f"  runs: {_shown(member_runs_dir)}")
+    if short:
+        click.echo(f"  {short} member(s) had an account go negative "
+                   "(`sim explain` on a member's run file says when)")
     return sorted(failures)
 
 
@@ -1387,11 +1406,12 @@ def _run_one_member(
     member_index: int, overrides: dict[str, float] | None, seed: int | None, member_count: int,
     recipe_tree_id: str, mode: str, run_by: str, allow_dirty_data: bool, allow_dirty_code: bool,
     with_series: bool = False,
-) -> tuple[str | None, MemberSeries | None]:
+) -> tuple[str | None, MemberSeries | None, bool]:
     """Resolve and run one member: the error text on failure, else ``None``,
     and with ``with_series`` its series store rows (#298), read here so
     they're read in parallel, or ``None`` if reading them failed (the store
-    is then built when the batch is first opened). Module-level (not a
+    is then built when the batch is first opened); and whether an account
+    went negative in it. Module-level (not a
     closure) so a process pool can pickle it."""
     try:
         resolve_member(
@@ -1399,19 +1419,31 @@ def _run_one_member(
             seed=seed, member_index=member_index, member_count=member_count,
             recipe_tree_id=recipe_tree_id, overrides=overrides, mode=mode,
         )
-        run_scenario(
-            member_intent_path, member_run_path,
-            run_by=run_by,
-            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
-        )
+        # A member's negative balances are recorded in its run file
+        # (negative_balance_warnings); printed, eighty members' warnings
+        # would bury the batch (#369), so the batch counts them instead.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run_scenario(
+                member_intent_path, member_run_path,
+                run_by=run_by,
+                allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+            )
+        short = False
+        for warning in caught:
+            if issubclass(warning.category, RuntimeWarning) and "went negative" in str(warning.message):
+                short = True
+            else:
+                warnings.showwarning(warning.message, warning.category, warning.filename,
+                                     warning.lineno, warning.file, warning.line)
     except Exception as exc:
-        return str(exc), None
+        return str(exc), None, False
     if not with_series:
-        return None, None
+        return None, None, short
     try:
-        return None, member_series(member_run_path)
+        return None, member_series(member_run_path), short
     except Exception:
-        return None, None
+        return None, None, short
 
 
 def _report_batch(label: str, member_count: int, failures: list[tuple[int, Path, str]]) -> None:
@@ -1420,7 +1452,7 @@ def _report_batch(label: str, member_count: int, failures: list[tuple[int, Path,
     if failures:
         click.echo(f"  {len(failures)} failure(s):")
         for i, path, _error in failures:
-            click.echo(f"    member {i}: {path}")
+            click.echo(f"    member {i}: {_shown(path)}")
 
 
 def _suggest_readme(target: Path) -> None:
@@ -2453,9 +2485,9 @@ def ensemble_compare(
     VARIANTS (#328), each table has a row per (year, recipe), as the
     notebook's ensemble table does.
 
-    --chart draws the notebook's comparison panels: each percentile's delta,
-    the paired futures' deltas when the recipes pair, the CVaR deltas and,
-    with a reserve, the change in the shares below it; with several
+    --chart draws the notebook's comparison panels: the paired futures'
+    deltas when the recipes pair, the CVaR deltas and, with a reserve, the
+    change in the shares below it; with several
     VARIANTS (at most four), a column of panels each. When only one of a
     baseline and one variant has the account, it draws that recipe's fan
     chart instead.
@@ -2515,9 +2547,12 @@ def ensemble_compare(
         _echo_ensemble_comparisons(tables, baseline, list(variants), subject, clip)
     _echo_ensemble_rail_deltas(data_dir, baseline, variants, stores, mode, years)
     if as_graph or graph_file is not None:
-        _draw_figure(_ensemble_compare_chart(tables, baseline, list(variants), subject,
-                                             clip=clip, log_scale=log_scale),
-                     graph_file, "ensemble-")
+        def chart(size: tuple[float, float] | None = None) -> Figure:
+            return _ensemble_compare_chart(tables, baseline, list(variants), subject,
+                                           clip=clip, log_scale=log_scale, size=size)
+
+        _draw_figure(chart(), graph_file, "ensemble-",
+                     fit=lambda size: chart(_reasonable_chart_size(size)))
 
 
 def _reserve_note(tables: RecipeTables) -> str:
@@ -2578,10 +2613,12 @@ def _echo_ensemble_comparisons(
 def _ensemble_compare_chart(
     tables: RecipeTables, baseline: str, variants: list[str], subject: str, *,
     clip: Callable[[pd.DataFrame], pd.DataFrame], log_scale: bool = False,
+    size: tuple[float, float] | None = None,
 ) -> Figure:
     """``sim ensemble compare --chart``'s figure: the comparison panels for
     each variant with the account, or, when only one of a baseline and one
-    variant has it, that recipe's fan chart."""
+    variant has it, that recipe's fan chart. ``size`` is the comparison's
+    (width, height) in inches; ``None`` is 16:9."""
     from analysis.sim.ensemble_plots import (
         CompareSide,
         ensemble_compare_grid_figure,
@@ -2598,7 +2635,7 @@ def _ensemble_compare_chart(
              for name in compared},
             mode_label, tables.reserve, tables.cpi_frames.get(baseline),
             log_scale=log_scale, clip=clip,
-            deaths=tables.stores[baseline].base_case_deaths(),
+            deaths=tables.stores[baseline].base_case_deaths(), size=size,
         )
     if len(tables.frames) != 1:
         raise click.ClickException(f"no chart: {baseline} has no {subject} to compare with")
@@ -3109,7 +3146,7 @@ def ensemble_sensitivity(
 )
 @click.option(
     "--mode", "mode", type=click.Choice(registries.ENSEMBLE_MODES), default=None,
-    help="Which kind of batch to pick when --batch isn't given; default: the latest of either.",
+    help="Which kind of batch to pick when --batch isn't given; default: monte_carlo.",
 )
 @click.option(
     "--node", default=None, type=completion.DRAW_NODE,
@@ -3148,10 +3185,20 @@ def ensemble_draws(
     draws them as the notebook does (#330): the node's values and u
     histograms, the pair's scores against each other.
 
+    The latest Monte Carlo batch is read unless --batch names one or
+    --mode sensitivity asks for a sensitivity batch: a sensitivity batch's
+    few members each move one row, so its draws say little about the
+    distributions or how they correlate.
+
     Without SCENARIO_NAME, the current scenario when it is an ensemble
     that has been run, else one that has is asked for."""
     from analysis.sim.draws_db import build_draws_db, draws_db_current, draws_db_path, open_draws_db
 
+    if batch in registries.ENSEMBLE_MODES:
+        raise click.UsageError(f"--batch takes a batch's timestamp (a folder under the ensemble's "
+                               f"runs); for the latest {batch} batch, use --mode {batch}")
+    if batch is None and mode is None:
+        mode = "monte_carlo"
     charted = as_graph or graph_file is not None
     if charted and node is None and pair is None:
         raise click.UsageError("--chart and --chart-file draw --node's draws or --pair's scores; "
@@ -3167,6 +3214,14 @@ def ensemble_draws(
                                           make=mode or "monte_carlo")
     batch_dir = _batch_to_read(resolved_runs_dir, scenario_name, mode, batch, data_dir=data_dir,
                                make=mode or "monte_carlo")
+    if charted and batch_mode(batch_dir) == "sensitivity":
+        # Each sensitivity member pins one row at a chosen percentile and holds
+        # the rest at their base case, so a histogram or scatter of its draws
+        # shows those few percentiles, not the distribution (#369).
+        raise click.UsageError(
+            "--chart draws a Monte Carlo batch: a sensitivity batch's members each pin one row "
+            "at a chosen percentile, so its charts would show only those few points. "
+            "Its tables (--node, --pair without --chart) still list what each member used")
     path = draws_db_path(batch_dir)
     if rebuild or not draws_db_current(batch_dir):
         resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
@@ -3190,6 +3245,92 @@ def ensemble_draws(
             click.echo(f"wrote {len(frame)} member(s) x {nodes} node(s) to {csv_file}")
     if charted:
         _draw_draws_charts(batch_dir, node, pair_names, graph_file)
+
+
+@ensemble_group_command.command("factors")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@click.option("--varying", "with_varying", is_flag=True,
+              help="Also show the varying rows under each factor, with their ρ to it: "
+                   "in a table, and in the chart as dotted boxes.")
+@click.option("--mermaid", "as_mermaid", is_flag=True,
+              help="Print the tree's Mermaid source (to paste into markdown) instead.")
+@_graph_options("the factor tree", written="the factor tree", after="the table")
+@_ENSEMBLE_DATA_DIR_OPTION
+def ensemble_factors(
+    scenario: str | None, with_varying: bool, as_mermaid: bool,
+    as_graph: bool, graph_file: Path | None, data_dir: Path | None,
+) -> None:
+    """The latent factors that tie a scenario's varying values together
+    (ADR-008), as the trees they form.
+
+    Each factor shows its ρ to its parent and how many varying rows hang
+    from it; --varying lists those rows too, each with the ρ the tree gives
+    it to its factor, and the rows that vary on their own. --chart draws the
+    tree left to right, each link labeled with the child's ρ, and with
+    --varying, each row as a box on a dotted link from its factor; --mermaid
+    prints the factors as a Mermaid flowchart, for a README.
+
+    Without SCENARIO, the current scenario."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    from analysis.sim import factor_tree as ft
+
+    if as_mermaid and (as_graph or graph_file is not None):
+        raise click.UsageError("use one of --mermaid, --chart and --chart-file")
+    if as_mermaid and with_varying:
+        raise click.UsageError("--varying lists rows in a table; --mermaid prints only the tree")
+    data = _resolve_data_dir(data_dir)
+    with _intent_db(data, scenario) as (con, name):
+        tree = ft.factor_tree(con)
+    if not tree.factors and not (with_varying and tree.varying):
+        click.echo(f"no latent factors in {name}")
+        return
+    if as_mermaid:
+        click.echo(ft.mermaid(tree))
+        return
+    _hold_tables()
+    if as_graph or graph_file is not None:
+        title = f"Latent factors in {name}"
+        _draw_figure(ft.factor_tree_figure(tree, title, varying=with_varying), graph_file, "factors-",
+                     fit=lambda size: ft.factor_tree_figure(
+                         tree, title, _reasonable_chart_size(size), varying=with_varying))
+    under: dict[str | None, list[ft.Varying]] = {}
+    for node in tree.varying:
+        under.setdefault(tree.factor_of(node.name), []).append(node)
+    table = Table(title=f"Factors in {escape(name)}", title_justify="left")
+    for column in ("Factor", "ρ", "Rows", "Description"):
+        table.add_column(column, justify="right" if column in ("ρ", "Rows") else "left")
+    for factor, depth in tree.walk():
+        via = f" (via {', '.join(factor.via)})" if factor.via else ""
+        table.add_row(escape("  " * depth + factor.name + via),
+                      "" if factor.rho is None else f"{factor.rho:.3g}",
+                      str(len(under.get(factor.name, []))) if factor.name in under else "",
+                      escape(factor.description))
+    _print_wide(table)
+    if not with_varying:
+        return
+    rows = Table(title=f"Varying rows in {escape(name)}", title_justify="left")
+    for column in ("Tree", "Factor", "Row", "ρ to factor", "ρ to tree", "Varies", "Distribution"):
+        rows.add_column(column, justify="right" if column.startswith("ρ") else "left")
+    # One section per tree, its root named once; the rows that vary on
+    # their own come last.
+    trees = [(root.name, [f.name for f, _ in tree.walk() if tree.root(f.name) == root.name])
+             for root in tree.children(None)] + [(None, [None])]
+    for root, owners in trees:
+        listed = [(owner, node) for owner in owners for node in under.get(owner, [])]
+        for i, (owner, node) in enumerate(listed):
+            link = tree.links.get(node.name)
+            via = "" if link is None or link.parent == owner else f" (via {link.parent})"
+            rows.add_row("" if i else escape(root or "(none)"), escape(owner or "—"),
+                         escape(node.name + via),
+                         "—" if owner is None else f"{tree.rho(node.name, owner):.2f}",
+                         "—" if root is None else f"{tree.rho(node.name, root):.2f}",
+                         escape(node.varies), escape(node.distribution))
+        if listed and root is not None:
+            rows.add_section()
+    click.echo()
+    _print_wide(rows)
 
 
 def _parse_pair(pair: str) -> tuple[str, str]:
@@ -12213,6 +12354,17 @@ def _terminal_figure_size(cell: tuple[float, float]) -> tuple[float, float]:
             max(1, size.lines - _PROMPT_LINES) * cell[1] / dpi)
 
 
+def _reasonable_chart_size(size: tuple[float, float]) -> tuple[float, float] | None:
+    """The terminal's ``size`` in inches when a chart can use its shape:
+    between square and 3:1, and at least 6 by 3.5 inches. Else ``None``,
+    for the chart's own 16:9 (#369): a terminal can report a narrow or
+    odd size that would crush the panels."""
+    width, height = size
+    if width < 6 or height < 3.5 or not 1 <= width / height <= 3:
+        return None
+    return size
+
+
 def _figure_dpi(cell: tuple[float, float] | None) -> float:
     """The resolution that draws a figure's 10pt text as tall as the
     terminal's text, ``cell`` being its cell size in the pixels it draws
@@ -13419,7 +13571,7 @@ def _inherits_line(data: Path, parents: Sequence[str]) -> str:
 
 
 def _create_new_scenario(
-    data: Path, name: str, parents: Sequence[str], *, description: str | None, ensemble_size: int,
+    data: Path, name: str, parents: Sequence[str], *, description: str | None,
 ) -> str:
     """Create scenario ``name`` on ``parents`` (none: mix-in only), validated
     in a staged copy; returns the ``inherits`` line to show."""
@@ -13430,7 +13582,6 @@ def _create_new_scenario(
     with _scenario_edit(data, parent or MIXIN_BASE, remember=False, template_parent=True) as edit:
         sc.create_scenario(
             edit.data_dir, name, parent, description=description, mixins=mixins,
-            ensemble_size=ensemble_size,
         )
     line = _inherits_line(data, parents)
     if parents and is_mixin_only(data / "scenarios", name):
@@ -13466,9 +13617,10 @@ def scenario_create(
     just the mix-in itself, stopping at the shared base. See ADR-003 §4.5 for
     merge semantics.
 
-    NAME is never an ensemble: it records ``ensemble_size`` 0, so under an
-    ensemble parent ``sim run NAME`` runs the base case, each varying row at
-    its central value. Use ``sim ensemble create`` for an ensemble.
+    NAME sets no ``ensemble_size`` of its own, so it is an ensemble exactly
+    when its parents make one, and mixing it into an ensemble keeps that
+    ensemble. To turn an ensemble child into a single run, ``sim ensemble
+    edit NAME --size 0``. Use ``sim ensemble create`` for a new ensemble.
 
     With --no-parent, NAME builds on nothing and has no start or end: a
     mix-in only scenario, which `sim run` and `sim all` skip, for mixing into
@@ -13487,7 +13639,7 @@ def scenario_create(
     try:
         data_dir_p = _resolve_data_dir(data_dir)
         name, parents = _ask_new_scenario(data_dir_p, "scenario", name, parent, mixins, no_parent=no_parent)
-        inherits = _create_new_scenario(data_dir_p, name, parents, description=description, ensemble_size=0)
+        inherits = _create_new_scenario(data_dir_p, name, parents, description=description)
         target = data_dir_p / "scenarios" / name
         _make_current(data_dir_p, name)
         click.echo(f"created {_shown(target)}")
@@ -14309,7 +14461,7 @@ def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what
         click.echo(f"  {path.relative_to(data)} still mentions it")
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
     if latest_run_path(runs, name, wait=False) or (runs / name).is_dir():
-        click.echo(f"  runs already made of {name} are kept, under {runs}")
+        click.echo(f"  runs already made of {name} are kept, under {_shown(runs)}")
 
 
 @scenario_group_command.command("delete")

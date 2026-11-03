@@ -46,3 +46,10 @@ def test_pair_row_takes_either_order(mc_batch: Path) -> None:
     row = dc.pair_row(frames, b, a)
     assert row is not None and {row["a"], row["b"]} == {a, b}
     assert dc.pair_row(frames, a, a) is None
+
+
+def test_dots_shrink_and_fade_for_a_large_ensemble() -> None:
+    small, large = dc.dot_style(8), dc.dot_style(1000)
+
+    assert small["s"] == 36 and "alpha" not in small
+    assert 4 <= large["s"] < 10 and large["alpha"] < 0.5
