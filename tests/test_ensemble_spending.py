@@ -199,7 +199,7 @@ def test_the_ensemble_spending_widget_draws_a_batch(
 ) -> None:
     from analysis.sim.notebook_ui.ensemble_widgets import ensemble_spending_widget
 
-    box = ensemble_spending_widget(data_dir=strategy_scenarios, runs_dir=cut_batch.parent.parent,
+    box = ensemble_spending_widget(data_dir=strategy_scenarios, runs_dir=cut_batch.parent.parent.parent,
                                    default=SCENARIO)
     category = box.children[1].children[0]
     assert "other" in category.options

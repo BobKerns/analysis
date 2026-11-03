@@ -757,49 +757,6 @@ def test_read_batch_manifest_defaults_old_batches_to_monte_carlo(tmp_path: Path)
     assert manifest["mode"] == "monte_carlo"
 
 
-def test_batches_from_before_454_move_into_their_modes_folder(tmp_path: Path) -> None:
-    """Batches made directly under the recipe's folder move, once, into
-    monte-carlo/ or sensitivity/ by their mode; then each mode's latest is
-    found there."""
-    recipe_dir = tmp_path / "runs" / "retire_alice"
-    mc = recipe_dir / "2026-01-01T000000Z"
-    oat = recipe_dir / "2026-06-01T000000Z"
-    legacy = recipe_dir / "2025-06-01T000000Z"  # no manifest: Monte Carlo
-    for d in (mc, oat, legacy):
-        d.mkdir(parents=True)
-        (d / "member_0000.sqlite3").touch()
-    write_batch_manifest(mc, member_count=1, failures=[])
-    write_batch_manifest(oat, member_count=1, failures=[], mode="sensitivity",
-                         quantiles=(0.1, 0.9), rows=[])
-    (recipe_dir / "base_case.sqlite3").touch()  # not a batch: stays
-    moved_oat = recipe_dir / "sensitivity" / oat.name
-    moved_mc = recipe_dir / "monte-carlo" / mc.name
-    assert latest_ensemble_batch(recipe_dir) == moved_oat
-    assert sorted(p.name for p in recipe_dir.iterdir()) == [
-        "base_case.sqlite3", "monte-carlo", "sensitivity"]
-    assert latest_ensemble_batch(recipe_dir, mode="monte_carlo") == moved_mc
-    assert latest_ensemble_batch(recipe_dir, mode="sensitivity") == moved_oat
-    assert (recipe_dir / "monte-carlo" / legacy.name).is_dir()
-
-
-def test_member_intents_from_before_454_follow_the_mode_of_their_run_batch(tmp_path: Path) -> None:
-    """A sensitivity batch whose every member failed to resolve has member
-    intents that don't say their mode: its run batch's manifest does."""
-    from analysis.sim.loader import batch_recipe, intent_batch_dir
-
-    runs, intent = tmp_path / "runs" / "pool", tmp_path / "intent" / "pool"
-    oat = runs / "2026-06-01T000000Z"
-    oat.mkdir(parents=True)
-    write_batch_manifest(oat, member_count=1, failures=[], mode="sensitivity",
-                         quantiles=(0.1, 0.9), rows=[])
-    (intent / oat.name).mkdir(parents=True)
-    (intent / oat.name / "member_0000.sqlite3").touch()
-    assert batch_recipe(oat) == "pool"  # not moved yet: a run file opened directly
-    found = intent_batch_dir(tmp_path / "intent", oat)
-    assert found == intent / "sensitivity" / oat.name and found.is_dir()
-    assert batch_recipe(intent / "sensitivity" / oat.name) == "pool"
-
-
 # --- #31: shaped truncated_normal and triangular rows -------------------------------
 
 

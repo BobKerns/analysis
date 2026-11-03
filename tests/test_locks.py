@@ -57,8 +57,8 @@ def test_a_reserved_run_is_not_the_latest_until_written(runs_dir: Path) -> None:
 
 def test_batches_order_by_their_number(runs_dir: Path) -> None:
     for name in ("2026-10-26T043000Z-9", "2026-10-26T043000Z-10"):
-        (runs_dir / "base" / name).mkdir(parents=True)
-        (runs_dir / "base" / name / "batch_manifest.json").write_text("{}")
+        (runs_dir / "base" / "monte-carlo" / name).mkdir(parents=True)
+        (runs_dir / "base" / "monte-carlo" / name / "batch_manifest.json").write_text("{}")
     batch = latest_ensemble_batch(runs_dir / "base")
     assert batch is not None and batch.name == "2026-10-26T043000Z-10"
 

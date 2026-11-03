@@ -655,6 +655,24 @@ def test_a_requested_scenarios_other_jobs_follow_it_at_once(
     assert daemon.order(daemon.queue) == ["a:series", "a:sensitivity", "b", "b:sensitivity"]
 
 
+def test_a_series_store_comes_before_a_requested_sensitivity_batch(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reader asked for a's run and sensitivity batch; the run's batch
+    needs a series store, found only later: it goes before the sensitivity
+    batch, and that request never preempts it."""
+    daemon.first = ["a", "a:sensitivity"]
+    assert daemon.order(["b", "a:sensitivity", "a:series"]) == ["a:series", "a:sensitivity", "b"]
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.first = ["a:sensitivity"]
+    daemon.queue = ["a:series", "a:sensitivity", "b"]
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None and running.job == "a:series"
+    daemon.preempt()
+    assert daemon.build is running and running.wanted
+
+
 def test_each_step_runs_its_own_command(daemon: builder._Daemon) -> None:
     data = daemon.data_dir
     assert builder.step_command(data, "e", "run") == ["load", "e", "--data-dir", str(data)]
@@ -681,9 +699,10 @@ def test_which_steps_an_ensemble_needs(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stale run needs running; a current batch without a current series
-    store needs one; an ensemble whose latest result is a batch needs a
-    sensitivity batch unless its latest one is current."""
-    from analysis.sim import series_db
+    store needs one; an ensemble needs a sensitivity batch unless its latest
+    one is current, whatever its Monte Carlo results are, so a reader of a
+    stale sensitivity batch always has a job to wait on."""
+    from analysis.sim import scenario, series_db
 
     runs = daemon.paths.runs_dir
     batch = runs / "e" / "monte-carlo" / "2026-01-01T000000Z"
@@ -691,7 +710,8 @@ def test_which_steps_an_ensemble_needs(
     fresh: dict[str, freshness.Unchanged | None] = {"monte_carlo": None, "sensitivity": None}
     monkeypatch.setattr(freshness, "unchanged_run",
                         lambda *_a, mode="monte_carlo", **_kw: fresh[mode])
-    monkeypatch.setattr(freshness, "latest_result", lambda *_a: batch)
+    size: dict[str, int | None] = {"e": 4}
+    monkeypatch.setattr(scenario, "ensemble_settings", lambda _d, name: (None, size[name]))
     current = {"store": False}
     monkeypatch.setattr(series_db, "series_db_current", lambda _b: current["store"])
     needs = lambda: builder.needed_steps(daemon.data_dir, runs, "e", None)  # noqa: E731
@@ -701,9 +721,13 @@ def test_which_steps_an_ensemble_needs(
     current["store"] = True
     fresh["sensitivity"] = freshness.Unchanged(batch)
     assert needs() == []
-    monkeypatch.setattr(freshness, "latest_result", lambda *_a: runs / "a-run-file.sqlite3")
+    # Only a single run (or nothing) for Monte Carlo: a stale sensitivity
+    # batch still needs making again.
+    fresh["monte_carlo"] = None
     fresh["sensitivity"] = None
-    assert needs() == []  # a single run: nothing to vary
+    assert needs() == ["run", "sensitivity"]
+    size["e"] = None  # not an ensemble: nothing to vary
+    assert needs() == ["run"]
 
 
 @pytest.mark.slow

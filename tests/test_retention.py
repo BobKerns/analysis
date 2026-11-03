@@ -131,50 +131,6 @@ def test_monte_carlo_and_sensitivity_batches_are_counted_apart(
     assert set(mc).isdisjoint(planned) and mc_intents not in planned
 
 
-def test_batches_from_before_454_are_moved_and_then_pruned(
-    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
-) -> None:
-    """A batch still directly under its scenario's folder (made before
-    #454) moves into its mode's folder, as a read would move it, and is
-    pruned there."""
-    old = fake_state("batch", "alice", "2026-10-01T120000Z")
-    fake_state("batch", "alice", "2026-10-02T120000Z")
-    legacy = runs_dir / "alice" / old.name
-    old.rename(legacy)
-    planned = _planned(_rules("runs:\n  - keep: 1\n", tmp_path), intent_dir, runs_dir)
-    assert planned == {old}
-    assert old.is_dir() and not legacy.exists()
-
-
-def test_a_pin_written_before_454_still_holds_its_moved_batch(
-    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
-) -> None:
-    batch = fake_state("batch", "alice", "2026-10-01T120000Z")
-    intents = fake_state("intent", "alice", "2026-10-01T120000Z")
-    for stamp in ("2026-10-02T120000Z", "2026-10-03T120000Z"):
-        fake_state("batch", "alice", stamp)
-        fake_state("intent", "alice", stamp)
-    old_pin = runs_dir / "alice" / batch.name / "member_0001.sqlite3"
-    retention = _rules(
-        "intents:\n  - keep: 1\nruns:\n  - keep: 1\n"
-        f"pins:\n  - {old_pin.relative_to(tmp_path)}\n",
-        tmp_path,
-    )
-    planned = _planned(retention, intent_dir, runs_dir)
-    assert {batch, intents}.isdisjoint(planned)
-
-
-def test_legacy_intents_move_with_the_mode_of_their_run_batch(
-    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
-) -> None:
-    oat = fake_state("batch", "alice", "2026-10-01T120000Z", mode="sensitivity")
-    legacy_intents = intent_dir / "alice" / oat.name
-    legacy_intents.mkdir(parents=True)
-    (legacy_intents / "member_0000.sqlite3").touch()  # says no mode
-    _planned(_rules("runs:\n  - keep: 5\n", tmp_path), intent_dir, runs_dir)
-    assert (intent_dir / "alice" / "sensitivity" / oat.name).is_dir()
-
-
 def test_pinning_a_member_keeps_its_batch_and_its_intents(
     fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
 ) -> None:

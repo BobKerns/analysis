@@ -74,7 +74,7 @@ __all__ = [
     "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
     "LoadError", "LoadResult", "DataDirtyRefused", "PendingRun", "ScenarioRef",
     "batch_mode", "batch_recipe", "batches_dir", "ensemble_batches", "find_batch",
-    "intent_batch_dir", "is_ensemble_batch", "latest_ensemble_batch", "move_legacy_batches",
+    "intent_batch_dir", "is_ensemble_batch", "latest_ensemble_batch",
     "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
@@ -305,7 +305,6 @@ def _await_fresh(runs_dir: Path, scenario: str, mode: str | None = "monte_carlo"
 # #454: each mode's batches in a folder of their own under the recipe's,
 # so the latest of a mode is the newest name there, with no batch opened.
 BATCH_MODE_DIRS: dict[str, str] = {"monte_carlo": "monte-carlo", "sensitivity": "sensitivity"}
-_BATCH_NAME = re.compile(r"^\d{4}-\d\d-\d\dT\d{6}Z(?:-\d+)?$")
 
 
 def batches_dir(recipe_dir: Path | str, mode: str) -> Path:
@@ -316,46 +315,8 @@ def batches_dir(recipe_dir: Path | str, mode: str) -> Path:
 
 
 def batch_recipe(batch_dir: Path | str) -> str:
-    """The recipe a batch folder belongs to: ``<recipe>/<mode dir>/<batch>``,
-    or ``<recipe>/<batch>`` for one from before #454 not yet moved (a run
-    file opened directly moves nothing)."""
-    parent = Path(batch_dir).parent
-    return parent.parent.name if parent.name in BATCH_MODE_DIRS.values() else parent.name
-
-
-def move_legacy_batches(recipe_dir: Path | str, runs_recipe: Path | str | None = None) -> None:
-    """Move a recipe's batches from where they were before #454, directly
-    under it, into their mode's folder (:func:`batches_dir`). Works for a
-    recipe's run batches and its member intents alike: either kind of
-    folder holds ``member_*.sqlite3`` files that say their mode. For member
-    intents, pass the recipe's folder under the runs dir as ``runs_recipe``:
-    the run batch of the same name says the mode even when no member
-    intent does (every member failed to resolve). Another process moving
-    the same batch first is fine."""
-    recipe_dir = Path(recipe_dir)
-    try:
-        legacy = [p for p in recipe_dir.iterdir()
-                  if _BATCH_NAME.match(p.name) and p.is_dir() and not p.is_symlink()]
-    except OSError:
-        return
-    for batch in legacy:
-        try:
-            mode = _run_batch_mode(Path(runs_recipe), batch.name) if runs_recipe else None
-            target = batches_dir(recipe_dir, mode or batch_mode(batch))
-            target.mkdir(exist_ok=True)
-            batch.rename(target / batch.name)
-        except (OSError, ValueError, sqlite3.Error):
-            pass  # moved by another process, or unreadable: left where it is
-
-
-def _run_batch_mode(runs_recipe: Path, name: str) -> str | None:
-    """The mode of ``runs_recipe``'s run batch ``name``, moved or not; None
-    when there is no such batch."""
-    for mode in registries.ENSEMBLE_MODES:
-        if (batches_dir(runs_recipe, mode) / name).is_dir():
-            return mode
-    legacy = runs_recipe / name
-    return batch_mode(legacy) if legacy.is_dir() else None
+    """The recipe a batch folder belongs to: ``<recipe>/<mode dir>/<batch>``."""
+    return Path(batch_dir).parent.parent.name
 
 
 def ensemble_batches(recipe_dir: Path | str, mode: str | None = None) -> list[Path]:
@@ -367,7 +328,6 @@ def ensemble_batches(recipe_dir: Path | str, mode: str | None = None) -> list[Pa
     recipe_dir = Path(recipe_dir)
     if not recipe_dir.is_dir():
         return []
-    move_legacy_batches(recipe_dir)
     found: list[Path] = []
     for each in (mode,) if mode is not None else registries.ENSEMBLE_MODES:
         folder = batches_dir(recipe_dir, each)
@@ -382,7 +342,6 @@ def find_batch(recipe_dir: Path | str, name: str, mode: str | None = None) -> Pa
     recipe_dir = Path(recipe_dir)
     if not recipe_dir.is_dir():
         return None
-    move_legacy_batches(recipe_dir)
     for each in (mode,) if mode is not None else registries.ENSEMBLE_MODES:
         path = batches_dir(recipe_dir, each) / name
         if is_ensemble_batch(path):
@@ -394,11 +353,7 @@ def intent_batch_dir(intent_dir: Path | str, batch_dir: Path | str) -> Path:
     """The member intents of the run batch ``batch_dir``: the folder of the
     same name, recipe and mode under ``intent_dir`` (#454)."""
     batch_dir = Path(batch_dir)
-    name = batch_recipe(batch_dir)
-    recipe = Path(intent_dir) / name
-    runs_recipe = batch_dir.parent.parent if batch_dir.parent.name in BATCH_MODE_DIRS.values() \
-        else batch_dir.parent
-    move_legacy_batches(recipe, runs_recipe)
+    recipe = Path(intent_dir) / batch_recipe(batch_dir)
     return batches_dir(recipe, batch_mode(batch_dir)) / batch_dir.name
 
 

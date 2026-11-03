@@ -129,20 +129,23 @@ def needed_steps(
       current (``sim run`` writes one; a batch whose members' rows couldn't
       all be gathered has none);
     - ``sensitivity`` for an ensemble that isn't a pool (ADR-009 refuses
-      one), once its latest result is a Monte Carlo batch (so it has rows to
-      vary), when its latest sensitivity batch could differ if it ran again.
+      one) when its latest sensitivity batch could differ if it ran again.
+      Whatever its Monte Carlo batch's state: a reader of sensitivity
+      results waits only on this job, so a stale sensitivity batch must
+      always have one.
     """
     from analysis.sim import freshness
+    from analysis.sim.scenario import ensemble_settings
     from analysis.sim.series_db import series_db_current
 
     steps: list[str] = []
     fresh = freshness.unchanged_run(data_dir, runs_dir, scenario, code)
-    latest = freshness.latest_result(runs_dir, scenario)
     if fresh is None:
         steps.append("run")
     elif fresh.path.is_dir() and not series_db_current(fresh.path):
         steps.append("series")
-    if latest is not None and latest.is_dir() and not is_pool(data_dir / "scenarios", scenario) \
+    if not is_pool(data_dir / "scenarios", scenario) \
+            and ensemble_settings(data_dir, scenario)[1] is not None \
             and freshness.unchanged_run(data_dir, runs_dir, scenario, code,
                                         mode="sensitivity") is None:
         steps.append("sensitivity")
@@ -655,13 +658,23 @@ class _Daemon:
         reuse their components' runs (ADR-009), then by name."""
         first = [j for j in self.first if j in queue]
         resume = [j for j in self.resume if j in queue]
+
+        def _series_pos(name: str, step: str) -> int:
+            # A series store found once a waited-on run ends goes with the
+            # scenario's waited-on jobs, ahead of its sensitivity batch (Bob).
+            if step == "series":
+                mine = [i for i, j in enumerate(first) if parse_job(j)[0] == name]
+                if mine:
+                    return mine[0]
+            return len(first)
+
         used = working_set_order(self.data_dir)
         runs = self.paths.runs_dir
         scenarios = self.data_dir / "scenarios"
 
         def rank(job: str) -> tuple[int, int, int, int, int, int, str]:
             name, step = parse_job(job)
-            pos = first.index(job) if job in first else len(first)
+            pos = first.index(job) if job in first else _series_pos(name, step)
             follow = self.follow.index(name) if name in self.follow else len(self.follow)
             again = resume.index(job) if job in resume else len(resume)
             recent = used.get(name, len(used))
@@ -677,7 +690,7 @@ class _Daemon:
         build = self.build
         if build is None:
             return
-        if build.wanted or build.job in self.first:  # asked for while building
+        if build.wanted or build.job in self.first or self._goes_first(build):  # asked for
             build.wanted = True
             self.first = [j for j in self.first if j != build.job]
             self._follow(build.scenario)
@@ -688,6 +701,12 @@ class _Daemon:
         self.cancel(f"{wanted} is wanted now")
         self.resume = [build.job, *[j for j in self.resume if j != build.job]]
         self.queue = self.order([*self.queue, build.job])
+
+    def _goes_first(self, build: _Build) -> bool:
+        """A series store of a scenario someone waits on: it comes before
+        that scenario's sensitivity batch, so that never preempts it."""
+        return build.step == "series" and any(
+            parse_job(j)[0] == build.scenario for j in self.first)
 
     def _follow(self, scenario: str) -> None:
         """A reader asked for one of ``scenario``'s jobs: its others follow."""

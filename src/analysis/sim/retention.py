@@ -48,7 +48,7 @@ from typing import Any
 import yaml
 
 from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
-from analysis.sim.loader import BATCH_MODE_DIRS, move_legacy_batches
+from analysis.sim.loader import BATCH_MODE_DIRS
 from analysis.sim.schema import connect_sim_file
 
 __all__ = [
@@ -279,7 +279,7 @@ def plan_prune(
     """What ``retention`` would prune, without touching anything."""
     now = now or datetime.now(UTC)
     pinned_batches = set()
-    items = [*_run_items(Path(runs_dir)), *_intent_items(Path(intent_dir), Path(runs_dir))]
+    items = [*_run_items(Path(runs_dir)), *_intent_items(Path(intent_dir))]
     for item in items:
         if item.kind != "run" and _is_pinned(item.path, retention.pins):
             pinned_batches.add((item.scenario, item.mode, item.path.name))
@@ -349,16 +349,15 @@ def _run_items(runs_dir: Path) -> Iterable[StateItem]:
             yield from _batch_items(path, "batch")
 
 
-def _intent_items(intent_dir: Path, runs_dir: Path) -> Iterable[StateItem]:
+def _intent_items(intent_dir: Path) -> Iterable[StateItem]:
     if not intent_dir.is_dir():
         return
     for path in intent_dir.iterdir():
         if path.is_dir() and not path.is_symlink():
-            yield from _batch_items(path, "intent", runs_dir / path.name)
+            yield from _batch_items(path, "intent")
 
 
-def _batch_items(scenario_dir: Path, kind: str, runs_recipe: Path | None = None) -> Iterable[StateItem]:
-    move_legacy_batches(scenario_dir, runs_recipe)
+def _batch_items(scenario_dir: Path, kind: str) -> Iterable[StateItem]:
     for mode in BATCH_MODE_DIRS.values():
         folder = scenario_dir / mode
         if not folder.is_dir() or folder.is_symlink():
@@ -414,14 +413,9 @@ def _active(path: Path, now: datetime) -> bool:
 
 def _is_pinned(path: Path, pins: tuple[Path, ...]) -> bool:
     """A pin names the item itself or something inside it (a member of a
-    batch pins the whole batch, which is never pruned member by member).
-    A batch also answers to the path it had before #454 moved it into its
-    mode's folder, so a pin written then still holds."""
+    batch pins the whole batch, which is never pruned member by member)."""
     resolved = path.resolve()
-    names = [resolved]
-    if resolved.parent.name in BATCH_MODE_DIRS.values():
-        names.append(resolved.parent.parent / resolved.name)
-    return any(pin == name or pin.is_relative_to(name) for pin in pins for name in names)
+    return any(pin == resolved or pin.is_relative_to(resolved) for pin in pins)
 
 
 def _remove_if_empty(directory: Path) -> None:
