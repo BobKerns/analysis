@@ -76,6 +76,13 @@ def test_annuity_rate() -> None:
     assert annuity_rate(0.05, 30) == pytest.approx(0.061954, abs=1e-6)
     # The persona example in the design: 60/40 at VPW's returns, 41 years.
     assert annuity_rate(0.6 * 0.05 + 0.4 * 0.019, 41) == pytest.approx(0.0465, abs=5e-5)
+    # Negative returns, near zero and near -100%: no overflow or division by zero.
+    assert annuity_rate(-0.02, 20) == pytest.approx(0.02 * 0.98 ** 19 / (1 - 0.98 ** 20))
+    assert annuity_rate(1e-17, 30) == pytest.approx(1 / 30)
+    assert annuity_rate(10_000 / 60_000 * 0.005 + 50_000 / 60_000 * -0.001, 30) == pytest.approx(1 / 30, rel=1e-3)
+    # Losing almost everything each year, a level payment over 65 years is
+    # almost nothing: each later year's dollar costs 100,000 today's.
+    assert 0 <= annuity_rate(-0.99999, 65) < 1e-300
 
 
 @pytest.mark.parametrize(("text", "parsed"), [
@@ -354,3 +361,29 @@ def test_an_empty_portfolio_pays_nothing_once_started() -> None:
     assert decision is not None and decision.detail["payment"] == 0
     # The owned spending loses the whole first payment: $30,000 - $20,000.
     assert decision.detail["spend"] == 1_000_000 and memory["factor"] == pytest.approx(1 / 3)
+
+
+def test_an_overdrawn_lot_is_left_out_of_the_blend() -> None:
+    """A lot below zero (a shortfall the run carries on past) has no return
+    to blend; the net portfolio still sets the payment."""
+    from analysis.sim.strategies.spending import Amortize
+    from analysis.sim.strategy_api import Context, LotRef, LotView, PersonView
+
+    def lot(account: str, symbol: str, balance: int) -> LotView:
+        return LotView(ref=LotRef(account, "default"), kind="asset", subkind="brokerage", lot_subkind=None,
+                       tax_treatment=None, owner=None, tags=frozenset({"portfolio:invest"}), symbol=symbol,
+                       balance=balance, cost_basis=None, minimum=0, roth_qualified=None, acquired=None,
+                       taxable_sale=False)
+
+    lots = {LotRef("Stocks", "default"): lot("Stocks", "USSTK", -10_000_000),
+            LotRef("Cash", "default"): lot("Cash", "CASH", 10_100_000)}
+    classes = {"Stocks": {"stock_us": 1.0}, "Cash": {"cash": 1.0}}
+    bill = PersonView(id="bill", role="primary", birthdate=date(1967, 8, 20), age=62, alive=True, final_month=None)
+    strategy = Amortize("flex", Amortize.Params(portfolio="portfolio:invest"))
+    ctx = Context(month=date(2030, 1, 31), lots=lots, weights=lambda ref: classes[ref.account],
+                  targets=lambda name: {}, memory={}, people={"bill": bill}, budget=lambda: 3_000_000,
+                  cpi=lambda since: 1_000_000)
+    decision = strategy.year_start(ctx)
+    assert decision is not None
+    assert decision.detail["real_return"] == 0  # only the cash is held
+    assert decision.detail["portfolio"] == 100_000 and decision.detail["rate"] == pytest.approx(1 / 38)

@@ -11,6 +11,7 @@ set what was spent against what was budgeted.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from collections.abc import Sequence
 from datetime import date
 from typing import Any
@@ -235,9 +236,15 @@ def annuity_rate(rate: float, years: int) -> float:
         raise StrategyError(f"annuity_rate needs at least one year, not {years}")
     if rate <= -1:
         raise StrategyError(f"annuity_rate needs a real return above -100%, not {rate:.2%}")
-    if rate == 0:
+    if abs(rate) < 1e-12:
         return 1 / years
-    return rate / (1 - (1 + rate) ** -years) / (1 + rate)
+    # In logs, so a return near zero keeps its precision and a return near
+    # -100% over many years doesn't overflow: for a negative return the
+    # growth factor is written with positive powers, which only shrink.
+    growth = math.log1p(rate)
+    if rate > 0:
+        return rate / -math.expm1(-years * growth) / (1 + rate)
+    return rate * math.exp((years - 1) * growth) / math.expm1(years * growth)
 
 
 # The asset classes each class return parameter covers (VPW's two figures,
@@ -344,18 +351,19 @@ class Amortize(_Spending):
         if p.real_return is not None:
             return p.real_return / 1_000_000
         allocation = ctx.allocation(ctx.tagged(p.portfolio))
-        total = allocation.total
+        # Blend what is held: a lot overdrawn below zero (a shortfall the run
+        # carries on past) isn't a holding with a return.
+        held = {c: cents for c, cents in allocation.dollars.items() if cents > 0}
+        total = sum(held.values())
         if total <= 0:
             return 0.0
         blended = 0.0
-        for asset_class, cents in allocation.dollars.items():
+        for asset_class, cents in held.items():
             field_name = _RETURN_OF.get(asset_class)
             if field_name is None:
-                if cents:
-                    raise StrategyError(
-                        f"portfolio {p.portfolio} holds {asset_class}, which has no class return: "
-                        f"give real_return")
-                continue
+                raise StrategyError(
+                    f"portfolio {p.portfolio} holds {asset_class}, which has no class return: "
+                    f"give real_return")
             blended += cents / total * getattr(p, field_name) / 1_000_000
         return blended
 
