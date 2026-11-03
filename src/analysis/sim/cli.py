@@ -78,7 +78,14 @@ from analysis.sim.series_db import (
     write_series_db,
 )
 from analysis.sim.ensemble_tables import RecipeTables
-from analysis.sim.locks import BUILDER_CHILD_ENV, LockHolder, build_lock, building, reserve_run_path
+from analysis.sim.locks import (
+    BUILDER_CHILD_ENV,
+    LockHolder,
+    build_lock,
+    building,
+    naming_lock,
+    reserve_run_path,
+)
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
@@ -1279,32 +1286,34 @@ def _reserve_batch(
     a tweaked distribution, ...) keeps every previous batch's history. A
     disambiguating suffix covers two runs within the same wall-clock second,
     whatever their modes: ``--batch NAME`` looks in both folders, so a name
-    stays unique per recipe. Reserved by exclusive mkdir (no separate existence check first), so two
-    concurrent `sim run` processes can never both win the same batch name
-    and race on the same member files.
+    stays unique per recipe; ``locks.naming_lock`` keeps that check and the
+    mkdirs together. Reserved by exclusive mkdir, so two concurrent `sim run`
+    processes can never both win the same batch name and race on the same
+    member files.
     """
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    suffix = 1
-    while True:
-        batch = stamp if suffix == 1 else f"{stamp}-{suffix}"
-        member_intent_dir = batches_dir(intent_dir / scenario_name, mode) / batch
-        member_runs_dir = batches_dir(runs_dir / scenario_name, mode) / batch
-        if any((batches_dir(root / scenario_name, other) / batch).exists()
-               for root in (intent_dir, runs_dir)
-               for other in registries.ENSEMBLE_MODES if other != mode):
-            suffix += 1
-            continue
-        try:
-            member_intent_dir.mkdir(parents=True, exist_ok=False)
-        except FileExistsError:
-            suffix += 1
-            continue
-        try:
-            member_runs_dir.mkdir(parents=True, exist_ok=False)
-        except FileExistsError:
-            suffix += 1
-            continue
-        return batch, member_intent_dir, member_runs_dir
+    with naming_lock(runs_dir, scenario_name):
+        suffix = 1
+        while True:
+            batch = stamp if suffix == 1 else f"{stamp}-{suffix}"
+            member_intent_dir = batches_dir(intent_dir / scenario_name, mode) / batch
+            member_runs_dir = batches_dir(runs_dir / scenario_name, mode) / batch
+            if any((batches_dir(root / scenario_name, other) / batch).exists()
+                   for root in (intent_dir, runs_dir)
+                   for other in registries.ENSEMBLE_MODES if other != mode):
+                suffix += 1
+                continue
+            try:
+                member_intent_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                suffix += 1
+                continue
+            try:
+                member_runs_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                suffix += 1
+                continue
+            return batch, member_intent_dir, member_runs_dir
 
 
 def _run_members(

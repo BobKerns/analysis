@@ -279,7 +279,7 @@ def plan_prune(
     """What ``retention`` would prune, without touching anything."""
     now = now or datetime.now(UTC)
     pinned_batches = set()
-    items = [*_run_items(Path(runs_dir)), *_intent_items(Path(intent_dir))]
+    items = [*_run_items(Path(runs_dir)), *_intent_items(Path(intent_dir), Path(runs_dir))]
     for item in items:
         if item.kind != "run" and _is_pinned(item.path, retention.pins):
             pinned_batches.add((item.scenario, item.mode, item.path.name))
@@ -349,16 +349,16 @@ def _run_items(runs_dir: Path) -> Iterable[StateItem]:
             yield from _batch_items(path, "batch")
 
 
-def _intent_items(intent_dir: Path) -> Iterable[StateItem]:
+def _intent_items(intent_dir: Path, runs_dir: Path) -> Iterable[StateItem]:
     if not intent_dir.is_dir():
         return
     for path in intent_dir.iterdir():
         if path.is_dir() and not path.is_symlink():
-            yield from _batch_items(path, "intent")
+            yield from _batch_items(path, "intent", runs_dir / path.name)
 
 
-def _batch_items(scenario_dir: Path, kind: str) -> Iterable[StateItem]:
-    move_legacy_batches(scenario_dir)
+def _batch_items(scenario_dir: Path, kind: str, runs_recipe: Path | None = None) -> Iterable[StateItem]:
+    move_legacy_batches(scenario_dir, runs_recipe)
     for mode in BATCH_MODE_DIRS.values():
         folder = scenario_dir / mode
         if not folder.is_dir() or folder.is_symlink():

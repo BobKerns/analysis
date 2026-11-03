@@ -164,6 +164,17 @@ def test_a_pin_written_before_454_still_holds_its_moved_batch(
     assert {batch, intents}.isdisjoint(planned)
 
 
+def test_legacy_intents_move_with_their_run_batchs_mode(
+    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    oat = fake_state("batch", "alice", "2026-10-01T120000Z", mode="sensitivity")
+    legacy_intents = intent_dir / "alice" / oat.name
+    legacy_intents.mkdir(parents=True)
+    (legacy_intents / "member_0000.sqlite3").touch()  # says no mode
+    _planned(_rules("runs:\n  - keep: 5\n", tmp_path), intent_dir, runs_dir)
+    assert (intent_dir / "alice" / "sensitivity" / oat.name).is_dir()
+
+
 def test_pinning_a_member_keeps_its_batch_and_its_intents(
     fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
 ) -> None:

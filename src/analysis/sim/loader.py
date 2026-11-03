@@ -316,16 +316,22 @@ def batches_dir(recipe_dir: Path | str, mode: str) -> Path:
 
 
 def batch_recipe(batch_dir: Path | str) -> str:
-    """The recipe a batch folder belongs to: ``<recipe>/<mode dir>/<batch>``."""
-    return Path(batch_dir).parent.parent.name
+    """The recipe a batch folder belongs to: ``<recipe>/<mode dir>/<batch>``,
+    or ``<recipe>/<batch>`` for one from before #454 not yet moved (a run
+    file opened directly moves nothing)."""
+    parent = Path(batch_dir).parent
+    return parent.parent.name if parent.name in BATCH_MODE_DIRS.values() else parent.name
 
 
-def move_legacy_batches(recipe_dir: Path | str) -> None:
+def move_legacy_batches(recipe_dir: Path | str, runs_recipe: Path | str | None = None) -> None:
     """Move a recipe's batches from where they were before #454, directly
     under it, into their mode's folder (:func:`batches_dir`). Works for a
     recipe's run batches and its member intents alike: either kind of
-    folder holds ``member_*.sqlite3`` files that say their mode. Another
-    process moving the same batch first is fine."""
+    folder holds ``member_*.sqlite3`` files that say their mode. For member
+    intents, pass the recipe's folder under the runs dir as ``runs_recipe``:
+    the run batch of the same name says the mode even when no member
+    intent does (every member failed to resolve). Another process moving
+    the same batch first is fine."""
     recipe_dir = Path(recipe_dir)
     try:
         legacy = [p for p in recipe_dir.iterdir()
@@ -334,11 +340,22 @@ def move_legacy_batches(recipe_dir: Path | str) -> None:
         return
     for batch in legacy:
         try:
-            target = batches_dir(recipe_dir, batch_mode(batch))
+            mode = _run_batch_mode(Path(runs_recipe), batch.name) if runs_recipe else None
+            target = batches_dir(recipe_dir, mode or batch_mode(batch))
             target.mkdir(exist_ok=True)
             batch.rename(target / batch.name)
         except (OSError, ValueError, sqlite3.Error):
             pass  # moved by another process, or unreadable: left where it is
+
+
+def _run_batch_mode(runs_recipe: Path, name: str) -> str | None:
+    """The mode of ``runs_recipe``'s run batch ``name``, moved or not; None
+    when there is no such batch."""
+    for mode in registries.ENSEMBLE_MODES:
+        if (batches_dir(runs_recipe, mode) / name).is_dir():
+            return mode
+    legacy = runs_recipe / name
+    return batch_mode(legacy) if legacy.is_dir() else None
 
 
 def ensemble_batches(recipe_dir: Path | str, mode: str | None = None) -> list[Path]:
@@ -377,8 +394,11 @@ def intent_batch_dir(intent_dir: Path | str, batch_dir: Path | str) -> Path:
     """The member intents of the run batch ``batch_dir``: the folder of the
     same name, recipe and mode under ``intent_dir`` (#454)."""
     batch_dir = Path(batch_dir)
-    recipe = Path(intent_dir) / batch_recipe(batch_dir)
-    move_legacy_batches(recipe)
+    name = batch_recipe(batch_dir)
+    recipe = Path(intent_dir) / name
+    runs_recipe = batch_dir.parent.parent if batch_dir.parent.name in BATCH_MODE_DIRS.values() \
+        else batch_dir.parent
+    move_legacy_batches(recipe, runs_recipe)
     return batches_dir(recipe, batch_mode(batch_dir)) / batch_dir.name
 
 

@@ -782,6 +782,24 @@ def test_batches_from_before_454_move_into_their_modes_folder(tmp_path: Path) ->
     assert (recipe_dir / "monte-carlo" / legacy.name).is_dir()
 
 
+def test_member_intents_from_before_454_follow_their_run_batchs_mode(tmp_path: Path) -> None:
+    """A sensitivity batch whose every member failed to resolve has member
+    intents that don't say their mode: its run batch's manifest does."""
+    from analysis.sim.loader import batch_recipe, intent_batch_dir
+
+    runs, intent = tmp_path / "runs" / "pool", tmp_path / "intent" / "pool"
+    oat = runs / "2026-06-01T000000Z"
+    oat.mkdir(parents=True)
+    write_batch_manifest(oat, member_count=1, failures=[], mode="sensitivity",
+                         quantiles=(0.1, 0.9), rows=[])
+    (intent / oat.name).mkdir(parents=True)
+    (intent / oat.name / "member_0000.sqlite3").touch()
+    assert batch_recipe(oat) == "pool"  # not moved yet: a run file opened directly
+    found = intent_batch_dir(tmp_path / "intent", oat)
+    assert found == intent / "sensitivity" / oat.name and found.is_dir()
+    assert batch_recipe(intent / "sensitivity" / oat.name) == "pool"
+
+
 # --- #31: shaped truncated_normal and triangular rows -------------------------------
 
 
@@ -891,3 +909,6 @@ def test_a_batch_name_is_unique_across_both_modes_folders(
     mc = cli._reserve_batch("base", intent, runs, "monte_carlo")[0]
     oat = cli._reserve_batch("base", intent, runs, "sensitivity")[0]
     assert (mc, oat) == ("2026-01-02T030405Z", "2026-01-02T030405Z-2")
+    # The check and the mkdirs happen under one lock in the runs dir, which
+    # runs with different intent dirs still share.
+    assert (runs / ".locks" / "base.names").is_file()
