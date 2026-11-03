@@ -675,13 +675,15 @@ class _Daemon:
         another job (Bob, #300): the wanted one starts at once and the
         stopped one is requeued right after it."""
         build = self.build
-        wanted = next((j for j in self.first if j in self.queue), None)
-        if build is None or wanted is None:
+        if build is None:
             return
         if build.wanted or build.job in self.first:  # asked for while building
             build.wanted = True
             self.first = [j for j in self.first if j != build.job]
             self._follow(build.scenario)
+            return
+        wanted = next((j for j in self.first if j in self.queue), None)
+        if wanted is None:
             return
         self.cancel(f"{wanted} is wanted now")
         self.resume = [build.job, *[j for j in self.resume if j != build.job]]
@@ -928,7 +930,7 @@ def await_fresh(
     if not daemon_alive(paths):
         spawn_daemon(paths, data_dir)
     try:
-        _wait(paths, scenario, jobs, made, echo)
+        _wait(paths, scenario, jobs, made, echo, steps)
     except KeyboardInterrupt:
         echo(f"gave up waiting for {scenario}; opening its latest results, which may be out of date")
 
@@ -1007,7 +1009,10 @@ def _pending(
 
 
 def _wait(paths: BuilderPaths, scenario: str, jobs: Sequence[str], made: float,
-          echo: Callable[[str], None]) -> None:
+          echo: Callable[[str], None], steps: Sequence[str] = STEPS) -> None:
+    """Wait until ``jobs`` and any of ``scenario``'s ``steps`` the builder
+    queues meanwhile are done: a run's batch can need a series store or a
+    first sensitivity batch the reader couldn't see pending when it came."""
     echo(f"waiting for the background build of {_describe(jobs)} (Ctrl-C to stop waiting)...")
     started = time.monotonic()
     last_progress = started
@@ -1022,6 +1027,12 @@ def _wait(paths: BuilderPaths, scenario: str, jobs: Sequence[str], made: float,
                 return
             current = (status.get("current") or {}).get("job") \
                 or (status.get("current") or {}).get("scenario")
+            for job in [current, *(status.get("queue") or [])]:
+                if job and job not in left and job not in jobs:
+                    name, step = parse_job(job)
+                    if name == scenario and step in steps:
+                        left.append(job)
+            jobs = [*jobs, *[j for j in left if j not in jobs]]
             for job in [j for j in left if j != current and j not in (status.get("queue") or [])]:
                 left.remove(job)
                 failed = (status.get("failed") or {}).get(job)

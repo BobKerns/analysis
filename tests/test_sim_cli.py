@@ -2654,3 +2654,23 @@ def test_a_report_offers_ensembles_that_have_no_runs_yet(
         input=f"{test_ensemble_scenario}\n")
     assert result.exit_code == 0, result.output
     assert f"ensembles: {test_ensemble_scenario}\n" in result.output
+
+
+@pytest.mark.parametrize(("mode", "make", "offered"), [
+    (None, "monte_carlo", True),   # `sim ensemble draws` can make a pool's batch
+    (None, "sensitivity", False),  # a pool has no sensitivity batch
+])
+def test_a_pool_is_offered_only_where_its_batch_can_be_made(
+    pool_scenarios: str, test_data_dir: Path, runs_dir: Path,
+    mode: str | None, make: str, offered: bool,
+) -> None:
+    import click
+
+    import analysis.sim.cli as sim_cli
+
+    result = CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
+        sim_cli._ask_ensemble_run(runs_dir, mode, data_dir=test_data_dir, current=False,
+                                  make=make))),
+        input="\n")
+    choices = next(line for line in result.output.splitlines() if "ensembles:" in line)
+    assert (pool_scenarios in choices.split("ensembles:")[1].replace(",", " ").split()) is offered

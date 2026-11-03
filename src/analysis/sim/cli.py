@@ -2178,15 +2178,17 @@ _report_graph_options = _graph_options("it as the notebook's chart", after="the 
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
                       batch: str | None = None, exclude: str | None = None, *,
-                      data_dir: Path | None = None, current: bool = True) -> str:
+                      data_dir: Path | None = None, current: bool = True,
+                      make: str | None = None) -> str:
     """An ensemble to report on: the current scenario when it is one (#449),
     announced as `_resolve_scenario` announces it, else one asked for; never
     ``exclude``. ``current=False`` always asks, for a second ensemble such
     as a comparison's variant.
 
     The choices are the data repo's ensembles (#454: a report on one with no
-    batch of ``mode`` yet waits for the builder or makes one), not counting
-    pools for a sensitivity report, and any other recipe with a batch of
+    batch of ``mode`` yet waits for the builder or makes one of ``make``,
+    default ``mode``), not counting pools when that is a sensitivity batch,
+    and any other recipe with a batch of
     ``mode`` (any, when None) under ``runs_dir``; with ``batch``, only those
     with a batch of that name."""
     def has_runs(recipe: Path) -> bool:
@@ -2202,7 +2204,7 @@ def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble"
     if batch is None and repo is not None \
             and _resolve_state_dir(None, DEFAULT_RUNS_DIR, repo) == runs_dir.resolve():
         found.update(n for n in _ensemble_names(repo)
-                     if mode == "monte_carlo" or not is_pool(repo / "scenarios", n))
+                     if (make or mode) == "monte_carlo" or not is_pool(repo / "scenarios", n))
     recipes = sorted(found - {exclude} if exclude else found)
     plural = f"ensembles with a batch {batch}" if batch else "ensembles"
     data = _current_data_dir(data_dir) if current else None
@@ -3022,7 +3024,8 @@ def ensemble_sensitivity(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir,
+                                          make=mode or "sensitivity")
     _hold_tables()
     draw: _Draw | None = (
         (lambda fig, fit=None: _draw_figure(fig, graph_file, "sensitivity-", fit))
@@ -3151,7 +3154,8 @@ def ensemble_draws(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir,
+                                          make=mode or "monte_carlo")
     batch_dir = _batch_to_read(resolved_runs_dir, scenario_name, mode, batch, data_dir=data_dir,
                                make=mode or "monte_carlo")
     path = draws_db_path(batch_dir)

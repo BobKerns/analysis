@@ -146,6 +146,24 @@ def test_batches_from_before_454_are_moved_and_then_pruned(
     assert old.is_dir() and not legacy.exists()
 
 
+def test_a_pin_written_before_454_still_holds_its_moved_batch(
+    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    batch = fake_state("batch", "alice", "2026-10-01T120000Z")
+    intents = fake_state("intent", "alice", "2026-10-01T120000Z")
+    for stamp in ("2026-10-02T120000Z", "2026-10-03T120000Z"):
+        fake_state("batch", "alice", stamp)
+        fake_state("intent", "alice", stamp)
+    old_pin = runs_dir / "alice" / batch.name / "member_0001.sqlite3"
+    retention = _rules(
+        "intents:\n  - keep: 1\nruns:\n  - keep: 1\n"
+        f"pins:\n  - {old_pin.relative_to(tmp_path)}\n",
+        tmp_path,
+    )
+    planned = _planned(retention, intent_dir, runs_dir)
+    assert {batch, intents}.isdisjoint(planned)
+
+
 def test_pinning_a_member_keeps_its_batch_and_its_intents(
     fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
 ) -> None:

@@ -391,6 +391,20 @@ def test_a_build_with_failed_members_waits_for_its_inputs_to_change(
     assert first not in daemon.queue
 
 
+def test_a_reader_asking_for_the_build_alone_still_makes_its_jobs_follow(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None and not running.wanted
+    daemon.first = [running.job]  # nothing else is wanted
+    daemon.preempt()
+    assert daemon.build is running and running.wanted
+    assert daemon.follow == [running.scenario] and daemon.first == []
+
+
 def test_a_build_a_reader_asks_for_while_it_runs_is_not_preempted(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -470,6 +484,36 @@ def test_a_reader_waiting_on_a_cancelled_build_says_so(
     canceller.join()
     assert lines[-1] == ("the background build of base was cancelled: its inputs changed; "
                          "opening its latest results, which are out of date")
+
+
+def test_a_reader_waits_for_a_job_its_run_turned_up(
+    running_daemon: BuilderPaths, builder_on: None,
+) -> None:
+    """A run that writes a batch can leave its series store to build: a
+    Monte Carlo reader waits for that too, though it wasn't pending when the
+    reader came, but not for the sensitivity batch it doesn't read."""
+    paths = running_daemon
+    made = time.time()
+
+    def build() -> None:
+        time.sleep(0.6)
+        builder._write_json(paths.status, {
+            "state": "building", "updated": time.time(),
+            "current": {"job": "base:series"}, "queue": ["base:sensitivity"]})
+        time.sleep(0.8)
+        builder._write_json(paths.status, {
+            "state": "building", "updated": time.time(),
+            "current": {"job": "base:sensitivity"}, "queue": []})
+
+    builder._write_json(paths.status, {
+        "state": "building", "updated": made, "current": {"job": "base"}, "queue": []})
+    lines: list[str] = []
+    worker = threading.Thread(target=build)
+    worker.start()
+    builder._wait(paths, "base", ["base"], made, lines.append, ("run", "series"))
+    worker.join()
+    assert lines[1:] == ["the background build of base is done",
+                         "the background build of base (series store) is done"]
 
 
 def test_looking_up_a_scenario_never_waits_for_its_build(

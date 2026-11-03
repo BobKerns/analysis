@@ -414,9 +414,14 @@ def _active(path: Path, now: datetime) -> bool:
 
 def _is_pinned(path: Path, pins: tuple[Path, ...]) -> bool:
     """A pin names the item itself or something inside it (a member of a
-    batch pins the whole batch, which is never pruned member by member)."""
+    batch pins the whole batch, which is never pruned member by member).
+    A batch also answers to the path it had before #454 moved it into its
+    mode's folder, so a pin written then still holds."""
     resolved = path.resolve()
-    return any(pin == resolved or pin.is_relative_to(resolved) for pin in pins)
+    names = [resolved]
+    if resolved.parent.name in BATCH_MODE_DIRS.values():
+        names.append(resolved.parent.parent / resolved.name)
+    return any(pin == name or pin.is_relative_to(name) for pin in pins for name in names)
 
 
 def _remove_if_empty(directory: Path) -> None:
