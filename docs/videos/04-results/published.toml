@@ -2,8 +2,8 @@
 # scenes: each scene's length in seconds in the build that was uploaded.
 
 [en]
-video = "hCFPwthvFL4"
-uploaded = 2026-11-01T01:08:32Z
+video = "8byMoioSYH8"
+uploaded = 2026-11-03T07:46:05Z
 scenes = [
   ["title", 19.24],
   ["contents", 30.68],
@@ -15,20 +15,20 @@ scenes = [
   ["history", 33.98],
   ["income", 36.01],
   ["expenses", 30.24],
-  ["tax", 32.49],
+  ["tax", 32.51],
   ["notebooks-card", 16.90],
-  ["nb-networth", 27.57],
-  ["nb-income-tax", 27.17],
-  ["nb-accounts", 24.07],
+  ["nb-networth", 27.60],
+  ["nb-income-tax", 28.53],
+  ["nb-accounts", 24.17],
   ["nb-events", 26.10],
   ["nb-overview", 17.27],
   ["ai", 17.54],
-  ["end", 8.29],
+  ["end", 8.42],
 ]
 
 [ja]
-video = "EHjnXhMulQ0"
-uploaded = 2026-11-01T01:09:02Z
+video = "SDzC49sCXqM"
+uploaded = 2026-11-03T07:46:29Z
 scenes = [
   ["title", 26.50],
   ["contents", 36.39],
@@ -42,9 +42,9 @@ scenes = [
   ["expenses", 36.27],
   ["tax", 39.75],
   ["notebooks-card", 23.60],
-  ["nb-networth", 27.57],
+  ["nb-networth", 27.67],
   ["nb-income-tax", 31.92],
-  ["nb-accounts", 24.07],
+  ["nb-accounts", 24.17],
   ["nb-events", 36.27],
   ["nb-overview", 19.78],
   ["ai", 22.01],
