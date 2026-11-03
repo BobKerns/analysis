@@ -7,13 +7,14 @@ import re
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from analysis.videos import captions, notebook, render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
-from analysis.videos.__main__ import TTYD_URL, check, vhs_url
+from analysis.videos.commands import TTYD_URL, check, vhs_url
 from analysis.videos.build import VIDEO_DATA_ENV, _Builder, build
 
 SCRIPT = """\
@@ -650,14 +651,18 @@ def test_launch_chromium_says_how_to_get_one(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.fixture
-def video_runs(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[list[str]]]:
+def video_runs(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     """`analysis video` with the container and the local builder replaced
-    by recorders: which one ran, with what arguments."""
+    by recorders: which one ran, with what arguments (the container's
+    command line; the local function's name, positional and keywords)."""
     from analysis.videos import cli as video_cli
+    from analysis.videos import commands
 
-    runs: dict[str, list[list[str]]] = {"docker": [], "local": []}
+    runs: dict[str, list[Any]] = {"docker": [], "local": []}
     monkeypatch.setattr(video_cli, "_docker", lambda args, out=None: runs["docker"].append(args) or 0)
-    monkeypatch.setattr(video_cli, "_local", lambda args: runs["local"].append(args) or 0)
+    for name in ("build", "check", "publish", "setup"):
+        monkeypatch.setattr(commands, name,
+                            lambda *args, _name=name, **kw: runs["local"].append((_name, *args, kw)) or 0)
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
     return runs
 
@@ -669,7 +674,7 @@ def video_runs(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[list[str]]]:
     (True, ["--docker"], "docker"),
 ])
 def test_analysis_video_build_runs_in_docker_when_it_can(monkeypatch: pytest.MonkeyPatch,
-                                                         video_runs: dict[str, list[list[str]]],
+                                                         video_runs: dict[str, list[Any]],
                                                          running: bool, where: list[str], ran: str) -> None:
     from click.testing import CliRunner
 
@@ -680,16 +685,16 @@ def test_analysis_video_build_runs_in_docker_when_it_can(monkeypatch: pytest.Mon
     result = CliRunner().invoke(main, ["video", "build", "01-intro", "--lang", "ja", "--silent", "--jobs", "3",
                                          *where])
     assert result.exit_code == 0, result.output
-    folder = str(Path.cwd() / "docs" / "videos" / "01-intro")
+    folder = Path.cwd() / "docs" / "videos" / "01-intro"
     expected = (["build", "01-intro", "--lang", "ja", "--silent", "--jobs", "3"] if ran == "docker"
-                else ["build", folder, "--lang", "ja", "--silent", "--jobs", "3"])
+                else ("build", folder, {"lang": "ja", "out": None, "silent": True, "rerecord": False, "jobs": 3}))
     assert video_runs[ran] == [expected]
     assert video_runs["docker" if ran == "local" else "local"] == []
     assert ("running locally" in result.output) == (not running and not where)
 
 
 def test_analysis_video_docker_needs_docker(monkeypatch: pytest.MonkeyPatch,
-                                            video_runs: dict[str, list[list[str]]]) -> None:
+                                            video_runs: dict[str, list[Any]]) -> None:
     from click.testing import CliRunner
 
     from analysis.cli import main
@@ -703,7 +708,7 @@ def test_analysis_video_docker_needs_docker(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_analysis_video_names_a_video_by_folder_name(monkeypatch: pytest.MonkeyPatch,
-                                                    video_runs: dict[str, list[list[str]]]) -> None:
+                                                    video_runs: dict[str, list[Any]]) -> None:
     from click.testing import CliRunner
 
     from analysis.cli import main
@@ -716,9 +721,50 @@ def test_analysis_video_names_a_video_by_folder_name(monkeypatch: pytest.MonkeyP
     # publish always runs here, and takes a name as build does.
     assert runner.invoke(main, ["video", "publish", "01-intro", "--lang", "ja"]).exit_code == 0
     # An option's value stays as typed, even one that names a video.
-    assert runner.invoke(main, ["video", "publish", "--out", "01-intro"]).exit_code == 0
-    assert video_runs["local"] == [["publish", str(Path.cwd() / "docs" / "videos" / "01-intro"), "--lang", "ja"],
-                                   ["publish", "--out", "01-intro"]]
+    assert runner.invoke(main, ["video", "publish", "--refresh", "--out", "01-intro"]).exit_code == 0
+    flags = {"dry_run": False, "new_upload": False}
+    assert video_runs["local"] == [
+        ("publish", [Path.cwd() / "docs" / "videos" / "01-intro"], {"lang": "ja", "out": None, "refresh": False,
+                                                                     **flags}),
+        ("publish", [], {"lang": None, "out": Path("01-intro"), "refresh": True, **flags})]
     # A path names a folder as given, not by its last part.
     result = runner.invoke(main, ["video", "build", "elsewhere/01-intro", "--local"])
     assert result.exit_code == 2 and "no video elsewhere/01-intro" in result.output
+
+
+def test_analysis_video_publish_shows_its_options() -> None:
+    """publish's options are the command's own (#456): --help lists them,
+    and TAB completes them."""
+    from click.shell_completion import ShellComplete
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    result = CliRunner().invoke(main, ["video", "publish", "--help"])
+    assert result.exit_code == 0
+    for option in ("--refresh", "--new-upload", "--dry-run", "--lang", "--out"):
+        assert option in result.output
+    completions = ShellComplete(main, {}, "analysis", "_ANALYSIS_COMPLETE").get_completions(["video", "publish"], "--")
+    assert {"--refresh", "--new-upload"} <= {c.value for c in completions}
+
+
+def test_python_m_analysis_videos_runs_locally(monkeypatch: pytest.MonkeyPatch,
+                                               video_runs: dict[str, list[Any]]) -> None:
+    """`python -m analysis.videos` is `analysis video`, always on this
+    machine: it's what the container runs, so it never looks for Docker."""
+    from analysis.videos import __main__ as videos_main
+    from analysis.videos import cli as video_cli
+
+    def no_docker_check() -> bool:
+        raise AssertionError("python -m analysis.videos looked for Docker")
+
+    monkeypatch.setattr(video_cli, "docker_running", no_docker_check)
+    with pytest.raises(SystemExit) as done:
+        videos_main.main(["check", "docs/videos/01-intro"])
+    assert done.value.code == 0
+    assert video_runs == {"docker": [], "local": [("check", [Path("docs/videos/01-intro")], {})]}
+    # Asking it for the container is an error, not a quiet local run.
+    with pytest.raises(SystemExit) as done:
+        videos_main.main(["build", "01-intro", "--docker"])
+    assert done.value.code == 1
+    assert video_runs["docker"] == [] and len(video_runs["local"]) == 1
