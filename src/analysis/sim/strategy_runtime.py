@@ -24,11 +24,11 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from analysis.sim import guard_rails, registries
+from analysis.sim import guard_rails, life_table, registries
 from analysis.sim.asset_classes import class_weights, weight_sets, weights_at
 from analysis.sim.measures import RailYears
 from analysis.sim.strategy_api import (
-    BreachView, ChainView, Context, Decision, History, LotRef, LotView, PersonView, Put, Realize,
+    BreachView, ChainView, Context, Decision, History, LotRef, LotView, Mortality, PersonView, Put, Realize,
     RuleView, Spend, StepView, Strategy, StrategyError, Take, TaxView, Transfer,
 )
 from analysis.sim.types import DollarMode
@@ -91,6 +91,87 @@ class _Lots(Mapping[LotRef, LotView]):
         return ref in self._refs
 
 
+class _TableMortality(Mortality):
+    """``ctx.survival_years``, ``life_expectancy`` and ``rmd_divisor`` from
+    the intent's aux tables (#459). Each person is read from the life table
+    their lifespan row names, with its set-forward (the household's stated
+    mortality, solved at load and never redrawn), else ``life_table.csv``.
+    The lifespan's ``final_month``, which an ensemble member draws, is never
+    read: planning to it would be foreknowledge."""
+
+    def __init__(self, con: sqlite3.Connection) -> None:
+        self._con = con
+        self._birth: dict[str, date] = {}
+        self._sex: dict[str, str | None] = {}
+        for pid, birth, sex in con.execute("SELECT id, birthdate, sex FROM person"):
+            if birth:
+                self._birth[pid] = date.fromisoformat(birth)
+            self._sex[pid] = sex or None
+        columns = {row[1] for row in con.execute("PRAGMA table_info(person_lifespan)")}
+        self._lifespan: dict[str, tuple[str | None, float]] = {}
+        if {"life_table", "life_table_set_forward"} <= columns:
+            for pid, name, forward in con.execute(
+                    "SELECT person, life_table, life_table_set_forward FROM person_lifespan"):
+                self._lifespan[pid] = (name or None, forward or 0.0)
+        self._curves: dict[tuple[str, date], list[float]] = {}
+        self._rmd: list[tuple[str, int, float]] | None = None
+
+    def _curve(self, person: str, month: date) -> list[float]:
+        key = (person, month)
+        curve = self._curves.get(key)
+        if curve is None:
+            birth = self._birth.get(person)
+            sex = self._sex.get(person)
+            if birth is None or sex is None:
+                raise StrategyError(f"{person} needs a birthdate and a sex in persons.csv for a life table")
+            name, forward = self._lifespan.get(person, (None, 0.0))
+            try:
+                table = life_table.life_table_in(self._con, sex, month.isoformat(), name)
+            except life_table.LifeTableError as e:
+                raise StrategyError(str(e)) from None
+            curve = self._curves[key] = life_table.survival_curve(
+                table, life_table.months_since_birth(birth, month), forward)
+        return curve
+
+    def survival_years(self, probability: float, people: tuple[str, ...], month: date) -> int:
+        curves = [self._curve(p, month) for p in people]
+        longest = max(len(c) for c in curves)
+        for years in range(1, longest // 12 + 2):
+            k = 12 * years - 1
+            none_alive = 1.0
+            for c in curves:
+                none_alive *= 1.0 - (c[k] if k < len(c) else 0.0)
+            if 1.0 - none_alive < probability:
+                return years
+        return longest // 12 + 1
+
+    def life_expectancy(self, person: str, month: date) -> float:
+        curve = self._curve(person, month)
+        alive = [1.0, *curve]
+        return sum((a + b) / 2 for a, b in zip(alive, alive[1:], strict=False)) / 12
+
+    def rmd_divisor(self, person: str, month: date) -> float | None:
+        if self._rmd is None:
+            self._rmd = sorted(
+                (effective, int(payload["age"]), payload["factor_micros"] / 1_000_000)
+                for effective, payload in (
+                    (e, json.loads(p)) for e, p in self._con.execute(
+                        "SELECT effective_date, payload_json FROM aux_table "
+                        "WHERE kind = 'rmd_factors' AND series IS NULL"))
+            )
+        birth = self._birth.get(person)
+        if birth is None:
+            raise StrategyError(f"rmd_divisor: {person} has no birthdate")
+        age = month.year - birth.year
+        vintages = sorted({e for e, _a, _f in self._rmd})
+        if not vintages:
+            return None
+        # The vintage in force: the latest on or before this month, else the
+        # earliest, as for every aux table.
+        vintage = max((v for v in vintages if v <= month.isoformat()), default=vintages[0])
+        return next((f for e, a, f in self._rmd if e == vintage and a == age), None)
+
+
 class StrategyRuntime:
     """Everything the engine needs to ask a run's strategies."""
 
@@ -135,6 +216,7 @@ class StrategyRuntime:
         self._started: set[int] = set()
         # ctx.people, made once a month: it changes only with the month.
         self._people_month: tuple[date, Mapping[str, PersonView]] | None = None
+        self._mortality = _TableMortality(con)
         self._people = [
             (pid, role or None, date.fromisoformat(birth) if birth else None)
             for pid, role, birth in con.execute("SELECT id, role, birthdate FROM person ORDER BY id")
@@ -327,6 +409,7 @@ class StrategyRuntime:
             history=History(lambda: self._history_months(month),
                             lambda refs: self._history_balances(refs, month)),
             rail=self._rail if self._rails else None,
+            mortality=self._mortality,
         )
 
     def _history_months(self, month: date) -> tuple[date, ...]:
