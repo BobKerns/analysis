@@ -290,8 +290,9 @@ def test_buckets_annual_cadence_refills_only_in_january(
     ({"cadence": "weekly"}, "cadence 'weekly': monthly or annual"),
     ({"lookback": 0}, "lookback 0: a whole number of years"),
     ({"cash_years": -1}, "cash_years -1: a number of years"),
+    ({"bond_years": 1e309}, "bond_years inf: a number of years"),
     ({"need": "0.00"}, "need must be more than"),
-    ({"portfolio": "portfolio:stocks_only"}, "holds no cash or cd, no bond"),
+    ({"portfolio": "portfolio:stocks_only"}, "has no lot mostly cash or cd and none mostly bond"),
 ])
 def test_buckets_load_checks(
     strategy_csv: Callable[[str, str], Path], strategy_scenarios: Path, intent_dir: Path,
@@ -309,6 +310,42 @@ def test_buckets_load_checks(
                       compute_stamps=False)
 
 
+def test_buckets_judges_a_blended_fund_by_its_bucket(
+    strategy_csv: Callable[[str, str], Path], strategy_scenarios: Path, intent_dir: Path,
+) -> None:
+    """Cash and a 60/40 fund hold bonds, but no lot is mostly bonds: there
+    is no bond bucket to refill or sell."""
+    path = strategy_csv(SCENARIO, "accounts.csv")
+    path.write_text(path.read_text() + (
+        "Asset_Balanced,asset,brokerage_taxable,joint,taxable,,gains,2020-01-31,,{},portfolio:balanced\n"))
+    lots = strategy_csv(SCENARIO, "account_lots.csv")
+    lots.write_text(lots.read_text() + (
+        "Asset_Balanced,default,,,,,,1000.00,1000.00,,,,,,,,,\n"
+        "Asset_Balanced,cash,,CASH,,,money_market,100.00,100.00,,,,,,,,,\n"))
+    allocations = strategy_scenarios / "allocations.csv"
+    allocations.write_text(allocations.read_text()
+                           + "Asset_Balanced:default,,stock_us,60%\nAsset_Balanced:default,,bond,40%\n")
+    _strategy(strategy_csv, "buckets", portfolio="portfolio:balanced", need="1000.00")
+    with pytest.raises(LoadError, match="no lot mostly bond"):
+        load_scenario(strategy_scenarios, SCENARIO, intent_dir=intent_dir, allow_dirty_data=True,
+                      compute_stamps=False)
+
+
+def test_buckets_never_refills_across_traditional_and_roth_lots(
+    strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """A retirement account can hold traditional and Roth lots; selling a
+    traditional stock lot into the Roth cash lot would be a conversion."""
+    lots = strategy_csv(SCENARIO, "account_lots.csv")
+    lots.write_text(lots.read_text()
+                    + "Asset_Roth_Alice,rollover,traditional_ira,USSTK,,,,400000.00,,400000.00,,,,,,,,\n")
+    run = run_strategy_scenario(SCENARIO)
+    legs = _legs(run, "month_start")
+    assert legs
+    assert not [leg for leg in legs if leg[1:3] == ("Asset_Roth_Alice", "rollover")]
+    assert all(character != "tax_deferred_out" for *_x, character in legs)
+
+
 def test_buckets_without_bonds_is_fine_with_bond_years_zero(
     strategy_csv: Callable[[str, str], Path], strategy_scenarios: Path, intent_dir: Path,
 ) -> None:
@@ -320,7 +357,7 @@ def test_buckets_without_bonds_is_fine_with_bond_years_zero(
         "Asset_Stocks,default,,USSTK,,,,1000.00,1000.00,,,,,,,,,\n"
         "Asset_Stocks,cash,,CASH,,,money_market,100.00,100.00,,,,,,,,,\n"))
     _strategy(strategy_csv, "buckets", portfolio="portfolio:lean", need="1000.00")
-    with pytest.raises(LoadError, match="no bond"):
+    with pytest.raises(LoadError, match="no lot mostly bond"):
         load_scenario(strategy_scenarios, SCENARIO, intent_dir=intent_dir, allow_dirty_data=True,
                       compute_stamps=False)
     _strategy(strategy_csv, "buckets", portfolio="portfolio:lean", need="1000.00", bond_years=0)

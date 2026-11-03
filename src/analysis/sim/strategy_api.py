@@ -55,7 +55,7 @@ and ``annual_return``. 3 (#421) added ``year_end``, :class:`Transfer`,
 and ``ctx.rail``. 5 (#459) added ``ctx.survival_years``,
 ``ctx.life_expectancy`` and ``ctx.rmd_divisor``, and :class:`ScenarioView`'s
 ``people``, ``aux`` and ``portfolio_classes``. 6 (#463) added
-``ctx.trailing_return``."""
+``ctx.trailing_return`` and :class:`ScenarioView`'s ``portfolio_lots``."""
 
 
 class StrategyError(Exception):
@@ -801,6 +801,9 @@ class ScenarioView:
     portfolio_classes: Mapping[str, frozenset[str]] = field(default_factory=dict)
     """Each account tag's asset classes: those its asset lots hold in the
     scenario's first month (#459)."""
+    portfolio_lots: Mapping[str, tuple[Mapping[str, float], ...]] = field(default_factory=dict)
+    """Each account tag's asset lots, as each lot's class weights in the
+    scenario's first month (#463)."""
 
 
 _HOOKS = ("draw", "place", "year_start", "scale", "year_end", "month_start", "on_breach")

@@ -12,6 +12,7 @@ review most households make.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -74,6 +75,13 @@ def _bucket(weights: dict[str, float] | Any) -> int | None:
             rest += weight
     best = max(share, key=lambda b: (share[b], -b))
     return best if share[best] > rest else None
+
+
+def _wrapper(ctx: Context, ref: LotRef) -> str:
+    """Which side of a retirement account a lot is on: one account can hold
+    traditional and Roth lots, and money between them is a conversion."""
+    subkind = ctx.lots[ref].lot_subkind or ""
+    return "roth" if subkind.startswith("roth") else "traditional" if subkind.startswith("traditional") else ""
 
 
 def _take_in_order(ctx: Context, order: Sequence[LotRef], need: int) -> dict[LotRef, int]:
@@ -181,17 +189,19 @@ class Buckets(Strategy):
             problems.append("need must be more than $0")
         for name in ("cash_years", "bond_years"):
             value = getattr(params, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value < 0):
                 problems.append(f"{name} {value!r}: a number of years, 0 or more")
-        classes = scenario.portfolio_classes.get(params.portfolio, frozenset())
-        held = {BUCKET_OF[c] for c in classes if c in BUCKET_OF}
+        # Each lot in the one bucket it is drawn and refilled as, as at run time.
+        held = {_bucket(weights) for weights in scenario.portfolio_lots.get(params.portfolio, ())}
         wanted = {1, 3} | ({2} if params.bond_years else set())
         missing = sorted(wanted - held)
         if missing:
-            names = {1: "cash or cd", 2: "bond (or set bond_years to 0)", 3: "stock"}
+            names = {1: "cash or cd", 2: "bond", 3: "stock"}
             problems.append(
-                f"portfolio {params.portfolio} holds no {', no '.join(names[b] for b in missing)}: "
-                "buckets needs a lot of each to spend from and refill")
+                f"portfolio {params.portfolio} has no lot mostly {' and none mostly '.join(names[b] for b in missing)}"
+                ": buckets spends from and refills a lot in each bucket"
+                + (" (a plan without bonds sets bond_years to 0)" if 2 in missing else ""))
         return problems
 
     # ----- draws -----
@@ -264,7 +274,8 @@ class Buckets(Strategy):
             for ref in sellers:
                 if moved >= short:
                     break
-                to = next((r for r in lots if r.account == ref.account and bucket[r] == into), None)
+                to = next((r for r in lots if r.account == ref.account and bucket[r] == into
+                           and _wrapper(ctx, r) == _wrapper(ctx, ref)), None)
                 if to is None:
                     if ctx.lots[ref].available - spent.get(ref, 0) > 0:
                         stuck.add((ref.account, into))
