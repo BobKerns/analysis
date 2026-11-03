@@ -114,6 +114,38 @@ def test_batches_are_pruned_whole_and_an_incomplete_batch_is_no_success(
     assert complete not in planned
 
 
+def test_monte_carlo_and_sensitivity_batches_are_counted_apart(
+    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    """#454: a run of sensitivity batches never pushes out the Monte Carlo
+    batches, nor their member intents, or the other way round."""
+    mc = [fake_state("batch", "alice", f"2026-10-0{d}T120000Z") for d in (1, 2)]
+    oat = [fake_state("batch", "alice", f"2026-10-0{d}T120000Z", mode="sensitivity")
+           for d in (3, 4, 5)]
+    mc_intents = fake_state("intent", "alice", "2026-10-02T120000Z")
+    oat_intents = [fake_state("intent", "alice", f"2026-10-0{d}T120000Z", mode="sensitivity")
+                   for d in (4, 5)]
+    planned = _planned(_rules("intents:\n  - keep: 1\nruns:\n  - keep: 2\n", tmp_path),
+                       intent_dir, runs_dir)
+    assert planned == {oat[0], oat_intents[0]}
+    assert set(mc).isdisjoint(planned) and mc_intents not in planned
+
+
+def test_batches_from_before_454_are_moved_and_then_pruned(
+    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    """A batch still directly under its scenario's folder (made before
+    #454) moves into its mode's folder, as a read would move it, and is
+    pruned there."""
+    old = fake_state("batch", "alice", "2026-10-01T120000Z")
+    fake_state("batch", "alice", "2026-10-02T120000Z")
+    legacy = runs_dir / "alice" / old.name
+    old.rename(legacy)
+    planned = _planned(_rules("runs:\n  - keep: 1\n", tmp_path), intent_dir, runs_dir)
+    assert planned == {old}
+    assert old.is_dir() and not legacy.exists()
+
+
 def test_pinning_a_member_keeps_its_batch_and_its_intents(
     fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
 ) -> None:

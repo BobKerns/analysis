@@ -1444,8 +1444,8 @@ def test_sim_run_generates_and_runs_ensemble_for_a_recipe(
     assert result.exit_code == 0, result.output
     assert "2/2 member(s) succeeded" in result.output
 
-    member_intents = sorted((intent_dir / "retire_alice").glob("*/member_*.sqlite3"))
-    member_runs = sorted((runs_dir / "retire_alice").glob("*/member_*.sqlite3"))
+    member_intents = sorted((intent_dir / "retire_alice").glob("*/*/member_*.sqlite3"))
+    member_runs = sorted((runs_dir / "retire_alice").glob("*/*/member_*.sqlite3"))
     assert [p.name for p in member_intents] == ["member_0000.sqlite3", "member_0001.sqlite3"]
     assert [p.name for p in member_runs] == ["member_0000.sqlite3", "member_0001.sqlite3"]
     assert member_intents[0].parent == member_intents[1].parent  # same batch
@@ -1621,8 +1621,8 @@ def test_sim_run_ensemble_reports_member_failures_without_stopping(
     assert result.exit_code == 0, result.output
     assert "member 1: FAILED (boom)" in result.output
     assert "1/2 member(s) succeeded" in result.output
-    intent_batch = next((intent_dir / "retire_alice").glob("*/member_0000.sqlite3")).parent
-    runs_batch = next((runs_dir / "retire_alice").glob("*/member_0000.sqlite3")).parent
+    intent_batch = next((intent_dir / "retire_alice").glob("*/*/member_0000.sqlite3")).parent
+    runs_batch = next((runs_dir / "retire_alice").glob("*/*/member_0000.sqlite3")).parent
     assert (intent_batch / "member_0000.sqlite3").exists()
     assert (runs_batch / "member_0000.sqlite3").exists()
     assert not (runs_batch / "member_0001.sqlite3").exists()
@@ -1727,7 +1727,7 @@ def test_sim_run_ensemble_batch_reservation_is_exclusive(
             return real_datetime(2026, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(sim_cli, "datetime", _FixedDatetime)
-    (intent_dir / "retire_alice" / fixed_stamp).mkdir(parents=True)
+    (intent_dir / "retire_alice" / "monte-carlo" / fixed_stamp).mkdir(parents=True)
 
     result = runner.invoke(
         main,
@@ -1738,7 +1738,7 @@ def test_sim_run_ensemble_batch_reservation_is_exclusive(
         ],
     )
     assert result.exit_code == 0, result.output
-    batches = sorted(p.name for p in (runs_dir / "retire_alice").iterdir())
+    batches = sorted(p.name for p in (runs_dir / "retire_alice" / "monte-carlo").iterdir())
     assert batches == [f"{fixed_stamp}-2"]
 
 
@@ -1769,7 +1769,7 @@ def test_sim_run_ensemble_rerun_does_not_collide_with_prior_batch(
     assert second.exit_code == 0, second.output
     assert "2/2 member(s) succeeded" in second.output
 
-    batches = sorted((runs_dir / "retire_alice").iterdir())
+    batches = sorted((runs_dir / "retire_alice" / "monte-carlo").iterdir())
     assert len(batches) == 2
     for batch in batches:
         assert sorted(p.name for p in batch.glob("member_*.sqlite3")) == [
@@ -2012,7 +2012,7 @@ def test_sim_run_ensemble_resolves_an_inflation_series_vary(
     )
     assert run_result.exit_code == 0, run_result.output
 
-    member_intent = next((intent_dir / "retire_alice").glob("*/member_0000.sqlite3"))
+    member_intent = next((intent_dir / "retire_alice").glob("*/*/member_0000.sqlite3"))
     con = sqlite3.connect(member_intent)
     try:
         kind, amount, vary_distribution = con.execute(
@@ -2191,7 +2191,7 @@ def test_sim_calendar_add_transfer_vary_amount_is_not_shadowed_by_params_json(
     )
     assert run_result.exit_code == 0, run_result.output
 
-    member_run = next((runs_dir / "retire_alice").glob("*/member_0000.sqlite3"))
+    member_run = next((runs_dir / "retire_alice").glob("*/*/member_0000.sqlite3"))
     con = sqlite3.connect(member_run)
     try:
         amount = con.execute(
@@ -2250,7 +2250,7 @@ def test_sim_run_sensitivity_generates_oat_batch(
     assert "5/5 member(s) succeeded" in result.output
     assert "checking_rate_vary@0.1" in result.output
 
-    member_runs = sorted((runs_dir / "retire_alice").glob("*/member_*.sqlite3"))
+    member_runs = sorted((runs_dir / "retire_alice").glob("*/*/member_*.sqlite3"))
     assert len(member_runs) == 5
     manifest = read_batch_manifest(member_runs[0].parent)
     assert manifest is not None
@@ -2338,7 +2338,9 @@ def test_sim_ensemble_summary_skips_sensitivity_batches(
     oat = _sim_run_sensitivity(intent_dir, runs_dir, runner, "--only", "checking_rate_vary")
     assert oat.exit_code == 0, oat.output
 
-    batches = sorted(p for p in (runs_dir / "retire_alice").iterdir() if p.is_dir())
+    # #454: each mode's batches in a folder of their own.
+    batches = [*(runs_dir / "retire_alice" / "monte-carlo").iterdir(),
+               *(runs_dir / "retire_alice" / "sensitivity").iterdir()]
     assert len(batches) == 2
     result = runner.invoke(
         main, ["sim", "ensemble", "summary", "retire_alice", "--runs-dir", str(runs_dir)],
@@ -2384,7 +2386,7 @@ def test_sim_run_sensitivity_reports_member_failures_without_stopping(
 def _batch_results(runs_dir: Path) -> dict[str, tuple[list, list]]:
     """Per member: its draws and its monthly net worth -- what must match
     between sequential and parallel runs (file bytes won't: timestamps)."""
-    batch = max(p for p in (runs_dir / "retire_alice").iterdir() if p.is_dir())
+    batch = max(p for p in (runs_dir / "retire_alice").glob("*/*") if p.is_dir())
     results = {}
     for path in sorted(batch.glob("member_*.sqlite3")):
         con = sqlite3.connect(path)
@@ -2613,3 +2615,42 @@ def test_sim_prints_a_warning_as_one_plain_line() -> None:
     text = _format_warning(RuntimeWarning("2033-10-31: account 'X' went negative"),
                            RuntimeWarning, "/x/engine.py", 1152, "_warn_if_negative(...)")
     assert text == "warning: 2033-10-31: account 'X' went negative\n"
+
+
+# --- #454: a report with no batch yet makes one --------------------------------
+
+
+@pytest.mark.slow
+def test_a_sensitivity_report_with_no_sensitivity_batch_makes_one(
+    ensemble_recipe: str, test_data_dir: Path, runs_dir: Path,
+    commit_test_data: Callable[[], Path],
+) -> None:
+    from analysis.sim.loader import ensemble_batches
+
+    commit_test_data()
+    recipe_dir = runs_dir / ensemble_recipe
+    assert ensemble_batches(recipe_dir, "sensitivity") == []
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "sensitivity", ensemble_recipe, "--data-dir", str(test_data_dir),
+        "--mode", "sensitivity"])
+    assert result.exit_code == 0, result.output
+    assert f"{ensemble_recipe} has no sensitivity (OAT) batch yet; running one now" in result.stderr
+    [batch] = ensemble_batches(recipe_dir, "sensitivity")
+    assert batch.parent == recipe_dir / "sensitivity"
+    assert "checking_rate_vary" in result.stdout
+
+
+def test_a_report_offers_ensembles_that_have_no_runs_yet(
+    test_ensemble_scenario: str, test_data_dir: Path, runs_dir: Path,
+) -> None:
+    """#454: rather than only those with runs, every ensemble is offered;
+    one without a batch is then built (or waited for)."""
+    import click
+
+    import analysis.sim.cli as sim_cli
+
+    result = CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
+        sim_cli._ask_ensemble_run(runs_dir, "sensitivity", data_dir=test_data_dir, current=False))),
+        input=f"{test_ensemble_scenario}\n")
+    assert result.exit_code == 0, result.output
+    assert f"ensembles: {test_ensemble_scenario}\n" in result.output

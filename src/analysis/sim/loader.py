@@ -69,11 +69,13 @@ from analysis.sim.schema import SCHEMA_VERSION, apply_run_schema, inserted_id, c
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
-    "BATCH_MANIFEST_FILENAME",
+    "BATCH_MANIFEST_FILENAME", "BATCH_MODE_DIRS",
     "CURRENT_SCENARIO_FILE", "KEEP_SCENARIO_ENV", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
     "LoadError", "LoadResult", "DataDirtyRefused", "PendingRun", "ScenarioRef",
-    "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
+    "batch_mode", "batch_recipe", "batches_dir", "ensemble_batches", "find_batch",
+    "intent_batch_dir", "is_ensemble_batch", "latest_ensemble_batch", "move_legacy_batches",
+    "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
     "set_scenario_enabled", "template_aux_copies", "write_current_scenario",
@@ -292,41 +294,120 @@ def batch_mode(batch_dir: Path) -> str:
     return "monte_carlo"
 
 
-def _await_fresh(runs_dir: Path, scenario: str) -> None:
+def _await_fresh(runs_dir: Path, scenario: str, mode: str | None = "monte_carlo") -> None:
+    """Wait for a pending background build of ``scenario``'s results of
+    ``mode`` (a single run's too, for Monte Carlo; every kind when None)."""
     from analysis.sim.builder import await_fresh
 
-    await_fresh(runs_dir, scenario)
+    await_fresh(runs_dir, scenario, mode=mode)
+
+
+# #454: each mode's batches in a folder of their own under the recipe's,
+# so the latest of a mode is the newest name there, with no batch opened.
+BATCH_MODE_DIRS: dict[str, str] = {"monte_carlo": "monte-carlo", "sensitivity": "sensitivity"}
+_BATCH_NAME = re.compile(r"^\d{4}-\d\d-\d\dT\d{6}Z(?:-\d+)?$")
+
+
+def batches_dir(recipe_dir: Path | str, mode: str) -> Path:
+    """Where ``mode``'s batches of a recipe live (#454):
+    ``<recipe_dir>/monte-carlo/`` or ``<recipe_dir>/sensitivity/``. The same
+    under ``state/runs/<recipe>`` and ``state/intent/<recipe>``."""
+    return Path(recipe_dir) / BATCH_MODE_DIRS[mode]
+
+
+def batch_recipe(batch_dir: Path | str) -> str:
+    """The recipe a batch folder belongs to: ``<recipe>/<mode dir>/<batch>``."""
+    return Path(batch_dir).parent.parent.name
+
+
+def move_legacy_batches(recipe_dir: Path | str) -> None:
+    """Move a recipe's batches from where they were before #454, directly
+    under it, into their mode's folder (:func:`batches_dir`). Works for a
+    recipe's run batches and its member intents alike: either kind of
+    folder holds ``member_*.sqlite3`` files that say their mode. Another
+    process moving the same batch first is fine."""
+    recipe_dir = Path(recipe_dir)
+    try:
+        legacy = [p for p in recipe_dir.iterdir()
+                  if _BATCH_NAME.match(p.name) and p.is_dir() and not p.is_symlink()]
+    except OSError:
+        return
+    for batch in legacy:
+        try:
+            target = batches_dir(recipe_dir, batch_mode(batch))
+            target.mkdir(exist_ok=True)
+            batch.rename(target / batch.name)
+        except (OSError, ValueError, sqlite3.Error):
+            pass  # moved by another process, or unreadable: left where it is
+
+
+def ensemble_batches(recipe_dir: Path | str, mode: str | None = None) -> list[Path]:
+    """A recipe's run batches of ``mode`` (both modes when None), oldest
+    first: folders holding a member run file or a batch manifest. With both
+    modes, ordered by when they were made (``locks.run_name_key``)."""
+    from analysis.sim.locks import run_name_key
+
+    recipe_dir = Path(recipe_dir)
+    if not recipe_dir.is_dir():
+        return []
+    move_legacy_batches(recipe_dir)
+    found: list[Path] = []
+    for each in (mode,) if mode is not None else registries.ENSEMBLE_MODES:
+        folder = batches_dir(recipe_dir, each)
+        if folder.is_dir():
+            found.extend(p for p in folder.iterdir() if is_ensemble_batch(p))
+    return sorted(found, key=lambda p: run_name_key(p.name))
+
+
+def find_batch(recipe_dir: Path | str, name: str, mode: str | None = None) -> Path | None:
+    """A recipe's batch named ``name`` (a ``sim run`` stamp), of ``mode``
+    (either, when None), or None when there is no such batch."""
+    recipe_dir = Path(recipe_dir)
+    if not recipe_dir.is_dir():
+        return None
+    move_legacy_batches(recipe_dir)
+    for each in (mode,) if mode is not None else registries.ENSEMBLE_MODES:
+        path = batches_dir(recipe_dir, each) / name
+        if is_ensemble_batch(path):
+            return path
+    return None
+
+
+def intent_batch_dir(intent_dir: Path | str, batch_dir: Path | str) -> Path:
+    """The member intents of the run batch ``batch_dir``: the folder of the
+    same name, recipe and mode under ``intent_dir`` (#454)."""
+    batch_dir = Path(batch_dir)
+    recipe = Path(intent_dir) / batch_recipe(batch_dir)
+    move_legacy_batches(recipe)
+    return batches_dir(recipe, batch_mode(batch_dir)) / batch_dir.name
 
 
 def latest_ensemble_batch(
     recipe_dir: Path, mode: str | None = None, *, wait: bool = True,
 ) -> Path | None:
-    """The most recently generated batch subfolder under ``recipe_dir`` that
-    holds at least one member run file or a batch manifest, or ``None`` if
-    there isn't one.
+    """The most recently generated batch under ``recipe_dir`` that holds at
+    least one member run file or a batch manifest, or ``None`` if there
+    isn't one.
 
-    A recipe's members live under ``<recipe_dir>/<timestamp>/member_NNNN.sqlite3``
-    -- one subfolder per ``sim run`` invocation, timestamp-named so reruns
-    never collide and every batch's history is kept (matching how an
-    ordinary, non-ensemble run file is never overwritten either). The
-    manifest check covers the batch where every member failed to resolve:
-    no member file was ever created for any of them, but the batch itself
-    (and its recorded failures) still needs to be discoverable, not silently
-    invisible.
+    A recipe's members live under
+    ``<recipe_dir>/<mode dir>/<timestamp>/member_NNNN.sqlite3`` (#454:
+    :func:`batches_dir`) -- one subfolder per ``sim run`` invocation,
+    timestamp-named so reruns never collide and every batch's history is
+    kept (matching how an ordinary, non-ensemble run file is never
+    overwritten either). The manifest check covers the batch where every
+    member failed to resolve: no member file was ever created for any of
+    them, but the batch itself (and its recorded failures) still needs to
+    be discoverable, not silently invisible.
 
     ``mode`` (ADR-007 §5) restricts the search to ``"monte_carlo"`` or
     ``"sensitivity"`` batches; ``None`` accepts either. Unless ``wait`` is
-    False, first waits for a pending background build of the recipe (#300).
+    False, first waits for a pending background build of that mode (#300,
+    #454).
     """
     recipe_dir = Path(recipe_dir)
     if wait:
-        _await_fresh(recipe_dir.parent, recipe_dir.name)
-    if not recipe_dir.is_dir():
-        return None
-    from analysis.sim.locks import run_name_key
-
-    batches = sorted((p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode)),
-                     key=lambda p: run_name_key(p.name))
+        _await_fresh(recipe_dir.parent, recipe_dir.name, mode)
+    batches = ensemble_batches(recipe_dir, mode)
     return batches[-1] if batches else None
 
 
@@ -348,7 +429,7 @@ def _latest_ensemble_member_zero(
     so it stands in for "the" run the same way any other scenario's one run
     file would.
     """
-    batch = latest_ensemble_batch(Path(runs_dir) / name, wait=wait)
+    batch = latest_ensemble_batch(Path(runs_dir) / name, mode="monte_carlo", wait=wait)
     if batch is None:
         return None
     member = batch / "member_0000.sqlite3"

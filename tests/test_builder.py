@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
@@ -118,7 +119,7 @@ def test_a_reader_asks_again_once_a_repo_changes(
     _code, data_dir = pair
     builder.install(data_dir)
     asked: list[str] = []
-    monkeypatch.setattr(builder, "_pending", lambda _p, _d, name: asked.append(name) or False)
+    monkeypatch.setattr(builder, "_pending", lambda _p, _d, name, *_steps: asked.append(name) or [])
     runs = BuilderPaths.for_data(data_dir).runs_dir
     builder.await_fresh(runs, "base")
     builder.await_fresh(runs, "base")
@@ -166,7 +167,7 @@ def daemon(
     builds a stand-in command (FAKE_BUILD: sleep seconds and exit code)."""
     _code, data_dir = pair
     monkeypatch.setattr(builder, "main_check", lambda *_a: (("t1",), None))
-    monkeypatch.setattr(freshness, "unchanged_run", lambda *_a: None)
+    monkeypatch.setattr(freshness, "unchanged_run", lambda *_a, **_kw: None)
     monkeypatch.setattr(freshness, "code_tree", lambda: freshness.CodeTree(None, ("t1",)))
     monkeypatch.setenv("FAKE_BUILD", "0 0")
     monkeypatch.setattr(builder, "_sim_executable", lambda: [
@@ -429,7 +430,7 @@ def test_an_edit_cancels_the_build_and_its_dependents_wait_for_a_commit(
     from analysis.sim import loader
 
     waited: list[str] = []
-    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name: waited.append(name))
+    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name, *_mode: waited.append(name))
     poked: list[Path] = []
     monkeypatch.setattr(builder, "notify", lambda data_dir, **_kw: poked.append(data_dir) or "")
     result = CliRunner().invoke(main, ["sim", "scenario", "edit", "base", "--description", "edited",
@@ -468,7 +469,7 @@ def test_a_reader_waiting_on_a_cancelled_build_says_so(
     builder.await_fresh(paths.runs_dir, "base", echo=lines.append)
     canceller.join()
     assert lines[-1] == ("the background build of base was cancelled: its inputs changed; "
-                         "opening its latest run, which is out of date")
+                         "opening its latest results, which are out of date")
 
 
 def test_looking_up_a_scenario_never_waits_for_its_build(
@@ -485,7 +486,7 @@ def test_looking_up_a_scenario_never_waits_for_its_build(
     builder._write_json(paths.status, {"state": "building", "current": {"scenario": "base"},
                                        "queue": [], "updated": time.time()})
     waited: list[str] = []
-    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name: waited.append(name))
+    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name, *_mode: waited.append(name))
     ref = loader.resolve_scenario_name(data_dir, "base")
     assert not ref.run.done()  # its build is in progress
     assert ref.run.latest() is None and "no runs" in ref.describe()
@@ -575,3 +576,114 @@ def test_hold_does_nothing_where_the_builder_is_not_installed(
     monkeypatch.setattr(builder, "_holding", {})
     builder.hold(data_dir, ["base"])
     assert not BuilderPaths.for_data(data_dir).holds.exists()
+
+
+# -- #454: series stores and sensitivity batches -------------------------------
+
+
+def test_jobs_are_named_for_their_scenario_and_step() -> None:
+    assert builder.job_key("base", "run") == "base"
+    assert builder.job_key("ens", "sensitivity") == "ens:sensitivity"
+    assert builder.parse_job("ens:series") == ("ens", "series")
+    assert builder.parse_job("base") == ("base", "run")
+
+
+def test_the_builder_runs_everything_then_series_stores_then_sensitivities(
+    daemon: builder._Daemon,
+) -> None:
+    (daemon.data_dir / ".current_scenario").write_text("b\n")
+    queue = ["a:sensitivity", "b:series", "a", "b:sensitivity", "b", "a:series"]
+    assert daemon.order(queue) == ["b", "a", "b:series", "a:series", "b:sensitivity", "a:sensitivity"]
+
+
+def test_a_requested_scenarios_other_jobs_follow_it_at_once(
+    daemon: builder._Daemon,
+) -> None:
+    """Once a reader has waited on a's run, a's series store and sensitivity
+    batch come before anyone else's run."""
+    queue = ["a", "b", "a:series", "a:sensitivity", "b:sensitivity"]
+    daemon.first = ["a"]
+    assert daemon.order(queue)[0] == "a"
+    daemon.queue = daemon.order(queue)
+    daemon.start_next(("t1",))
+    assert daemon.build is not None and daemon.build.wanted
+    assert daemon.follow == ["a"]
+    assert daemon.order(daemon.queue) == ["a:series", "a:sensitivity", "b", "b:sensitivity"]
+
+
+def test_each_step_runs_its_own_command(daemon: builder._Daemon) -> None:
+    data = daemon.data_dir
+    assert builder.step_command(data, "e", "run") == ["load", "e", "--data-dir", str(data)]
+    assert builder.step_command(data, "e", "series") == [
+        "builder", "series", "e", "--data-dir", str(data)]
+    assert builder.step_command(data, "e", "sensitivity") == [
+        "run", "e", "--sensitivity", "--data-dir", str(data)]
+
+
+def test_a_sensitivity_batch_is_made_again_with_its_quantiles(
+    daemon: builder._Daemon, fake_state: Callable[..., Path],
+) -> None:
+    from analysis.sim.ensemble import write_batch_manifest
+
+    batch = daemon.paths.runs_dir / "e" / "sensitivity" / "2026-01-01T000000Z"
+    batch.mkdir(parents=True)
+    write_batch_manifest(batch, member_count=5, failures=[], mode="sensitivity",
+                         quantiles=(0.1, 0.25, 0.75, 0.9), rows=["r"])
+    assert builder.step_command(daemon.data_dir, "e", "sensitivity")[3:5] == [
+        "--quantiles", "0.1,0.25,0.75,0.9"]
+
+
+def test_which_steps_an_ensemble_needs(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale run needs running; a current batch without a current series
+    store needs one; an ensemble whose latest result is a batch needs a
+    sensitivity batch unless its latest one is current."""
+    from analysis.sim import series_db
+
+    runs = daemon.paths.runs_dir
+    batch = runs / "e" / "monte-carlo" / "2026-01-01T000000Z"
+    batch.mkdir(parents=True)
+    fresh: dict[str, freshness.Unchanged | None] = {"monte_carlo": None, "sensitivity": None}
+    monkeypatch.setattr(freshness, "unchanged_run",
+                        lambda *_a, mode="monte_carlo", **_kw: fresh[mode])
+    monkeypatch.setattr(freshness, "latest_result", lambda *_a: batch)
+    current = {"store": False}
+    monkeypatch.setattr(series_db, "series_db_current", lambda _b: current["store"])
+    needs = lambda: builder.needed_steps(daemon.data_dir, runs, "e", None)  # noqa: E731
+    assert needs() == ["run", "sensitivity"]
+    fresh["monte_carlo"] = freshness.Unchanged(batch)
+    assert needs() == ["series", "sensitivity"]
+    current["store"] = True
+    fresh["sensitivity"] = freshness.Unchanged(batch)
+    assert needs() == []
+    monkeypatch.setattr(freshness, "latest_result", lambda *_a: runs / "a-run-file.sqlite3")
+    fresh["sensitivity"] = None
+    assert needs() == []  # a single run: nothing to vary
+
+
+@pytest.mark.slow
+def test_a_sensitivity_reader_waits_only_for_the_sensitivity_batch(
+    running_daemon: BuilderPaths, builder_on: None,
+) -> None:
+    paths = running_daemon
+    builder._write_json(paths.status, {
+        "state": "building", "current": {"scenario": "base", "job": "base"},
+        "queue": ["base:sensitivity"], "updated": 0})
+
+    def finish() -> None:
+        time.sleep(1.0)
+        [request] = [json.loads(p.read_text()) for p in paths.requests.glob("*.json")]
+        assert request["steps"] == ["sensitivity"]
+        builder._write_json(paths.status, {"state": "building", "current": {"job": "base"},
+                                           "queue": [], "updated": time.time()})
+
+    lines: list[str] = []
+    finisher = threading.Thread(target=finish)
+    finisher.start()
+    builder.await_fresh(paths.runs_dir, "base", echo=lines.append, mode="sensitivity")
+    finisher.join()
+    assert lines == [
+        "waiting for the background build of base (sensitivity batch) (Ctrl-C to stop waiting)...",
+        "the background build of base (sensitivity batch) is done",
+    ]

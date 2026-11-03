@@ -130,11 +130,11 @@ def test_listing_ensembles_never_waits_for_their_builds(
     )
     from analysis.sim.notebook_ui.sensitivity_widgets import list_sensitivity_recipes
 
-    batch = runs_dir / "base" / "2026-10-26T043000Z"
+    batch = runs_dir / "base" / "monte-carlo" / "2026-10-26T043000Z"
     batch.mkdir(parents=True)
     (batch / "batch_manifest.json").write_text('{"mode": "monte_carlo"}')
     waited: list[str] = []
-    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name: waited.append(name))
+    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name, *_mode: waited.append(name))
     assert list_ensemble_recipes(runs_dir) == ["base"]
     assert list_sensitivity_recipes(runs_dir) == ["base"]
     recipe_accounts(runs_dir, ["base"])

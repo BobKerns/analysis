@@ -400,7 +400,7 @@ def test_sim_ensemble_compare_with_several_variants_prints_the_notebooks_two_tab
     from analysis.sim.series_db import open_series
 
     tables = RecipeTables(
-        {name: open_series(runs_dir / name / "2026-01-01T000000Z")
+        {name: open_series(runs_dir / name / "monte-carlo" / "2026-01-01T000000Z")
          for name in ("baseline", "child", "other")},
         None, None, DollarMode.CPI_CONSTANT, 1_000_000.0, after_tax=True)
     assert len(deltas) == len(tables.deltas_table("baseline", ["child", "other"]))

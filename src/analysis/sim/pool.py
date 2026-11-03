@@ -31,7 +31,7 @@ from analysis.sim.lineage import (
     read_parents,
     scenario_dir,
 )
-from analysis.sim.loader import BATCH_MANIFEST_FILENAME
+from analysis.sim.loader import BATCH_MANIFEST_FILENAME, intent_batch_dir
 
 __all__ = [
     "POOL_KEY", "Pool", "PoolError", "read_pool", "pool_issues", "pool_size", "assign_members",
@@ -427,7 +427,7 @@ def build_pool_batch(
     for j, k in enumerate(choice):
         component = pool.components[k]
         stem = f"member_{j:04d}.sqlite3"
-        source_intent = intent_dir / component / sources[component].name / stem
+        source_intent = intent_batch_dir(intent_dir, sources[component]) / stem
         if source_intent.is_file():
             _link(source_intent, intent_batch / stem)
         source_run = sources[component] / stem
