@@ -3094,8 +3094,9 @@ def ensemble_factors(
     for column in ("Factor", "ρ", "Rows", "Description"):
         table.add_column(column, justify="right" if column in ("ρ", "Rows") else "left")
     for factor, depth in tree.walk():
-        table.add_row(escape("  " * depth + factor.name),
-                      "" if factor.rho is None else f"{factor.rho:g}",
+        via = f" (via {', '.join(factor.via)})" if factor.via else ""
+        table.add_row(escape("  " * depth + factor.name + via),
+                      "" if factor.rho is None else f"{factor.rho:.3g}",
                       str(len(under.get(factor.name, []))) if factor.name in under else "",
                       escape(factor.description))
     _print_wide(table)

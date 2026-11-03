@@ -164,3 +164,26 @@ def test_the_tree_reads_factors_and_varying_rows_from_an_intent(
     assert list(tree.factors)[0] == "core_inflation"
     assert {"cpi_path", "cash_path", "stock_path"} <= {v.name for v in tree.varying}
     assert tree.factor_of("cpi_path") == "cpi_factor"
+
+
+def test_a_factor_hung_from_a_row_stays_in_its_tree(
+    template_data_dir: Path, derive_template_scenario: Callable[..., Path],
+) -> None:
+    from analysis.sim.registries import CALENDAR_HEADER
+
+    header = ",".join(CALENDAR_HEADER)
+    row = {"kind": "latent_factor", "name": "under_cpi", "description": "follows the CPI path",
+           "vary_correlate_with": "cpi_path", "vary_correlation": "0.8"}
+    derive_template_scenario("hung", "base:t_inflation_ensemble", files={
+        "calendar.csv": f"{header}\n" + ",".join(row.get(c, "") for c in CALENDAR_HEADER) + "\n"})
+
+    table = _factors(template_data_dir, "hung")
+    source = _factors(template_data_dir, "hung", "--mermaid")
+
+    assert table.exit_code == 0, table.output
+    lines = _lines(table.output)
+    # cpi_path is cpi_factor's at ρ 1, so under_cpi is cpi_factor's at 0.8.
+    assert any(line.startswith("under_cpi (via cpi_path) │ 0.8 │") for line in lines)
+    assert lines.index(next(line for line in lines if line.startswith("cpi_factor "))) < \
+        lines.index(next(line for line in lines if line.startswith("under_cpi ")))
+    assert '-.->|"0.8 via cpi_path"|' in source.output

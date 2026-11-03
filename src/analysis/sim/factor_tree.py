@@ -34,6 +34,10 @@ class Factor:
     description: str
     # On a tree's root: the Student-t copula's degrees of freedom (#68).
     nu: float | None = None
+    # The varying rows (or lifespans) between this factor and its parent,
+    # nearest first: a factor may hang from a row (ADR-008 §4), and its
+    # ``rho`` is then the product along the way.
+    via: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -94,15 +98,18 @@ def factor_tree(con: sqlite3.Connection) -> FactorTree:
     cur.row_factory = sqlite3.Row
     columns = {row[1] for row in con.execute("PRAGMA table_info(calendar_event)")}
     nu = "vary_tail_dependence" if "vary_tail_dependence" in columns else "NULL"
-    factors: dict[str, Factor] = {}
-    for row in cur.execute(
+    rows = cur.execute(
         f"SELECT name, description, {nu} AS nu FROM calendar_event WHERE kind = ? ORDER BY id",
         (LATENT_FACTOR_KIND,),
-    ):
-        link = links.get(row["name"])
+    ).fetchall()
+    names = {row["name"] for row in rows}
+    factors: dict[str, Factor] = {}
+    for row in rows:
+        parent, via = _factor_parent(links, names, row["name"])
         factors[row["name"]] = Factor(
-            row["name"], link.parent if link else None, link.rho if link else None,
-            row["description"] or "", row["nu"])
+            row["name"], parent,
+            None if parent is None else implied_correlation(links, row["name"], parent),
+            row["description"] or "", row["nu"], via)
     varying = [
         Varying(row["name"], _row_varies(row), _distribution(row))
         for row in cur.execute(
@@ -119,6 +126,22 @@ def factor_tree(con: sqlite3.Connection) -> FactorTree:
     varying += [Varying(row["name"], f"strategy {row['strategy']}", row["vary_distribution"])
                 for row in strategy_vary_rows(con)]
     return FactorTree(factors, varying, links)
+
+
+def _factor_parent(
+    links: dict[str, Link], factors: set[str], name: str,
+) -> tuple[str | None, tuple[str, ...]]:
+    """The nearest factor above ``name`` and the other nodes passed on the
+    way; ``None`` when nothing above it is a factor (a tree's root)."""
+    via: list[str] = []
+    while name in links:
+        name = links[name].parent
+        if name in factors:
+            return name, tuple(via)
+        if name in via:  # the loader refuses cycles; don't loop on one
+            break
+        via.append(name)
+    return None, ()
 
 
 def _row_varies(row: sqlite3.Row) -> str:
@@ -147,7 +170,9 @@ def mermaid(tree: FactorTree) -> str:
     walked = [factor for factor, _depth in tree.walk()]
     lines = ["flowchart TB"]
     lines += [f"    {node(factor)}" for factor in walked]
-    lines += [f"    {ids[f.parent]} -->|{f.rho:g}| {ids[f.name]}"
+    # A link through varying rows is dotted, and names them.
+    lines += [f"    {ids[f.parent]} -->|{f.rho:.3g}| {ids[f.name]}" if not f.via else
+              f"    {ids[f.parent]} -.->|\"{f.rho:.3g} via {', '.join(f.via)}\"| {ids[f.name]}"
               for f in walked if f.parent in tree.factors]
     return "\n".join(lines)
 
@@ -212,8 +237,10 @@ def factor_tree_figure(
         ax.plot([x, spine], [y, y], color=MUTED, lw=1, zorder=1)
         ax.plot([spine, spine], [min(ys + [y]), max(ys + [y])], color=MUTED, lw=1, zorder=1)
         for child, cy in zip(children, ys, strict=True):
-            ax.plot([spine, x + 1], [cy, cy], color=MUTED, lw=1, zorder=1)
-            ax.text(spine + _SPINE / 2, cy, f"{child.rho:g}", ha="center", va="center",
+            # A link through varying rows is dashed: its ρ is the product.
+            ax.plot([spine, x + 1], [cy, cy], color=MUTED, lw=1, zorder=1,
+                    linestyle="--" if child.via else "-")
+            ax.text(spine + _SPINE / 2, cy, f"{child.rho:.3g}", ha="center", va="center",
                     fontsize=9, color=INK, zorder=2,
                     bbox={"boxstyle": "square,pad=0.15", "facecolor": GRID, "edgecolor": "none"})
     if title:
