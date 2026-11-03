@@ -346,6 +346,28 @@ def test_buckets_never_refills_across_traditional_and_roth_lots(
     assert all(character != "tax_deferred_out" for *_x, character in legs)
 
 
+def test_buckets_says_once_why_nothing_could_refill(
+    strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """Stocks only in the brokerage, which has no cash lot: no refill can
+    happen, and the log says why the first time, not every month."""
+    lots = strategy_csv(SCENARIO, "account_lots.csv")
+    lots.write_text("\n".join(
+        line.replace(",roth_ira,USSTK,", ",roth_ira,BONDX,") for line in lots.read_text().splitlines()
+        if not line.startswith("Asset_Brokerage_Joint,sweep")) + "\n")
+    chain = strategy_csv(SCENARIO, "chains/source/portfolio_draw.csv")
+    chain.write_text("\n".join(
+        line for line in chain.read_text().splitlines()
+        if not line.startswith("Asset_Brokerage_Joint,sweep")) + "\n")
+    _buckets(strategy_csv, bond_years=0)
+    run = run_strategy_scenario(SCENARIO)
+    refills = _decisions(run, "month_start")
+    stuck = [(m, n) for m, n, *_ in refills if n.startswith("could not refill")]
+    assert len(stuck) == 1, refills
+    assert stuck[0][1] == "could not refill: no cash lot in Asset_Brokerage_Joint"
+    assert not _legs(run, "month_start")
+
+
 def test_buckets_without_bonds_is_fine_with_bond_years_zero(
     strategy_csv: Callable[[str, str], Path], strategy_scenarios: Path, intent_dir: Path,
 ) -> None:

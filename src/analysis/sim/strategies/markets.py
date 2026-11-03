@@ -299,15 +299,24 @@ class Buckets(Strategy):
         bonds = refill(2, 3) if up and p.bond_years else 0
         if bonds:
             parts.append(f"bonds to {_dollars(held[2])} ({p.bond_years:g} years): {_dollars(bonds)} from stocks")
+        missing = [f"{BUCKET_NAMES[b]} lot in {account}" for account, b in sorted(stuck)]
         if not moves:
-            return None
+            # Nothing could move: say why, once while the reason holds (a
+            # monthly note repeating it would bury the log).
+            if not missing or memory.get("stuck") == missing:
+                return None
+            memory["stuck"] = missing
+            return Decision([], note="could not refill: no " + ", no ".join(missing), detail={
+                "need": round(need), "targets": target, "held": held, "stocks_up": up,
+                "stock_return": stock_return, "cannot_refill": missing,
+            })
+        memory["stuck"] = missing
         prefix = "" if up else f"stocks {stock_return:+.1%} {period}, bonds not refilled: "
         note = prefix + "refilled " + "; ".join(parts)
-        if stuck:
-            note += "; no " + ", no ".join(
-                f"{BUCKET_NAMES[b]} lot in {account}" for account, b in sorted(stuck))
+        if missing:
+            note += "; no " + ", no ".join(missing)
         return Decision(moves, note=note, detail={
             "need": round(need), "targets": target, "held": held, "stocks_up": up,
             "stock_return": stock_return,
-            "cannot_refill": [f"{account}:{BUCKET_NAMES[b]}" for account, b in sorted(stuck)],
+            "cannot_refill": missing,
         })
