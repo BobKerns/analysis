@@ -846,7 +846,10 @@ def strategy_scenarios(test_data_dir: Path, test_scenarios_dir: Path, test_data:
     ``alice_year_end`` adds a federal tax rule, a gift expense account and a
     ``harvest`` year-end strategy (#421); ``alice_triggers`` adds a
     ``tight`` spending rail and a ``cut_on_breach`` strategy whose trigger
-    watches it (#441). Brings its own allocations.csv (USSTK, BONDX). Returns the data
+    watches it (#441); ``alice_buckets`` builds on retire_alice with cash,
+    bond and stock lots in the brokerage, Alice's IRA and her Roth, 7%/4%/2%
+    rate series, and a ``buckets`` strategy owning ``portfolio_draw`` (#463).
+    Brings its own allocations.csv (USSTK, BONDX). Returns the data
     directory."""
     source = test_data / "sim" / "strategies"
     for folder in (source / "scenarios").iterdir():

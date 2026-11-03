@@ -1,0 +1,8 @@
+account_name,lot,maximum,percent,series,cadence
+Asset_Savings,,,,,
+Asset_Brokerage_Joint,sweep,,,,
+Asset_Roth_Alice,mm,,,,
+Asset_TraditionalIRA_Alice,default,,,,
+Asset_Roth_Alice,bonds,,,,
+Asset_Brokerage_Joint,default,,,,
+Asset_Roth_Alice,default,,,,

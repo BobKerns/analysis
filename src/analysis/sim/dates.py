@@ -73,6 +73,12 @@ def _month_end(year: int, month: int) -> date:
     return date(year, month, monthrange(year, month)[1])
 
 
+def add_month_ends(d: date, months: int) -> date:
+    """The last day of the month ``months`` after ``d``'s (negative: before)."""
+    year, month0 = divmod(d.year * 12 + d.month - 1 + months, 12)
+    return _month_end(year, month0 + 1)
+
+
 def parse_month(s: str) -> date:
     """``YYYY-MM`` or ``YYYY-MM-DD`` as the last day of its month.
 

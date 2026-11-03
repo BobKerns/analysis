@@ -98,6 +98,7 @@ errstate
 esac
 espeak
 evals
+Evensky
 executemany
 executescript
 execv
@@ -161,6 +162,7 @@ kendalltau
 Kensho
 kernelspec
 killpg
+Kitces
 klinger
 kokoro
 Kolmogorov
@@ -182,6 +184,7 @@ linalg
 linestyle
 linthresh
 lognormal
+lookback
 lookthrough
 lotb
 lstsq
@@ -237,6 +240,7 @@ paywalled
 pcon
 pdftotext
 Pewsey
+Pfau
 phonemize
 phonemized
 phonemizer

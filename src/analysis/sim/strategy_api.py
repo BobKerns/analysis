@@ -42,7 +42,7 @@ __all__ = [
     "register", "sale_gain",
 ]
 
-API_VERSION = 5
+API_VERSION = 6
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
@@ -54,7 +54,8 @@ and ``annual_return``. 3 (#421) added ``year_end``, :class:`Transfer`,
 ``month_start``, ``on_breach`` and :class:`BreachView`, ``ctx.history``
 and ``ctx.rail``. 5 (#459) added ``ctx.survival_years``,
 ``ctx.life_expectancy`` and ``ctx.rmd_divisor``, and :class:`ScenarioView`'s
-``people``, ``aux`` and ``portfolio_classes``."""
+``people``, ``aux`` and ``portfolio_classes``. 6 (#463) added
+``ctx.trailing_return``."""
 
 
 class StrategyError(Exception):
@@ -440,6 +441,7 @@ class Context:
         people: Mapping[str, PersonView] | None = None,
         budget: Callable[[], int] | None = None,
         annual_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
+        trailing_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
         tax: TaxView | None = None,
         history: History | None = None,
         rail: Callable[[str], RailYears] | None = None,
@@ -454,6 +456,7 @@ class Context:
         self._people = people if people is not None else {}
         self._budget = budget
         self._annual_return = annual_return
+        self._trailing_return = trailing_return
         self._tax = tax
         self._history = history
         self._rail = rail
@@ -538,6 +541,19 @@ class Context:
         if self._annual_return is None:
             return None
         return self._annual_return(tuple(lots), year)
+
+    def trailing_return(self, lots: Iterable[LotRef], months: int) -> float | None:
+        """The investment return on ``lots`` over the ``months`` finished
+        months before this one (#463): the growth posted to them in those
+        months over their balance at the window's start. A window reaching
+        back before the run starts with the run (its opening balance), so it
+        is shorter. None when no month has finished yet, or they held
+        nothing at the window's start."""
+        if not isinstance(months, int) or isinstance(months, bool) or months < 1:
+            raise StrategyError(f"trailing_return needs a whole number of months >= 1, not {months!r}")
+        if self._trailing_return is None:
+            return None
+        return self._trailing_return(tuple(lots), months)
 
     @property
     def tax(self) -> TaxView:
