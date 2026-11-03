@@ -209,6 +209,29 @@ def test_the_terminal_figure_leaves_room_for_the_prompt(monkeypatch: pytest.Monk
     assert height * dpi == pytest.approx((50 - 3) * 24)
 
 
+def test_a_terminal_chart_is_no_wider_than_the_terminal_nor_too_large(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#452: a figure drawn at the terminal's text size can come out wider
+    than the terminal, and a tall one (a row per varying parameter) more
+    pixels than a terminal decodes; it's drawn smaller instead."""
+    import os
+    import shutil
+
+    from analysis.sim import cli
+
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *a, **k: os.terminal_size((100, 50)))
+    cell = (20.0, 48.0)  # a Retina terminal's 2x pixels: 288 dpi for 10pt text
+    dpi = cli._figure_dpi(cell)
+
+    assert cli._terminal_dpi((5, 4), dpi, cell) == dpi  # small enough already
+    assert 11 * cli._terminal_dpi((11, 8), dpi, cell) == pytest.approx(100 * 20)
+    tall = cli._terminal_dpi((11, 40), dpi, cell)
+    assert 11 * 40 * tall**2 == pytest.approx(cli._MAX_TERMINAL_PIXELS)
+    assert 11 * 40 * cli._terminal_dpi((11, 40), 200.0, None) ** 2 == pytest.approx(
+        cli._MAX_TERMINAL_PIXELS)
+
+
 def test_person_show_reads_and_names_a_persons_own_table(
     test_data_dir: Path, write_lifespans: Callable[..., None],
 ) -> None:
