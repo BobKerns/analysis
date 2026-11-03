@@ -154,7 +154,7 @@ def test_sim_ensemble_compare_shows_each_rails_change(
     mc_batch: Path, test_data_dir: Path, runs_dir: Path,
 ) -> None:
     """Against itself every share and RMS changes by zero."""
-    shutil.copytree(mc_batch.parent, runs_dir / "same")
+    shutil.copytree(mc_batch.parent.parent, runs_dir / "same")
     shutil.copytree(test_data_dir / "scenarios" / "retire_alice", test_data_dir / "scenarios" / "same")
     result = _ensemble("compare", "retire_alice", "same", "--data-dir", str(test_data_dir),
                        "--runs-dir", str(runs_dir))
@@ -210,7 +210,7 @@ def test_the_ensemble_guard_rails_table_widget_compares_recipes_by_year(
     from analysis.sim.notebook_ui import ensemble_widgets
     from analysis.sim.notebook_ui.pickers import TimeRangePicker
 
-    shutil.copytree(mc_batch.parent, runs_dir / "same")
+    shutil.copytree(mc_batch.parent.parent, runs_dir / "same")
     shutil.copytree(test_data_dir / "scenarios" / "retire_alice", test_data_dir / "scenarios" / "same")
     shown: list[Any] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))

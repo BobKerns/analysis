@@ -17,7 +17,7 @@ from analysis.cli import main
 from analysis.sim import cli as sim_cli
 from analysis.sim import completion, names
 from analysis.sim.cli import sim_group_command
-from analysis.sim.loader import BATCH_MANIFEST_FILENAME, write_current_scenario
+from analysis.sim.loader import BATCH_MANIFEST_FILENAME, batches_dir, write_current_scenario
 
 
 @pytest.fixture
@@ -130,7 +130,7 @@ def test_ensemble_summary_with_no_runs_says_so(
         "sim", "ensemble", "summary", "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir),
     ])
     assert result.exit_code != 0
-    assert "there are no ensembles with runs to choose from" in result.output
+    assert "there are no ensembles to choose from" in result.output
 
 
 def test_a_name_given_on_the_line_is_not_asked(sim: Callable[..., Result], test_data_dir: Path) -> None:
@@ -375,10 +375,10 @@ def test_lot_names_can_leave_out_the_implicit_default(data_dir: Path) -> None:
 
 def test_a_named_batch_is_offered_only_when_it_holds_runs_of_the_mode(tmp_path: Path) -> None:
     for recipe, mode in (("mc_recipe", "monte_carlo"), ("oat_recipe", "sensitivity")):
-        batch = tmp_path / recipe / "b1"
+        batch = batches_dir(tmp_path / recipe, mode) / "b1"
         batch.mkdir(parents=True)
         (batch / BATCH_MANIFEST_FILENAME).write_text(json.dumps({"mode": mode}))
-    (tmp_path / "stale_recipe" / "b1").mkdir(parents=True)  # no manifest, no members
+    (tmp_path / "stale_recipe" / "monte-carlo" / "b1").mkdir(parents=True)  # no manifest, no members
     result = CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
         sim_cli._ask_ensemble_run(tmp_path, "monte_carlo", batch="b1"))), input="mc_recipe\n")
     assert result.exit_code == 0, result.output
@@ -401,7 +401,7 @@ def test_a_rules_person_may_be_the_household(sim: Callable[..., Result], test_da
 
 def _mc_runs(runs: Path, *recipes: str) -> None:
     for recipe in recipes:
-        batch = runs / recipe / "b1"
+        batch = runs / recipe / "monte-carlo" / "b1"
         batch.mkdir(parents=True)
         (batch / BATCH_MANIFEST_FILENAME).write_text(json.dumps({"mode": "monte_carlo"}))
 
@@ -433,7 +433,7 @@ def test_an_ensemble_is_asked_for_when_the_current_scenario_has_no_runs(tmp_path
     write_current_scenario(data, "retire_alice")
     result = _ask_ensemble(runs, data, input="mc_one\n")
     assert result.exit_code == 0, result.output
-    assert "ensembles with runs: mc_one\n" in result.output
+    assert "ensembles: mc_one\n" in result.output
     assert "The current scenario, retire_alice, is not among them." in result.stderr
     assert result.stdout.endswith("mc_one\n")
 

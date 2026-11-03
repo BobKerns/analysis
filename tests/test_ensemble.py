@@ -471,9 +471,9 @@ def test_latest_ensemble_batch_picks_the_most_recent_timestamp(tmp_path: Path) -
     recipe_dir = tmp_path / "runs" / "retire_alice"
     assert latest_ensemble_batch(recipe_dir) is None  # doesn't exist yet
 
-    older = recipe_dir / "2026-01-01T000000Z"
-    newer = recipe_dir / "2026-06-01T000000Z"
-    empty = recipe_dir / "2026-12-01T000000Z"  # no member files -- not a real batch
+    older = recipe_dir / "monte-carlo" / "2026-01-01T000000Z"
+    newer = recipe_dir / "monte-carlo" / "2026-06-01T000000Z"
+    empty = recipe_dir / "monte-carlo" / "2026-12-01T000000Z"  # no member files -- not a real batch
     for d in (older, newer, empty):
         d.mkdir(parents=True)
     (older / "member_0000.sqlite3").touch()
@@ -486,7 +486,7 @@ def test_latest_ensemble_batch_recognizes_a_manifest_only_batch(tmp_path: Path) 
     """A batch where every member failed to resolve has no member_*.sqlite3
     files at all -- the manifest alone must still make it discoverable."""
     recipe_dir = tmp_path / "runs" / "retire_alice"
-    batch = recipe_dir / "2026-06-01T000000Z"
+    batch = recipe_dir / "monte-carlo" / "2026-06-01T000000Z"
     batch.mkdir(parents=True)
     write_batch_manifest(batch, member_count=3, failures=[
         (0, tmp_path / "member_0000.sqlite3", "boom"),
@@ -757,25 +757,6 @@ def test_read_batch_manifest_defaults_old_batches_to_monte_carlo(tmp_path: Path)
     assert manifest["mode"] == "monte_carlo"
 
 
-def test_latest_ensemble_batch_filters_by_mode(tmp_path: Path) -> None:
-    recipe_dir = tmp_path / "runs" / "retire_alice"
-    mc = recipe_dir / "2026-01-01T000000Z"
-    oat = recipe_dir / "2026-06-01T000000Z"
-    legacy = recipe_dir / "2025-06-01T000000Z"  # no manifest: Monte Carlo
-    for d in (mc, oat, legacy):
-        d.mkdir(parents=True)
-        (d / "member_0000.sqlite3").touch()
-    write_batch_manifest(mc, member_count=1, failures=[])
-    write_batch_manifest(oat, member_count=1, failures=[], mode="sensitivity",
-                         quantiles=(0.1, 0.9), rows=[])
-    assert latest_ensemble_batch(recipe_dir) == oat
-    assert latest_ensemble_batch(recipe_dir, mode="monte_carlo") == mc
-    assert latest_ensemble_batch(recipe_dir, mode="sensitivity") == oat
-    mc_manifest = mc / "batch_manifest.json"
-    mc_manifest.unlink()
-    assert latest_ensemble_batch(recipe_dir, mode="monte_carlo") == mc  # legacy-style
-
-
 # --- #31: shaped truncated_normal and triangular rows -------------------------------
 
 
@@ -864,3 +845,27 @@ def test_summary_with_percentiles_reports_p05_to_p95_instead_of_min_and_max() ->
     row = result.iloc[0]
     assert [row["p05"], row["p20"], row["p80"], row["p95"]] == pytest.approx([5.0, 20, 80, 95])
     assert list(summary_with_percentiles(members, (0.8, 0.2)).columns)[3:] == ["p20", "p80"]
+
+
+def test_a_batch_name_is_unique_across_both_modes_folders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #454: `--batch NAME` looks in both folders, so a sensitivity batch
+    # reserved in the same second as a Monte Carlo one takes a suffix.
+    from datetime import UTC, datetime
+
+    from analysis.sim import cli
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            return datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+    monkeypatch.setattr(cli, "datetime", _Frozen)
+    intent, runs = tmp_path / "intent", tmp_path / "runs"
+    mc = cli._reserve_batch("base", intent, runs, "monte_carlo")[0]
+    oat = cli._reserve_batch("base", intent, runs, "sensitivity")[0]
+    assert (mc, oat) == ("2026-01-02T030405Z", "2026-01-02T030405Z-2")
+    # The check and the folders are made under one lock in the runs dir, which
+    # runs with different intent dirs still share.
+    assert (runs / ".locks" / "base.names").is_file()

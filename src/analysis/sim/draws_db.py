@@ -57,6 +57,7 @@ from analysis.sim.ensemble import (
     EnsembleError, build_distribution, correlation_links, lifespan_distribution,
     member_run_statuses, read_batch_manifest,
 )
+from analysis.sim.loader import batch_recipe
 from analysis.sim.life_table import LifeTableAge
 from analysis.sim.registries import (
     DATE_MARKER_KIND, LATENT_FACTOR_KIND, LIFE_TABLE_DISTRIBUTION, LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET,
@@ -641,7 +642,7 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     # own nodes, so nodes, checks and pairs are kept per component.
     pool = pool_record(batch_dir)
     origin = member_components(batch_dir) or {}
-    own_name = batch_dir.parent.name
+    own_name = batch_recipe(batch_dir)
     component_of = {m.index: origin.get(m.index, own_name) for m in members}
 
     member_rows: list[dict[str, Any]] = []
@@ -651,7 +652,7 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     # A batch whose every member failed to resolve has only its manifest:
     # it still lists them, with no nodes or draws.
     batch: dict[str, Any] = {
-        "ensemble_name": batch_dir.parent.name, "batch": batch_dir.name,
+        "ensemble_name": own_name, "batch": batch_dir.name,
         "mode": manifest.get("mode", "monte_carlo"), "member_count": manifest.get("member_count", len(members)),
     }
     # Each component's nodes are described from member 0 where it is the

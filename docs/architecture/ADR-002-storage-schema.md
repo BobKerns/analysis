@@ -638,7 +638,7 @@ CREATE TABLE ensemble_path_shock (
 );
 ```
 
-A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
+A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<mode>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
 
 ### Intent manifest (intent files only)
 

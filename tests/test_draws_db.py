@@ -282,7 +282,7 @@ def test_sim_ensemble_draws_on_a_sensitivity_batch(
 
 
 def test_a_batch_whose_every_member_failed_still_lists_them(tmp_path: Path) -> None:
-    batch = tmp_path / "runs" / "retire_alice" / "b"
+    batch = tmp_path / "runs" / "retire_alice" / "monte-carlo" / "b"
     batch.mkdir(parents=True)
     write_batch_manifest(batch, member_count=2,
                          failures=[(0, batch / "x", "boom"), (1, batch / "y", "boom")])
@@ -323,7 +323,7 @@ def test_a_draws_database_from_before_pools_is_gathered_again(mc_batch: Path) ->
         con.execute("CREATE TABLE member (member_index INTEGER PRIMARY KEY)")
     assert not draws_db_current(mc_batch)
     result = CliRunner().invoke(main, [
-        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(mc_batch.parent.parent)])
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(mc_batch.parent.parent.parent)])
     assert result.exit_code == 0, result.output
     assert draws_db_current(mc_batch)
     assert "component" not in result.output  # one component: no per-component headings

@@ -55,9 +55,9 @@ def test_list_ensemble_recipes_finds_only_directories_with_members(tmp_path: Pat
     assert list_ensemble_recipes(tmp_path / "nope") == []
 
     runs_dir = tmp_path / "runs"
-    (runs_dir / "recipe_a" / "2026-01-01T000000Z").mkdir(parents=True)
-    (runs_dir / "recipe_a" / "2026-01-01T000000Z" / "member_0000.sqlite3").touch()
-    (runs_dir / "recipe_b" / "2026-01-01T000000Z").mkdir(parents=True)  # no members yet
+    (runs_dir / "recipe_a" / "monte-carlo" / "2026-01-01T000000Z").mkdir(parents=True)
+    (runs_dir / "recipe_a" / "monte-carlo" / "2026-01-01T000000Z" / "member_0000.sqlite3").touch()
+    (runs_dir / "recipe_b" / "monte-carlo" / "2026-01-01T000000Z").mkdir(parents=True)  # no members yet
     (runs_dir / "not_a_recipe.sqlite3").touch()  # a plain, non-ensemble run file
 
     assert list_ensemble_recipes(runs_dir) == ["recipe_a"]
@@ -76,7 +76,7 @@ def small_ensemble_runs_dir(
         vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
-    batch_dir = runs_dir / "retire_alice" / "2026-01-01T000000Z"
+    batch_dir = runs_dir / "retire_alice" / "monte-carlo" / "2026-01-01T000000Z"
     for i in range(2):
         member_intent = resolve_member(
             recipe, intent_dir / f"intent_member_{i}.sqlite3",

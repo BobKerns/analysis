@@ -18,7 +18,6 @@ import pandas as pd
 from IPython.display import clear_output, display
 
 from analysis.sim import compare
-from analysis.sim.compare import breakeven_month
 from analysis.sim.compare_charts import comparison_figure
 from analysis.sim.connection import RunConnection
 from analysis.sim.notebook_ui.pickers import (
@@ -36,7 +35,6 @@ from analysis.sim.notebook_ui.pickers import (
     run_years,
     to_markdown,
 )
-from analysis.sim.plotting import FRAME_ALPHA, include_zero
 from analysis.sim.types import AccountKind, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
@@ -68,34 +66,6 @@ def breakeven_summary(
     return compare.breakeven_summary(nw, delta, container.baseline, container.variants)
 
 
-def filter_comparisons(comparisons: dict, available: list[str]) -> dict:
-    """Drop comparison pairs that reference a scenario that wasn't loaded."""
-    return {
-        group: {
-            label: pair for label, pair in pairs.items() if set(pair) <= set(available)
-        }
-        for group, pairs in comparisons.items()
-    }
-
-
-def has_any_comparisons(comparisons: dict) -> bool:
-    """True if at least one comparison pair survived `filter_comparisons`."""
-    return any(pairs for pairs in comparisons.values())
-
-
-def comparison_frame(nw: pd.DataFrame, comparisons: dict) -> pd.DataFrame:
-    """One column per comparison label: nw[a] - nw[b].
-
-    Keeps `nw`'s index even when there are no comparisons, so callers like
-    `year_end_values` don't choke on a columnless frame's default RangeIndex.
-    """
-    result = pd.DataFrame(index=nw.index)
-    for pairs in comparisons.values():
-        for label, (a, b) in pairs.items():
-            result[label] = nw[a] - nw[b]
-    return result
-
-
 def _time_range(
     time_range: TimeRangePicker | None, container: MultiScenarioConnections,
 ) -> TimeRangePicker:
@@ -123,36 +93,6 @@ def plot_net_worth_and_delta(
         deaths=compare.scenario_deaths(container.connections, container.scenarios),
     )
     show_figure(figure)
-
-
-def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
-    """One panel per comparison group, with a break-even marker on each line."""
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(1, len(comparisons), figsize=(13, 5))
-    if len(comparisons) == 1:
-        axes = [axes]
-    for ax, (group, pairs) in zip(axes, comparisons.items(), strict=True):
-        for offset, label in enumerate(pairs):
-            line, = ax.plot(compare.index, compare[label], label=label)
-            month = breakeven_month(compare[label])
-            if month is not None and compare[label].min() < 0:
-                ax.axvline(month, color=line.get_color(), linestyle=":", alpha=0.7)
-                ax.annotate(
-                    f"break-even {month:%Y-%m}", xy=(month, 0),
-                    xytext=(6, 10 + 16 * offset),  # stagger so labels don't collide
-                    textcoords="offset points", color=line.get_color(), fontsize=9,
-                )
-        ax.axhline(0, color="grey", linewidth=0.8)
-        ax.set_title(group)
-        ax.set_xlabel("if the money stops mattering here…")
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-        ax.grid(True, alpha=0.3)
-        ax.legend(framealpha=FRAME_ALPHA)
-        include_zero(ax)
-    axes[0].set_ylabel("difference in net worth")
-    plt.tight_layout()
-    plt.show()
 
 
 # ---------- widget-builders ----------
@@ -416,26 +356,6 @@ def breakeven_widget(
     if container.ok:
         _redraw()
     return widgets.VBox([controls_row(dollar_mode, after_tax), output])
-
-
-def horizon_widget(container: MultiScenarioConnections, comparisons: dict) -> None:
-    """Net-worth gap at every possible horizon, for a set of (scenario, counterfactual) pairs."""
-
-    def _redraw():
-        filtered = filter_comparisons(comparisons, container.scenarios)
-        if not has_any_comparisons(filtered):
-            display(StyledMarkdown(
-                "_None of the configured `COMPARISONS` pairs apply to this selection "
-                "— pick scenarios from `COMPARISONS`, or edit it above to add a pair "
-                "for this selection._"
-            ))
-            return
-        nw = net_worth_by_month(container)
-        compare = comparison_frame(nw, filtered)
-        plot_horizon_comparisons(compare, filtered)
-
-    if container.ok:
-        _redraw()
 
 
 def year_end_widget(
