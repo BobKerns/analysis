@@ -3,8 +3,9 @@ container when Docker is running here, else on this machine; publish and
 set up always on this machine.
 
 A thin front for what's already there: ``scripts/videos/docker.sh`` for the
-container, ``python -m analysis.videos`` (``analysis.videos.__main__.main``)
-for local runs.
+container, ``analysis.videos.commands`` for local runs. ``python -m
+analysis.videos`` is this same group, run locally only (the container runs
+it).
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ from pathlib import Path
 import click
 from click.shell_completion import CompletionItem
 
+# The context object `python -m analysis.videos` runs the group with: on
+# this machine, without looking for Docker (it's what the container runs).
+LOCAL_ONLY = {"where": "local"}
 
 
 def _repo() -> Path | None:
@@ -71,6 +75,8 @@ def docker_running() -> bool:
 
 
 def _use_docker(where: str | None) -> bool:
+    obj = click.get_current_context().obj
+    where = where or (obj or {}).get("where")
     if where == "local":
         return False
     running = docker_running()
@@ -87,12 +93,6 @@ def _docker(args: list[str], out: Path | None = None) -> int:
         env["ANALYSIS_VIDEO_OUT"] = str(out.resolve())
     script = _videos_root().parent.parent / "scripts" / "videos" / "docker.sh"
     return subprocess.run(["bash", str(script), *args], env=env, check=False).returncode
-
-
-def _local(args: list[str]) -> int:
-    from analysis.videos.__main__ import main
-
-    return main(args)
 
 
 def _where_option(fn: click.decorators.FC) -> click.decorators.FC:
@@ -127,7 +127,9 @@ def build_command(video: str, lang: str | None, out: Path | None, silent: bool, 
     if _use_docker(where):
         code = _docker(["build", folder.name, *flags], out)
     else:
-        code = _local(["build", str(folder), *(["--out", str(out)] if out else []), *flags])
+        from analysis.videos import commands
+
+        code = commands.build(folder, lang=lang, out=out, silent=silent, rerecord=rerecord, jobs=jobs)
     raise SystemExit(code)
 
 
@@ -141,7 +143,9 @@ def check_command(videos: tuple[str, ...], where: str | None) -> None:
     if _use_docker(where):
         code = _docker(["check", *(f.name for f in folders)])
     else:
-        code = _local(["check", *(str(f) for f in folders)])
+        from analysis.videos import commands
+
+        code = commands.check(commands.video_folders(folders))
     raise SystemExit(code)
 
 
@@ -156,39 +160,30 @@ def shell_command(video: str) -> None:
 
 
 # publish and setup always run here: publishing needs this machine's Google
-# sign-in, and setup fetches the tools a local build uses. Their arguments
-# go to the builder's own parser, so its --help is the one shown.
-_PASS_THROUGH = {"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []}
+# sign-in, and setup fetches the tools a local build uses.
+@video_group_command.command(name="publish")
+@click.argument("videos", nargs=-1, shell_complete=_complete_video)
+@click.option("--lang", default=None, help="One language (default: every language the script has).")
+@click.option("--out", type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Where the builds are (default: out/videos).")
+@click.option("--dry-run", is_flag=True, help="Show what would be sent; send nothing.")
+@click.option("--refresh", is_flag=True,
+              help="Only update titles and descriptions of videos already up (no VIDEOS: every published one).")
+@click.option("--new-upload", is_flag=True,
+              help="Upload again as a new video (YouTube can't replace a video's picture).")
+def publish_command(videos: tuple[str, ...], lang: str | None, out: Path | None, dry_run: bool,
+                    refresh: bool, new_upload: bool) -> None:
+    """Upload built VIDEOS to YouTube, or update what's there."""
+    from analysis.videos import commands
+
+    folders = [_video_folder(v) for v in videos]
+    raise SystemExit(commands.publish(folders, lang=lang, out=out, dry_run=dry_run, refresh=refresh,
+                                      new_upload=new_upload))
 
 
-@video_group_command.command(name="publish", context_settings=_PASS_THROUGH)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED, shell_complete=_complete_video)
-def publish_command(args: tuple[str, ...]) -> None:
-    """Upload built videos to YouTube, or update what's there (--help for its options)."""
-    raise SystemExit(_local(["publish", *_named_folders(args)]))
-
-
-# publish's options that take a value: the value is never a video's name.
-_PUBLISH_VALUE_OPTIONS = ("--lang", "--out")
-
-
-def _named_folders(args: tuple[str, ...]) -> list[str]:
-    """publish's arguments, with each positional video name as its folder,
-    so publish takes 04-results as build does."""
-    out: list[str] = []
-    takes_value = False
-    for arg in args:
-        if takes_value or arg.startswith("-") or Path(arg).is_dir():
-            out.append(arg)
-        else:
-            folder = _videos_root() / arg
-            out.append(str(folder) if (folder / "script.md").is_file() else arg)
-        takes_value = arg in _PUBLISH_VALUE_OPTIONS
-    return out
-
-
-@video_group_command.command(name="setup", context_settings=_PASS_THROUGH)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def setup_command(args: tuple[str, ...]) -> None:
+@video_group_command.command(name="setup")
+def setup_command() -> None:
     """Download the voice model and recording tools for local builds."""
-    raise SystemExit(_local(["setup", *args]))
+    from analysis.videos import commands
+
+    raise SystemExit(commands.setup())
