@@ -110,7 +110,7 @@ latest run; add `</dev/null`. Charts marked † take `--graph` (in the pane) or
 | --- | --- |
 | What scenarios are there; what is X | `sim scenario list`, `sim scenario show X` (description, lineage, dates, latest run) |
 | Net worth over time | `sim networth X [--monthly] [--pre-tax] [--dollars nominal]`; `sim explain X` (year-end net worth, lots, negative balances, years past a guard rail) |
-| Compare scenarios | `sim compare BASE V1 [V2...] [--section net-worth\|break-even\|guard-rails\|differences\|runs\|account] [--account A]` † |
+| Compare scenarios | `sim compare BASE V1 [V2...] [--section net-worth\|break-even\|guard-rails\|differences\|runs\|social-security\|tax\|account] [--account A]` † |
 | How X is set up | `sim account list`, `sim scheduled list`, `sim calendar list` (each row says where it's defined in the lineage), `sim person list`, `sim guard-rail list` |
 | How an account is affected | `sim account history A [--yearly] [--lot L]`, `sim account holdings A`, `sim items --account A --start YYYY-MM [--months N]` (each movement with the rule that made it) |
 | How money flows | `sim chain list`, `sim chain show A [--rules]` † (a flowchart of where a debit draws from, refills and overflows) |

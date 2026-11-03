@@ -4327,7 +4327,8 @@ def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode
 
 
 COMPARE_SECTIONS = (
-    "runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "spending", "account",
+    "runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "spending",
+    "social-security", "tax", "account",
 )
 """``sim compare``'s sections, in the order it prints them (#188)."""
 
@@ -4391,8 +4392,9 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
 @click.option("--lot", type=completion.LotName("account"), default=None,
               help="With --account: one lot of the account instead of its total.")
 @_year_range_options
-@_graph_options("net worth (or --account's balance) and each variant's difference",
-                after="the tables", written="that chart")
+@_graph_options("net worth (or --account's balance) and each variant's difference, or with "
+                "--section social-security or tax, that section's chart",
+                after="the tables", written="that chart (one chart only)")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 @click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
@@ -4413,10 +4415,18 @@ def compare_command(
     (#359) when any has strategies or targets (a strategy on vs off: compare
     with a child where `sim strategy edit NAME --disable` switches it off),
     each scenario's spending against its plan by year (#408) when any has a
-    spending strategy, and with --account, that account's balance.
+    spending strategy, gross Social Security by year and over the run (#335)
+    when it differs, total tax (federal and state, as `sim report tax`
+    prints it) in the years it differs and over the run, with lifetime
+    Social Security and final net worth (#336), when it differs, and with
+    --account, that account's balance.
+
+    --chart draws net worth (or --account's balance); --section
+    social-security and --section tax draw their own charts instead, unless
+    net-worth, break-even or account is asked for too, when it draws each.
 
     --start and --end limit the years the tables and chart show. Break-even
-    and the spending summary over the run still cover the whole run.
+    and the summaries over the run still cover the whole run.
 
     BASELINE left out is the current scenario; with no VARIANTS, one is
     asked for. A scenario with no accounts is a valid compare point."""
@@ -4440,6 +4450,11 @@ def compare_command(
         raise click.UsageError(
             f"--chart draws at most {_COMPARE_MAX_GRAPHED} variants; name fewer, "
             "or leave --chart off for the tables")
+    charts = _compare_charts(sections, account) if as_graph or graph_file is not None else []
+    if graph_file is not None and len(charts) > 1:
+        raise click.UsageError(
+            f"--chart-file writes one chart, and these sections draw {len(charts)} "
+            f"({', '.join(charts)}); ask for fewer, or use --chart")
     _hold_tables()
     after_tax = not pre_tax
     shown = set(sections) or {*COMPARE_SECTIONS[:-1], *(["account"] if account else [])}
@@ -4512,7 +4527,7 @@ def compare_command(
         nw = pd.DataFrame()
         # Only the sections that use it read net worth, so --section runs, say,
         # still works on a run with no CPI series.
-        if shown & {"net-worth", "break-even"} or (graphed and account is None):
+        if shown & {"net-worth", "break-even", "tax"} or "net-worth" in charts:
             nw = compare.net_worth_by_month(connections, scenarios, mode, after_tax=after_tax)
             if no_cpi := compare.all_nan_columns(nw):
                 raise click.ClickException(
@@ -4540,9 +4555,17 @@ def compare_command(
         if "spending" in shown:
             _echo_spending_comparison(connections, scenarios, mode, asked="spending" in sections,
                                       years=years)
+        if shown & {"social-security", "tax"} or {"social-security", "tax"} & set(charts):
+            _refuse_cpi_without_index(connections, mode, "Social Security and tax")
+        if "social-security" in shown:
+            _echo_ss_comparison(connections, scenarios, mode,
+                                asked="social-security" in sections, years=years)
+        if "tax" in shown:
+            _echo_tax_comparison(connections, scenarios, mode, nw, after_tax=after_tax,
+                                 asked="tax" in sections, years=years)
 
         balances = None
-        if account is not None and ("account" in shown or graphed):
+        if account is not None and ("account" in shown or "account" in charts):
             balances = compare.balance_by_month(connections, scenarios, account, lot, mode)
             subject = f"{account}" + (f", lot {lot}" if lot else "")
             if balances.empty:  # a balance of zero throughout is still a balance
@@ -4559,18 +4582,128 @@ def compare_command(
                                          years).map(_cell))
 
         if graphed:
-            from analysis.sim.compare_charts import comparison_figure
+            from analysis.sim.compare_charts import comparison_figure, ss_figure, tax_figure
 
             deaths = compare.scenario_deaths(connections, scenarios)
-            if balances is not None:
-                figure = comparison_figure(
-                    clip_years(balances, years), baseline, list(variants),
-                    f"{subject}, {mode_label}", ylabel="balance (USD)", deaths=deaths)
-            else:
-                figure = comparison_figure(
-                    clip_years(nw, years), baseline, list(variants), f"Net worth, {mode_label}",
-                    deaths=deaths)
-            _draw_figure(figure, graph_file, "compare-")
+            for chart in charts:
+                if chart == "account":
+                    assert balances is not None
+                    figure = comparison_figure(
+                        clip_years(balances, years), baseline, list(variants),
+                        f"{subject}, {mode_label}", ylabel="balance (USD)", deaths=deaths)
+                elif chart == "social-security":
+                    ss = compare.ss_gross_by_month(connections, scenarios, mode)
+                    figure = ss_figure(
+                        clip_years(ss, years), clip_years(ss.cumsum(), years), baseline,
+                        list(variants), f"Gross Social Security, {mode_label}", deaths=deaths)
+                elif chart == "tax":
+                    tax = compare.tax_by_scenario(connections, scenarios, mode)
+                    figure = tax_figure(
+                        clip_years(compare.tax_comparison(tax, baseline, variants), years),
+                        baseline, list(variants), f"Total tax, {mode_label}", deaths=deaths)
+                else:
+                    figure = comparison_figure(
+                        clip_years(nw, years), baseline, list(variants),
+                        f"Net worth, {mode_label}", deaths=deaths)
+                _draw_figure(figure, graph_file,
+                             f"compare-{chart}-" if len(charts) > 1 else "compare-")
+
+
+def _compare_charts(sections: Sequence[str], account: str | None) -> list[str]:
+    """The charts ``sim compare --chart`` draws, in order: net worth, or
+    --account's balance; Social Security's and tax's (#335, #336) instead
+    when those sections are asked for and no section of the first is."""
+    first = "account" if account is not None else "net-worth"
+    own = [chart for chart in ("social-security", "tax") if chart in sections]
+    if not own:
+        return [first]
+    if set(sections) & {"net-worth", "break-even", "account"}:
+        return [first, *own]
+    return own
+
+
+def _refuse_cpi_without_index(
+    connections: Mapping[str, RunConnection], mode: DollarMode, what: str,
+) -> None:
+    """Refuse CPI-constant ``what`` when a run has no 'cpi' inflation index."""
+    if mode != DollarMode.CPI_CONSTANT:
+        return
+    if missing := [name for name, rc in connections.items() if rc.cpi_index().isna().all()]:
+        raise click.ClickException(
+            f"no 'cpi' inflation index in the run of {', '.join(missing)}, so no "
+            f"CPI-constant {what}; pass --dollars nominal")
+
+
+def _whole_dollars_cell(value: Any) -> str:
+    """A table cell in whole dollars, missing as an em dash."""
+    return _cell(value if pd.isna(value) else _whole_dollars(value))
+
+
+def _echo_ss_comparison(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], mode: DollarMode, *,
+    asked: bool, years: tuple[int, int] | None = None,
+) -> None:
+    """``sim compare``'s social-security section (#335): each scenario's gross
+    Social Security by year (the years any has some) with each variant's
+    difference, then each one's lifetime total. Shown by default only when
+    the benefits differ, and said to be empty only when ``asked`` for."""
+    from analysis.sim import compare
+
+    ss = compare.ss_gross_by_month(connections, scenarios, mode)
+    if not asked and not compare.ss_differs(ss):
+        return
+    baseline, variants = scenarios[0], scenarios[1:]
+    yearly = compare.ss_by_year(ss, baseline, variants)
+    yearly = yearly[yearly[list(scenarios)].fillna(0).ne(0).any(axis=1)]
+    if yearly.empty:
+        click.echo("\nSocial Security: none in these runs")
+        return
+    label = DollarMode(mode).label
+    click.echo(f"\nGross Social Security by year ({label}):")
+    table = clip_years(yearly, years)
+    if table.empty:
+        click.echo("  none in these years")
+    else:
+        _echo_frame(table.map(_whole_dollars_cell))
+    click.echo(f"\nGross Social Security over the run ({label}), Δ against {baseline}:")
+    _echo_frame(compare.ss_summary(ss, baseline).map(_whole_dollars_cell))
+
+
+def _echo_tax_comparison(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str], mode: DollarMode,
+    nw: pd.DataFrame, *, after_tax: bool, asked: bool, years: tuple[int, int] | None = None,
+) -> None:
+    """``sim compare``'s tax section (#336): each scenario's total tax
+    (federal and state liability, as ``sim report tax`` prints it) in the tax
+    years where some variant's differs, with each variant's difference, then
+    each one's lifetime tax, gross Social Security and final net worth
+    against the baseline. Shown by default only when the tax differs, and
+    said to be empty only when ``asked`` for."""
+    from analysis.sim import compare
+
+    tax = compare.tax_by_scenario(connections, scenarios, mode)
+    if all(table.empty for table in tax.values()):
+        if asked:
+            click.echo("\nTax: none in these runs (no tax rule)")
+        return
+    baseline, variants = scenarios[0], scenarios[1:]
+    comparison = compare.tax_comparison(tax, baseline, variants)
+    if not asked and not compare.tax_differs(comparison).any():
+        return
+    label = DollarMode(mode).label
+    shown = clip_years(comparison, years)
+    moved = shown[compare.tax_differs(shown)]
+    click.echo(f"\nTotal tax by tax year ({label}), the {len(moved)} of {len(shown)} years "
+               f"where a variant's differs from {baseline}'s (a negative Δ owes less):")
+    if moved.empty:
+        click.echo("  none")
+    else:
+        _echo_frame(moved.map(_whole_dollars_cell))
+    ss = compare.ss_gross_by_month(connections, scenarios, mode)
+    summary = compare.tax_summary(tax, ss, nw, baseline)
+    click.echo(f"\nTax over the run ({label}), Δ against {baseline}; final net worth "
+               f"{'after tax' if after_tax else 'pre-tax'}:")
+    _echo_frame(summary.map(_whole_dollars_cell))
 
 
 def _echo_strategy_differences(

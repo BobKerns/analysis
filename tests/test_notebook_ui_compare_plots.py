@@ -278,3 +278,19 @@ def test_guard_rails_compare_past_color_leaves_deltas_plain() -> None:
     assert cp._past_color(-1.0, "gk_lower cum", "positive") == "color: #2a78d6"
     assert cp._past_color(-1.0, "Δ variant", "negative") == ""
     assert cp._past_color(1.0, "four_percent", "negative") == ""
+
+
+def test_ss_and_tax_widgets_take_what_show_passes(
+    retire_alice_run: RunConnection, variant_a_run: RunConnection,
+) -> None:
+    """#335, #336: shown with ``CONNECTIONS.show``, a widget gets the
+    container's context keywords (baseline, connections, member, ...) as
+    well as the notebook's shared controls."""
+    container = _two_runs(retire_alice_run, variant_a_run)
+    dollar_mode, time_range = DollarModePicker(), TimeRangePicker()
+    for widget in (cp.ss_gross_widget, cp.tax_impact_widget):
+        assert container._invoke(widget, member=None, dollar_mode=dollar_mode,
+                                 time_range=time_range) is not None
+    dollar_mode.value = DollarMode.CPI_CONSTANT  # redraws both; must not raise
+    years = run_years(*container.connections.values())
+    time_range.value = (years[0], years[0])
