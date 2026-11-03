@@ -775,10 +775,13 @@ class ScenarioView:
     """Each account's ``(kind, subkind)``."""
     tax_rules: Mapping[str, int]
     """How many ``tax_accumulator`` rules each scope (``federal``, ``state``) has."""
-    people: Mapping[str, tuple[str | None, str | None]] = field(default_factory=dict)
-    """Each person's ``(role, sex)`` from persons.csv, blank as None (#459)."""
+    people: Mapping[str, tuple[str | None, str | None, str | None]] = field(default_factory=dict)
+    """Each person's ``(role, sex, life table)`` from persons.csv and
+    lifespan.csv, blank as None: the table is the name a lifespan row gives
+    (``life_table__<name>.csv``), None for ``life_table.csv`` (#459)."""
     aux: frozenset[str] = frozenset()
-    """The aux tables the scenario has (``rmd_factors``, ``life_table``, ...)."""
+    """The aux files the scenario has, by file name without ``.csv``
+    (``rmd_factors``, ``life_table``, ``life_table__jp``, ...)."""
     portfolio_classes: Mapping[str, frozenset[str]] = field(default_factory=dict)
     """Each account tag's asset classes: those its asset lots hold in the
     scenario's first month (#459)."""

@@ -233,6 +233,8 @@ def annuity_rate(rate: float, years: int) -> float:
     an annuity-due's payment per dollar. ``1/years`` at a zero return."""
     if years < 1:
         raise StrategyError(f"annuity_rate needs at least one year, not {years}")
+    if rate <= -1:
+        raise StrategyError(f"annuity_rate needs a real return above -100%, not {rate:.2%}")
     if rate == 0:
         return 1 / years
     return rate / (1 - (1 + rate) ** -years) / (1 + rate)
@@ -317,12 +319,19 @@ class Amortize(_Spending):
             if "rmd_factors" not in scenario.aux:
                 problems.append("the rmd horizon needs aux rmd_factors.csv")
         if kind in ("rmd", "survival"):
-            if "life_table" not in scenario.aux:
-                problems.append(f"the {kind} horizon needs aux life_table.csv")
-            missing = sorted(pid for pid, (role, sex) in scenario.people.items()
-                             if role in ("primary", "secondary") and not sex)
+            household = {pid: person for pid, person in scenario.people.items()
+                         if person[0] in ("primary", "secondary")}
+            missing = sorted(pid for pid, (_role, sex, _table) in household.items() if not sex)
             if missing:
                 problems.append(f"the {kind} horizon needs a sex in persons.csv for {', '.join(missing)}")
+            tables = sorted({f"life_table__{table}" if table else "life_table"
+                             for _role, _sex, table in household.values()} - scenario.aux)
+            if tables:
+                problems.append(f"the {kind} horizon needs aux {', '.join(t + '.csv' for t in tables)}")
+        for name in ("real_return", "stock_return", "bond_return", "cash_return"):
+            value = getattr(params, name)
+            if value is not None and value <= -1_000_000:
+                problems.append(f"{name} must be above -100%")
         if params.real_return is None and kind != "rmd":
             odd = sorted(scenario.portfolio_classes.get(params.portfolio, frozenset()) - set(_RETURN_OF))
             if odd:
@@ -361,7 +370,7 @@ class Amortize(_Spending):
         if not living:
             return None
         if kind == "rmd":
-            oldest = max(living, key=lambda v: (v.age, v.id))
+            oldest = min(living, key=lambda v: (v.birthdate or date.max, v.id))
             divisor = ctx.rmd_divisor(oldest.id)
             source = "rmd_factors"
             if divisor is None:
@@ -383,13 +392,15 @@ class Amortize(_Spending):
         balance = self._portfolio(ctx, p.portfolio)
         budget = ctx.budget()
         found = self._rate(ctx)
-        if found is None or balance <= 0:
-            return None
+        if found is None:
+            return None  # nobody left to plan for
         rate, how, detail = found
-        payment = round(rate * balance)
+        # An empty portfolio pays nothing; that is a payment of zero once
+        # the strategy has started, so the owned spending falls with it.
+        payment = round(rate * balance) if balance > 0 else 0
         first = "first_payment" not in memory
         if first:
-            if budget <= 0:
+            if budget <= 0 or balance <= 0:
                 return None
             spend = budget
             memory.update(first_payment=payment, first_since=ctx.month.isoformat())

@@ -114,7 +114,6 @@ class _TableMortality(Mortality):
                     "SELECT person, life_table, life_table_set_forward FROM person_lifespan"):
                 self._lifespan[pid] = (name or None, forward or 0.0)
         self._curves: dict[tuple[str, date], list[float]] = {}
-        self._rmd: list[tuple[str, int, float]] | None = None
 
     def _curve(self, person: str, month: date) -> list[float]:
         key = (person, month)
@@ -151,25 +150,22 @@ class _TableMortality(Mortality):
         return sum((a + b) / 2 for a, b in zip(alive, alive[1:], strict=False)) / 12
 
     def rmd_divisor(self, person: str, month: date) -> float | None:
-        if self._rmd is None:
-            self._rmd = sorted(
-                (effective, int(payload["age"]), payload["factor_micros"] / 1_000_000)
-                for effective, payload in (
-                    (e, json.loads(p)) for e, p in self._con.execute(
-                        "SELECT effective_date, payload_json FROM aux_table "
-                        "WHERE kind = 'rmd_factors' AND series IS NULL"))
-            )
+        # Read each time, not cached: a swap_aux_table event can replace the
+        # table mid-run. The lookup matches the rmd rule's: the latest row in
+        # force for this age (engine._lookup_rmd_factor).
         birth = self._birth.get(person)
         if birth is None:
             raise StrategyError(f"rmd_divisor: {person} has no birthdate")
         age = month.year - birth.year
-        vintages = sorted({e for e, _a, _f in self._rmd})
-        if not vintages:
-            return None
-        # The vintage in force: the latest on or before this month, else the
-        # earliest, as for every aux table.
-        vintage = max((v for v in vintages if v <= month.isoformat()), default=vintages[0])
-        return next((f for e, a, f in self._rmd if e == vintage and a == age), None)
+        found = None
+        for _effective, payload_json in self._con.execute(
+                "SELECT effective_date, payload_json FROM aux_table "
+                "WHERE kind = 'rmd_factors' AND series IS NULL AND effective_date <= ? "
+                "ORDER BY effective_date, id", (month.isoformat(),)):
+            payload = json.loads(payload_json)
+            if int(payload.get("age", -1)) == age:
+                found = payload["factor_micros"] / 1_000_000
+        return found
 
 
 class StrategyRuntime:

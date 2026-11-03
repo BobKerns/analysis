@@ -295,3 +295,62 @@ def test_an_ensemble_varies_the_real_return(
         drawn.append(json.loads(params)["real_return"])
     assert drawn[0] == 30_000
     assert all(10_000 <= r <= 50_000 for r in drawn) and len(set(drawn)) == 3
+
+
+def test_a_real_return_of_minus_100_percent_fails_the_load(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path], intent_dir: Path,
+) -> None:
+    _amortize(strategy_csv, real_return="-100%")
+    assert "real_return must be above -100%" in _load_errors(strategy_scenarios, intent_dir)
+
+
+def test_a_survival_horizon_needs_the_life_tables_people_use(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path], intent_dir: Path,
+) -> None:
+    """Each person's own table is checked: the one their lifespan row names."""
+    _amortize(strategy_csv, horizon="survival:10%")
+    lifespan = strategy_csv(SCENARIO, "lifespan.csv")
+    lifespan.write_text("person,age_at_death,life_table\nalice,90,jp\nbill,90,nowhere\n")
+    errors = _load_errors(strategy_scenarios, intent_dir)
+    assert "the survival horizon needs aux life_table__nowhere.csv" in errors
+    assert "life_table__jp" not in errors
+    lifespan.write_text("person,age_at_death,life_table\nalice,90,jp\nbill,90,jp\n")
+    load_scenario(strategy_scenarios, SCENARIO, intent_dir=intent_dir, allow_dirty_data=True,
+                  compute_stamps=False)
+
+
+def test_the_rmd_divisor_is_the_latest_row_for_the_age(
+    strategy_scenarios: Path, intent_dir: Path,
+) -> None:
+    """A newer row for one age doesn't hide another age's older row, as for
+    the rmd rule; and the table is read afresh, so a swap is seen."""
+    loaded = load_scenario(strategy_scenarios, SCENARIO, intent_dir=intent_dir, allow_dirty_data=True,
+                           compute_stamps=False)
+    con = sqlite3.connect(loaded.intent_path)
+    try:
+        tables = _TableMortality(con)
+        assert tables.rmd_divisor("alice", date(2039, 1, 31)) == 25.5  # 74 at the end of 2039
+        con.execute("INSERT INTO aux_table(kind, series, effective_date, payload_json) VALUES "
+                    "('rmd_factors', NULL, '2030-01-31', ?)",
+                    (json.dumps({"age": 73, "factor_micros": 27_000_000}),))
+        assert tables.rmd_divisor("alice", date(2039, 1, 31)) == 25.5
+        assert tables.rmd_divisor("alice", date(2038, 1, 31)) == 27.0
+    finally:
+        con.close()
+
+
+def test_an_empty_portfolio_pays_nothing_once_started() -> None:
+    from analysis.sim.strategies.spending import Amortize
+    from analysis.sim.strategy_api import Context, PersonView, percent
+
+    strategy = Amortize("flex", Amortize.Params(portfolio="portfolio:invest", real_return=percent("2%")))
+    memory = {"first_payment": 2_000_000, "first_since": "2026-05-31", "spend": 3_000_000,
+              "since": "2029-01-31", "factor": 1.0}
+    bill = PersonView(id="bill", role="primary", birthdate=date(1967, 8, 20), age=62, alive=True, final_month=None)
+    ctx = Context(month=date(2030, 1, 31), lots={}, weights=lambda ref: {}, targets=lambda name: {},
+                  memory=memory, people={"bill": bill}, budget=lambda: 3_000_000,
+                  cpi=lambda since: 1_000_000)
+    decision = strategy.year_start(ctx)
+    assert decision is not None and decision.detail["payment"] == 0
+    # The owned spending loses the whole first payment: $30,000 - $20,000.
+    assert decision.detail["spend"] == 1_000_000 and memory["factor"] == pytest.approx(1 / 3)
