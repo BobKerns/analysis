@@ -201,10 +201,10 @@ sim ensemble sensitivity <recipe> [--batch B] [--mode sensitivity|monte_carlo]
                                   [--dollars cpi_constant|nominal] [--relative]
                                   [--years 2030,2040] [--negligible 0.05]
                                   [--row NAME | --attribute NAME [--by category|flow_account|holding_account]]
-                                  [--chart | --chart-file FILE] [--table]
+                                  [--chart | --chart-file FILE] [--top [N]] [--table]
 ```
 
-`--row NAME` prints one row's delta by year and quantile. `--chart` draws the §9 charts that fit what's reported, at the last reporting year: for a sensitivity batch the share heatmap and the tornado, with `--row` the delta over time and (for a ladder) the response curve, with `--attribute` the attribution bars; for a Monte Carlo batch the R² strip and the ρ (or SRRC) chart. The charts live in the widget-free `sim/sensitivity_charts.py`, which the notebook draws with too. `--row` and `--attribute` pick the latest sensitivity batch when `--mode` isn't given.
+`--row NAME` prints one row's delta by year and quantile. `--chart` draws the §9 charts that fit what's reported, at the last reporting year: for a sensitivity batch the share heatmap and the tornado, with `--row` the delta over time and (for a ladder) the response curve, with `--attribute` the attribution bars; for a Monte Carlo batch the R² strip and the ρ (or SRRC) chart. `--top N` keeps each overview panel's N most important rows (the heatmap's by peak share, the tornado's by impact, the ρ chart's by |ρ| or |SRRC|, every latent factor kept), with "top N of M" in its title; shares stay shares of every row's total. `--top` alone fits as many as the terminal shows at its text size, filling it, for a readable recording (10 when there's no terminal to fill). An image shown in the terminal is drawn no wider than the terminal and at most 8 million pixels, which terminals decode. The charts live in the widget-free `sim/sensitivity_charts.py`, which the notebook draws with too. `--row` and `--attribute` pick the latest sensitivity batch when `--mode` isn't given.
 
 `--sensitivity` on a scenario with no unresolved `vary_*` rows is an error ("nothing to perturb"), not a silent single run. Neither runs on a pool ([ADR-009](ADR-009-pooled-ensembles.md) §7): `--sensitivity` and `sim ensemble sensitivity` on a pool's batch are refused, pointing at its components, since a row only one component draws would be confounded with which world a member is in. `--sensitivity` together with `--ensemble-size` is also an error, because an OAT batch's size is always `1 + k × m`, where `k` counts the swept factors (§2) as well as the rows.
 
@@ -270,3 +270,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#292](https://github.com/BobKerns/analysis/issues/292) ([ADR-009](ADR-009-pooled-ensembles.md)): sensitivity is refused on a pool, run on its components instead (§7).
 - [#329](https://github.com/BobKerns/analysis/issues/329): `sim ensemble sensitivity` draws the notebook's charts (`--chart`) and shows one row (`--row`); the views move to `sim/sensitivity_charts.py` (§7, §9).
 - [#438](https://github.com/BobKerns/analysis/issues/438): PRCC gets a 95% interval, and the notebook's correlation chart can plot ρ, SRRC or PRCC (`CorrelationMeasurePicker`) (§6.2, §9).
+- [#452](https://github.com/BobKerns/analysis/issues/452): `--top [N]` draws an overview's most important rows, or as many as fill the terminal (§7).

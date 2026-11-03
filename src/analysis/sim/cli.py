@@ -2058,6 +2058,10 @@ def _hold_tables() -> None:
         state.hold()
 
 
+# `sim ensemble sensitivity --top` without N, where there's no terminal to
+# fill: the overview chart's rows.
+_DEFAULT_TOP = 10
+
 _ENSEMBLE_GRAPH_OPTIONS = _graph_options("them as the notebook's chart", after="the tables")
 _LOG_OPTION = click.option(
     "--log", "log_scale", is_flag=True,
@@ -2859,12 +2863,19 @@ def _echo_ensemble_rail_deltas(
     show_default=True, help="With --attribute: income/expense category, flow account, or "
                             "holding account.",
 )
+@click.option(
+    "--top", "top", type=click.IntRange(min=0), is_flag=False, flag_value=0, default=None,
+    metavar="[N]",
+    help="With --chart or --chart-file: draw only the N most important rows. "
+         f"Without N (or 0), as many as fill the terminal at its text size (else {_DEFAULT_TOP}); "
+         "give N, or put --top after SCENARIO_NAME, so the name isn't read as N.",
+)
 @_graph_options("the notebook's charts for it", after="the tables")
 def ensemble_sensitivity(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     mode: str | None, dollars: str, relative: bool, measure: str, years: str | None,
-    negligible: float, row: str | None, attribute: str | None, by: str, as_graph: bool,
-    graph_file: Path | None,
+    negligible: float, row: str | None, attribute: str | None, by: str, top: int | None,
+    as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Which of SCENARIO_NAME's varying rows matter, and when (ADR-007).
 
@@ -2885,13 +2896,20 @@ def ensemble_sensitivity(
     ladder, its response across its range at that year; with --attribute, where
     its delta comes from that year. A Monte Carlo batch: R^2 by year, and each
     row's correlation with its 95% interval at that year. --years picks the
-    year: its last.
+    year: its last. --top N draws only the N most important rows of the
+    overview (for a recording, say); --top alone fills the terminal.
 
     Without SCENARIO_NAME, the current scenario when it is an ensemble
     that has been run, else one that has is asked for.
     """
     if row is not None and attribute is not None:
         raise click.UsageError("use one of --row and --attribute")
+    if top is not None:
+        if not as_graph and graph_file is None:
+            raise click.UsageError("--top needs --chart or --chart-file")
+        if row is not None or attribute is not None:
+            raise click.UsageError("--top picks rows of the overview chart; "
+                                   "--row and --attribute show one row")
     # One row's views need a sensitivity batch, so that's the one to find.
     if mode is None and (row is not None or attribute is not None):
         mode = "sensitivity"
@@ -2901,8 +2919,8 @@ def ensemble_sensitivity(
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
     _hold_tables()
-    draw = (
-        (lambda fig: _draw_figure(fig, graph_file, "sensitivity-"))
+    draw: _Draw | None = (
+        (lambda fig, fit=None: _draw_figure(fig, graph_file, "sensitivity-", fit))
         if as_graph or graph_file is not None else None
     )
     recipe_runs_dir = resolved_runs_dir / scenario_name
@@ -2950,12 +2968,12 @@ def ensemble_sensitivity(
     if batch_mode(batch_dir) == "sensitivity":
         _report_oat(
             scenario_name, batch_dir, dollar_mode, relative=relative, measure=measure,
-            years=requested_years, negligible=negligible, draw=draw,
+            years=requested_years, negligible=negligible, draw=draw, top=top,
         )
     else:
         _report_correlation(
             scenario_name, batch_dir, dollar_mode, measure=measure,
-            years=requested_years, negligible=negligible, draw=draw,
+            years=requested_years, negligible=negligible, draw=draw, top=top,
         )
 
 
@@ -3284,7 +3302,20 @@ def _echo_pair_draws(con: sqlite3.Connection, a: str, b: str) -> None:
 
 # Draws one of `sim ensemble sensitivity`'s figures (``_draw_figure``, bound
 # to the command's --chart or --chart-file).
-_Draw = Callable[[Any], None]
+# Draws a figure; given ``fit``, the figure ``fit`` draws at the terminal's size instead.
+_Draw = Callable[..., None]
+
+
+def _draw_top(draw: _Draw, top: int | None, figure: Callable[..., Any],
+              fitting: Callable[[float], int]) -> None:
+    """Draw ``figure(top=..., width=...)``: all its rows, the top ``top``,
+    or (``top`` 0, --top without N) as many as ``fitting(height)`` says fit
+    the terminal, at its size."""
+    if top == 0:
+        draw(figure(top=_DEFAULT_TOP),
+             fit=lambda size: figure(top=fitting(size[1]), width=size[0]))
+    else:
+        draw(figure(top=top))
 
 
 def _report_years(batch_dir: Path, available: list[int], requested: list[int] | None) -> list[int]:
@@ -3360,6 +3391,7 @@ def _signed(value: float) -> str:
 def _report_correlation(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     measure: str, years: list[int] | None, negligible: float, draw: _Draw | None = None,
+    top: int | None = None,
 ) -> None:
     """ADR-007 §6.2: rho, SRRC and PRCC, each with its interval, per row and
     year, R^2 per year, each latent factor's rho, the achieved score
@@ -3436,10 +3468,15 @@ def _report_correlation(
     for name, value in status.items():
         click.echo(f"    {name:<24} {value}")
     if draw is not None:
-        from analysis.sim.sensitivity_charts import correlation_figure
+        from analysis.sim.sensitivity_charts import correlation_figure, correlation_rows_fitting
 
-        draw(correlation_figure(table, years[-1], negligible, scenario_name, by=by,
-                                measure=measure))
+        year = years[-1]
+        _draw_top(
+            draw, top,
+            lambda **kw: correlation_figure(table, year, negligible, scenario_name, by=by,
+                                            measure=measure, **kw),
+            lambda height: correlation_rows_fitting(table, year, height),
+        )
 
 
 def _fmt_delta(value: float, relative: bool) -> str:
@@ -3451,7 +3488,7 @@ def _fmt_delta(value: float, relative: bool) -> str:
 def _report_oat(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     relative: bool, measure: str, years: list[int] | None, negligible: float,
-    draw: _Draw | None = None,
+    draw: _Draw | None = None, top: int | None = None,
 ) -> None:
     try:
         deltas = sensitivity.oat_deltas(batch_dir, dollar_mode)
@@ -3501,9 +3538,14 @@ def _report_oat(
         for stem in failed:
             click.echo(f"    {stem}: {statuses[stem]}")
     if draw is not None:
-        from analysis.sim.sensitivity_charts import oat_figure
+        from analysis.sim.sensitivity_charts import oat_figure, oat_rows_fitting
 
-        draw(oat_figure(deltas, years[-1], scenario_name, relative=relative, measure=measure))
+        _draw_top(
+            draw, top,
+            lambda **kw: oat_figure(deltas, years[-1], scenario_name, relative=relative,
+                                    measure=measure, **kw),
+            oat_rows_fitting,
+        )
 
 
 def _report_row(
@@ -11862,9 +11904,11 @@ def _draw_figure(
     """Draw the matplotlib figure ``fig`` as ``_draw_chain_graph`` draws a
     chart: into ``graph_file``, else in the terminal, else into a PNG file
     named with ``prefix``. For the terminal, at the resolution that makes the
-    figure's text the size of the terminal's own; and when ``fit`` is given
-    and the terminal reports its size, the figure ``fit`` draws at the
-    terminal's size in inches instead (``_terminal_figure_size``)."""
+    figure's text the size of the terminal's own, but never wider than the
+    terminal or larger than a terminal will decode (``_terminal_dpi``); and
+    when ``fit`` is given and the terminal reports its size, the figure
+    ``fit`` draws at the terminal's size in inches instead
+    (``_terminal_figure_size``)."""
     from analysis.sim import chain_graph
     from analysis.sim.ensemble_plots import figure_bytes
 
@@ -11876,11 +11920,32 @@ def _draw_figure(
     cell = chain_graph.cell_size() if protocol else None
     if fit is not None and cell is not None:
         fig = fit(_terminal_figure_size(cell))
+    dpi = _figure_dpi(cell)
+    if protocol is not None:
+        dpi = _terminal_dpi(tuple(fig.get_size_inches()), dpi, cell)
     try:
-        image = figure_bytes(fig, _graph_format(graph_file), dpi=_figure_dpi(cell))
+        image = figure_bytes(fig, _graph_format(graph_file), dpi=dpi)
     except (OSError, ValueError) as error:
         raise click.ClickException(f"couldn't draw the chart: {error}") from error
     _show_image(image, graph_file, protocol, cell, prefix)
+
+
+# The most pixels an image sent to the terminal may have. Terminals refuse a
+# larger one and show a broken-image icon instead (#452): VS Code's (xterm.js)
+# stops at 16 million by default; this leaves room for bbox_inches="tight".
+_MAX_TERMINAL_PIXELS = 8_000_000
+
+
+def _terminal_dpi(size: tuple[float, float], dpi: float, cell: tuple[float, float] | None) -> float:
+    """``dpi``, lowered for a figure of ``size`` inches shown in the
+    terminal: to the terminal's width, since the image is shrunk to fit it
+    anyway (so the pixels above that show nothing), and to
+    ``_MAX_TERMINAL_PIXELS``, so a tall figure (one row per varying
+    parameter) still decodes."""
+    width, height = size
+    if cell is not None:
+        dpi = min(dpi, shutil.get_terminal_size().columns * cell[0] / width)
+    return min(dpi, math.sqrt(_MAX_TERMINAL_PIXELS / (width * height)))
 
 
 # Matplotlib's text is 10pt; a terminal cell is about 1.2 times its font's height.
