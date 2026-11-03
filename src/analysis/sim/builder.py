@@ -646,6 +646,11 @@ class _Daemon:
         building = {self.build.scenario} if self.build is not None else set()
         self.follow = [n for n in self.follow
                        if n in building or any(parse_job(j)[0] == n for j in queue)]
+        # A reader asks for every step it reads, needed yet or not (a run
+        # can leave a series store to build): such a job stays wanted while
+        # its scenario has anything queued or building.
+        self.first = [j for j in self.first if parse_job(j)[0] in building
+                      or any(parse_job(q)[0] == parse_job(j)[0] for q in queue)]
         self.queue = self.order(queue)
         self.state = "building" if self.build is not None or self.queue else "idle"
 
@@ -945,7 +950,10 @@ def await_fresh(
         return
     paths, data_dir, jobs = found
     echo = echo or (lambda text: print(text, file=sys.stderr))
-    made = _request(paths, "first", scenario, [parse_job(j)[1] for j in jobs])
+    # Every step it reads, not only those pending now: one a pending job
+    # turns up (a series store a run needs) is then waited on, so no other
+    # reader's request preempts it.
+    made = _request(paths, "first", scenario, list(steps))
     if not daemon_alive(paths):
         spawn_daemon(paths, data_dir)
     try:

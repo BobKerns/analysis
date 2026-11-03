@@ -673,6 +673,24 @@ def test_a_series_store_comes_before_a_requested_sensitivity_batch(
     assert daemon.build is running and running.wanted
 
 
+def test_a_readers_later_steps_stay_wanted_while_its_scenario_builds(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Monte Carlo reader asks for run and series though only the run is
+    pending: the series store the run turns up is then wanted too, so no
+    other reader preempts it; a step its scenario no longer needs drops."""
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None
+    daemon.first = [running.job, f"{running.scenario}:series", "gone:series"]
+    daemon.scan()
+    daemon.preempt()
+    assert daemon.build is running and running.wanted
+    assert daemon.first == [f"{running.scenario}:series"]
+
+
 def test_each_step_runs_its_own_command(daemon: builder._Daemon) -> None:
     data = daemon.data_dir
     assert builder.step_command(data, "e", "run") == ["load", "e", "--data-dir", str(data)]
