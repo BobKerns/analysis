@@ -216,8 +216,9 @@ sim run inflation_1
 ```
 
 `sim run` detects the unresolved varying rows and generates+runs every
-member instead of a single run, under `state/runs/inflation_1/<timestamp>/
-member_NNNN.sqlite3`. Look at the result with `sim ensemble summary
+member instead of a single run, under `state/runs/inflation_1/monte-carlo/
+<timestamp>/member_NNNN.sqlite3` (a sensitivity batch, below, goes in
+`sensitivity/` beside `monte-carlo/`). Look at the result with `sim ensemble summary
 inflation_1` (a terminal table) or `notebooks/ensemble.ipynb` (the Monte
 Carlo "fan chart" — mean/median over quintile bands, shaded darker toward
 the middle fifth of members and lightest out at the 5th–95th percentile
@@ -992,12 +993,13 @@ noisy. Rerun with more members rather than reading a small difference:
 about 80 is enough for a quick comparison, and 400 to confirm one.
 
 **Loading time.** `sim run` keeps each batch's member series in one file,
-`state/runs/<ensemble>/<batch>/series.sqlite3`, so the notebook and
+`state/runs/<ensemble>/monte-carlo/<batch>/series.sqlite3`, so the notebook and
 `sim ensemble summary|compare` read a recipe in about a second however
 many members it has. A batch run before that file existed (or after the
-code that reads it changed) gets it built the first time it's read: the
-notebook shows a progress bar, `sim ensemble` says it's building it, and
-reads after that are quick. Nothing needs rerunning.
+code that reads it changed) gets it built by the background builder, if
+you use it, or else the first time it's read: the notebook shows a
+progress bar, `sim ensemble` says it's building it, and reads after that
+are quick. Nothing needs rerunning.
 
 ## Pooling several kinds of trouble
 
@@ -1146,6 +1148,13 @@ sim run inflation_1 --sensitivity
 sim ensemble sensitivity inflation_1
 ```
 
+You can usually skip the `sim run`: the background builder (`sim builder`)
+makes an ensemble's sensitivity batch once its Monte Carlo batch is done,
+and `sim ensemble sensitivity` waits for it, or runs one itself when there
+is none and the builder isn't running. The builder makes it again whenever
+the ensemble's data or the code changes, with the quantiles of the last
+one, so a ladder you ran with `--quantiles` keeps its rungs.
+
 `--sensitivity` runs one base member (every varying row at its central
 value, the same as an ensemble's member 0) plus one member per row per
 quantile. Each row is moved to the 10th and 90th percentile of its own
@@ -1279,7 +1288,7 @@ always stays with that.
 
 Every batch keeps what it drew, and what each draw depends on, in one
 SQLite file beside its member run files:
-`state/runs/<ensemble>/<batch>/draws.sqlite3`. Use it to check the
+`state/runs/<ensemble>/<mode>/<batch>/draws.sqlite3`. Use it to check the
 statistical setup before trusting a fan chart: do the members follow the
 distributions you wrote, and do correlated rows move together as much as
 you specified?

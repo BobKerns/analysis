@@ -22,7 +22,7 @@ from analysis.sim.ensemble import (
     risk_summary,
     summary_with_percentiles,
 )
-from analysis.sim.loader import is_ensemble_batch, read_disabled_scenarios
+from analysis.sim.loader import ensemble_batches, read_disabled_scenarios
 from analysis.sim.ensemble_tables import RecipeTables
 from analysis.sim.ensemble_plots import (
     band_edges,
@@ -114,14 +114,7 @@ def settled_batch(runs_dir: Path, recipe: str) -> tuple[Path, list[int]] | None:
     build (#300). Building the controls reads this; only drawing a recipe
     waits. A batch still being built may have no finished member yet, so
     an older batch stands in for it."""
-    from analysis.sim.locks import run_name_key
-
-    recipe_dir = Path(runs_dir) / recipe
-    if not recipe_dir.is_dir():
-        return None
-    batches = sorted((p for p in recipe_dir.iterdir() if is_ensemble_batch(p, "monte_carlo")),
-                     key=lambda p: run_name_key(p.name), reverse=True)
-    for batch_dir in batches:
+    for batch_dir in reversed(ensemble_batches(Path(runs_dir) / recipe, "monte_carlo")):
         indexes = sorted(int(stem.removeprefix("member_"))
                          for stem, status in member_run_statuses(batch_dir).items()
                          if status == "succeeded")

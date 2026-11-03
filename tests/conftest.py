@@ -894,7 +894,7 @@ def strategy_ensemble(strategy_scenarios: Path, intent_dir: Path, runs_dir: Path
     def _run(name: str) -> Path:
         recipe = load_scenario(strategy_scenarios, name, intent_dir=intent_dir / "recipe",
                                allow_dirty_data=True, compute_stamps=False).intent_path
-        batch_dir = runs_dir / name / "2026-01-01T000000Z"
+        batch_dir = runs_dir / name / "monte-carlo" / "2026-01-01T000000Z"
         for i in range(3):
             member_intent = resolve_member(
                 recipe, intent_dir / f"{name}_member_{i}.sqlite3",
@@ -1536,7 +1536,7 @@ def two_lot_ensemble_runs_dir(
         vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
-    batch_dir = runs_dir / "two_lot" / "2026-01-01T000000Z"
+    batch_dir = runs_dir / "two_lot" / "monte-carlo" / "2026-01-01T000000Z"
     for i in range(2):
         member_intent = resolve_member(
             recipe, intent_dir / f"two_lot_member_{i}.sqlite3",
@@ -1566,7 +1566,7 @@ def seeded_ensemble_batch(
     recipe = load_test_copy().intent_path
 
     def _batch(name: str, seed: int) -> Path:
-        batch_dir = runs_dir / name / "2026-01-01T000000Z"
+        batch_dir = runs_dir / name / "monte-carlo" / "2026-01-01T000000Z"
         for i in range(3):
             member_intent = resolve_member(
                 recipe, intent_dir / f"{name}_member_{i}.sqlite3",
@@ -1748,7 +1748,8 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     ``fake_state("run", "alice", "2026-10-01T120000Z", status=...)`` writes a
     single run file; ``fake_state("batch", ...)`` a run batch of ``members``
     member files with a batch manifest (``complete=False`` leaves the last
-    member out); ``fake_state("intent", ...)`` a member-intent batch. Each
+    member out); ``fake_state("intent", ...)`` a member-intent batch; a
+    batch of either kind goes in its ``mode``'s folder (#454). Each
     run file holds just a ``simulation_run`` row with the status. Every file
     and folder written gets the stamp as its mtime, so nothing reads as still
     being written (retention.ACTIVE_WINDOW)."""
@@ -1756,6 +1757,7 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     from datetime import UTC, datetime
 
     from analysis.sim.ensemble import write_batch_manifest
+    from analysis.sim.loader import batches_dir
 
     def _run_file(path: Path, status: str) -> None:
         con = sqlite3.connect(path)
@@ -1767,20 +1769,25 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
             con.close()
 
     def _fake(kind: str, scenario_name: str, stamp: str, *, status: str = "succeeded",
-              members: int = 2, complete: bool = True) -> Path:
+              members: int = 2, complete: bool = True, mode: str = "monte_carlo") -> Path:
         made = datetime.strptime(stamp, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
         if kind == "run":
             path = runs_dir / f"{stamp}_{scenario_name}_abc1234.sqlite3"
             _run_file(path, status)
             os.utime(path, (made, made))
             return path
-        path = (runs_dir if kind == "batch" else intent_dir) / scenario_name / stamp
+        recipe = (runs_dir if kind == "batch" else intent_dir) / scenario_name
+        path = batches_dir(recipe, mode) / stamp
         path.mkdir(parents=True)
         written = members if complete else members - 1
         for i in range(written):
             _run_file(path / f"member_{i:04d}.sqlite3", status)
         if kind == "batch":
-            write_batch_manifest(path, member_count=members, failures=[])
+            if mode == "sensitivity":
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode,
+                                     quantiles=(0.1, 0.9), rows=[])
+            else:
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode)
         for child in [*path.iterdir(), path]:
             os.utime(child, (made, made))
         return path

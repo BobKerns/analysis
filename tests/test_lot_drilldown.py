@@ -227,7 +227,7 @@ def _copy_recipe(runs_dir: Path, name: str, rename_lot: str | None = None) -> No
     shutil.copytree(runs_dir / "two_lot", runs_dir / name)
     if rename_lot is None:
         return
-    for member in (runs_dir / name).glob("*/member_*.sqlite3"):
+    for member in (runs_dir / name).glob("*/*/member_*.sqlite3"):
         with sqlite3.connect(member) as con:
             con.execute("UPDATE account_lot SET lot = 'renamed' WHERE lot = ?", (rename_lot,))
 
