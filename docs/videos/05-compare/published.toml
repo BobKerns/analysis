@@ -2,18 +2,18 @@
 # scenes: each scene's length in seconds in the build that was uploaded.
 
 [en]
-video = "z-HLIqsKTZg"
-uploaded = 2026-11-01T06:04:42Z
+video = "gq3mAFwscMI"
+uploaded = 2026-11-03T08:07:10Z
 scenes = [
   ["title", 18.62],
   ["contents", 18.27],
   ["builds-on", 26.07],
-  ["create", 28.60],
-  ["claim-early", 18.56],
+  ["create", 27.72],
+  ["claim-early", 16.20],
   ["mix-in", 21.59],
   ["run-all", 13.83],
   ["compare-graph", 27.53],
-  ["compare", 34.72],
+  ["compare", 34.68],
   ["after-tax-dip", 40.92],
   ["break-even", 26.91],
   ["account", 20.16],
@@ -23,8 +23,8 @@ scenes = [
 ]
 
 [ja]
-video = "_9xq98dz6kw"
-uploaded = 2026-11-01T06:05:02Z
+video = "5RbOMWhtU8c"
+uploaded = 2026-11-03T08:07:24Z
 scenes = [
   ["title", 22.52],
   ["contents", 20.35],
@@ -34,7 +34,7 @@ scenes = [
   ["mix-in", 25.13],
   ["run-all", 17.82],
   ["compare-graph", 32.32],
-  ["compare", 34.56],
+  ["compare", 34.72],
   ["after-tax-dip", 48.41],
   ["break-even", 34.32],
   ["account", 24.20],
