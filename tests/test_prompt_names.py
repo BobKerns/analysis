@@ -17,7 +17,7 @@ from analysis.cli import main
 from analysis.sim import cli as sim_cli
 from analysis.sim import completion, names
 from analysis.sim.cli import sim_group_command
-from analysis.sim.loader import BATCH_MANIFEST_FILENAME
+from analysis.sim.loader import BATCH_MANIFEST_FILENAME, write_current_scenario
 
 
 @pytest.fixture
@@ -397,3 +397,78 @@ def test_a_rules_person_may_be_the_household(sim: Callable[..., Result], test_da
                  "--name", "shared", "--person", "joint", "--scenario", "retire_alice")
     assert result.exit_code == 0, result.output
     assert "unknown" not in result.output
+
+
+def _mc_runs(runs: Path, *recipes: str) -> None:
+    for recipe in recipes:
+        batch = runs / recipe / "b1"
+        batch.mkdir(parents=True)
+        (batch / BATCH_MANIFEST_FILENAME).write_text(json.dumps({"mode": "monte_carlo"}))
+
+
+def _ask_ensemble(runs: Path, data: Path | None, input: str = "", *,  # noqa: A002
+                  current: bool = True) -> Result:
+    return CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
+        sim_cli._ask_ensemble_run(runs, "monte_carlo", data_dir=data, current=current))),
+        input=input)
+
+
+def test_an_ensemble_left_out_is_the_current_scenario_when_it_has_runs(tmp_path: Path) -> None:
+    """#449: like any command that takes a scenario, an ensemble report
+    defaults to the current one, saying so, rather than asking."""
+    runs, data = tmp_path / "runs", tmp_path / "data"
+    _mc_runs(runs, "mc_one", "mc_two")
+    data.mkdir()
+    write_current_scenario(data, "mc_two")
+    result = _ask_ensemble(runs, data)
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "mc_two\n"
+    assert "Using scenario mc_two" in result.stderr
+
+
+def test_an_ensemble_is_asked_for_when_the_current_scenario_has_no_runs(tmp_path: Path) -> None:
+    runs, data = tmp_path / "runs", tmp_path / "data"
+    _mc_runs(runs, "mc_one")
+    data.mkdir()
+    write_current_scenario(data, "retire_alice")
+    result = _ask_ensemble(runs, data, input="mc_one\n")
+    assert result.exit_code == 0, result.output
+    assert "ensembles with runs: mc_one\n" in result.output
+    assert "The current scenario, retire_alice, is not among them." in result.stderr
+    assert result.stdout.endswith("mc_one\n")
+
+
+def test_a_second_ensemble_is_asked_for_even_when_one_is_current(tmp_path: Path) -> None:
+    runs, data = tmp_path / "runs", tmp_path / "data"
+    _mc_runs(runs, "mc_one", "mc_two")
+    data.mkdir()
+    write_current_scenario(data, "mc_two")
+    result = _ask_ensemble(runs, data, input="mc_one\n", current=False)
+    assert result.exit_code == 0, result.output
+    assert "Using scenario" not in result.stderr
+    assert result.stdout.endswith("mc_one\n")
+
+
+def test_an_ensemble_is_asked_for_without_a_data_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANALYSIS_DATA_DIR", raising=False)
+    runs = tmp_path / "runs"
+    _mc_runs(runs, "mc_one")
+    result = _ask_ensemble(runs, None, input="mc_one\n")
+    assert result.exit_code == 0, result.output
+    assert result.stdout.endswith("mc_one\n")
+
+
+@pytest.mark.parametrize("command", [("summary",), ("draws",)])
+def test_ensemble_reports_run_on_the_current_scenario(
+    command: tuple[str, ...], mc_batch: Path, test_data_dir: Path, runs_dir: Path,
+) -> None:
+    """#449's commands, end to end: no name, no prompt."""
+    write_current_scenario(test_data_dir, "retire_alice")
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", *command, "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir),
+    ])
+    assert result.exit_code == 0, result.output
+    assert "Using scenario retire_alice" in result.stderr
+    assert "ensembles with runs" not in result.output

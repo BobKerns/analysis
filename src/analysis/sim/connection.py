@@ -577,6 +577,46 @@ class Connection(_TagReader):
 
 # ---------- run (read-only) ----------
 
+class HandleBudget:
+    """Caps how many of a group of ``RunConnection``s hold an open SQLite
+    handle at once, closing the least recently used one to open another.
+
+    An ensemble's members are read side by side (``ensemble.load_ensemble``),
+    and a batch can have thousands of them: one handle each runs out of file
+    descriptors (macOS allows 256 by default), which SQLite reports as
+    "unable to open database file" (#448).
+    """
+
+    DEFAULT_LIMIT = 64
+
+    def __init__(self, limit: int | None = None) -> None:
+        limit = self.DEFAULT_LIMIT if limit is None else limit
+        if limit < 1:
+            raise ValueError(f"limit must be at least 1, not {limit}")
+        self.limit = limit
+        self._open: dict[int, RunConnection] = {}  # insertion order = recency
+        self._lock = threading.Lock()
+
+    def touch(self, rc: RunConnection) -> None:
+        """Count ``rc``'s handle as open and just used, closing the least
+        recently used others' handles while more than ``limit`` are counted.
+        Called before ``rc`` opens one, so the limit holds at every moment."""
+        with self._lock:
+            self._open.pop(id(rc), None)
+            self._open[id(rc)] = rc
+            while len(self._open) > self.limit:
+                oldest = next(iter(self._open))
+                self._open.pop(oldest)._release()
+
+    def forget(self, rc: RunConnection) -> None:
+        with self._lock:
+            self._open.pop(id(rc), None)
+
+    @property
+    def open_count(self) -> int:
+        return len(self._open)
+
+
 class RunConnection(Connection):
     """Read-only access to a finalized run snapshot DB.
 
@@ -590,7 +630,6 @@ class RunConnection(Connection):
     def name(self) -> str:
         return self.metadata().scenario_name[0]
     run_path: Path
-    _con: sqlite3.Connection
     @property
     def date(self) -> pd.Timestamp:
         return pd.to_datetime(self.metadata().finished_at)[0]
@@ -623,7 +662,8 @@ class RunConnection(Connection):
         return self.scenario.data_dir
 
     def __init__(self, run_path: Path | str,
-                  scenario: ScenarioConnection | str | None = None) -> None:
+                  scenario: ScenarioConnection | str | None = None,
+                  *, handles: HandleBudget | None = None) -> None:
         if isinstance(scenario, str):
             self._scenario_name = scenario
             self._scenario = None
@@ -632,8 +672,52 @@ class RunConnection(Connection):
             self._scenario = scenario
 
         self.run_path = Path(run_path)
-        self._con = connect_sim_file(self.run_path)
-        self._con.row_factory = sqlite3.Row
+        self._handles = handles
+        if handles is None:
+            self._open()
+
+    # Class defaults, so ``live()``, which skips __init__, has them too.
+    _handles: HandleBudget | None = None
+    _handle: sqlite3.Connection | None = None
+
+    def _open(self) -> sqlite3.Connection:
+        # A budgeted handle may be closed by another member's read, which in a
+        # notebook can come from a widget's subshell thread (#375), so it isn't
+        # tied to the thread that opened it.
+        kwargs = {} if self._handles is None else {"check_same_thread": False}
+        con = connect_sim_file(self.run_path, **kwargs)
+        con.row_factory = sqlite3.Row
+        self._handle = con
+        return con
+
+    @property
+    def _con(self) -> sqlite3.Connection:
+        """The run file's SQLite handle. Under a ``HandleBudget`` it opens on
+        first use and may be closed again to make room for another member's,
+        then reopens here the next time it's needed; the read caches survive."""
+        if self._handles is None:
+            if self._handle is None:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+            return self._handle
+        # Make room before opening, so no more than the limit are ever open.
+        self._handles.touch(self)
+        if self._handle is not None:
+            return self._handle
+        try:
+            return self._open()
+        except BaseException:
+            self._handles.forget(self)
+            raise
+
+    @_con.setter
+    def _con(self, con: sqlite3.Connection) -> None:
+        self._handle = con
+
+    def _release(self) -> None:
+        """Close the handle but keep the connection usable: it reopens on demand."""
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
 
     @classmethod
     def live(cls, con: sqlite3.Connection) -> RunConnection:
@@ -653,7 +737,9 @@ class RunConnection(Connection):
         return self.run_path
 
     def close(self) -> None:
-        self._con.close()
+        if self._handles is not None:
+            self._handles.forget(self)
+        self._release()
 
     def __enter__(self) -> RunConnection:
         return self

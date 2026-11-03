@@ -594,11 +594,8 @@ def _announce_current(name: str | None, previous: str | None) -> None:
 def _note_use(data_dir: Path | None, *names: str | None) -> None:
     """Record use of ``names`` (#322) by a command that reads only runs, so
     may have no data repo (``--runs-dir``): then there is nothing to record."""
-    try:
-        data = _resolve_data_dir(data_dir)
-    except click.ClickException:
-        return
-    working_set.use(data, *names)
+    if (data := _current_data_dir(data_dir)) is not None:
+        working_set.use(data, *names)
 
 
 def _resolve_data_dir(data_dir: Path | None) -> Path:
@@ -1812,6 +1809,29 @@ def ensemble_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     _list_scenarios(data_dir, verbose, ensembles_only=True, templates=all_)
 
 
+def _no_batch_error(
+    recipe_runs_dir: Path, scenario_name: str, mode: str | None, batch: str | None,
+) -> click.ClickException:
+    """Why no batch was found for ``scenario_name``, and how to make one: a
+    recipe run only one way has no batch of the other mode, which is not the
+    same as having no runs at all (#448)."""
+    if batch:
+        return click.ClickException(f"no ensemble batch {batch} under {recipe_runs_dir}")
+    make = f"'sim run {scenario_name}{' --sensitivity' if mode == 'sensitivity' else ''}'"
+    if mode is not None and recipe_runs_dir.is_dir():
+        others = sorted({
+            batch_mode(p) for p in recipe_runs_dir.iterdir() if is_ensemble_batch(p)
+        } - {mode})
+        if others:
+            names = {"monte_carlo": "Monte Carlo", "sensitivity": "sensitivity (OAT)"}
+            have = " and ".join(names.get(m, m) for m in others)
+            return click.ClickException(
+                f"{scenario_name} has no {names.get(mode, mode)} batch, only {have} "
+                f"runs; {make} makes one"
+            )
+    return click.ClickException(f"no ensemble runs found under {recipe_runs_dir}; {make} makes one")
+
+
 def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -> Path:
     """The Monte Carlo batch ``sim ensemble summary``/``compare`` report on."""
     recipe_runs_dir = runs_dir / scenario_name
@@ -1820,7 +1840,7 @@ def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -
         else latest_ensemble_batch(recipe_runs_dir, mode="monte_carlo")
     )
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, "monte_carlo", batch)
     if batch_mode(batch_dir) != "monte_carlo":
         # ADR-007 §5: a fan-chart summary over an OAT batch is meaningless.
         raise click.ClickException(
@@ -2070,6 +2090,10 @@ def _hold_tables() -> None:
         state.hold()
 
 
+# `sim ensemble sensitivity --top` without N, where there's no terminal to
+# fill: the overview chart's rows.
+_DEFAULT_TOP = 10
+
 _ENSEMBLE_GRAPH_OPTIONS = _graph_options("them as the notebook's chart", after="the tables")
 _LOG_OPTION = click.option(
     "--log", "log_scale", is_flag=True,
@@ -2091,10 +2115,13 @@ _report_graph_options = _graph_options("it as the notebook's chart", after="the 
 
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
-                      batch: str | None = None, exclude: str | None = None) -> str:
+                      batch: str | None = None, exclude: str | None = None, *,
+                      data_dir: Path | None = None, current: bool = True) -> str:
     """An ensemble with a run batch of ``mode`` (any, when None) under
-    ``runs_dir`` asked for: the batch named ``batch`` when given; never
-    ``exclude``."""
+    ``runs_dir``: the current scenario when it is one (#449), announced as
+    `_resolve_scenario` announces it, else one asked for; the batch named
+    ``batch`` when given; never ``exclude``. ``current=False`` always asks,
+    for a second ensemble such as a comparison's variant."""
     def has_runs(recipe: Path) -> bool:
         if batch:
             return is_ensemble_batch(recipe / batch, mode)
@@ -2105,7 +2132,27 @@ def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble"
         if p.is_dir() and p.name != exclude and has_runs(p)
     )
     plural = f"ensembles with a batch {batch}" if batch else "ensembles with runs"
+    data = _current_data_dir(data_dir) if current else None
+    name = read_current_scenario(data) if data is not None else None
+    if name is not None and name in recipes:
+        ctx = click.get_current_context(silent=True)
+        if ctx is None or not ctx.meta.get(_SCENARIO_ANNOUNCED):
+            click.echo(f"Using scenario {name}", err=True)
+            if ctx is not None:
+                ctx.meta[_SCENARIO_ANNOUNCED] = True
+        return name
+    if name is not None:
+        click.echo(f"The current scenario, {name}, is not among them.", err=True)
     return _ask_name("ensemble", recipes, prompt=prompt, plural=plural)
+
+
+def _current_data_dir(data_dir: Path | None) -> Path | None:
+    """The data repo, when there is one: a command that reads only runs
+    (``--runs-dir``) may have none, and then has no current scenario."""
+    try:
+        return _resolve_data_dir(data_dir)
+    except click.ClickException:
+        return None
 
 
 def _resolve_runs_dir(runs_dir: Path | None, data_dir: Path | None) -> Path:
@@ -2198,13 +2245,15 @@ def ensemble_summary(
     --start and --end limit the years shown; the share ever below the
     reserve still looks back to the start of the run.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     _check_lot_has_account(account, lot)
     _check_log(log_scale, as_graph, graph_file)
     years = _year_range(first_year, last_year)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
         known = _ask_again_once_known(scenario_name=scenario_name)
         account, lot = known["account"], known["lot"]
     after_tax = not pre_tax and account is None
@@ -2331,8 +2380,9 @@ def ensemble_compare(
     over the whole run, so the share ever below the reserve looks back to
     its start.
 
-    Either ensemble left out is asked for, from those that have been run
-    (one variant)."""
+    Without BASELINE, the current scenario when it is an ensemble that has
+    been run; otherwise either ensemble left out is asked for, from those
+    that have been run (one variant)."""
     _check_lot_has_account(account, lot)
     _check_log(log_scale, as_graph, graph_file)
     years = _year_range(first_year, last_year)
@@ -2344,10 +2394,11 @@ def ensemble_compare(
     if baseline is None or not variants:
         if baseline is None:
             baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline",
-                                         exclude=variants[0] if variants else None)
+                                         exclude=variants[0] if variants else None,
+                                         data_dir=data_dir)
         if not variants:
             variants = (_ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant",
-                                          exclude=baseline),)
+                                          exclude=baseline, current=False),)
         known = _ask_again_once_known(baseline=baseline, variants=variants)
         baseline, variants = known["baseline"], tuple(known["variants"])
         account, lot = known["account"], known["lot"]
@@ -2579,10 +2630,12 @@ def ensemble_guard_rails(
     The rails are the recipe's guard_rails.csv as it is now, read from the
     data repo: editing one reruns nothing. --chart draws the shares and RMS.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     mode = DollarMode(dollars)
@@ -2654,10 +2707,12 @@ def ensemble_drift(
     instead (signed: above zero is overweight). --chart draws the spread
     over every month.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
@@ -2721,10 +2776,12 @@ def ensemble_spending(
     plan delivered, the years cut on average and the members ever cut.
     --chart draws the spread of spending by year against the plan.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch,
+                                          data_dir=data_dir)
     _note_use(data_dir, scenario_name)
     _hold_tables()
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
@@ -2843,12 +2900,19 @@ def _echo_ensemble_rail_deltas(
     show_default=True, help="With --attribute: income/expense category, flow account, or "
                             "holding account.",
 )
+@click.option(
+    "--top", "top", type=click.IntRange(min=0), is_flag=False, flag_value=0, default=None,
+    metavar="[N]",
+    help="With --chart or --chart-file: draw only the N most important rows. "
+         f"Without N (or 0), as many as fill the terminal at its text size (else {_DEFAULT_TOP}); "
+         "give N, or put --top after SCENARIO_NAME, so the name isn't read as N.",
+)
 @_graph_options("the notebook's charts for it", after="the tables")
 def ensemble_sensitivity(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     mode: str | None, dollars: str, relative: bool, measure: str, years: str | None,
-    negligible: float, row: str | None, attribute: str | None, by: str, as_graph: bool,
-    graph_file: Path | None,
+    negligible: float, row: str | None, attribute: str | None, by: str, top: int | None,
+    as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Which of SCENARIO_NAME's varying rows matter, and when (ADR-007).
 
@@ -2869,12 +2933,20 @@ def ensemble_sensitivity(
     ladder, its response across its range at that year; with --attribute, where
     its delta comes from that year. A Monte Carlo batch: R^2 by year, and each
     row's correlation with its 95% interval at that year. --years picks the
-    year: its last.
+    year: its last. --top N draws only the N most important rows of the
+    overview (for a recording, say); --top alone fills the terminal.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for.
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for.
     """
     if row is not None and attribute is not None:
         raise click.UsageError("use one of --row and --attribute")
+    if top is not None:
+        if not as_graph and graph_file is None:
+            raise click.UsageError("--top needs --chart or --chart-file")
+        if row is not None or attribute is not None:
+            raise click.UsageError("--top picks rows of the overview chart; "
+                                   "--row and --attribute show one row")
     # One row's views need a sensitivity batch, so that's the one to find.
     if mode is None and (row is not None or attribute is not None):
         mode = "sensitivity"
@@ -2882,16 +2954,16 @@ def ensemble_sensitivity(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
     _hold_tables()
-    draw = (
-        (lambda fig: _draw_figure(fig, graph_file, "sensitivity-"))
+    draw: _Draw | None = (
+        (lambda fig, fit=None: _draw_figure(fig, graph_file, "sensitivity-", fit))
         if as_graph or graph_file is not None else None
     )
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
     from analysis.sim.pool import pool_record
 
     if (record := pool_record(batch_dir)) is not None:
@@ -2933,12 +3005,12 @@ def ensemble_sensitivity(
     if batch_mode(batch_dir) == "sensitivity":
         _report_oat(
             scenario_name, batch_dir, dollar_mode, relative=relative, measure=measure,
-            years=requested_years, negligible=negligible, draw=draw,
+            years=requested_years, negligible=negligible, draw=draw, top=top,
         )
     else:
         _report_correlation(
             scenario_name, batch_dir, dollar_mode, measure=measure,
-            years=requested_years, negligible=negligible, draw=draw,
+            years=requested_years, negligible=negligible, draw=draw, top=top,
         )
 
 
@@ -3005,7 +3077,8 @@ def ensemble_draws(
     few members each move one row, so its draws say little about the
     distributions or how they correlate.
 
-    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    Without SCENARIO_NAME, the current scenario when it is an ensemble
+    that has been run, else one that has is asked for."""
     from analysis.sim.draws_db import build_draws_db, draws_db_current, draws_db_path, open_draws_db
 
     if batch in registries.ENSEMBLE_MODES:
@@ -3024,7 +3097,7 @@ def ensemble_draws(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch, data_dir=data_dir)
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if (batch_dir is None and mode == "monte_carlo" and resolved_data_dir is not None
@@ -3036,7 +3109,7 @@ def ensemble_draws(
                    runs_dir=runs_dir)
         batch_dir = latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
-        raise click.ClickException(f"no ensemble runs found under {_shown(recipe_runs_dir)}")
+        raise _no_batch_error(recipe_runs_dir, scenario_name, mode, batch)
     if charted and batch_mode(batch_dir) == "sensitivity":
         # Each sensitivity member pins one row at a chosen percentile and holds
         # the rest at their base case, so a histogram or scatter of its draws
@@ -3380,7 +3453,20 @@ def _echo_pair_draws(con: sqlite3.Connection, a: str, b: str) -> None:
 
 # Draws one of `sim ensemble sensitivity`'s figures (``_draw_figure``, bound
 # to the command's --chart or --chart-file).
-_Draw = Callable[[Any], None]
+# Draws a figure; given ``fit``, the figure ``fit`` draws at the terminal's size instead.
+_Draw = Callable[..., None]
+
+
+def _draw_top(draw: _Draw, top: int | None, figure: Callable[..., Any],
+              fitting: Callable[[float], int]) -> None:
+    """Draw ``figure(top=..., width=...)``: all its rows, the top ``top``,
+    or (``top`` 0, --top without N) as many as ``fitting(height)`` says fit
+    the terminal, at its size."""
+    if top == 0:
+        draw(figure(top=_DEFAULT_TOP),
+             fit=lambda size: figure(top=fitting(size[1]), width=size[0]))
+    else:
+        draw(figure(top=top))
 
 
 def _report_years(batch_dir: Path, available: list[int], requested: list[int] | None) -> list[int]:
@@ -3456,6 +3542,7 @@ def _signed(value: float) -> str:
 def _report_correlation(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     measure: str, years: list[int] | None, negligible: float, draw: _Draw | None = None,
+    top: int | None = None,
 ) -> None:
     """ADR-007 §6.2: rho, SRRC and PRCC, each with its interval, per row and
     year, R^2 per year, each latent factor's rho, the achieved score
@@ -3532,10 +3619,15 @@ def _report_correlation(
     for name, value in status.items():
         click.echo(f"    {name:<24} {value}")
     if draw is not None:
-        from analysis.sim.sensitivity_charts import correlation_figure
+        from analysis.sim.sensitivity_charts import correlation_figure, correlation_rows_fitting
 
-        draw(correlation_figure(table, years[-1], negligible, scenario_name, by=by,
-                                measure=measure))
+        year = years[-1]
+        _draw_top(
+            draw, top,
+            lambda **kw: correlation_figure(table, year, negligible, scenario_name, by=by,
+                                            measure=measure, **kw),
+            lambda height: correlation_rows_fitting(table, year, height),
+        )
 
 
 def _fmt_delta(value: float, relative: bool) -> str:
@@ -3547,7 +3639,7 @@ def _fmt_delta(value: float, relative: bool) -> str:
 def _report_oat(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     relative: bool, measure: str, years: list[int] | None, negligible: float,
-    draw: _Draw | None = None,
+    draw: _Draw | None = None, top: int | None = None,
 ) -> None:
     try:
         deltas = sensitivity.oat_deltas(batch_dir, dollar_mode)
@@ -3597,9 +3689,14 @@ def _report_oat(
         for stem in failed:
             click.echo(f"    {stem}: {statuses[stem]}")
     if draw is not None:
-        from analysis.sim.sensitivity_charts import oat_figure
+        from analysis.sim.sensitivity_charts import oat_figure, oat_rows_fitting
 
-        draw(oat_figure(deltas, years[-1], scenario_name, relative=relative, measure=measure))
+        _draw_top(
+            draw, top,
+            lambda **kw: oat_figure(deltas, years[-1], scenario_name, relative=relative,
+                                    measure=measure, **kw),
+            oat_rows_fitting,
+        )
 
 
 def _report_row(
@@ -9900,7 +9997,7 @@ def report_spending_command(
     def figure():
         from analysis.sim.spending_charts import spending_figure
 
-        return spending_figure(frame, f"{what.capitalize()}, {_DOLLAR_LABELS[mode]} ({described})",
+        return spending_figure(frame, f"{what[0].upper()}{what[1:]}, {_DOLLAR_LABELS[mode]} ({described})",
                                ylabel=_DOLLAR_LABELS[mode], deaths=deaths)
 
     # Before the lines below the table, as a run with no strategy returns
@@ -11958,9 +12055,11 @@ def _draw_figure(
     """Draw the matplotlib figure ``fig`` as ``_draw_chain_graph`` draws a
     chart: into ``graph_file``, else in the terminal, else into a PNG file
     named with ``prefix``. For the terminal, at the resolution that makes the
-    figure's text the size of the terminal's own; and when ``fit`` is given
-    and the terminal reports its size, the figure ``fit`` draws at the
-    terminal's size in inches instead (``_terminal_figure_size``)."""
+    figure's text the size of the terminal's own, but never wider than the
+    terminal or larger than a terminal will decode (``_terminal_dpi``); and
+    when ``fit`` is given and the terminal reports its size, the figure
+    ``fit`` draws at the terminal's size in inches instead
+    (``_terminal_figure_size``)."""
     from analysis.sim import chain_graph
     from analysis.sim.ensemble_plots import figure_bytes
 
@@ -11972,11 +12071,32 @@ def _draw_figure(
     cell = chain_graph.cell_size() if protocol else None
     if fit is not None and cell is not None:
         fig = fit(_terminal_figure_size(cell))
+    dpi = _figure_dpi(cell)
+    if protocol is not None:
+        dpi = _terminal_dpi(tuple(fig.get_size_inches()), dpi, cell)
     try:
-        image = figure_bytes(fig, _graph_format(graph_file), dpi=_figure_dpi(cell))
+        image = figure_bytes(fig, _graph_format(graph_file), dpi=dpi)
     except (OSError, ValueError) as error:
         raise click.ClickException(f"couldn't draw the chart: {error}") from error
     _show_image(image, graph_file, protocol, cell, prefix)
+
+
+# The most pixels an image sent to the terminal may have. Terminals refuse a
+# larger one and show a broken-image icon instead (#452): VS Code's (xterm.js)
+# stops at 16 million by default; this leaves room for bbox_inches="tight".
+_MAX_TERMINAL_PIXELS = 8_000_000
+
+
+def _terminal_dpi(size: tuple[float, float], dpi: float, cell: tuple[float, float] | None) -> float:
+    """``dpi``, lowered for a figure of ``size`` inches shown in the
+    terminal: to the terminal's width, since the image is shrunk to fit it
+    anyway (so the pixels above that show nothing), and to
+    ``_MAX_TERMINAL_PIXELS``, so a tall figure (one row per varying
+    parameter) still decodes."""
+    width, height = size
+    if cell is not None:
+        dpi = min(dpi, shutil.get_terminal_size().columns * cell[0] / width)
+    return min(dpi, math.sqrt(_MAX_TERMINAL_PIXELS / (width * height)))
 
 
 # Matplotlib's text is 10pt; a terminal cell is about 1.2 times its font's height.
