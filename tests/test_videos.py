@@ -763,3 +763,8 @@ def test_python_m_analysis_videos_runs_locally(monkeypatch: pytest.MonkeyPatch,
         videos_main.main(["check", "docs/videos/01-intro"])
     assert done.value.code == 0
     assert video_runs == {"docker": [], "local": [("check", [Path("docs/videos/01-intro")], {})]}
+    # Asking it for the container is an error, not a quiet local run.
+    with pytest.raises(SystemExit) as done:
+        videos_main.main(["build", "01-intro", "--docker"])
+    assert done.value.code == 1
+    assert video_runs["docker"] == [] and len(video_runs["local"]) == 1

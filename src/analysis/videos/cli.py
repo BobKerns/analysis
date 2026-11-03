@@ -75,8 +75,11 @@ def docker_running() -> bool:
 
 
 def _use_docker(where: str | None) -> bool:
-    obj = click.get_current_context().obj
-    where = where or (obj or {}).get("where")
+    if click.get_current_context().obj == LOCAL_ONLY:
+        if where == "docker":
+            raise click.ClickException("--docker: `python -m analysis.videos` runs only on this machine; "
+                                       "use `analysis video` for the container")
+        return False
     if where == "local":
         return False
     running = docker_running()
