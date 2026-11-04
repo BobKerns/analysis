@@ -25,6 +25,7 @@ from analysis.sim.notebook_ui.pickers import (
     TimeRangePicker,
     display_warning,
     multi_scenario_picker,
+    latest_run_ref,
     newer_runs_warning,
     observe_while_shown,
     open_run_line,
@@ -561,3 +562,19 @@ def test_newer_runs_warning_quotes_a_run_path_with_a_space(
     warning = newer_runs_warning("retire_alice", copy)
     assert warning is not None
     assert f"sim explain --runfile &#x27;{failed}&#x27;" in warning
+
+
+def test_the_scenario_summary_names_the_latest_run_not_the_opened_one(
+    test_data_dir: Path, retire_alice_test_run: Path, runs_dir: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    failed = _failed_copy(good, "99991231T235959Z", "Boom")
+
+    _widget, container, _dropdown = scenario_picker(test_data_dir, "retire_alice")
+    try:
+        assert container.scenario_ref.run_path == good
+        summary = latest_run_ref(container.scenario_ref).describe()
+        assert f"| latest run | `{failed}`" in summary
+    finally:
+        container.close()

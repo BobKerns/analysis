@@ -174,6 +174,13 @@ def open_run_line(name: str, run_path: Path | None) -> str | None:
             + "; its results stop where it ended")
 
 
+def latest_run_ref(ref: ScenarioRef) -> ScenarioRef:
+    """``ref`` for its summary table, whose "latest run" row names the
+    scenario's latest run (#437): the picker pins the run it opened, which
+    may be an older one, or an ensemble member; the line above names that."""
+    return replace(ref, run=PendingRun(ref.runs_dir, ref.name))
+
+
 def newer_runs_warning(name: str, run_path: Path | None) -> str | None:
     """The HTML of a warning that ``name`` has runs newer than the open
     ``run_path`` that didn't succeed (#437), so the notebook shows an older
@@ -625,7 +632,7 @@ def scenario_picker(
             newer = newer_runs_warning(name, run_path)
             if newer is not None:
                 display(HTML(newer))
-            display(container.scenario_ref)
+            display(latest_run_ref(container.scenario_ref))
             if show_shortfalls:
                 banner = shortfall_banner(container.run, name)
                 if banner is not None:
