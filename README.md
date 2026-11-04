@@ -87,7 +87,7 @@ state's own revenue department before relying on a figure.
 | Maryland | Partial | County income tax; pension exclusion; capital gains surtax |
 | Massachusetts | Partial | Short-term gain rate; surtax on high income; personal exemptions |
 | Michigan | Partial | City income tax; retirement deduction |
-| Minnesota | Tables needed | |
+| Minnesota | Partial | Social Security subtraction phases out in $4,000 steps (modeled as a straight line) |
 | Mississippi | Partial | Retirement income and IRA distributions exempt |
 | Missouri | Partial | Capital gains exempt; pension exemptions |
 | Montana | Partial | Lower long-term gain rate |
