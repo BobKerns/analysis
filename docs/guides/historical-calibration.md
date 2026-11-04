@@ -4,7 +4,7 @@
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
-<!-- cspell:ignore CPIAUCSL PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize SASLE SEMF SETE -->
+<!-- cspell:ignore CPIAUCSL PMMS TB3MS DGS3MO CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize SASLE SEMF SETE -->
 
 The [ensembles guide](ensembles.md) explains how a varying rate, a
 correlation and tail dependence work. This guide is about the numbers:
@@ -793,7 +793,7 @@ long run](#todays-rate-returning-to-the-long-run)):
 | `housing` | 3.0% | Shelter |
 | `education` | 3.4% | Tuition |
 | `services` | 3.0% | Services less energy |
-| `cash` | 4.0% | T-bills averaged 4.2% in 2025; a placeholder until a monthly T-bill series is here ([#287](https://github.com/BobKerns/analysis/issues/287)) |
+| `cash` | 4.1% | 3-month T-bill, October 2026: 4.05% discount yield (TB3MS), 4.15% as an investment yield |
 
 - **The hold is political, not statistical.** Rates hold for about three
   years, on the judgment that no effective policy change comes before
@@ -820,6 +820,28 @@ long run](#todays-rate-returning-to-the-long-run)):
   within a year, and energy's latest 12 months (16%) are a one-year spike
   that holding for three years would turn into a trend. Bonds and stocks
   likewise have no current start.
+- **Cash starts at the latest month, not 12 months.** A yield is a
+  reading at one point in time, so `cash` takes the latest month of
+  FRED's 3-month T-bill rate, `TB3MS` (October 2026; it was 3.72% in
+  August). `TB3MS` is a *discount* yield, the bill's discount over its
+  face value; the cash `_ensemble` row returns to Damodaran's series,
+  which since 1982 is an *investment* (bond-equivalent) yield, about 0.1
+  point higher at 4% and 0.2 at 5%. The template converts:
+  `365 × d / (360 − 91 × d)`, so 4.05% becomes 4.15%, close to what
+  money market funds pay before fees. Through 1981 the two series are
+  the same; since then `TB3MS` runs 0.11 point a year below:
+
+  | Series | Years     |   N | Compound % | Median % |  SD | Min % | Max % | Gap vs ref |
+  | ------ | --------- | --: | ---------: | -------: | --: | ----: | ----: | ---------: |
+  | TB3MS  | 1982–2025 |  44 |        3.6 |      3.7 | 2.9 |   0.0 |  10.6 |      -0.11 |
+  | T-bill | 1982–2025 |  44 |        3.7 |      3.9 | 3.0 |   0.0 |  11.1 |       0.00 |
+
+  ```sh
+  uv run analysis historical --reference T-bill=damodaran:tbill \
+    --period "Since 1982=1982-2025" TB3MS=fred:TB3MS@rate T-bill=damodaran:tbill
+  ```
+
+  The long-run tables keep Damodaran's series, which reaches back to 1928.
 
 ### Episodes
 
@@ -1055,14 +1077,14 @@ Verified and retrieved on 2026-10-05:
 | [BLS CPI flat files](https://download.bls.gov/pub/time.series/cu/) (`cu` CPI-U, [`cw`](https://download.bls.gov/pub/time.series/cw/) CPI-W, [`su`](https://download.bls.gov/pub/time.series/su/) C-CPI-U) | All CPI series by item and area. CPI-U and CPI-W all items from 1913, core from 1957, medical care from 1935, shelter from 1952, tuition from 1977, C-CPI-U from December 1999. | Monthly, plus annual averages | `bls:ID`, e.g. `bls:CUUR0000SAM`; ids are in each survey's `.series` file |
 | [BLS R-CPI-E](https://www.bls.gov/cpi/research-series/r-cpi-e-home.htm) | CPI for Americans 62 and older: all items and eight major groups, from December 1982 | Monthly | `rcpie:COLUMN`, e.g. `rcpie:Medical care` |
 | [BEA NIPA flat files](https://apps.bea.gov/national/Release/TXT/) | PCE price index (`DPCERG`) and core PCE (`DPCCRG`), from 1959, and every other monthly NIPA series | Monthly | `bea:CODE`; codes are in `SeriesRegister.txt` |
-| [Damodaran, historical returns](https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histretSP.html) | Annual returns on the S&P 500, small caps, 3-month T-bills (average yield over the year), 10-year T-bonds, Baa corporate bonds, real estate and gold, 1928–2025 (updated January 5, 2026) | Annual | `damodaran:COLUMN` (`sp500`, `small_cap`, `tbill`, `tbond`, `baa_corp`, `real_estate`, `gold`) |
+| [Damodaran, historical returns](https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histretSP.html) | Annual returns on the S&P 500, small caps, 3-month T-bills (the year's average yield, not a compounded return: `TB3MS`'s discount yield through 1981, then the 3-month constant-maturity investment yield, `DGS3MO`), 10-year T-bonds, Baa corporate bonds, real estate and gold, 1928–2025 (updated January 5, 2026) | Annual | `damodaran:COLUMN` (`sp500`, `small_cap`, `tbill`, `tbond`, `baa_corp`, `real_estate`, `gold`) |
 | [Federal Reserve H.15](https://www.federalreserve.gov/releases/h15/) | Interest rates and Treasury yields, with daily, weekly, monthly and annual averages through the Data Download Program | Daily to annual | `csv:FILE` (reduce to `date,rate`) |
 | [CMS National Health Expenditure data](https://www.cms.gov/data-research/statistics-trends-and-reports/national-health-expenditure-data/historical) | Health spending since 1960 | Annual | `csv:FILE` |
 | [Freddie Mac PMMS](https://www.freddiemac.com/pmms) | Average 30-year fixed mortgage rate (and others), with a historical weekly spreadsheet | Weekly | `csv:FILE` (reduce to `date,rate`) |
 | [Philadelphia Fed, Survey of Professional Forecasters](https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/survey-of-professional-forecasters) | Forecasts of inflation, rates and output, since 1968 | Quarterly | `csv:FILE` (reduce to one row per year) |
 | [Cleveland Fed, inflation expectations](https://www.clevelandfed.org/indicators-and-data/inflation-expectations) | Model expectations of inflation for horizons of 1 to 30 years, back to 1982 | Monthly | `csv:FILE` |
 | [Shiller's long-run data](https://shillerdata.com/) | Monthly stock prices, dividends, earnings, interest rates and CPI, from January 1871 (`ie_data.xls`, an Excel file to save as CSV) | Monthly | `csv:FILE` |
-| [FRED](https://fred.stlouisfed.org/) | Most of the series above under one interface, by FRED id (e.g. `PCEPI`, `CPIAUCSL`); its PCE matches the BEA download | Varies by series | `fred:ID` |
+| [FRED](https://fred.stlouisfed.org/) | Most of the series above under one interface, by FRED id (e.g. `PCEPI`, `CPIAUCSL`); its PCE matches the BEA download. Cached here: `PCEPI`, `DGS10` (daily 10-year yield, from 1962) and `TB3MS` (monthly 3-month T-bill discount yield, from 1934, retrieved 2026-11-04) | Varies by series | `fred:ID` |
 | [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html) | Social Security cost-of-living adjustments, 1975–2025. Since 1984 each is the rise in CPI-W's third-quarter average over the previous year's, rounded to 0.1 and never negative; after a zero COLA the base stays at the last COLA's quarter (so 2011 and 2016 are measured over two years). The site refuses scripted downloads, so save the page from a browser | Annual | `csv:FILE` (reduce to `date,rate`) |
 | [Medicare Trustees Report, Table III.C2](https://www.cms.gov/oact/tr/2025) and the [2026 premium fact sheet](https://www.cms.gov/newsroom/fact-sheets/2026-medicare-parts-b-premiums-deductibles) | Standard Part B monthly premium, 1966–2025 (every year from 1990), and $202.90 for 2026. Hold-harmless years (2010, 2011, 2016, 2017) left most enrollees paying less than the standard premium | Annual | `csv:FILE` (`date,value`) |
 

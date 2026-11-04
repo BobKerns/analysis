@@ -6,7 +6,7 @@ Builds on `t_market_ensemble`.
 
 ## Purpose
 
-Starts cash at today's yield, holds it until the `normalization_start` date marker, then lets it return to its level at its persistence. The marker is the same row as `t_inflation_current`'s, so with both templates one date moves both. Bonds and stocks have no current start: with no persistence it would be gone in a year. Today's 4.0% is a placeholder until a monthly T-bill series is in `historical_data/` (#287).
+Starts cash at today's yield, holds it until the `normalization_start` date marker, then lets it return to its level at its persistence. The marker is the same row as `t_inflation_current`'s, so with both templates one date moves both. Bonds and stocks have no current start: with no persistence it would be gone in a year. Today's 4.1% is the 3-month T-bill for October 2026 (`historical_data/fred/TB3MS.csv`): a 4.05% discount yield, which is 4.15% as an investment yield, the basis of the long-run cash series. See [Today's rates](../../../docs/guides/historical-calibration.md#todays-rates-_current) in the historical calibration guide.
 
 A template scenario: data repos read it from the analysis code repository's `templates/scenarios/` unless they have a scenario of the same name, which replaces it whole. See [Template scenarios](../../../docs/guides/historical-calibration.md#template-scenarios) in the historical calibration guide.
 
