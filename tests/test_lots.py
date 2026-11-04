@@ -567,7 +567,7 @@ def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: s
         )
     from analysis.sim.engine import _capital_gains
 
-    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (100, 7)
+    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (100, 7, 0)
     gains = _capital_gains(ledger_con, tax_year=2026, loss_limit=lambda _year: 0)
     assert (gains.stcg, gains.ltcg) == (50, 30)
 
