@@ -987,6 +987,18 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
 
 
 @pytest.fixture(scope="function")
+def priced_lots(add_account_value: Callable[..., None], write_aux: Callable[[str, str], Path]) -> None:
+    """Roth_Alice gains three lots holding 10 shares of AAA: one whose balance matches
+    the price at the 2026-05-31 start ($11.50 on 05-29), one that is stale, one
+    whose symbol has no prices. A later price ($20) is in the file too."""
+    write_aux("security_price__AAA.csv",
+              "effective_date,price\n2026-05-29,11.50\n2026-09-24,20.00\n")
+    add_account_value("Asset_Roth_Alice", lot="ok", symbol="AAA", quantity="10", opening_balance="115.00")
+    add_account_value("Asset_Roth_Alice", lot="old", symbol="AAA", quantity="10", opening_balance="140.00")
+    add_account_value("Asset_Roth_Alice", lot="bare", symbol="ZZZ", quantity="10", opening_balance="50.00")
+
+
+@pytest.fixture(scope="function")
 def without_prototype_defaults(test_data_dir: Path) -> None:
     """Cut the private copy's ``base`` scenario, which retire_alice inherits
     from (#91), loose from the template scenarios it builds on (#282): their
