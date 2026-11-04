@@ -63,6 +63,19 @@ def test_a_lots_payouts_are_named_as_such() -> None:
     assert "but the payout rule for Acct reads it from 2026-05" in issue
 
 
+def test_a_growth_rule_reads_the_payout_rates_it_takes_out() -> None:
+    """Even with its payout rule retired, a taxable lot's growth rule reads
+    the yield it subtracts from the total return (#468)."""
+    growth = {**_growth("stocks"),
+              "params_json": json.dumps({"less": [{"series": "yield"}]})}
+    aux = _rate("stocks", "2026-01-31") + _rate("yield", "2027-01-31")
+    [issue] = _issues([growth], aux)
+    assert "but the growth of Acct (less its payout) reads it from 2026-05" in issue
+    blended = {**growth, "params_json": json.dumps(
+        {"less": [{"blend": [["2026-05-31", [["yield", 1_000_000]]]]}]})}
+    assert len(_issues([blended], aux)) == 1
+
+
 def test_a_series_with_a_rate_by_the_start_loads() -> None:
     assert _issues([_growth("stocks")], _rate("stocks", "2026-05-31", "2030-01-31")) == []
 

@@ -4498,18 +4498,26 @@ def _validate_rate_series_start(
             reader = f"{what} {account}" + (
                 f" / {lot}" if lot != registries.DEFAULT_LOT else "")
         rate_kind = params.get("rate_kind", "rate")
-        if blend := params.get("blend"):
-            # Growth rules are monthly. A set applies from its as_of (the
-            # first set from the start) until the next set's.
-            for i, (as_of, slices) in enumerate(blend):
-                begins = first if i == 0 else max(first, parse_month(as_of))
-                if begins > last or (i + 1 < len(blend) and begins.isoformat() >= blend[i + 1][0]):
-                    continue  # applies only after the rule stops, or replaced before it's read
-                for slice_series, _ in slices:
-                    reads((rate_kind, slice_series), begins,
-                          f"{reader} ({slice_series} in its blend)")
-        elif series := row.get("series", ""):
-            reads((rate_kind, series), first, reader)
+        # A taxable lot's growth rule also reads its payouts' rates, to take
+        # them out of the total return (#468).
+        specs = [(params, row.get("series", ""), reader)] + [
+            (spec, spec.get("series", ""), f"{reader} (less its payout)")
+            for spec in params.get("less") or ()
+        ]
+        for spec, series, who in specs:
+            if blend := spec.get("blend"):
+                # Growth rules are monthly. A set applies from its as_of (the
+                # first set from the start) until the next set's.
+                for i, (as_of, slices) in enumerate(blend):
+                    begins = first if i == 0 else max(first, parse_month(as_of))
+                    if begins > last or (
+                            i + 1 < len(blend) and begins.isoformat() >= blend[i + 1][0]):
+                        continue  # applies only after the rule stops, or replaced before it's read
+                    for slice_series, _ in slices:
+                        reads((rate_kind, slice_series), begins,
+                              f"{who} ({slice_series} in its blend)")
+            elif series:
+                reads((rate_kind, series), first, who)
 
     for (kind, series), (month_s, reader) in sorted(first_read.items()):
         supplied = supplied_from[(kind, series)]
