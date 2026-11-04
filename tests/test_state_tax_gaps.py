@@ -205,3 +205,14 @@ def test_a_moved_surcharge_keeps_its_indexing_and_a_later_one_left_behind_goes(
     _swap_aux_table(ledger, 2, "2029-03-31",
                     {"aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux2)
     assert (registries.STATE_SURCHARGE, "CA") not in aux2
+
+
+def test_swapping_the_hsa_table_alone_keeps_the_years_before(ledger: sqlite3.Connection) -> None:
+    _post(ledger, 2026, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    aux = _aux(hsa="taxable")
+    aux[(registries.STATE_HSA, "federal")] = [("2026-01-31", {"treatment": "federal"})]
+    _swap_aux_table(ledger, 1, "2027-03-31",
+                    {"aux_kind": registries.STATE_HSA, "series": "CA", "source_series": "federal"}, aux)
+    assert _estimate(ledger, aux, "state", 2026).ordinary_income == 0
+    _post(ledger, 2027, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    assert _estimate(ledger, aux, "state", 2027).ordinary_income == -8_000_00

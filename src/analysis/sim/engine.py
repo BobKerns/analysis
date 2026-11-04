@@ -4579,6 +4579,10 @@ def _swap_aux_table(
             f"swap_aux_table event id={ev_id}: requires params_json aux_kind "
             "and source_series"
         )
+    if aux_kind in _OPTIONAL_STATE_AUX_KINDS:
+        # Swapped alone too, the earlier years keep their rows (#490).
+        _move_optional_state_table(con, ev_id, ev_date, aux_kind, series, str(source_series), aux)
+        return
     source = aux.get((aux_kind, source_series))
     if not source:
         raise EngineError(
