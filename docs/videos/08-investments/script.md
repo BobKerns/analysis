@@ -229,7 +229,7 @@ Sleep 400ms
 Enter
 Wait
 Sleep 12s
-Type "clear && sim account history Asset_Brokerage_Joint --lot balanced --yearly --end 2032"
+Type "clear && sim account history Asset_Brokerage_Joint --lot balanced --yearly --end 2032 --dollars nominal"
 Sleep 400ms
 Enter
 Wait
@@ -239,9 +239,10 @@ Sleep 12s
 After a run, sim allocation adds up everything by asset class: US stocks,
 bonds, cash, across every account. That's the mix to check against the
 one Alice and Bill meant to have. And sim account history, with dash dash
-lot, follows one lot year by year: the balanced fund, bought for thirty
-thousand, growing each year. Its dividends and interest add to its basis,
-so only its rise in price is still untaxed.
+lot, follows one lot year by year, here in each year's own dollars: the
+balanced fund, bought for thirty thousand, growing each year. Its
+dividends and interest add to its basis, so only its rise in price is
+still untaxed.
 
 ## Scene `taxes`: Where the tax falls
 
