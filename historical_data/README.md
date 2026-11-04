@@ -1,6 +1,6 @@
 # Historical calibration data
 
-<!-- cspell:ignore PCEPI -->
+<!-- cspell:ignore PCEPI TB3MS -->
 
 The public data behind
 [the historical calibration guide](../docs/guides/historical-calibration.md),
@@ -20,7 +20,7 @@ two CSVs noted below.
 | `bls/` | CPI-U (`cu`), CPI-W (`cw`) and C-CPI-U (`su`) flat files, series lists and directory listings; the R-CPI-E spreadsheet | [BLS LABSTAT](https://download.bls.gov/pub/time.series/), [R-CPI-E](https://www.bls.gov/cpi/research-series/r-cpi-e-home.htm) |
 | `bea/` | Monthly NIPA data and the series register (PCE price indexes) | [BEA NIPA flat files](https://apps.bea.gov/national/Release/TXT/) |
 | `damodaran/` | Annual returns on stocks, bonds, bills, real estate and gold, 1928–2025 | [Damodaran](https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histretSP.html) |
-| `fred/` | PCEPI and DGS10 | [FRED](https://fred.stlouisfed.org/) |
+| `fred/` | PCEPI, DGS10 (daily 10-year yield) and TB3MS (monthly 3-month T-bill discount yield, from 1934; retrieved 2026-11-04) | [FRED](https://fred.stlouisfed.org/) |
 | `cms/` | 2025 Medicare Trustees Report (PDF) and the 2026 Part B premium fact sheet | [Trustees Report](https://www.cms.gov/oact/tr/2025), [fact sheet](https://www.cms.gov/newsroom/fact-sheets/2026-medicare-parts-b-premiums-deductibles) |
 | `hld/` | Japan's 2023 life table (MHLW's Table A) as the Human Life-Table Database's PDF | [Human Life-Table Database](https://www.lifetable.de/) |
 | `ssa/` | Social Security COLAs, 1975–2025; the 2023 period life table (2026 Trustees Report) | [SSA COLAs](https://www.ssa.gov/oact/cola/colaseries.html), [life table](https://www.ssa.gov/oact/STATS/table4c6.html) |
