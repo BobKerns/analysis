@@ -3027,9 +3027,10 @@ def _year_tax_estimate(
         "retirement_exclusion_aux", registries.STATE_RETIREMENT_EXCLUSION))
     exclusion = (
         _retirement_exclusion(
-            con, aux, exclusion_aux, bracket_series, tax_year, filing_status, growth_cache)
+            con, aux, exclusion_aux, bracket_series, tax_year, filing_status, growth_cache,
+            net_gain=capital.stcg + capital.ltcg)
         if scope == "state" and bracket_series is not None
-        else _RetirementExclusion(())
+        else _RetirementExclusion()
     )
 
     def net_income(ordinary: int, ltcg: int) -> tuple[int, int]:
@@ -3176,41 +3177,63 @@ def _year_tax_estimate(
 
 
 class _ExclusionGrant(NamedTuple):
-    """What one person's exclusion (#486) covers before its income test."""
-    amount: int
-    gains: int
-    """How much of ``amount`` is capital gain."""
+    """One person's exclusion (#486), before the household income is known."""
+    person: str
+    income: tuple[str, ...]
+    """The ``STATE_EXCLUSION_INCOME`` kinds it covers, in the order it uses them."""
+    cap: int | None
+    """The most it excludes; None for all of it."""
     income_limit: int | None
     phaseout: int | None
 
-    def after_income_test(self, income: int) -> tuple[int, int]:
-        """The grant, and its gain part, once household ``income`` is known:
-        all of it up to ``income_limit``, then nothing (a cliff) or less in
-        a line to nothing ``phaseout`` above it."""
+    def after_income_test(self, amount: int, income: int) -> int:
+        """How much of the ``amount`` it covers it grants, once household
+        ``income`` is known: all of it up to ``income_limit``, then nothing
+        (a cliff) or less in a line to nothing ``phaseout`` above it."""
         if self.income_limit is None or income <= self.income_limit:
-            return self.amount, self.gains
+            return amount
         if not self.phaseout:
-            return 0, 0
-        left = max(0, self.income_limit + self.phaseout - income)
-        return self.amount * left // self.phaseout, self.gains * left // self.phaseout
+            return 0
+        return amount * max(0, self.income_limit + self.phaseout - income) // self.phaseout
 
 
 class _RetirementExclusion(NamedTuple):
-    """A tax year's state retirement income exclusions (#486)."""
-    grants: tuple[_ExclusionGrant, ...]
+    """A tax year's state retirement income exclusions (#486): each person's
+    income by kind, the grants in the order they use it, and the year's net
+    capital gain, which caps what they leave out as gain."""
+    pools: Mapping[str, Mapping[str, int]] = {}
+    grants: tuple[_ExclusionGrant, ...] = ()
+    net_gain: int = 0
 
     def excluded(self, ordinary: int, ltcg: int) -> tuple[int, int]:
         """How much of ``ordinary`` income and ``ltcg`` the exclusions take
         off, with household income ``ordinary + ltcg`` for their income
-        tests: never more than there is. Gains come off the long-term gain
-        first, the rest off ordinary income."""
+        tests. A grant uses up only the income it actually leaves out, so a
+        later one can cover what an earlier one's test denied. Gain beyond
+        the net capital gain (a loss offset it) isn't left out at all; the
+        rest comes off the long-term gain first, and never more than there
+        is."""
         if not self.grants:
             return 0, 0
+        income = ordinary + ltcg
+        pools = {person: dict(by_kind) for person, by_kind in self.pools.items()}
         total = gains = 0
         for grant in self.grants:
-            amount, gain = grant.after_income_test(ordinary + ltcg)
-            total, gains = total + amount, gains + gain
-        total = min(total, max(0, ordinary + ltcg))
+            left = pools[grant.person]
+            covered = [(kind, left[kind]) for kind in grant.income]
+            eligible = sum(amount for _, amount in covered)
+            if grant.cap is not None:
+                eligible = min(eligible, grant.cap)
+            granted = grant.after_income_test(eligible, income)
+            total += granted
+            for kind, amount in covered:
+                take = min(amount, granted)
+                left[kind] -= take
+                granted -= take
+                gains += take if kind == "capital_gain" else 0
+        total -= gains - min(gains, max(0, self.net_gain))
+        gains = min(gains, max(0, self.net_gain))
+        total = min(total, max(0, income))
         off_ordinary = min(total - min(gains, max(0, ltcg)), max(0, ordinary))
         return off_ordinary, min(total - off_ordinary, max(0, ltcg))
 
@@ -3239,17 +3262,21 @@ def _person_income(
     pools = {p: dict.fromkeys(registries.STATE_EXCLUSION_INCOME, 0) for p in people}
     ss = dict.fromkeys(people, 0)
     rows = con.execute(
-        "SELECT te.tax_character, fa.kind, fa.subkind, fa.owner, ta.owner, SUM(te.amount) "
+        "SELECT te.tax_character, fa.kind, fa.subkind, fa.owner, ta.owner, fa.meta_json, "
+        "       SUM(te.amount) "
         "FROM transfer_event te "
         "JOIN account fa ON fa.id = te.from_account "
         "JOIN account ta ON ta.id = te.to_account "
         "WHERE COALESCE(te.tax_year, CAST(substr(te.date, 1, 4) AS INTEGER)) = ? "
         "  AND te.tax_character IN ('ordinary', 'ss_benefit', "
         f"  {', '.join(repr(c) for c in _EXCLUSION_POOL_BY_CHARACTER)}) "
-        "GROUP BY 1, 2, 3, 4, 5",
+        "GROUP BY 1, 2, 3, 4, 5, 6",
         (tax_year,),
     )
-    for character, kind, subkind, payer, payee, amount in rows:
+    for character, kind, subkind, payer, payee, payer_meta, amount in rows:
+        if (character == registries.BUSINESS_EXPENSE
+                and json.loads(payer_meta or "{}").get("hobby") is True):
+            continue  # a hobby's expenses aren't deducted (#231), so its receipts stay income
         if character == "ordinary":
             pool, sign = (subkind if kind == "income" and subkind in
                           ("pension", "interest", "dividend") else "other"), 1
@@ -3282,7 +3309,7 @@ def _split_cents(amount: int, ways: int) -> list[int]:
 def _retirement_exclusion(
     con, aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     kind: str, state: str, tax_year: int, filing_status: str,
-    growth_cache: dict[tuple[str, date, date, str], int],
+    growth_cache: dict[tuple[str, date, date, str], int], *, net_gain: int,
 ) -> _RetirementExclusion:
     """``state``'s retirement income exclusions for ``tax_year`` (#486), from
     the ``kind`` table in force (``state_retirement_exclusion__<state>``).
@@ -3292,14 +3319,14 @@ def _retirement_exclusion(
     file order), the age tier with the highest ``min_age`` they reach by
     December 31. It covers their income of the kinds it lists, in that
     order, up to its ``amount`` (all of it when blank, and less their Social
-    Security when ``less_ss``). Income one exclusion covers isn't left for a
-    later one."""
+    Security when ``less_ss``). ``_RetirementExclusion.excluded`` applies
+    the household income tests and uses the income up."""
     rows = [
         r for r in _indexed_tax_rows(aux, kind, state, tax_year, growth_cache)
         if not r.get("filing_status") or r.get("filing_status") == filing_status
     ]
     if not rows:
-        return _RetirementExclusion(())
+        return _RetirementExclusion()
     birthdates = {
         person: (_parse_date(born) if born else None)
         for person, born, role in con.execute("SELECT id, birthdate, role FROM person")
@@ -3310,7 +3337,7 @@ def _retirement_exclusion(
     }
     people = sorted(birthdates)
     if not people:
-        return _RetirementExclusion(())
+        return _RetirementExclusion()
     pools, ss = _person_income(con, tax_year, people)
     tiers: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -3332,20 +3359,13 @@ def _retirement_exclusion(
             cap = row.get("amount")
             if cap is not None and _exclusion_less_ss(row):
                 cap = max(0, int(cap) - ss[person])
-            taken = gains = 0
-            for income in _exclusion_income(row):
-                take = pools[person][income] if cap is None else min(
-                    pools[person][income], int(cap) - taken)
-                pools[person][income] -= take
-                taken += take
-                gains += take if income == "capital_gain" else 0
-            if taken:
-                limit, phaseout = row.get("income_limit"), row.get("phaseout")
-                grants.append(_ExclusionGrant(
-                    taken, gains,
-                    None if limit is None else int(limit),
-                    None if phaseout is None else int(phaseout)))
-    return _RetirementExclusion(tuple(grants))
+            limit, phaseout = row.get("income_limit"), row.get("phaseout")
+            grants.append(_ExclusionGrant(
+                person, tuple(_exclusion_income(row)),
+                None if cap is None else int(cap),
+                None if limit is None else int(limit),
+                None if phaseout is None else int(phaseout)))
+    return _RetirementExclusion(pools, tuple(grants), net_gain)
 
 
 def _exclusion_age_months(row: Mapping[str, Any]) -> int:

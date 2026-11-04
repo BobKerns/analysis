@@ -14,7 +14,7 @@ import pytest
 
 from analysis.sim.engine import _ExclusionGrant, _RetirementExclusion, run_scenario
 from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.registries import SCHEDULED_CSV_HEADER
+from analysis.sim.registries import SCHEDULED_CSV_HEADER, STATE_EXCLUSION_INCOME
 
 HEADER = "effective_date,name,income,min_age,amount,filing_status,income_limit,phaseout,less_ss\n"
 
@@ -124,26 +124,57 @@ def test_an_income_limit_takes_the_exclusion_away(state_ira: Path, tmp_path: Pat
         con.close()
 
 
+def _pools(**by_kind: int) -> dict[str, dict[str, int]]:
+    """Alice's income by kind, the rest zero."""
+    return {"alice": {kind: by_kind.get(kind, 0) for kind in STATE_EXCLUSION_INCOME}}
+
+
+def _grant(*income: str, cap: int | None = None, limit: int | None = None,
+           phaseout: int | None = None) -> _ExclusionGrant:
+    return _ExclusionGrant("alice", income, cap, limit, phaseout)
+
+
 def test_grant_income_test() -> None:
     """Up to the limit all of it; past it nothing at a cliff, or a straight
     line down to nothing over the phaseout."""
-    cliff = _ExclusionGrant(10_000, 0, income_limit=100_000, phaseout=None)
-    assert cliff.after_income_test(100_000) == (10_000, 0)
-    assert cliff.after_income_test(100_001) == (0, 0)
-    phased = _ExclusionGrant(10_000, 4_000, income_limit=100_000, phaseout=20_000)
-    assert phased.after_income_test(110_000) == (5_000, 2_000)
-    assert phased.after_income_test(130_000) == (0, 0)
-    assert _ExclusionGrant(10_000, 0, None, None).after_income_test(10**9) == (10_000, 0)
+    cliff = _grant(limit=100_000)
+    assert cliff.after_income_test(10_000, 100_000) == 10_000
+    assert cliff.after_income_test(10_000, 100_001) == 0
+    phased = _grant(limit=100_000, phaseout=20_000)
+    assert phased.after_income_test(10_000, 110_000) == 5_000
+    assert phased.after_income_test(10_000, 130_000) == 0
+    assert _grant().after_income_test(10_000, 10**9) == 10_000
 
 
 def test_exclusion_never_exceeds_the_income() -> None:
     """Gains come off the long-term gain first, and the whole never takes
     income below zero."""
-    exclusion = _RetirementExclusion((
-        _ExclusionGrant(8_000, 6_000, None, None), _ExclusionGrant(5_000, 0, None, None)))
+    exclusion = _RetirementExclusion(
+        _pools(capital_gain=6_000, pension=10_000),
+        (_grant("capital_gain", "pension", cap=8_000), _grant("pension", cap=5_000)),
+        net_gain=6_000)
     assert exclusion.excluded(10_000, 4_000) == (9_000, 4_000)
     assert exclusion.excluded(2_000, 1_000) == (2_000, 1_000)
-    assert _RetirementExclusion(()).excluded(5, 5) == (0, 0)
+    assert _RetirementExclusion().excluded(5, 5) == (0, 0)
+
+
+def test_a_gain_a_loss_offset_is_not_excluded() -> None:
+    """$10,000 of gain legs that a carried loss wiped out leave nothing to
+    exclude, and nothing comes off ordinary income in their place."""
+    exclusion = _RetirementExclusion(
+        _pools(capital_gain=10_000), (_grant("capital_gain"),), net_gain=0)
+    assert exclusion.excluded(50_000, 0) == (0, 0)
+
+
+def test_a_denied_exclusion_leaves_its_income_for_the_next() -> None:
+    """A retirement exclusion over its $20,000 cliff takes nothing, so the
+    age exclusion after it still covers $10,000 of the same IRA income."""
+    exclusion = _RetirementExclusion(
+        _pools(retirement_account=30_000),
+        (_grant("retirement_account", limit=20_000), _grant(*STATE_EXCLUSION_INCOME, cap=10_000)))
+    assert exclusion.excluded(30_000, 0) == (10_000, 0)
+    # Below the cliff the first takes all of it, leaving the second nothing.
+    assert exclusion.excluded(15_000, 0) == (15_000, 0)
 
 
 @pytest.mark.parametrize(("row", "message"), [
@@ -237,3 +268,27 @@ def test_tax_report_shows_the_exclusion(state_ira: Path, tmp_path: Path) -> None
     columns = list(frame.columns)
     assert columns.index("state_exclusion") == columns.index("state_agi") - 1
     assert frame.loc[2026, "state_exclusion"] == 30_000
+
+
+def test_hobby_receipts_stay_income_an_exclusion_covers(
+    business_scenarios: Path, test_data_dir: Path, tmp_path: Path,
+) -> None:
+    """A hobby's expenses aren't deducted (#231), so they don't cancel its
+    receipts in the income an exclusion of ``other`` income covers; a real
+    business's do."""
+    from analysis.sim.engine import _person_income
+
+    other = {}
+    for scenario in ("alice_business", "alice_business_hobby"):
+        load = load_scenario(test_data_dir, scenario, intent_dir=tmp_path / scenario,
+                             loaded_by="test", allow_dirty_data=True)
+        run_path = tmp_path / f"{scenario}.sqlite3"
+        run_scenario(load.intent_path, run_path, run_by="test", allow_dirty_data=True)
+        with sqlite3.connect(run_path) as con:
+            receipts = con.execute(
+                "SELECT SUM(amount) FROM transfer_event WHERE tax_character = 'business_income' "
+                "AND substr(date, 1, 4) = '2032'").fetchone()[0]
+            pools, _ = _person_income(con, 2032, ["alice", "bill"])
+        other[scenario] = pools["alice"]["other"]
+    assert receipts > 0
+    assert other["alice_business_hobby"] >= receipts > other["alice_business"]
