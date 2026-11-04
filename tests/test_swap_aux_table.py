@@ -264,7 +264,7 @@ def test_a_move_to_a_state_without_a_standard_deduction_falls_back_to_federal(
         deduction = dict(con.execute(
             "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_standard_deduction'"
         ).fetchall())
-    assert deduction[2028] == 32_200_00  # the federal figure, not California's
+    assert deduction[2028] == 33_000_00  # the federal figure (indexed, #467), not California's
 
 
 def test_a_move_without_a_state_tax_rule_says_nothing_of_the_deduction(

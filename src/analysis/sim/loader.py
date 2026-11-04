@@ -1834,6 +1834,9 @@ def _read_aux_files(
                         payload[c] = None
                 else:
                     payload[c] = _coerce(raw)
+            for c in registries.TAX_GROWTH_SERIES_COLUMNS.get(kind, {}):
+                # Optional (#467): a file without the column holds its figures flat.
+                payload[c] = (row.get(c) or "").strip() or None
             effective = row["effective_date"]
             # Prices are dated by their actual close, so keep the day; every
             # other aux and series row takes effect for a whole month (#34).
@@ -4218,6 +4221,23 @@ def _validate_series_references(
                         f"aux/{file} ({effective}, {payload.get('filing_status')} tier "
                         f"{payload.get('tier')}): {column} '{series}' doesn't exist -- "
                         f"no series/inflation__{series}.csv in this scenario or a parent"
+                    )
+
+    if any(row.get("amount_rule_kind") == "tax_accumulator" for row in scheduled_rows):
+        # A tax rule grows each indexed tax table's figures by the series
+        # its rows name (#467).
+        for kind, table, payload, effective in aux_rows:
+            for column in registries.TAX_GROWTH_SERIES_COLUMNS.get(kind, {}):
+                series = payload.get(column)
+                if not series:
+                    continue
+                demanded.add(("inflation", str(series)))
+                if ("inflation", str(series)) not in supplied:
+                    file = f"{kind}__{table}.csv" if table else f"{kind}.csv"
+                    issues.append(
+                        f"aux/{file} ({effective}, {payload.get('filing_status')}): "
+                        f"{column} '{series}' doesn't exist -- no "
+                        f"series/inflation__{series}.csv in this scenario or a parent"
                     )
 
     for where, row in _located(calendar_rows, "calendar.csv"):
