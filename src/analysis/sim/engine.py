@@ -4613,11 +4613,55 @@ def _swap_aux_table(
         # federal one, and there's no surcharge, and the HSA follows the
         # federal rules.
         for companion in registries.STATE_KEYED_AUX_KINDS:
-            if aux.get((companion, source_series)):
+            if companion in _OPTIONAL_STATE_AUX_KINDS:
+                _move_optional_state_table(con, ev_id, ev_date, companion, series,
+                                           str(source_series), aux)
+            elif aux.get((companion, source_series)):
                 _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux)
             elif aux.pop((companion, series), None):
                 con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
                             (companion, series))
+
+
+_OPTIONAL_STATE_AUX_KINDS = frozenset({registries.STATE_SURCHARGE, registries.STATE_HSA})
+"""A state's tables (#490) that a state may lack, or may start only after a
+move: then it has no surcharge, and its HSA follows the federal rules."""
+
+
+def _move_optional_state_table(
+    con, ev_id: int, ev_date: str, kind: str, series: str | None, source_series: str,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+) -> None:
+    """A move's ``kind`` table: the old state's rows before ``ev_date`` stay,
+    since the years before the move are still computed (an April return, a
+    loss carried in from an HSA year); from ``ev_date``, the new state's row
+    then in force, or a neutral one where it has none yet, then its later
+    rows."""
+    kept = [row for row in aux.get((kind, series), []) if row[0] < ev_date]
+    source = aux.get((kind, source_series), [])
+    latest = max((effective for effective, _ in source if effective <= ev_date), default=None)
+    in_force = [(ev_date, row) for effective, row in source if effective == latest]
+    if not in_force and kept:
+        if kind == registries.STATE_HSA:
+            in_force = [(ev_date, {"treatment": "federal"})]
+        else:
+            # No surcharge: a 0% band for each filing status the old one had.
+            statuses = sorted({str(row[1].get("filing_status")) for row in kept})
+            in_force = [(ev_date, {"filing_status": status, "bracket_index": 0, "floor": 0,
+                                   "marginal_rate_micros": 0, "floor_series": None})
+                        for status in statuses]
+    written = in_force + [row for row in source if row[0] > ev_date]
+    con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ? AND effective_date >= ?",
+                (kind, series, ev_date))
+    con.executemany(
+        "INSERT INTO aux_table(kind, series, effective_date, payload_json, description) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [(kind, series, effective, json.dumps(row_payload),
+          f"swap_aux_table event id={ev_id} from series {source_series!r}")
+         for effective, row_payload in written],
+    )
+    if kept or written:
+        aux[(kind, series)] = kept + written
 
 
 def _apply_calendar_event(

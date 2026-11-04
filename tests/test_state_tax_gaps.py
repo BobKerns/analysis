@@ -67,7 +67,8 @@ def _post(con: sqlite3.Connection, year: int, frm: int, to: int, amount: int, ch
 
 
 def _estimate(con: sqlite3.Connection, aux: Aux, scope: str, year: int = 2026):
-    return _year_tax_estimate(con, {"scope": scope}, aux=aux, tax_year=year, tid=1)
+    params = {"scope": scope, **({"bracket_series": "CA"} if scope == "state" else {})}
+    return _year_tax_estimate(con, params, aux=aux, tax_year=year, tid=1)
 
 
 def test_the_surcharge_adds_its_rate_above_its_floor(ledger: sqlite3.Connection) -> None:
@@ -116,19 +117,45 @@ def test_an_hsa_that_falls_is_a_capital_loss_for_the_state(ledger: sqlite3.Conne
     assert _estimate(ledger, _aux(hsa="taxable"), "federal").capital.loss_deduction == 0
 
 
-def test_a_move_takes_or_drops_the_states_other_tables(ledger: sqlite3.Connection) -> None:
-    """A swap of state_brackets swaps each table keyed by the state with it,
-    and drops the old state's where the new state has none."""
+def test_a_move_keeps_the_old_states_tables_for_the_years_before_it(
+    ledger: sqlite3.Connection,
+) -> None:
+    """A swap of state_brackets moves each table keyed by the state with it.
+    The old state's surcharge and HSA rows still answer for the years before
+    the move (an April return, a loss carried in); from the move, the new
+    state's apply, or none: no surcharge, and the federal HSA rules."""
+    _post(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
+    _post(ledger, 2027, SALARY, CHECKING, 2_010_000_00, "ordinary")
+    _post(ledger, 2026, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    _post(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     aux = _aux(surcharge=True, hsa="taxable")
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
-    aux[(registries.STATE_HSA, "WA")] = [("2026-01-31", {"treatment": "federal"})]
-    _swap_aux_table(ledger, 1, "2028-03-31",
+    _swap_aux_table(ledger, 1, "2027-03-31",
                     {"aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux)
-    assert (registries.STATE_SURCHARGE, "CA") not in aux
-    assert aux[(registries.STATE_HSA, "CA")] == aux[(registries.STATE_HSA, "WA")]
+    taxable = 2_000_000_00
+    before = _estimate(ledger, aux, "state", 2026)
+    assert before.tax_liability == taxable // 10 + 1_000_000_00 // 100
+    assert before.ordinary_income == 2_010_000_00
+    after = _estimate(ledger, aux, "state", 2027)
+    assert after.tax_liability == taxable // 10
+    assert _estimate(ledger, aux, "state", 2029).ordinary_income == -8_000_00
     assert ledger.execute(
-        "SELECT kind FROM aux_table WHERE series = 'CA' ORDER BY kind").fetchall() == [
-        ("state_brackets",), (registries.STATE_HSA,)]
+        "SELECT DISTINCT kind FROM aux_table WHERE series = 'CA' ORDER BY kind").fetchall() == [
+        ("state_brackets",), (registries.STATE_HSA,), (registries.STATE_SURCHARGE,)]
+
+
+def test_a_move_to_a_state_whose_tables_start_later_waits_for_them(
+    ledger: sqlite3.Connection,
+) -> None:
+    _post(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    aux = _aux()
+    aux[("state_brackets", "OR")] = aux[("state_brackets", "CA")]
+    aux[(registries.STATE_HSA, "OR")] = [("2030-01-31", {"treatment": "taxable"})]
+    _swap_aux_table(ledger, 1, "2028-03-31",
+                    {"aux_kind": "state_brackets", "series": "CA", "source_series": "OR"}, aux)
+    assert _estimate(ledger, aux, "state", 2029).ordinary_income == -8_000_00
+    _post(ledger, 2030, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    assert _estimate(ledger, aux, "state", 2030).ordinary_income == 0
 
 
 def test_the_templates_ship_the_california_tables(
