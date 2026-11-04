@@ -117,9 +117,9 @@ def test_nonqualified_earnings_are_ordinary_income(
                         account_2="Asset_Checking", amount="70000.00")
     run = _run(load_test_copy, runs_dir)
     with sqlite3.connect(run) as con:
-        ordinary, _ss = engine._tax_year_income_buckets(con, tax_year=2027)
+        ordinary, _ss, _qualified = engine._tax_year_income_buckets(con, tax_year=2027)
         con.execute("DELETE FROM transfer_event WHERE tax_character = 'roth_nonqualified'")
-        without, _ss = engine._tax_year_income_buckets(con, tax_year=2027)
+        without, _ss, _qualified = engine._tax_year_income_buckets(con, tax_year=2027)
     assert ordinary - without == 1_000_000
 
 

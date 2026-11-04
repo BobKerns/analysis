@@ -41,7 +41,7 @@ __all__ = [
     "clashes", "copy_scenario", "describe_clashes", "generated_growth_rules", "name_problem", "relink_markdown",
     "rename_account", "rename_calendar_row", "rename_growth_rules", "rename_lot_keys", "rename_scenario",
     "rename_scheduled", "rename_series", "scenario_folders", "scheduled_defined", "scope",
-    "series_mentioned", "shared_series_files", "shared_series_references", "symbol_series",
+    "series_mentioned", "shared_series_files", "sources", "shared_series_references", "symbol_series",
 ]
 
 Defines = Callable[[Path], bool]
@@ -89,6 +89,14 @@ def clashes(scenarios_dir: Path, affected: Iterable[str], defines: Defines) -> d
                 found[each] = source
                 break
     return found
+
+
+def sources(scenarios_dir: Path, affected: Iterable[str], defines: Defines) -> dict[str, list[str]]:
+    """For each affected scenario, every scenario in its load order that
+    defines a name (itself included), nearest first; [] where none does."""
+    return {each: [source for source in reversed(load_order(scenarios_dir, each))
+                   if defines(_folder_of(scenarios_dir, source))]
+            for each in affected}
 
 
 def describe_clashes(found: dict[str, str]) -> str:
@@ -144,13 +152,14 @@ def account_defined(name: str) -> Defines:
     return lambda scenario_dir: name in _cells(scenario_dir / "accounts.csv", ("name",))
 
 
-RESERVED_ACCOUNTS = frozenset(c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values())
-"""Accounts the loader makes for declared growth when no scenario has one;
+RESERVED_ACCOUNTS = frozenset(
+    c.name for c in (*registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.PAYOUT_ACCOUNTS.values()))
+"""Accounts the loader makes for declared growth and payouts (#468) when no scenario has one;
 a rename onto one of these names would turn an account into the built-in."""
 
 
 _GROWTH_RULES = """
-SELECT st.name, a.name, l.lot
+SELECT st.name, a.name, l.lot, fa.name
 FROM scheduled_transaction st
 JOIN chain f ON f.id = st.from_account JOIN account fa ON fa.id = f.account_id
 JOIN chain t ON t.id = st.to_account JOIN account a ON a.id = t.account_id
@@ -159,9 +168,10 @@ WHERE fa.name IN ({})
 """
 
 
-def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str], str]:
-    """The growth rule the loader generates for each (account, lot) of
-    ``scenario``, by name: read from a load, since the name depends on what
+def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str, str], str]:
+    """The growth and payout (#468) rules the loader generates for each
+    (account, lot) of ``scenario``, by (account, lot, built-in account the
+    rule is from), by name: read from a load, since the name depends on what
     other rules the scenario has (``loader.growth_rule_name``). {} if the
     scenario doesn't load; the staged edit reports that."""
     scenarios = data_dir / "scenarios"
@@ -180,7 +190,7 @@ def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str
                                sorted(RESERVED_ACCOUNTS)).fetchall()
         finally:
             con.close()
-    return {(account, lot): name for name, account, lot in rows if name not in authored}
+    return {(account, lot, source): name for name, account, lot, source in rows if name not in authored}
 
 
 def rename_growth_rules(scenario_dir: Path, rules: dict[str, str]) -> list[str]:

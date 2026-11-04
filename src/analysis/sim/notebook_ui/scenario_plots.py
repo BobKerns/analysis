@@ -277,3 +277,97 @@ def show_calendar_view(sc, **_):
     # Amounts are display text now (a rate or dollars, by kind): keep them
     # right-aligned like the numbers they are.
     return scrollable(styled.set_properties(subset=["amount"], **{"text-align": "right"}))
+
+
+def _none_message(text: str) -> Markdown:
+    return Markdown(f"*{text}*")
+
+
+def show_ytd_view(sc, **_):
+    """
+    The scenario's year-to-date rows from the scenario connection ``sc``
+    (``sim ytd list`` as a table): year_to_date.csv's rows, then the scheduled
+    rows with a ``ytd_amount`` or ``ytd_preroll``, each with where it is defined.
+    """
+    from analysis.sim.notebook_ui.scenario_view import ytd_view
+
+    view = ytd_view(sc)
+    if view.empty:
+        return _none_message(f"No year-to-date rows in {sc.ref.name}.")
+    # escape="html" escapes the authored text before _breakable adds its <wbr>.
+    styled = view.style.hide(axis="index").format(
+        {c: _breakable for c in ("name", "from", "to", "tax_character", "description", "defined_in")},
+        escape="html")
+    styled = _fit_to_width(styled, nowrap=["source", "amount", "year"])
+    return scrollable(styled.set_properties(subset=["amount"], **{"text-align": "right"}))
+
+
+def _dollars(value) -> str:
+    return "error" if pd.isna(value) else f"${value:,.2f}"
+
+
+def _escaped(frame: pd.DataFrame):
+    """``frame`` styled with its cells and column labels shown as text, not HTML."""
+    return (frame.style.hide(axis="index")
+            .format(escape="html").format_index(escape="html", axis=1))
+
+
+def show_itemizations(sc, **_):
+    """
+    The itemizations the scenario connection ``sc`` can reference, with their
+    totals (``sim itemization list``), and below, one picked itemization's rows,
+    total and the cells referencing it (``sim itemization show``).
+    """
+    from analysis.sim.notebook_ui.scenario_view import itemization_detail, itemizations_view
+
+    view = itemizations_view(sc)
+    if view.empty:
+        return _none_message(f"No itemizations for {sc.ref.name}.")
+    shown = view.drop(columns=["error"]) if not view["error"].any() else view
+    styled = shown.style.hide(axis="index").format(
+        {"total": _dollars, "name": _breakable, "defined_in": _breakable}, escape="html")
+    table = scrollable(_fit_to_width(styled, nowrap=["rows", "total", "refs"]))
+    picker = widgets.Dropdown(options=list(view["name"]), description="Itemization")
+    out = scrollable_output()
+
+    def _redraw(*_):
+        detail = itemization_detail(sc, picker.value)
+        out.clear_output(wait=True)
+        with out:
+            total = (f"cannot be computed: {detail.error}" if detail.total is None
+                     else _dollars(detail.total))
+            display(Markdown(f"**@{html.escape(detail.name)}** ({html.escape(detail.defined_in)}), "
+                             f"total {html.escape(total)}"))
+            # An itemization's columns beyond Value are free text (ADR-003 §4.1c).
+            display(_escaped(detail.rows))
+            if detail.references.empty:
+                display(_none_message("Referenced by nothing."))
+            else:
+                display(Markdown("Referenced by:"))
+                display(_escaped(detail.references))
+
+    picker.observe(_redraw, names="value")
+    _redraw()
+    return widgets.VBox([table, picker, out])
+
+
+def show_tags(sc, **_):
+    """
+    Every tag in the scenario connection ``sc``, with the accounts, scheduled
+    rules and calendar rows carrying it (``sim tags`` and ``sim tags items``).
+    A calendar row is named by its month and its name, or its kind.
+    """
+    from analysis.sim.notebook_ui.scenario_view import tags_view
+
+    view = tags_view(sc)
+    if view.empty:
+        return _none_message(f"No tags in {sc.ref.name}.")
+
+    def lines(text: str) -> str:
+        # Names come from the data, so escape them before adding markup.
+        return "<br>".join(_breakable(html.escape(line)) for line in text.split("\n"))
+
+    styled = (view.style.hide(axis="index")
+              .set_table_styles([{"selector": "td", "props": [("vertical-align", "top")]}])
+              .format({c: lines for c in ("tag", "accounts", "scheduled", "calendar")}))
+    return scrollable(_fit_to_width(styled, nowrap=[]))
