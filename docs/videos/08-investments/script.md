@@ -428,7 +428,7 @@ Show
 Sleep 6s
 Select "Account:" "Asset_Brokerage_Joint"
 Sleep 5s
-Scroll "Portfolio by asset class"
+Scroll "Portfolio by asset class."
 Sleep 8s
 ```
 
