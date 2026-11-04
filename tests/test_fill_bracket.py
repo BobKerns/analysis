@@ -13,13 +13,22 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.sim import engine
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.registries import SCHEDULED_CSV_HEADER
 
-MFJ_22_TOP = 211_400_00
-"""The top of the prototype's 22% MFJ bracket from 2027 (aux/federal_brackets.csv)."""
-SINGLE_22_TOP = 105_700_00
+def _top_22(run: Path, year: int, status: str = "MFJ") -> int:
+    """The top of the 22% bracket for ``status`` in tax ``year``, as the run
+    indexed the prototype's aux/federal_brackets.csv (#467): the floor of
+    the 24% bracket above it."""
+    with sqlite3.connect(run) as con:
+        aux = engine._load_aux(con)
+    rows = engine._indexed_tax_rows(aux, "federal_brackets", None, year, {})
+    return next(
+        r["floor"] for r in rows
+        if r["filing_status"] == status and r["marginal_rate_micros"] == 240_000
+    )
 
 Rules = Callable[..., Path]
 
@@ -110,22 +119,26 @@ def test_a_bracket_target_fills_ordinary_taxable_income_to_the_bracket_top(
     assert len(conversions) >= 2
     first = conversions.iloc[0]
     assert first["year"] == 2029
-    assert first["fill"] == {"target": MFJ_22_TOP, "measure": "ordinary", "reached": MFJ_22_TOP}
+    top = _top_22(run, 2029)
+    assert first["fill"] == {"target": top, "measure": "ordinary", "reached": top}
     # The tax rule, measuring the finished year the next April, agrees.
-    assert _ordinary_taxable(summary, 2029) == MFJ_22_TOP
+    assert _ordinary_taxable(summary, 2029) == top
     for year, event_id in zip(conversions["year"], conversions["event_id"], strict=True):
         if year in summary.index and _ira_balance_after(run, int(event_id)) > 0:
-            assert _ordinary_taxable(summary, int(year)) == MFJ_22_TOP, year
+            assert _ordinary_taxable(summary, int(year)) == _top_22(run, int(year)), year
+    # The bracket rises with inflation, and the target with it (#467).
+    assert _top_22(run, 2030) > top
 
 
 def test_taxable_social_security_is_solved_for_not_subtracted(fill_run: Rules) -> None:
     """Alice's benefit starts in 2032: the conversion makes more of it
     taxable, so subtracting the year's income from the target would
     overshoot it; the conversion still lands on the bracket top."""
-    summary = _summary(fill_run({"start": "2033-01-31"}))
+    run = fill_run({"start": "2033-01-31"})
+    summary = _summary(run)
     without = _summary(fill_run({"start": "2034-01-31"}))
     assert summary.loc[2033, "federal_taxable_ss"] > without.loc[2033, "federal_taxable_ss"]
-    assert _ordinary_taxable(summary, 2033) == MFJ_22_TOP
+    assert _ordinary_taxable(summary, 2033) == _top_22(run, 2033)
 
 
 def test_an_amount_target_is_in_todays_dollars_grown_by_its_series(fill_run: Rules) -> None:
@@ -157,8 +170,8 @@ def test_max_amount_and_the_lots_balance_cap_the_conversion(fill_run: Rules) -> 
 def test_max_marginal_rate_stops_where_the_next_100_dollars_costs_more(fill_run: Rules) -> None:
     run = fill_run({"rate": "32%", "params_json": '{"max_marginal_rate": "22%"}'})
     first = _conversions(run).iloc[0]
-    reached = first["fill"]["reached"]
-    assert MFJ_22_TOP - 100_00 < reached <= MFJ_22_TOP
+    reached, top = first["fill"]["reached"], _top_22(run, int(first["year"]))
+    assert top - 100_00 < reached <= top
 
 
 def test_a_death_moves_the_target_to_the_single_bracket(
@@ -167,8 +180,9 @@ def test_a_death_moves_the_target_to_the_single_bracket(
     """Bill dies in 2032; from 2033 Alice files Single, whose 22% bracket
     tops out at half the joint one."""
     retire_alice_csv("lifespan.csv").write_text("person,age_at_death\nbill,65\n")
-    conversions = _conversions(fill_run({"start": "2033-01-31"}))
-    assert conversions.iloc[0]["fill"]["target"] == SINGLE_22_TOP
+    run = fill_run({"start": "2033-01-31"})
+    conversions = _conversions(run)
+    assert conversions.iloc[0]["fill"]["target"] == _top_22(run, 2033, "Single")
 
 
 def test_the_conversion_comes_after_the_years_rmd(fill_run: Rules) -> None:

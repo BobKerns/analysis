@@ -13903,10 +13903,11 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
     """Rename series OLD to NEW in every scenario that shares it: its rate
     files (series/<kind>__OLD.csv and a scenario's aux/<kind>__OLD.csv), and
     every column naming it -- accounts', lots', rules', calendar rows' and
-    chain steps' series.
+    chain steps' series, and a scenario's own aux tables' growth series.
 
-    A series with a file in the shared aux/ folder (cpi) is read by every
-    scenario and isn't renamed here, nor is an asset class's series, or one
+    A series with a file in the shared aux/ folder (cpi), or one a shared
+    aux table names (an IRMAA tier's growth), is read by every scenario and
+    isn't renamed here, nor is an asset class's series, or one
     named for a symbol (or <symbol>.<class>), which lots read by name.
 
     Either name left out is asked for."""
@@ -13917,6 +13918,7 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
             name for name in names.series_names(data, scenario_name)
             if name not in registries.ASSET_CLASSES
             and not rename.symbol_series(data, name) and not rename.shared_series_files(data, name)
+            and not rename.shared_series_references(data, name)
         ]
         old, new = _ask_rename("series", old, new, can_rename)
     old, new = old.strip(), new.strip()
@@ -13933,6 +13935,10 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
             raise click.ClickException(
                 f"series {name!r} has rates in the shared {', '.join(f'aux/{p.name}' for p in shared)}, "
                 "which every scenario reads; it can't be renamed")
+    if named_by := rename.shared_series_references(data, old):
+        raise click.ClickException(
+            f"series {old!r} is named by the shared {', '.join(named_by)}, which every "
+            "scenario reads; it can't be renamed")
     with _scenario_edit(data, scenario) as edit:
         changed = _rename_across(edit, "series", old, new, defines=rename.series_mentioned,
                                  rewrite=rename.rename_series)

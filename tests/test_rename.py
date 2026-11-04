@@ -330,3 +330,28 @@ def test_lot_rename_reaches_every_scenario(test_data_dir: Path, test_scenarios_d
 def test_lot_rename_of_an_unknown_lot(test_data_dir: Path) -> None:
     result = _sim(test_data_dir, "account", "lot", "rename", "Asset_Brokerage_Joint", "nope", "core")
     assert result.exit_code != 0 and "'Asset_Brokerage_Joint' has no lot 'nope'" in result.output
+
+
+def test_series_rename_follows_a_scenarios_own_tax_table(
+    test_data_dir: Path, test_scenarios_dir: Path, write_series, loads: Callable[[str], None],
+) -> None:
+    """An indexed tax table in a scenario's aux/ names its growth series (#467)."""
+    folder = test_scenarios_dir / "retire_alice"
+    (folder / "series" / "inflation__wages.csv").write_text("effective_date,annual_rate\n2026-01-31,3%\n")
+    (folder / "aux").mkdir(exist_ok=True)
+    table = folder / "aux" / "standard_deduction.csv"
+    table.write_text("effective_date,filing_status,amount,amount_series\n"
+                     "2026-01-31,MFJ,31500.00,wages\n2026-01-31,Single,15750.00,\n"
+                     "2026-01-31,MFS,15750.00,\n")
+    result = _sim(test_data_dir, "series", "rename", "wages", "pay")
+    assert result.exit_code == 0, result.output
+    assert "aux/standard_deduction.csv" in result.output
+    assert _column(table, "amount_series") == ["pay", "", ""]
+    loads("retire_alice")
+
+
+def test_series_rename_refuses_a_series_a_shared_aux_table_names(test_data_dir: Path) -> None:
+    """The templates' irmaa_tiers.csv grows its floors by irmaa_floor."""
+    result = _sim(test_data_dir, "series", "rename", "irmaa_floor", "medicare_floor", scenario="base")
+    assert result.exit_code != 0
+    assert "named by the shared" in result.output and "irmaa_tiers.csv (floor_series)" in result.output
