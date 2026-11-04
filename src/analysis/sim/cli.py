@@ -13949,12 +13949,22 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
                 raise click.ClickException(
                     f"{name!r} is {of}'s yield series (#468), which lots find by name; "
                     f"rename {of} and its yield follows")
+        # Its yield (#468) goes with it, in every scenario the rename reaches
+        # that has one, or the lots growing at it would stop paying out.
+        scenarios = edit.data_dir / "scenarios"
+        with_yield = [each for each in rename.scope(scenarios, edit.name, rename.series_mentioned(old))
+                      if rename.series_mentioned(old_yield)(scenarios / each)]
+        if with_yield and (found := rename.clashes(scenarios, with_yield, rename.series_mentioned(new_yield))):
+            raise click.ClickException(
+                f"a series {new_yield!r} already applies in {rename.describe_clashes(found)}; "
+                "rename or delete it first")
         changed = _rename_across(edit, "series", old, new, defines=rename.series_mentioned,
                                  rewrite=rename.rename_series)
-        # Its yield (#468) goes with it, or the lots growing at it would stop paying out.
-        if rename.scope(edit.data_dir / "scenarios", edit.name, rename.series_mentioned(old_yield)):
-            changed += _rename_across(edit, "series", old_yield, new_yield,
-                                      defines=rename.series_mentioned, rewrite=rename.rename_series)
+        try:
+            changed += [f"{each}: {c}" for each in with_yield
+                        for c in rename.rename_series(scenarios / each, old_yield, new_yield)]
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from None
     _echo_renamed("series", old, new, changed)
 
 

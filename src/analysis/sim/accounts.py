@@ -106,12 +106,12 @@ def load_accounts_view(
     # or CD lot pays all of its return, so its payout is its only rate.
     payers = set(chains.loc[chains["name"].isin(
         [a.name for a in registries.PAYOUT_ACCOUNTS.values()]), "id"]) if not chains.empty else set()
-    rate_rows = scheduled[
-        (scheduled["amount_rule_kind"] == "percent_of_balance") & scheduled["series"].notna()
-    ]
+    rate_rows = scheduled[scheduled["amount_rule_kind"] == "percent_of_balance"]
     is_payout = rate_rows["from_account"].isin(payers)
+    # A fund growing at its blend has a growth rule with no series; it still
+    # counts, so its payouts aren't shown as its rate.
     grown = set(rate_rows.loc[~is_payout, "to_account"])
-    rate_rows = rate_rows[~is_payout | ~rate_rows["to_account"].isin(grown)]
+    rate_rows = rate_rows[(~is_payout | ~rate_rows["to_account"].isin(grown)) & rate_rows["series"].notna()]
     series_by_name: dict[str, set[str]] = {}
     for _, row in rate_rows.iterrows():
         account_id = account_id_by_chain.get(row["to_account"])

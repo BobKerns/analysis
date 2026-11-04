@@ -371,3 +371,19 @@ def test_series_rename_takes_its_yield_along(test_data_dir: Path, test_scenarios
     assert (series / "rate__broker_growth_yield.csv").is_file()
     assert not (series / "rate__brokerage_growth_yield.csv").exists()
     loads("retire_alice")
+
+
+def test_series_rename_takes_a_yield_only_a_child_has(test_data_dir: Path, test_scenarios_dir: Path,
+                                                      loads: Callable[[str], None]) -> None:
+    """Renamed from the parent that defines the series, the yield a child
+    scenario adds follows too."""
+    rates = "effective_date,annual_rate\n2026-01-31,6%\n"
+    (test_scenarios_dir / "base" / "series").mkdir(exist_ok=True)
+    (test_scenarios_dir / "base" / "series" / "rate__brokerage_growth.csv").write_text(rates)
+    child = test_scenarios_dir / "retire_alice" / "series"
+    (child / "rate__brokerage_growth_yield.csv").write_text("effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth", scenario="base")
+    assert result.exit_code == 0, result.output
+    assert (child / "rate__broker_growth_yield.csv").is_file()
+    assert not (child / "rate__brokerage_growth_yield.csv").exists()
+    loads("retire_alice")

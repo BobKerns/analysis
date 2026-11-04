@@ -189,3 +189,12 @@ def test_an_all_interest_lot_keeps_its_rate_in_the_account_view(
     with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
         [row] = [r for r in load_accounts_view(scenario) if r.name == BROKERAGE]
     assert row.rate_series == "cash"
+
+
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund", "yields")
+def test_a_blended_funds_payouts_are_not_shown_as_its_rate(test_data_dir: Path) -> None:
+    """A fund growing at its blend has a growth rule with no series; its
+    payout rules mustn't stand in for its total-return rate."""
+    with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
+        [row] = [r for r in load_accounts_view(scenario) if r.name == BROKERAGE]
+    assert row.rate_series is None or "yield" not in row.rate_series
