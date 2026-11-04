@@ -3177,7 +3177,10 @@ def _year_tax_estimate(
         before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
         used = min(nol_in, max(0, before_nol) * nol_limit_percent // 100)
         taxable = max(0, before_nol - used)
-        return taxable, taxable - min(ltcg, taxable)
+        below_gain = taxable - min(ltcg, taxable)
+        # A state's separately taxed short-term gain (#485) isn't ordinary.
+        short = min(capital.stcg, below_gain) if stcg_brackets else 0
+        return taxable, below_gain - short
 
     def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
         """This year's tax with more ordinary income and long-term gain on top."""

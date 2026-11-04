@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from analysis.sim import units
-from analysis.sim.engine import _progressive_tax_cents, run_scenario
+from analysis.sim.engine import (
+    _load_aux,
+    _progressive_tax_cents,
+    _year_tax_estimate,
+    run_scenario,
+)
 from analysis.sim.loader import LoadError, LoadResult
 
 _BRACKETS_HEADER = "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
@@ -129,6 +134,31 @@ def test_short_term_rates_alone_keep_long_term_gain_on_top_at_ordinary_rates(
                 + _progressive_tax_cents(taxable, brackets)
                 - _progressive_tax_cents(taxable - 100_000_00, brackets))
     assert summary["state_tax_liability"] == expected
+
+
+def test_the_ordinary_part_of_taxable_income_leaves_out_separately_taxed_short_term_gain(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    """What fill_bracket measures a rate target against (#252): with the
+    state's own short-term rates, that gain isn't ordinary income."""
+    add_state_tax()
+    write_aux("state_stcg_brackets__CA.csv", _BRACKETS_HEADER + "2026-01-31,MFJ,0,0.00,8.5%\n")
+    retire_alice_csv("year_to_date.csv").write_text(
+        "name,from_account,to_account,amount,tax_character\n"
+        "short,Income_CapitalGain,Asset_Checking,20000.00,stcg\n")
+    run = runs_dir / "measure.sqlite3"
+    run_scenario(load_test_copy().intent_path, run, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run)
+    con.row_factory = sqlite3.Row
+    try:
+        est = _year_tax_estimate(con, {"scope": "state"}, aux=_load_aux(con), tax_year=2026, tid=0)
+    finally:
+        con.close()
+    taxable, ordinary = est.taxable_with(0, 0)
+    assert taxable == est.taxable_income
+    assert ordinary == taxable - 20_000_00
 
 
 def test_without_gain_tables_a_state_taxes_gains_as_ordinary_income(

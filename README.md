@@ -66,7 +66,7 @@ state's own revenue department before relying on a figure.
 | --- | --- | --- |
 | Alabama | Partial | Deduction for federal income tax paid; pension exclusion |
 | Alaska | No tax | |
-| Arizona | Tables needed | |
+| Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
 | Arkansas | Partial | Retirement income exclusion |
 | California | Shipped | Personal exemption credits; 1% surcharge over $1 million; tax on HSA growth |
 | Colorado | Partial | Pension and annuity subtraction; Social Security taxed below 65 |
