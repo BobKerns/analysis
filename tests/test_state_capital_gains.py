@@ -115,6 +115,22 @@ def test_a_state_short_term_gain_rate_taxes_the_slice_below_long_term_gain(
     assert summary["state_tax_liability"] == expected
 
 
+def test_short_term_rates_alone_keep_long_term_gain_on_top_at_ordinary_rates(
+    state_gains: Callable[..., dict[str, int]], write_aux: Callable[[str, str], Path],
+    test_data_dir: Path,
+) -> None:
+    write_aux("state_stcg_brackets__CA.csv", _BRACKETS_HEADER + "2026-01-31,MFJ,0,0.00,8.5%\n")
+    summary = state_gains(stcg="20000.00")
+    taxable = summary["state_taxable_income"]
+    ordinary = taxable - 100_000_00 - 20_000_00
+    assert ordinary > 0
+    brackets = _ca_brackets(test_data_dir)
+    expected = (_progressive_tax_cents(ordinary, brackets) + 20_000_00 * 85 // 1000
+                + _progressive_tax_cents(taxable, brackets)
+                - _progressive_tax_cents(taxable - 100_000_00, brackets))
+    assert summary["state_tax_liability"] == expected
+
+
 def test_without_gain_tables_a_state_taxes_gains_as_ordinary_income(
     state_gains: Callable[..., dict[str, int]], test_data_dir: Path,
 ) -> None:
@@ -154,6 +170,31 @@ def test_a_move_to_another_state_takes_its_gain_rules(
     assert exclusion[2026] == 5_000_00   # California's half, before the move
     assert exclusion[2028] == 1_000_00   # Washington's flat amount
     assert "state_ltcg_brackets" not in tables
+
+
+def test_a_move_to_a_state_whose_gain_rule_starts_later_applies_it_from_then(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    add_state_tax(bracket_series="CA")
+    write_aux("state_brackets__WA.csv", _BRACKETS_HEADER + "2026-01-31,MFJ,0,0.00,1%\n")
+    write_aux("state_ltcg_exclusion__WA.csv", _EXCLUSION_HEADER + "2029-01-31,0%,1000.00,\n")
+    append_calendar_row(
+        date="2028-03", kind="swap_aux_table", series="CA",
+        params_json=json.dumps({"aux_kind": "state_brackets", "source_series": "WA"}))
+    for year in (2028, 2029):
+        append_calendar_row(
+            date=f"{year}-06", kind="one_off_transfer", account_1="Income_CapitalGain",
+            account_2="Asset_Checking", amount="10000.00", tax_character="ltcg")
+    run = runs_dir / "later.sqlite3"
+    run_scenario(load_test_copy().intent_path, run, run_by="test", allow_dirty_data=True)
+    with sqlite3.connect(run) as con:
+        exclusion = dict(con.execute(
+            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_ltcg_exclusion'"
+        ).fetchall())
+    assert exclusion[2028] == 0
+    assert exclusion[2029] == 1_000_00
 
 
 @pytest.mark.parametrize(("filename", "text", "message"), [

@@ -3132,8 +3132,11 @@ def _year_tax_estimate(
         """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term gain."""
         # Long-term gains sit on top of ordinary taxable income and are taxed at
         # the preferential rates for the band each part lands in; a state's
-        # short-term gain rates (#485) take the slice just below them.
-        gain_taxable = min(max(0, ltcg), taxable) if ltcg_brackets else 0
+        # short-term gain rates (#485) take the slice just below them. A gain
+        # without a table of its own keeps its place, at the ordinary rates.
+        if not (ltcg_brackets or stcg_brackets):
+            return _progressive_tax_cents(taxable, brackets)
+        gain_taxable = min(max(0, ltcg), taxable)
         below_gain = taxable - gain_taxable
         short_taxable = min(capital.stcg, below_gain) if stcg_brackets else 0
         ordinary_taxable = below_gain - short_taxable
@@ -3141,7 +3144,7 @@ def _year_tax_estimate(
         if short_taxable > 0:
             tax += band_tax(ordinary_taxable, below_gain, stcg_brackets)
         if gain_taxable > 0:
-            tax += band_tax(below_gain, taxable, ltcg_brackets)
+            tax += band_tax(below_gain, taxable, ltcg_brackets or brackets)
         return tax
 
     taxable_ss = taxable_ss_for(ordinary_income, ltcg_income)
@@ -4510,6 +4513,7 @@ _LOOKED_BACK_AUX_KINDS = frozenset({"inflation"})
 def _swap_aux_table(
     con, ev_id: int, ev_date: str, payload: dict[str, Any],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    *, require_in_force: bool = True,
 ) -> None:
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
@@ -4538,7 +4542,7 @@ def _swap_aux_table(
             f"swap_aux_table event id={ev_id}: no aux rows for "
             f"kind={aux_kind!r} series={source_series!r}"
         )
-    if source[0][0] > ev_date:
+    if require_in_force and source[0][0] > ev_date:
         raise EngineError(
             f"swap_aux_table event id={ev_id}: series {source_series!r} has no "
             f"{aux_kind} row effective on or before {ev_date}, so there is "
@@ -4576,7 +4580,11 @@ def _swap_aux_table(
         # than the old state's.
         for companion in registries.STATE_COMPANION_KINDS:
             if aux.get((companion, source_series)):
-                _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux)
+                # A gain rule that starts later applies from its own date;
+                # until then the gains are ordinary income.
+                _swap_aux_table(
+                    con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux,
+                    require_in_force=companion == registries.STATE_STANDARD_DEDUCTION)
             elif aux.pop((companion, series), None):
                 con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
                             (companion, series))
