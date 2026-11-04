@@ -3748,9 +3748,10 @@ def _validate_state_retirement_exclusions(
             )
         age = payload.get("min_age")
         try:
-            months = 0 if age in (None, "") else round(float(age) * 12)
-            if months < 0:
+            years = 0.0 if age in (None, "") else float(age)
+            if not 0 <= years <= 150:  # also refuses nan and inf
                 raise ValueError(age)
+            months = round(years * 12)
         except (TypeError, ValueError):
             issues.append(f"{where}: min_age {age!r} must be an age in years, such as 59.5")
             months = 0

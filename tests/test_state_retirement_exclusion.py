@@ -181,6 +181,8 @@ def test_a_denied_exclusion_leaves_its_income_for_the_next() -> None:
     ("2025-01,,pension,,,,,,\n", "name is blank"),
     ("2025-01,x,pensions,,,,,,\n", "must list one or more of"),
     ("2025-01,x,pension,sixty,,,,,\n", "min_age 'sixty'"),
+    ("2025-01,x,pension,-0.01,,,,,\n", "min_age '-0.01'"),
+    ("2025-01,x,pension,1e309,,,,,\n", "min_age '1e309'"),
     ("2025-01,x,pension,,,Married,,,\n", "filing_status 'Married'"),
     ("2025-01,x,pension,,,,,5000,\n", "a phaseout needs the income_limit"),
     ("2025-01,x,pension,,,,,,yes\n", "less_ss needs an amount"),
