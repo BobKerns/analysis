@@ -41,20 +41,23 @@ To read a formatted `.md` file:
 ## State and territory income tax
 
 The simulator works out a state's income tax the same way for every state:
-federal-style income less Social Security, with long-term gains taxed as
-ordinary income, less the state's standard deduction, run through the state's
-brackets ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)). A
-state needs two tables in `aux/`, `state_brackets__XX.csv` and
+federal-style income, with long-term gains taxed as ordinary income, less
+the state's standard deduction, run through the state's brackets ([how tax
+is handled](./docs/user-guide.md#3-how-tax-is-handled)). A state needs two
+tables in `aux/`, `state_brackets__XX.csv` and
 `state_standard_deduction__XX.csv`, and a `tax_accumulator` rule with `scope`
-`state`. Many states have rules this leaves out; the table says which matter
-most for a retired household. It reflects state law as of 2026; check the
+`state`. Social Security is left out unless a third table,
+`state_social_security__XX.csv`, says how the state taxes it: the federally
+taxable amount less an exclusion that can phase out with income.
+Many states have rules this leaves out; the table says which matter most
+for a retired household. It reflects state law as of 2026; check the
 state's own revenue department before relying on a figure.
 
 | Status | Meaning |
 | --- | --- |
 | **Shipped** | The tables come with the simulator. |
 | **No tax** | No income tax: leave out the state rule. |
-| **Tables needed** | The model fits; write the state's two tables. |
+| **Tables needed** | The model fits; write the state's tables. |
 | **Partial** | The tables work, but the rules listed are not modeled, so the estimate is rough. |
 | **Federal rule** | The territory's tax mirrors the federal one; the federal rule stands in for it. |
 | **Not supported** | A tax system of its own that the model can't express. |
@@ -67,7 +70,7 @@ state's own revenue department before relying on a figure.
 | Arkansas | Partial | Long-term gain exclusion; retirement income exclusion |
 | California | Shipped | Personal exemption credits; 1% surcharge over $1 million; tax on HSA growth |
 | Colorado | Partial | Pension and annuity subtraction; Social Security taxed below 65 |
-| Connecticut | Partial | Social Security, pension and IRA exemptions phased by income; exemption phase-outs |
+| Connecticut | Partial | Social Security's 25% cap above the income limit; pension and IRA exemptions phased by income; exemption phase-outs |
 | Delaware | Partial | Pension exclusion |
 | District of Columbia | Tables needed | |
 | Florida | No tax | |
@@ -84,15 +87,15 @@ state's own revenue department before relying on a figure.
 | Maryland | Partial | County income tax; pension exclusion; capital gains surtax |
 | Massachusetts | Partial | Short-term gain rate; surtax on high income; personal exemptions |
 | Michigan | Partial | City income tax; retirement deduction |
-| Minnesota | Partial | Social Security taxed |
+| Minnesota | Tables needed | |
 | Mississippi | Partial | Retirement income and IRA distributions exempt |
 | Missouri | Partial | Capital gains exempt; pension exemptions |
-| Montana | Partial | Social Security taxed; lower long-term gain rate |
+| Montana | Partial | Lower long-term gain rate |
 | Nebraska | Tables needed | |
 | Nevada | No tax | |
 | New Hampshire | No tax | |
 | New Jersey | Partial | Pension and IRA exclusion with an income cliff; personal exemptions |
-| New Mexico | Partial | Social Security taxed above an income limit; capital gains deduction |
+| New Mexico | Partial | Capital gains deduction |
 | New York | Partial | Pension and IRA exclusion from age 59½; New York City and Yonkers taxes |
 | North Carolina | Tables needed | |
 | North Dakota | Partial | Long-term gain exclusion |
@@ -100,13 +103,13 @@ state's own revenue department before relying on a figure.
 | Oklahoma | Partial | Retirement income exclusion |
 | Oregon | Partial | Federal tax subtraction; retirement credit; Portland-area taxes |
 | Pennsylvania | Partial | Retirement income exempt; separate income classes; local taxes |
-| Rhode Island | Partial | Social Security taxed below full retirement age or above an income limit; pension modification |
+| Rhode Island | Partial | Social Security exemption's full-retirement-age test; pension modification |
 | South Carolina | Partial | Retirement and age deductions; long-term gain exclusion |
 | South Dakota | No tax | |
 | Tennessee | No tax | |
 | Texas | No tax | |
-| Utah | Partial | Taxpayer credit in place of a deduction; Social Security taxed, with a credit |
-| Vermont | Partial | Social Security taxed above an income limit; capital gains exclusion |
+| Utah | Partial | Taxpayer credit in place of a deduction |
+| Vermont | Partial | Capital gains exclusion |
 | Virginia | Partial | Age deduction from 65 |
 | Washington | Partial | No income tax, but a capital gains tax (retirement accounts and homes exempt) |
 | West Virginia | Partial | Senior income exclusion |

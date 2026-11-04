@@ -368,6 +368,15 @@ after every other rule of its month (#252)."""
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
 
+STATE_SOCIAL_SECURITY = "state_social_security"
+"""The aux kind of how a state taxes Social Security (#484). Without one a
+state taxes none of it."""
+
+STATE_KEYED_AUX_KINDS: tuple[str, ...] = (STATE_STANDARD_DEDUCTION, STATE_SOCIAL_SECURITY)
+"""The aux kinds keyed by state like ``state_brackets`` (their series is the
+brackets' series), which a state tax rule reads beside its brackets and a
+move to another state swaps with them."""
+
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
 
@@ -381,6 +390,9 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     "ltcg_brackets": {"floor_series": "floor"},
     "standard_deduction": {"amount_series": "amount"},
     STATE_STANDARD_DEDUCTION: {"amount_series": "amount"},
+    STATE_SOCIAL_SECURITY: {
+        "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
+    },
 }
 """Optional columns of the tax tables the law indexes for inflation (#467),
 by kind: {series column: the money column it grows}. Each names an
@@ -413,6 +425,15 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # when there is no state_standard_deduction__<state> for its brackets'
     # state, and the loader warns that it did.
     STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount"),
+    # How a state taxes Social Security (#484): it starts from the federally
+    # taxable amount and excludes exclusion_percent of it, an exclusion that
+    # phases out above phaseout_start of federal AGI: to nothing at
+    # phaseout_end (linearly; at once when they're equal), or by
+    # phaseout_rate of each dollar over (a credit, as a flat-rate state gives
+    # one). The phase-out columns are optional (AUX_OPTIONAL_COLUMNS). Without
+    # the file a state taxes none of it.
+    STATE_SOCIAL_SECURITY: ("effective_date", "filing_status", "exclusion_percent",
+                            "phaseout_start", "phaseout_end", "phaseout_rate"),
     # Itemized deductions: a dated total, no filing_status split (unlike
     # standard_deduction). Optional; when present, the tax_accumulator rule uses
     # whichever is greater, itemized or standard. `amount` may be a literal
@@ -485,6 +506,10 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "rate": {"annual_rate": ("annual_rate_micros", "percent")},
     "inflation": {"annual_rate": ("annual_rate_micros", "percent")},
     "energy_credits": {"rate": ("rate_micros", "percent")},
+    STATE_SOCIAL_SECURITY: {
+        "exclusion_percent": ("exclusion_micros", "percent"),
+        "phaseout_rate": ("phaseout_rate_micros", "percent"),
+    },
     "life_table": {"q_female": ("q_female_micros", "number"),
                    "q_male": ("q_male_micros", "number")},
 }
@@ -514,7 +539,14 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "energy_credits": frozenset({"cap"}),
     "capital_loss_limit": frozenset({"amount"}),
     IRMAA_TIERS: frozenset({"magi_floor", "part_b", "part_d"}),
+    STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end"}),
 }
+
+AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
+    STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
+}
+"""Columns of ``AUX_KIND_COLUMNS`` a file may leave out, by kind: a missing
+column or a blank cell is stored as None."""
 
 
 SCENARIO_HEADER: tuple[str, ...] = (
