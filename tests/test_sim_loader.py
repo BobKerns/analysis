@@ -2236,13 +2236,12 @@ def test_an_account_defined_by_unrelated_scenarios_gets_a_hint(
     ("100%,80000,,0%", "phaseout_rate must be more than 0%"),
 ])
 def test_state_social_security_table_is_checked(
-    test_data_dir: Path, tmp_path: Path, cells: str, message: str,
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+    cells: str, message: str,
 ) -> None:
     """A state_social_security row phases its exclusion out one way (#484)."""
-    (test_data_dir / "aux" / "state_social_security__CA.csv").write_text(
-        "effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,"
-        f"phaseout_rate\n2020-01-31,MFJ,{cells}\n", encoding="utf-8",
-    )
+    write_aux("state_social_security__CA.csv",
+              "effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,"
+              f"phaseout_rate\n2020-01-31,MFJ,{cells}\n")
     with pytest.raises(LoadError, match=message):
-        load_scenario(test_data_dir, "retire_alice", intent_dir=tmp_path / "intent",
-                      loaded_by="test", allow_dirty_data=True)
+        load_test_copy()
