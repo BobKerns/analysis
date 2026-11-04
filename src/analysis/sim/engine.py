@@ -4286,11 +4286,13 @@ def _indexed_tax_rows(
     out = []
     for row in rows:
         grown = row
+        # A row a move re-dated grows from its own table's date (#490).
+        base = _parse_date(row["index_from"]) if row.get("index_from") else effective
         for column, money in columns.items():
             growth = row.get(column)
-            if not growth or january <= effective or row.get(money) is None:
+            if not growth or january <= base or row.get(money) is None:
                 continue
-            factor = _cumulative_inflation_factor(aux, str(growth), effective, january, cache)
+            factor = _cumulative_inflation_factor(aux, str(growth), base, january, cache)
             amount = int(row[money]) * factor // 1_000_000
             grown = {**grown, money: amount // _TAX_INDEX_ROUNDING * _TAX_INDEX_ROUNDING}
         out.append(grown)
@@ -4640,7 +4642,9 @@ def _move_optional_state_table(
     kept = [row for row in aux.get((kind, series), []) if row[0] < ev_date]
     source = aux.get((kind, source_series), [])
     latest = max((effective for effective, _ in source if effective <= ev_date), default=None)
-    in_force = [(ev_date, row) for effective, row in source if effective == latest]
+    # The row keeps the date it was indexed from (#467), not the move's.
+    in_force = [(ev_date, {**row, "index_from": row.get("index_from") or effective})
+                for effective, row in source if effective == latest]
     if not in_force and kept:
         if kind == registries.STATE_HSA:
             in_force = [(ev_date, {"treatment": "federal"})]
@@ -4662,6 +4666,8 @@ def _move_optional_state_table(
     )
     if kept or written:
         aux[(kind, series)] = kept + written
+    else:
+        aux.pop((kind, series), None)
 
 
 def _apply_calendar_event(

@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from analysis.sim import registries
-from analysis.sim.engine import _swap_aux_table, _year_tax_estimate
+from analysis.sim.engine import _indexed_tax_rows, _swap_aux_table, _year_tax_estimate
 from analysis.sim.loader import LoadError, LoadResult
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
@@ -178,3 +178,30 @@ def _aux_rows(result: LoadResult) -> list[tuple[str, str | None, dict[str, Any],
                 in con.execute("SELECT kind, series, payload_json, effective_date FROM aux_table")]
     finally:
         con.close()
+
+
+def test_a_moved_surcharge_keeps_its_indexing_and_a_later_one_left_behind_goes(
+    ledger: sqlite3.Connection,
+) -> None:
+    """A surcharge row the move re-dates still grows from its own table's
+    date; and the old state's surcharge that would start only after the
+    move never applies."""
+    aux = _aux()
+    aux[("inflation", "cpi")] = [("2020-01-31", {"annual_rate_micros": 100_000})]
+    aux[("state_brackets", "MA")] = aux[("state_brackets", "CA")]
+    aux[(registries.STATE_SURCHARGE, "MA")] = [("2026-01-31", {
+        "filing_status": "MFJ", "floor": 1_000_000_00, "marginal_rate_micros": 40_000,
+        "floor_series": "cpi"})]
+    aux[(registries.STATE_SURCHARGE, "CA")] = [("2031-01-31", {
+        "filing_status": "MFJ", "floor": 0, "marginal_rate_micros": 10_000, "floor_series": None})]
+    _swap_aux_table(ledger, 1, "2029-03-31",
+                    {"aux_kind": "state_brackets", "series": "CA", "source_series": "MA"}, aux)
+    rows = _indexed_tax_rows(aux, registries.STATE_SURCHARGE, "CA", 2030, {})
+    assert rows[0]["floor"] > 1_300_000_00  # grown since 2026, not since the move
+    aux2 = _aux()
+    aux2[("state_brackets", "WA")] = aux2[("state_brackets", "CA")]
+    aux2[(registries.STATE_SURCHARGE, "CA")] = [("2031-01-31", {
+        "filing_status": "MFJ", "floor": 0, "marginal_rate_micros": 10_000, "floor_series": None})]
+    _swap_aux_table(ledger, 2, "2029-03-31",
+                    {"aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux2)
+    assert (registries.STATE_SURCHARGE, "CA") not in aux2
