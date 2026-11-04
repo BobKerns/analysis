@@ -292,3 +292,34 @@ def test_hobby_receipts_stay_income_an_exclusion_covers(
         other[scenario] = pools["alice"]["other"]
     assert receipts > 0
     assert other["alice_business_hobby"] >= receipts > other["alice_business"]
+
+
+def test_an_offset_gain_does_not_use_up_a_cap() -> None:
+    """$10,000 of gain a loss wiped out leaves the whole $10,000 cap of a
+    gains-and-pension exclusion for the pension."""
+    exclusion = _RetirementExclusion(
+        _pools(capital_gain=10_000, pension=10_000),
+        (_grant("capital_gain", "pension", cap=10_000),), net_gain=0)
+    assert exclusion.excluded(10_000, 0) == (10_000, 0)
+
+
+def test_a_move_to_a_state_whose_exclusions_start_later(
+    state_ira: Path, tmp_path: Path, append_calendar_row: Callable[..., None],
+) -> None:
+    """A new state's exclusion table dated after the move takes over on its
+    own date, and the move doesn't fail for it."""
+    _exclusions(state_ira, "2025-01,retirement,retirement_account,,,,,,\n")
+    (state_ira / "aux" / "state_brackets__NY.csv").write_text(
+        "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+        "2026-01-31,MFJ,0,0.00,1%\n", encoding="utf-8")
+    (state_ira / "aux" / "state_retirement_exclusion__NY.csv").write_text(
+        HEADER + "2030-01,pension,retirement_account,,5000,,,,\n", encoding="utf-8")
+    append_calendar_row(
+        date="2028-03", kind="swap_aux_table", series="CA",
+        params_json=json.dumps({"aux_kind": "state_brackets", "source_series": "NY"}))
+    con, _ = _run(state_ira, tmp_path)
+    try:
+        assert _bucket(con, 2028, "state_retirement_exclusion") == 0
+        assert _bucket(con, 2030, "state_retirement_exclusion") == 5_000_00
+    finally:
+        con.close()

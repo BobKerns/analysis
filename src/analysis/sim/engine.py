@@ -3220,7 +3220,11 @@ class _RetirementExclusion(NamedTuple):
         total = gains = 0
         for grant in self.grants:
             left = pools[grant.person]
-            covered = [(kind, left[kind]) for kind in grant.income]
+            # Gain past what losses left of the net gain isn't income to
+            # cover, so it mustn't use up a grant's cap.
+            net_left = max(0, max(0, self.net_gain) - gains)
+            covered = [(kind, min(left[kind], net_left) if kind == "capital_gain" else left[kind])
+                       for kind in grant.income]
             eligible = sum(amount for _, amount in covered)
             if grant.cap is not None:
                 eligible = min(eligible, grant.cap)
@@ -3231,8 +3235,6 @@ class _RetirementExclusion(NamedTuple):
                 left[kind] -= take
                 granted -= take
                 gains += take if kind == "capital_gain" else 0
-        total -= gains - min(gains, max(0, self.net_gain))
-        gains = min(gains, max(0, self.net_gain))
         total = min(total, max(0, income))
         off_ordinary = min(total - min(gains, max(0, ltcg)), max(0, ordinary))
         return off_ordinary, min(total - off_ordinary, max(0, ltcg))
@@ -4698,6 +4700,7 @@ _LOOKED_BACK_AUX_KINDS = frozenset({"inflation"})
 def _swap_aux_table(
     con, ev_id: int, ev_date: str, payload: dict[str, Any],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    *, allow_future: bool = False,
 ) -> None:
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
@@ -4726,7 +4729,7 @@ def _swap_aux_table(
             f"swap_aux_table event id={ev_id}: no aux rows for "
             f"kind={aux_kind!r} series={source_series!r}"
         )
-    if source[0][0] > ev_date:
+    if source[0][0] > ev_date and not allow_future:
         raise EngineError(
             f"swap_aux_table event id={ev_id}: series {source_series!r} has no "
             f"{aux_kind} row effective on or before {ev_date}, so there is "
@@ -4765,7 +4768,11 @@ def _swap_aux_table(
         for companion in (registries.STATE_STANDARD_DEDUCTION,
                           registries.STATE_RETIREMENT_EXCLUSION):
             if aux.get((companion, source_series)):
-                _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux)
+                # An exclusion table that starts later is fine: until its
+                # date the new state excludes nothing.
+                _swap_aux_table(
+                    con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux,
+                    allow_future=companion == registries.STATE_RETIREMENT_EXCLUSION)
             elif aux.pop((companion, series), None):
                 con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
                             (companion, series))
