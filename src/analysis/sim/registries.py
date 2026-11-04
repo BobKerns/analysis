@@ -382,7 +382,7 @@ rules (the default, without a table); ``taxable`` is California's, which
 doesn't recognize an HSA: contributions aren't deducted, its growth is
 taxed each year, so what comes out was taxed already."""
 
-STATE_COMPANION_AUX_KINDS: tuple[str, ...] = (STATE_STANDARD_DEDUCTION, STATE_SURCHARGE, STATE_HSA)
+STATE_KEYED_AUX_KINDS: tuple[str, ...] = (STATE_STANDARD_DEDUCTION, STATE_SURCHARGE, STATE_HSA)
 """Aux kinds keyed by state like ``state_brackets``, read with its series,
 which a move to another state (a ``swap_aux_table`` of ``state_brackets``)
 swaps with it."""

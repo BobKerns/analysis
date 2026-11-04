@@ -4522,7 +4522,7 @@ def _swap_aux_table(
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
     ``source_series``) would. Swapping ``state_brackets`` swaps the state's
-    other tables (``registries.STATE_COMPANION_AUX_KINDS``) with it.
+    other tables (``registries.STATE_KEYED_AUX_KINDS``) with it.
 
     Lookups only move forward, so the target simply becomes a copy of the
     source -- which keeps each lookup style exact: the latest row, the
@@ -4583,7 +4583,7 @@ def _swap_aux_table(
         # state has none, the old state's go: the deduction falls back to the
         # federal one, and there's no surcharge, and the HSA follows the
         # federal rules.
-        for companion in registries.STATE_COMPANION_AUX_KINDS:
+        for companion in registries.STATE_KEYED_AUX_KINDS:
             if aux.get((companion, source_series)):
                 _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux)
             elif aux.pop((companion, series), None):
