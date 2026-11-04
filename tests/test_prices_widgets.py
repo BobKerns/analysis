@@ -8,7 +8,6 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
-import pytest
 
 matplotlib.use("Agg")
 
@@ -22,18 +21,6 @@ from analysis.sim.notebook_ui.prices_widgets import (
     symbol_table_widget,
 )
 from analysis.sim import prices
-
-QQQ_PRICES = "effective_date,price\n2025-12-31,400.00\n2026-09-30,580.00\n2026-10-13,609.00\n"
-
-
-@pytest.fixture(scope="function")
-def qqq_prices(test_data_dir: Path) -> Path:
-    """The private copy's shared prices/ gets QQQ, and securities.csv names it."""
-    (test_data_dir / "prices").mkdir(exist_ok=True)
-    (test_data_dir / "prices" / "security_price__QQQ.csv").write_text(QQQ_PRICES)
-    (test_data_dir / "securities.csv").write_text("symbol,name\nQQQ,Nasdaq 100\nABCDX,A fund\n")
-    return test_data_dir
-
 
 def test_check_view_puts_the_flagged_lots_first(
     priced_lots: None, test_data_dir: Path, load_test_copy,
@@ -91,9 +78,8 @@ def test_history_widget_says_so_with_no_prices(test_retire_alice_scenario: Scena
     assert len(price_history_widget(test_retire_alice_scenario).children) == 1
 
 
-def test_history_figure_draws_every_stored_price(tmp_path: Path) -> None:
-    (tmp_path / "security_price__QQQ.csv").write_text(QQQ_PRICES)
-    history = prices.price_history(tmp_path, "QQQ")
+def test_history_figure_draws_every_stored_price(qqq_prices: Path) -> None:
+    history = prices.price_history(qqq_prices / "prices", "QQQ")
     assert history is not None
     fig = price_history_figure(history, "QQQ")
     line = fig.axes[0].get_lines()[0]
@@ -101,12 +87,7 @@ def test_history_figure_draws_every_stored_price(tmp_path: Path) -> None:
 
 
 def test_symbol_table_counts_a_scenarios_own_prices_as_present(
-    test_data_dir: Path, add_account_value, retire_alice_csv,
-    test_retire_alice_scenario: ScenarioConnection,
+    scenario_own_prices: None, test_retire_alice_scenario: ScenarioConnection,
 ) -> None:
-    own = retire_alice_csv("prices")
-    own.mkdir(exist_ok=True)
-    (own / "security_price__QQQX.csv").write_text("effective_date,price\n2026-05-29,10.00\n")
-    add_account_value("Asset_Roth_Alice", lot="x", symbol="QQQX", quantity="10", opening_balance="1.00")
     frame = symbol_table_view(test_retire_alice_scenario)
     assert frame.loc["QQQX", "prices"] == "0 (own file in retire_alice)"  # not "none", so not red

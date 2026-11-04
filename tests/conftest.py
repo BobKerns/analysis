@@ -999,6 +999,28 @@ def priced_lots(add_account_value: Callable[..., None], write_aux: Callable[[str
 
 
 @pytest.fixture(scope="function")
+def qqq_prices(test_data_dir: Path) -> Path:
+    """The private copy's shared prices/ gets three QQQ prices ($400 at 2025's
+    end, $580 on 2026-09-30, $609 on 2026-10-13), and securities.csv names QQQ
+    and ABCDX (which has no prices). Returns the data dir."""
+    (test_data_dir / "prices").mkdir(exist_ok=True)
+    (test_data_dir / "prices" / "security_price__QQQ.csv").write_text(
+        "effective_date,price\n2025-12-31,400.00\n2026-09-30,580.00\n2026-10-13,609.00\n")
+    (test_data_dir / "securities.csv").write_text("symbol,name\nQQQ,Nasdaq 100\nABCDX,A fund\n")
+    return test_data_dir
+
+
+@pytest.fixture(scope="function")
+def scenario_own_prices(retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None]) -> None:
+    """retire_alice gets its own prices/ file for QQQX, which the shared prices/
+    lacks, and a Roth_Alice lot holding 10 shares of it."""
+    own = retire_alice_csv("prices")
+    own.mkdir(exist_ok=True)
+    (own / "security_price__QQQX.csv").write_text("effective_date,price\n2026-05-29,10.00\n")
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="QQQX", quantity="10", opening_balance="1.00")
+
+
+@pytest.fixture(scope="function")
 def without_prototype_defaults(test_data_dir: Path) -> None:
     """Cut the private copy's ``base`` scenario, which retire_alice inherits
     from (#91), loose from the template scenarios it builds on (#282): their
