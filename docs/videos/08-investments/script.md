@@ -203,12 +203,12 @@ Each lot grows every month, at a yearly rate. Where does the rate come
 from? The lot's own series if it has one; otherwise its symbol's; and for
 a fund, the blend of what it holds: sixty percent of the stock rate, plus
 forty percent of the bond rate. A target date fund, whose mix changes
-over the years, grows at the mix of each year. Growth is the total
-return, with dividends and interest reinvested. And in an ensemble, from
-video six, every one of those rates can vary.
+over the years, grows at the mix of each year. Part of that return is
+paid out each year: dividends from the stocks, interest from the bonds,
+reinvested in the lot. And in an ensemble, from video six, every one of
+those rates can vary.
 
-> Open: what the video says about dividends and interest depends on Bob's
-> decision (taxed yearly, or deferred to the sale as today).
+> Needs #468 (PR #470): payouts split from growth.
 
 ## Scene `allocation`: What they own
 
@@ -243,10 +243,8 @@ After a run, sim allocation adds up everything by asset class: US stocks,
 bonds, cash, across every account. That's the mix to check against the
 one Alice and Bill meant to have. And sim account history, with dash dash
 lot, follows one lot year by year: the balanced fund, bought for thirty
-thousand, growing a little each year, its gain still untaxed.
-
-> Needs the plan's item 2 (lots classified by their series) or the table
-> is mostly "unclassified".
+thousand, growing each year. Its dividends and interest add to its basis,
+so only its rise in price is still untaxed.
 
 ## Scene `taxes`: Where the tax falls
 
@@ -255,7 +253,7 @@ template = "card"
 heading = "Where the tax falls"
 body = [
   "Cash: interest taxed every year, as ordinary income",
-  "Brokerage: at the sale. Basis back untaxed; the gain long- or short-term",
+  "Brokerage: dividends and interest every year; the rest at the sale",
   "Traditional IRA: everything out is ordinary income; RMDs from 75",
   "Roth: nothing, once the five-year rule is met",
   "At a death, a brokerage lot's basis steps up",
@@ -264,7 +262,9 @@ speaker = "alice"
 ```
 
 Where the tax falls depends on the account. Cash pays interest, taxed
-every year as ordinary income. In a brokerage, growth is taxed when it's
+every year as ordinary income. In a brokerage, dividends and interest are
+taxed the year they're paid, dividends at the lower capital gains rates,
+even though they're reinvested. The rest of the growth is taxed when it's
 sold: the basis comes back untaxed, and the gain is long-term or
 short-term, by when the lot was bought. Everything out of a traditional
 IRA is ordinary income, and from seventy five, required minimum

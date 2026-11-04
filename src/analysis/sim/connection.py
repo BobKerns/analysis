@@ -395,6 +395,20 @@ class _TagReader:
     def _ensure_fresh(self) -> None:
         """Hook for subclasses; default no-op (run files don't mutate)."""
 
+    def lot_growth_series(self) -> dict[tuple[str, str], str]:
+        """Each lot's growth series, by (account, lot): the series its
+        generated growth rule reads (ADR-005 §5). A lot growing at a blend,
+        or not at all, is absent."""
+        from .asset_classes import GROWTH_SERIES_SQL
+
+        self._ensure_fresh()
+        frame = self._read_sql(
+            "SELECT a.name AS account, m.lot, g.series FROM (" + GROWTH_SERIES_SQL + ") g "
+            "JOIN account_lot m ON m.id = g.lot_id JOIN account a ON a.id = m.account_id"
+        )
+        return {(account, lot): series
+                for account, lot, series in zip(frame["account"], frame["lot"], frame["series"], strict=True)}
+
     def list_tags(self, role: str | None = None) -> pd.DataFrame:
         """Return distinct tags with per-item-type usage counts."""
         self._ensure_fresh()

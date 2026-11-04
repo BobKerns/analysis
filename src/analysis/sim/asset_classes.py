@@ -11,9 +11,24 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from analysis.sim import registries
 
-__all__ = ["UNCLASSIFIED", "WeightSets", "class_weights", "is_lot_key", "lot_key", "weight_sets", "weights_at"]
+__all__ = [
+    "GROWTH_SERIES_SQL", "UNCLASSIFIED", "WeightSets", "class_weights", "is_lot_key", "lot_key", "weight_sets",
+    "weights_at",
+]
 
 UNCLASSIFIED = "unclassified"
+
+GROWTH_SERIES_SQL = (
+    "SELECT c.lot_id, s.series FROM scheduled_transaction s "
+    "JOIN chain c ON c.id = s.to_account JOIN chain f ON f.id = s.from_account "
+    "JOIN account g ON g.id = f.account_id "
+    "WHERE s.amount_rule_kind = 'percent_of_balance' AND s.series IS NOT NULL "
+    "  AND c.lot_id IS NOT NULL AND g.name IN ("
+    + ", ".join(f"'{c.name}'" for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()) + ")"
+)
+"""Each lot's growth series in an intent or run file, as ``(lot id, series)``
+rows: the series of the rule the loader made from a built-in growth account
+into the lot's leaf chain (ADR-005 §5). A lot growing at a blend has none."""
 
 type WeightSets = dict[str, list[tuple[str, dict[str, float]]]]
 """A key (a symbol, ``<account>:<lot>`` or target set) to its dated weight
@@ -53,15 +68,19 @@ def is_lot_key(symbol: str) -> bool:
 def class_weights(
     *, symbol: str | None, account: str, lot: str, subkind: str,
     sets: Mapping[str, Sequence[tuple[str, Mapping[str, float]]]], date: str,
+    series: str | None = None,
 ) -> dict[str, float]:
     """One asset lot's split across asset classes on ``date``: its symbol's
     allocations.csv set, else its ``<account>:<lot>`` set, else the class its
-    symbol (``CASH``, ``CD``) or account subkind (cash, real estate, ...)
-    means, else ``unclassified``. Shared by ``sim allocation`` and the
+    symbol (``CASH``, ``CD``) means, else the class its growth ``series`` is
+    named for (``stock_us``, ``bond``, ...), else the class its account
+    subkind (cash, real estate, ...) means, else ``unclassified``. Shared by ``sim allocation`` and the
     strategies' context (#326), so the two can't disagree."""
     described = (sets.get(symbol) if symbol else None) or sets.get(lot_key(account, lot))
     if described:
         return dict(weights_at(described, date))
     if symbol and symbol in registries.SYMBOL_ASSET_CLASS:
         return {registries.SYMBOL_ASSET_CLASS[symbol]: 1.0}
+    if series in registries.ASSET_CLASSES:
+        return {series: 1.0}
     return {registries.SUBKIND_ASSET_CLASS.get(subkind, UNCLASSIFIED): 1.0}

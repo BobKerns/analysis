@@ -142,16 +142,47 @@ def test_invest_adds_a_new_account_and_symbol(
 def test_guided_invest_asks_and_prints_the_command(
     invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
 ) -> None:
-    # source, account, lot, lot subkind, symbol, amount, date
+    # source, account, lot, lot subkind, symbol, amount, date, and, since
+    # nothing else would grow the lot, a growth series (#371)
     result = invest("--no-fetch", answers=(
-        "Asset_Savings", "Asset_Roth_Bill", "contrib_2027", "roth_ira", "", "7000", "2027-02",
+        "Asset_Savings", "Asset_Roth_Bill", "contrib_2027", "roth_ira", "", "7000", "2027-02", "stock",
     ))
 
     assert result.exit_code == 0, result.output
     assert ("sim invest Asset_Savings Asset_Roth_Bill contrib_2027 --amount 7000.00 --date 2027-02 "
-            "--subkind roth_ira --no-fetch") in result.output
+            "--series stock --subkind roth_ira --no-fetch") in result.output
     [lot] = _rows(retire_alice_csv("account_lots.csv"), account_name="Asset_Roth_Bill", lot="contrib_2027")
-    assert lot["subkind"] == "roth_ira"
+    assert (lot["subkind"], lot["series"]) == ("roth_ira", "stock")
+
+
+def test_invest_warns_when_the_new_lot_has_nothing_to_grow_by(
+    invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """#371: a lot with no symbol, series or account series would hold its
+    dollars flat for the whole run; say so rather than let it pass."""
+    result = invest("Asset_Savings", "Asset_Roth_Alice", "converted", "--subkind", "roth_ira",
+                    "--amount", "40000", "--date", "2030-01")
+    assert result.exit_code == 0, result.output
+    assert "warning: lot 'converted' has nothing to grow by" in result.output
+    assert "--series" in result.output
+
+
+def test_invest_with_a_series_grows_the_lot_at_it(
+    invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    result = invest("Asset_Savings", "Asset_Roth_Alice", "converted", "--subkind", "roth_ira",
+                    "--series", "stock_us", "--amount", "40000", "--date", "2030-01")
+    assert result.exit_code == 0, result.output
+    assert "nothing to grow by" not in result.output
+    [lot] = _rows(retire_alice_csv("account_lots.csv"), account_name="Asset_Roth_Alice", lot="converted")
+    assert lot["series"] == "stock_us"
+    with sqlite3.connect(load_test_copy().intent_path) as con:
+        assert con.execute(
+            "SELECT s.series FROM scheduled_transaction s JOIN chain c ON c.id = s.to_account "
+            "JOIN account_lot m ON m.id = c.lot_id JOIN account a ON a.id = m.account_id "
+            "WHERE a.name = 'Asset_Roth_Alice' AND m.lot = 'converted' "
+            "AND s.amount_rule_kind = 'percent_of_balance'").fetchall() == [("stock_us",)]
 
 
 @pytest.mark.parametrize(("args", "error"), [
@@ -159,6 +190,7 @@ def test_guided_invest_asks_and_prints_the_command(
     (("Asset_Roth_Alice", "x", "--amount", "1"), "a retirement account's lot needs --subkind"),
     ((BROKERAGE, "x", "--subkind", "roth_ira", "--amount", "1"), "--subkind is only for"),
     ((BROKERAGE, "x", "--amount", "0"), "more than zero"),
+    ((BROKERAGE, "x", "--amount", "1", "--series", "no_such"), "no rate series 'no_such'"),
     # The engine posts nothing before the first month; that's an opening holding.
     ((BROKERAGE, "x", "--amount", "1", "--date", "2026-04"), "before the scenario starts"),
     # A retirement account belongs to a person, not the household.

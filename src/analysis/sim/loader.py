@@ -4445,7 +4445,7 @@ def _validate_strategies(
         weights = asset_classes.class_weights(
             symbol=m.get("symbol") or None, account=account["name"],
             lot=m.get("lot") or registries.DEFAULT_LOT, subkind=account.get("subkind", ""),
-            sets=class_sets, date=start,
+            sets=class_sets, date=start, series=_lot_growth_series(m, account),
         )
         for tag in tags.get(account["name"], frozenset()):
             portfolio_classes.setdefault(tag, set()).update(c for c, w in weights.items() if w > 0)
@@ -4469,7 +4469,7 @@ def _validate_strategies(
     lots = [
         (m["account_name"], m.get("lot") or registries.DEFAULT_LOT, m.get("symbol") or None,
          by_account[m["account_name"]].get("kind", ""), by_account[m["account_name"]].get("subkind", ""),
-         tags.get(m["account_name"], frozenset()))
+         tags.get(m["account_name"], frozenset()), _lot_growth_series(m, by_account[m["account_name"]]))
         for m in value_rows if m.get("account_name") in by_account
     ]
     strategy_load.check_portfolio_classes(
@@ -4484,6 +4484,14 @@ def _validate_strategies(
             if account in by_account and (account, lot) not in known_lots:
                 unused.append(f"allocations.csv ({symbol}): {account} has no lot '{lot}' here")
     return kinds, prepared
+
+
+def _lot_growth_series(lot: Mapping[str, str], account: Mapping[str, str]) -> str | None:
+    """The rate series an account_lots.csv row grows at, as far as the CSVs
+    say before growth is expanded: its own ``series``, else its account's.
+    (A rate series named for its symbol wins at expansion, but a symbol is
+    classed by its allocation first.)"""
+    return (lot.get("series") or "").strip() or (account.get("series") or "").strip() or None
 
 
 def _allocation_class_sets(

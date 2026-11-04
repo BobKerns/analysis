@@ -1,3 +1,4 @@
+# cspell:ignore BALX STKX
 # Prepares what video 8 shows, before any scene records (docs/videos/README.md,
 # "Setting up the demo"). Video 8 looks inside Alice and Bill's accounts, so
 # this builds base with the commands videos 3 to 5 type, video 7's checking

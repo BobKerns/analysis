@@ -22,7 +22,9 @@ import numpy as np
 import pandas as pd
 
 from analysis.sim import registries
-from analysis.sim.asset_classes import UNCLASSIFIED, WeightSets, class_weights, weight_sets, weights_at
+from analysis.sim.asset_classes import (
+    GROWTH_SERIES_SQL, UNCLASSIFIED, WeightSets, class_weights, weight_sets, weights_at,
+)
 
 __all__ = [
     "ALL_LOTS", "MAX_ABS", "Watch", "choose", "class_dollars", "class_order", "drift", "drift_by_month",
@@ -67,6 +69,7 @@ def class_dollars(
         "SELECT m.id, a.id, a.name, m.lot, m.symbol, a.subkind FROM account_lot m "
         "JOIN account a ON a.id = m.account_id WHERE a.kind = 'asset' ORDER BY m.id"
     ).fetchall()
+    growth = dict(con.execute(GROWTH_SERIES_SQL).fetchall())
     tags: dict[int, set[str]] = {}
     for account_id, tag in con.execute(
         "SELECT at.account_id, t.role || ':' || t.name FROM account_tag at JOIN tag t ON t.id = at.tag_id"
@@ -98,8 +101,9 @@ def class_dollars(
     for s in sorted(set(stretch.tolist())):
         month = months[int(np.argmax(stretch == s))]
         weights_by_stretch[s] = [
-            class_weights(symbol=symbol or None, account=account, lot=lot, subkind=subkind, sets=symbols, date=month)
-            for _lot_id, _account_id, account, lot, symbol, subkind in lots
+            class_weights(symbol=symbol or None, account=account, lot=lot, subkind=subkind, sets=symbols,
+                          date=month, series=growth.get(lot_id))
+            for lot_id, _account_id, account, lot, symbol, subkind in lots
         ]
         for weights in weights_by_stretch[s]:
             classes.update(weights)

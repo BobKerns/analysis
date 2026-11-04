@@ -26,7 +26,7 @@ import numpy as np
 
 from analysis.sim import guard_rails, life_table, registries
 from analysis.sim.dates import add_month_ends
-from analysis.sim.asset_classes import class_weights, weight_sets, weights_at
+from analysis.sim.asset_classes import GROWTH_SERIES_SQL, class_weights, weight_sets, weights_at
 from analysis.sim.measures import RailYears
 from analysis.sim.strategy_api import (
     BreachView, ChainView, Context, Decision, History, LotRef, LotView, Mortality, PersonView, Put, Realize,
@@ -275,6 +275,7 @@ class StrategyRuntime:
             (name, as_of, asset_class, weight / 1_000_000) for name, as_of, asset_class, weight
             in con.execute("SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")
         )
+        self._growth_series: dict[int, str] = dict(con.execute(GROWTH_SERIES_SQL).fetchall())
         self._weights_cache: dict[tuple[int, str], dict[str, float]] = {}
         self._roth_cache: dict[tuple[int, date], bool | None] = {}
         self._chain_views: dict[int, ChainView] = {}
@@ -360,6 +361,7 @@ class StrategyRuntime:
             cached = class_weights(
                 symbol=info.symbol, account=info.ref.account, lot=info.ref.lot,
                 subkind=info.subkind, sets=self._sets, date=month_s,
+                series=self._growth_series.get(lot_id),
             )
             self._weights_cache[key] = cached
         return cached

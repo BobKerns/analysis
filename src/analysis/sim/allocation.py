@@ -59,13 +59,14 @@ def lot_classes(source: Connection, month: str | None = None) -> pd.DataFrame:
     owners = source.items("account").set_index("name")["owner"]
     lots = lots.assign(owner=lots["account"].map(owners).fillna(_JOINT))
     sets = _weight_sets(source)
+    growth = source.lot_growth_series()
     dates = {as_of: _reference_date(source, as_of) for as_of in set(lots["as_of"])}
     rows = []
     for lot in named_rows(lots):
         symbol = lot.symbol if isinstance(lot.symbol, str) and lot.symbol else None
         weights = class_weights(
             symbol=symbol, account=lot.account, lot=lot.lot, subkind=lot.subkind,
-            sets=sets, date=dates[lot.as_of],
+            sets=sets, date=dates[lot.as_of], series=growth.get((lot.account, lot.lot)),
         )
         for asset_class, weight in weights.items():
             rows.append({
