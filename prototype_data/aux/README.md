@@ -27,6 +27,22 @@ When tax law changes (typically once a year), you add a new row with a new
 effective date; you do **not** edit the old row. Past months keep using the old
 values; future months pick up the new ones.
 
+## Indexed for inflation
+
+The law raises the brackets, the standard deduction and the long-term gain
+bands every year with inflation. So a row of `federal_brackets.csv`,
+`state_brackets__<state>.csv` or `ltcg_brackets.csv` can name an inflation
+series in `floor_series`, and a row of `standard_deduction.csv` or
+`state_standard_deduction__<state>.csv` one in `amount_series`. For each
+later tax year the figure grows by that series from the row's
+`effective_date` to the year's January, rounded down to a multiple of $50,
+as the IRS rounds it. These files name `cpi`, so in an ensemble each
+member's tax tables follow its own inflation. A blank series holds the
+figure flat, and a new dated row (next year's published figures, or a law
+change) starts again from its own figures. The Social Security thresholds
+and the capital loss limit aren't indexed by law, so they have no such
+column.
+
 ## Units (same as everywhere else in the data repo)
 
 - **Money** is decimal **dollars**: `$31,500.00` → `31500.00`.
