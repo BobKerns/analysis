@@ -186,7 +186,7 @@ class Harvest(Strategy):
             moves,
             note=(f"realized {_dollars(total)} of long-term gain into the {_rate(p.band)} band "
                   f"(room {_dollars(room)}{stopped})"),
-            detail={"band_top": top, "taxable_before": before, "room": room,
+            detail={"band_top": top, "taxable_before": before, "room": room, "held": held,
                     "limit": limit, "realized": realized},
         )
 

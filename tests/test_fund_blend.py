@@ -32,14 +32,23 @@ def _growth_rule(intent: Path) -> tuple[str | None, dict, str]:
     return series, json.loads(params or "{}"), description
 
 
+FUND_PAYOUT_RULES = tuple(growth_rule_name(BROKERAGE, "fund", prefix=p) for p in ("dividends_", "interest_"))
+
+
 def _first_growth(run_file: Path) -> int:
+    """The fund's first month of total return: its appreciation, plus the
+    dividends and interest it pays out and reinvests (#468)."""
     con = sqlite3.connect(run_file)
     try:
+        rules = (FUND_RULE, *FUND_PAYOUT_RULES)
         return con.execute(
-            "SELECT t.amount FROM transfer_event t "
+            "SELECT COALESCE(SUM(t.amount), 0) FROM transfer_event t "
             "JOIN scheduled_transaction s ON s.id = t.reason_id "
-            "WHERE t.reason_kind = 'rule' AND s.name = ? ORDER BY t.id LIMIT 1",
-            (FUND_RULE,),
+            f"WHERE t.reason_kind = 'rule' AND s.name IN ({','.join('?' * len(rules))}) "
+            "  AND t.step_id = (SELECT MIN(step_id) FROM transfer_event t2 "
+            "                   JOIN scheduled_transaction s2 ON s2.id = t2.reason_id "
+            "                   WHERE t2.reason_kind = 'rule' AND s2.name = ?)",
+            (*rules, FUND_RULE),
         ).fetchone()[0]
     finally:
         con.close()
