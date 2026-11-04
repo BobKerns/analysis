@@ -184,8 +184,10 @@ def test_drawdown_years_and_step_up_change_the_deferred_tax(
     assert (stepped["federal_drawdown_base"] < ten["federal_drawdown_base"]).any()
     # The traditional balances are still taxed, while there's enough of them
     # to rise above the deduction beside the later years' Social Security.
-    assert (deferred["2026":"2037"] > 0).all()
-    assert (rates.loc[:2037] > 0).all()
+    # From 2037 what's left, drawn over ten years, stays under the deduction
+    # as it rises with inflation (#467).
+    assert (deferred["2026":"2036"] > 0).all()
+    assert (rates.loc[:2036] > 0).all()
 
 
 @pytest.mark.parametrize(("settings", "message"), [

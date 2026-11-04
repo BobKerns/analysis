@@ -2941,6 +2941,7 @@ def _year_tax_estimate(
     bracket_series = params.get("bracket_series")
 
     as_of = f"{tax_year}-12-31"
+    growth_cache: dict[tuple[str, date, date, str], int] = {}
     filing_status = _active_filing_status(
         aux, filing_status_aux, tax_year, tid,
         person_lifespan=person_lifespan, taxpayers=taxpayers,
@@ -3004,7 +3005,8 @@ def _year_tax_estimate(
     if deduction_series is not None and not aux.get((standard_deduction_aux, deduction_series)):
         # The loader warned: the federal figure stands in for the state's.
         standard_deduction_aux, deduction_series = "standard_deduction", None
-    deduction_rows = _active_aux_rows(aux, standard_deduction_aux, deduction_series, as_of)
+    deduction_rows = _indexed_tax_rows(
+        aux, standard_deduction_aux, deduction_series, tax_year, growth_cache)
     deduction_rows = [r for r in deduction_rows if r.get("filing_status") == filing_status]
     if not deduction_rows:
         raise EngineError(
@@ -3025,7 +3027,7 @@ def _year_tax_estimate(
     itemized_deduction = int(itemized_rows[0]["amount"]) if itemized_rows else 0
     deduction = max(standard_deduction, itemized_deduction)
 
-    bracket_rows = _active_aux_rows(aux, bracket_aux, bracket_series, as_of)
+    bracket_rows = _indexed_tax_rows(aux, bracket_aux, bracket_series, tax_year, growth_cache)
     bracket_rows = [r for r in bracket_rows if r.get("filing_status") == filing_status]
     if not bracket_rows:
         raise EngineError(
@@ -3037,7 +3039,7 @@ def _year_tax_estimate(
         for r in bracket_rows
     )
     ltcg_rows = [
-        r for r in _active_aux_rows(aux, ltcg_bracket_aux, None, as_of)
+        r for r in _indexed_tax_rows(aux, ltcg_bracket_aux, None, tax_year, growth_cache)
         if r.get("filing_status") == filing_status
     ] if scope == "federal" else []
     ltcg_brackets = sorted(
@@ -4128,6 +4130,47 @@ def _lookup_aux(
         else:
             break
     return chosen
+
+
+_TAX_INDEX_ROUNDING = 5_000
+"""Indexed tax figures round down to a multiple of $50, as IRC §1(f)(7)
+rounds the brackets and standard deduction (#467)."""
+
+
+def _indexed_tax_rows(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    kind: str, series: str | None, tax_year: int,
+    cache: dict[tuple[str, date, date, str], int],
+) -> list[dict[str, Any]]:
+    """The tax table ``kind`` in force for ``tax_year``, each figure that
+    has a growth series (``registries.TAX_GROWTH_SERIES_COLUMNS``, read
+    from the row whatever its kind, so a ``bracket_aux`` of another name
+    indexes too) grown from the table's effective date to January of the
+    tax year, as the law indexes them each year (#467). A blank series, or
+    a table dated after that January, leaves the figure as written."""
+    as_of = f"{tax_year}-12-31"
+    rows = _active_aux_rows(aux, kind, series, as_of)
+    if not rows:
+        return rows
+    columns = {
+        column: money
+        for by_kind in registries.TAX_GROWTH_SERIES_COLUMNS.values()
+        for column, money in by_kind.items()
+    }
+    effective = _parse_date(max(e for e, _ in aux[(kind, series)] if e <= as_of))
+    january = date(tax_year, 1, 31)
+    out = []
+    for row in rows:
+        grown = row
+        for column, money in columns.items():
+            growth = row.get(column)
+            if not growth or january <= effective or row.get(money) is None:
+                continue
+            factor = _cumulative_inflation_factor(aux, str(growth), effective, january, cache)
+            amount = int(row[money]) * factor // 1_000_000
+            grown = {**grown, money: amount // _TAX_INDEX_ROUNDING * _TAX_INDEX_ROUNDING}
+        out.append(grown)
+    return out
 
 
 def _active_aux_rows(

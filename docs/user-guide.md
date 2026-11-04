@@ -372,6 +372,12 @@ tax year, by looking back over everything that happened that year (the
   unless you add itemized deductions for that year — see §4.9. The simulator
   then uses whichever is greater. (See the glossary above — *itemization* and
   *itemized deduction* mean two different things in this guide.)
+- **Inflation**: the brackets, the standard deduction and the long-term
+  gain bands rise each year with inflation, as the law raises them. The
+  supplied tables carry the latest published figures and grow them with
+  `cpi` from then on (`floor_series`/`amount_series`, see the `aux/`
+  README). The Social Security thresholds and the $3,000 capital loss limit
+  stay fixed, as they are in law.
 - **State tax** works the same way as federal tax, using
   `state_brackets__CA.csv` (or your own state's file, in `aux/`) and the
   state's standard deduction from `state_standard_deduction__CA.csv` (named

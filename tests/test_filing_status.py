@@ -90,5 +90,8 @@ def test_the_standard_deduction_switches_after_the_year_of_death(
         ).fetchall())
     finally:
         con.close()
-    assert deduction[2027] == deduction[2028] == 32_200_00  # MFJ, including the year of death
-    assert deduction[2029] == deduction[2030] == 16_100_00  # Single afterward
+    # The figures rise with inflation each year (#467): prototype_data's CPI
+    # is 2.5%, and each rounds down to $50.
+    assert deduction[2027] == 32_200_00  # MFJ
+    assert deduction[2028] == 33_000_00  # MFJ, including the year of death
+    assert 16_100_00 < deduction[2029] < deduction[2030] < 17_500_00  # Single afterward
