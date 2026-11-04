@@ -81,9 +81,11 @@ def test_a_fund_pays_each_class_yield_split_by_how_it_is_taxed(
     result = load_test_copy()
     assert not result.warnings
     rules = _rules(result.intent_path)
-    assert rules[DIVIDENDS] == (None, {"blend": [["", [["stock_us_yield", 600_000]]]]},
-                                "qualified_dividend")
-    assert rules[INTEREST] == (None, {"blend": [["", [["bond_yield", 400_000]]]]}, "ordinary")
+    assert rules[DIVIDENDS] == (
+        None, {"blend": [["", [["stock_us_yield", 600_000]]]], "payout": True},
+        "qualified_dividend")
+    assert rules[INTEREST] == (
+        None, {"blend": [["", [["bond_yield", 400_000]]]], "payout": True}, "ordinary")
     assert sorted(map(json.dumps, rules[GROWTH][1]["less"])) == sorted(
         json.dumps({"blend": [["", [[paid, weight]]]]})
         for paid, weight in (("stock_us_yield", 600_000), ("bond_yield", 400_000)))
@@ -137,7 +139,7 @@ def test_only_taxable_brokerage_lots_pay_out(
     write_series("brokerage_growth_yield", "2026-01-31,2%")
     rules = _rules(load_test_copy().intent_path)
     payouts = {n: rule for n, rule in rules.items() if n.startswith(("dividends_", "interest_"))}
-    assert list(payouts.values()) == [("brokerage_growth_yield", {}, "ordinary")]
+    assert list(payouts.values()) == [("brokerage_growth_yield", {"payout": True}, "ordinary")]
     assert list(payouts) == [growth_rule_name(BROKERAGE, "default", prefix="interest_")]
     ira = rules[growth_rule_name("Asset_TraditionalIRA_Alice", "default")]
     assert ira[0] == "stock" and "less" not in ira[1]
@@ -178,12 +180,37 @@ def test_a_return_below_its_yield_is_an_unrealized_loss_that_sells_no_shares(
     assert gains.loc[year, "taxable"] >= paid / 100
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
+def test_cash_at_a_negative_rate_pays_no_interest_and_loses_value(
+    test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+    write_series: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """Cash pays all its return as interest, but a negative rate is no
+    negative interest: nothing is taxed, and the fall is an unrealized loss
+    carried by the lot's growth rule."""
+    set_brokerage_lots([{"lot": "default", "series": "cash", "opening_balance": "300000.00",
+                         "opening_cost_basis": "300000.00"}])
+    write_series("cash", "2026-01-31,-1.2%")
+    run = run_scenario(load_test_copy().intent_path, runs_dir / "negative.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    interest = growth_rule_name(BROKERAGE, "default", prefix="interest_")
+    assert not _query(run, (
+        "SELECT 1 FROM transfer_event t JOIN scheduled_transaction r ON r.id = t.reason_id "
+        "WHERE t.reason_kind = 'rule' AND r.name = ? AND t.amount != 0"), interest)
+    month, fall = _first_month(run, growth_rule_name(BROKERAGE, "default"))
+    # 1.2% a year on $300,000 is $300 a month, posted from the lot.
+    assert fall == pytest.approx(30_000, rel=0.01)
+    with RunConnection(run) as ran:
+        gains = ran.gains_by_category()
+    assert gains.loc[int(month[:4]), "unrealized"] < 0
+
+
 def test_an_all_interest_lot_keeps_its_rate_in_the_account_view(
     write_series: Callable[[str, str], Path], set_brokerage_lots: Callable[[list[dict[str, str]]], None],
     test_data_dir: Path,
 ) -> None:
-    """A cash lot in a brokerage pays all its return as interest and has no
-    growth rule; the interest rule's series is still the account's rate."""
+    """A cash lot in a brokerage pays all its return as interest; the
+    interest rule's series is still the account's rate."""
     set_brokerage_lots([{"lot": "default", "series": "cash", "opening_balance": "300000.00",
                          "opening_cost_basis": "300000.00"}])
     with ScenarioConnection(test_data_dir, "retire_alice") as scenario:

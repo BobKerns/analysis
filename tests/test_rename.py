@@ -387,3 +387,25 @@ def test_series_rename_takes_a_yield_only_a_child_has(test_data_dir: Path, test_
     assert (child / "rate__broker_growth_yield.csv").is_file()
     assert not (child / "rate__brokerage_growth_yield.csv").exists()
     loads("retire_alice")
+
+
+def test_series_rename_refuses_a_yield_from_outside_its_reach(test_data_dir: Path,
+                                                              test_scenarios_dir: Path) -> None:
+    """A yield a parent provides for a series only the child names can't
+    follow the rename without changing the parent's other children: refused."""
+    (test_scenarios_dir / "base" / "series").mkdir(exist_ok=True)
+    (test_scenarios_dir / "base" / "series" / "rate__brokerage_growth_yield.csv").write_text(
+        "effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth")
+    assert result.exit_code != 0 and "doesn't reach: retire_alice (from base)" in result.output, result.output
+    assert (test_scenarios_dir / "retire_alice" / "series" / "rate__brokerage_growth.csv").is_file()
+
+
+def test_series_rename_refuses_a_new_name_whose_yield_exists(test_data_dir: Path,
+                                                             test_scenarios_dir: Path) -> None:
+    """Even with no yield of its own, a series renamed onto a name that has
+    a yield would start paying it out: refused."""
+    series = test_scenarios_dir / "retire_alice" / "series"
+    (series / "rate__broker_growth_yield.csv").write_text("effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth")
+    assert result.exit_code != 0 and "'broker_growth_yield' already applies" in result.output, result.output

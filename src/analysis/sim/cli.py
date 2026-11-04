@@ -13950,14 +13950,32 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
                     f"{name!r} is {of}'s yield series (#468), which lots find by name; "
                     f"rename {of} and its yield follows")
         # Its yield (#468) goes with it, in every scenario the rename reaches
-        # that has one, or the lots growing at it would stop paying out.
+        # that has one, or the lots growing at it would stop paying out. A
+        # yield from outside those scenarios can't follow, and an existing
+        # NEW_yield would start paying out where none was paid.
         scenarios = edit.data_dir / "scenarios"
-        with_yield = [each for each in rename.scope(scenarios, edit.name, rename.series_mentioned(old))
-                      if rename.series_mentioned(old_yield)(scenarios / each)]
-        if with_yield and (found := rename.clashes(scenarios, with_yield, rename.series_mentioned(new_yield))):
+        affected = rename.scope(scenarios, edit.name, rename.series_mentioned(old))
+        if shared := rename.shared_series_files(data, old_yield):
+            raise click.ClickException(
+                f"{old!r}'s yield {old_yield!r} has rates in the shared "
+                f"{', '.join(f'aux/{p.name}' for p in shared)}, which every scenario reads; "
+                f"{old!r} can't be renamed")
+        outside = {each: source for each, found in rename.sources(
+                       scenarios, affected, rename.series_mentioned(old_yield)).items()
+                   for source in found if source not in affected}
+        if outside:
+            raise click.ClickException(
+                f"{old!r}'s yield {old_yield!r} comes from scenarios the rename doesn't reach: "
+                f"{rename.describe_clashes(outside)}; rename or move it first")
+        if found := rename.clashes(scenarios, affected, rename.series_mentioned(new_yield)):
             raise click.ClickException(
                 f"a series {new_yield!r} already applies in {rename.describe_clashes(found)}; "
                 "rename or delete it first")
+        if shared := rename.shared_series_files(data, new_yield):
+            raise click.ClickException(
+                f"series {new_yield!r} has rates in the shared {', '.join(f'aux/{p.name}' for p in shared)}, "
+                f"which every scenario reads; {new!r}'s lots would start paying it")
+        with_yield = [each for each in affected if rename.series_mentioned(old_yield)(scenarios / each)]
         changed = _rename_across(edit, "series", old, new, defines=rename.series_mentioned,
                                  rewrite=rename.rename_series)
         try:

@@ -41,7 +41,7 @@ __all__ = [
     "clashes", "copy_scenario", "describe_clashes", "generated_growth_rules", "name_problem", "relink_markdown",
     "rename_account", "rename_calendar_row", "rename_growth_rules", "rename_lot_keys", "rename_scenario",
     "rename_scheduled", "rename_series", "scenario_folders", "scheduled_defined", "scope",
-    "series_mentioned", "shared_series_files", "shared_series_references", "symbol_series",
+    "series_mentioned", "shared_series_files", "sources", "shared_series_references", "symbol_series",
 ]
 
 Defines = Callable[[Path], bool]
@@ -89,6 +89,14 @@ def clashes(scenarios_dir: Path, affected: Iterable[str], defines: Defines) -> d
                 found[each] = source
                 break
     return found
+
+
+def sources(scenarios_dir: Path, affected: Iterable[str], defines: Defines) -> dict[str, list[str]]:
+    """For each affected scenario, every scenario in its load order that
+    defines a name (itself included), nearest first; [] where none does."""
+    return {each: [source for source in reversed(load_order(scenarios_dir, each))
+                   if defines(_folder_of(scenarios_dir, source))]
+            for each in affected}
 
 
 def describe_clashes(found: dict[str, str]) -> str:

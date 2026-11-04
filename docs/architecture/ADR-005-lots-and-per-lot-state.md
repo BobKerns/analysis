@@ -120,10 +120,10 @@ What a lot pays comes from yield series, ordinary rate series named `<series>_yi
 - A symbol with its own `<SYMBOL>_yield` series pays at it: qualified dividends when every class its allocation holds is a stock class (`stock`, `stock_us`, `stock_intl`), else ordinary.
 - A fund growing at its allocation's blend pays each class's `<class>_yield` at its weight, the stock classes as qualified dividends and the rest as ordinary, each part a blend of its own (`{"blend": ...}` in the payout rule's `params_json`).
 - A lot growing at one series pays `<series>_yield`, taxed by the series' asset class (ordinary when it has none).
-- Cash and CDs pay all of their rate, so such a lot gets an `interest_` rule and no growth rule.
+- Cash and CDs pay all of their rate as interest, so their growth rule is left with nothing, except below zero.
 - A class with no yield series pays nothing, as before: its whole return is appreciation.
 
-The growth rule then grows the lot at its total return less the payouts (`{"less": [spec, ...]}` in its `params_json`), so total return is unchanged and only its taxation moves. Payouts are reinvested: they are money into the lot from an account that is not a growth counterparty, so they add to its basis (§7), and the gain left at a sale is the appreciation alone. Retirement, HSA and other untaxed lots get no payout rules: what they earn is not taxed until it leaves. Taking payouts as cash instead of reinvesting them is not modeled.
+The growth rule then grows the lot at its total return less the payouts (`{"less": [spec, ...]}` in its `params_json`), so total return is unchanged and only its taxation moves. A payout is never negative (`{"payout": true}` in its rule's `params_json`): a yield below zero pays nothing, and the growth rule carries the whole fall as an unrealized loss, so cash at a negative rate loses value without negative interest. Payouts are reinvested: they are money into the lot from an account that is not a growth counterparty, so they add to its basis (§7), and the gain left at a sale is the appreciation alone. Retirement, HSA and other untaxed lots get no payout rules: what they earn is not taxed until it leaves. Taking payouts as cash instead of reinvesting them is not modeled.
 
 ### 6. Prices
 

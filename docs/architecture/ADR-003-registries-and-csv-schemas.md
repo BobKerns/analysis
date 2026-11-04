@@ -139,7 +139,7 @@ A `retirement` account's lot takes its growth character from its subkind instead
 | `qualified_dividend` | `dividends` | income / `dividend` | `taxable` | `dividends_<account/lot>` | stock dividends, taxed at long-term gain rates |
 | `ordinary` | `investment_interest` | income / `interest` | `taxable` | `interest_<account/lot>` | bond and cash interest, other dividends |
 
-Money from either account into a lot is a purchase, so a reinvested payout adds to the lot's basis.
+Money from either account into a lot is a purchase, so a reinvested payout adds to the lot's basis. A payout rule's `params_json` carries `"payout": true`, which keeps its amount from going below zero; a negative return falls through to the growth rule.
 
 `gains` and `deferred` are tax characters in their own right (§2 registry): unlike `ltcg`, they are *unrealized*, so the retrospective tax scan ignores them until a sale or distribution converts them into `ltcg`/`tax_deferred_out`. Rules synthesized for `depreciation` record `tax_character='none'` — personal-use depreciation is not deductible.
 

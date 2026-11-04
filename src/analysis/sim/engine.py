@@ -1735,10 +1735,15 @@ def _amount_percent_of_balance(
     if base <= 0:
         return 0
     total = _percent_of(base, params, rate_kind, aux, month_s, tid)
-    # A taxable lot's payouts (#468) are their own rules; what's left of the
-    # total return is the appreciation, which waits for a sale.
+    if params.get("payout"):
+        # A dividend or interest payout (#468) is never negative: a rate
+        # below zero is a fall in value, left to the growth rule.
+        return max(total, 0)
+    # A taxable lot's payouts are their own rules; what's left of the total
+    # return is the appreciation, which waits for a sale. A cash lot's is
+    # zero unless its rate goes negative.
     for spec in params.get("less") or ():
-        total -= _percent_of(base, spec, rate_kind, aux, month_s, tid)
+        total -= max(_percent_of(base, spec, rate_kind, aux, month_s, tid), 0)
     return total
 
 

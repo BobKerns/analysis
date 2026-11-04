@@ -2222,10 +2222,10 @@ def _expand_account_growth(
                     "cadence": "monthly",
                     "amount_rule_kind": "percent_of_balance",
                     "series": spec.get("series", ""),
-                    "params_json": (
-                        json.dumps({"blend": spec["blend"]}, separators=(",", ":"))
-                        if "blend" in spec else ""
-                    ),
+                    # A payout is never negative (engine): a rate below zero
+                    # is a fall in value, which the growth rule carries.
+                    "params_json": json.dumps({"blend": spec["blend"], "payout": True} if "blend" in spec
+                                              else {"payout": True}, separators=(",", ":")),
                     "tax_character": payer.tax_character,
                     "start": start,
                     "description": (
@@ -2234,8 +2234,6 @@ def _expand_account_growth(
                         + (_describe_blend(spec["blend"]) if "blend" in spec else spec["series"]) + ")"
                     ),
                 })
-            if any(spec.get("series") == series and not blend for _, spec in lot_payouts):
-                continue  # cash pays out all its growth: nothing is left to appreciate
             rule_name = growth_rule_name(name, lot, rule_names)
             if rule_name in rule_names:
                 issues.append(
