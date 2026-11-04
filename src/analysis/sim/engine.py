@@ -2910,6 +2910,9 @@ class _TaxEstimate:
     agi_with: Callable[[int, int], int]
     """The year's AGI (and so IRMAA's MAGI, #253) with more ordinary income
     and long-term gain on top."""
+    retirement_exclusion: int = 0
+    """The state retirement income the year leaves out (#486), already
+    taken off ``ordinary_income`` and ``ltcg_income``."""
 
 
 def _year_tax_estimate(
@@ -2983,8 +2986,27 @@ def _year_tax_estimate(
     business = _business_result(con, tax_year=tax_year)
     capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
     # A Schedule C loss offsets the year's other income (#231).
-    ordinary_income = other_ordinary + business.net + capital.stcg - capital.loss_deduction
-    ltcg_income = capital.ltcg
+    gross_ordinary = other_ordinary + business.net + capital.stcg - capital.loss_deduction
+    gross_ltcg = capital.ltcg
+    # A state's retirement income exclusions (#486) come off before AGI, as
+    # the states' own subtractions from income do. Keyed by state, like the
+    # standard deduction below.
+    exclusion_aux = str(params.get(
+        "retirement_exclusion_aux", registries.STATE_RETIREMENT_EXCLUSION))
+    exclusion = (
+        _retirement_exclusion(
+            con, aux, exclusion_aux, bracket_series, tax_year, filing_status, growth_cache)
+        if scope == "state" and bracket_series is not None
+        else _RetirementExclusion(())
+    )
+
+    def net_income(ordinary: int, ltcg: int) -> tuple[int, int]:
+        """Ordinary income and long-term gain less the exclusions."""
+        off_ordinary, off_ltcg = exclusion.excluded(ordinary, ltcg)
+        return ordinary - off_ordinary, ltcg - off_ltcg
+
+    ordinary_income, ltcg_income = net_income(gross_ordinary, gross_ltcg)
+    excluded = gross_ordinary + gross_ltcg - ordinary_income - ltcg_income
 
     ss_tiers: tuple[int, int] | None = None
     if scope == "federal" and ss_income > 0:
@@ -3085,7 +3107,7 @@ def _year_tax_estimate(
     # The loss that carries: the business loss less the income it absorbed.
     # The deduction never adds to it (a nonbusiness deduction offsets only
     # nonbusiness income, §172(d)(4)), nor does the capital-loss deduction.
-    nonbusiness_income = other_ordinary + capital.stcg + ltcg_income + taxable_ss
+    nonbusiness_income = other_ordinary + capital.stcg + gross_ltcg + taxable_ss - excluded
     nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
     tax_liability = tax_on(taxable_income, ltcg_income)
 
@@ -3093,7 +3115,7 @@ def _year_tax_estimate(
         """This year's taxable income, and its ordinary part, with more
         ordinary income and long-term gain on top. More income can use more
         of a carried-in NOL under its limit, so that is worked out again."""
-        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
+        ordinary, ltcg = net_income(gross_ordinary + extra_ordinary, gross_ltcg + extra_ltcg)
         before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
         used = min(nol_in, max(0, before_nol) * nol_limit_percent // 100)
         taxable = max(0, before_nol - used)
@@ -3101,10 +3123,11 @@ def _year_tax_estimate(
 
     def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
         """This year's tax with more ordinary income and long-term gain on top."""
-        return tax_on(taxable_with(extra_ordinary, extra_ltcg)[0], ltcg_income + extra_ltcg)
+        ltcg = net_income(gross_ordinary + extra_ordinary, gross_ltcg + extra_ltcg)[1]
+        return tax_on(taxable_with(extra_ordinary, extra_ltcg)[0], ltcg)
 
     def agi_with(extra_ordinary: int, extra_ltcg: int) -> int:
-        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
+        ordinary, ltcg = net_income(gross_ordinary + extra_ordinary, gross_ltcg + extra_ltcg)
         return ordinary + ltcg + taxable_ss_for(ordinary, ltcg)
 
     return _TaxEstimate(
@@ -3115,7 +3138,203 @@ def _year_tax_estimate(
         deduction=deduction, nol_in=nol_in, nol_used=nol_used, nol_new=nol_new,
         taxable_income=taxable_income, tax_liability=tax_liability,
         tax_with=tax_with, taxable_with=taxable_with, agi_with=agi_with,
+        retirement_exclusion=excluded,
     )
+
+
+class _ExclusionGrant(NamedTuple):
+    """What one person's exclusion (#486) covers before its income test."""
+    amount: int
+    gains: int
+    """How much of ``amount`` is capital gain."""
+    income_limit: int | None
+    phaseout: int | None
+
+    def after_income_test(self, income: int) -> tuple[int, int]:
+        """The grant, and its gain part, once household ``income`` is known:
+        all of it up to ``income_limit``, then nothing (a cliff) or less in
+        a line to nothing ``phaseout`` above it."""
+        if self.income_limit is None or income <= self.income_limit:
+            return self.amount, self.gains
+        if not self.phaseout:
+            return 0, 0
+        left = max(0, self.income_limit + self.phaseout - income)
+        return self.amount * left // self.phaseout, self.gains * left // self.phaseout
+
+
+class _RetirementExclusion(NamedTuple):
+    """A tax year's state retirement income exclusions (#486)."""
+    grants: tuple[_ExclusionGrant, ...]
+
+    def excluded(self, ordinary: int, ltcg: int) -> tuple[int, int]:
+        """How much of ``ordinary`` income and ``ltcg`` the exclusions take
+        off, with household income ``ordinary + ltcg`` for their income
+        tests: never more than there is. Gains come off the long-term gain
+        first, the rest off ordinary income."""
+        if not self.grants:
+            return 0, 0
+        total = gains = 0
+        for grant in self.grants:
+            amount, gain = grant.after_income_test(ordinary + ltcg)
+            total, gains = total + amount, gains + gain
+        total = min(total, max(0, ordinary + ltcg))
+        off_ordinary = min(total - min(gains, max(0, ltcg)), max(0, ordinary))
+        return off_ordinary, min(total - off_ordinary, max(0, ltcg))
+
+
+_EXCLUSION_POOL_BY_CHARACTER: dict[str, tuple[str, int]] = {
+    "tax_deferred_out": ("retirement_account", 1),
+    "roth_nonqualified": ("retirement_account", 1),
+    "stcg": ("capital_gain", 1),
+    "ltcg": ("capital_gain", 1),
+    "tax_deferred_in": ("other", -1),
+    registries.BUSINESS_INCOME: ("other", 1),
+    registries.BUSINESS_EXPENSE: ("other", -1),
+}
+"""Which ``STATE_EXCLUSION_INCOME`` kind a taxed character's legs are, and
+their sign. ``ordinary`` goes by its income account's subkind instead."""
+
+
+def _person_income(
+    con, tax_year: int, people: Sequence[str],
+) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
+    """Each person's ``tax_year`` income by ``STATE_EXCLUSION_INCOME`` kind
+    (never below zero), and their Social Security. A leg is its paying
+    account's owner's, or else its receiving account's; one neither owns
+    alone (``joint``, or no owner) is split evenly among ``people``."""
+    pools = {p: dict.fromkeys(registries.STATE_EXCLUSION_INCOME, 0) for p in people}
+    ss = dict.fromkeys(people, 0)
+    rows = con.execute(
+        "SELECT te.tax_character, fa.kind, fa.subkind, fa.owner, ta.owner, SUM(te.amount) "
+        "FROM transfer_event te "
+        "JOIN account fa ON fa.id = te.from_account "
+        "JOIN account ta ON ta.id = te.to_account "
+        "WHERE COALESCE(te.tax_year, CAST(substr(te.date, 1, 4) AS INTEGER)) = ? "
+        "  AND te.tax_character IN ('ordinary', 'ss_benefit', "
+        f"  {', '.join(repr(c) for c in _EXCLUSION_POOL_BY_CHARACTER)}) "
+        "GROUP BY 1, 2, 3, 4, 5",
+        (tax_year,),
+    )
+    for character, kind, subkind, payer, payee, amount in rows:
+        if character == "ordinary":
+            pool, sign = (subkind if kind == "income" and subkind in
+                          ("pension", "interest", "dividend") else "other"), 1
+        elif character == "ss_benefit":
+            pool, sign = "ss", 1
+        else:
+            pool, sign = _EXCLUSION_POOL_BY_CHARACTER[character]
+        owner = payer if payer in pools else payee if payee in pools else None
+        shares = [(owner, int(amount))] if owner else [
+            (p, share) for p, share in zip(
+                people, _split_cents(int(amount), len(people)), strict=True)
+        ]
+        for person, share in shares:
+            if pool == "ss":
+                ss[person] += share
+            else:
+                pools[person][pool] += sign * share
+    for by_kind in pools.values():
+        for pool, amount in by_kind.items():
+            by_kind[pool] = max(0, amount)
+    return pools, ss
+
+
+def _split_cents(amount: int, ways: int) -> list[int]:
+    """``amount`` in ``ways`` shares that differ by at most a cent."""
+    share, extra = divmod(amount, ways)
+    return [share + (i < extra) for i in range(ways)]
+
+
+def _retirement_exclusion(
+    con, aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    kind: str, state: str, tax_year: int, filing_status: str,
+    growth_cache: dict[tuple[str, date, date, str], int],
+) -> _RetirementExclusion:
+    """``state``'s retirement income exclusions for ``tax_year`` (#486), from
+    the ``kind`` table in force (``state_retirement_exclusion__<state>``).
+
+    Each person who files (role ``primary``, or everyone with a birthdate if
+    no one is) gets, of each exclusion (rows sharing a ``name``, applied in
+    file order), the age tier with the highest ``min_age`` they reach by
+    December 31. It covers their income of the kinds it lists, in that
+    order, up to its ``amount`` (all of it when blank, and less their Social
+    Security when ``less_ss``). Income one exclusion covers isn't left for a
+    later one."""
+    rows = [
+        r for r in _indexed_tax_rows(aux, kind, state, tax_year, growth_cache)
+        if not r.get("filing_status") or r.get("filing_status") == filing_status
+    ]
+    if not rows:
+        return _RetirementExclusion(())
+    birthdates = {
+        person: (_parse_date(born) if born else None)
+        for person, born, role in con.execute("SELECT id, birthdate, role FROM person")
+        if role == "primary"
+    } or {
+        person: _parse_date(born)
+        for person, born in con.execute("SELECT id, birthdate FROM person WHERE birthdate != ''")
+    }
+    people = sorted(birthdates)
+    if not people:
+        return _RetirementExclusion(())
+    pools, ss = _person_income(con, tax_year, people)
+    tiers: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        tiers.setdefault(str(row["name"]), []).append(row)
+    grants: list[_ExclusionGrant] = []
+    for name_rows in tiers.values():
+        for person in people:
+            born = birthdates[person]
+            # Whole months of age on December 31.
+            months = None if born is None else (tax_year - born.year) * 12 + 12 - born.month
+            reached = [
+                r for r in name_rows
+                if months is not None and months >= _exclusion_age_months(r)
+                or _exclusion_age_months(r) == 0
+            ]
+            if not reached:
+                continue
+            row = max(reached, key=_exclusion_age_months)
+            cap = row.get("amount")
+            if cap is not None and _exclusion_less_ss(row):
+                cap = max(0, int(cap) - ss[person])
+            taken = gains = 0
+            for income in _exclusion_income(row):
+                take = pools[person][income] if cap is None else min(
+                    pools[person][income], int(cap) - taken)
+                pools[person][income] -= take
+                taken += take
+                gains += take if income == "capital_gain" else 0
+            if taken:
+                limit, phaseout = row.get("income_limit"), row.get("phaseout")
+                grants.append(_ExclusionGrant(
+                    taken, gains,
+                    None if limit is None else int(limit),
+                    None if phaseout is None else int(phaseout)))
+    return _RetirementExclusion(tuple(grants))
+
+
+def _exclusion_age_months(row: Mapping[str, Any]) -> int:
+    """A ``state_retirement_exclusion`` row's ``min_age`` in months (59.5:
+    714); blank is any age."""
+    age = row.get("min_age")
+    return 0 if age in (None, "") else round(float(age) * 12)
+
+
+def _exclusion_income(row: Mapping[str, Any]) -> list[str]:
+    """The income kinds a ``state_retirement_exclusion`` row covers, in the
+    order it uses them up; ``all`` is every kind."""
+    kinds: list[str] = []
+    for word in str(row.get("income") or "").replace(",", ";").split(";"):
+        word = word.strip()
+        for income in registries.STATE_EXCLUSION_INCOME if word == "all" else (word,):
+            if income and income not in kinds:
+                kinds.append(income)
+    return kinds
+
+
+def _exclusion_less_ss(row: Mapping[str, Any]) -> bool:
+    return str(row.get("less_ss") or "").strip().lower() in ("yes", "true")
 
 
 def _apply_tax_accumulator(
@@ -3265,6 +3484,8 @@ def _apply_tax_accumulator(
         f"{scope}_ss_income": ss_income,
         f"{scope}_taxable_ss": taxable_ss,
         f"{scope}_adjusted_gross_income": ordinary_income + ltcg_income + taxable_ss,
+        **({f"{scope}_retirement_exclusion": est.retirement_exclusion}
+           if scope == "state" else {}),
         f"{scope}_standard_deduction": standard_deduction,
         f"{scope}_itemized_deduction": itemized_deduction,
         f"{scope}_deduction_used": deduction,
@@ -4427,7 +4648,7 @@ def _swap_aux_table(
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
     ``source_series``) would. Swapping ``state_brackets`` swaps the state's
-    standard deduction with it.
+    standard deduction and retirement income exclusions with it.
 
     Lookups only move forward, so the target simply becomes a copy of the
     source -- which keeps each lookup style exact: the latest row, the
@@ -4483,15 +4704,17 @@ def _swap_aux_table(
     )
     aux[(aux_kind, series)] = kept + written
     if aux_kind == "state_brackets":
-        # A move to another state takes its standard deduction too (#248):
-        # the new state's state_standard_deduction__<state>, or, with none,
-        # the federal fallback rather than the old state's figure.
-        deduction = registries.STATE_STANDARD_DEDUCTION
-        if aux.get((deduction, source_series)):
-            _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": deduction}, aux)
-        elif aux.pop((deduction, series), None):
-            con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
-                        (deduction, series))
+        # A move to another state takes its standard deduction (#248) and
+        # retirement income exclusions (#486) too: the new state's tables,
+        # or, with none, the federal deduction and no exclusion rather than
+        # the old state's.
+        for companion in (registries.STATE_STANDARD_DEDUCTION,
+                          registries.STATE_RETIREMENT_EXCLUSION):
+            if aux.get((companion, source_series)):
+                _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux)
+            elif aux.pop((companion, series), None):
+                con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
+                            (companion, series))
 
 
 def _apply_calendar_event(

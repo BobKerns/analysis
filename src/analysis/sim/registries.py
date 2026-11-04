@@ -368,6 +368,20 @@ after every other rule of its month (#252)."""
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
 
+STATE_RETIREMENT_EXCLUSION = "state_retirement_exclusion"
+"""The aux kind of a state's retirement income exclusions (#486), keyed by
+state like its brackets."""
+
+STATE_EXCLUSION_INCOME: tuple[str, ...] = (
+    "pension", "retirement_account", "interest", "dividend", "capital_gain", "other",
+)
+"""The kinds of income a ``state_retirement_exclusion`` row may cover (#486),
+in the order a row that covers several uses them up: ordinary income from a
+``pension``, ``interest`` or ``dividend`` income account; a
+``retirement_account`` distribution (``tax_deferred_out``, ``roth_nonqualified``);
+a ``capital_gain`` (``stcg``/``ltcg``); and ``other``, the rest of the state's
+taxable income. ``all`` in a row stands for every one of them."""
+
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
 
@@ -381,6 +395,7 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     "ltcg_brackets": {"floor_series": "floor"},
     "standard_deduction": {"amount_series": "amount"},
     STATE_STANDARD_DEDUCTION: {"amount_series": "amount"},
+    STATE_RETIREMENT_EXCLUSION: {"amount_series": "amount"},
 }
 """Optional columns of the tax tables the law indexes for inflation (#467),
 by kind: {series column: the money column it grows}. Each names an
@@ -413,6 +428,17 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # when there is no state_standard_deduction__<state> for its brackets'
     # state, and the loader warns that it did.
     STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount"),
+    # A state's retirement income exclusions (#486), keyed by state like its
+    # brackets: each row excludes up to `amount` per person (blank: all of
+    # it) of the `income` kinds it lists (STATE_EXCLUSION_INCOME), from
+    # `min_age`. Rows sharing a `name` are age tiers of one exclusion; a
+    # blank filing_status applies to every status. `income_limit` (household
+    # income) and `phaseout` take it away; `less_ss` reduces it by the
+    # person's Social Security.
+    STATE_RETIREMENT_EXCLUSION: (
+        "effective_date", "name", "income", "min_age", "amount", "filing_status",
+        "income_limit", "phaseout", "less_ss",
+    ),
     # Itemized deductions: a dated total, no filing_status split (unlike
     # standard_deduction). Optional; when present, the tax_accumulator rule uses
     # whichever is greater, itemized or standard. `amount` may be a literal
@@ -508,6 +534,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "state_brackets": frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
     STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
+    STATE_RETIREMENT_EXCLUSION: frozenset({"amount", "income_limit", "phaseout"}),
     "federal_deductions": frozenset({"amount"}),
     "state_deductions": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),

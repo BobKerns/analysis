@@ -46,7 +46,10 @@ ordinary income, less the state's standard deduction, run through the state's
 brackets ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)). A
 state needs two tables in `aux/`, `state_brackets__XX.csv` and
 `state_standard_deduction__XX.csv`, and a `tax_accumulator` rule with `scope`
-`state`. Many states have rules this leaves out; the table says which matter
+`state`. A state's retirement income exclusions, by age, kind of income and
+household income, go in a third, optional table,
+`state_retirement_exclusion__XX.csv`; a "Partial" row below whose gap is such
+an exclusion needs that table written. Many states have rules this leaves out; the table says which matter
 most for a retired household. It reflects state law as of 2026; check the
 state's own revenue department before relying on a figure.
 

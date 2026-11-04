@@ -79,6 +79,48 @@ The loader (`src/analysis/sim/loader.py`) parses the filename to figure out the
 kind and series; the required columns per kind are listed in
 `src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and [ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4.
 
+## State retirement income exclusions
+
+Most states leave some retirement income out of their income tax: a
+pension, an IRA or 401(k) draw, sometimes interest, dividends and gains,
+often only from an age and up to an amount per person, and sometimes only
+below a household income. A `state_retirement_exclusion__<state>.csv`
+beside the state's brackets says what its law leaves out. None ships: write
+the one for your state from its revenue department's instructions for the
+year. Each row is one exclusion, or one age tier of one:
+
+| Column | Meaning |
+| --- | --- |
+| `effective_date` | When the rows take effect; the rows of one date are the whole set. |
+| `name` | The exclusion. Rows with the same name are its age tiers: each person gets the one with the highest `min_age` they have reached. |
+| `income` | What it covers, separated by `;`: `pension`, `retirement_account` (IRA and 401(k) draws), `interest`, `dividend`, `capital_gain`, `other`, or `all`. It uses them up in that order. |
+| `min_age` | The age it starts at by December 31, such as `59.5`; blank for any age. |
+| `amount` | The most it leaves out per person, in dollars; blank for all of it. |
+| `amount_series` | Optional: an inflation series that grows `amount` each year, as above. |
+| `filing_status` | Blank for every status, or the one status the row is for. |
+| `income_limit` | Optional: household income above which the exclusion goes. |
+| `phaseout` | Optional: with `income_limit`, it shrinks to nothing over this many dollars instead of going all at once. |
+| `less_ss` | `yes` if the amount is reduced by the person's Social Security. |
+
+Income is each person's by the owner of the account it comes out of (an
+IRA's owner, a pension income account's), or else the account it goes
+into; a joint account's is split between the spouses, so give a pension
+income account its owner. Household income for the limit is the state's
+income before the exclusions, which leaves out Social Security. Two
+exclusions never leave out the same dollar.
+
+An illustration, not any state's law: from 59½ each spouse leaves out up to
+$20,000 of pension and IRA income; from 65 a further $10,000 of any income,
+which goes away for a married couple above $100,000 by the time income
+reaches $120,000:
+
+```csv
+effective_date,name,income,min_age,amount,filing_status,income_limit,phaseout,less_ss
+2026-01,pension,pension;retirement_account,59.5,20000,,,,
+2026-01,age,all,65,10000,MFJ,100000,20000,
+2026-01,age,all,65,10000,Single,50000,10000,
+```
+
 ## Per-scenario overrides
 
 A scenario can replace one of these files for itself (and its descendants) by
@@ -97,6 +139,7 @@ every other scenario.
 | `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
 | `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state `tax_accumulator` rule, keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
+| `state_retirement_exclusion__<state>.csv` | Optional: the state's retirement income exclusions, keyed by state like `state_brackets__<state>.csv` and read by a state `tax_accumulator` rule. None ships (California has none); see "State retirement income exclusions" below. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, the `tax_accumulator` rule uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
 | `filing_status.csv` | The household's filing status from each effective date, one row per change. Empty here: put the household's in the data repo's `aux/`. A joint filer becomes Single the year after a death without a row. |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |

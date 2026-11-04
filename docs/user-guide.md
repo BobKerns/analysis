@@ -386,6 +386,15 @@ tax year, by looking back over everything that happened that year (the
   since most states' deduction is much smaller. State taxable income
   leaves out Social Security, and long-term gains are taxed as ordinary
   income.
+- **State retirement income exclusions**: most states leave some pension,
+  IRA and 401(k) income out, often from an age, up to an amount per person,
+  and sometimes only below a household income. Add your state's rules as
+  `state_retirement_exclusion__<state>.csv` in `aux/` (none ships; the
+  `aux/` README lists the columns), and the state's taxable income leaves
+  that income out for each of you. `sim report tax` shows what was left out
+  as `state_exclusion`. Give a pension income account its owner, so the
+  pension counts as that person's; a joint account's income is split
+  between you.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year.
 - **RMDs** are calculated from the account's lot balances on the previous
