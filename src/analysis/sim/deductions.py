@@ -10,6 +10,8 @@ writes beside it in the scenario's own folder."""
 
 from __future__ import annotations
 
+# cspell:ignore restval
+
 import csv
 from dataclasses import dataclass
 from pathlib import Path
