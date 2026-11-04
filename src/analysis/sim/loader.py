@@ -1316,7 +1316,7 @@ def load_scenario(
     strategy_kinds, strategies = _validate_strategies(
         strategy_rows, target_rows, strategy_sources,
         accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
-        scheduled_rows=scheduled_rows, rails=rail_rows,
+        scheduled_rows=scheduled_rows, rails=rail_rows, leaves=leaves,
         start=scenario_row.get("start", ""), issues=issues, unused=unused,
         persons=persons, lifespan_rows=lifespan_rows,
         aux_kinds=frozenset(f"{kind}__{table}" if table else kind for kind, table, _p, _e in aux_rows),
@@ -4436,6 +4436,7 @@ def _validate_strategies(
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     scheduled_rows: list[dict[str, str]],
     rails: Mapping[str, Mapping[str, str]],
+    leaves: _LeafIndex,
     start: str,
     issues: list[str],
     unused: list[str],
@@ -4472,6 +4473,7 @@ def _validate_strategies(
     by_account = {a["name"]: a for a in accounts}
     life_tables = {row.get("person", ""): (row.get("life_table") or "").strip() or None for row in lifespan_rows}
     class_sets = _allocation_class_sets(allocations)
+    grows_at = _lot_growth_series(scheduled_rows, leaves)
     portfolio_classes: dict[str, set[str]] = {}
     portfolio_lots: dict[str, list[dict[str, float]]] = {}
     for m in value_rows:
@@ -4481,7 +4483,8 @@ def _validate_strategies(
         weights = asset_classes.class_weights(
             symbol=m.get("symbol") or None, account=account["name"],
             lot=m.get("lot") or registries.DEFAULT_LOT, subkind=account.get("subkind", ""),
-            sets=class_sets, date=start, series=_lot_growth_series(m, account),
+            sets=class_sets, date=start,
+            series=grows_at.get((account["name"], m.get("lot") or registries.DEFAULT_LOT)),
         )
         for tag in tags.get(account["name"], frozenset()):
             portfolio_classes.setdefault(tag, set()).update(c for c, w in weights.items() if w > 0)
@@ -4505,7 +4508,8 @@ def _validate_strategies(
     lots = [
         (m["account_name"], m.get("lot") or registries.DEFAULT_LOT, m.get("symbol") or None,
          by_account[m["account_name"]].get("kind", ""), by_account[m["account_name"]].get("subkind", ""),
-         tags.get(m["account_name"], frozenset()), _lot_growth_series(m, by_account[m["account_name"]]))
+         tags.get(m["account_name"], frozenset()),
+         grows_at.get((m["account_name"], m.get("lot") or registries.DEFAULT_LOT)))
         for m in value_rows if m.get("account_name") in by_account
     ]
     strategy_load.check_portfolio_classes(
@@ -4522,12 +4526,22 @@ def _validate_strategies(
     return kinds, prepared
 
 
-def _lot_growth_series(lot: Mapping[str, str], account: Mapping[str, str]) -> str | None:
-    """The rate series an account_lots.csv row grows at, as far as the CSVs
-    say before growth is expanded: its own ``series``, else its account's.
-    (A rate series named for its symbol wins at expansion, but a symbol is
-    classed by its allocation first.)"""
-    return (lot.get("series") or "").strip() or (account.get("series") or "").strip() or None
+def _lot_growth_series(
+    scheduled_rows: list[dict[str, str]], leaves: _LeafIndex,
+) -> dict[tuple[str, str], str]:
+    """(account, lot) to the rate series its expanded growth rule reads, as
+    the run will see it (``Connection.lot_growth_series``): the lot's own
+    series, else one named for its symbol, else its account's. A lot growing
+    at its allocation's blend has none, and is classed by the allocation."""
+    growth_accounts = {g.name for g in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
+    by_leaf = {
+        row.get("to_account", ""): series
+        for row in scheduled_rows
+        if row.get("from_account") in growth_accounts
+        and row.get("amount_rule_kind") == "percent_of_balance"
+        and (series := (row.get("series") or "").strip())
+    }
+    return {key: by_leaf[leaf] for key, leaf in leaves.leaf_of.items() if leaf in by_leaf}
 
 
 def _allocation_class_sets(

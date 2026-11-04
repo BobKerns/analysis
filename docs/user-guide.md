@@ -1096,9 +1096,10 @@ The source can be an account (with `--source-lot` if it has several lots) or
 a source chain. The date defaults to the scenario's first month and can't be
 earlier; a day within the month still buys at its end. If the lot's symbol
 grows and the account has no `tax_character` yet, the command sets one, as it
-does for a new account. The lot grows at its symbol's rate series or allocation;
-without one, `--series` names a rate series for it, such as an asset class's
-(`--series stock_us`), else it grows at the account's series. A lot with
+does for a new account. The lot grows at its symbol's rate series or allocation,
+else at the account's series. `--series` names a rate series for it instead,
+such as an asset class's (`--series stock_us`); it replaces the symbol's, as a
+lot's `series` does in `account_lots.csv`. A lot with
 none of these would hold its dollars flat for the whole run, so the command
 asks for a series when it is asking, and otherwise warns. A new account takes `--account-subkind` and
 `--owner` (`joint` unless you say otherwise, but a retirement account needs a

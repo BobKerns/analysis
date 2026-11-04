@@ -16305,8 +16305,8 @@ def _ask(text: str, choices: list[str] | None = None, default: str | None = None
 @click.option("--fetch/--no-fetch", default=True, show_default=True,
               help="Fetch a new symbol's prices.")
 @click.option("--series", "lot_series", type=completion.SeriesName("rate"), default=None,
-              help="A rate series the lot grows at, such as an asset class's (stock_us), "
-                   "when its symbol gives none.")
+              help="A rate series the lot grows at, such as an asset class's (stock_us); "
+                   "it replaces the symbol's own rate series or allocation.")
 @click.option("--subkind", "lot_subkind", default=None,
               type=click.Choice(sorted(registries.RETIREMENT_LOT_SUBKINDS)),
               help="The lot's subkind, in a retirement account: Roth or traditional, IRA or 401k.")
@@ -16332,8 +16332,8 @@ def invest_command(
     account or a source chain. Whatever is left out is asked for, and the
     equivalent command is printed.
 
-    The lot grows at its symbol's rate series or allocation, else at
-    --series, else at its account's series. A lot with none of these would
+    The lot grows at --series when given (it replaces the symbol's), else at
+    its symbol's rate series or allocation, else at its account's series. A lot with none of these would
     hold its dollars flat, so it is asked for (guided) or warned about.
 
     For a holding the scenario starts with, use `sim account lot add` instead.
