@@ -253,6 +253,11 @@ class Connections(traitlets.HasTraits):
                     _shown_observers.reset(token)
                 if result is not None:
                     display(result)
+                else:
+                    # clear_output(wait=True) clears only when new output comes;
+                    # a widget that shows nothing this time must still drop the
+                    # last scenario's (#434).
+                    clear_output()
 
         def _redraw(*_):
             # The first draw waits for the end of the cell that called show(), so it

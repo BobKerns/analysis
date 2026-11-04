@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
@@ -262,6 +263,33 @@ def test_show_and_show_scenario_pass_the_context_keywords(
     first_run = shown[0][0]
     assert shown[0] == (first_run, (), {"member": 0})
     assert scenario_shown[0][2] == {"run": first_run, "member": 0}
+    container.close()
+
+
+def test_a_widget_that_shows_nothing_clears_the_last_draw(
+    test_data_dir: Path, ensemble_recipe: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """clear_output(wait=True) waits for new output, so a redraw that shows
+    nothing (a table with no rows this time, #434) must clear at once, or the
+    last scenario's output stays up."""
+    from analysis.sim.notebook_ui import pickers
+
+    events: list[tuple] = []
+    monkeypatch.setattr(pickers, "clear_output", lambda **kwargs: events.append(("clear", kwargs)))
+
+    def table(rc, *, member: int, **_) -> str | None:
+        events.append(("draw", member))
+        return "table" if member == 0 else None
+
+    widget, container, _dropdown = scenario_picker(test_data_dir, ensemble_recipe)
+    _scenario_dropdown, member_dropdown, _ref_out = widget.children
+    container.show(table)
+    member_dropdown.value = "member_0001"
+
+    # What each draw did next: member 0 showed its table, member 1 cleared.
+    after = {member: events[events.index(("draw", member)) + 1:][:1] for member in (0, 1)}
+    assert after[0] != [("clear", {})]
+    assert after[1] == [("clear", {})]
     container.close()
 
 
