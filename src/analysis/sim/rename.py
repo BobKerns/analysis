@@ -151,7 +151,7 @@ a rename onto one of these names would turn an account into the built-in."""
 
 
 _GROWTH_RULES = """
-SELECT st.name, a.name, l.lot
+SELECT st.name, a.name, l.lot, fa.name
 FROM scheduled_transaction st
 JOIN chain f ON f.id = st.from_account JOIN account fa ON fa.id = f.account_id
 JOIN chain t ON t.id = st.to_account JOIN account a ON a.id = t.account_id
@@ -160,9 +160,10 @@ WHERE fa.name IN ({})
 """
 
 
-def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str], str]:
-    """The growth rule the loader generates for each (account, lot) of
-    ``scenario``, by name: read from a load, since the name depends on what
+def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str, str], str]:
+    """The growth and payout (#468) rules the loader generates for each
+    (account, lot) of ``scenario``, by (account, lot, built-in account the
+    rule is from), by name: read from a load, since the name depends on what
     other rules the scenario has (``loader.growth_rule_name``). {} if the
     scenario doesn't load; the staged edit reports that."""
     scenarios = data_dir / "scenarios"
@@ -181,7 +182,7 @@ def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str
                                sorted(RESERVED_ACCOUNTS)).fetchall()
         finally:
             con.close()
-    return {(account, lot): name for name, account, lot in rows if name not in authored}
+    return {(account, lot, source): name for name, account, lot, source in rows if name not in authored}
 
 
 def rename_growth_rules(scenario_dir: Path, rules: dict[str, str]) -> list[str]:

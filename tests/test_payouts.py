@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from analysis.sim.accounts import load_accounts_view
+from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import LoadResult, growth_rule_name
 
@@ -139,3 +141,51 @@ def test_only_taxable_brokerage_lots_pay_out(
     assert list(payouts) == [growth_rule_name(BROKERAGE, "default", prefix="interest_")]
     ira = rules[growth_rule_name("Asset_TraditionalIRA_Alice", "default")]
     assert ira[0] == "stock" and "less" not in ira[1]
+
+
+@pytest.mark.usefixtures("without_prototype_defaults")
+def test_a_return_below_its_yield_is_an_unrealized_loss_that_sells_no_shares(
+    test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+    write_series: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """A bond fund whose price falls as much as it pays: 4% interest, 0%
+    total return. The interest buys shares; the fall is an unrealized loss,
+    which sells none, and the gains report nets it against the interest."""
+    set_brokerage_lots([{"lot": "fund", "symbol": "BND", "quantity": "1000", "series": "bond",
+                         "opening_balance": "300000.00", "opening_cost_basis": "300000.00"}])
+    calendar = test_data_dir / "scenarios" / "retire_alice" / "calendar.csv"
+    calendar.write_text(calendar.read_text().replace(
+        ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,fund,"))
+    write_series("bond", "2026-01-31,0%")
+    write_series("bond_yield", "2026-01-31,4%")
+    run = run_scenario(load_test_copy().intent_path, runs_dir / "loss.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    month, interest = _first_month(run, INTEREST)
+    # The fall posts as much back from the lot to capital_gains.
+    assert _first_month(run, GROWTH) == (month, interest)
+    quantity = _query(run, (
+        "SELECT ls.quantity_micros FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
+        "JOIN account_lot m ON m.id = ls.lot_id WHERE m.lot = 'fund' AND s.month = ?"), month)[0][0]
+    assert quantity > 1000 * 1_000_000
+    with RunConnection(run) as ran:
+        gains = ran.gains_by_category()
+    year = int(month[:4])
+    paid = _query(run, (
+        "SELECT SUM(t.amount) FROM transfer_event t JOIN scheduled_transaction r ON r.id = t.reason_id "
+        "JOIN simulation_step s ON s.id = t.step_id "
+        "WHERE t.reason_kind = 'rule' AND r.name = ? AND substr(s.month, 1, 4) = ?"), INTEREST, str(year))[0][0]
+    assert gains.loc[year, "unrealized"] == pytest.approx(-paid / 100)
+    assert gains.loc[year, "taxable"] >= paid / 100
+
+
+def test_an_all_interest_lot_keeps_its_rate_in_the_account_view(
+    write_series: Callable[[str, str], Path], set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+    test_data_dir: Path,
+) -> None:
+    """A cash lot in a brokerage pays all its return as interest and has no
+    growth rule; the interest rule's series is still the account's rate."""
+    set_brokerage_lots([{"lot": "default", "series": "cash", "opening_balance": "300000.00",
+                         "opening_cost_basis": "300000.00"}])
+    with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
+        [row] = [r for r in load_accounts_view(scenario) if r.name == BROKERAGE]
+    assert row.rate_series == "cash"

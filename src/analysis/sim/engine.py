@@ -1201,7 +1201,9 @@ def _track_lots(
     Rolled into another Roth lot, it carries that basis, or all of it as
     basis when the draw would have been qualified, as a qualified Roth 401k
     rollover into a Roth IRA does."""
-    if amount <= 0:
+    if amount <= 0 or to_id in ctx.growth_sources:
+        # A month of negative growth posts back to its counterparty: the lot
+        # lost value, which sells no shares and spends no basis.
         return
     carried = amount
     if from_id in ctx.roth:

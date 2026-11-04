@@ -102,14 +102,16 @@ def load_accounts_view(
     account_id_by_chain = chains.set_index("id")["account_id"] if not chains.empty else {}
     scheduled = sc.items("scheduled")
     # A taxable lot's payouts (#468) are part of its growth, not a rate of
-    # their own: the growth rule's series is the lot's total return.
+    # their own: the growth rule's series is the lot's total return. A cash
+    # or CD lot pays all of its return, so its payout is its only rate.
     payers = set(chains.loc[chains["name"].isin(
         [a.name for a in registries.PAYOUT_ACCOUNTS.values()]), "id"]) if not chains.empty else set()
     rate_rows = scheduled[
-        (scheduled["amount_rule_kind"] == "percent_of_balance")
-        & scheduled["series"].notna()
-        & ~scheduled["from_account"].isin(payers)
+        (scheduled["amount_rule_kind"] == "percent_of_balance") & scheduled["series"].notna()
     ]
+    is_payout = rate_rows["from_account"].isin(payers)
+    grown = set(rate_rows.loc[~is_payout, "to_account"])
+    rate_rows = rate_rows[~is_payout | ~rate_rows["to_account"].isin(grown)]
     series_by_name: dict[str, set[str]] = {}
     for _, row in rate_rows.iterrows():
         account_id = account_id_by_chain.get(row["to_account"])

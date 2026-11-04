@@ -143,7 +143,7 @@ Money from either account into a lot is a purchase, so a reinvested payout adds 
 
 `gains` and `deferred` are tax characters in their own right (§2 registry): unlike `ltcg`, they are *unrealized*, so the retrospective tax scan ignores them until a sale or distribution converts them into `ltcg`/`tax_deferred_out`. Rules synthesized for `depreciation` record `tax_character='none'` — personal-use depreciation is not deductible.
 
-**Negative rates (depreciation).** The rate series may be negative. `to_account` remains the balance-bearing account and `from_account` remains the counterparty, but when the computed amount is negative the two legs swap at post time, so value flows *out* of the asset and into the expense account. Declining-balance decay follows automatically from `rate_basis='balance'` (the default), and the asset asymptotically approaches — without reaching — zero, which is roughly how a vehicle's scrap value behaves.
+**Negative rates (depreciation).** The rate series may be negative. `to_account` remains the balance-bearing account and `from_account` remains the counterparty, but when the computed amount is negative the two legs swap at post time, so value flows *out* of the asset and into the expense account. Declining-balance decay follows automatically from `rate_basis='balance'` (the default), and the asset asymptotically approaches — without reaching — zero, which is roughly how a vehicle's scrap value behaves. A swapped leg is a loss of value, not a withdrawal: it sells none of the lot's shares and spends none of its basis, and the gains report counts a swapped leg into a growth counterparty as a negative unrealized gain.
 
 Depreciation is a book entry, not spending. Reporting that totals cash outflows should exclude the `depreciation` account (see `notebooks/net_worth.ipynb`).
 
@@ -1089,13 +1089,14 @@ inherited name therefore starts at the parent that defines it. A new name
 that already applies in any of those scenarios is refused, as is an
 account or chain named for a built-in growth or payout account (`interest_income`,
 `dividends` ...). Renaming an account or lot also renames the calendar rows naming a
-growth rule the loader generates for it: each affected scenario is loaded
+growth or payout rule the loader generates for it: each affected scenario is loaded
 before and after, so the names are the ones the loader actually gives
 (widened where they collide), and a row naming an authored rule is left
 alone. A series with a file in the shared `aux/` (`cpi`), an asset class's
 series, and one named for a symbol or `<symbol>.<class>` (read by lots by
 name, ADR-005 §5) are not renamed; only `rate__`/`inflation__` files are a
-series' files. `scenario rename` (the same command as `ensemble rename`)
+series' files. A series' yield (`<series>_yield`, §4.4) is renamed with it,
+and a yield of a series, class or symbol can't be renamed alone. `scenario rename` (the same command as `ensemble rename`)
 moves the folder and rewrites its `scenario.csv` name, its README's title when that is the old name (as `scenario create` writes it), every `parent_scenario` naming
 it, `.current_scenario`, and the links to it in the data repo's markdown
 files (`scenarios/**` and the top level); runs already made keep the old
@@ -1337,5 +1338,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#369](https://github.com/BobKerns/analysis/issues/369): `scenario create` no longer writes `ensemble_size` 0, so a plain scenario mixed into an ensemble keeps it one; `ensemble edit --size 0` turns one off (§4.5).
 - [#431](https://github.com/BobKerns/analysis/issues/431): `negative_balance_warnings` are read back, with each account's lowest balance, by `sim explain` and the notebooks alike (§4.7).
 - [#441](https://github.com/BobKerns/analysis/issues/441): a strategy file's `trigger` column names guard rails it answers; a triggered rail is read by the run, and puts the lineage's `guard_rails.csv` in its tree (§4.11, §4.12).
-- [#468](https://github.com/BobKerns/analysis/issues/468): a taxable brokerage lot pays dividends and interest each year from `<series>_yield` rate series, through the built-in `dividends` and `investment_interest` accounts; the new `qualified_dividend` character is taxed at long-term gain rates (§2.2, §2.6, §4.4, §4.6).
+- [#468](https://github.com/BobKerns/analysis/issues/468): a taxable brokerage lot pays dividends and interest each year from `<series>_yield` rate series, through the built-in `dividends` and `investment_interest` accounts; the new `qualified_dividend` character is taxed at long-term gain rates (§2.2, §2.6, §4.4, §4.6); negative growth sells no shares and is an unrealized loss (§2.2); a series' yield is renamed with it (§7).
 - [#467](https://github.com/BobKerns/analysis/issues/467): tax brackets, standard deductions and long-term gain bands are indexed for inflation by an optional `floor_series`/`amount_series` per row, `cpi` in the templates (§4.4).

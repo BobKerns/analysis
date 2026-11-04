@@ -74,6 +74,8 @@ TAXABLE_GAIN_CHARS = {
 # A taxable lot's reinvested dividends and interest (#468): realized, since
 # they're taxed the year they're paid, though they never reach cash.
 PAYOUT_ACCOUNT_NAMES = frozenset(a.name for a in registries.PAYOUT_ACCOUNTS.values())
+GROWTH_ACCOUNT_NAMES = frozenset(
+    a.name for a in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values() if a.kind == "income")
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
@@ -1185,7 +1187,11 @@ class RunConnection(Connection):
 
             reaches_cash = gains["to_subkind"].isin(LIQUID_SUBKINDS)
             is_payout = gains["from_name"].isin(PAYOUT_ACCOUNT_NAMES)
-            is_unrealized = (gains["from_kind"] == "income") & ~reaches_cash & ~is_payout
+            # Negative growth posts from the lot back to its counterparty: an
+            # unrealized loss, counted against the unrealized gains.
+            is_loss = gains["to_name"].isin(GROWTH_ACCOUNT_NAMES) & (gains["from_kind"] == "asset")
+            gains.loc[is_loss, "amount"] = -gains.loc[is_loss, "amount"]
+            is_unrealized = ((gains["from_kind"] == "income") & ~reaches_cash & ~is_payout) | is_loss
             is_taxable = (reaches_cash | is_payout) & gains["tax_character"].isin(TAXABLE_GAIN_CHARS)
             is_nontaxable = reaches_cash & gains["tax_character"].isin(NONTAXABLE_GAIN_CHARS)
             is_ss = gains["tax_character"] == "ss_benefit"

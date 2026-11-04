@@ -755,7 +755,7 @@ judgment from the history beside it:
 | `bond_yield` | 4.0 | 1.5 | held | — | | | |
 
 `bond_yield` has no yearly path: it is drawn once per member, at ρ 1.0 to
-`bond_factor` like `bond`'s level, and held, so a member whose bonds return
+`bond_factor` like `bond`'s level, never below 0%, and held, so a member whose bonds return
 more also pays more interest. A bond's yearly swings are price changes,
 which are appreciation. The stock yields are held at their `_series` rates.
 

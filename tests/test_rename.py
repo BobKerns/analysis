@@ -355,3 +355,19 @@ def test_series_rename_refuses_a_series_a_shared_aux_table_names(test_data_dir: 
     result = _sim(test_data_dir, "series", "rename", "irmaa_floor", "medicare_floor", scenario="base")
     assert result.exit_code != 0
     assert "named by the shared" in result.output and "irmaa_tiers.csv (floor_series)" in result.output
+
+
+def test_series_rename_takes_its_yield_along(test_data_dir: Path, test_scenarios_dir: Path,
+                                             loads: Callable[[str], None]) -> None:
+    """A lot growing at a series pays out at ``<series>_yield`` (#468), found
+    by name: renaming the series renames its yield too, and a yield alone
+    can't be renamed."""
+    series = test_scenarios_dir / "retire_alice" / "series"
+    (series / "rate__brokerage_growth_yield.csv").write_text("effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth_yield", "payout")
+    assert result.exit_code != 0 and "yield series" in result.output, result.output
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth")
+    assert result.exit_code == 0, result.output
+    assert (series / "rate__broker_growth_yield.csv").is_file()
+    assert not (series / "rate__brokerage_growth_yield.csv").exists()
+    loads("retire_alice")
