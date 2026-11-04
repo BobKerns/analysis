@@ -40,6 +40,7 @@ from .schema import connect_sim_file
 if TYPE_CHECKING:
     from analysis.sim.lifespan_curves import PersonLifespan
     from analysis.sim.shortfalls import NegativeBalance
+    from analysis.sim.step_ups import BasisStepUp
 
 # Category-bucketing defaults for RunConnection's derived-data methods below.
 # Notebooks may pass their own mapping/set to override any of these.
@@ -1037,6 +1038,16 @@ class RunConnection(Connection):
         # widget redraw can come from a kernel subshell (see _read_sql).
         return self._cached("negative_balances",
                             lambda: shortfalls.run_negative_balances(self.run_path))
+
+    def basis_step_ups(self) -> list[BasisStepUp]:
+        """The run's basis step-ups at a death (#434), as ``sim explain``
+        lists them: see ``step_ups.basis_step_ups``. Empty for a run with
+        none, or from before they were recorded."""
+        from analysis.sim import step_ups
+
+        # Its own read-only connection on the calling thread, as negative_balances.
+        return self._cached("basis_step_ups",
+                            lambda: step_ups.run_basis_step_ups(self.run_path) or [])
 
     def deaths(self) -> list[Death]:
         """Each person's death in this run (#255), from ``lifespan.csv``: the
