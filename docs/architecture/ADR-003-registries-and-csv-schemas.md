@@ -530,6 +530,12 @@ lots use).
   `aux/` only — the code repository's `templates/aux/`. A match
   replaces the entire file; there is no row-level merge across tiers (unlike
   `accounts.csv`/`account_lots.csv`/etc., which do merge by key, §4.5).
+- **An empty file is an empty series.** A file with only its header supplies no rows, so the
+  scenario has none of that series, exactly as if there were no file, except that it also hides
+  the ancestor's file of the same name: a scenario built on it that reads the series has to
+  supply its own, and the ancestor's rates are never used by mistake. `sim series delete`
+  writes one when the scenario inherits the series; `sim series revert` removes the scenario's
+  own file so the inherited one applies again ([#471](https://github.com/BobKerns/analysis/issues/471)).
 - **A derived scenario without its own override inherits its parent's.** Overriding a
   file only where it first needs to differ, and leaving every descendant to inherit that
   override, is the intended shape. For `series/` this is not optional: since there is no
@@ -1328,3 +1334,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#431](https://github.com/BobKerns/analysis/issues/431): `negative_balance_warnings` are read back, with each account's lowest balance, by `sim explain` and the notebooks alike (§4.7).
 - [#441](https://github.com/BobKerns/analysis/issues/441): a strategy file's `trigger` column names guard rails it answers; a triggered rail is read by the run, and puts the lineage's `guard_rails.csv` in its tree (§4.11, §4.12).
 - [#467](https://github.com/BobKerns/analysis/issues/467): tax brackets, standard deductions and long-term gain bands are indexed for inflation by an optional `floor_series`/`amount_series` per row, `cpi` in the templates (§4.4).
+- [#471](https://github.com/BobKerns/analysis/issues/471): a header-only `series/` (or `aux/`) file empties the inherited series, which a scenario reading it must then supply; `sim series` adds, edits, deletes and reverts series (§4.1d).

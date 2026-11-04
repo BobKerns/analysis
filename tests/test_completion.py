@@ -140,6 +140,15 @@ def test_series_follows_the_aux_kind(data_dir: Path) -> None:
     assert "cpi" in inflation and "stock" not in inflation
 
 
+
+def test_an_emptied_series_completes_only_for_revert(test_data_dir: Path) -> None:
+    # #471: an empty file hides the inherited series; only revert can drop it.
+    (test_data_dir / "scenarios" / "retire_alice" / "series" / "inflation__food.csv").write_text(
+        "effective_date,annual_rate\n")
+    assert "food" not in _complete(test_data_dir, "series edit --scenario retire_alice ")
+    assert _complete(test_data_dir, "series revert --scenario retire_alice ") == ["food"]
+    assert _complete(test_data_dir, "series revert --scenario retire_alice --kind rate ") == []
+
 def test_ensemble_commands_complete_only_ensembles(test_data_dir: Path,
                                                    test_ensemble_scenario: str) -> None:
     # The template ensembles (#282) are offered too: they run like any other.
@@ -181,7 +190,8 @@ _NAMING_PARAMS = {
 }
 # ... except where the command makes a new one (by the command's function,
 # as `sim accounts` repeats `sim account`).
-_NEW_NAMES = {("lot_add", "lot"), ("invest_command", "lot"), ("symbol_add_command", "symbol")}
+_NEW_NAMES = {("lot_add", "lot"), ("invest_command", "lot"), ("symbol_add_command", "symbol"),
+              ("series_add", "series")}
 
 
 def _params(command: click.Command, path: str) -> list[tuple[str, click.Command, click.Parameter]]:
