@@ -297,8 +297,9 @@ When both have retired, the spending chain sells the bonds first. Each
 sale takes the same share of the lot's basis as of its balance. Its
 interest was taxed as it was paid, and added to its basis, so in 2031 the
 lot falls by seventy four thousand dollars and its basis by seventy two:
-nearly all of it comes back untaxed. Sim report gains shows each year's gains: realized,
-meaning sold or paid out, and unrealized, still growing in the accounts.
+nearly all of it comes back untaxed. Sim report gains shows each year's
+gains: realized, meaning sold or paid out, and unrealized, still growing
+in the accounts.
 
 ## Scene `location`: Which money goes where
 
