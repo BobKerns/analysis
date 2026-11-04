@@ -16374,8 +16374,10 @@ def _read_items(path: Path) -> list[dict[str, str]]:
     import csv
 
     with path.open(newline="", encoding="utf-8") as fh:
-        return [{str(k): str(v or "").strip() for k, v in row.items() if k is not None}
+        rows = [{str(k): str(v or "").strip() for k, v in row.items() if k is not None}
                 for row in csv.DictReader(fh)]
+    # A row of only commas is no item, as the loader reads it.
+    return [row for row in rows if any(row.values())]
 
 
 def _other_references(
@@ -16462,11 +16464,12 @@ def _write_deduction(
     data_dir: Path, scenario_name: str, scenario_dir: Path, target: _DeductionEdit,
     rows: list[dict[str, str]], items: tuple[str, list[dict[str, str]]] | None = None,
     drop_items: str | None = None,
-    read_items: tuple[Path, list[dict[str, str]]] | None = None,
+    read_items: tuple[str, Path, list[dict[str, str]]] | None = None,
 ) -> None:
     """Write ``rows`` as the scenario's own file, with ``items`` (an
     itemization's name and rows) beside it, as one staged edit.
-    ``read_items`` is an itemization the prompts started from, as read."""
+    ``read_items`` is the itemization the prompts started from: its name,
+    the file it was read from, and its rows as read."""
     with _scenario_edit(data_dir, scenario_name) as edit:
         # The rows were read before any prompts: if the file in force, or
         # its rows, changed since (a scenario's own file added, say),
@@ -16480,10 +16483,17 @@ def _write_deduction(
             raise click.ClickException(
                 f"{_shown(target.found.path or target.own)} changed while this was being "
                 "edited. Nothing was written; start again.")
-        if read_items is not None and _read_items(_staged_or_real(edit, read_items[0])) != read_items[1]:
-            raise click.ClickException(
-                f"{_shown(read_items[0])} changed while this was being edited. "
-                "Nothing was written; start again.")
+        if read_items is not None:
+            # The name is found again: a nearer scenario may have made its
+            # own file of that name meanwhile.
+            name, path, read = read_items
+            now = [i.path for i in setup_listings.itemizations(edit.data_dir, edit.path(scenario_dir))
+                   if i.name == name]
+            if (not now or now[0].resolve() != _staged_or_real(edit, path).resolve()
+                    or _read_items(now[0]) != read):
+                raise click.ClickException(
+                    f"@{name} changed while this was being edited. "
+                    "Nothing was written; start again.")
         if items is not None:
             name, listed = items
             deductions.write_items(edit.path(scenario_dir / "itemizations" / f"{name}.csv"), listed)
@@ -16639,7 +16649,7 @@ def deduction_edit(
         )
     current = target.rows[index]["amount"]
     listed: list[dict[str, str]] | None = None
-    read_items: tuple[Path, list[dict[str, str]]] | None = None
+    read_items: tuple[str, Path, list[dict[str, str]]] | None = None
     if items:
         listed = _parse_items(items)
     elif amount is not None:
@@ -16651,8 +16661,8 @@ def deduction_edit(
                  if i.name == current[1:]]
         click.echo(f"{year_n}'s itemized deductions, from {current}:")
         if found:
-            read_items = (found[0].path, _read_items(found[0].path))
-        listed = _ask_items(read_items[1] if read_items else [])
+            read_items = (found[0].name, found[0].path, _read_items(found[0].path))
+        listed = _ask_items(read_items[2] if read_items else [])
         if not listed:
             raise click.ClickException("no items left; `sim deduction delete` removes the year")
     else:

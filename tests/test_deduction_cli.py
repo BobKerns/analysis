@@ -357,3 +357,38 @@ def test_an_amount_naming_the_years_own_list_keeps_it(test_data_dir: Path) -> No
     assert result.exit_code == 0, result.output
     assert (test_data_dir / "scenarios" / "retire_alice" / "itemizations"
             / "deductions_2028.csv").exists()
+
+
+def test_a_comma_only_row_is_no_item(test_data_dir: Path) -> None:
+    _itemization(test_data_dir, "medical")
+    path = test_data_dir / "scenarios" / "retire_alice" / "itemizations" / "medical.csv"
+    path.write_text("Item,Value\nx,500.00\n,\n", encoding="utf-8")
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "@medical").exit_code == 0
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", answers=["", ""])
+
+    assert result.exit_code == 0, result.output
+    assert _items(path.parent / "deductions_2028.csv") == [("x", "500.00")]
+
+
+def test_a_nearer_itemization_made_during_the_prompts_aborts(
+    test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _itemization(test_data_dir, "medical")
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "@medical").exit_code == 0
+    assert CliRunner().invoke(main, ["sim", "scenario", "create", "child", "retire_alice",
+                                     "--data-dir", str(test_data_dir)]).exit_code == 0
+    assert _sim(test_data_dir, "child", "add", "2029", "5").exit_code == 0  # its own aux file
+    child_items = test_data_dir / "scenarios" / "child" / "itemizations" / "medical.csv"
+    asked = cli._prompt_with_completion
+
+    def meanwhile(*args: Any, **kwargs: Any) -> str:
+        child_items.parent.mkdir(parents=True, exist_ok=True)
+        child_items.write_text("Item,Value\nx,500.00\n", encoding="utf-8")
+        return asked(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_prompt_with_completion", meanwhile)
+    result = _sim(test_data_dir, "child", "edit", "2028", answers=["", ""])
+
+    assert result.exit_code != 0
+    assert "changed while this was being edited" in result.output
