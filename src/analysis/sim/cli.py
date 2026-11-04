@@ -16392,12 +16392,11 @@ def _other_references(
     """The money cells referencing ``@name`` besides tax ``year``'s own row
     in the file in force. A deduction file of the same kind that file
     shadows doesn't count: this scenario never reads it."""
-    own_line = None
-    if target.found.path is not None and (index := _deduction_row(target.rows, year)) is not None:
-        own_line = index + 2  # the header is line 1
+    own_lines = deductions.year_lines(target.found.path, year)
     return [ref for ref in setup_listings.itemization_references(data_dir, scenario_dir).get(name, [])
-            if not (ref.path == target.found.path and ref.line == own_line)
-            and not (ref.path.name == f"{target.kind}.csv" and ref.path != target.found.path)]
+            if not (ref.path == target.found.path and ref.line in own_lines)
+            and not (ref.path.name == f"{target.kind}.csv" and ref.path.parent.name == "aux"
+                     and ref.path != target.found.path)]
 
 
 def _deduction_items_name(
@@ -16676,7 +16675,8 @@ def deduction_edit(
     else:
         # A total in place of the year's own list: the list goes, or a
         # later --item would find its name taken.
-        dropped = _own_items_to_drop(data_dir_p, scenario_dir, target, year_n, state, current)
+        dropped = (None if cell == current
+                   else _own_items_to_drop(data_dir_p, scenario_dir, target, year_n, state, current))
     rows = list(target.rows)
     rows[index] = {**rows[index], "amount": cell}
     _write_deduction(data_dir_p, scenario_name, scenario_dir, target, rows, written,

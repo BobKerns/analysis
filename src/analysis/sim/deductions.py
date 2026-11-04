@@ -118,6 +118,22 @@ def listing(data_dir: Path, scenario_dir: Path, kind: str) -> tuple[InForce, lis
     return found, sorted(out, key=lambda d: d.year)
 
 
+def year_lines(path: Path | None, year: int) -> set[int]:
+    """The lines of ``path`` (the header is line 1) holding tax ``year``'s
+    rows, counted as ``setup_listings.itemization_references`` counts
+    them: a blank line takes a number too."""
+    if path is None or not path.is_file():
+        return set()
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.reader(fh)
+        header = [column.strip() for column in next(reader, [])]
+        if "effective_date" not in header:
+            return set()
+        at = header.index("effective_date")
+        return {line for line, cells in enumerate(reader, start=2)
+                if len(cells) > at and year_of({"effective_date": cells[at].strip()}) == year}
+
+
 def itemization_name(year: int, state: bool) -> str:
     return f"{'state_' if state else ''}deductions_{year}"
 

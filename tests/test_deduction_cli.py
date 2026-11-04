@@ -323,3 +323,37 @@ def test_an_itemization_changed_during_the_prompts_aborts(
     assert result.exit_code != 0
     assert "changed while this was being edited" in result.output
     assert not (path.parent / "deductions_2028.csv").exists()
+
+
+def test_a_blank_line_doesnt_hide_the_years_own_row(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+    own = _own(test_data_dir, "retire_alice")
+    own.write_text("effective_date,amount\n\n2028-01-01,@deductions_2028\n", encoding="utf-8")
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", "--item", "a=2")
+
+    assert result.exit_code == 0, result.output
+    assert _items(test_data_dir / "scenarios" / "retire_alice" / "itemizations"
+                  / "deductions_2028.csv") == [("a", "2.00")]
+
+
+def test_an_itemization_named_like_a_deduction_file_counts(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+    # An itemization that happens to be named federal_deductions, using the
+    # year's list: not the aux table, so its reference counts.
+    _itemization(test_data_dir, "federal_deductions", "@deductions_2028")
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", "--item", "a=2")
+
+    assert result.exit_code != 0
+    assert "also referenced by" in result.output
+
+
+def test_an_amount_naming_the_years_own_list_keeps_it(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", "--amount", "@deductions_2028")
+
+    assert result.exit_code == 0, result.output
+    assert (test_data_dir / "scenarios" / "retire_alice" / "itemizations"
+            / "deductions_2028.csv").exists()
