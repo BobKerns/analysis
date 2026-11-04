@@ -4336,6 +4336,8 @@ def _validate_rate_series_start(
                 or (row.get("vary_resume") or "").strip()
                 or "date" in (_safe_json(row.get(DATE_REFS)) or {})):
             continue
+        if when < run_start.isoformat():
+            continue  # the run never applies an event dated before its first month
         key = ((_safe_json(row.get("params_json")) or {}).get("aux_kind", "rate"), series)
         if key in supplied_from:
             supplied_from[key] = min(supplied_from[key], when)
@@ -4352,9 +4354,10 @@ def _validate_rate_series_start(
         if row.get("amount_rule_kind") != "percent_of_balance":
             continue
         params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
-        first = _first_firing(row, run_start, run_end)
-        if first is None:
+        window = _first_firing(row, run_start, run_end)
+        if window is None:
             continue
+        first, last = window
         if ORIGIN in row:
             reader = f"{where} ({row.get('name', '')})"
         else:
@@ -4369,8 +4372,8 @@ def _validate_rate_series_start(
             # first set from the start) until the next set's.
             for i, (as_of, slices) in enumerate(blend):
                 begins = first if i == 0 else max(first, parse_month(as_of))
-                if i + 1 < len(blend) and begins.isoformat() >= blend[i + 1][0]:
-                    continue  # replaced before it's ever read
+                if begins > last or (i + 1 < len(blend) and begins.isoformat() >= blend[i + 1][0]):
+                    continue  # applies only after the rule stops, or replaced before it's read
                 for slice_series, _ in slices:
                     reads((rate_kind, slice_series), begins,
                           f"{reader} ({slice_series} in its blend)")
@@ -4387,10 +4390,13 @@ def _validate_rate_series_start(
             )
 
 
-def _first_firing(row: Mapping[str, str], run_start: date, run_end: date) -> date | None:
-    """The first month a scheduled rule posts in the run, or None if it never
-    does: from its start or the scenario's, whichever is later, to the first
-    month its cadence fires, before its end and the scenario's."""
+def _first_firing(
+    row: Mapping[str, str], run_start: date, run_end: date,
+) -> tuple[date, date] | None:
+    """The first and last months a scheduled rule can post in the run, or
+    None if it never does: the first is from its start or the scenario's,
+    whichever is later, to the first month its cadence fires; the last is its
+    end or the scenario's, whichever is earlier."""
     from analysis.sim.engine import _cadence_fires  # the engine's own cadence rule
 
     try:
@@ -4399,6 +4405,8 @@ def _first_firing(row: Mapping[str, str], run_start: date, run_end: date) -> dat
     except ValueError:
         return None  # reported by _validate_scheduled
     cadence = row.get("cadence") or "monthly"
+    if cadence not in registries.CADENCES:
+        return None  # reported by _validate_scheduled; the engine's rule would raise
     month_of_year = row.get("month_of_year", "")
     moy = int(month_of_year) if month_of_year.isdigit() else None
     month = max(rule_start, run_start)
@@ -4407,7 +4415,7 @@ def _first_firing(row: Mapping[str, str], run_start: date, run_end: date) -> dat
         if month > last:
             return None
         if cadence == "biweekly" or _cadence_fires(cadence, moy, month, rule_start):
-            return month
+            return month, last
         month = add_month_ends(month, 1)
     return None
 

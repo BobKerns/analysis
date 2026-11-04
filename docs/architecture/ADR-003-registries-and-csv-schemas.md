@@ -638,7 +638,7 @@ the first month the rule reads it ([#475](https://github.com/BobKerns/analysis/i
 the load fails, naming the series, its first row and the first reader. Each lot's growth rule
 (ADR-005 §5) reads from `scenario.start`; a hand-written rule from the first month it posts, its
 `start` or the scenario's, whichever is later, then its cadence; a blend slice from the month its
-allocation set applies. A `set_rate` row (§3.1) on the same `(aux_kind, series)` supplies a rate
+allocation set applies, while the rule still posts. A `set_rate` row (§3.1) dated in the run, on the same `(aux_kind, series)`, supplies a rate
 from its month, when its date is fixed: one whose date varies or follows a `date_marker` could
 land later, so it doesn't count.
 

@@ -98,6 +98,16 @@ def test_a_set_rate_with_a_fixed_date_supplies_a_rate_in_time() -> None:
     assert len(_issues([_growth("stocks")], aux, [late])) == 1
 
 
+def test_a_set_rate_before_the_first_month_does_not_count() -> None:
+    """The run never applies an event dated before its first month."""
+    set_rate = {"kind": "set_rate", "series": "stocks", "date": "2026-04-30"}
+    assert len(_issues([_growth("stocks")], _rate("stocks", "2027-01-31"), [set_rate])) == 1
+
+
+def test_an_unknown_cadence_is_left_to_the_scheduled_check() -> None:
+    assert _issues([_rule(series="bonus", cadence="weekly")], _rate("bonus", "2030-01-31")) == []
+
+
 @pytest.mark.parametrize("extra", [
     {"vary_target": "date"},
     {loader.DATE_REFS: '{"date":["retire",0]}'},
@@ -133,6 +143,15 @@ def test_a_blend_set_replaced_before_the_start_is_never_read() -> None:
         ["2025-01-31", [["stock_us", 1_000_000]]],
     ]
     aux = _rate("stock_us", "2026-01-31") + _rate("bond", "2035-01-31")
+    assert _issues([_growth(blend=blend)], aux) == []
+
+
+def test_a_blend_set_that_applies_after_the_run_ends_is_never_read() -> None:
+    blend = [
+        ["2026-05-31", [["stock_us", 1_000_000]]],
+        ["2045-01-31", [["bond", 1_000_000]]],
+    ]
+    aux = _rate("stock_us", "2026-01-31") + _rate("bond", "2046-01-31")
     assert _issues([_growth(blend=blend)], aux) == []
 
 
