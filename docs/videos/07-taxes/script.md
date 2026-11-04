@@ -147,12 +147,13 @@ Sleep 14s
 
 Sim report tax shows each year's tax: the adjusted gross income, the
 deduction, the taxable income that's left, and the tax. All in today's
-dollars. While both work, about twenty three thousand dollars a year.
-Then Alice retires, and it falls to nine thousand. And then, from 2031 to
+dollars. While both work, about twenty five thousand dollars a year.
+Then Alice retires, and it falls to about ten thousand. And then, from 2031 to
 2034: nothing. Both are retired, Bill's Social Security hasn't started,
 and Alice's required distributions don't start until 2037. The little
-income they have is less than the standard deduction. From 2035, tax
-comes back.
+income they have is less than the standard deduction, or, in 2034, taxed
+at the zero rate for long-term gains and dividends. From 2035, tax comes
+back.
 
 With dash dash chart, the same years are drawn: tax as bars, and the
 effective rate as a line.
@@ -283,15 +284,15 @@ Sleep 12s
 ```
 
 Sim compare, with dash dash section tax, compares the two year by year.
-In the conversion years, convert pays ten to seventeen thousand dollars
+In the conversion years, convert pays nine to seventeen thousand dollars
 of tax that base doesn't. From 2037, when the required distributions
 would have started, it pays four to six thousand dollars a year less, and
 keeps paying less for the rest of their lives. Over the whole run, about
-sixty thousand dollars less tax, in today's dollars.
+seventy five thousand dollars less tax, in today's dollars.
 
 And net worth, after tax: convert pulls ahead and keeps pulling away. By
-2050 it's seventy thousand dollars ahead of base, and by 2060 a hundred
-and fifty thousand. Part of that is the lower tax,
+2050 it's eighty five thousand dollars ahead of base, and by 2060 a
+hundred and sixty thousand. Part of that is the lower tax,
 and part is that the Roth carries no tax still owed.
 
 ## Scene `irmaa`: Medicare's surcharge
@@ -379,9 +380,9 @@ year stays at tier zero, and the conversion is spread over five years
 instead of four.
 
 Is converting more better? Not here. Filling the twenty two percent
-bracket all the way ends about seventy five thousand dollars behind the
-twelve percent plan. Staying under the first tier halves that, to about
-forty thousand, but it's still behind: the extra tax now buys less than it
+bracket all the way ends about sixty thousand dollars behind the twelve
+percent plan. Staying under the first tier cuts that to about twenty
+thousand, but it's still behind: the extra tax now buys less than it
 saves later. A conversion pays when it's taxed at a lower rate than the
 money would be later.
 
@@ -430,8 +431,8 @@ and local taxes, and charity. The simulator adds them up, and uses them
 only if they beat the standard deduction, and only in 2028.
 
 The report shows it: 2028's deduction rises from thirty thousand to forty
-eight thousand, and the tax falls by about three thousand dollars. The
-years around it are unchanged.
+eight thousand, and the tax falls by over four thousand dollars. The
+years around it barely change.
 
 ## Scene `nb-tax`: The notebooks
 
