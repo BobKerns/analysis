@@ -37,7 +37,9 @@ from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import (
-    PendingRun, ScenarioRef, list_scenario_names, read_disabled_scenarios, resolve_scenario_name,
+    PendingRun, RunStatus, ScenarioRef, is_ensemble_batch, last_good_run_path, latest_run_path,
+    list_scenario_names, read_disabled_scenarios, read_run_status, resolve_scenario_name,
+    runs_not_succeeded_after,
 )
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.readme import description_view
@@ -108,8 +110,10 @@ def shortfall_banner(rc: RunConnection | None, scenario: str | None = None) -> s
         return None
     lines = shortfalls.warning_lines(found)
     # An ensemble member's run is named by its file: `sim explain RECIPE`
-    # reads member 0.
-    if rc.ensemble_member() is not None:
+    # reads member 0. So is a run older than the scenario's latest (#437):
+    # `sim explain SCENARIO` reads the latest.
+    if rc.ensemble_member() is not None or (
+            scenario and latest_run_path(rc.run_path.parent, scenario, wait=False) != rc.run_path):
         explain = f"sim explain --runfile {rc.run_path}"
     else:
         explain = f"sim explain {scenario}" if scenario else "sim explain"
@@ -121,6 +125,65 @@ def shortfall_banner(rc: RunConnection | None, scenario: str | None = None) -> s
         "run: the debit posts and the balance goes below zero.",
         lines,
     )
+
+
+def _local_time(utc: str | None) -> str | None:
+    """A run's UTC ``finished_at`` as local ``YYYY-MM-DD HH:MM``, as
+    ``ScenarioRef.describe`` shows file times."""
+    if not utc:
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(utc.replace("Z", "+00:00"))
+    except ValueError:
+        return utc
+    return f"{when.astimezone():%Y-%m-%d %H:%M}"
+
+
+def _failure(status: RunStatus) -> str:
+    """What became of a run that didn't succeed, for a sentence."""
+    if status.status == "failed":
+        return "failed" + (f" ({status.failure_reason})" if status.failure_reason else "")
+    if status.status == "running":
+        return "is still running, or was interrupted"
+    return f"is {status.status}"
+
+
+def open_run_line(name: str, run_path: Path | None) -> str | None:
+    """One line of Markdown naming the run a notebook has open for scenario
+    ``name`` and when it finished (#437), as ``sim list`` would; for an
+    ensemble member, its batch, as ``--batch`` names it. None for no run."""
+    if run_path is None:
+        return None
+    status = read_run_status(run_path)
+    finished = _local_time(status.finished_at)
+    if run_path.stem.startswith("member_") and is_ensemble_batch(run_path.parent):
+        batch = run_path.parent.name
+        line = (f"`{name}`: batch `{batch}` (`--batch {batch}`), "
+                f"`{run_path.stem}`")
+    else:
+        line = f"`{name}`: run `{run_path.name}`"
+    if status.status == "succeeded":
+        return line + (f", finished {finished}" if finished else "")
+    return (line + f" **{_failure(status)}**"
+            + (f" at {finished}" if finished else "")
+            + "; its results stop where it ended")
+
+
+def newer_runs_warning(name: str, run_path: Path | None) -> str | None:
+    """The HTML of a warning that ``name`` has runs newer than the open
+    ``run_path`` that didn't succeed (#437), so the notebook shows an older
+    one; None when it has none."""
+    if run_path is None:
+        return None
+    newer = runs_not_succeeded_after(run_path.parent, name, run_path)
+    if not newer:
+        return None
+    latest = newer[0]
+    more = f" ({len(newer)} newer runs didn't succeed)" if len(newer) > 1 else ""
+    return warning_html(
+        f"**The latest run of `{name}` {_failure(latest)}**{more}, so this shows the last "
+        f"run that succeeded. `sim explain --runfile {latest.path}` says more; "
+        "`sim list` lists every run.")
 
 
 def shortfall_summary_line(name: str, rc: RunConnection) -> str | None:
@@ -329,6 +392,12 @@ def _open_single(
                                 scenarios_dir=scenarios_dir,
                                 runs_dir=runs_dir,
                                 run_path=run_path)
+    if run_path is None:
+        # A newer run that failed holds only the months before it failed:
+        # open the last good one, and say so (#437, newer_runs_warning).
+        chosen = last_good_run_path(ref.runs_dir, ref.name)
+        if chosen is not None:
+            ref = replace(ref, run=PendingRun(ref.runs_dir, ref.name, chosen))
     if require_run and ref.run_path is None:
         raise FileNotFoundError(
             f"no runs for {name!r} in {ref.runs_dir}; run "
@@ -541,6 +610,13 @@ def scenario_picker(
     def _redraw() -> None:
         with ref_out:
             clear_output(wait=True)
+            run_path = container.run.run_path if container.run is not None else None
+            line = open_run_line(container.value, run_path)
+            if line is not None:
+                display(StyledMarkdown(line))
+            newer = newer_runs_warning(container.value, run_path)
+            if newer is not None:
+                display(HTML(newer))
             display(container.scenario_ref)
             if show_shortfalls:
                 banner = shortfall_banner(container.run, container.value)
@@ -709,12 +785,12 @@ def _load_multi(
     connections: dict[str, RunConnection] = {}
     missing = []
     for name in [baseline, *variants]:
-        ref = resolve_scenario_name(data_dir, name)
-        if ref.run_path is None:
+        scenarios = _open_single(data_dir, name, require_run=False)
+        if scenarios.run is None:
+            scenarios.close()
             missing.append(name)
             continue
-        scenarios = _open_single(data_dir, name, require_run=True)
-        connections[name] = RunConnection(ref.run_path, scenarios.scenario)
+        connections[name] = scenarios.run
 
     if baseline not in connections:
         return MultiScenarioConnections(connections, "", [], {}, [
@@ -820,6 +896,15 @@ def multi_scenario_picker(
             clear_output(wait=True)
             for message in container.warnings:
                 display_warning(message)
+            shown = [(name, rc.run_path) for name, rc in container.connections.items()
+                     if name in container.scenarios]
+            lines = [line for name, path in shown
+                     if (line := open_run_line(name, path)) is not None]
+            if lines:
+                display(StyledMarkdown("\n".join(f"- {line}" for line in lines)))
+            for name, path in shown:
+                if (newer := newer_runs_warning(name, path)) is not None:
+                    display(HTML(newer))
             lines = [line for name, rc in container.connections.items()
                      if name in container.scenarios
                      and (line := shortfall_summary_line(name, rc)) is not None]

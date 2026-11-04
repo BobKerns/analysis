@@ -31,6 +31,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | scheduled transactions | `analysis sim scheduled list` |
 | one-time transfers | `analysis sim transfer list` |
 | the scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `analysis sim scenario show [SCENARIO]` |
+| every run, with its status (a notebook opens a scenario's newest run that succeeded, names it under the picker, and warns of a newer one that failed) | `analysis sim list` |
 | persons and their lifespans | `analysis sim person list` |
 | each person's age-at-death distribution, and the household's last death (`lifespan.ipynb`) | `analysis sim person show [PERSON] [--graph]` |
 | calendar events of every kind, with their variation | `analysis sim calendar list [--kind KIND] [--tag TAG]` |
