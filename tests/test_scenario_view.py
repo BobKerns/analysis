@@ -1,5 +1,5 @@
 """Scenario overview views: chains, scheduled rules and calendar events, with the lot
-in its own column."""
+in its own column; year-to-date rows, itemizations and tags (#435)."""
 
 from __future__ import annotations
 
@@ -10,13 +10,21 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import pandas as pd
+import pytest
+from ipywidgets import widgets
+
+from analysis.sim import setup_listings
 from analysis.sim.connection import open_scenario
 from analysis.sim.notebook_ui.scenario_plots import (
     SCHEDULED_OPTIONAL_COLUMNS,
     scheduled_styler,
     show_calendar_view,
     show_chains,
+    show_itemizations,
     show_scheduled_view,
+    show_tags,
+    show_ytd_view,
 )
 from analysis.sim.readme import description_view
 from analysis.sim.notebook_ui.scenario_view import (
@@ -24,7 +32,11 @@ from analysis.sim.notebook_ui.scenario_view import (
     UNUSED,
     chain_table,
     chains_view,
+    itemization_detail,
+    itemizations_view,
     scheduled_view,
+    tags_view,
+    ytd_view,
 )
 
 
@@ -318,3 +330,99 @@ def test_calendar_view_target_names_what_each_row_acts_on(
     assert targets["set_amount:2028-07-31"] == "healthcare"
     assert targets["retire_scheduled:2028-06-30"] == "salary_alice"
     assert targets["one_off_transfer:2029-03-31"] == "-"  # its accounts are the target
+
+
+# ---------- year to date, itemizations, tags (#435) ----------
+
+
+def test_ytd_view_lists_the_rows_sim_ytd_list_does(test_data_dir: Path) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = ytd_view(scenario)
+        listed = setup_listings.ytd_listing(scenario.ref.path)
+    assert list(view["name"]) == [row.name for row in listed]
+    assert set(view["source"]) == {"year_to_date"}
+    assert set(view["defined_in"]) == {setup_listings.THIS_SCENARIO}
+
+
+def test_itemizations_view_totals_and_references(
+    test_data_dir: Path, write_itemization: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    write_itemization("fees", "100.00", "25.50")
+    write_itemization("unused", "1.00")
+    ytd = retire_alice_csv("year_to_date.csv")
+    rows = pd.read_csv(ytd, dtype=str, keep_default_na=False)
+    rows.loc[0, "amount"] = "@fees"
+    rows.to_csv(ytd, index=False)
+
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = itemizations_view(scenario).set_index("name")
+        detail = itemization_detail(scenario, "@fees")
+        with pytest.raises(KeyError):
+            itemization_detail(scenario, "nope")
+        widget = show_itemizations(scenario)
+
+    assert view.loc["fees", "total"] == 125.5
+    assert view.loc["fees", "refs"] == 1
+    assert view.loc["unused", "refs"] == 0
+    assert view.loc["fees", "defined_in"] == setup_listings.SHARED
+    assert detail.total == 125.5
+    assert list(detail.rows["Value"]) == ["100.00", "25.50"]
+    assert detail.references.to_dict("records") == [
+        {"file": "scenarios/retire_alice/year_to_date.csv", "line": 2, "column": "amount"},
+    ]
+    assert isinstance(widget, widgets.VBox)
+
+
+def test_tags_view_names_what_carries_each_tag(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+) -> None:
+    append_calendar_row(date="2029-05-31", kind="one_off_transfer", account_1="Asset_Checking",
+                        account_2="Asset_Savings", amount="100.00", name="gift",
+                        tags="estimate:rough")
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        scenario.set_tags("account", "Asset_Checking", "estimate:rough notebook:net_worth")
+        scenario.set_tags("scheduled", "salary_alice", "estimate:rough")
+        view = tags_view(scenario).set_index("tag")
+        counts = scenario.list_tags()
+
+    assert list(view.index) == [f"{r}:{n}" for r, n in zip(counts["role"], counts["name"], strict=True)]
+    assert view.loc["estimate:rough"].to_dict() == {
+        "accounts": "Asset_Checking", "scheduled": "salary_alice", "calendar": "2029-05 gift",
+    }
+    assert view.loc["notebook:net_worth", "scheduled"] == ""
+
+
+def test_overview_widgets_say_when_there_is_nothing_to_show(test_data_dir: Path) -> None:
+    (test_data_dir / "scenarios" / "retire_alice" / "year_to_date.csv").unlink()
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        shown = [show_ytd_view(scenario), show_itemizations(scenario), show_tags(scenario)]
+    assert [type(each).__name__ for each in shown] == ["Markdown"] * 3
+    assert "No year-to-date rows" in shown[0].data
+
+
+def test_overview_tables_show_authored_text_not_html(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A description or an itemization's note is text: ``<pending>`` shows as
+    written rather than vanishing as a tag."""
+    from analysis.sim.notebook_ui import scenario_plots
+
+    (test_data_dir / "itemizations" / "fees.csv").write_text(
+        "Item,Note <b>,Value\nclosing,<pending>,10.00\n", encoding="utf-8")
+    ytd = retire_alice_csv("year_to_date.csv")
+    rows = pd.read_csv(ytd, dtype=str, keep_default_na=False)
+    rows.loc[0, "description"] = "Payment <pending>"
+    rows.to_csv(ytd, index=False)
+    shown: list[str] = []
+    # Output widgets capture nothing outside a kernel, so collect what is displayed.
+    monkeypatch.setattr(scenario_plots, "display", lambda obj: shown.append(
+        obj.to_html() if hasattr(obj, "to_html") else ""))
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        show_ytd_view(scenario)
+        show_itemizations(scenario)
+
+    html = "".join(shown)
+    assert "Payment &lt;pending&gt;" in html
+    assert "&lt;pending&gt;" in html.replace("Payment &lt;pending&gt;", "")
+    assert "Note &lt;b&gt;" in html
