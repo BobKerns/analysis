@@ -281,7 +281,8 @@ def read_run_status(path: Path | str) -> RunStatus:
     """``path``'s run status; never raises for a damaged or half-written file."""
     path = Path(path)
     try:
-        con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
+        # as_uri escapes a '#' or '?' in the path, which would end it.
+        con = connect_sim_file(f"{path.resolve().as_uri()}?mode=ro", uri=True)
         try:
             row = con.execute("SELECT status, finished_at, failure_reason "
                               "FROM simulation_run WHERE id = 1").fetchone()

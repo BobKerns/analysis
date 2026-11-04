@@ -18,7 +18,7 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim import notebook_ui
 from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.loader import last_good_run_path, latest_run_path
+from analysis.sim.loader import last_good_run_path, latest_run_path, read_run_status
 from analysis.sim.notebook_ui.pickers import (
     Connections,
     MultiScenarioConnections,
@@ -531,3 +531,17 @@ def test_multi_scenario_picker_opens_each_scenarios_last_good_run(
     finally:
         for rc in container.connections.values():
             rc.close()
+
+
+def test_read_run_status_reads_a_run_under_a_folder_with_a_hash(
+    retire_alice_test_run: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    folder = tmp_path / "data#copy"
+    folder.mkdir()
+    copy = folder / good.name
+    shutil.copyfile(good, copy)
+
+    assert read_run_status(copy).status == "succeeded"
+    assert sorted(p.name for p in tmp_path.iterdir() if p.is_file()) == []

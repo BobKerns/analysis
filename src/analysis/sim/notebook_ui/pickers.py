@@ -100,6 +100,17 @@ def _times(count: int) -> str:
     return "once" if count == 1 else ("twice" if count == 2 else f"{count} times")
 
 
+def explain_command(rc: RunConnection, scenario: str | None = None) -> str:
+    """The ``sim explain`` command line that reads ``rc``'s run."""
+    # An ensemble member's run is named by its file: `sim explain RECIPE`
+    # reads member 0. So is a run older than the scenario's latest (#437):
+    # `sim explain SCENARIO` reads the latest.
+    if rc.ensemble_member() is not None or (
+            scenario and latest_run_path(rc.run_path.parent, scenario, wait=False) != rc.run_path):
+        return f"sim explain --runfile {rc.run_path}"
+    return f"sim explain {scenario}" if scenario else "sim explain"
+
+
 def shortfall_banner(rc: RunConnection | None, scenario: str | None = None) -> str | None:
     """The HTML of a warning listing ``rc``'s negative-balance warnings
     (#431) as ``sim explain`` lists them, or None for a run with none."""
@@ -109,14 +120,7 @@ def shortfall_banner(rc: RunConnection | None, scenario: str | None = None) -> s
     if not found:
         return None
     lines = shortfalls.warning_lines(found)
-    # An ensemble member's run is named by its file: `sim explain RECIPE`
-    # reads member 0. So is a run older than the scenario's latest (#437):
-    # `sim explain SCENARIO` reads the latest.
-    if rc.ensemble_member() is not None or (
-            scenario and latest_run_path(rc.run_path.parent, scenario, wait=False) != rc.run_path):
-        explain = f"sim explain --runfile {rc.run_path}"
-    else:
-        explain = f"sim explain {scenario}" if scenario else "sim explain"
+    explain = explain_command(rc, scenario)
     if len(lines) > SHORTFALL_LINES:
         lines = [*lines[:SHORTFALL_LINES],
                  f"... and {len(lines) - SHORTFALL_LINES} more; `{explain}` lists them all"]
@@ -610,16 +614,19 @@ def scenario_picker(
     def _redraw() -> None:
         with ref_out:
             clear_output(wait=True)
+            # Not container.value: on a switch, _on_change redraws before the
+            # dropdown's link updates it.
+            name = container.scenario_ref.name
             run_path = container.run.run_path if container.run is not None else None
-            line = open_run_line(container.value, run_path)
+            line = open_run_line(name, run_path)
             if line is not None:
                 display(StyledMarkdown(line))
-            newer = newer_runs_warning(container.value, run_path)
+            newer = newer_runs_warning(name, run_path)
             if newer is not None:
                 display(HTML(newer))
             display(container.scenario_ref)
             if show_shortfalls:
-                banner = shortfall_banner(container.run, container.value)
+                banner = shortfall_banner(container.run, name)
                 if banner is not None:
                     display(HTML(banner))
             if show_metadata:
@@ -785,11 +792,15 @@ def _load_multi(
     connections: dict[str, RunConnection] = {}
     missing = []
     for name in [baseline, *variants]:
-        scenarios = _open_single(data_dir, name, require_run=False)
-        if scenarios.run is None:
-            scenarios.close()
+        # Found before opening the scenario, whose inputs may not load.
+        ref = resolve_scenario_name(data_dir, name)
+        run_path = last_good_run_path(ref.runs_dir, name)
+        if run_path is None:
             missing.append(name)
             continue
+        scenarios = _open_single(data_dir, name, require_run=True,
+                                 runs_dir=ref.runs_dir, run_path=run_path)
+        assert scenarios.run is not None
         connections[name] = scenarios.run
 
     if baseline not in connections:
@@ -905,12 +916,13 @@ def multi_scenario_picker(
             for name, path in shown:
                 if (newer := newer_runs_warning(name, path)) is not None:
                     display(HTML(newer))
-            lines = [line for name, rc in container.connections.items()
+            lines = [f"{line} ({explain_command(rc, name)})"
+                     for name, rc in container.connections.items()
                      if name in container.scenarios
                      and (line := shortfall_summary_line(name, rc)) is not None]
             if lines:
                 display_warning("**Negative balances** (a shortfall doesn't stop a run; "
-                                "`sim explain <scenario>` lists them):", lines)
+                                "`sim explain` lists them):", lines)
 
     def _on_change(*_) -> None:
         old_connections = dict(container.connections)
