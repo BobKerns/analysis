@@ -2,7 +2,7 @@
 series = "Planning with the simulator"
 episode = "Video 7"
 title = "Taxes"
-subtitle = "What the plan pays in tax, and the years that pay none"
+subtitle = "What the plan pays in tax, Roth conversions, Medicare's surcharge, and deductions"
 data = "prototype_data"
 
 [youtube]
@@ -49,8 +49,9 @@ template = "title"
 Planning with the simulator. Video seven: taxes.
 
 So far, Alice and Bill have seen what their plan does. This time: what it
-pays in tax, why some years pay none at all, and how to put those years to
-use.
+pays in tax, and why some years pay none at all. Then a Roth conversion to
+put those years to use, Medicare's income surcharge, and a big medical
+year.
 
 ## Scene `contents`: Taxes
 
