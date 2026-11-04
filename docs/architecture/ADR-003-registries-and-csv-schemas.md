@@ -1175,7 +1175,8 @@ an override whose `end` is the month before `scenario.start`, with
 `calendar delete` picks its row as `calendar edit` does; it refuses a row
 another row's `vary_correlate_with` names and an inherited row, and deletes
 an override, bringing back the inherited row. `calendar tag add|rm` changes
-a row's tags, writing an override of the whole row for an inherited one.
+a row's tags, writing an override of the whole row for an inherited one, as
+`account tag add|rm` and `scheduled tag add|rm` do for an inherited account or rule.
 
 The commands that add a transfer (`transfer add`, `calendar add transfer`,
 the guided `calendar add`, `scheduled add`) pick each side the same way,
@@ -1328,4 +1329,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#431](https://github.com/BobKerns/analysis/issues/431): `negative_balance_warnings` are read back, with each account's lowest balance, by `sim explain` and the notebooks alike (§4.7).
 - [#441](https://github.com/BobKerns/analysis/issues/441): a strategy file's `trigger` column names guard rails it answers; a triggered rail is read by the run, and puts the lineage's `guard_rails.csv` in its tree (§4.11, §4.12).
 - [#467](https://github.com/BobKerns/analysis/issues/467): tax brackets, standard deductions and long-term gain bands are indexed for inflation by an optional `floor_series`/`amount_series` per row, `cpi` in the templates (§4.4).
-- [#370](https://github.com/BobKerns/analysis/issues/370): an itemized-deduction row counts only for its own tax year, one row per year (§2.6, §4.4); `sim deduction` writes them.
+- [#370](https://github.com/BobKerns/analysis/issues/370): an itemized-deduction row counts only for its own tax year, one row per year (§2.6, §4.4); `sim deduction` writes them; `account|scheduled tag add|rm` on an inherited item writes an override (§7).

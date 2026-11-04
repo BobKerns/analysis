@@ -614,8 +614,12 @@ _RECONCILIATION_COLUMNS = {
 
 def tax_reconciliation(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
     """Each tax year's liability, what was withheld or paid during it, and the
-    balance due or refunded at the following April's reconciliation."""
+    balance due or refunded at the following April's reconciliation. The
+    state columns appear only when the run computes state tax, as in
+    :func:`tax_by_year`."""
     frame = _tax_buckets(rc, list(_RECONCILIATION_COLUMNS)).rename(columns=_RECONCILIATION_COLUMNS)
+    if frame["state_liability"].isna().all():
+        frame = frame.drop(columns=[c for c in frame.columns if c.startswith("state_")])
     return _cpi(rc, frame.fillna(0), mode, annual=True)
 
 

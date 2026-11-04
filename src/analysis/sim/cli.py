@@ -11887,14 +11887,28 @@ def _scenario_write(
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    filename, header = (("accounts.csv", registries.ACCOUNTS_CSV_HEADER) if item_type == "account"
+                        else ("scheduled.csv", registries.SCHEDULED_CSV_HEADER))
+    found = _overlay_rows(scenario_dir, filename).get(item_name.strip())
+    if found is None:
+        raise click.ClickException(f"unknown {what}: {item_name!r}")
+    # An inherited item's tags change by an override of its whole row, as
+    # its other fields do (#202); the parent keeps its own.
+    inherited = found.index is None and found.inherited_from is not None
     with _scenario_edit(data_dir_p, scenario) as edit:
+        if inherited:
+            _widen_header(edit.path(scenario_dir / filename), scenario_dir, filename, header)
+            _append_csv_row(edit.path(scenario_dir / filename), header, dict(found.row))
         try:
             with open_scenario(edit.data_dir, edit.name) as sc:
                 method = sc.add_tags if op == "add" else sc.remove_tags
                 new_val = method(item_type, item_name, tag_tokens)
         except (FileNotFoundError, KeyError, ValueError) as e:
             raise click.ClickException(str(e)) from None
-    click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
+    override = (f" (an override in {_shown(scenario_dir / filename)}; inherited from "
+                f"{found.inherited_from!r})" if inherited else "")
+    click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}{override}")
 
 
 # ---------- scenario: create derived scenarios ----------

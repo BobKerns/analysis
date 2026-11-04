@@ -1081,6 +1081,27 @@ def test_sim_tag_add_rm_round_trip(test_data_dir: Path) -> None:
     assert "owner:alice" in final_tags
 
 
+@pytest.mark.parametrize(("item_type", "item", "filename"), [
+    ("account", "Asset_Checking", "accounts.csv"),
+    ("scheduled", "salary_bill", "scheduled.csv"),
+])
+def test_tagging_an_inherited_item_writes_an_override(
+    test_data_dir: Path, test_child_scenario: Path, item_type: str, item: str, filename: str,
+) -> None:
+    import pandas as pd
+
+    r = CliRunner().invoke(main, ["sim", item_type, "tag", "add", item, "demo:x",
+                                  "--scenario", "child", "--data-dir", str(test_data_dir)])
+
+    assert r.exit_code == 0, r.output
+    assert "an override" in r.output and "retire_alice" in r.output
+    own = pd.read_csv(test_child_scenario / filename, dtype=str, keep_default_na=False)
+    assert own.loc[own["name"] == item, "tags"].iloc[0].endswith("demo:x")
+    parent = pd.read_csv(test_data_dir / "scenarios" / "retire_alice" / filename,
+                         dtype=str, keep_default_na=False)
+    assert "demo:x" not in parent.loc[parent["name"] == item, "tags"].iloc[0]
+
+
 def test_sim_tag_add_rejects_bad_token(test_data_dir: Path) -> None:
     data = test_data_dir
     runner = CliRunner()

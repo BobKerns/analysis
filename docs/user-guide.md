@@ -94,7 +94,7 @@ runs alone.
 
 You can also start from what the scenario inherits: `sim account edit`,
 `sim account lot edit`, `sim scheduled edit`, `sim calendar edit` and
-`sim ytd edit` (and `sim calendar tag add|rm`) on an inherited item write the edited row into
+`sim ytd edit` (and `sim account|scheduled|calendar tag add|rm`) on an inherited item write the edited row into
 the derived scenario as an override, and leave the parent alone. A derived
 scenario can't remove what it inherits, so `sim account delete`,
 `sim calendar delete` and `sim person lifespan clear` refuse an inherited
