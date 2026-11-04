@@ -16496,6 +16496,10 @@ def invest_command(
         raise click.ClickException(
             f"{when} is before the scenario starts ({start[:7]}); for a holding it starts "
             "with, use `sim account lot add`")
+    # Before a new symbol is written, so a mistyped --series leaves nothing
+    # behind to block the corrected retry; a guided answer is checked below.
+    if lot_series is not None and lot_series not in rate_series:
+        raise click.ClickException(f"no rate series {lot_series!r}; known: {', '.join(rate_series)}")
 
     if new_symbol:
         assert symbol is not None
