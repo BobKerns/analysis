@@ -409,3 +409,15 @@ def test_series_rename_refuses_a_new_name_whose_yield_exists(test_data_dir: Path
     (series / "rate__broker_growth_yield.csv").write_text("effective_date,annual_rate\n2026-01-31,2%\n")
     result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth")
     assert result.exit_code != 0 and "'broker_growth_yield' already applies" in result.output, result.output
+
+
+def test_series_rename_refuses_a_yield_whose_series_only_a_child_has(test_data_dir: Path,
+                                                                     test_scenarios_dir: Path) -> None:
+    """Renamed from the parent that has it, a yield is still one a child's
+    lots pay at, when only the child grows at its series: refused."""
+    (test_scenarios_dir / "base" / "series").mkdir(exist_ok=True)
+    yielded = test_scenarios_dir / "base" / "series" / "rate__brokerage_growth_yield.csv"
+    yielded.write_text("effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth_yield", "payout", scenario="base")
+    assert result.exit_code != 0 and "yield series" in result.output, result.output
+    assert yielded.is_file()

@@ -1168,7 +1168,8 @@ class RunConnection(Connection):
         """Year-indexed realized (taxable/non-taxable) vs. unrealized gains, in dollars.
 
         A taxable lot's reinvested dividends and interest (#468) count as
-        realized taxable gains: they are taxed the year they're paid.
+        realized taxable gains: they are taxed the year they're paid, but
+        never reach cash, so ``distribution_coverage`` leaves them out.
         Social Security is split into taxable/non-taxable by this run's own
         ``federal_taxable_ss`` (the provisional-income test), not a flat
         assumption. Also includes ``expenses``/``distribution_coverage``
@@ -1199,6 +1200,12 @@ class RunConnection(Connection):
                 (gains["reason_kind"] == "strategy") & (gains["from_lot"] == gains["to_lot"])
                 & (gains["from_account"] == gains["to_account"])
                 & gains["tax_character"].isin(["ltcg", "stcg"])
+            )
+
+            # Reinvested payouts are taxable but never reach cash, so they
+            # don't cover spending.
+            reinvested = (
+                gains[is_payout & ~reaches_cash].groupby("year")["amount"].sum() / 100
             )
 
             gains["gain_category"] = pd.NA
@@ -1245,7 +1252,9 @@ class RunConnection(Connection):
                 expenses_yearly["total"].reindex(gains_yearly.index).fillna(0)
             )
             gains_yearly["distribution_coverage"] = (
-                gains_yearly["realized_total"] - gains_yearly["expenses"]
+                gains_yearly["realized_total"]
+                - reinvested.reindex(gains_yearly.index).fillna(0)
+                - gains_yearly["expenses"]
             )
             if harvested.any():
                 gains_yearly["harvested"] = harvested

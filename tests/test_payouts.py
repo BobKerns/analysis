@@ -205,6 +205,47 @@ def test_cash_at_a_negative_rate_pays_no_interest_and_loses_value(
     assert gains.loc[int(month[:4]), "unrealized"] < 0
 
 
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund", "yields")
+def test_reinvested_payouts_are_taxable_gains_that_cover_no_spending(
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """A reinvested payout is a taxable gain the year it's paid, but it never
+    reaches cash, so it pays for none of the year's expenses."""
+    run = run_scenario(load_test_copy().intent_path, runs_dir / "coverage.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    year = int(_first_month(run, DIVIDENDS)[0][:4])
+    paid = _query(run, (
+        "SELECT SUM(t.amount) FROM transfer_event t JOIN scheduled_transaction r ON r.id = t.reason_id "
+        "WHERE t.reason_kind = 'rule' AND r.name IN (?, ?) AND substr(t.date, 1, 4) = ?"),
+        DIVIDENDS, INTEREST, str(year))[0][0]
+    with RunConnection(run) as ran:
+        row = ran.gains_by_category().loc[year]
+    assert row["taxable"] >= paid / 100
+    assert row["distribution_coverage"] == pytest.approx(
+        row["realized_total"] - paid / 100 - row["expenses"])
+
+
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund")
+def test_a_negative_slice_leaves_a_funds_interest_whole(
+    test_data_dir: Path, write_series: Callable[[str, str], Path],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """Half bonds paying 4%, half cash at -1.2%: the bonds' interest is paid
+    in full, and the cash's fall stays an unrealized loss on the growth rule,
+    so the fund's total return is unchanged."""
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nFND,,bond,50%\nFND,,cash,50%\n")
+    write_series("bond_yield", "2026-01-31,4%")
+    write_series("cash", "2026-01-31,-1.2%")
+    run = run_scenario(load_test_copy().intent_path, runs_dir / "slice.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    month, interest = _first_month(run, INTEREST)
+    # $150,000 of bonds at 4% a year: $500 a month.
+    assert interest == 50_000
+    # The fund returns 1.4% a year, $350 a month: $150 less than it paid.
+    assert _first_month(run, GROWTH) == (month, 15_000)
+
+
 def test_an_all_interest_lot_keeps_its_rate_in_the_account_view(
     write_series: Callable[[str, str], Path], set_brokerage_lots: Callable[[list[dict[str, str]]], None],
     test_data_dir: Path,

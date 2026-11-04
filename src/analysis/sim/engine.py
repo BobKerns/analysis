@@ -1734,38 +1734,39 @@ def _amount_percent_of_balance(
     base = (opening_balances if basis == "opening" else current_balances).get(to_id, 0)
     if base <= 0:
         return 0
-    total = _percent_of(base, params, rate_kind, aux, month_s, tid)
     if params.get("payout"):
-        # A dividend or interest payout (#468) is never negative: a rate
-        # below zero is a fall in value, left to the growth rule.
-        return max(total, 0)
+        # A dividend or interest payout (#468) is never negative: a yield
+        # below zero, even one slice of a blend, is a fall in value, left to
+        # the growth rule.
+        return _percent_of(base, params, rate_kind, aux, month_s, tid, payout=True)
     # A taxable lot's payouts are their own rules; what's left of the total
     # return is the appreciation, which waits for a sale. A cash lot's is
     # zero unless its rate goes negative.
+    total = _percent_of(base, params, rate_kind, aux, month_s, tid)
     for spec in params.get("less") or ():
-        total -= max(_percent_of(base, spec, rate_kind, aux, month_s, tid), 0)
+        total -= _percent_of(base, spec, rate_kind, aux, month_s, tid, payout=True)
     return total
 
 
 def _percent_of(
     base: int, spec: dict[str, Any], rate_kind: str,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    month_s: str, tid: int,
+    month_s: str, tid: int, *, payout: bool = False,
 ) -> int:
     """A month of ``base`` at the annual rate of ``spec``: its ``blend`` or
-    its ``series``."""
+    its ``series``. A ``payout`` counts each rate below zero as zero."""
+    def rate(series: str | None) -> int:
+        annual = _annual_rate_micros(aux, rate_kind, series, month_s, tid)
+        return max(annual, 0) if payout else annual
+
     if blend := spec.get("blend"):
         # A fund's allocation blend (#78): sum weight x each slice's rate, read
         # now rather than at load, since a set_rate event can move any slice.
         # Kept in micros-squared so the blend itself never rounds.
-        weighted = sum(
-            weight * _annual_rate_micros(aux, rate_kind, slice_series, month_s, tid)
-            for slice_series, weight in _blend_slices_at(blend, month_s)
-        )
+        weighted = sum(weight * rate(slice_series) for slice_series, weight in _blend_slices_at(blend, month_s))
         return (base * weighted) // (12 * 1_000_000 * 1_000_000)
-    annual_micros = _annual_rate_micros(aux, rate_kind, spec.get("series"), month_s, tid)
     # monthly_rate = annual_micros / 12 / 1_000_000; amount = base * monthly_rate
-    return (base * annual_micros) // (12 * 1_000_000)
+    return (base * rate(spec.get("series"))) // (12 * 1_000_000)
 
 
 def _blend_slices_at(blend: list[list[Any]], month_s: str) -> list[list[Any]]:
