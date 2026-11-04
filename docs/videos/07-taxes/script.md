@@ -274,7 +274,7 @@ Sleep 400ms
 Enter
 Wait
 Sleep 24s
-Type "clear && sim compare base convert --section net-worth | tail -8"
+Type "clear && sim compare base convert --section net-worth --start 2050"
 Sleep 400ms
 Enter
 Wait
@@ -288,8 +288,9 @@ would have started, it pays four to six thousand dollars a year less, and
 keeps paying less for the rest of their lives. Over the whole run, about
 sixty thousand dollars less tax, in today's dollars.
 
-And net worth, after tax: convert pulls ahead, and by 2060 it's a hundred
-and fifty thousand dollars ahead of base. Part of that is the lower tax,
+And net worth, after tax: convert pulls ahead and keeps pulling away. By
+2050 it's seventy thousand dollars ahead of base, and by 2060 a hundred
+and fifty thousand. Part of that is the lower tax,
 and part is that the Roth carries no tax still owed.
 
 ## Scene `irmaa`: Medicare's surcharge
@@ -336,12 +337,12 @@ Sleep 400ms
 Enter
 Wait
 Sleep 4s
-Type "sim scheduled add 2028-01 Income_SS_Alice Expense_Healthcare --kind irmaa --name irmaa_alice --person alice"
+Type "sim scheduled add 2028-01 Asset_Checking Expense_Healthcare --kind irmaa --name irmaa_alice --person alice"
 Sleep 400ms
 Enter
 Wait
 Sleep 3s
-Type "sim scheduled add 2029-08 Income_SS_Bill Expense_Healthcare --kind irmaa --name irmaa_bill --person bill"
+Type "sim scheduled add 2029-08 Asset_Checking Expense_Healthcare --kind irmaa --name irmaa_bill --person bill"
 Sleep 400ms
 Enter
 Wait
@@ -364,8 +365,8 @@ Sleep 16s
 ```
 
 Convert 22 builds on convert, and fills the twenty two percent bracket
-instead. Two irmaa rules charge the surcharge: each takes it out of a
-Social Security check, from the month its person is on Medicare.
+instead. Two irmaa rules charge the surcharge, paid from checking, each
+from the month its person is on Medicare.
 
 The report now shows the income Medicare looks at, and the IRMAA tier it
 sets, for the premiums two years later. Converting this much crosses the
@@ -376,10 +377,12 @@ short of the first tier, even if the bracket has more room. Now every
 year stays at tier zero, and the conversion is spread over five years
 instead of four.
 
-Is converting more better? Not here. Both twenty two percent versions end
-about forty thousand dollars behind the twelve percent one: the extra tax
-now buys less than it saves later. A conversion pays when it's taxed at a
-lower rate than the money would be later.
+Is converting more better? Not here. Filling the twenty two percent
+bracket all the way ends about seventy five thousand dollars behind the
+twelve percent plan. Staying under the first tier halves that, to about
+forty thousand, but it's still behind: the extra tax now buys less than it
+saves later. A conversion pays when it's taxed at a lower rate than the
+money would be later.
 
 ## Scene `medical`: A big medical year
 
@@ -439,8 +442,8 @@ RunAll
 Scroll "Tax"
 Show
 Sleep 9s
-Open "scenario_compare.ipynb"
 Hide
+Open "scenario_compare.ipynb"
 RunAll
 Scroll "Tax"
 Show
@@ -451,8 +454,10 @@ Sleep 8s
 
 The notebooks show the same. Net worth's tax section stacks each year's
 tax, with the effective rate on the right. The scenario comparison
-notebook's tax section compares the runs: the years where tax differs,
-then each run's total, and its final net worth after tax.
+notebook's tax section draws every run's tax, and below it, each one's
+difference from base: convert and convert 22 pay more early, and less
+for decades after. Tables under the chart give the totals, and each
+run's final net worth after tax.
 
 ## Scene `more`: Also in the guide
 

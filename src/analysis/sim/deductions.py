@@ -62,18 +62,32 @@ def in_force(data_dir: Path, scenario_dir: Path, kind: str) -> InForce:
 
 
 def read_rows(path: Path | None) -> list[dict[str, str]]:
+    """The file's rows, each with every column it has (a note, say), not
+    only :data:`HEADER`'s."""
     if path is None or not path.is_file() or path.stat().st_size == 0:
         return []
     with path.open(newline="", encoding="utf-8") as fh:
-        return [{column: (row.get(column) or "").strip() for column in HEADER}
-                for row in csv.DictReader(fh)]
+        reader = csv.DictReader(fh)
+        columns = [*HEADER, *(c for c in reader.fieldnames or [] if c and c not in HEADER)]
+        return [{column: (row.get(column) or "").strip() for column in columns}
+                for row in reader]
+
+
+def _columns(rows: list[dict[str, str]], first: tuple[str, ...]) -> list[str]:
+    columns = list(first)
+    for row in rows:
+        columns += [column for column in row if column not in columns]
+    return columns
 
 
 def write_rows(path: Path, rows: list[dict[str, str]]) -> None:
+    """``rows`` in year order, :data:`HEADER` first, then any other
+    columns they carry, kept as they were."""
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = sorted(rows, key=lambda row: row["effective_date"])
     with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(HEADER), lineterminator="\n")
+        writer = csv.DictWriter(fh, fieldnames=_columns(rows, HEADER), lineterminator="\n",
+                                restval="")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -111,9 +125,7 @@ def itemization_name(year: int, state: bool) -> str:
 def write_items(path: Path, items: list[dict[str, str]]) -> None:
     """``items`` as an itemization file: Item and Value first, then any
     other columns the rows carry (a note, say), kept as they were."""
-    columns = list(ITEM_HEADER)
-    for row in items:
-        columns += [column for column in row if column not in columns]
+    columns = _columns(items, ITEM_HEADER)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=columns, lineterminator="\n", restval="")

@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import csv
 from collections.abc import Sequence
+from typing import Any
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
+from analysis.sim import cli
 
 
 def _sim(data: Path, scenario: str, *args: str, answers: Sequence[str] = ()) -> Result:
@@ -212,10 +215,6 @@ def test_a_name_another_itemization_has_is_refused(test_data_dir: Path) -> None:
 
 def test_delete_keeps_items_something_else_references(test_data_dir: Path) -> None:
     assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
-    assert _sim(test_data_dir, "retire_alice", "add", "2029", "@deductions_2028").exit_code == 0
-    # Another year's row sharing it isn't "something else": move the
-    # reference to a different kind of file, the state's deductions.
-    assert _sim(test_data_dir, "retire_alice", "delete", "2029", "--yes").exit_code == 0
     assert _sim(test_data_dir, "retire_alice", "add", "2029", "--state",
                 "@deductions_2028").exit_code == 0
 
@@ -224,3 +223,103 @@ def test_delete_keeps_items_something_else_references(test_data_dir: Path) -> No
     assert result.exit_code == 0, result.output
     assert (test_data_dir / "scenarios" / "retire_alice" / "itemizations"
             / "deductions_2028.csv").exists()
+
+
+def test_guided_edit_keeps_an_unchanged_itemization_reference(test_data_dir: Path) -> None:
+    _itemization(test_data_dir, "drugs", "300.00")
+    assert _sim(test_data_dir, "retire_alice", "add", "2028",
+                "--item", "a=1", "--item", "pharmacy=@drugs").exit_code == 0
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", answers=["", "", ""])
+
+    assert result.exit_code == 0, result.output
+    items = test_data_dir / "scenarios" / "retire_alice" / "itemizations" / "deductions_2028.csv"
+    assert _items(items) == [("a", "1.00"), ("pharmacy", "@drugs")]
+    assert "($301.00)" in result.output
+
+
+def test_a_total_in_place_of_the_list_removes_it(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+    items = test_data_dir / "scenarios" / "retire_alice" / "itemizations" / "deductions_2028.csv"
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", "--amount", "900")
+
+    assert result.exit_code == 0, result.output
+    assert not items.exists()
+    # So the year can be listed again.
+    assert _sim(test_data_dir, "retire_alice", "edit", "2028", "--item", "b=2").exit_code == 0
+    assert _items(items) == [("b", "2.00")]
+
+
+def test_another_years_row_counts_as_a_reference(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+    assert _sim(test_data_dir, "retire_alice", "add", "2029", "@deductions_2028").exit_code == 0
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", "--amount", "5")
+
+    assert result.exit_code == 0, result.output
+    assert (test_data_dir / "scenarios" / "retire_alice" / "itemizations"
+            / "deductions_2028.csv").exists()
+
+
+def test_a_rows_other_columns_are_kept(test_data_dir: Path) -> None:
+    own = _own(test_data_dir, "retire_alice")
+    own.parent.mkdir(parents=True, exist_ok=True)
+    own.write_text("effective_date,amount,note\n2027-01-01,500.00,gifts\n", encoding="utf-8")
+
+    result = _sim(test_data_dir, "retire_alice", "add", "2028", "700")
+
+    assert result.exit_code == 0, result.output
+    assert own.read_text(encoding="utf-8") == (
+        "effective_date,amount,note\n2027-01-01,500.00,gifts\n2028-01-01,700.00,\n")
+
+
+def test_no_state_rows_says_the_federal_ones_apply(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "retire_alice", "list", "--state")
+
+    assert result.exit_code == 0, result.output
+    assert "the state uses the federal ones" in result.output
+
+
+def test_a_file_put_in_force_during_the_prompts_aborts(
+    test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "100").exit_code == 0
+    assert CliRunner().invoke(main, ["sim", "scenario", "create", "child", "retire_alice",
+                                     "--data-dir", str(test_data_dir)]).exit_code == 0
+    child_own = _own(test_data_dir, "child")
+    asked = cli._prompt_with_completion
+
+    def meanwhile(*args: Any, **kwargs: Any) -> str:
+        # Another command gives the child its own file, same rows, while
+        # this one waits for an answer.
+        child_own.parent.mkdir(parents=True, exist_ok=True)
+        child_own.write_text("effective_date,amount\n2028-01-01,100.00\n", encoding="utf-8")
+        return asked(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_prompt_with_completion", meanwhile)
+    result = _sim(test_data_dir, "child", "edit", "2028", answers=["250"])
+
+    assert result.exit_code != 0
+    assert "changed while this was being edited" in result.output
+    assert _rows(child_own) == [("2028-01-01", "100.00")]
+
+
+def test_an_itemization_changed_during_the_prompts_aborts(
+    test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _itemization(test_data_dir, "medical")
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "@medical").exit_code == 0
+    path = test_data_dir / "scenarios" / "retire_alice" / "itemizations" / "medical.csv"
+    asked = cli._prompt_with_completion
+
+    def meanwhile(*args: Any, **kwargs: Any) -> str:
+        path.write_text("Item,Value\nx,500.00\ny,9.00\n", encoding="utf-8")
+        return asked(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_prompt_with_completion", meanwhile)
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", answers=["", ""])
+
+    assert result.exit_code != 0
+    assert "changed while this was being edited" in result.output
+    assert not (path.parent / "deductions_2028.csv").exists()

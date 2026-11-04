@@ -16282,10 +16282,15 @@ def _check_deduction_year(text: str) -> int:
 
 
 def _item_dollars(text: str) -> str:
-    """An item's dollars: a number, never blank or another @itemization."""
+    """An item's value: dollars, or ``@name`` for another itemization's
+    total (the loader checks it resolves); never blank."""
     text = text.strip()
-    if not text or text.startswith("@"):
-        raise click.ClickException(f"an item's value is dollars: {text!r}")
+    if text.startswith("@"):
+        if len(text) == 1:
+            raise click.ClickException("an @itemization needs a name: '@'")
+        return text
+    if not text:
+        raise click.ClickException("an item's value is dollars or an @itemization: ''")
     return _money_cell(text)
 
 
@@ -16324,16 +16329,30 @@ def _read_items(path: Path) -> list[dict[str, str]]:
                 for row in csv.DictReader(fh)]
 
 
+def _other_references(
+    data_dir: Path, scenario_dir: Path, target: _DeductionEdit, name: str, year: int,
+) -> list[setup_listings.ItemizationReference]:
+    """The money cells referencing ``@name`` besides tax ``year``'s own row
+    in the file in force. A deduction file of the same kind that file
+    shadows doesn't count: this scenario never reads it."""
+    own_line = None
+    if target.found.path is not None and (index := _deduction_row(target.rows, year)) is not None:
+        own_line = index + 2  # the header is line 1
+    return [ref for ref in setup_listings.itemization_references(data_dir, scenario_dir).get(name, [])
+            if not (ref.path == target.found.path and ref.line == own_line)
+            and not (ref.path.name == f"{target.kind}.csv" and ref.path != target.found.path)]
+
+
 def _deduction_items_name(
-    data_dir: Path, scenario_dir: Path, kind: str, year: int, state: bool, current: str,
+    data_dir: Path, scenario_dir: Path, target: _DeductionEdit, year: int, state: bool,
+    current: str,
 ) -> str:
     """The itemization a year's listed deductions go in: deductions_<year>
     (state_deductions_<year>), named for the year so nothing else uses it.
     Refused when another itemization the scenario can see has that name or
     another money cell references it: writing it would change those too."""
     name = deductions.itemization_name(year, state)
-    others = [ref for ref in setup_listings.itemization_references(data_dir, scenario_dir).get(name, [])
-              if ref.path.name != f"{kind}.csv"]
+    others = _other_references(data_dir, scenario_dir, target, name, year)
     if others:
         where = ", ".join(f"{_shown(ref.path)} line {ref.line}" for ref in others)
         raise click.ClickException(
@@ -16343,6 +16362,19 @@ def _deduction_items_name(
         raise click.ClickException(
             f"an itemization named {name} already exists; give the year's total as an amount instead")
     return name
+
+
+def _own_items_to_drop(
+    data_dir: Path, scenario_dir: Path, target: _DeductionEdit, year: int, state: bool,
+    current: str,
+) -> str | None:
+    """The year's own list, when the row being replaced or deleted names it,
+    it is this scenario's own file, and nothing else references it; else
+    None. Another file may be used elsewhere, so it stays."""
+    made = deductions.itemization_name(year, state)
+    if current != f"@{made}" or not (scenario_dir / "itemizations" / f"{made}.csv").exists():
+        return None
+    return None if _other_references(data_dir, scenario_dir, target, made, year) else made
 
 
 def _check_deduction_amount(cell: str) -> str:
@@ -16371,26 +16403,39 @@ def _deduction_row(rows: list[dict[str, str]], year: int) -> int | None:
     return next((i for i, row in enumerate(rows) if deductions.year_of(row) == year), None)
 
 
+def _staged_or_real(edit: StagedEdit, path: Path) -> Path:
+    try:
+        return edit.path(path)
+    except ValueError:  # a shared or template file, read in place
+        return path
+
+
 def _write_deduction(
     data_dir: Path, scenario_name: str, scenario_dir: Path, target: _DeductionEdit,
     rows: list[dict[str, str]], items: tuple[str, list[dict[str, str]]] | None = None,
     drop_items: str | None = None,
+    read_items: tuple[Path, list[dict[str, str]]] | None = None,
 ) -> None:
     """Write ``rows`` as the scenario's own file, with ``items`` (an
-    itemization's name and rows) beside it, as one staged edit."""
+    itemization's name and rows) beside it, as one staged edit.
+    ``read_items`` is an itemization the prompts started from, as read."""
     with _scenario_edit(data_dir, scenario_name) as edit:
-        # The rows were read before any prompts: if the file changed since,
+        # The rows were read before any prompts: if the file in force, or
+        # its rows, changed since (a scenario's own file added, say),
         # writing them would lose that change.
-        source = target.found.path
-        if source is not None:
-            try:
-                source = edit.path(source)
-            except ValueError:  # a shared or template file, read in place
-                pass
-        if deductions.read_rows(source) != target.rows:
+        staged = deductions.in_force(edit.data_dir, edit.path(scenario_dir), target.kind)
+        expected = None if target.found.path is None else _staged_or_real(edit, target.found.path)
+        same_file = (staged.path is None) == (expected is None) and (
+            staged.path is None or expected is None
+            or staged.path.resolve() == expected.resolve())
+        if not same_file or deductions.read_rows(staged.path) != target.rows:
             raise click.ClickException(
                 f"{_shown(target.found.path or target.own)} changed while this was being "
                 "edited. Nothing was written; start again.")
+        if read_items is not None and _read_items(_staged_or_real(edit, read_items[0])) != read_items[1]:
+            raise click.ClickException(
+                f"{_shown(read_items[0])} changed while this was being edited. "
+                "Nothing was written; start again.")
         if items is not None:
             name, listed = items
             deductions.write_items(edit.path(scenario_dir / "itemizations" / f"{name}.csv"), listed)
@@ -16429,8 +16474,12 @@ def deduction_list(state: bool, scenario: str | None, data_dir: Path | None) -> 
     found, listed = deductions.listing(data, ref.path, kind)
     which = "state" if state else "federal"
     if not listed:
-        click.echo(f"no {which} itemized deductions in {ref.name}; every year takes the "
-                   "standard deduction")
+        if state:
+            click.echo(f"no state itemized deductions in {ref.name}; the state uses the "
+                       "federal ones (`sim deduction list`)")
+        else:
+            click.echo(f"no federal itemized deductions in {ref.name}; every year takes the "
+                       "standard deduction")
         return
     table = Table(title=f"{which} itemized deductions ({ref.name})", header_style="bold")
     for column, justify in (("Year", "left"), ("Amount", "left"), ("Total", "right")):
@@ -16490,7 +16539,7 @@ def deduction_add(
     rows = list(target.rows)
     written: tuple[str, list[dict[str, str]]] | None = None
     if listed:
-        name = _deduction_items_name(data_dir_p, scenario_dir, target.kind, year_n, state, "")
+        name = _deduction_items_name(data_dir_p, scenario_dir, target, year_n, state, "")
         written = (name, listed)
         cell = f"@{name}"
     else:
@@ -16542,6 +16591,7 @@ def deduction_edit(
         )
     current = target.rows[index]["amount"]
     listed: list[dict[str, str]] | None = None
+    read_items: tuple[Path, list[dict[str, str]]] | None = None
     if items:
         listed = _parse_items(items)
     elif amount is not None:
@@ -16552,24 +16602,33 @@ def deduction_edit(
         found = [i for i in setup_listings.itemizations(data_dir_p, scenario_dir)
                  if i.name == current[1:]]
         click.echo(f"{year_n}'s itemized deductions, from {current}:")
-        listed = _ask_items(_read_items(found[0].path) if found else [])
+        if found:
+            read_items = (found[0].path, _read_items(found[0].path))
+        listed = _ask_items(read_items[1] if read_items else [])
         if not listed:
             raise click.ClickException("no items left; `sim deduction delete` removes the year")
     else:
         cell = _check_deduction_amount(
             _money_cell(_prompt_with_completion("total in dollars", default=current)))
     written = None
+    dropped = None
     if listed is not None:
-        name = _deduction_items_name(data_dir_p, scenario_dir, target.kind, year_n, state, current)
+        name = _deduction_items_name(data_dir_p, scenario_dir, target, year_n, state, current)
         written = (name, listed)
         cell = f"@{name}"
+    else:
+        # A total in place of the year's own list: the list goes, or a
+        # later --item would find its name taken.
+        dropped = _own_items_to_drop(data_dir_p, scenario_dir, target, year_n, state, current)
     rows = list(target.rows)
     rows[index] = {**rows[index], "amount": cell}
-    _write_deduction(data_dir_p, scenario_name, scenario_dir, target, rows, written)
+    _write_deduction(data_dir_p, scenario_name, scenario_dir, target, rows, written,
+                     drop_items=dropped, read_items=read_items)
     _, after = deductions.listing(data_dir_p, scenario_dir, target.kind)
     total = next((d.total_cents for d in after if d.year == year_n), None)
+    gone = f" (itemizations/{dropped}.csv removed)" if dropped else ""
     click.echo(f"{year_n}'s itemized deductions are now {cell} ({_fmt_cents(total)}), "
-               f"in {_shown(target.own)}{_deduction_origin(target)}")
+               f"in {_shown(target.own)}{gone}{_deduction_origin(target)}")
 
 
 @deduction_group_command.command("delete")
@@ -16606,13 +16665,7 @@ def deduction_delete(
         click.echo("aborted")
         return
     rows = [row for i, row in enumerate(target.rows) if i != index]
-    # Only the year's own list goes with it, and only while nothing else
-    # references it: another file may be used elsewhere.
-    made = deductions.itemization_name(year_n, state)
-    shared = [ref for ref in setup_listings.itemization_references(data_dir_p, scenario_dir).get(made, [])
-              if ref.path.name != f"{target.kind}.csv"]
-    own_items = (made if current == f"@{made}" and not shared
-                 and (scenario_dir / "itemizations" / f"{made}.csv").exists() else None)
+    own_items = _own_items_to_drop(data_dir_p, scenario_dir, target, year_n, state, current)
     _write_deduction(data_dir_p, scenario_name, scenario_dir, target, rows, drop_items=own_items)
     dropped = f" and itemizations/{own_items}.csv" if own_items else ""
     click.echo(f"deleted {year_n}'s itemized deductions from {_shown(target.own)}{dropped}"

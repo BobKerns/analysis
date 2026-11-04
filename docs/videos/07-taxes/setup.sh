@@ -110,9 +110,9 @@ demo_run convert 2026-11-01T090100Z
 stage irmaa-demo
 sim scenario create convert-22 convert > /dev/null
 sim scheduled edit convert --rate 22% > /dev/null
-sim scheduled add 2028-01 Income_SS_Alice Expense_Healthcare --kind irmaa --name irmaa_alice \
+sim scheduled add 2028-01 Asset_Checking Expense_Healthcare --kind irmaa --name irmaa_alice \
     --person alice > /dev/null
-sim scheduled add 2029-08 Income_SS_Bill Expense_Healthcare --kind irmaa --name irmaa_bill \
+sim scheduled add 2029-08 Asset_Checking Expense_Healthcare --kind irmaa --name irmaa_bill \
     --person bill > /dev/null
 git add -A && git commit -q -m convert-22
 demo_run convert-22 2026-11-01T090200Z
