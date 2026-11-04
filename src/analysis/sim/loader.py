@@ -1273,7 +1273,7 @@ def load_scenario(
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
-    _validate_inflation_from_start(aux_rows, scenario_row.get("start", ""), issues)
+    _validate_inflation_from_start(aux_rows, calendar_rows, scenario_row.get("start", ""), issues)
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
     _validate_chains(
@@ -4215,11 +4215,14 @@ def _safe_json(raw: str | None) -> dict[str, Any] | None:
 
 
 def _validate_inflation_from_start(
-    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], start: str, issues: list[str],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    calendar_rows: list[dict[str, str]], start: str, issues: list[str],
 ) -> None:
     """Every inflation series needs a rate in force at the scenario's start:
     the run grows each one's index from its first month, read or not, so a
-    series whose first row comes later would fail that month (#471)."""
+    series whose first row comes later would fail that month (#471). A
+    set_rate row in the first month supplies one too: the run applies the
+    month's calendar events before it grows the indexes."""
     try:
         first_month = month_end_iso(start)
     except ValueError:
@@ -4228,8 +4231,19 @@ def _validate_inflation_from_start(
     for kind, series, _, effective in aux_rows:
         if kind == "inflation" and series is not None:
             first_row[series] = min(first_row.get(series, effective), effective)
+    set_at_start = set()
+    for row in calendar_rows:
+        if row.get("kind") != "set_rate" or not (row.get("amount") or "").strip():
+            continue
+        if (_safe_json(row.get("params_json")) or {}).get("aux_kind", "rate") != "inflation":
+            continue
+        try:
+            if month_end_iso(row.get("date", "")) == first_month:
+                set_at_start.add(row.get("series", ""))
+        except ValueError:
+            continue  # a marker or relative date: not known to be the first month here
     for series, effective in sorted(first_row.items()):
-        if effective > first_month:
+        if effective > first_month and series not in set_at_start:
             issues.append(
                 f"inflation__{series}.csv: its first rate is from {effective[:7]}, after the "
                 f"scenario's start ({first_month[:7]}); the run grows every inflation series "

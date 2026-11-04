@@ -337,3 +337,45 @@ def test_delete_refuses_when_the_file_changed_while_it_asked(
     result = sim("series", "delete", "spare")
     assert result.exit_code != 0 and "changed on disk" in result.output, result.output
     assert path.read_text() == _HEADER + "2026-01-31,2%\n"
+
+
+def test_list_gives_a_template_scenarios_rate_at_the_start(sim: Callable[..., Result]) -> None:
+    result = sim("series", "list", scenario="t_inflation_series")
+    assert result.exit_code == 0, result.output
+    food = next(line for line in result.output.splitlines() if " food " in line)
+    assert "%" in food, food
+
+
+def test_show_lists_each_folders_file_the_loader_reads(
+    sim: Callable[..., Result], test_scenarios_dir: Path,
+) -> None:
+    aux = test_scenarios_dir / "retire_alice" / "aux"
+    aux.mkdir()
+    (aux / "rate__brokerage_growth.csv").write_text(_HEADER + "2026-03-31,2%\n")
+    result = sim("series", "show", "brokerage_growth")
+    assert result.exit_code == 0, result.output
+    assert "series/rate__brokerage_growth.csv" in result.output
+    assert "aux/rate__brokerage_growth.csv" in result.output
+    assert "2026-03" in result.output and "2%" in result.output
+
+
+def test_edit_refuses_a_series_with_rates_in_two_folders(
+    sim: Callable[..., Result], test_scenarios_dir: Path, series_dir: Path,
+) -> None:
+    aux = test_scenarios_dir / "retire_alice" / "aux"
+    aux.mkdir()
+    (aux / "rate__brokerage_growth.csv").write_text(_HEADER + "2026-03-31,2%\n")
+    before = (series_dir / "rate__brokerage_growth.csv").read_text()
+    result = sim("series", "edit", "brokerage_growth", "--set", "2030-01=3%")
+    assert result.exit_code != 0 and "merge them into one file" in result.output, result.output
+    assert (series_dir / "rate__brokerage_growth.csv").read_text() == before
+
+
+def test_a_set_rate_in_the_first_month_gives_an_inflation_series_its_start_rate(
+    series_dir: Path, append_calendar_row: Callable[..., None], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    (series_dir / "inflation__late.csv").write_text(_HEADER + "2030-01-31,3%\n")
+    assert any("inflation__late.csv" in issue for issue in _loads(test_data_dir, intent_dir, "retire_alice"))
+    append_calendar_row(date="2026-05-31", kind="set_rate", series="late", amount="2%",
+                        params_json='{"aux_kind": "inflation"}')
+    assert _loads(test_data_dir, intent_dir, "retire_alice") == []

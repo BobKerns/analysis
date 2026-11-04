@@ -14056,7 +14056,7 @@ def _remove_series_row(rows: list[dict[str, str]], month: str, name: str) -> Non
 def _scenario_start(data: Path, scenario: str) -> str | None:
     """The scenario's start month as the load merges it (a template's only
     where no data repo scenario sets one), or None."""
-    summary = next((s for s in sc.scenario_summaries(data) if s.name == scenario), None)
+    summary = next((s for s in sc.scenario_summaries(data, templates=True) if s.name == scenario), None)
     return summary.start.month if summary is not None and summary.start is not None else None
 
 
@@ -14212,19 +14212,25 @@ def series_show(series: str | None, kind: str | None, scenario: str | None, data
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     found = _pick_series(data, ref.name, series, kind, wanted=lambda s: not s.empty)
-    file = found.read
-    click.echo(f"{_series_label(found)}: {_shown(file.path)} ({file.defined_in})")
-    below = found.below if found.own else None
-    if below is not None:
-        click.echo(f"  overrides {_series_where(below)}")
-    table = Table(header_style="bold")
-    extra = [c for c in file.header if c not in series_files.HEADER]
-    for column in ("From", "Annual rate", *extra):
-        table.add_column(column, justify="right" if column == "Annual rate" else "left")
-    for row in file.rows:
-        table.add_row(escape(_series_row_month(row)[:7]), escape(row.get("annual_rate", "")),
-                      *(escape(row.get(c, "")) for c in extra))
-    _print_wide(table)
+    # The loader reads the name's file in each folder that has one, so each
+    # is shown, with where it comes from.
+    for part in found.parts:
+        file = part.read
+        click.echo(f"{_series_label(found)}: {_shown(file.path)} ({file.defined_in})")
+        below = part.below if part.own else None
+        if below is not None:
+            click.echo(f"  overrides {_series_where(below)}")
+        if file.empty:
+            click.echo("  (empty)")
+            continue
+        table = Table(header_style="bold")
+        extra = [c for c in file.header if c not in series_files.HEADER]
+        for column in ("From", "Annual rate", *extra):
+            table.add_column(column, justify="right" if column == "Annual rate" else "left")
+        for row in file.rows:
+            table.add_row(escape(_series_row_month(row)[:7]), escape(row.get("annual_rate", "")),
+                          *(escape(row.get(c, "")) for c in extra))
+        _print_wide(table)
     readers = _series_readers(data, ref.name, found.name)
     if readers:
         click.echo("named by:")
@@ -14400,6 +14406,14 @@ def series_edit(
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     found = _pick_series(data, ref.name, series, kind, wanted=lambda s: not s.empty, what="series to edit")
+    live = [part for part in found.parts if not part.read.empty]
+    if len(live) > 1:
+        # The loader reads both files' rows as one series; editing one would
+        # leave the other's rows in force unseen.
+        raise click.ClickException(
+            f"{_series_label(found)} has rates in more than one file ("
+            + ", ".join(_series_where(part.read) for part in live)
+            + "), which the loader reads together; merge them into one file by hand first")
     file = found.read
     path = _own_series_path(ref.path, file)
     before = {p: _file_bytes(p) for p in (file.path, path)}
