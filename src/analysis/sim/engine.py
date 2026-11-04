@@ -131,6 +131,10 @@ def run_scenario(
             lots_by_account.setdefault(owner, []).append(lot_id)
         growth_names = {c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
         growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names)
+        # A strategy's view of a lot's return counts the dividends and
+        # interest it reinvests (#468) as well as its appreciation.
+        payout_names = {c.name for c in registries.PAYOUT_ACCOUNTS.values()}
+        return_sources = growth_sources | frozenset(r[0] for r in lots if r[9] in payout_names)
         account_id_by_name: dict[str, int] = {
             r[0]: r[1] for r in con.execute(
                 "SELECT name, lot_id FROM chain WHERE lot_id IS NOT NULL"
@@ -235,7 +239,7 @@ def run_scenario(
             rule_budget=lambda tid, on: _rule_year_budget(
                 Txn._make(txn_by_id[tid]), on, aux, inflation_factor_cache, rule_lifespan, months[-1],
             ),
-            growth_sources=growth_sources, opening_balances=balances, first_month=months[0],
+            growth_sources=return_sources, opening_balances=balances, first_month=months[0],
             acquired=acquired, roth_lots=roth,
         )
         refill_ctx.strategies = strategy_runtime or None
@@ -1197,7 +1201,9 @@ def _track_lots(
     Rolled into another Roth lot, it carries that basis, or all of it as
     basis when the draw would have been qualified, as a qualified Roth 401k
     rollover into a Roth IRA does."""
-    if amount <= 0:
+    if amount <= 0 or to_id in ctx.growth_sources:
+        # A month of negative growth posts back to its counterparty: the lot
+        # lost value, which sells no shares and spends no basis.
         return
     carried = amount
     if from_id in ctx.roth:
@@ -1728,18 +1734,39 @@ def _amount_percent_of_balance(
     base = (opening_balances if basis == "opening" else current_balances).get(to_id, 0)
     if base <= 0:
         return 0
-    if blend := params.get("blend"):
+    if params.get("payout"):
+        # A dividend or interest payout (#468) is never negative: a yield
+        # below zero, even one slice of a blend, is a fall in value, left to
+        # the growth rule.
+        return _percent_of(base, params, rate_kind, aux, month_s, tid, payout=True)
+    # A taxable lot's payouts are their own rules; what's left of the total
+    # return is the appreciation, which waits for a sale. A cash lot's is
+    # zero unless its rate goes negative.
+    total = _percent_of(base, params, rate_kind, aux, month_s, tid)
+    for spec in params.get("less") or ():
+        total -= _percent_of(base, spec, rate_kind, aux, month_s, tid, payout=True)
+    return total
+
+
+def _percent_of(
+    base: int, spec: dict[str, Any], rate_kind: str,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    month_s: str, tid: int, *, payout: bool = False,
+) -> int:
+    """A month of ``base`` at the annual rate of ``spec``: its ``blend`` or
+    its ``series``. A ``payout`` counts each rate below zero as zero."""
+    def rate(series: str | None) -> int:
+        annual = _annual_rate_micros(aux, rate_kind, series, month_s, tid)
+        return max(annual, 0) if payout else annual
+
+    if blend := spec.get("blend"):
         # A fund's allocation blend (#78): sum weight x each slice's rate, read
         # now rather than at load, since a set_rate event can move any slice.
         # Kept in micros-squared so the blend itself never rounds.
-        weighted = sum(
-            weight * _annual_rate_micros(aux, rate_kind, slice_series, month_s, tid)
-            for slice_series, weight in _blend_slices_at(blend, month_s)
-        )
+        weighted = sum(weight * rate(slice_series) for slice_series, weight in _blend_slices_at(blend, month_s))
         return (base * weighted) // (12 * 1_000_000 * 1_000_000)
-    annual_micros = _annual_rate_micros(aux, rate_kind, params.get("series"), month_s, tid)
     # monthly_rate = annual_micros / 12 / 1_000_000; amount = base * monthly_rate
-    return (base * annual_micros) // (12 * 1_000_000)
+    return (base * rate(spec.get("series"))) // (12 * 1_000_000)
 
 
 def _blend_slices_at(blend: list[list[Any]], month_s: str) -> list[list[Any]]:
@@ -2988,7 +3015,7 @@ def _year_tax_estimate(
             )
         return int(row["amount"])
 
-    other_ordinary, ss_income = _tax_year_income_buckets(con, tax_year=tax_year)
+    other_ordinary, ss_income, qualified_dividends = _tax_year_income_buckets(con, tax_year=tax_year)
     business = _business_result(con, tax_year=tax_year)
     capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
     # A Schedule C loss offsets the year's other income (#231).
@@ -3010,7 +3037,21 @@ def _year_tax_estimate(
         excluded = max(excluded, int(row.get("min_exclusion") or 0))
         return gain - min(excluded, gain)
 
-    ltcg_income = net_ltcg(capital.ltcg)
+    # Qualified dividends are taxed with long-term gains (IRC §1(h)(11)), but
+    # a capital loss doesn't offset them: they join after the netting. A
+    # state has no such preference: its gain rules (#485) are for gains, so
+    # its dividends are ordinary income.
+    if scope == "federal":
+        gain_dividends = qualified_dividends
+    else:
+        gain_dividends = 0
+        ordinary_income += qualified_dividends
+
+    def taxed_ltcg(extra_gain: int) -> int:
+        """The income taxed with long-term gain, with ``extra_gain`` more gain."""
+        return net_ltcg(capital.ltcg + extra_gain) + gain_dividends
+
+    ltcg_income = taxed_ltcg(0)
 
     ss_tiers: tuple[int, int] | None = None
     if scope == "federal" and ss_income > 0:
@@ -3120,7 +3161,8 @@ def _year_tax_estimate(
     # The loss that carries: the business loss less the income it absorbed.
     # The deduction never adds to it (a nonbusiness deduction offsets only
     # nonbusiness income, §172(d)(4)), nor does the capital-loss deduction.
-    nonbusiness_income = other_ordinary + capital.stcg + ltcg_income + taxable_ss
+    nonbusiness_income = (other_ordinary + capital.stcg + ltcg_income
+                          + qualified_dividends - gain_dividends + taxable_ss)
     nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
     tax_liability = tax_on(taxable_income, ltcg_income)
 
@@ -3128,7 +3170,7 @@ def _year_tax_estimate(
         """This year's taxable income, and its ordinary part, with more
         ordinary income and long-term gain on top. More income can use more
         of a carried-in NOL under its limit, so that is worked out again."""
-        ordinary, ltcg = ordinary_income + extra_ordinary, net_ltcg(capital.ltcg + extra_ltcg)
+        ordinary, ltcg = ordinary_income + extra_ordinary, taxed_ltcg(extra_ltcg)
         before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
         used = min(nol_in, max(0, before_nol) * nol_limit_percent // 100)
         taxable = max(0, before_nol - used)
@@ -3137,16 +3179,16 @@ def _year_tax_estimate(
     def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
         """This year's tax with more ordinary income and long-term gain on top."""
         return tax_on(
-            taxable_with(extra_ordinary, extra_ltcg)[0], net_ltcg(capital.ltcg + extra_ltcg))
+            taxable_with(extra_ordinary, extra_ltcg)[0], taxed_ltcg(extra_ltcg))
 
     def agi_with(extra_ordinary: int, extra_ltcg: int) -> int:
-        ordinary, ltcg = ordinary_income + extra_ordinary, net_ltcg(capital.ltcg + extra_ltcg)
+        ordinary, ltcg = ordinary_income + extra_ordinary, taxed_ltcg(extra_ltcg)
         return ordinary + ltcg + taxable_ss_for(ordinary, ltcg)
 
     return _TaxEstimate(
         scope=scope, filing_status=filing_status, brackets=brackets, ltcg_brackets=ltcg_brackets,
         ordinary_income=ordinary_income, ltcg_income=ltcg_income,
-        ltcg_exclusion=max(0, capital.ltcg) - max(0, ltcg_income), ss_income=ss_income,
+        ltcg_exclusion=capital.ltcg - net_ltcg(capital.ltcg), ss_income=ss_income,
         taxable_ss=taxable_ss, business=business, capital=capital,
         standard_deduction=standard_deduction, itemized_deduction=itemized_deduction,
         deduction=deduction, nol_in=nol_in, nol_used=nol_used, nol_new=nol_new,
@@ -3854,9 +3896,9 @@ def _record_drawdown_taxes(
                 )
 
 
-def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
-    """A tax year's ordinary income and Social Security benefits. Capital
-    gains and losses are ``_capital_gains``'s."""
+def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
+    """A tax year's ordinary income, Social Security benefits and qualified
+    dividends (#468). Capital gains and losses are ``_capital_gains``'s."""
     rows = con.execute(
         "SELECT tax_character, COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
@@ -3871,7 +3913,7 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
         + by_char.get("roth_nonqualified", 0)
         - by_char.get("tax_deferred_in", 0)
     )
-    return ordinary, by_char.get("ss_benefit", 0)
+    return ordinary, by_char.get("ss_benefit", 0), by_char.get(registries.QUALIFIED_DIVIDEND, 0)
 
 
 class BusinessResult(NamedTuple):

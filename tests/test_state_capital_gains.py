@@ -31,10 +31,13 @@ def state_gains(
     add_state_tax()
     runs = iter(range(100))
 
-    def _run(ltcg: str = "100000.00", stcg: str | None = None) -> dict[str, int]:
+    def _run(ltcg: str = "100000.00", stcg: str | None = None,
+             dividends: str | None = None) -> dict[str, int]:
         rows = [f"gain,Income_CapitalGain,Asset_Checking,{ltcg},ltcg"]
         if stcg is not None:
             rows.append(f"short,Income_CapitalGain,Asset_Checking,{stcg},stcg")
+        if dividends is not None:
+            rows.append(f"dividend,Income_CapitalGain,Asset_Checking,{dividends},qualified_dividend")
         retire_alice_csv("year_to_date.csv").write_text(
             "name,from_account,to_account,amount,tax_character\n" + "\n".join(rows) + "\n")
         run = run_scenario(load_test_copy().intent_path, runs_dir / f"r{next(runs)}.sqlite3",
@@ -170,3 +173,17 @@ def test_the_loader_refuses_a_state_gain_table_it_cannot_use(
     write_aux(filename, text)
     with pytest.raises(LoadError, match=message):
         load_test_copy()
+
+
+def test_a_state_taxes_qualified_dividends_as_ordinary_income(
+    state_gains: Callable[..., dict[str, int]], write_aux: Callable[[str, str], Path],
+) -> None:
+    """The state's gain rules are for gains: a dividend gets neither its
+    exclusion nor its gain rates."""
+    write_aux("state_ltcg_exclusion__CA.csv", _EXCLUSION_HEADER + "2026-01-31,50%,,\n")
+    write_aux("state_ltcg_brackets__CA.csv", _BRACKETS_HEADER + "2026-01-31,MFJ,0,0.00,0%\n")
+    without = state_gains(ltcg="0")
+    summary = state_gains(ltcg="0", dividends="10000.00")
+    assert summary["state_ltcg_income"] == 0
+    assert summary["state_ordinary_income"] == without["state_ordinary_income"] + 10_000_00
+    assert summary["state_tax_liability"] > without["state_tax_liability"]
