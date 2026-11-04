@@ -389,6 +389,13 @@ date to January of the tax year, rounded down to $50; blank or missing
 holds it flat. Social Security's thresholds and the capital loss limit are
 fixed in law, so they have none."""
 
+AUX_SERIES_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
+    IRMAA_TIERS: IRMAA_SERIES_COLUMNS,
+    **{kind: tuple(columns) for kind, columns in TAX_GROWTH_SERIES_COLUMNS.items()},
+}
+"""The aux table columns, by kind, that name an inflation series, which a
+series rename rewrites (#467)."""
+
 AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "federal_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
