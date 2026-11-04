@@ -216,3 +216,28 @@ def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, *
                 ))
     return output
 
+
+
+def basis_step_up_table(rc: RunConnection, **_):
+    """The run's basis step-ups at a death (#434), one row per lot: the
+    month, whose death, the lot, its balance, its basis before and after, and
+    the rule that decided how much stepped up. None when the run has none, so
+    the cell shows nothing. For an ensemble, the run shown is member 0's, as
+    the death lines on its charts are."""
+    found = rc.basis_step_ups()
+    if not found:
+        return None
+    frame = pd.DataFrame({
+        "month": [s.month[:7] for s in found],
+        "person": [s.display for s in found],
+        "account": [s.account for s in found],
+        "balance": [s.balance_cents / 100 for s in found],
+        "basis before": [s.basis_before_cents / 100 for s in found],
+        "basis after": [s.basis_after_cents / 100 for s in found],
+        "rule": [s.rule_label for s in found],
+    })
+    money = "${:,.2f}"
+    return (frame.style
+            .hide(axis="index")
+            .set_caption(f"Basis step-ups at a death - {rc.label}")
+            .format({"balance": money, "basis before": money, "basis after": money}))

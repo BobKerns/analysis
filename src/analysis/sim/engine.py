@@ -755,10 +755,12 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
 
 class StepUp(NamedTuple):
     """One lot's basis step-up at a death (#255): the lot, whose death it
-    is, and the share of its gain or loss that resets: all of it (1) or half (2)."""
+    is, the share of its gain or loss that resets: all of it (1) or half (2),
+    and the rule that decided it, one of ``step_ups.RULES`` (#434)."""
     lot_id: int
     person: str
     share: int
+    rule: str
 
 
 def _household(con) -> list[str]:
@@ -823,14 +825,19 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
                     continue
                 survivor = any(p != person and alive_after(p, month) for p in household)
                 # A joint tenancy is half each (§2040(b)); other shares are out of scope.
-                share = 2 if survivor and not community else 1
-            elif owner == person or (
-                spouses.get(owner) == person and deaths.get(owner, month) < month
-            ):
-                share = 1
+                if not survivor:
+                    share, rule = 1, "last_survivor"
+                elif community:
+                    share, rule = 1, "community_property"
+                else:
+                    share, rule = 2, "joint_half"
+            elif owner == person:
+                share, rule = 1, "owner"
+            elif spouses.get(owner) == person and deaths.get(owner, month) < month:
+                share, rule = 1, "inherited"
             else:
                 continue
-            plan.setdefault(month, []).append(StepUp(lot_id, person, share))
+            plan.setdefault(month, []).append(StepUp(lot_id, person, share, rule))
     return plan
 
 
@@ -844,7 +851,7 @@ def _step_up_basis(
     up (IRC §1014). Inherited property is long-term from then on (§1223(9)).
     Each step-up is recorded in ``basis_step_up``."""
     rows = []
-    for lot_id, person, share in step_ups:
+    for lot_id, person, share, rule in step_ups:
         before = cost_bases.get(lot_id)
         if before is None:
             continue  # not tracking a basis
@@ -852,10 +859,11 @@ def _step_up_basis(
         after = before + (value - before) // share
         cost_bases[lot_id] = after
         acquired[lot_id] = None
-        rows.append((step_id, month_s, lot_id, person, value, before, after))
+        rows.append((step_id, month_s, lot_id, person, value, before, after, rule))
     con.executemany(
         "INSERT INTO basis_step_up(step_id, date, lot_id, person, balance, "
-        "                          basis_before, basis_after) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "                          basis_before, basis_after, rule) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
 

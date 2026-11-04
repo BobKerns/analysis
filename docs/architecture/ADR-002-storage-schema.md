@@ -121,7 +121,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 55) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 56) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -856,7 +856,10 @@ CREATE TABLE basis_step_up (
     person          TEXT NOT NULL,
     balance         INTEGER NOT NULL,
     basis_before    INTEGER NOT NULL,
-    basis_after     INTEGER NOT NULL
+    basis_after     INTEGER NOT NULL,
+    -- #434: why, one of step_ups.RULES (owner, inherited, joint_half,
+    -- community_property, last_survivor).
+    rule            TEXT NOT NULL
 );
 
 CREATE TABLE applied_calendar_event (
@@ -926,7 +929,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
-| `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, and the basis before and after. No money moves. |
+| `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, the basis before and after, and the `rule` that decided it (`owner`, `inherited`, `joint_half`, `community_property`, `last_survivor`). No money moves. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
 | `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
@@ -1122,3 +1125,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#408](https://github.com/BobKerns/analysis/issues/408): `strategy_vary`, a strategy's varied parameters (Intent layer DDL, glossary; schema 53); a strategy is one file, `strategies/<name>.csv` (data repo layout).
 - [#421](https://github.com/BobKerns/analysis/issues/421): year-end strategy moves: `transfer_event.reason_kind` `strategy` and `strategy_decision.hook` `year_end` (Ledger layer DDL, glossary), and the expense subkind `gift` (Intent layer DDL; schema 54).
 - [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
+- [#434](https://github.com/BobKerns/analysis/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 56).

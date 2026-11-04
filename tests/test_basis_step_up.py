@@ -20,11 +20,12 @@ from matplotlib.dates import date2num
 from matplotlib.figure import Figure
 
 from analysis.cli import main
-from analysis.sim import compare, engine
+from analysis.sim import compare, engine, step_ups
 from analysis.sim.connection import RunConnection
 from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import base_case_deaths
 from analysis.sim.loader import LoadError, LoadResult
+from analysis.sim.notebook_ui.accounts_plots import basis_step_up_table
 from analysis.sim.plotting import mark_deaths
 from analysis.sim.types import Death
 
@@ -44,6 +45,16 @@ def _plan(load: Callable[[], LoadResult]) -> dict[str, set[tuple[str, str, int]]
     return {month: {(names[s.lot_id], s.person, s.share) for s in ups} for month, ups in plan.items()}
 
 
+def _rules(load: Callable[[], LoadResult]) -> dict[str, dict[str, str]]:
+    """The rule each step-up applied (#434), by final month and account."""
+    with sqlite3.connect(load().intent_path) as con:
+        names = dict(con.execute(
+            "SELECT m.id, a.name FROM account_lot m JOIN account a ON a.id = m.account_id"
+        ).fetchall())
+        plan = engine._basis_step_ups(con)
+    return {month: {names[s.lot_id]: s.rule for s in ups} for month, ups in plan.items()}
+
+
 def test_no_lifespan_no_step_up(load_test_copy: Callable[[], LoadResult]) -> None:
     assert _plan(load_test_copy) == {}
 
@@ -57,6 +68,10 @@ def test_a_joint_lot_steps_up_half_at_the_first_death_and_in_full_at_the_second(
         ALICE_FINAL: {(BROKERAGE, "alice", 2), ("Asset_Home", "alice", 2)},
         BILL_FINAL: {(BROKERAGE, "bill", 1), ("Asset_Home", "bill", 1)},
     }
+    assert _rules(load_test_copy) == {
+        ALICE_FINAL: {BROKERAGE: "joint_half", "Asset_Home": "joint_half"},
+        BILL_FINAL: {BROKERAGE: "last_survivor", "Asset_Home": "last_survivor"},
+    }
 
 
 def test_community_property_steps_up_both_halves_at_the_first_death(
@@ -68,20 +83,24 @@ def test_community_property_steps_up_both_halves_at_the_first_death(
     assert _plan(load_test_copy) == {
         ALICE_FINAL: {(BROKERAGE, "alice", 1), ("Asset_Home", "alice", 1)},
     }
+    assert _rules(load_test_copy) == {
+        ALICE_FINAL: {BROKERAGE: "community_property", "Asset_Home": "community_property"},
+    }
 
 
 BILL_FIRST = "2027-08-31"
 HOME = {BILL_FIRST: {("Asset_Home", "bill", 2)}, ALICE_FINAL: {("Asset_Home", "alice", 1)}}
 
 
-@pytest.mark.parametrize(("owner", "brokerage"), [
+@pytest.mark.parametrize(("owner", "brokerage", "rules"), [
     # Alice's own lot: nothing at Bill's death, all of it at hers.
-    ("alice", {ALICE_FINAL: {(BROKERAGE, "alice", 1)}}),
+    ("alice", {ALICE_FINAL: {(BROKERAGE, "alice", 1)}}, {ALICE_FINAL: "owner"}),
     # Bill's: all of it at his death, and again when Alice, who inherited it, dies.
-    ("bill", {BILL_FIRST: {(BROKERAGE, "bill", 1)}, ALICE_FINAL: {(BROKERAGE, "alice", 1)}}),
+    ("bill", {BILL_FIRST: {(BROKERAGE, "bill", 1)}, ALICE_FINAL: {(BROKERAGE, "alice", 1)}},
+     {BILL_FIRST: "owner", ALICE_FINAL: "inherited"}),
 ])
 def test_a_lot_one_person_owns_steps_up_at_their_death_and_their_heirs(
-    owner: str, brokerage: dict[str, set[tuple[str, str, int]]],
+    owner: str, brokerage: dict[str, set[tuple[str, str, int]]], rules: dict[str, str],
     write_lifespans: Callable[..., None], update_account: Callable[..., None],
     load_test_copy: Callable[[], LoadResult],
 ) -> None:
@@ -90,6 +109,8 @@ def test_a_lot_one_person_owns_steps_up_at_their_death_and_their_heirs(
     # The joint home: Bill's half at his death, then all of it at Alice's.
     assert _plan(load_test_copy) == {
         month: HOME[month] | brokerage.get(month, set()) for month in HOME}
+    assert {month: by_account[BROKERAGE] for month, by_account in _rules(load_test_copy).items()
+            if BROKERAGE in by_account} == rules
 
 
 def test_two_deaths_in_one_month_step_a_joint_lot_up_once_in_full(
@@ -109,15 +130,17 @@ def test_a_step_up_resets_basis_down_too_and_makes_the_lot_long_term(
     acquired: dict[int, date | None] = dict.fromkeys(balances, date(2035, 1, 15))
     engine._step_up_basis(
         ledger_con, 1, "2035-03-31",
-        [engine.StepUp(1, "alice", 2), engine.StepUp(2, "alice", 1), engine.StepUp(3, "alice", 1)],
+        [engine.StepUp(1, "alice", 2, "joint_half"), engine.StepUp(2, "alice", 1, "owner"),
+         engine.StepUp(3, "alice", 1, "owner")],
         balances, cost_bases, acquired,
     )
     # Half of a 60.00 gain; all of a 60.00 loss; a lot with no basis is left alone.
     assert cost_bases == {1: 70_00, 2: 100_00, 3: None}
     assert acquired == {1: None, 2: None, 3: date(2035, 1, 15)}
     assert ledger_con.execute(
-        "SELECT lot_id, person, balance, basis_before, basis_after FROM basis_step_up ORDER BY id"
-    ).fetchall() == [(1, "alice", 100_00, 40_00, 70_00), (2, "alice", 100_00, 160_00, 100_00)]
+        "SELECT lot_id, person, balance, basis_before, basis_after, rule FROM basis_step_up ORDER BY id"
+    ).fetchall() == [(1, "alice", 100_00, 40_00, 70_00, "joint_half"),
+                     (2, "alice", 100_00, 160_00, 100_00, "owner")]
 
 
 def _run_step_up(load: Callable[[], LoadResult], runs_dir: Path) -> tuple[int, int, int, int]:
@@ -198,6 +221,60 @@ def test_sim_explain_lists_the_step_ups(
         ["2035-03", "Asset_Brokerage_Joint", "(default)"], ["2035-03", "Asset_Home", "alice"],
     ]
     assert all("basis $" in line and " -> $" in line for line in lines)
+    assert all(line.endswith("(joint, decedent's half)") for line in lines)
+
+
+# -- Step-ups in the notebooks (#434) -----------------------------------------
+
+
+@pytest.fixture
+def step_up_run(write_lifespans: Callable[..., None], fund_asset_savings: Callable[..., None],
+                run_test_copy: Callable[[], Path]) -> Path:
+    """The private retire_alice copy, run with Alice dying in 2035-03: the
+    joint brokerage and home each step up half."""
+    fund_asset_savings("500000.00")  # the death halves the income
+    write_lifespans(ALICE_DIES)
+    return run_test_copy()
+
+
+def test_the_notebook_table_lists_each_step_up_with_its_rule(step_up_run: Path) -> None:
+    with RunConnection(step_up_run) as rc:
+        found = rc.basis_step_ups()
+        table = basis_step_up_table(rc)
+    assert [(s.month, s.account, s.person, s.display, s.rule) for s in found] == [
+        (ALICE_FINAL, f"{BROKERAGE} (default)", "alice", "Alice (fake)", "joint_half"),
+        (ALICE_FINAL, "Asset_Home", "alice", "Alice (fake)", "joint_half"),
+    ]
+    assert table is not None
+    frame = table.data
+    assert list(frame.columns) == [
+        "month", "person", "account", "balance", "basis before", "basis after", "rule"]
+    assert list(frame["rule"]) == ["joint, decedent's half"] * 2
+    assert list(frame["basis after"]) == [s.basis_after_cents / 100 for s in found]
+    assert "$" in table.to_html()
+
+
+def test_a_run_without_step_ups_shows_no_table(retire_alice_run_file: Path) -> None:
+    with RunConnection(retire_alice_run_file) as rc:
+        assert rc.basis_step_ups() == []
+        assert basis_step_up_table(rc) is None
+
+
+def test_a_run_from_before_the_rule_shows_its_step_ups_without_one(step_up_run: Path) -> None:
+    with sqlite3.connect(step_up_run) as con:
+        con.execute("ALTER TABLE basis_step_up DROP COLUMN rule")
+    found = step_ups.run_basis_step_ups(step_up_run)
+    assert found is not None
+    assert [(s.account, s.rule, s.rule_label) for s in found] == [
+        (f"{BROKERAGE} (default)", None, "-"), ("Asset_Home", None, "-")]
+
+
+def test_a_run_from_before_step_ups_has_none(step_up_run: Path) -> None:
+    with sqlite3.connect(step_up_run) as con:
+        con.execute("DROP TABLE basis_step_up")
+    assert step_ups.run_basis_step_ups(step_up_run) is None
+    with RunConnection(step_up_run) as rc:
+        assert rc.basis_step_ups() == []
 
 
 # -- Deaths on charts (#255) --------------------------------------------------
