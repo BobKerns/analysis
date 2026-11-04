@@ -3013,10 +3013,13 @@ def _year_tax_estimate(
     business = _business_result(con, tax_year=tax_year)
     capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
     # A Schedule C loss offsets the year's other income (#231).
-    gross_ordinary = other_ordinary + business.net + capital.stcg - capital.loss_deduction
     # Qualified dividends are taxed with long-term gains (IRC §1(h)(11)), but
-    # a capital loss doesn't offset them: they join after the netting.
-    gross_ltcg = capital.ltcg + qualified_dividends
+    # a capital loss doesn't offset them: they join after the netting. A
+    # state has no such preference, so its dividends are ordinary income.
+    gain_dividends = qualified_dividends if scope == "federal" else 0
+    gross_ordinary = (other_ordinary + business.net + capital.stcg - capital.loss_deduction
+                      + qualified_dividends - gain_dividends)
+    gross_ltcg = capital.ltcg + gain_dividends
     # A state's retirement income exclusions (#486) come off before AGI, as
     # the states' own subtractions from income do. Keyed by state, like the
     # standard deduction below.
@@ -3136,7 +3139,8 @@ def _year_tax_estimate(
     # The loss that carries: the business loss less the income it absorbed.
     # The deduction never adds to it (a nonbusiness deduction offsets only
     # nonbusiness income, §172(d)(4)), nor does the capital-loss deduction.
-    nonbusiness_income = other_ordinary + capital.stcg + gross_ltcg + taxable_ss - excluded
+    nonbusiness_income = (other_ordinary + capital.stcg + gross_ltcg
+                          + qualified_dividends - gain_dividends + taxable_ss - excluded)
     nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
     tax_liability = tax_on(taxable_income, ltcg_income)
 
