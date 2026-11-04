@@ -859,40 +859,33 @@ series.
 
 By default, tax is calculated using the standard deduction — a flat amount
 that depends only on filing status (Part 3). If a year has enough deductible
-expenses (a large medical bill is the usual case), you can add a
-`federal_deductions.csv` file to `aux/`. It has one dated row per year:
+expenses (a large medical bill is the usual case), give that year its
+itemized deductions with `sim deduction add`, listing the expenses:
 
-```csv
-# aux/federal_deductions.csv
-effective_date,amount
-2029-01-31,42000.00
+```sh
+sim deduction add 2028 --item surgery=38000 --item hospital=9000 --item prescriptions=3000
 ```
 
-For that tax year, the simulator uses whichever is greater: this amount, or
-the standard deduction. You do not need to compare them yourself. This file
-is shared by every scenario by default; add your own copy under a scenario's
-own `aux/` folder if only that scenario should have it (Part 2, `aux/`).
+For that tax year, the simulator uses whichever is greater: the expenses'
+total, or the standard deduction. You do not need to compare them yourself.
+A year's itemized deductions count for that year only; the years around it
+keep the standard deduction. Leave the `--item` options off and the command
+asks for the expenses one by one, or give a total instead
+(`sim deduction add 2029 12500`).
 
-Instead of a plain number, `amount` can be `@name`, pointing at an
-`itemizations/<name>.csv` file that lists the actual expenses and adds them
-up for you:
+`sim deduction list` shows each year's total, `sim deduction edit 2028`
+changes a year (it asks for each expense in turn), and
+`sim deduction delete 2028` takes one away.
 
-```csv
-# itemizations/medical_2029.csv
-Item,Value
-surgery,32000.00
-prescriptions,3000.00
-```
+The deductions are the current scenario's. The command keeps them in the
+scenario's `aux/federal_deductions.csv`, with the expenses in
+`itemizations/deductions_2028.csv` (`sim itemization show deductions_2028`).
+A scenario built on this one inherits them; changing them there gives that
+scenario its own copy, and the parent keeps its own.
 
-```csv
-# aux/federal_deductions.csv
-effective_date,amount
-2029-01-31,@medical_2029
-```
-
-State tax uses the same idea, in `state_deductions.csv`. If you don't add
-one, the state figure automatically uses whatever is in
-`federal_deductions.csv` — most states don't need their own file.
+State tax uses the same idea, with `--state` on each command. If you don't
+add any, the state figure uses the federal one — most states don't need
+their own.
 
 This is a simple, whole-dollar comparison. It does not model anything more
 detailed, such as medical expenses only counting above a share of your
@@ -1713,6 +1706,7 @@ machine too small for a notebook comfortably.
 | calendar rows of every kind, with where each is defined (latent factors, for ensembles, only with `--kind latent_factor`) | `sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
+| itemized deductions, by tax year | `sim deduction list` (`--state` for the state's) |
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
 | net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--start YEAR] [--end YEAR] [--chart]` |
 | one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH\|YEAR] [--end MONTH\|YEAR] [--yearly] [--chart]` |

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from analysis.sim.engine import EngineError, run_scenario
-from analysis.sim.loader import growth_rule_name, load_scenario
+from analysis.sim.loader import LoadError, growth_rule_name, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -1444,6 +1444,34 @@ def test_itemized_deduction_is_used_when_greater_than_standard(
         assert _summary(con, 2026, "federal_deduction_used") == 40_000_00
     finally:
         con.close()
+
+
+def test_an_itemized_deduction_counts_only_in_its_own_year(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
+    """A big medical year is that year's deduction, not every later year's (#370)."""
+    repo = test_data_dir
+    (repo / "aux" / "federal_deductions.csv").write_text(
+        "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
+    )
+    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
+    try:
+        assert _summary(con, 2026, "federal_deduction_used") == 40_000_00
+        assert _summary(con, 2027, "federal_itemized_deduction") == 0
+        assert _summary(con, 2027, "federal_deduction_used") == 32_200_00
+    finally:
+        con.close()
+
+
+def test_a_year_takes_one_itemized_row(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
+    repo = test_data_dir
+    (repo / "aux" / "federal_deductions.csv").write_text(
+        "effective_date,amount\n2026-01-31,40000.00\n2026-06-30,5000.00\n", encoding="utf-8",
+    )
+    with pytest.raises(LoadError, match="2026 has 2 rows .* a tax year takes one itemized total"):
+        _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
 
 
 def test_standard_deduction_is_used_when_greater_than_itemized(

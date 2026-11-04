@@ -3023,8 +3023,13 @@ def _year_tax_estimate(
     ))
     if scope == "state" and not aux.get((itemized_deduction_aux, None)):
         itemized_deduction_aux = "federal_deductions"
-    itemized_rows = _active_aux_rows(aux, itemized_deduction_aux, None, as_of)
-    itemized_deduction = int(itemized_rows[0]["amount"]) if itemized_rows else 0
+    # A row is one tax year's itemized total, so it counts for the year it's
+    # dated in only, never carried into the years after (#370).
+    itemized_rows = [
+        payload for effective, payload in aux.get((itemized_deduction_aux, None)) or []
+        if effective[:4] == str(tax_year)
+    ]
+    itemized_deduction = int(itemized_rows[-1]["amount"]) if itemized_rows else 0
     deduction = max(standard_deduction, itemized_deduction)
 
     bracket_rows = _indexed_tax_rows(aux, bracket_aux, bracket_series, tax_year, growth_cache)
