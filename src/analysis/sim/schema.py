@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 56
+SCHEMA_VERSION = 57
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -764,7 +764,10 @@ CREATE TABLE basis_step_up (
     person          TEXT NOT NULL,
     balance         INTEGER NOT NULL,
     basis_before    INTEGER NOT NULL,
-    basis_after     INTEGER NOT NULL
+    basis_after     INTEGER NOT NULL,
+    -- #434: why, one of step_ups.RULES (owner, inherited, joint_half,
+    -- community_property, last_survivor).
+    rule            TEXT NOT NULL
 );
 
 CREATE TABLE applied_calendar_event (
