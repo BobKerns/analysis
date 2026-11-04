@@ -108,7 +108,7 @@ def symbol_table_view(source: ScenarioConnection) -> pd.DataFrame:
         if r.symbol in registries.SYMBOL_ASSET_CLASS:
             count = "-"
         else:
-            count = str(r.prices) if r.prices else "none"
+            count = str(r.prices) if r.prices or r.scenario_prices else "none"
             if r.scenario_prices:
                 count += f" (own file in {', '.join(r.scenario_prices)})"
         rows.append({

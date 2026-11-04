@@ -98,3 +98,15 @@ def test_history_figure_draws_every_stored_price(tmp_path: Path) -> None:
     fig = price_history_figure(history, "QQQ")
     line = fig.axes[0].get_lines()[0]
     assert np.asarray(line.get_ydata()).tolist() == [400.0, 580.0, 609.0]
+
+
+def test_symbol_table_counts_a_scenarios_own_prices_as_present(
+    test_data_dir: Path, add_account_value, retire_alice_csv,
+    test_retire_alice_scenario: ScenarioConnection,
+) -> None:
+    own = retire_alice_csv("prices")
+    own.mkdir(exist_ok=True)
+    (own / "security_price__QQQX.csv").write_text("effective_date,price\n2026-05-29,10.00\n")
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="QQQX", quantity="10", opening_balance="1.00")
+    frame = symbol_table_view(test_retire_alice_scenario)
+    assert frame.loc["QQQX", "prices"] == "0 (own file in retire_alice)"  # not "none", so not red
