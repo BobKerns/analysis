@@ -325,7 +325,7 @@ def test_an_itemization_changed_during_the_prompts_aborts(
     assert not (path.parent / "deductions_2028.csv").exists()
 
 
-def test_a_blank_line_doesnt_hide_the_years_own_row(test_data_dir: Path) -> None:
+def test_the_years_own_row_is_found_past_a_blank_line(test_data_dir: Path) -> None:
     assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
     own = _own(test_data_dir, "retire_alice")
     own.write_text("effective_date,amount\n\n2028-01-01,@deductions_2028\n", encoding="utf-8")
