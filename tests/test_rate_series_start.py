@@ -102,6 +102,20 @@ def test_a_rule_retired_before_it_first_fires_never_reads() -> None:
     assert len(_issues([annual], aux, [{**retire, "vary_target": "date"}])) == 1
 
 
+def test_a_rule_retired_mid_month_misses_that_month() -> None:
+    """A retirement keeps its day and is the rule's inclusive end; the rule
+    posts at month-end, so a June rule retired June 15 never posts, even when
+    the retirement falls in the start month's first days."""
+    aux = _rate("bonus", "2027-01-31")
+    june = _rule(series="bonus", cadence="annual", month_of_year="6", start="2026-06-30")
+    retire = {"kind": "retire_scheduled", "scheduled_name": "grow", "date": "2026-06-15"}
+    assert _issues([june], aux, [retire]) == []
+    december = _rule(series="bonus", cadence="annual", month_of_year="12")
+    assert _issues([december], aux, [{**retire, "date": "2026-05-15"}]) == []
+    biweekly = _rule(series="bonus", cadence="biweekly", start="2026-06-05")
+    assert len(_issues([biweekly], aux, [{**retire, "date": "2026-06-15"}])) == 1
+
+
 def test_a_swap_supplies_the_series_from_its_date() -> None:
     swap = {"kind": "swap_aux_table", "series": "stocks", "date": "2026-05-31",
             "params_json": '{"aux_kind": "rate", "source_series": "old"}'}

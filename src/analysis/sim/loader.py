@@ -4443,7 +4443,7 @@ def _validate_rate_series_start(
     # follows a date marker could land later than written.
     fixed_events = [
         row for row in calendar_rows
-        if (when := row.get("date", "")) and when >= run_start.isoformat()
+        if (when := row.get("date", "")) and when[:7] >= run_start.isoformat()[:7]
         and (row.get("vary_target") or "").strip() != "date"
         and "date" not in (_safe_json(row.get(DATE_REFS)) or {})
     ]
@@ -4460,11 +4460,15 @@ def _validate_rate_series_start(
             continue
         if series and key in supplied_from:
             supplied_from[key] = min(supplied_from[key], when)
-    # A retire_scheduled event ends its rule after that month's posting.
+    # A retire_scheduled event's date, which keeps its day, becomes its
+    # rule's inclusive end (ADR-006 §2).
     retired: dict[str, date] = {}
     for row in fixed_events:
         if row.get("kind") == "retire_scheduled" and (name := row.get("scheduled_name", "")):
-            when_d = parse_month(row["date"])
+            try:
+                when_d = parse_day(row["date"])
+            except ValueError:
+                continue  # reported by _normalize_month_columns
             retired[name] = min(retired.get(name, when_d), when_d)
 
     # (aux_kind, series) -> (first month read, who reads it then)
@@ -4480,7 +4484,7 @@ def _validate_rate_series_start(
             continue
         params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
         window = _first_firing(
-            row, run_start, min(run_end, retired.get(row.get("name", ""), run_end)))
+            row, run_start, min(run_end, _last_posting_month(row, retired.get(row.get("name", "")))))
         if window is None:
             continue
         first, last = window
@@ -4515,6 +4519,18 @@ def _validate_rate_series_start(
                 f"but {reader} reads it from {month_s[:7]}; add a row on or before "
                 f"{month_s[:7]}, or a set_rate row with a fixed date by then"
             )
+
+
+def _last_posting_month(row: Mapping[str, str], retired_on: date | None) -> date:
+    """The last month a rule retired on ``retired_on`` can post. The engine
+    posts a month's rule at month-end, so one retired mid-month misses that
+    month, but a biweekly rule still pays its paydays up to the day."""
+    if retired_on is None:
+        return date.max
+    month = parse_month(retired_on.isoformat())
+    if retired_on == month or (row.get("cadence") or "") == "biweekly":
+        return month
+    return add_month_ends(month, -1)
 
 
 def _first_firing(
