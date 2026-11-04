@@ -69,7 +69,14 @@ NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
 LIQUID_SUBKINDS = registries.CASH_SUBKINDS
 # ss_benefit is handled separately
-TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "stcg", "tax_deferred_out", "roth_nonqualified"}
+TAXABLE_GAIN_CHARS = {
+    "ordinary", "ltcg", "stcg", "tax_deferred_out", "roth_nonqualified", registries.QUALIFIED_DIVIDEND,
+}
+# A taxable lot's reinvested dividends and interest (#468): realized, since
+# they're taxed the year they're paid, though they never reach cash.
+PAYOUT_ACCOUNT_NAMES = frozenset(a.name for a in registries.PAYOUT_ACCOUNTS.values())
+GROWTH_ACCOUNT_NAMES = frozenset(
+    a.name for a in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values() if a.kind == "income")
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
@@ -1171,6 +1178,9 @@ class RunConnection(Connection):
     def gains_by_category(self) -> pd.DataFrame:
         """Year-indexed realized (taxable/non-taxable) vs. unrealized gains, in dollars.
 
+        A taxable lot's reinvested dividends and interest (#468) count as
+        realized taxable gains: they are taxed the year they're paid, but
+        never reach cash, so ``distribution_coverage`` leaves them out.
         Social Security is split into taxable/non-taxable by this run's own
         ``federal_taxable_ss`` (the provisional-income test), not a flat
         assumption. Also includes ``expenses``/``distribution_coverage``
@@ -1188,14 +1198,25 @@ class RunConnection(Connection):
             gains["year"] = pd.to_datetime(gains["date"]).dt.year
 
             reaches_cash = gains["to_subkind"].isin(LIQUID_SUBKINDS)
-            is_unrealized = (gains["from_kind"] == "income") & ~reaches_cash
-            is_taxable = reaches_cash & gains["tax_character"].isin(TAXABLE_GAIN_CHARS)
+            is_payout = gains["from_name"].isin(PAYOUT_ACCOUNT_NAMES)
+            # Negative growth posts from the lot back to its counterparty: an
+            # unrealized loss, counted against the unrealized gains.
+            is_loss = gains["to_name"].isin(GROWTH_ACCOUNT_NAMES) & (gains["from_kind"] == "asset")
+            gains.loc[is_loss, "amount"] = -gains.loc[is_loss, "amount"]
+            is_unrealized = ((gains["from_kind"] == "income") & ~reaches_cash & ~is_payout) | is_loss
+            is_taxable = (reaches_cash | is_payout) & gains["tax_character"].isin(TAXABLE_GAIN_CHARS)
             is_nontaxable = reaches_cash & gains["tax_character"].isin(NONTAXABLE_GAIN_CHARS)
             is_ss = gains["tax_character"] == "ss_benefit"
             is_harvest = (
                 (gains["reason_kind"] == "strategy") & (gains["from_lot"] == gains["to_lot"])
                 & (gains["from_account"] == gains["to_account"])
                 & gains["tax_character"].isin(["ltcg", "stcg"])
+            )
+
+            # Reinvested payouts are taxable but never reach cash, so they
+            # don't cover spending.
+            reinvested = (
+                gains[is_payout & ~reaches_cash].groupby("year")["amount"].sum() / 100
             )
 
             gains["gain_category"] = pd.NA
@@ -1242,7 +1263,9 @@ class RunConnection(Connection):
                 expenses_yearly["total"].reindex(gains_yearly.index).fillna(0)
             )
             gains_yearly["distribution_coverage"] = (
-                gains_yearly["realized_total"] - gains_yearly["expenses"]
+                gains_yearly["realized_total"]
+                - reinvested.reindex(gains_yearly.index).fillna(0)
+                - gains_yearly["expenses"]
             )
             if harvested.any():
                 gains_yearly["harvested"] = harvested

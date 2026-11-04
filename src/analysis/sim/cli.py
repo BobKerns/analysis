@@ -10257,9 +10257,11 @@ def report_gains_command(
     """Show realized vs. unrealized gains by year, against that year's expenses.
 
     taxable and non-taxable are income that reached cash (Social Security
-    split by the year's computed taxable share); unrealized is growth that
-    stayed invested. distribution_coverage is realized_total minus expenses:
-    a negative year spent principal. --chart draws the gains stacked by
+    split by the year's computed taxable share), plus a taxable lot's
+    reinvested dividends and interest; unrealized is growth that stayed
+    invested. distribution_coverage is the cash part of realized_total
+    (less the reinvested payouts) minus expenses: a negative year spent
+    principal. --chart draws the gains stacked by
     year, with the expenses as a line.
     """
     years = _year_range(first_year, last_year)
@@ -13765,8 +13767,8 @@ def _rename_with_growth_rules(
     changed = _rename_across(edit, what, old, new, defines=defines, rewrite=rewrite, taken=taken, missing=missing)
     for each in affected:
         after = rename.generated_growth_rules(edit.data_dir, each)
-        rules = {name: after[target] for key, name in before[each].items()
-                 if (target := moved(*key)) is not None and target in after}
+        rules = {name: after[(*target, source)] for (account, lot, source), name in before[each].items()
+                 if (target := moved(account, lot)) is not None and (*target, source) in after}
         changed += [f"{each}: {c}" for c in rename.rename_growth_rules(scenarios / each, rules)]
     return list(dict.fromkeys(changed))
 
@@ -13900,6 +13902,8 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
     aux table names (an IRMAA tier's growth), is read by every scenario and
     isn't renamed here, nor is an asset class's series, or one
     named for a symbol (or <symbol>.<class>), which lots read by name.
+    A series' yield (<series>_yield, #468) is read by name too: it is renamed
+    with its series, never on its own.
 
     Either name left out is asked for."""
     data = _resolve_data_dir(data_dir)
@@ -13908,6 +13912,7 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
         can_rename = [
             name for name in names.series_names(data, scenario_name)
             if name not in registries.ASSET_CLASSES
+            and not name.endswith(registries.YIELD_SUFFIX)
             and not rename.symbol_series(data, name) and not rename.shared_series_files(data, name)
             and not rename.shared_series_references(data, name)
         ]
@@ -13930,10 +13935,62 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
         raise click.ClickException(
             f"series {old!r} is named by the shared {', '.join(named_by)}, which every "
             "scenario reads; it can't be renamed")
+    old_yield, new_yield = registries.yield_series(old), registries.yield_series(new)
     with _scenario_edit(data, scenario) as edit:
+        scenarios = edit.data_dir / "scenarios"
+        affected = rename.scope(scenarios, edit.name, rename.series_mentioned(old))
+        for name in (old, new):
+            if of := _yield_of(data, edit, name, affected):
+                raise click.ClickException(
+                    f"{name!r} is {of}'s yield series (#468), which lots find by name; "
+                    f"rename {of} and its yield follows")
+        # Its yield (#468) goes with it, in every scenario the rename reaches
+        # that has one, or the lots growing at it would stop paying out. A
+        # yield from outside those scenarios can't follow, and an existing
+        # NEW_yield would start paying out where none was paid.
+        if shared := rename.shared_series_files(data, old_yield):
+            raise click.ClickException(
+                f"{old!r}'s yield {old_yield!r} has rates in the shared "
+                f"{', '.join(f'aux/{p.name}' for p in shared)}, which every scenario reads; "
+                f"{old!r} can't be renamed")
+        outside = {each: source for each, found in rename.sources(
+                       scenarios, affected, rename.series_mentioned(old_yield)).items()
+                   for source in found if source not in affected}
+        if outside:
+            raise click.ClickException(
+                f"{old!r}'s yield {old_yield!r} comes from scenarios the rename doesn't reach: "
+                f"{rename.describe_clashes(outside)}; rename or move it first")
+        if found := rename.clashes(scenarios, affected, rename.series_mentioned(new_yield)):
+            raise click.ClickException(
+                f"a series {new_yield!r} already applies in {rename.describe_clashes(found)}; "
+                "rename or delete it first")
+        if shared := rename.shared_series_files(data, new_yield):
+            raise click.ClickException(
+                f"series {new_yield!r} has rates in the shared {', '.join(f'aux/{p.name}' for p in shared)}, "
+                f"which every scenario reads; {new!r}'s lots would start paying it")
+        with_yield = [each for each in affected if rename.series_mentioned(old_yield)(scenarios / each)]
         changed = _rename_across(edit, "series", old, new, defines=rename.series_mentioned,
                                  rewrite=rename.rename_series)
+        try:
+            changed += [f"{each}: {c}" for each in with_yield
+                        for c in rename.rename_series(scenarios / each, old_yield, new_yield)]
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from None
     _echo_renamed("series", old, new, changed)
+
+
+def _yield_of(data: Path, edit: StagedEdit, name: str, affected: list[str]) -> str | None:
+    """The series, asset class or symbol whose yield (#468) ``name`` is, if
+    any: ``<it>_yield`` where it names something lots grow at, in
+    ``edit``'s scenario's lineage or any scenario the rename reaches."""
+    if not name.endswith(registries.YIELD_SUFFIX):
+        return None
+    base = name.removesuffix(registries.YIELD_SUFFIX)
+    scenarios, mentioned = edit.data_dir / "scenarios", rename.series_mentioned(base)
+    if base in registries.ASSET_CLASSES or rename.symbol_series(data, base) \
+            or rename.scope(scenarios, edit.name, mentioned) or rename.clashes(scenarios, affected, mentioned):
+        return base
+    return None
 
 
 def _lot_defined(account: str, lot: str) -> rename.Defines:
