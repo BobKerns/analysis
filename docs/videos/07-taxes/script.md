@@ -237,7 +237,7 @@ Sleep 400ms
 Enter
 Wait
 Sleep 6s
-Type "clear && sim run convert"
+Type "clear && sim run convert --commit"
 Sleep 400ms
 Enter
 Wait
@@ -436,13 +436,13 @@ Set DataDir "home/retirement/data/sim"
 Hide
 Open "net_worth.ipynb"
 RunAll
-Scroll "Federal and state tax by year"
+Scroll "Tax"
 Show
 Sleep 9s
 Open "scenario_compare.ipynb"
 Hide
 RunAll
-Scroll "Each run's total tax by tax year"
+Scroll "Tax"
 Show
 Sleep 10s
 ScrollBy 500

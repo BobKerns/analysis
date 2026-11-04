@@ -106,10 +106,14 @@ def itemization_name(year: int, state: bool) -> str:
     return f"{'state_' if state else ''}deductions_{year}"
 
 
-def write_items(path: Path, items: list[tuple[str, str]]) -> None:
-    """``items`` (name, dollars) as an itemization file."""
+def write_items(path: Path, items: list[dict[str, str]]) -> None:
+    """``items`` as an itemization file: Item and Value first, then any
+    other columns the rows carry (a note, say), kept as they were."""
+    columns = list(ITEM_HEADER)
+    for row in items:
+        columns += [column for column in row if column not in columns]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh, lineterminator="\n")
-        writer.writerow(ITEM_HEADER)
+        writer = csv.DictWriter(fh, fieldnames=columns, lineterminator="\n", restval="")
+        writer.writeheader()
         writer.writerows(items)

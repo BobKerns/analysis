@@ -2740,14 +2740,17 @@ def _validate_itemized_deductions(
 ) -> None:
     """An itemized-deduction row is one tax year's total, counted in that
     year only (#370), so a year takes one row."""
-    years: dict[tuple[str, str], list[str]] = {}
-    for kind, _series, _payload, effective in aux_rows:
+    # By table: a series (`federal_deductions__<series>.csv`, for a
+    # swap_aux_table) is a table of its own, with its own years.
+    years: dict[tuple[str, str, str], list[str]] = {}
+    for kind, series, _payload, effective in aux_rows:
         if kind in ("federal_deductions", "state_deductions"):
-            years.setdefault((kind, effective[:4]), []).append(effective[:7])
-    for (kind, year), dates in sorted(years.items()):
+            years.setdefault((kind, series or "", effective[:4]), []).append(effective[:7])
+    for (kind, series, year), dates in sorted(years.items()):
         if len(dates) > 1:
+            table = f"{kind}__{series}" if series else kind
             issues.append(
-                f"aux/{kind}.csv: {year} has {len(dates)} rows ({', '.join(dates)}); "
+                f"aux/{table}.csv: {year} has {len(dates)} rows ({', '.join(dates)}); "
                 "a tax year takes one itemized total")
 
 

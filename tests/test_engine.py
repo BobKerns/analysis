@@ -1474,6 +1474,21 @@ def test_a_year_takes_one_itemized_row(
         _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
 
 
+def test_each_deduction_table_takes_its_own_row_for_a_year(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
+    # A series is another table (for a swap_aux_table), with its own years.
+    repo = test_data_dir
+    for name, amount in (("federal_deductions", "40000.00"), ("federal_deductions__sunset", "5000.00")):
+        (repo / "aux" / f"{name}.csv").write_text(
+            f"effective_date,amount\n2026-01-31,{amount}\n", encoding="utf-8")
+    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
+    try:
+        assert _summary(con, 2026, "federal_itemized_deduction") == 40_000_00
+    finally:
+        con.close()
+
+
 def test_standard_deduction_is_used_when_greater_than_itemized(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
 ) -> None:

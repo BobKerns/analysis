@@ -158,3 +158,69 @@ def test_a_bad_amount_is_refused(test_data_dir: Path) -> None:
 
     assert result.exit_code != 0
     assert not _own(test_data_dir, "retire_alice").exists()
+
+
+def test_an_empty_amount_is_refused(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "100").exit_code == 0
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", "--amount", "")
+
+    assert result.exit_code != 0
+    assert _rows(_own(test_data_dir, "retire_alice")) == [("2028-01-01", "100.00")]
+
+
+def test_guided_edit_keeps_an_items_other_columns(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+    items = test_data_dir / "scenarios" / "retire_alice" / "itemizations" / "deductions_2028.csv"
+    items.write_text("Item,Value,Note\na,1.00,receipt in the box\n", encoding="utf-8")
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", answers=["2", ""])
+
+    assert result.exit_code == 0, result.output
+    assert items.read_text(encoding="utf-8") == "Item,Value,Note\na,2.00,receipt in the box\n"
+
+
+def _itemization(data: Path, name: str, value: str = "500.00") -> None:
+    path = data / "scenarios" / "retire_alice" / "itemizations" / f"{name}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"Item,Value\nx,{value}\n", encoding="utf-8")
+
+
+def test_editing_a_shared_itemization_writes_the_years_own(test_data_dir: Path) -> None:
+    _itemization(test_data_dir, "medical")
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "@medical").exit_code == 0
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "2028", answers=["700", ""])
+
+    assert result.exit_code == 0, result.output
+    folder = test_data_dir / "scenarios" / "retire_alice" / "itemizations"
+    assert _items(folder / "medical.csv") == [("x", "500.00")]
+    assert _items(folder / "deductions_2028.csv") == [("x", "700.00")]
+    assert _rows(_own(test_data_dir, "retire_alice")) == [("2028-01-01", "@deductions_2028")]
+
+
+def test_a_name_another_itemization_has_is_refused(test_data_dir: Path) -> None:
+    _itemization(test_data_dir, "deductions_2028")
+
+    result = _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1")
+
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+    assert _items(test_data_dir / "scenarios" / "retire_alice" / "itemizations"
+                  / "deductions_2028.csv") == [("x", "500.00")]
+
+
+def test_delete_keeps_items_something_else_references(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+    assert _sim(test_data_dir, "retire_alice", "add", "2029", "@deductions_2028").exit_code == 0
+    # Another year's row sharing it isn't "something else": move the
+    # reference to a different kind of file, the state's deductions.
+    assert _sim(test_data_dir, "retire_alice", "delete", "2029", "--yes").exit_code == 0
+    assert _sim(test_data_dir, "retire_alice", "add", "2029", "--state",
+                "@deductions_2028").exit_code == 0
+
+    result = _sim(test_data_dir, "retire_alice", "delete", "2028", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert (test_data_dir / "scenarios" / "retire_alice" / "itemizations"
+            / "deductions_2028.csv").exists()
