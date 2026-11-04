@@ -38,9 +38,8 @@ each scene (`stage/<scene>`) so a tape can make on camera what later scenes
 already have. Each scenario is run once at the end and its run renamed to a
 fixed time. The tapes work in `~/retirement/data/sim`, as in videos 3 to 7.
 
-> Draft: numbers in the narration come from a trial run on tax
-> brackets that aren't yet indexed for inflation (#370's finding); re-check them once that fix and video 7's
-> setup land.
+> Numbers in the narration were re-checked on 2026-11-04 against `setup.sh`
+> with #467's indexed brackets and #468's payouts.
 
 ## Scene `title`: Title card
 
@@ -208,8 +207,6 @@ paid out each year: dividends from the stocks, interest from the bonds,
 reinvested in the lot. And in an ensemble, from video six, every one of
 those rates can vary.
 
-> Needs #468 (PR #470): payouts split from growth.
-
 ## Scene `allocation`: What they own
 
 ```tape
@@ -297,9 +294,10 @@ Sleep 14s
 ```
 
 When both have retired, the spending chain sells the bonds first. Each
-sale takes the same share of the lot's basis as of its balance: in 2031,
-sixty eight thousand dollars of bonds sold, fifty seven thousand of it
-basis, back untaxed. Sim report gains shows each year's gains: realized,
+sale takes the same share of the lot's basis as of its balance. Its
+interest was taxed as it was paid, and added to its basis, so in 2031 the
+lot falls by seventy four thousand dollars and its basis by seventy two:
+nearly all of it comes back untaxed. Sim report gains shows each year's gains: realized,
 meaning sold or paid out, and unrealized, still growing in the accounts.
 
 ## Scene `location`: Which money goes where
@@ -348,9 +346,9 @@ Wait
 Sleep 12s
 ```
 
-In convert, Alice's IRA shrinks by about sixty thousand dollars a year
-from 2031, and stops at about three hundred and forty thousand in today's
-dollars, less than half what it reaches in base. So her required
+In convert, Alice's IRA shrinks by fifty to eighty thousand dollars a
+year from 2031, and stops at about two hundred and thirteen thousand in
+today's dollars, under a third of what it reaches in base. So her required
 distributions, and the tax on them, are smaller for good. The Roth holds
 what came over: its basis is what was converted, and everything above
 that will never be taxed.
@@ -409,12 +407,12 @@ Sleep 14s
 Sim allocation, by tax treatment, shows where each kind of investment
 sits: taxable, tax deferred, or tax free. In 2040, most of Alice's IRA
 has moved to the Roth. And the comparison from video five gives the
-result: the extra conversion pays about seventeen thousand dollars less
-tax over the run than convert alone, and ends about twenty five thousand
-dollars ahead.
+result: the extra conversion pays about six thousand dollars less tax
+over the run than convert alone, and ends about four thousand dollars
+ahead.
 
 > Numbers: roth-fund vs convert from `sim compare base convert roth-fund`
-> (Δ tax −$120.9k vs −$103.9k; 2060 after tax +$208.8k vs +$183.5k). Show
+> (Δ tax −$79.7k vs −$73.8k; 2060 after tax +$150.8k vs +$146.4k). Show
 > the compare on screen too, or keep it narrated?
 
 ## Scene `nb-accounts`: The accounts notebook
