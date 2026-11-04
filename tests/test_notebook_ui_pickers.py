@@ -545,3 +545,19 @@ def test_read_run_status_reads_a_run_under_a_folder_with_a_hash(
 
     assert read_run_status(copy).status == "succeeded"
     assert sorted(p.name for p in tmp_path.iterdir() if p.is_file()) == []
+
+
+def test_newer_runs_warning_quotes_a_run_path_with_a_space(
+    retire_alice_test_run: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    folder = tmp_path / "my runs"
+    folder.mkdir()
+    copy = folder / good.name
+    shutil.copyfile(good, copy)
+    failed = _failed_copy(copy, "99991231T235959Z", "Boom")
+
+    warning = newer_runs_warning("retire_alice", copy)
+    assert warning is not None
+    assert f"sim explain --runfile &#x27;{failed}&#x27;" in warning

@@ -15,6 +15,7 @@ from contextvars import ContextVar
 import html as html_lib
 import os
 import re
+import shlex
 import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -107,7 +108,7 @@ def explain_command(rc: RunConnection, scenario: str | None = None) -> str:
     # `sim explain SCENARIO` reads the latest.
     if rc.ensemble_member() is not None or (
             scenario and latest_run_path(rc.run_path.parent, scenario, wait=False) != rc.run_path):
-        return f"sim explain --runfile {rc.run_path}"
+        return f"sim explain --runfile {shlex.quote(str(rc.run_path))}"
     return f"sim explain {scenario}" if scenario else "sim explain"
 
 
@@ -186,7 +187,7 @@ def newer_runs_warning(name: str, run_path: Path | None) -> str | None:
     more = f" ({len(newer)} newer runs didn't succeed)" if len(newer) > 1 else ""
     return warning_html(
         f"**The latest run of `{name}` {_failure(latest)}**{more}, so this shows the last "
-        f"run that succeeded. `sim explain --runfile {latest.path}` says more; "
+        f"run that succeeded. `sim explain --runfile {shlex.quote(str(latest.path))}` says more; "
         "`sim list` lists every run.")
 
 
