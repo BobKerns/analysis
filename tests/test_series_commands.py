@@ -400,3 +400,27 @@ def test_revert_drops_an_own_aux_file_beside_an_inherited_series_file(
     assert result.exit_code == 0, result.output
     assert not (aux / "inflation__food.csv").exists()
     assert "t_inflation_series" in result.output
+
+
+def test_edit_changes_the_only_folders_file_with_rates(
+    sim: Callable[..., Result], test_scenarios_dir: Path, series_dir: Path,
+) -> None:
+    """series/ holds an empty file; aux/ holds the rates the loader reads."""
+    (series_dir / "rate__spare.csv").write_text(_HEADER)
+    aux = test_scenarios_dir / "retire_alice" / "aux"
+    aux.mkdir()
+    (aux / "rate__spare.csv").write_text(_HEADER + "2026-01-31,1%\n2030-01-31,2%\n")
+    result = sim("series", "edit", "spare", "--remove", "2030-01")
+    assert result.exit_code == 0, result.output
+    assert (aux / "rate__spare.csv").read_text() == _HEADER + "2026-01-31,1%\n"
+    assert (series_dir / "rate__spare.csv").read_text() == _HEADER
+
+
+def test_a_swap_in_the_first_month_gives_an_inflation_series_its_start_rate(
+    series_dir: Path, append_calendar_row: Callable[..., None], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    (series_dir / "inflation__late.csv").write_text(_HEADER + "2030-01-31,3%\n")
+    (series_dir / "inflation__early.csv").write_text(_HEADER + "2020-01-31,2%\n")
+    append_calendar_row(date="2026-05-31", kind="swap_aux_table", series="late",
+                        params_json='{"aux_kind": "inflation", "source_series": "early"}')
+    assert _loads(test_data_dir, intent_dir, "retire_alice") == []

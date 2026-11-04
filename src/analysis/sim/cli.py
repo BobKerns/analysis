@@ -14407,7 +14407,10 @@ def series_edit(
             f"{_series_label(found)} has rates in more than one file ("
             + ", ".join(_series_where(part.read) for part in live)
             + "), which the loader reads together; merge them into one file by hand first")
-    file = found.read
+    # With one folder's file live, that is the one to edit, even when the
+    # other folder's (series/, shown first) is empty.
+    part = live[0] if live else found
+    file = part.read
     path = _own_series_path(ref.path, file)
     before = {p: _file_bytes(p) for p in (file.path, path)}
     rows = [dict(row) for row in file.rows]
@@ -14422,7 +14425,7 @@ def series_edit(
             _set_series_row(rows, month, value)
     else:
         _echo_guided_scenario(ref.name, path, defaulted=scenario is None)
-        if not found.own:
+        if not part.own:
             click.echo(f"  It comes from {_series_where(file)}: writing puts this "
                        "scenario's own copy of the whole file here.")
         if not _ask_series_edits(found, rows, _scenario_start(data, ref.name)):
@@ -14437,7 +14440,7 @@ def series_edit(
     with _scenario_edit(data, ref.name) as edit:
         _series_unchanged(edit, before)
         series_files.write(edit.path(path), file.header, rows)
-    if found.own:
+    if part.own:
         click.echo(f"updated {_series_label(found)} in {_shown(path)}")
     else:
         click.echo(f"wrote an override of {_series_label(found)} (from {file.defined_in}) to {_shown(path)}")

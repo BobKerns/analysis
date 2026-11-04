@@ -4221,8 +4221,8 @@ def _validate_inflation_from_start(
     """Every inflation series needs a rate in force at the scenario's start:
     the run grows each one's index from its first month, read or not, so a
     series whose first row comes later would fail that month (#471). A
-    set_rate row in the first month supplies one too: the run applies the
-    month's calendar events before it grows the indexes."""
+    set_rate or swap_aux_table row in the first month supplies one too: the
+    run applies the month's calendar events before it grows the indexes."""
     try:
         first_month = month_end_iso(start)
     except ValueError:
@@ -4233,12 +4233,20 @@ def _validate_inflation_from_start(
             first_row[series] = min(first_row.get(series, effective), effective)
     set_at_start = set()
     for row in calendar_rows:
-        if row.get("kind") != "set_rate" or not (row.get("amount") or "").strip():
+        kind = row.get("kind")
+        params = _safe_json(row.get("params_json")) or {}
+        if params.get("aux_kind", "rate") != "inflation":
             continue
-        if (_safe_json(row.get("params_json")) or {}).get("aux_kind", "rate") != "inflation":
+        if kind == "set_rate":
+            supplied = bool((row.get("amount") or "").strip())
+        elif kind == "swap_aux_table":
+            # The source's row in force then takes over (ADR-003 §3.5).
+            source = first_row.get(str(params.get("source_series") or ""))
+            supplied = source is not None and source <= first_month
+        else:
             continue
         try:
-            if month_end_iso(row.get("date", "")) == first_month:
+            if supplied and month_end_iso(row.get("date", "")) == first_month:
                 set_at_start.add(row.get("series", ""))
         except ValueError:
             continue  # a marker or relative date: not known to be the first month here
