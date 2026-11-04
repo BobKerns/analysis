@@ -1,6 +1,6 @@
 """Scenario intent-data notebook views: manifest, persons, chains, scheduled
-transactions, calendar events -- a scenario's whole setup, readable without
-running it.
+transactions, calendar events, year-to-date rows, itemizations and tags -- a
+scenario's whole setup, readable without running it.
 
 All take a :class:`~analysis.sim.connection.ScenarioConnection` and return
 plain, display-ready DataFrames -- these are intent-side facts (unlike
@@ -9,13 +9,14 @@ plain, display-ready DataFrames -- these are intent-side facts (unlike
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 
-from analysis.sim import chain_map, registries
+from analysis.sim import chain_map, registries, setup_listings
 from analysis.sim.connection import ScenarioConnection
 
 
@@ -253,3 +254,113 @@ def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
     events = events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True)
     events[_CALENDAR_COLS] = events[_CALENDAR_COLS].fillna("-")
     return events
+
+
+# ---------- year to date, itemizations, tags (#435) ----------
+#
+# Read with the same functions ``sim ytd list``, ``sim itemization list|show``
+# and ``sim tags`` use, so the notebook and the terminal show the same rows.
+
+YTD_COLUMNS = ["name", "source", "from", "to", "amount", "tax_character", "year",
+               "description", "defined_in"]
+
+
+def ytd_view(sc: ScenarioConnection) -> pd.DataFrame:
+    """``sim ytd list`` as a table: year_to_date.csv's rows, then the
+    scheduled rows carrying a ``ytd_amount`` or ``ytd_preroll``, merged down
+    the load order with where each is defined. ``amount`` is as written:
+    dollars, an ``@itemization``, or ``preroll``."""
+    rows = setup_listings.ytd_listing(sc.ref.path)
+    return pd.DataFrame(
+        [[r.name, r.source, r.from_account, r.to_account, r.amount, r.tax_character,
+          r.year, r.description, r.defined_in] for r in rows],
+        columns=YTD_COLUMNS,
+    )
+
+
+def itemizations_view(sc: ScenarioConnection) -> pd.DataFrame:
+    """``sim itemization list`` as a table: every itemization the scenario can
+    reference, with its row count, its total in dollars (NaN when it can't be
+    computed; ``error`` says why), how many ``@name`` cells reference it, and
+    where it is defined."""
+    items = setup_listings.itemizations(sc.data_dir, sc.ref.path)
+    references = setup_listings.itemization_references(sc.data_dir, sc.ref.path)
+    return pd.DataFrame(
+        [[i.name, len(i.rows), None if i.total_cents is None else i.total_cents / 100,
+          len(references.get(i.name, [])), i.defined_in, i.error] for i in items],
+        columns=["name", "rows", "total", "refs", "defined_in", "error"],
+    )
+
+
+@dataclass(frozen=True)
+class ItemizationDetail:
+    """``sim itemization show NAME``'s facts: the file's rows, its total, and
+    the cells referencing it."""
+    name: str
+    path: Path
+    defined_in: str
+    rows: pd.DataFrame
+    total: float | None
+    """Dollars, or None when it can't be computed (``error`` says why)."""
+    error: str
+    references: pd.DataFrame
+    """``file`` (relative to the data repo), ``line`` and ``column`` of each
+    ``@name`` cell referencing it."""
+
+
+def itemization_detail(sc: ScenarioConnection, name: str) -> ItemizationDetail:
+    """One itemization's rows, total and references. ``name`` may start with
+    ``@``; an unknown name raises KeyError."""
+    name = name.removeprefix("@")
+    item = next((i for i in setup_listings.itemizations(sc.data_dir, sc.ref.path)
+                 if i.name == name), None)
+    if item is None:
+        raise KeyError(f"no itemization {name!r} for {sc.ref.name}")
+    found = setup_listings.itemization_references(sc.data_dir, sc.ref.path).get(name, [])
+
+    def shown(path: Path) -> str:
+        try:
+            return str(path.relative_to(sc.data_dir))
+        except ValueError:
+            return str(path)
+
+    return ItemizationDetail(
+        name=item.name, path=item.path, defined_in=item.defined_in,
+        rows=pd.DataFrame(item.rows, columns=list(item.rows[0]) if item.rows else ["Value"]),
+        total=None if item.total_cents is None else item.total_cents / 100,
+        error=item.error,
+        references=pd.DataFrame(
+            [[shown(r.path), r.line, r.column] for r in found],
+            columns=["file", "line", "column"],
+        ),
+    )
+
+
+def _calendar_label(row: pd.Series) -> str:
+    """A calendar row as ``sim tags items`` names it (its date), with its
+    name, or else its kind, so two rows on one date can be told apart."""
+    label = row["name"] if isinstance(row.get("name"), str) and row["name"] else row["kind"]
+    return f"{str(row['date'])[:7]} {label}"
+
+
+def tags_view(sc: ScenarioConnection) -> pd.DataFrame:
+    """``sim tags`` and ``sim tags items`` in one table: every tag, by role
+    and name, with the accounts, scheduled rules and calendar rows carrying
+    it, one per line in each column."""
+    tags = sc.list_tags()
+    carriers: dict[str, dict[str, list[str]]] = {}
+    for item_type, column, label in (
+        ("account", "accounts", lambda row: str(row["name"])),
+        ("scheduled", "scheduled", lambda row: str(row["name"])),
+        ("calendar_event", "calendar", _calendar_label),
+    ):
+        items = sc.items(item_type)
+        for _, row in items.iterrows():
+            for token in str(row["tags"]).split():
+                carriers.setdefault(token, {}).setdefault(column, []).append(label(row))
+    tokens = [f"{role}:{name}" for role, name in zip(tags["role"], tags["name"], strict=True)]
+    return pd.DataFrame({
+        "tag": tokens,
+        **{column: ["\n".join(carriers.get(token, {}).get(column, [])) for token in tokens]
+           for column in ("accounts", "scheduled", "calendar")},
+    })
