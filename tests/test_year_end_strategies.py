@@ -82,8 +82,14 @@ def test_harvest_fills_the_zero_percent_band_to_the_cent(run_strategy_scenario) 
         year = int(month[:4])
         assert note.startswith("realized $") and "0% band" in note
         taxable = _summary(run, year, "federal_taxable_income")
-        # The April settlement sees taxable income at the band's top, within a cent.
-        assert detail["band_top"] - 1 <= taxable <= detail["band_top"]
+        # The April settlement sees taxable income at the band's top, within a
+        # cent, unless every long-term gain held was realized short of it:
+        # reinvested dividends and interest (#468) leave less gain to harvest.
+        if detail["room"] < detail["held"]:
+            assert detail["band_top"] - 1 <= taxable <= detail["band_top"]
+        else:
+            assert taxable <= detail["band_top"]
+            assert sum(detail["realized"].values()) == detail["held"]
         assert _summary(run, year, "federal_ltcg_income") >= sum(detail["realized"].values())
 
 
