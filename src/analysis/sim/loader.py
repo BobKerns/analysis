@@ -27,7 +27,7 @@ from analysis.sim import (
     strategy_load, units,
 )
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, is_marker_name, month_end_iso, parse_day,
+    MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
     parse_relative_date, place_month, vary_date_iso,
 )
 from analysis.sim.distributions import (
@@ -4225,7 +4225,13 @@ def _validate_series_references(
 
     if any(row.get("amount_rule_kind") == "tax_accumulator" for row in scheduled_rows):
         # A tax rule grows each indexed tax table's figures by the series
-        # its rows name (#467).
+        # its rows name (#467), from the month after the table's date, so
+        # the series needs a rate in effect by then.
+        first_rate: dict[str, str] = {}
+        for kind, series, _, effective in aux_rows:
+            if kind == "inflation" and series is not None:
+                first_rate[series] = min(first_rate.get(series, effective), effective)
+        late: set[tuple[str, str]] = set()
         for kind, table, payload, effective in aux_rows:
             for column in registries.TAX_GROWTH_SERIES_COLUMNS.get(kind, {}):
                 series = payload.get(column)
@@ -4238,6 +4244,16 @@ def _validate_series_references(
                         f"aux/{file} ({effective}, {payload.get('filing_status')}): "
                         f"{column} '{series}' doesn't exist -- no "
                         f"series/inflation__{series}.csv in this scenario or a parent"
+                    )
+                    continue
+                growth_from = add_month_ends(parse_day(effective), 1).isoformat()
+                file = f"{kind}__{table}.csv" if table else f"{kind}.csv"
+                if first_rate[str(series)] > growth_from and (file, effective) not in late:
+                    late.add((file, effective))
+                    issues.append(
+                        f"aux/{file} ({effective}): {column} '{series}' has no rate until "
+                        f"{first_rate[str(series)][:7]}, but grows the table from "
+                        f"{growth_from[:7]}; add an earlier rate to inflation__{series}.csv"
                     )
 
     for where, row in _located(calendar_rows, "calendar.csv"):

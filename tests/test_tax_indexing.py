@@ -129,3 +129,20 @@ def test_a_growth_series_must_exist(
     )
     with pytest.raises(LoadError, match="amount_series 'no_such_series' doesn't exist"):
         _run(tmp_path, test_data_dir, fund_asset_savings)
+
+
+def test_a_growth_series_must_have_a_rate_from_the_tables_date(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
+    """Growing 2027's table into 2028 reads the series from February 2027."""
+    (test_data_dir / "aux" / "inflation__late.csv").write_text(
+        "effective_date,annual_rate\n2028-01-31,3%\n", encoding="utf-8")
+    (test_data_dir / "aux" / "standard_deduction.csv").write_text(
+        "effective_date,filing_status,amount,amount_series\n"
+        "2026-01-31,MFJ,31500.00,\n2027-01-31,MFJ,32200.00,late\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(LoadError, match="amount_series 'late' has no rate until 2028-01, "
+                                        "but grows the table from 2027-02"):
+        _run(tmp_path, test_data_dir, fund_asset_savings)
+
