@@ -362,6 +362,14 @@ tax year, by looking back over everything that happened that year (the
   that file exists. These rates apply on top of your ordinary taxable income.
   If the file does not exist, long-term gains are taxed the same as ordinary
   income.
+- **Dividends and interest** from a taxable brokerage lot are taxed in the
+  year they are paid, even though the simulator reinvests them: stock
+  dividends (`qualified_dividend`) at the long-term gain rates, and bond and
+  cash interest as ordinary income. Each reinvested payout adds to the lot's
+  cost basis, so only the appreciation is left to tax at a sale. How much a
+  lot pays comes from a `_yield` rate series beside its growth series; see
+  Part 4.11. IRAs, Roth accounts and HSAs pay nothing out: their earnings
+  are taxed (or not) only when money leaves.
 - **Filing status** comes from the `filing_status` aux table for that tax
   year: your data repo's `aux/filing_status.csv`, one row per date such as
   `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
@@ -972,6 +980,29 @@ To check it:
 - `sim prices check` compares each lot's stated balance with quantity times
   price.
 - `sim allocation --by security` shows how the symbol's lots split.
+
+#### Dividends and interest
+
+Part of a fund's return is paid out each year, as dividends from its stocks
+and interest from its bonds, and in a taxable brokerage account that is
+taxed the year it is paid, even when it is reinvested (Part 3). The
+simulator splits each lot's growth into the two: what it pays out, from a
+`_yield` rate series, and the appreciation, the rest. The template series
+include yields for the asset classes (`stock_us_yield` 1.5%,
+`stock_intl_yield` 3%, `stock_yield` 2%, `bond_yield` 4%), so a fund pays at
+the blend of its classes' yields with no setup: stocks as qualified
+dividends, bonds as ordinary interest. A lot growing at one series pays
+that series' yield, and cash and CDs pay all of their rate as interest.
+
+A symbol whose own yield you know can have it in
+`series/rate__ABCDX_yield.csv` (`effective_date,annual_rate`, such as
+`2026-01-31,2.5%`), which then replaces the class blend. It is taxed as
+qualified dividends when everything the symbol holds is stock, and as
+ordinary interest otherwise. Payouts are always reinvested; taking them as
+cash is not modeled yet.
+
+`sim report gains` counts reinvested dividends and interest as realized
+taxable gains.
 
 #### Asking an AI to fill it in
 

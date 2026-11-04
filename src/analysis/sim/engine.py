@@ -131,6 +131,10 @@ def run_scenario(
             lots_by_account.setdefault(owner, []).append(lot_id)
         growth_names = {c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
         growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names)
+        # A strategy's view of a lot's return counts the dividends and
+        # interest it reinvests (#468) as well as its appreciation.
+        payout_names = {c.name for c in registries.PAYOUT_ACCOUNTS.values()}
+        return_sources = growth_sources | frozenset(r[0] for r in lots if r[9] in payout_names)
         account_id_by_name: dict[str, int] = {
             r[0]: r[1] for r in con.execute(
                 "SELECT name, lot_id FROM chain WHERE lot_id IS NOT NULL"
@@ -235,7 +239,7 @@ def run_scenario(
             rule_budget=lambda tid, on: _rule_year_budget(
                 Txn._make(txn_by_id[tid]), on, aux, inflation_factor_cache, rule_lifespan, months[-1],
             ),
-            growth_sources=growth_sources, opening_balances=balances, first_month=months[0],
+            growth_sources=return_sources, opening_balances=balances, first_month=months[0],
             acquired=acquired, roth_lots=roth,
         )
         refill_ctx.strategies = strategy_runtime or None
@@ -1728,7 +1732,22 @@ def _amount_percent_of_balance(
     base = (opening_balances if basis == "opening" else current_balances).get(to_id, 0)
     if base <= 0:
         return 0
-    if blend := params.get("blend"):
+    total = _percent_of(base, params, rate_kind, aux, month_s, tid)
+    # A taxable lot's payouts (#468) are their own rules; what's left of the
+    # total return is the appreciation, which waits for a sale.
+    for spec in params.get("less") or ():
+        total -= _percent_of(base, spec, rate_kind, aux, month_s, tid)
+    return total
+
+
+def _percent_of(
+    base: int, spec: dict[str, Any], rate_kind: str,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    month_s: str, tid: int,
+) -> int:
+    """A month of ``base`` at the annual rate of ``spec``: its ``blend`` or
+    its ``series``."""
+    if blend := spec.get("blend"):
         # A fund's allocation blend (#78): sum weight x each slice's rate, read
         # now rather than at load, since a set_rate event can move any slice.
         # Kept in micros-squared so the blend itself never rounds.
@@ -1737,7 +1756,7 @@ def _amount_percent_of_balance(
             for slice_series, weight in _blend_slices_at(blend, month_s)
         )
         return (base * weighted) // (12 * 1_000_000 * 1_000_000)
-    annual_micros = _annual_rate_micros(aux, rate_kind, params.get("series"), month_s, tid)
+    annual_micros = _annual_rate_micros(aux, rate_kind, spec.get("series"), month_s, tid)
     # monthly_rate = annual_micros / 12 / 1_000_000; amount = base * monthly_rate
     return (base * annual_micros) // (12 * 1_000_000)
 
@@ -2978,12 +2997,14 @@ def _year_tax_estimate(
             )
         return int(row["amount"])
 
-    other_ordinary, ss_income = _tax_year_income_buckets(con, tax_year=tax_year)
+    other_ordinary, ss_income, qualified_dividends = _tax_year_income_buckets(con, tax_year=tax_year)
     business = _business_result(con, tax_year=tax_year)
     capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
     # A Schedule C loss offsets the year's other income (#231).
     ordinary_income = other_ordinary + business.net + capital.stcg - capital.loss_deduction
-    ltcg_income = capital.ltcg
+    # Qualified dividends are taxed with long-term gains (IRC §1(h)(11)), but
+    # a capital loss doesn't offset them: they join after the netting.
+    ltcg_income = capital.ltcg + qualified_dividends
 
     ss_tiers: tuple[int, int] | None = None
     if scope == "federal" and ss_income > 0:
@@ -3807,9 +3828,9 @@ def _record_drawdown_taxes(
                 )
 
 
-def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
-    """A tax year's ordinary income and Social Security benefits. Capital
-    gains and losses are ``_capital_gains``'s."""
+def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
+    """A tax year's ordinary income, Social Security benefits and qualified
+    dividends (#468). Capital gains and losses are ``_capital_gains``'s."""
     rows = con.execute(
         "SELECT tax_character, COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
@@ -3824,7 +3845,7 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
         + by_char.get("roth_nonqualified", 0)
         - by_char.get("tax_deferred_in", 0)
     )
-    return ordinary, by_char.get("ss_benefit", 0)
+    return ordinary, by_char.get("ss_benefit", 0), by_char.get(registries.QUALIFIED_DIVIDEND, 0)
 
 
 class BusinessResult(NamedTuple):

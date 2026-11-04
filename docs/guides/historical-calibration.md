@@ -609,11 +609,21 @@ where it differs, rounded to half a point or so:
 | `rate__stock` | 7.0 | Stock with an unknown US/international split |
 | `rate__bond` | 4.0 | Below the 10-year Treasury's 6.0 since 1984, a falling-rate era |
 | `rate__cash` | 3.0 | T-bills: 3.4 since 1984, 4.0 postwar; money market follows them |
+| `rate__stock_us_yield` | 1.5 | The part of `stock_us` paid as dividends: the S&P 500's dividend yield, 1.2 to 2.0 since 2010 |
+| `rate__stock_intl_yield` | 3.0 | Developed-market stocks pay more of their return as dividends |
+| `rate__stock_yield` | 2.0 | Between the two |
+| `rate__bond_yield` | 4.0 | A bond pays its return as interest: all of `bond`'s long-run level |
 
 ```sh
 uv run scripts/historical_calibration.py --reference CPI-U=CUUR0000SA0 \
   --period "Since 2010=2010-" CPI-U=CUUR0000SA0 Tuition=CUUR0000SEEB Medical=CUUR0000SAM
 ```
+
+A `_yield` series is the part of its class's return that a taxable
+brokerage lot is paid each year, and taxed on that year: stock dividends at
+long-term gain rates, bond interest as ordinary income. The rest is
+appreciation, taxed only at a sale. A class with no `_yield` series is all
+appreciation.
 
 The investment rates are deliberately below their history. Since 1984
 stocks and bonds both rode falling interest rates and rising valuations,
@@ -742,6 +752,12 @@ judgment from the history beside it:
 | `stock_us` | 7.0 | 2.5 | 0 | 16 | 0.00 / 16.1 | 0.00 / 15.9 | 0.00 / 18.0 |
 | `stock_intl` | 7.0 | 3.0 | 0 | 17 | no data | | |
 | `stock` | 7.0 | 2.5 | 0 | 16 | as US | | |
+| `bond_yield` | 4.0 | 1.5 | held | — | | | |
+
+`bond_yield` has no yearly path: it is drawn once per member, at ρ 1.0 to
+`bond_factor` like `bond`'s level, and held, so a member whose bonds return
+more also pays more interest. A bond's yearly swings are price changes,
+which are appreciation. The stock yields are held at their `_series` rates.
 
 ```sh
 analysis historical --period "Since 1984=1984-" --period "Postwar=1948-" \

@@ -159,9 +159,16 @@ def test_gift_in_kind_gives_basis_and_realizes_no_gain(run_strategy_scenario, st
         "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
         "WHERE a.name = ? AND s.month = '2026-11-30'"), BROKERAGE)[0]
     after = _lot(run, BROKERAGE, "2026-12-31")
-    # December's growth posts before the gift; the basis leaves pro rata.
+    # December's growth posts before the gift, its reinvested dividends
+    # adding to the basis (#468); the basis leaves pro rata.
+    reinvested = _query(run, (
+        "SELECT COALESCE(SUM(t.amount), 0) FROM transfer_event t "
+        "JOIN account fa ON fa.id = t.from_account JOIN account ta ON ta.id = t.to_account "
+        "WHERE fa.name IN ('dividends', 'investment_interest') AND ta.name = ? AND t.date = '2026-12-31'"),
+        BROKERAGE)[0][0]
     december_balance = after[0] + gift
-    assert before[1] is not None and after[1] == before[1] - before[1] * gift // december_balance
+    basis = before[1] + reinvested
+    assert before[1] is not None and after[1] == basis - basis * gift // december_balance
     rc = RunConnection(run)
     try:
         expenses = rc.expenses_by_category()

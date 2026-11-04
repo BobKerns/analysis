@@ -10265,8 +10265,9 @@ def report_gains_command(
     """Show realized vs. unrealized gains by year, against that year's expenses.
 
     taxable and non-taxable are income that reached cash (Social Security
-    split by the year's computed taxable share); unrealized is growth that
-    stayed invested. distribution_coverage is realized_total minus expenses:
+    split by the year's computed taxable share), plus a taxable lot's
+    reinvested dividends and interest; unrealized is growth that stayed
+    invested. distribution_coverage is realized_total minus expenses:
     a negative year spent principal. --chart draws the gains stacked by
     year, with the expenses as a line.
     """
