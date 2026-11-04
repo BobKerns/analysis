@@ -633,6 +633,15 @@ The folder a kind lives in is a convention for humans and for what's most likely
 per-scenario override, not something the loader validates by kind — a misplaced file still
 loads correctly (it just won't be found via the tier it "should" have used).
 
+A series a `percent_of_balance` rule reads, whatever its `rate_kind`, needs a rate in force by
+the first month the rule reads it ([#475](https://github.com/BobKerns/analysis/issues/475)), or
+the load fails, naming the series, its first row and the first reader. Each lot's growth rule
+(ADR-005 §5) reads from `scenario.start`; a hand-written rule from the first month it posts, its
+`start` or the scenario's, whichever is later, then its cadence; a blend slice from the month its
+allocation set applies. A `set_rate` row (§3.1) on the same `(aux_kind, series)` supplies a rate
+from its month, when its date is fixed: one whose date varies or follows a `date_marker` could
+land later, so it doesn't count.
+
 Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_lots.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it. A symbol is also upper case, as tickers are: a lower-case spelling would be a second symbol that no price file or allocation matches, so the loader rejects one in `securities.csv`, `allocations.csv`, `account_lots.csv` or a `security_price__<symbol>.csv` filename (`_validate_symbol_case`), and the commands that write a symbol upper-case it.
 
 - **`federal_brackets.csv`**, **`state_brackets__<state>.csv`**:
@@ -1328,3 +1337,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#431](https://github.com/BobKerns/analysis/issues/431): `negative_balance_warnings` are read back, with each account's lowest balance, by `sim explain` and the notebooks alike (§4.7).
 - [#441](https://github.com/BobKerns/analysis/issues/441): a strategy file's `trigger` column names guard rails it answers; a triggered rail is read by the run, and puts the lineage's `guard_rails.csv` in its tree (§4.11, §4.12).
 - [#467](https://github.com/BobKerns/analysis/issues/467): tax brackets, standard deductions and long-term gain bands are indexed for inflation by an optional `floor_series`/`amount_series` per row, `cpi` in the templates (§4.4).
+- [#475](https://github.com/BobKerns/analysis/issues/475): the loader refuses a series a `percent_of_balance` rule reads before its first rate (§4.4).

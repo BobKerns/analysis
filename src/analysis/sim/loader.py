@@ -28,7 +28,7 @@ from analysis.sim import (
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
-    parse_relative_date, place_month, vary_date_iso,
+    parse_month, parse_relative_date, place_month, vary_date_iso,
 )
 from analysis.sim.distributions import (
     Discrete,
@@ -1272,6 +1272,9 @@ def load_scenario(
     )
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
+    )
+    _validate_rate_series_start(
+        scheduled_rows, calendar_rows, aux_rows, scenario_row, issues,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
@@ -4296,6 +4299,117 @@ def _validate_series_references(
                 "cap or account growth series -- this value has no effect "
                 "here, unless a scenario inheriting from this one reads it"
             )
+
+
+def _validate_rate_series_start(
+    scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scenario_row: Mapping[str, str],
+    issues: list[str],
+) -> None:
+    """A series a ``percent_of_balance`` rule reads needs a rate in force by
+    the first month the rule reads it, or the run fails that month with "no
+    aux row" (#475). The readers are each lot's growth rule (from
+    ``scenario.start``), hand-written rules (from their ``start`` and first
+    firing), and each slice of a fund's blend (from when its set applies). A
+    ``set_rate`` row with a fixed date also supplies a rate from its month;
+    one whose date varies, or follows a date marker, might land later, so it
+    doesn't count. A series nothing supplies at all is reported by
+    ``_validate_series_references``."""
+    try:
+        run_start = parse_month(scenario_row.get("start", ""))
+        run_end = parse_month(scenario_row.get("end", ""))
+    except ValueError:
+        return  # a missing or bad start or end is reported where it's read
+
+    supplied_from: dict[tuple[str, str], str] = {}
+    for kind, series, _, effective in aux_rows:
+        if series is not None:
+            key = (kind, series)
+            supplied_from[key] = min(supplied_from.get(key, effective), effective)
+    file_from = dict(supplied_from)
+    for row in calendar_rows:
+        series, when = row.get("series", ""), row.get("date", "")
+        if (row.get("kind") != "set_rate" or not series or not when
+                or (row.get("vary_target") or "").strip() == "date"
+                or (row.get("vary_resume") or "").strip()
+                or "date" in (_safe_json(row.get(DATE_REFS)) or {})):
+            continue
+        key = ((_safe_json(row.get("params_json")) or {}).get("aux_kind", "rate"), series)
+        if key in supplied_from:
+            supplied_from[key] = min(supplied_from[key], when)
+
+    # (aux_kind, series) -> (first month read, who reads it then)
+    first_read: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def reads(key: tuple[str, str], month: date, reader: str) -> None:
+        month_s = month.isoformat()
+        if key in supplied_from and (key not in first_read or month_s < first_read[key][0]):
+            first_read[key] = (month_s, reader)
+
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") != "percent_of_balance":
+            continue
+        params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
+        first = _first_firing(row, run_start, run_end)
+        if first is None:
+            continue
+        if ORIGIN in row:
+            reader = f"{where} ({row.get('name', '')})"
+        else:
+            # Validation has rewritten to_account to its leaf, "account:lot".
+            account, _, leaf_lot = row.get("to_account", "").partition(":")
+            lot = leaf_lot or row.get("to_lot") or registries.DEFAULT_LOT
+            reader = f"the growth of {account}" + (
+                f" / {lot}" if lot != registries.DEFAULT_LOT else "")
+        rate_kind = params.get("rate_kind", "rate")
+        if blend := params.get("blend"):
+            # Growth rules are monthly. A set applies from its as_of (the
+            # first set from the start) until the next set's.
+            for i, (as_of, slices) in enumerate(blend):
+                begins = first if i == 0 else max(first, parse_month(as_of))
+                if i + 1 < len(blend) and begins.isoformat() >= blend[i + 1][0]:
+                    continue  # replaced before it's ever read
+                for slice_series, _ in slices:
+                    reads((rate_kind, slice_series), begins,
+                          f"{reader} ({slice_series} in its blend)")
+        elif series := row.get("series", ""):
+            reads((rate_kind, series), first, reader)
+
+    for (kind, series), (month_s, reader) in sorted(first_read.items()):
+        supplied = supplied_from[(kind, series)]
+        if supplied > month_s:
+            issues.append(
+                f"{kind}__{series}.csv: its first rate is from {file_from[(kind, series)][:7]}, "
+                f"but {reader} reads it from {month_s[:7]}; add a row on or before "
+                f"{month_s[:7]}, or a set_rate row with a fixed date by then"
+            )
+
+
+def _first_firing(row: Mapping[str, str], run_start: date, run_end: date) -> date | None:
+    """The first month a scheduled rule posts in the run, or None if it never
+    does: from its start or the scenario's, whichever is later, to the first
+    month its cadence fires, before its end and the scenario's."""
+    from analysis.sim.engine import _cadence_fires  # the engine's own cadence rule
+
+    try:
+        rule_start = parse_month(row.get("start") or run_start.isoformat())
+        rule_end = parse_month(row["end"]) if row.get("end") else run_end
+    except ValueError:
+        return None  # reported by _validate_scheduled
+    cadence = row.get("cadence") or "monthly"
+    month_of_year = row.get("month_of_year", "")
+    moy = int(month_of_year) if month_of_year.isdigit() else None
+    month = max(rule_start, run_start)
+    last = min(rule_end, run_end)
+    for _ in range(12):  # every cadence fires within a year of its start
+        if month > last:
+            return None
+        if cadence == "biweekly" or _cadence_fires(cadence, moy, month, rule_start):
+            return month
+        month = add_month_ends(month, 1)
+    return None
 
 
 def _rate_in_effect_before(
