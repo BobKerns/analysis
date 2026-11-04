@@ -99,6 +99,29 @@ class Series:
         return self.read.name
 
     @property
+    def parts(self) -> tuple[Series, ...]:
+        """This folder's files and those of every other folder the loader
+        reads for the name."""
+        return (self, *self.others)
+
+    @property
+    def rows(self) -> list[dict[str, str]]:
+        """Every row the loader reads for the name, ``aux/``'s before
+        ``series/``'s, as it reads them."""
+        return [row for part in reversed(self.parts) for row in part.read.rows]
+
+    @property
+    def any_own(self) -> bool:
+        """Whether the scenario has its own file of the name, in any folder."""
+        return any(part.own for part in self.parts)
+
+    @property
+    def revertible(self) -> bool:
+        """Whether the scenario has its own file of the name over an
+        inherited one, in some folder: what ``sim series revert`` drops."""
+        return any(part.own and part.below is not None for part in self.parts)
+
+    @property
     def empty(self) -> bool:
         """No rates here: every folder's file of the name is empty."""
         return self.read.empty and all(other.empty for other in self.others)

@@ -291,3 +291,49 @@ def test_delete_empties_a_series_in_both_folders(sim: Callable[..., Result], tes
     reverted = sim("series", "revert", "food")
     assert reverted.exit_code == 0, reverted.output
     assert not (series_dir / "inflation__food.csv").exists()
+
+
+def test_the_rate_at_the_start_counts_a_same_named_aux_file(
+    sim: Callable[..., Result], test_scenarios_dir: Path, series_dir: Path,
+) -> None:
+    # The loader reads both files; the later dated row is the one in force.
+    aux = test_scenarios_dir / "retire_alice" / "aux"
+    aux.mkdir()
+    (aux / "rate__brokerage_growth.csv").write_text(_HEADER + "2026-03-31,2%\n")
+    line = next(line for line in sim("series", "list").output.splitlines() if " brokerage_growth " in line)
+    assert " 2% " in line, line
+
+
+def test_revert_finds_an_override_in_the_scenarios_aux(
+    sim: Callable[..., Result], test_scenarios_dir: Path,
+) -> None:
+    """series/ is inherited, but the child's aux/ has its own file of the name."""
+    aux = test_scenarios_dir / "retire_alice" / "aux"
+    aux.mkdir()
+    (aux / "inflation__food.csv").write_text(_HEADER + "2025-01-31,9%\n")
+    # Inherited from a parent's aux/ as well, so there is something to revert to.
+    base_aux = test_scenarios_dir / "base" / "aux"
+    base_aux.mkdir(exist_ok=True)
+    (base_aux / "inflation__food.csv").write_text(_HEADER + "2025-01-31,1%\n")
+    result = sim("series", "revert", input="food\n")
+    assert result.exit_code == 0, result.output
+    assert not (aux / "inflation__food.csv").exists()
+    assert (base_aux / "inflation__food.csv").exists()
+
+
+def test_delete_refuses_when_the_file_changed_while_it_asked(
+    sim: Callable[..., Result], series_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import cli as sim_cli
+
+    path = series_dir / "rate__spare.csv"
+    path.write_text(_HEADER + "2026-01-31,1%\n")
+
+    def confirm_after_a_change(*_args: object, **_kwargs: object) -> bool:
+        path.write_text(_HEADER + "2026-01-31,2%\n")
+        return True
+
+    monkeypatch.setattr(sim_cli.click, "confirm", confirm_after_a_change)
+    result = sim("series", "delete", "spare")
+    assert result.exit_code != 0 and "changed on disk" in result.output, result.output
+    assert path.read_text() == _HEADER + "2026-01-31,2%\n"

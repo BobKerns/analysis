@@ -401,7 +401,7 @@ def _own_series(ctx: click.Context, data_dir: Path) -> Sequence[str]:
         return []
     wanted = _line_params(ctx).get("kind")
     return sorted({name for (kind, name), series in series_files.scenario_series(data_dir, scenario).items()
-                   if series.own and series.below is not None
+                   if series.revertible
                    and (not isinstance(wanted, str) or kind == wanted)})
 
 

@@ -14065,8 +14065,7 @@ def _pick_series(
             raise click.ClickException(
                 f"{_series_label(series)} is empty in {scenario} ({_series_where(series.read)}): it "
                 f"has no rates here. `sim series add {name}` gives it some"
-                + (f"; `sim series revert {name}` inherits {series.below.defined_in}'s again"
-                   if series.own and series.below else "")
+                + (f"; `sim series revert {name}` inherits the parent's again" if series.revertible else "")
             )
         kinds = f"{kind} " if kind else ""
         raise click.ClickException(f"no {kinds}series {name!r} in {scenario} (see `sim series list`)")
@@ -14149,7 +14148,7 @@ def series_list(kind: str | None, show_all: bool, scenario: str | None, data_dir
         below = series.below if series.own else None
         table.add_row(
             escape(series.name), series.kind, "empty" if series.empty else str(len(file.rows)),
-            escape(_rate_at(file.rows, start)), escape(f"{file.folder}/{file.filename}"),
+            escape(_rate_at(series.rows, start)), escape(f"{file.folder}/{file.filename}"),
             escape(file.defined_in), escape(below.defined_in if below else ""),
         )
     _print_wide(table)
@@ -14426,9 +14425,11 @@ def series_delete(
             "gives this scenario its own rates)")
     # The loader reads a name's series/ and aux/ files both, so each folder
     # that still has rates for it is emptied, or its file removed.
-    parts = [s for s in (found, *found.others) if not s.empty]
+    parts = [s for s in found.parts if not s.empty]
     below = next((s.below for s in parts if s.below is not None), None)
     shown = ", ".join(_shown(_own_series_path(ref.path, s.read)) for s in parts)
+    # The confirmation can wait a while: what is changed must still be as read.
+    before = {p: _file_bytes(p) for s in parts for p in (s.read.path, _own_series_path(ref.path, s.read))}
     if below is None:
         prompt = f"delete {_series_label(found)} ({shown})?"
     else:
@@ -14437,6 +14438,7 @@ def series_delete(
         click.echo("aborted")
         return
     with _scenario_edit(data, ref.name) as edit:
+        _series_unchanged(edit, before)
         for part in parts:
             staged = edit.path(_own_series_path(ref.path, part.read))
             if part.below is None:
@@ -14466,9 +14468,9 @@ def series_revert(series: str | None, kind: str | None, scenario: str | None, da
     """
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
-    found = _pick_series(data, ref.name, series, kind, wanted=lambda s: s.own, what="series to revert",
-                         offer=lambda s: s.below is not None)
-    parts = [s for s in (found, *found.others) if s.own]
+    found = _pick_series(data, ref.name, series, kind, wanted=lambda s: s.any_own,
+                         what="series to revert", offer=lambda s: s.revertible)
+    parts = [s for s in found.parts if s.own]
     below = next((s.below for s in parts if s.below is not None), None)
     if below is None:
         raise click.ClickException(
