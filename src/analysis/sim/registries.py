@@ -194,6 +194,9 @@ TAX_CHARACTERS: set[str] = {
     # Earnings out of a Roth lot before the owner's 5-year clock has run (or
     # before 59½): ordinary income (#217). Its basis comes out tax_free.
     "roth_nonqualified",
+    # A stock fund's dividends, paid and reinvested in a taxable lot (#468):
+    # taxed each year, at the long-term gains rates (IRC §1(h)(11)).
+    "qualified_dividend",
     *BUSINESS_TAX_CHARACTERS,
 }
 
@@ -346,6 +349,39 @@ GROWTH_COUNTERPARTY_ACCOUNTS: dict[str, GrowthCounterparty] = {
     ),
 }
 
+# A taxable lot's payout (#468, ADR-005 §5): the part of its total return a
+# fund pays out each year (dividends, interest), taxed that year and
+# reinvested, so it adds to the lot's basis. Each asset class pays from the
+# rate series `<class>_yield`; cash and CDs, which have no price to move, pay
+# all of their rate. Stocks' payouts are qualified dividends, the rest
+# ordinary income. The built-in income accounts the payouts come from are
+# not growth counterparties: money from them is a purchase.
+YIELD_SUFFIX = "_yield"
+QUALIFIED_DIVIDEND = "qualified_dividend"
+QUALIFIED_DIVIDEND_CLASSES: frozenset[str] = frozenset({"stock", "stock_us", "stock_intl"})
+ALL_PAYOUT_CLASSES: frozenset[str] = frozenset({"cash", "cd"})
+PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
+    QUALIFIED_DIVIDEND: GrowthCounterparty(
+        "dividends", "income", "dividend", "taxable", QUALIFIED_DIVIDEND,
+        "Built-in: qualified dividends paid and reinvested in taxable lots",
+    ),
+    "ordinary": GrowthCounterparty(
+        "investment_interest", "income", "interest", "taxable", "ordinary",
+        "Built-in: interest and other dividends paid and reinvested in taxable lots",
+    ),
+}
+
+
+def yield_series(series: str) -> str:
+    """The rate series a lot growing at ``series`` pays out from (#468)."""
+    return series + YIELD_SUFFIX
+
+
+def payout_character(asset_class: str) -> str:
+    """How an asset class's payout is taxed (#468)."""
+    return QUALIFIED_DIVIDEND if asset_class in QUALIFIED_DIVIDEND_CLASSES else "ordinary"
+
+
 DEFAULT_PRIORITIES: dict[str, int] = {
     "percent_of_balance": 100,
     "ss_benefit": 200,
@@ -377,7 +413,8 @@ STATE_EXCLUSION_INCOME: tuple[str, ...] = (
 )
 """The kinds of income a ``state_retirement_exclusion`` row may cover (#486),
 in the order a row that covers several uses them up: ordinary income from a
-``pension``, ``interest`` or ``dividend`` income account; a
+``pension``, ``interest`` or ``dividend`` income account (and, for
+``dividend``, ``qualified_dividend`` legs); a
 ``retirement_account`` distribution (``tax_deferred_out``, ``roth_nonqualified``);
 a ``capital_gain`` (``stcg``/``ltcg``); and ``other``, the rest of the state's
 taxable income. ``all`` in a row stands for every one of them."""
