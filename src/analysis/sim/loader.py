@@ -1307,6 +1307,7 @@ def load_scenario(
     _validate_retirement_owners(accounts, persons, issues)
     _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
     _validate_filing_status(scheduled_rows, aux_rows, scenario_row, issues)
+    _validate_state_hsa(aux_rows, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
@@ -2690,6 +2691,25 @@ IRMAA_PARTS = ("B+D", "B", "D")
 
 
 FILING_STATUS_RULE_KINDS = frozenset({"tax_accumulator", "irmaa"})
+
+
+def _validate_state_hsa(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """A ``state_hsa`` row's treatment is one the engine knows (#490), and the
+    table is keyed by state like the brackets it goes with."""
+    for kind, state, payload, effective in aux_rows:
+        if kind != registries.STATE_HSA:
+            continue
+        file = f"aux/{kind}__{state}.csv" if state else f"aux/{kind}.csv"
+        if state is None:
+            issues.append(f"{file}: name the state, as in {kind}__CA.csv")
+            continue
+        treatment = payload.get("treatment")
+        if treatment not in registries.STATE_HSA_TREATMENTS:
+            issues.append(
+                f"{file} ({effective}): treatment {treatment!r} must be one of "
+                f"{', '.join(registries.STATE_HSA_TREATMENTS)}")
 
 
 def _validate_filing_status(

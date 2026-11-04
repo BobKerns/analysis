@@ -82,6 +82,8 @@ shared default ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-sch
 | `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
 | `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state `tax_accumulator` rule, keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
+| `state_surcharge__<state>.csv` | A state's surcharge on high taxable income, in the columns of its brackets, whose rates add to the brackets' rates. Optional, keyed by state like `state_brackets__<state>.csv`. `__CA` is California's Behavioral Health Services Tax: 1% of taxable income over $1 million, the same for every filing status and not indexed, so its `floor_series` is blank. |
+| `state_hsa__<state>.csv` | How a state taxes a health savings account: `treatment` `taxable` or `federal`. Optional, keyed by state; without one the HSA follows the federal rules. `__CA` says `taxable`: California doesn't recognize HSAs, so a contribution isn't deducted, the account's growth is taxed each year, and what comes out was taxed already. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, the `tax_accumulator` rule uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
 | `filing_status.csv` | The household's filing status from each effective date, one row per change (here MFJ). The code repository's `templates/aux/` ships it empty. |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |
@@ -202,8 +204,8 @@ The cleanest way is to ask the AI assistant. A prompt that works:
 > `prototype_data/aux/filing_status.csv` with the latest IRS and CA FTB
 > figures. Use the most recent IRS Revenue Procedure for federal and FTB's
 > annual indexing announcement (in "Tax News") for California. Filing statuses:
-> MFJ, Single, MFS. Exclude CA's Mental Health / Behavioral Health Services Tax
-> (the extra 1% over $1M). Then mirror the four files into `templates/aux/`
+> MFJ, Single, MFS. Leave out CA's Behavioral Health Services Tax (the extra
+> 1% over $1M): it's in `state_surcharge__CA.csv`, which isn't indexed. Then mirror the four files into `templates/aux/`
 > and run `uv run pytest`.
 
 Authoritative sources the AI should pull from:

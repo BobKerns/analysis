@@ -46,7 +46,10 @@ ordinary income, less the state's standard deduction, run through the state's
 brackets ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)). A
 state needs two tables in `aux/`, `state_brackets__XX.csv` and
 `state_standard_deduction__XX.csv`, and a `tax_accumulator` rule with `scope`
-`state`. Many states have rules this leaves out; the table says which matter
+`state`. Two more are optional: `state_surcharge__XX.csv`, a surtax on
+high income (California's 1% over $1 million, Massachusetts's 4%), and
+`state_hsa__XX.csv`, for a state that taxes health savings accounts
+(California). Many states have rules this leaves out; the table says which matter
 most for a retired household. It reflects state law as of 2026; check the
 state's own revenue department before relying on a figure.
 
@@ -65,7 +68,7 @@ state's own revenue department before relying on a figure.
 | Alaska | No tax | |
 | Arizona | Partial | Long-term gain subtraction |
 | Arkansas | Partial | Long-term gain exclusion; retirement income exclusion |
-| California | Shipped | Personal exemption credits; 1% surcharge over $1 million; tax on HSA growth |
+| California | Shipped | Personal exemption credits |
 | Colorado | Partial | Pension and annuity subtraction; Social Security taxed below 65 |
 | Connecticut | Partial | Social Security, pension and IRA exemptions phased by income; exemption phase-outs |
 | Delaware | Partial | Pension exclusion |
@@ -82,7 +85,7 @@ state's own revenue department before relying on a figure.
 | Louisiana | Partial | Retirement income exclusion from age 65 |
 | Maine | Partial | Pension deduction |
 | Maryland | Partial | County income tax; pension exclusion; capital gains surtax |
-| Massachusetts | Partial | Short-term gain rate; surtax on high income; personal exemptions |
+| Massachusetts | Partial | Short-term gain rate; personal exemptions |
 | Michigan | Partial | City income tax; retirement deduction |
 | Minnesota | Partial | Social Security taxed |
 | Mississippi | Partial | Retirement income and IRA distributions exempt |

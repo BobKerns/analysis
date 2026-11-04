@@ -2981,7 +2981,19 @@ def _year_tax_estimate(
 
     other_ordinary, ss_income = _tax_year_income_buckets(con, tax_year=tax_year)
     business = _business_result(con, tax_year=tax_year)
-    capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
+    hsa_growth: dict[int, int] = {}
+    if scope == "state" and bracket_series is not None:
+        # A state that doesn't recognize an HSA (#490) taxes it like a
+        # brokerage account: no deduction going in, its growth each year,
+        # nothing coming out.
+        taxed_years = [
+            year for year in _hsa_flow_years(con, tax_year)
+            if _state_taxes_hsa(aux, bracket_series, year)
+        ]
+        hsa_growth = _hsa_growth_by_year(con, taxed_years)
+        if tax_year in taxed_years:
+            other_ordinary -= _hsa_deferred_flows(con, tax_year)
+    capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit, extra_ltcg=hsa_growth)
     # A Schedule C loss offsets the year's other income (#231).
     ordinary_income = other_ordinary + business.net + capital.stcg - capital.loss_deduction
     ltcg_income = capital.ltcg
@@ -3045,6 +3057,16 @@ def _year_tax_estimate(
     ltcg_brackets = sorted(
         (int(r["floor"]), int(r["marginal_rate_micros"])) for r in ltcg_rows
     )
+    # A state's surcharge on high incomes (#490) adds its rates to the
+    # brackets'. Its own bands, rather than more bracket rows, because its
+    # floor needn't be indexed or fall between the same brackets for every
+    # filing status (California's $1 million).
+    surcharge = sorted(
+        (int(r["floor"]), int(r["marginal_rate_micros"]))
+        for r in _indexed_tax_rows(
+            aux, registries.STATE_SURCHARGE, bracket_series, tax_year, growth_cache)
+        if r.get("filing_status") == filing_status
+    ) if scope == "state" and bracket_series is not None else []
 
     def taxable_ss_for(ordinary: int, ltcg: int) -> int:
         if ss_tiers is None:
@@ -3056,8 +3078,9 @@ def _year_tax_estimate(
 
     def tax_on(taxable: int, ltcg: int) -> int:
         """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term gain."""
+        extra = _progressive_tax_cents(taxable, surcharge)
         if not (ltcg_brackets and ltcg > 0):
-            return _progressive_tax_cents(taxable, brackets)
+            return _progressive_tax_cents(taxable, brackets) + extra
         # Long-term gains sit on top of ordinary taxable income and are taxed at
         # the preferential rates for the band each part lands in.
         gain_taxable = min(ltcg, taxable)
@@ -3066,6 +3089,7 @@ def _year_tax_estimate(
             _progressive_tax_cents(ordinary_taxable, brackets)
             + _progressive_tax_cents(taxable, ltcg_brackets)
             - _progressive_tax_cents(ordinary_taxable, ltcg_brackets)
+            + extra
         )
 
     taxable_ss = taxable_ss_for(ordinary_income, ltcg_income)
@@ -3829,6 +3853,72 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
     return ordinary, by_char.get("ss_benefit", 0)
 
 
+def _state_taxes_hsa(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    state: str, year: int,
+) -> bool:
+    """Whether ``state``'s ``state_hsa`` table, as of ``year``'s end, says it
+    taxes an HSA (#490); without a table it follows the federal rules."""
+    rows = _active_aux_rows(aux, registries.STATE_HSA, state, f"{year}-12-31")
+    return bool(rows) and rows[0].get("treatment") == "taxable"
+
+
+_HSA_GROWTH_ACCOUNTS = tuple(
+    registries.GROWTH_COUNTERPARTY_ACCOUNTS[character].name
+    for character in ("deferred", "tax_free")
+)
+"""The built-in accounts an HSA's untaxed growth comes from (or, when it
+falls, goes back to): growth of another character is taxed already."""
+
+_HSA_YEAR = "COALESCE(te.tax_year, CAST(substr(te.date, 1, 4) AS INTEGER))"
+
+
+def _hsa_flow_years(con, tax_year: int) -> list[int]:
+    """The years up to ``tax_year`` with money moving into or out of an HSA."""
+    return [int(year) for (year,) in con.execute(
+        f"SELECT DISTINCT {_HSA_YEAR} FROM transfer_event te "
+        "JOIN account fa ON fa.id = te.from_account JOIN account ta ON ta.id = te.to_account "
+        f"WHERE (fa.subkind = 'hsa' OR ta.subkind = 'hsa') AND {_HSA_YEAR} <= ?",
+        (tax_year,),
+    )]
+
+
+def _hsa_growth_by_year(con, years: Collection[int]) -> dict[int, int]:
+    """Each of ``years``' net untaxed growth of the HSAs, a fall negative."""
+    if not years:
+        return {}
+    marks = ", ".join("?" * len(_HSA_GROWTH_ACCOUNTS))
+    year_marks = ", ".join("?" * len(years))
+    return {int(year): int(amount) for year, amount in con.execute(
+        f"SELECT {_HSA_YEAR} AS y, SUM(CASE WHEN ta.subkind = 'hsa' THEN te.amount "
+        "ELSE -te.amount END) "
+        "FROM transfer_event te "
+        "JOIN account fa ON fa.id = te.from_account JOIN account ta ON ta.id = te.to_account "
+        f"WHERE ((ta.subkind = 'hsa' AND fa.name IN ({marks})) "
+        f"    OR (fa.subkind = 'hsa' AND ta.name IN ({marks}))) "
+        f"  AND y IN ({year_marks}) GROUP BY y",
+        (*_HSA_GROWTH_ACCOUNTS, *_HSA_GROWTH_ACCOUNTS, *years),
+    )}
+
+
+def _hsa_deferred_flows(con, tax_year: int) -> int:
+    """``tax_year``'s ordinary income the federal rules leave out or take in
+    for an HSA, which a state that taxes one undoes: contributions
+    (``tax_deferred_in``) deducted, less withdrawals (``tax_deferred_out``)
+    taxed."""
+    row = con.execute(
+        "SELECT COALESCE(SUM(CASE WHEN te.tax_character = 'tax_deferred_out' THEN te.amount "
+        "ELSE -te.amount END), 0) "
+        "FROM transfer_event te "
+        "JOIN account fa ON fa.id = te.from_account JOIN account ta ON ta.id = te.to_account "
+        "WHERE ((te.tax_character = 'tax_deferred_in' AND ta.subkind = 'hsa') "
+        "    OR (te.tax_character = 'tax_deferred_out' AND fa.subkind = 'hsa')) "
+        f"  AND {_HSA_YEAR} = ?",
+        (tax_year,),
+    ).fetchone()
+    return int(row[0])
+
+
 class BusinessResult(NamedTuple):
     """One tax year's Schedule C result (#231): receipts less deductible
     expenses, a loss negative, and the expenses not deducted because the
@@ -3912,11 +4002,13 @@ def _net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
 
 def _capital_gains(
     con, *, tax_year: int, loss_limit: Callable[[int], int],
+    extra_ltcg: Mapping[int, int] | None = None,
 ) -> CapitalGains:
     """``tax_year``'s capital gains: its ``stcg``/``ltcg`` legs (a withdrawal at
     a loss posts a negative one) less its ``capital_loss`` records, netted
     with the carryover from every earlier year, each of which used up to its
-    own year's ``loss_limit``."""
+    own year's ``loss_limit``. ``extra_ltcg`` adds a long-term result to
+    some years (a state's tax on HSA growth, #490)."""
     year_of = "COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER))"
     totals: dict[int, list[int]] = {}
     for table, sign in (("transfer_event", 1), ("capital_loss", -1)):
@@ -3927,6 +4019,9 @@ def _capital_gains(
             (tax_year,),
         ):
             totals.setdefault(int(year), [0, 0])[1 if character == "ltcg" else 0] += sign * int(amount)
+    for year, amount in (extra_ltcg or {}).items():
+        if year <= tax_year:
+            totals.setdefault(year, [0, 0])[1] += amount
     carry_st = carry_lt = 0
     result = CapitalGains(0, 0, 0, 0, 0)
     for year in range(min(totals, default=tax_year), tax_year + 1):
@@ -4427,7 +4522,7 @@ def _swap_aux_table(
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
     ``source_series``) would. Swapping ``state_brackets`` swaps the state's
-    standard deduction with it.
+    other tables (``registries.STATE_COMPANION_AUX_KINDS``) with it.
 
     Lookups only move forward, so the target simply becomes a copy of the
     source -- which keeps each lookup style exact: the latest row, the
@@ -4483,15 +4578,17 @@ def _swap_aux_table(
     )
     aux[(aux_kind, series)] = kept + written
     if aux_kind == "state_brackets":
-        # A move to another state takes its standard deduction too (#248):
-        # the new state's state_standard_deduction__<state>, or, with none,
-        # the federal fallback rather than the old state's figure.
-        deduction = registries.STATE_STANDARD_DEDUCTION
-        if aux.get((deduction, source_series)):
-            _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": deduction}, aux)
-        elif aux.pop((deduction, series), None):
-            con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
-                        (deduction, series))
+        # A move to another state takes its other tables too: its standard
+        # deduction (#248), surcharge and HSA treatment (#490). Where the new
+        # state has none, the old state's go: the deduction falls back to the
+        # federal one, and there's no surcharge, and the HSA follows the
+        # federal rules.
+        for companion in registries.STATE_COMPANION_AUX_KINDS:
+            if aux.get((companion, source_series)):
+                _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux)
+            elif aux.pop((companion, series), None):
+                con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
+                            (companion, series))
 
 
 def _apply_calendar_event(

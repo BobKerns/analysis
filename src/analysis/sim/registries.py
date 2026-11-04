@@ -368,6 +368,25 @@ after every other rule of its month (#252)."""
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
 
+STATE_SURCHARGE = "state_surcharge"
+"""The aux kind of a state's surcharge on high taxable income (#490), in the
+shape of its brackets, whose rates add to the brackets' (California's 1%
+over $1 million)."""
+
+STATE_HSA = "state_hsa"
+"""The aux kind of how a state treats a health savings account (#490)."""
+
+STATE_HSA_TREATMENTS: tuple[str, ...] = ("federal", "taxable")
+"""A ``state_hsa`` row's ``treatment``: ``federal`` follows the federal
+rules (the default, without a table); ``taxable`` is California's, which
+doesn't recognize an HSA: contributions aren't deducted, its growth is
+taxed each year, so what comes out was taxed already."""
+
+STATE_COMPANION_AUX_KINDS: tuple[str, ...] = (STATE_STANDARD_DEDUCTION, STATE_SURCHARGE, STATE_HSA)
+"""Aux kinds keyed by state like ``state_brackets``, read with its series,
+which a move to another state (a ``swap_aux_table`` of ``state_brackets``)
+swaps with it."""
+
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
 
@@ -378,6 +397,7 @@ a row's floor, Part B add-on and Part D add-on (#253)."""
 TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     "federal_brackets": {"floor_series": "floor"},
     "state_brackets": {"floor_series": "floor"},
+    STATE_SURCHARGE: {"floor_series": "floor"},
     "ltcg_brackets": {"floor_series": "floor"},
     "standard_deduction": {"amount_series": "amount"},
     STATE_STANDARD_DEDUCTION: {"amount_series": "amount"},
@@ -401,6 +421,14 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
     "state_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # A state's surcharge on high incomes (#490): bands in the shape of its
+    # brackets whose rates add to theirs, read with the brackets' series.
+    # California's is one band, 1% over $1 million, not indexed.
+    STATE_SURCHARGE:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # How a state treats an HSA (#490), read with the brackets' series:
+    # `treatment` is one of STATE_HSA_TREATMENTS. Without a table, `federal`.
+    STATE_HSA: ("effective_date", "treatment"),
     # Federal long-term capital gain rates: the same shape as federal_brackets,
     # but a band's floor is the taxable income (ordinary income plus the gain,
     # stacked on top) at which its rate starts. Optional: without it long-term
@@ -480,6 +508,7 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "security_price": {"price": ("price_micros", "price")},
     "federal_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     "state_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_SURCHARGE: {"marginal_rate": ("marginal_rate_micros", "percent")},
     "ltcg_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     "rmd_factors": {"factor": ("factor_micros", "number")},
     "rate": {"annual_rate": ("annual_rate_micros", "percent")},
@@ -506,6 +535,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "federal_brackets": frozenset({"floor"}),
     "ltcg_brackets": frozenset({"floor"}),
     "state_brackets": frozenset({"floor"}),
+    STATE_SURCHARGE: frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
     STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
     "federal_deductions": frozenset({"amount"}),

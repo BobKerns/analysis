@@ -385,7 +385,12 @@ tax year, by looking back over everything that happened that year (the
   that file the federal standard deduction is used, and loading warns,
   since most states' deduction is much smaller. State taxable income
   leaves out Social Security, and long-term gains are taxed as ordinary
-  income.
+  income. Two more tables, also named for the state, are optional:
+  `state_surcharge__CA.csv` adds California's 1% on taxable income over
+  $1 million, and `state_hsa__CA.csv` says California doesn't recognize
+  health savings accounts, so its tax doesn't deduct what goes into an HSA,
+  taxes the account's growth each year (a fall is a capital loss), and
+  leaves what comes out alone.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year.
 - **RMDs** are calculated from the account's lot balances on the previous
@@ -850,8 +855,10 @@ date,kind,series,params_json
 From July 2031 on, everything that read the `CA` brackets reads the `WA`
 ones instead, including their later dated changes. With two states'
 brackets in `aux/`, the state `tax_accumulator` rule must say which it reads:
-`"bracket_series": "CA"` in its `params_json`. Do the same for
-`state_deductions` if you use it. Any aux table works the same way: a new
+`"bracket_series": "CA"` in its `params_json`. The state's standard
+deduction, surcharge and HSA tables move with its brackets by themselves:
+the new state's if it has them, otherwise none (the federal standard
+deduction stands in). Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new
 federal bracket table on the date a law takes effect, or another inflation
 series.
 
