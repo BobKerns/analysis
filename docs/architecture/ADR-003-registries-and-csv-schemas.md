@@ -653,7 +653,7 @@ Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation
 - **`rate__<account_name>.csv`**:
   `effective_date`, `annual_rate` (percent)
 - **`inflation__<series>.csv`**:
-  `effective_date`, `annual_rate` (percent; deterministic projection; future ensembles substitute realizations)
+  `effective_date`, `annual_rate` (percent; deterministic projection; future ensembles substitute realizations). Every inflation series needs a row on or before the scenario's `start`, read or not: the run grows each one's index from the first month, so the loader rejects one whose first row is later
 - **`filing_status.csv`**:
   `effective_date`, `filing_status`: the household's status, one row per change, so one row per date. The templates ship it with only its header. A scenario with a `tax_accumulator` or `irmaa` rule (§2.6, §2.11) needs a row in force by the end of its first year, and a date with two rows is a load error. A taxpayer's death still makes MFJ or MFS Single from the next year without a row (§4.9).
 - **`rmd_start_age.csv`**:
@@ -1334,4 +1334,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#431](https://github.com/BobKerns/analysis/issues/431): `negative_balance_warnings` are read back, with each account's lowest balance, by `sim explain` and the notebooks alike (§4.7).
 - [#441](https://github.com/BobKerns/analysis/issues/441): a strategy file's `trigger` column names guard rails it answers; a triggered rail is read by the run, and puts the lineage's `guard_rails.csv` in its tree (§4.11, §4.12).
 - [#467](https://github.com/BobKerns/analysis/issues/467): tax brackets, standard deductions and long-term gain bands are indexed for inflation by an optional `floor_series`/`amount_series` per row, `cpi` in the templates (§4.4).
-- [#471](https://github.com/BobKerns/analysis/issues/471): a header-only `series/` (or `aux/`) file empties the inherited series, which a scenario reading it must then supply; `sim series` adds, edits, deletes and reverts series (§4.1d).
+- [#471](https://github.com/BobKerns/analysis/issues/471): a header-only `series/` (or `aux/`) file empties the inherited series, which a scenario reading it must then supply; `sim series` adds, edits, deletes and reverts series (§4.1d); an inflation series needs a rate at the scenario's start (§4.4).

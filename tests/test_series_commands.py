@@ -76,9 +76,9 @@ def test_add_writes_a_series_from_options(sim: Callable[..., Result], series_dir
 
 
 def test_add_asks_for_what_is_left_out(sim: Callable[..., Result], series_dir: Path) -> None:
-    result = sim("series", "add", input="tuition\ninflation\n2027-09\n5%\n2030-09\n6%\n\n")
+    result = sim("series", "add", input="tuition\nrate\n2027-09\n5%\n2030-09\n6%\n\n")
     assert result.exit_code == 0, result.output
-    assert (series_dir / "inflation__tuition.csv").read_text() == (
+    assert (series_dir / "rate__tuition.csv").read_text() == (
         _HEADER + "2027-09-30,5%\n2030-09-30,6%\n")
 
 
@@ -259,3 +259,35 @@ def test_a_name_with_both_kinds_needs_kind(sim: Callable[..., Result], series_di
     assert result.exit_code != 0 and "say which with --kind" in result.output, result.output
     shown = sim("series", "show", "food", "--kind", "rate")
     assert shown.exit_code == 0 and "rate series 'food'" in shown.output, shown.output
+
+
+# ---------- review follow-ups ----------
+
+def test_an_inflation_series_must_have_a_rate_at_the_start(sim: Callable[..., Result], series_dir: Path) -> None:
+    # The run grows every inflation index from the first month, read or not.
+    result = sim("series", "add", "late", "--kind", "inflation", "--set", "2030-01=3%")
+    assert result.exit_code != 0, result.output
+    assert "its first rate is from 2030-01, after the scenario's start (2026-05)" in result.output
+    assert not (series_dir / "inflation__late.csv").exists()
+
+
+def test_the_rate_at_the_start_follows_dates_not_file_order(sim: Callable[..., Result], series_dir: Path) -> None:
+    (series_dir / "rate__brokerage_growth.csv").write_text(_HEADER + "2026-01-31,6%\n2025-01-31,3%\n")
+    line = next(line for line in sim("series", "list").output.splitlines() if " brokerage_growth " in line)
+    assert " 6% " in line, line
+
+
+def test_delete_empties_a_series_in_both_folders(sim: Callable[..., Result], test_scenarios_dir: Path,
+                                                 series_dir: Path) -> None:
+    """The loader reads a name's series/ and aux/ files both, so emptying
+    only one would leave rates the run still uses."""
+    aux = test_scenarios_dir / "retire_alice" / "aux"
+    aux.mkdir()
+    (aux / "inflation__food.csv").write_text(_HEADER + "2025-01-31,9%\n")
+    result = sim("series", "delete", "food", "--yes")
+    assert result.exit_code == 0, result.output
+    assert (series_dir / "inflation__food.csv").read_text() == _HEADER
+    assert not (aux / "inflation__food.csv").exists()  # only this scenario had it there
+    reverted = sim("series", "revert", "food")
+    assert reverted.exit_code == 0, reverted.output
+    assert not (series_dir / "inflation__food.csv").exists()

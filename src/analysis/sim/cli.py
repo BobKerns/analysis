@@ -14011,15 +14011,10 @@ def _remove_series_row(rows: list[dict[str, str]], month: str, name: str) -> Non
 
 
 def _scenario_start(data: Path, scenario: str) -> str | None:
-    """The scenario's start month as the load merges it, or None."""
-    scenarios = data / "scenarios"
-    for name in reversed(load_order(scenarios, scenario)):
-        path = _folder_of(scenarios, name) / "scenario.csv"
-        with contextlib.suppress(OSError, StopIteration, _csv.Error):
-            with path.open(newline="", encoding="utf-8") as fh:
-                if start := (next(_csv.DictReader(fh)).get("start") or "").strip():
-                    return start
-    return None
+    """The scenario's start month as the load merges it (a template's only
+    where no data repo scenario sets one), or None."""
+    summary = next((s for s in sc.scenario_summaries(data) if s.name == scenario), None)
+    return summary.start.month if summary is not None and summary.start is not None else None
 
 
 def _rate_at(rows: Sequence[Mapping[str, str]], month: str | None) -> str:
@@ -14032,7 +14027,7 @@ def _rate_at(rows: Sequence[Mapping[str, str]], month: str | None) -> str:
     except ValueError:
         return ""
     found = ""
-    for row in rows:
+    for row in sorted(rows, key=_series_row_month):  # the engine reads them in date order
         if _series_row_month(row) <= when:
             found = row.get("annual_rate", "")
     return found
@@ -14088,6 +14083,19 @@ def _pick_series(
 def _own_series_path(ref_path: Path, file: series_files.SeriesFile) -> Path:
     """Where the scenario at ``ref_path`` keeps its own copy of ``file``'s series."""
     return ref_path / file.folder / file.filename
+
+
+def _series_unchanged(edit: StagedEdit, before: Mapping[Path, bytes | None]) -> None:
+    """Refuse a series edit whose files changed since they were read, while
+    its prompts waited: writing then would undo that change. A file outside
+    the scenarios (shared aux/, templates) isn't staged, so is compared on disk."""
+    for path, was in before.items():
+        try:
+            _require_unchanged(edit, path, was)
+        except ValueError:
+            if _file_bytes(path) != was:
+                raise click.ClickException(
+                    f"changed on disk while this edit was in progress; nothing was written: {path}") from None
 
 
 def _series_readers(data: Path, scenario: str, name: str) -> list[str]:
@@ -14251,6 +14259,8 @@ def series_add(
             f"{ref.name} already has {_series_label(existing)} ({_series_where(existing.read)}); "
             f"`sim series edit {series}` changes it")
     start = _scenario_start(data, ref.name)
+    target = ref.path / (existing.read.folder if existing is not None else "series") / f"{kind}__{series}.csv"
+    before = {target: _file_bytes(target)}
     rows: list[dict[str, str]] = []
     if rate is not None:
         when = from_month or start
@@ -14270,6 +14280,7 @@ def series_add(
     path = ref.path / folder / f"{kind}__{series}.csv"
     header = existing.read.header if existing is not None else series_files.HEADER
     with _scenario_edit(data, ref.name) as edit:
+        _series_unchanged(edit, before)
         series_files.write(edit.path(path), header, rows)
     if existing is not None:
         click.echo(f"gave emptied {kind} series {series!r} {len(rows)} row(s) in {_shown(path)}")
@@ -14348,6 +14359,8 @@ def series_edit(
     ref = _resolve_scenario(data, scenario)
     found = _pick_series(data, ref.name, series, kind, wanted=lambda s: not s.empty, what="series to edit")
     file = found.read
+    path = _own_series_path(ref.path, file)
+    before = {p: _file_bytes(p) for p in (file.path, path)}
     rows = [dict(row) for row in file.rows]
     if sets or removes:
         for month_text in removes:
@@ -14359,7 +14372,6 @@ def series_edit(
         for month, value in _parse_series_sets(sets):
             _set_series_row(rows, month, value)
     else:
-        path = _own_series_path(ref.path, file)
         _echo_guided_scenario(ref.name, path, defaulted=scenario is None)
         if not found.own:
             click.echo(f"  It comes from {_series_where(file)}: writing puts this "
@@ -14373,8 +14385,8 @@ def series_edit(
     if rows == file.rows:
         click.echo("no change; nothing was written")
         return
-    path = _own_series_path(ref.path, file)
     with _scenario_edit(data, ref.name) as edit:
+        _series_unchanged(edit, before)
         series_files.write(edit.path(path), file.header, rows)
     if found.own:
         click.echo(f"updated {_series_label(found)} in {_shown(path)}")
@@ -14412,26 +14424,29 @@ def series_delete(
         raise click.ClickException(
             "cpi can't be deleted: CPI-constant dollars need it (`sim series edit cpi` "
             "gives this scenario its own rates)")
-    file = found.read
-    path = _own_series_path(ref.path, file)
-    below = found.below
+    # The loader reads a name's series/ and aux/ files both, so each folder
+    # that still has rates for it is emptied, or its file removed.
+    parts = [s for s in (found, *found.others) if not s.empty]
+    below = next((s.below for s in parts if s.below is not None), None)
+    shown = ", ".join(_shown(_own_series_path(ref.path, s.read)) for s in parts)
     if below is None:
-        prompt = f"delete {_series_label(found)} ({_shown(path)})?"
+        prompt = f"delete {_series_label(found)} ({shown})?"
     else:
-        prompt = (f"empty {_series_label(found)} in {ref.name}, hiding {_series_where(below)}?")
+        prompt = f"empty {_series_label(found)} in {ref.name}, hiding {_series_where(below)}?"
     if not yes and not click.confirm(prompt, default=False):
         click.echo("aborted")
         return
     with _scenario_edit(data, ref.name) as edit:
-        staged = edit.path(path)
-        if below is None:
-            staged.unlink()
-        else:
-            series_files.write(staged, file.header, [])
+        for part in parts:
+            staged = edit.path(_own_series_path(ref.path, part.read))
+            if part.below is None:
+                staged.unlink()
+            else:
+                series_files.write(staged, part.read.header, [])
     if below is None:
-        click.echo(f"deleted {_series_label(found)}: removed {_shown(path)}")
+        click.echo(f"deleted {_series_label(found)}: removed {shown}")
         return
-    click.echo(f"emptied {_series_label(found)} in {_shown(path)}: {ref.name} and the scenarios "
+    click.echo(f"emptied {_series_label(found)} in {shown}: {ref.name} and the scenarios "
                f"built on it have no {found.name!r} unless they supply their own")
     click.echo(f"`sim series revert {found.name}` inherits {below.defined_in}'s again")
 
@@ -14453,16 +14468,17 @@ def series_revert(series: str | None, kind: str | None, scenario: str | None, da
     ref = _resolve_scenario(data, scenario)
     found = _pick_series(data, ref.name, series, kind, wanted=lambda s: s.own, what="series to revert",
                          offer=lambda s: s.below is not None)
-    below = found.below
+    parts = [s for s in (found, *found.others) if s.own]
+    below = next((s.below for s in parts if s.below is not None), None)
     if below is None:
         raise click.ClickException(
             f"{ref.name} doesn't inherit a {found.kind} series {found.name!r}: its own is the only "
             f"one, so there's nothing to revert to; `sim series delete {found.name}` removes it")
-    path = found.read.path
     with _scenario_edit(data, ref.name) as edit:
-        edit.path(path).unlink()
-    click.echo(f"removed {_shown(path)}: {ref.name} inherits {_series_where(below)} again")
-
+        for part in parts:
+            edit.path(part.read.path).unlink()
+    click.echo(f"removed {', '.join(_shown(s.read.path) for s in parts)}: "
+               f"{ref.name} inherits {_series_where(below)} again")
 
 def _lot_defined(account: str, lot: str) -> rename.Defines:
     return lambda scenario_dir: any(

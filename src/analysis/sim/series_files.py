@@ -75,6 +75,9 @@ class Series:
     files: list[SeriesFile]
     own: bool
     """Whether the first file is the scenario's own."""
+    others: tuple[Series, ...] = ()
+    """The same name's files in another folder (``aux/`` beside ``series/``),
+    which the loader reads too."""
 
     @property
     def read(self) -> SeriesFile:
@@ -97,7 +100,8 @@ class Series:
 
     @property
     def empty(self) -> bool:
-        return self.read.empty
+        """No rates here: every folder's file of the name is empty."""
+        return self.read.empty and all(other.empty for other in self.others)
 
 
 def _rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -142,19 +146,19 @@ def _files(data_dir: Path, scenario: str) -> Iterator[tuple[str, str, str, Tier,
 def scenario_series(data_dir: Path, scenario: str) -> dict[tuple[str, str], Series]:
     """Every rate and inflation series ``scenario`` sees, by (kind, name),
     empty ones included. One with files in both ``series/`` and ``aux/`` is
-    read from ``series/``."""
+    shown and edited from ``series/``; the loader reads both, so its
+    ``aux/`` files are its ``others``."""
     stacks: dict[tuple[str, str, str], list[tuple[Tier, Path]]] = {}
     for kind, name, folder, tier, path in _files(data_dir, scenario):
         stacks.setdefault((kind, name, folder), []).append((tier, path))
-    found: dict[tuple[str, str], Series] = {}
-    for (kind, name, folder), stack in stacks.items():
-        if (kind, name) in found:
-            continue  # series/ came first
+    by_name: dict[tuple[str, str], list[Series]] = {}
+    for (kind, name, folder), stack in stacks.items():  # series/ first
         files = []
         for tier, path in stack:
             header, rows = _rows(path)
             files.append(SeriesFile(kind, name, path, folder, tier.label, header, rows))
-        found[(kind, name)] = Series(files, own=stack[0][0].label == scenario)
+        by_name.setdefault((kind, name), []).append(Series(files, own=stack[0][0].label == scenario))
+    found = {key: Series(first.files, first.own, tuple(rest)) for key, (first, *rest) in by_name.items()}
     return dict(sorted(found.items(), key=lambda item: (item[0][1], item[0][0])))
 
 
