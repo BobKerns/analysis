@@ -89,7 +89,7 @@ state's own revenue department before relying on a figure.
 | Michigan | Partial | City income tax; retirement deduction |
 | Minnesota | Partial | Social Security taxed |
 | Mississippi | Partial | Retirement income and IRA distributions exempt |
-| Missouri | Partial | Pension exemptions |
+| Missouri | Partial | Short-term gain exemption; pension exemptions |
 | Montana | Partial | Social Security taxed |
 | Nebraska | Tables needed | |
 | Nevada | No tax | |
