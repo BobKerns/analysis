@@ -399,3 +399,30 @@ def test_overview_widgets_say_when_there_is_nothing_to_show(test_data_dir: Path)
         shown = [show_ytd_view(scenario), show_itemizations(scenario), show_tags(scenario)]
     assert [type(each).__name__ for each in shown] == ["Markdown"] * 3
     assert "No year-to-date rows" in shown[0].data
+
+
+def test_overview_tables_show_authored_text_not_html(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A description or an itemization's note is text: ``<pending>`` shows as
+    written rather than vanishing as a tag."""
+    from analysis.sim.notebook_ui import scenario_plots
+
+    (test_data_dir / "itemizations" / "fees.csv").write_text(
+        "Item,Note <b>,Value\nclosing,<pending>,10.00\n", encoding="utf-8")
+    ytd = retire_alice_csv("year_to_date.csv")
+    rows = pd.read_csv(ytd, dtype=str, keep_default_na=False)
+    rows.loc[0, "description"] = "Payment <pending>"
+    rows.to_csv(ytd, index=False)
+    shown: list[str] = []
+    # Output widgets capture nothing outside a kernel, so collect what is displayed.
+    monkeypatch.setattr(scenario_plots, "display", lambda obj: shown.append(
+        obj.to_html() if hasattr(obj, "to_html") else ""))
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        show_ytd_view(scenario)
+        show_itemizations(scenario)
+
+    html = "".join(shown)
+    assert "Payment &lt;pending&gt;" in html
+    assert "&lt;pending&gt;" in html.replace("Payment &lt;pending&gt;", "")
+    assert "Note &lt;b&gt;" in html

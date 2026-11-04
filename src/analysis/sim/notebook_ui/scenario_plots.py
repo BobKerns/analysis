@@ -294,14 +294,22 @@ def show_ytd_view(sc, **_):
     view = ytd_view(sc)
     if view.empty:
         return _none_message(f"No year-to-date rows in {sc.ref.name}.")
+    # escape="html" escapes the authored text before _breakable adds its <wbr>.
     styled = view.style.hide(axis="index").format(
-        {c: _breakable for c in ("name", "from", "to", "tax_character", "description", "defined_in")})
+        {c: _breakable for c in ("name", "from", "to", "tax_character", "description", "defined_in")},
+        escape="html")
     styled = _fit_to_width(styled, nowrap=["source", "amount", "year"])
     return scrollable(styled.set_properties(subset=["amount"], **{"text-align": "right"}))
 
 
 def _dollars(value) -> str:
     return "error" if pd.isna(value) else f"${value:,.2f}"
+
+
+def _escaped(frame: pd.DataFrame):
+    """``frame`` styled with its cells and column labels shown as text, not HTML."""
+    return (frame.style.hide(axis="index")
+            .format(escape="html").format_index(escape="html", axis=1))
 
 
 def show_itemizations(sc, **_):
@@ -317,7 +325,7 @@ def show_itemizations(sc, **_):
         return _none_message(f"No itemizations for {sc.ref.name}.")
     shown = view.drop(columns=["error"]) if not view["error"].any() else view
     styled = shown.style.hide(axis="index").format(
-        {"total": _dollars, "name": _breakable, "defined_in": _breakable})
+        {"total": _dollars, "name": _breakable, "defined_in": _breakable}, escape="html")
     table = scrollable(_fit_to_width(styled, nowrap=["rows", "total", "refs"]))
     picker = widgets.Dropdown(options=list(view["name"]), description="Itemization")
     out = scrollable_output()
@@ -330,12 +338,13 @@ def show_itemizations(sc, **_):
                      else _dollars(detail.total))
             display(Markdown(f"**@{html.escape(detail.name)}** ({html.escape(detail.defined_in)}), "
                              f"total {html.escape(total)}"))
-            display(detail.rows.style.hide(axis="index"))
+            # An itemization's columns beyond Value are free text (ADR-003 §4.1c).
+            display(_escaped(detail.rows))
             if detail.references.empty:
                 display(_none_message("Referenced by nothing."))
             else:
                 display(Markdown("Referenced by:"))
-                display(detail.references.style.hide(axis="index"))
+                display(_escaped(detail.references))
 
     picker.observe(_redraw, names="value")
     _redraw()
