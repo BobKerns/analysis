@@ -4285,34 +4285,26 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
 
 def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
     """The run's basis step-ups at a death (#255): the month, the lot, whose
-    death, and its basis before and after. A run file from before them has
-    no table, and says nothing."""
-    if con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'basis_step_up'"
-    ).fetchone() is None:
+    death, its basis before and after, and the rule that applied (#434). A
+    run file from before them has no table, and says nothing."""
+    from analysis.sim.step_ups import basis_step_ups
+
+    found = basis_step_ups(con)
+    if found is None:
         return
-    rows = con.execute(
-        "SELECT b.date, a.name, a.subkind, m.lot, b.person, b.balance, "
-        "       b.basis_before, b.basis_after "
-        "FROM basis_step_up b JOIN account_lot m ON m.id = b.lot_id "
-        "JOIN account a ON a.id = m.account_id ORDER BY b.id"
-    ).fetchall()
-    if not rows:
+    if not found:
         click.echo("basis step-ups at a death: none")
         return
-    click.echo(f"basis step-ups at a death ({len(rows)}):")
-    names = [_account_with_lot(name, subkind, lot) for _d, name, subkind, lot, *_ in rows]
-    width = max(len(n) for n in names)
-    who = max(len(row[4]) for row in rows)
-
-    def money(cents: int) -> str:
-        return f"${cents / 100:,.2f}"
-
-    for name, (month, _a, _s, _l, person, balance, before, after) in zip(names, rows, strict=True):
-        click.echo(
-            f"  {month[:7]}  {name:<{width}}  {person:<{who}}  balance {money(balance)}"
-            f"  basis {money(before)} -> {money(after)}"
-        )
+    click.echo(f"basis step-ups at a death ({len(found)}):")
+    width = max(len(s.account) for s in found)
+    who = max(len(s.person) for s in found)
+    for s in found:
+        line = (f"  {s.month[:7]}  {s.account:<{width}}  {s.person:<{who}}"
+                f"  balance {_compact_cents(s.balance_cents)}"
+                f"  basis {_compact_cents(s.basis_before_cents)} -> {_compact_cents(s.basis_after_cents)}")
+        if s.rule is not None:
+            line += f"  ({s.rule_label})"
+        click.echo(line)
 
 
 def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
