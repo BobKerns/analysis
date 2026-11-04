@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
+from ipywidgets import widgets
+from pandas.io.formats.style import Styler
 import pytest
 from click.testing import CliRunner
 from matplotlib.dates import date2num
@@ -245,7 +247,7 @@ def test_the_notebook_table_lists_each_step_up_with_its_rule(step_up_run: Path) 
         (ALICE_FINAL, f"{BROKERAGE} (default)", "alice", "Alice (fake)", "joint_half"),
         (ALICE_FINAL, "Asset_Home", "alice", "Alice (fake)", "joint_half"),
     ]
-    assert table is not None
+    assert isinstance(table, Styler)
     frame = table.data
     assert list(frame.columns) == [
         "month", "person", "account", "balance", "basis before", "basis after", "rule"]
@@ -257,7 +259,10 @@ def test_the_notebook_table_lists_each_step_up_with_its_rule(step_up_run: Path) 
 def test_a_run_without_step_ups_shows_no_table(retire_alice_run_file: Path) -> None:
     with RunConnection(retire_alice_run_file) as rc:
         assert rc.basis_step_ups() == []
-        assert basis_step_up_table(rc) is None
+        empty = basis_step_up_table(rc)
+    # Something to display, so the last scenario's table is cleared (#434).
+    assert isinstance(empty, widgets.HTML)
+    assert empty.value == ""
 
 
 def test_a_run_from_before_the_rule_shows_its_step_ups_without_one(step_up_run: Path) -> None:

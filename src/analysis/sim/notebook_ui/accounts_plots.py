@@ -221,12 +221,14 @@ def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, *
 def basis_step_up_table(rc: RunConnection, **_):
     """The run's basis step-ups at a death (#434), one row per lot: the
     month, whose death, the lot, its balance, its basis before and after, and
-    the rule that decided how much stepped up. None when the run has none, so
-    the cell shows nothing. For an ensemble, the run shown is member 0's, as
+    the rule that decided how much stepped up. An empty widget when the run
+    has none: Connections.show clears with wait=True, which takes effect only
+    once something is displayed, so returning None would leave the last
+    scenario's table up. For an ensemble, the run shown is member 0's, as
     the death lines on its charts are."""
     found = rc.basis_step_ups()
     if not found:
-        return None
+        return widgets.HTML()
     frame = pd.DataFrame({
         "month": [s.month[:7] for s in found],
         "person": [s.display for s in found],
