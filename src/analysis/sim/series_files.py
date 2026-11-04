@@ -116,10 +116,18 @@ class Series:
         return any(part.own for part in self.parts)
 
     @property
+    def inherited(self) -> SeriesFile | None:
+        """The first file of the name the scenario inherits, in any folder:
+        what it reads, in part, without its own files."""
+        return next((file for file in (part.below if part.own else part.read for part in self.parts)
+                     if file is not None), None)
+
+    @property
     def revertible(self) -> bool:
-        """Whether the scenario has its own file of the name over an
-        inherited one, in some folder: what ``sim series revert`` drops."""
-        return any(part.own and part.below is not None for part in self.parts)
+        """Whether the scenario has its own file of the name and inherits
+        one, in any folder (its own ``aux/`` file beside an inherited
+        ``series/`` one counts): what ``sim series revert`` drops."""
+        return self.any_own and self.inherited is not None
 
     @property
     def empty(self) -> bool:

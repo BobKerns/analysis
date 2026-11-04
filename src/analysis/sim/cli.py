@@ -14026,14 +14026,16 @@ def _parse_series_sets(values: Iterable[str]) -> list[tuple[str, str]]:
     return parsed
 
 
-def _set_series_row(rows: list[dict[str, str]], month: str, rate: str) -> None:
+def _set_series_row(rows: list[dict[str, str]], month: str, rate: str,
+                    keep: dict[str, str] | None = None) -> None:
     """Give ``rows`` ``rate`` from ``month``: that month's row changes, or a
-    new one goes in, in date order."""
+    new one goes in, in date order, with ``keep``'s other cells (the row it
+    replaces)."""
     for row in rows:
         if _series_row_month(row) == month:
             row.update(effective_date=month, annual_rate=rate)
             return
-    rows.append({"effective_date": month, "annual_rate": rate})
+    rows.append({**(keep or {}), "effective_date": month, "annual_rate": rate})
     rows.sort(key=_series_row_month)
 
 
@@ -14366,9 +14368,8 @@ def _ask_series_edits(series: series_files.Series, rows: list[dict[str, str]], s
         except ValueError as exc:
             click.echo(f"  {exc}; nothing changed")
             continue
-        if index is not None and answer != "+":
-            del rows[index]
-        _set_series_row(rows, month, rate)
+        keep = rows.pop(index) if index is not None else None
+        _set_series_row(rows, month, rate, keep)
 
 
 @series_group_command.command("edit")
@@ -14520,7 +14521,7 @@ def series_revert(series: str | None, kind: str | None, scenario: str | None, da
     found = _pick_series(data, ref.name, series, kind, wanted=lambda s: s.any_own,
                          what="series to revert", offer=lambda s: s.revertible)
     parts = [s for s in found.parts if s.own]
-    below = next((s.below for s in parts if s.below is not None), None)
+    below = found.inherited
     if below is None:
         raise click.ClickException(
             f"{ref.name} doesn't inherit a {found.kind} series {found.name!r}: its own is the only "

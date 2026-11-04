@@ -379,3 +379,24 @@ def test_a_set_rate_in_the_first_month_gives_an_inflation_series_its_start_rate(
     append_calendar_row(date="2026-05-31", kind="set_rate", series="late", amount="2%",
                         params_json='{"aux_kind": "inflation"}')
     assert _loads(test_data_dir, intent_dir, "retire_alice") == []
+
+
+def test_guided_edit_keeps_a_changed_rows_other_cells(sim: Callable[..., Result], series_dir: Path) -> None:
+    path = series_dir / "rate__spare.csv"
+    path.write_text("effective_date,annual_rate,description\n2026-01-31,1%,first\n")
+    result = sim("series", "edit", "spare", input="\n".join(["1", "2026-01", "2%", ""]) + "\n")
+    assert result.exit_code == 0, result.output
+    assert path.read_text() == "effective_date,annual_rate,description\n2026-01-31,2%,first\n"
+
+
+def test_revert_drops_an_own_aux_file_beside_an_inherited_series_file(
+    sim: Callable[..., Result], test_scenarios_dir: Path,
+) -> None:
+    """Only series/ is inherited; the child's own file is in aux/."""
+    aux = test_scenarios_dir / "retire_alice" / "aux"
+    aux.mkdir()
+    (aux / "inflation__food.csv").write_text(_HEADER + "2025-01-31,9%\n")
+    result = sim("series", "revert", input="food\n")
+    assert result.exit_code == 0, result.output
+    assert not (aux / "inflation__food.csv").exists()
+    assert "t_inflation_series" in result.output
