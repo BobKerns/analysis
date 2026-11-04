@@ -55,6 +55,14 @@ def test_a_lots_growth_reads_its_series_from_the_scenarios_start() -> None:
     )
 
 
+def test_a_lots_payouts_are_named_as_such() -> None:
+    """A taxable lot's dividend or interest rule (#468) reads its yield series
+    from the start too."""
+    payout = {**_growth("yield"), "params_json": '{"payout": true}'}
+    [issue] = _issues([payout], _rate("yield", "2027-01-31"))
+    assert "but the payout rule for Acct reads it from 2026-05" in issue
+
+
 def test_a_series_with_a_rate_by_the_start_loads() -> None:
     assert _issues([_growth("stocks")], _rate("stocks", "2026-05-31", "2030-01-31")) == []
 

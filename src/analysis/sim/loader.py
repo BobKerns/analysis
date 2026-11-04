@@ -4490,7 +4490,8 @@ def _validate_rate_series_start(
             # Validation has rewritten to_account to its leaf, "account:lot".
             account, _, leaf_lot = row.get("to_account", "").partition(":")
             lot = leaf_lot or row.get("to_lot") or registries.DEFAULT_LOT
-            reader = f"the growth of {account}" + (
+            what = "the payout rule for" if params.get("payout") else "the growth of"
+            reader = f"{what} {account}" + (
                 f" / {lot}" if lot != registries.DEFAULT_LOT else "")
         rate_kind = params.get("rate_kind", "rate")
         if blend := params.get("blend"):
