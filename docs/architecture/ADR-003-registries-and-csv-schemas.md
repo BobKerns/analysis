@@ -637,10 +637,12 @@ A series a `percent_of_balance` rule reads, whatever its `rate_kind`, needs a ra
 the first month the rule reads it ([#475](https://github.com/BobKerns/analysis/issues/475)), or
 the load fails, naming the series, its first row and the first reader. Each lot's growth rule
 (ADR-005 §5) reads from `scenario.start`; a hand-written rule from the first month it posts, its
-`start` or the scenario's, whichever is later, then its cadence; a blend slice from the month its
-allocation set applies, while the rule still posts. A `set_rate` row (§3.1) dated in the run, on the same `(aux_kind, series)`, supplies a rate
-from its month, when its date is fixed: one whose date varies or follows a `date_marker` could
-land later, so it doesn't count.
+`start` or the scenario's, whichever is later, then its cadence, unless its `end`, the scenario's,
+or a `retire_scheduled` row (§3.1) comes first; a blend slice from the month its allocation set
+applies, while the rule still posts. A `set_rate` row on the same `(aux_kind, series)` supplies a
+rate from its month, and so does a `swap_aux_table` row (§3.5) of that series. Calendar rows count
+only when dated in the run and fixed: one whose date varies or follows a `date_marker` could land
+later.
 
 Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_lots.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it. A symbol is also upper case, as tickers are: a lower-case spelling would be a second symbol that no price file or allocation matches, so the loader rejects one in `securities.csv`, `allocations.csv`, `account_lots.csv` or a `security_price__<symbol>.csv` filename (`_validate_symbol_case`), and the commands that write a symbol upper-case it.
 

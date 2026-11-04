@@ -4329,18 +4329,34 @@ def _validate_rate_series_start(
             key = (kind, series)
             supplied_from[key] = min(supplied_from.get(key, effective), effective)
     file_from = dict(supplied_from)
-    for row in calendar_rows:
-        series, when = row.get("series", ""), row.get("date", "")
-        if (row.get("kind") != "set_rate" or not series or not when
-                or (row.get("vary_target") or "").strip() == "date"
-                or (row.get("vary_resume") or "").strip()
-                or "date" in (_safe_json(row.get(DATE_REFS)) or {})):
+    # The run applies a calendar event only in a month it steps through, so
+    # one dated before the start never happens; one whose date varies or
+    # follows a date marker could land later than written.
+    fixed_events = [
+        row for row in calendar_rows
+        if (when := row.get("date", "")) and when >= run_start.isoformat()
+        and (row.get("vary_target") or "").strip() != "date"
+        and "date" not in (_safe_json(row.get(DATE_REFS)) or {})
+    ]
+    for row in fixed_events:
+        series, when = row.get("series", ""), row["date"]
+        params = _safe_json(row.get("params_json")) or {}
+        if row.get("kind") == "set_rate" and not (row.get("vary_resume") or "").strip():
+            key = (params.get("aux_kind", "rate"), series)
+        elif row.get("kind") == "swap_aux_table":
+            # From its date the series reads as its source, which the run
+            # requires to have a row in force by then (ADR-003 §3.5).
+            key = (params.get("aux_kind", ""), series)
+        else:
             continue
-        if when < run_start.isoformat():
-            continue  # the run never applies an event dated before its first month
-        key = ((_safe_json(row.get("params_json")) or {}).get("aux_kind", "rate"), series)
-        if key in supplied_from:
+        if series and key in supplied_from:
             supplied_from[key] = min(supplied_from[key], when)
+    # A retire_scheduled event ends its rule after that month's posting.
+    retired: dict[str, date] = {}
+    for row in fixed_events:
+        if row.get("kind") == "retire_scheduled" and (name := row.get("scheduled_name", "")):
+            when_d = parse_month(row["date"])
+            retired[name] = min(retired.get(name, when_d), when_d)
 
     # (aux_kind, series) -> (first month read, who reads it then)
     first_read: dict[tuple[str, str], tuple[str, str]] = {}
@@ -4354,7 +4370,8 @@ def _validate_rate_series_start(
         if row.get("amount_rule_kind") != "percent_of_balance":
             continue
         params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
-        window = _first_firing(row, run_start, run_end)
+        window = _first_firing(
+            row, run_start, min(run_end, retired.get(row.get("name", ""), run_end)))
         if window is None:
             continue
         first, last = window

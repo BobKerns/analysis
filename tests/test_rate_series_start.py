@@ -83,6 +83,25 @@ def test_a_rule_that_never_fires_in_the_run_never_reads_it() -> None:
     assert _issues([one_off_before_the_start], aux) == []
 
 
+def test_a_rule_retired_before_it_first_fires_never_reads() -> None:
+    """retire_scheduled ends a rule after that month: a December rule retired
+    in June 2026 never posts, but one retired in December still does."""
+    aux = _rate("bonus", "2027-01-31")
+    annual = _rule(series="bonus", cadence="annual", month_of_year="12")
+    retire = {"kind": "retire_scheduled", "scheduled_name": "grow", "date": "2026-06-30"}
+    assert _issues([annual], aux, [retire]) == []
+    assert len(_issues([annual], aux, [{**retire, "date": "2026-12-31"}])) == 1
+    assert len(_issues([annual], aux, [{**retire, "vary_target": "date"}])) == 1
+
+
+def test_a_swap_supplies_the_series_from_its_date() -> None:
+    swap = {"kind": "swap_aux_table", "series": "stocks", "date": "2026-05-31",
+            "params_json": '{"aux_kind": "rate", "source_series": "old"}'}
+    aux = _rate("stocks", "2027-01-31") + _rate("old", "2026-01-31")
+    assert _issues([_growth("stocks")], aux, [swap]) == []
+    assert len(_issues([_growth("stocks")], aux, [{**swap, "date": "2026-07-31"}])) == 1
+
+
 def test_rate_kind_names_the_series_kind() -> None:
     aux = [("inflation", "medical", {"annual_rate_micros": 50_000}, "2027-01-31")]
     rule = _rule(series="medical", params_json='{"rate_kind": "inflation"}')
