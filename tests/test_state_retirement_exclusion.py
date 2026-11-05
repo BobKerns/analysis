@@ -12,7 +12,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.engine import _ExclusionGrant, _RetirementExclusion, run_scenario
+from analysis.sim.engine import (
+    _ExclusionGrant,
+    _RetirementExclusion,
+    _taxable_social_security_cents,
+    run_scenario,
+)
 from analysis.sim.loader import LoadError, load_scenario
 from analysis.sim.registries import SCHEDULED_CSV_HEADER, STATE_EXCLUSION_INCOME
 
@@ -352,3 +357,35 @@ def test_an_excluded_short_term_gain_leaves_the_short_term_rates() -> None:
     assert exclusion.split(120_000, 0) == (20_000, 0, 20_000)
     # Long-term gain goes first; only the rest is short-term.
     assert exclusion.split(115_000, 5_000) == (15_000, 5_000, 15_000)
+
+
+
+def test_state_taxable_social_security_reads_income_before_the_exclusion(
+    state_ira: Path, tmp_path: Path,
+) -> None:
+    """A state that taxes Social Security (#484) starts from the federally
+    taxable amount, which the state's own retirement exclusion doesn't
+    change: the IRA draw it leaves out still counts toward it."""
+    (state_ira / "aux" / "state_social_security__CA.csv").write_text(
+        "effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,"
+        "phaseout_rate\n2020-01-31,MFJ,0%,,,\n2020-01-31,Single,0%,,,\n", encoding="utf-8")
+    _exclusions(state_ira, "2025-01,retirement,retirement_account,,,,,,\n")
+    con, _ = _run(state_ira, tmp_path)
+    try:
+        year = 2033
+        excluded = _bucket(con, year, "state_retirement_exclusion")
+        assert excluded == 30_000_00
+        ss = _bucket(con, year, "state_ss_income")
+        ordinary = _bucket(con, year, "state_ordinary_income")
+        ltcg = _bucket(con, year, "state_ltcg_income")
+        tiers = {"tier1": 32_000_00, "tier2": 44_000_00}  # MFJ, prototype aux
+        expected = _taxable_social_security_cents(
+            ordinary_income=ordinary + excluded, ltcg_income=ltcg, ss_income=ss,
+            tier1=tiers["tier1"], tier2=tiers["tier2"])
+        after = _taxable_social_security_cents(
+            ordinary_income=ordinary, ltcg_income=ltcg, ss_income=ss,
+            tier1=tiers["tier1"], tier2=tiers["tier2"])
+        assert expected != after  # the year shows the difference
+        assert _bucket(con, year, "state_taxable_ss") == expected
+    finally:
+        con.close()
