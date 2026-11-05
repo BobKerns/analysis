@@ -3349,9 +3349,9 @@ def _apply_tax_accumulator(
             "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ?",
             (tax_year,),
         ).fetchone()[0]) - est.hsa_withdrawn
-        # A state that taxes an HSA counts its growth as gain (#490), but
-        # nothing was sold: the drawdown's gains are other money.
-        realized = max(0, est.capital.ltcg - max(0, est.hsa_growth))
+        # A state that taxes an HSA counts its growth, or fall, as gain
+        # (#490), but nothing was sold: the drawdown's gains are other money.
+        realized = max(0, est.capital.ltcg - est.hsa_growth)
         drawdown_pricing[(scope, tax_year)] = (
             lambda ordinary, gains, tax_with=est.tax_with, drawn=drawn, realized=realized:
             tax_with(ordinary - drawn, gains - realized))

@@ -2804,8 +2804,8 @@ def _validate_state_hsa(
     for kind, state, payload, effective in aux_rows:
         if kind != registries.STATE_HSA:
             continue
-        file = f"aux/{kind}__{state}.csv" if state else f"aux/{kind}.csv"
-        if state is None:
+        file = f"aux/{kind}__{state}.csv" if state is not None else f"aux/{kind}.csv"
+        if not state:
             issues.append(f"{file}: name the state, as in {kind}__CA.csv")
             continue
         treatment = payload.get("treatment")

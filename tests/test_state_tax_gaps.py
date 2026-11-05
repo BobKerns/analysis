@@ -115,6 +115,8 @@ def test_an_hsa_that_falls_is_a_capital_loss_for_the_state(ledger: sqlite3.Conne
 
     fell = _estimate(ledger, _aux(hsa="taxable"), "state")
     assert (fell.capital.loss_deduction, fell.capital.carryover_lt) == (3_000_00, 2_000_00)
+    # The drawdown's baseline adds a fall back: it was no sale.
+    assert fell.hsa_growth == -5_000_00
     # The next year's growth first absorbs the loss carried in.
     rose = _estimate(ledger, _aux(hsa="taxable"), "state", year=2027)
     assert rose.ltcg_income == 2_000_00
@@ -170,6 +172,10 @@ def test_the_templates_ship_the_california_tables(
     assert rows[(registries.STATE_HSA, "CA")]["treatment"] == "taxable"
     assert rows[(registries.STATE_SURCHARGE, "CA")]["floor"] == 1_000_000_00
 
+    nameless = write_aux("state_hsa__.csv", "effective_date,treatment\n2026-01-31,taxable\n")
+    with pytest.raises(LoadError, match=r"state_hsa__.csv: name the state"):
+        load_test_copy()
+    nameless.unlink()
     write_aux("state_hsa__CA.csv", "effective_date,treatment\n2026-01-31,exempt\n")
     with pytest.raises(LoadError, match=r"state_hsa__CA.csv \(2026-01-31\): treatment 'exempt'"):
         load_test_copy()
