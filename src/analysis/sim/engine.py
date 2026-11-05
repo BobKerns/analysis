@@ -3061,8 +3061,25 @@ def _year_tax_estimate(
 
     ltcg_income = taxed_ltcg(0)
 
+    # A state taxes Social Security only by its state_social_security table
+    # (#484), keyed by state like its brackets.
+    state_ss: dict[str, Any] | None = None
+    if scope == "state" and bracket_series is not None and aux.get(
+            (registries.STATE_SOCIAL_SECURITY, bracket_series)):
+        rows = [
+            r for r in _indexed_tax_rows(aux, registries.STATE_SOCIAL_SECURITY,
+                                         bracket_series, tax_year, growth_cache)
+            if r.get("filing_status") == filing_status
+        ]
+        if not rows:
+            raise EngineError(
+                f"tax_accumulator id={tid}: no {registries.STATE_SOCIAL_SECURITY}__"
+                f"{bracket_series} row for filing_status={filing_status!r} in {tax_year}"
+            )
+        state_ss = rows[0]
+
     ss_tiers: tuple[int, int] | None = None
-    if scope == "federal" and ss_income > 0:
+    if (scope == "federal" or state_ss is not None) and ss_income > 0:
         thresholds = _active_aux_rows(aux, ss_threshold_aux, None, as_of)
         thresholds = [r for r in thresholds if r.get("filing_status") == filing_status]
         if not thresholds:
@@ -3128,10 +3145,13 @@ def _year_tax_estimate(
     def taxable_ss_for(ordinary: int, ltcg: int) -> int:
         if ss_tiers is None:
             return 0
-        return _taxable_social_security_cents(
+        taxable = _taxable_social_security_cents(
             ordinary_income=ordinary, ltcg_income=ltcg, ss_income=ss_income,
             tier1=ss_tiers[0], tier2=ss_tiers[1],
         )
+        if state_ss is None:
+            return taxable
+        return taxable - _state_ss_exclusion(state_ss, taxable, ordinary + ltcg + taxable)
 
     def band_tax(low: int, high: int, table: list[tuple[int, int]]) -> int:
         return _progressive_tax_cents(high, table) - _progressive_tax_cents(low, table)
@@ -3249,7 +3269,10 @@ def _apply_tax_accumulator(
       "state_deductions" (state); the greater of it and the standard deduction
       is used. "state_deductions" falls back to "federal_deductions" when the
       scenario has no "state_deductions" rows at all.
-    - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
+    - ss_threshold_aux: defaults to "ss_taxation_thresholds"; read by a
+      federal rule, and by a state rule whose state has a
+      "state_social_security" table (#484), which starts from the federally
+      taxable amount. Without that table a state taxes no Social Security.
     - ltcg_bracket_aux: defaults to "ltcg_brackets" (federal) or
       "state_ltcg_brackets" (state, with bracket_series's series); without
       such a table long-term gain is taxed as ordinary income
@@ -4096,6 +4119,26 @@ def _taxable_social_security_cents(
     return min((ss_income * 85) // 100, base + addl)
 
 
+def _state_ss_exclusion(row: Mapping[str, Any], taxable_ss: int, agi: int) -> int:
+    """How much of ``taxable_ss``, the federally taxable Social Security, a
+    state leaves out by its ``state_social_security`` ``row`` (#484), at a
+    federal AGI of ``agi``: ``exclusion_percent`` of it, phased out above
+    ``phaseout_start`` to nothing at ``phaseout_end`` (at once when they are
+    equal), or less ``phaseout_rate`` of each dollar over."""
+    full = taxable_ss * int(row["exclusion_micros"]) // 1_000_000
+    start = row.get("phaseout_start")
+    if start is None or agi <= int(start):
+        return full
+    over = agi - int(start)
+    rate = row.get("phaseout_rate_micros")
+    if rate is not None:
+        return max(0, full - over * int(rate) // 1_000_000)
+    span = int(row["phaseout_end"]) - int(start)
+    if over >= span:
+        return 0
+    return full * (span - over) // span
+
+
 def _progressive_tax_cents(taxable_income: int, brackets: list[tuple[int, int]]) -> int:
     if taxable_income <= 0 or not brackets:
         return 0
@@ -4529,7 +4572,7 @@ def _swap_aux_table(
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
     ``source_series``) would. Swapping ``state_brackets`` swaps the state's
-    standard deduction with it.
+    standard deduction and Social Security table with it.
 
     Lookups only move forward, so the target simply becomes a copy of the
     source -- which keeps each lookup style exact: the latest row, the
@@ -4585,9 +4628,10 @@ def _swap_aux_table(
     )
     aux[(aux_kind, series)] = kept + written
     if aux_kind == "state_brackets":
-        # A move to another state takes its standard deduction (#248) and gain
-        # rules (#485) too: the new state's tables, or, with none, the
-        # fallback (the federal deduction, gains as ordinary income) rather
+        # A move to another state takes its standard deduction (#248), gain
+        # rules (#485) and Social Security table (#484) too: the new state's tables, or, with none, the
+        # fallback (the federal deduction, gains as ordinary income, no tax on Social
+        # Security) rather
         # than the old state's.
         for companion in registries.STATE_COMPANION_KINDS:
             if aux.get((companion, source_series)):
