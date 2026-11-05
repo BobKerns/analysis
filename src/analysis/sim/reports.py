@@ -539,8 +539,9 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     income its brackets taxed), and ``tax``. Federal AGI is Form 1040 line
     11, except that a carried loss comes off taxable income instead and there
     are no adjustments such as half of self-employment tax; state AGI leaves
-    out Social Security. The state columns appear only when the run computes
-    state tax. A run that charges IRMAA (#253) adds ``fed_magi`` and
+    out Social Security and, in ``state_exclusion`` (shown only when some
+    year has one), the state's retirement income exclusions (#486). The
+    state columns appear only when the run computes state tax. A run that charges IRMAA (#253) adds ``fed_magi`` and
     ``irmaa_tier``, the tier that year's MAGI set for the premiums two years
     later (0 below the first), blank for a year whose premiums the run ends
     before charging. ``effective_rate`` is total tax over federal AGI. Liability
@@ -551,6 +552,13 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     frame = _tax_buckets(rc, list(_TAX_COLUMNS)).rename(columns=_TAX_COLUMNS)
     if frame["state_tax"].isna().all():
         frame = frame.drop(columns=[c for c in frame.columns if c.startswith("state_")])
+    else:
+        # A state retirement income exclusion (#486), only when some year has
+        # one: it is what state AGI already left out.
+        excluded = _tax_buckets(rc, ["state_retirement_exclusion"]).reindex(frame.index)
+        if excluded.fillna(0).ne(0).any().any():
+            frame.insert(frame.columns.get_loc("state_agi"), "state_exclusion",
+                         excluded["state_retirement_exclusion"])
     # A scenario may compute federal tax and not state tax: a blank is "not
     # computed", so the total is blank only when neither is.
     taxes = [c for c in ("fed_tax", "state_tax") if c in frame.columns]
