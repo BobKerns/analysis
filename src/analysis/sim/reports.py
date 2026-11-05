@@ -557,13 +557,14 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     else:
         # A state retirement income exclusion (#486), only when some year has
         # one: it is what state AGI already left out.
-        excluded = _tax_buckets(rc, ["state_retirement_exclusion"]).reindex(frame.index)
-        if excluded.fillna(0).ne(0).any().any():
-            frame.insert(frame.columns.get_loc("state_agi"), "state_exclusion",
-                         excluded["state_retirement_exclusion"])
+        extra = _tax_buckets(
+            rc, ["state_retirement_exclusion", "state_local_tax"]).reindex(frame.index)
+        excluded = extra["state_retirement_exclusion"]
+        if excluded.fillna(0).ne(0).any():
+            frame.insert(frame.columns.get_loc("state_agi"), "state_exclusion", excluded)
         # A local income tax (#487) is paid with the state's, but shown
         # apart from it, only when some year has one.
-        local = _tax_buckets(rc, ["state_local_tax"]).reindex(frame.index)["state_local_tax"]
+        local = extra["state_local_tax"]
         if local.fillna(0).ne(0).any():
             frame["state_tax"] -= local.fillna(0)
             frame.insert(frame.columns.get_loc("state_tax") + 1, "local_tax", local)

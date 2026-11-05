@@ -466,6 +466,17 @@ STATE_COMPANION_KINDS: tuple[str, ...] = (
 brackets' series, so a move to another state swaps them along (#248, #484,
 #485, #486, #487, #490)."""
 
+OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset(
+    {STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX})
+"""The state tables a state may lack, or may start only after a move (#490,
+#487): then it has no surcharge or local tax, and its HSA follows the
+federal rules. A move keeps the old state's rows for the years before it,
+and the table it swaps into needn't exist yet."""
+
+STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX})
+"""The state tables of bands whose rates add to the brackets' (#490, #487):
+a filing status the brackets have and the table lacks would tax nothing."""
+
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
 

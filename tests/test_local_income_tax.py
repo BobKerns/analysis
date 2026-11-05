@@ -4,6 +4,7 @@ brackets), paid with the state's tax and reported apart from it."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -13,8 +14,8 @@ import pytest
 
 from analysis.sim import registries
 from analysis.sim.connection import RunConnection
-from analysis.sim.engine import _swap_aux_table, _year_tax_estimate, run_scenario
-from analysis.sim.loader import LoadError, LoadResult, load_scenario
+from analysis.sim.engine import _swap_aux_table, _year_tax_estimate
+from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.reports import tax_by_year
 from analysis.sim.run_charts import tax_figure
 
@@ -129,27 +130,55 @@ def test_load_rejects_a_local_tax_without_a_state(
         load_test_copy()
 
 
-def _run(repo: Path, out: Path) -> RunConnection:
-    load = load_scenario(repo, "retire_alice", intent_dir=out / "intent",
-                         loaded_by="test", allow_dirty_data=True)
-    run_path = out / "r.sqlite3"
-    run_scenario(load.intent_path, run_path, run_by="test", allow_dirty_data=True)
-    return RunConnection(run_path)
+def test_load_rejects_a_local_tax_missing_a_filing_status(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Brackets for MFJ, Single and MFS, a local tax for MFJ only: the
+    survivor's Single years would tax nothing, so it fails to load."""
+    write_aux("state_local_tax__CA.csv", LOCAL_HEADER + "2026-01-31,MFJ,0,0.00,3%\n")
+    with pytest.raises(LoadError, match=r"state_local_tax__CA.csv: no rows for filing status "
+                                        r"MFS, Single"):
+        load_test_copy()
+
+
+def _local_rows(rate: str) -> str:
+    return LOCAL_HEADER + "".join(
+        f"2020-01-31,{status},0,0.00,{rate}\n" for status in ("Single", "MFJ", "MFS"))
+
+
+def test_a_county_move_needs_no_local_tax_before_it(
+    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """A household moving from a county with no local tax into one with a
+    local tax swaps it in alone; the state had no table before."""
+    write_aux("state_local_tax__CA-county.csv", _local_rows("3%"))
+    append_calendar_row(date="2028-01", kind="swap_aux_table", series="CA",
+                        params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
+                                                "source_series": "CA-county"}))
+    load_test_copy()
+    append_calendar_row(date="2029-01", kind="swap_aux_table", series="CA",
+                        params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
+                                                "source_series": "CA-misspelt"}))
+    with pytest.raises(LoadError, match=r"source_series names state_local_tax__CA-misspelt.csv"):
+        load_test_copy()
 
 
 def test_tax_report_shows_local_tax_apart_from_the_states(
-    test_data_dir: Path, add_state_tax: Callable[..., None], tmp_path: Path,
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    run_test_copy: Callable[[], Path],
 ) -> None:
     """``sim report tax`` adds local_tax after state_tax only when some year
     has one; state_tax then leaves it out, and total_tax counts it once."""
     add_state_tax(bracket_series="CA")
-    without = tax_by_year(_run(test_data_dir, tmp_path / "without"))
+    first = run_test_copy()
+    with RunConnection(first) as rc:
+        without = tax_by_year(rc)
     assert "local_tax" not in without.columns
-    (test_data_dir / "aux" / "state_local_tax__CA.csv").write_text(
-        LOCAL_HEADER + "".join(f"2020-01-31,{status},0,0.00,3%\n"
-                               for status in ("Single", "MFJ")), encoding="utf-8")
-    rc = _run(test_data_dir, tmp_path / "with")
-    frame = tax_by_year(rc)
+    first.unlink()  # run_test_copy writes one run file
+    write_aux("state_local_tax__CA.csv", _local_rows("3%"))
+    with RunConnection(run_test_copy()) as rc:
+        frame = tax_by_year(rc)
     columns = list(frame.columns)
     assert columns.index("local_tax") == columns.index("state_tax") + 1
     year = int(frame.index[frame["local_tax"] > 0][0])

@@ -3199,24 +3199,24 @@ def _year_tax_estimate(
 
     ltcg_brackets = gain_brackets(ltcg_bracket_aux)
     stcg_brackets = gain_brackets(stcg_bracket_aux)
+    def state_bands(kind: str) -> list[tuple[int, int]]:
+        """A state's bands of ``kind`` keyed by its brackets' series, whose
+        rates add to the brackets'; none for a federal rule."""
+        if scope != "state" or bracket_series is None:
+            return []
+        return sorted(
+            (int(r["floor"]), int(r["marginal_rate_micros"]))
+            for r in _indexed_tax_rows(aux, kind, bracket_series, tax_year, growth_cache)
+            if r.get("filing_status") == filing_status
+        )
+
     # A state's surcharge on high incomes (#490) adds its rates to the
     # brackets'. Its own bands, rather than more bracket rows, because its
     # floor needn't be indexed or fall between the same brackets for every
-    # filing status (California's $1 million).
-    surcharge = sorted(
-        (int(r["floor"]), int(r["marginal_rate_micros"]))
-        for r in _indexed_tax_rows(
-            aux, registries.STATE_SURCHARGE, bracket_series, tax_year, growth_cache)
-        if r.get("filing_status") == filing_status
-    ) if scope == "state" and bracket_series is not None else []
-    # A local income tax (#487) is bands on the state's taxable income too,
-    # but its own, reported apart from the state's.
-    local = sorted(
-        (int(r["floor"]), int(r["marginal_rate_micros"]))
-        for r in _indexed_tax_rows(
-            aux, registries.STATE_LOCAL_TAX, bracket_series, tax_year, growth_cache)
-        if r.get("filing_status") == filing_status
-    ) if scope == "state" and bracket_series is not None else []
+    # filing status (California's $1 million). A local income tax (#487) is
+    # bands on the state's taxable income too, reported apart from it.
+    surcharge = state_bands(registries.STATE_SURCHARGE)
+    local = state_bands(registries.STATE_LOCAL_TAX)
 
     def taxable_ss_for(extra_ordinary: int, extra_gain: int) -> int:
         """Taxable Social Security with more ordinary income and long-term
@@ -5033,7 +5033,7 @@ def _swap_aux_table(
             f"swap_aux_table event id={ev_id}: requires params_json aux_kind "
             "and source_series"
         )
-    if aux_kind in _OPTIONAL_STATE_AUX_KINDS:
+    if aux_kind in registries.OPTIONAL_STATE_AUX_KINDS:
         # Swapped alone too, the earlier years keep their rows (#490).
         _move_optional_state_table(con, ev_id, ev_date, aux_kind, series, str(source_series), aux)
         return
@@ -5084,7 +5084,7 @@ def _swap_aux_table(
         # excluded, there's no surcharge or local tax, and the HSA follows
         # the federal rules.
         for companion in registries.STATE_COMPANION_KINDS:
-            if companion in _OPTIONAL_STATE_AUX_KINDS:
+            if companion in registries.OPTIONAL_STATE_AUX_KINDS:
                 _move_optional_state_table(con, ev_id, ev_date, companion, series,
                                            str(source_series), aux)
             elif aux.get((companion, source_series)):
@@ -5096,13 +5096,6 @@ def _swap_aux_table(
             elif aux.pop((companion, series), None):
                 con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
                             (companion, series))
-
-
-_OPTIONAL_STATE_AUX_KINDS = frozenset(
-    {registries.STATE_SURCHARGE, registries.STATE_HSA, registries.STATE_LOCAL_TAX})
-"""A state's tables (#490, #487) that a state may lack, or may start only
-after a move: then it has no surcharge or local tax, and its HSA follows the
-federal rules."""
 
 
 def _move_optional_state_table(

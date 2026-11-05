@@ -439,7 +439,8 @@ tax year, by looking back over everything that happened that year (the
   area). Where the local tax is figured on the state's taxable income, put
   your own county's or city's rates in `aux/state_local_tax__<state>.csv`, in
   the columns of the state's brackets: one band for a flat county rate, the
-  city's brackets, or a 0% band below a threshold. It is paid with the
+  city's brackets, or a 0% band below a threshold, with rows for each
+  filing status your state brackets have. It is paid with the
   state's tax, and `sim report tax` shows it as `local_tax`, apart from
   `state_tax`. A local tax only on wages, or with a base of its own
   (Philadelphia's on investment income, Yonkers's share of the state tax),
@@ -923,7 +924,9 @@ themselves: the new state's if it has them, otherwise none (the federal
 standard deduction stands in). A move to another county in the same state
 swaps the local tax alone: write the new county's as, say,
 `aux/state_local_tax__CA-county.csv`, and swap it in with
-`"aux_kind": "state_local_tax", "source_series": "CA-county"`. Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new
+`"aux_kind": "state_local_tax", "source_series": "CA-county"`. You needn't
+have a local tax table before the move; for a move to a county with no local
+tax, swap in one with a single 0% band for each filing status. Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new
 federal bracket table on the date a law takes effect, or another inflation
 series.
 
