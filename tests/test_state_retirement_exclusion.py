@@ -20,7 +20,11 @@ from analysis.sim.engine import (
     run_scenario,
 )
 from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.registries import SCHEDULED_CSV_HEADER, STATE_EXCLUSION_INCOME
+from analysis.sim.registries import (
+    GROWTH_COUNTERPARTY_ACCOUNTS,
+    SCHEDULED_CSV_HEADER,
+    STATE_EXCLUSION_INCOME,
+)
 
 HEADER = "effective_date,name,income,min_age,amount,filing_status,income_limit,phaseout,less_ss\n"
 
@@ -429,3 +433,35 @@ def test_hsa_flows_are_not_retirement_income(ledger_con: sqlite3.Connection) -> 
     assert (pools["alice"]["retirement_account"], pools["alice"]["other"]) == (5_000_00, 4_000_00)
     pools, _ = _person_income(ledger_con, 2026, ["alice"], hsa_taxed=True)
     assert (pools["alice"]["retirement_account"], pools["alice"]["other"]) == (5_000_00, 0)
+
+
+def test_load_rejects_an_exclusion_table_without_a_state(
+    test_data_dir: Path, tmp_path: Path,
+) -> None:
+    """An empty suffix names no state, so no rule would read its rows."""
+    (test_data_dir / "aux" / "state_retirement_exclusion__.csv").write_text(
+        HEADER + "2025-01,x,pension,,,,,,\n", encoding="utf-8")
+    with pytest.raises(LoadError, match="name the state"):
+        load_scenario(test_data_dir, "retire_alice", intent_dir=tmp_path / "intent",
+                      loaded_by="test", allow_dirty_data=True)
+
+
+def test_taxed_hsa_growth_is_its_owners_gain(ledger_con: sqlite3.Connection) -> None:
+    """Where the state taxes an HSA's growth as gain (#490), an exclusion
+    covering gains covers it: Alice's HSA grew $1,000 and Bill's fell $300."""
+    growth = GROWTH_COUNTERPARTY_ACCOUNTS["deferred"].name
+    ledger_con.executemany(
+        "INSERT INTO account(id, name, kind, subkind, owner) VALUES (?, ?, ?, ?, ?)",
+        [(1, "Asset_HSA_Alice", "asset", "hsa", "alice"),
+         (2, "Asset_HSA_Bill", "asset", "hsa", "bill"),
+         (3, growth, "income", "capital_gain", None)])
+    for frm, to, amount in ((3, 1, 1_000_00), (2, 3, 300_00)):
+        ledger_con.execute(
+            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
+            "VALUES (1, '2026-06-30', ?, ?, ?, ?, ?, ?, 0, 'deferred', 'rule')",
+            (frm, to, frm, to, amount, amount))
+    pools, _ = _person_income(ledger_con, 2026, ["alice", "bill"], hsa_taxed=True)
+    assert (pools["alice"]["capital_gain"], pools["bill"]["capital_gain"]) == (1_000_00, 0)
+    pools, _ = _person_income(ledger_con, 2026, ["alice", "bill"])
+    assert pools["alice"]["capital_gain"] == 0

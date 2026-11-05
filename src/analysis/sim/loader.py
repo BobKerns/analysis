@@ -3870,7 +3870,7 @@ def _validate_state_retirement_exclusions(
         if row_kind != kind:
             continue
         where = f"aux/{kind}__{state}.csv ({effective}, {payload.get('name')})"
-        if state is None:
+        if not state:  # no suffix, or an empty one (state_retirement_exclusion__.csv)
             issues.append(f"aux/{kind}.csv: name the state, as {kind}__CA.csv")
             return
         name = str(payload.get("name") or "").strip()

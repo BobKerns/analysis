@@ -3403,7 +3403,7 @@ def _person_income(
     alone (``joint``, or no owner) is split evenly among ``people``. An
     HSA's flows are ``other`` income, not a retirement account's, and none
     at all when the state taxes the HSA as a brokerage account
-    (``hsa_taxed``, #490)."""
+    (``hsa_taxed``, #490); then its growth is its owner's capital gain."""
     pools = {p: dict.fromkeys(registries.STATE_EXCLUSION_INCOME, 0) for p in people}
     ss = dict.fromkeys(people, 0)
     rows = con.execute(
@@ -3444,6 +3444,14 @@ def _person_income(
                 ss[person] += share
             else:
                 pools[person][pool] += sign * share
+    if hsa_taxed:
+        # The state counts an HSA's growth as long-term gain (#490): its
+        # owner's, a fall offsetting their other gains.
+        for owner, amount in _hsa_growth_by_owner(con, tax_year):
+            shares = [(owner, amount)] if owner in pools else list(
+                zip(people, _split_cents(amount, len(people)), strict=True))
+            for person, share in shares:
+                pools[person]["capital_gain"] += share
     # A realized loss recorded apart from its sale (#199) offsets its lot
     # owner's gains, as the household's netting does.
     for owner, amount in con.execute(
@@ -4329,6 +4337,22 @@ def _hsa_growth_by_year(con, years: Collection[int]) -> dict[int, int]:
         f"  AND y IN ({year_marks}) GROUP BY y",
         (*_HSA_GROWTH_ACCOUNTS, *_HSA_GROWTH_ACCOUNTS, *years),
     )}
+
+
+def _hsa_growth_by_owner(con, tax_year: int) -> list[tuple[str | None, int]]:
+    """``tax_year``'s net untaxed HSA growth by the HSA's owner, a fall
+    negative (``_hsa_growth_by_year``, per owner, #486)."""
+    marks = ", ".join("?" * len(_HSA_GROWTH_ACCOUNTS))
+    return [(owner, int(amount)) for owner, amount in con.execute(
+        "SELECT CASE WHEN ta.subkind = 'hsa' THEN ta.owner ELSE fa.owner END AS o, "
+        "SUM(CASE WHEN ta.subkind = 'hsa' THEN te.amount ELSE -te.amount END) "
+        "FROM transfer_event te "
+        "JOIN account fa ON fa.id = te.from_account JOIN account ta ON ta.id = te.to_account "
+        f"WHERE ((ta.subkind = 'hsa' AND fa.name IN ({marks})) "
+        f"    OR (fa.subkind = 'hsa' AND ta.name IN ({marks}))) "
+        f"  AND {_HSA_YEAR} = ? GROUP BY o",
+        (*_HSA_GROWTH_ACCOUNTS, *_HSA_GROWTH_ACCOUNTS, tax_year),
+    )]
 
 
 def _hsa_deferred_flows(con, tax_year: int) -> tuple[int, int]:
