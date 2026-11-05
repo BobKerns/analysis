@@ -4461,16 +4461,28 @@ def _validate_rate_series_start(
             continue
         if series and key in supplied_from:
             supplied_from[key] = min(supplied_from[key], when)
-    # A retire_scheduled event's date, which keeps its day, becomes its
-    # rule's inclusive end (ADR-006 §2).
-    retired: dict[str, date] = {}
-    for row in fixed_events:
-        if row.get("kind") == "retire_scheduled" and (name := row.get("scheduled_name", "")):
+    # A retire_scheduled event's date, which keeps its day, replaces its
+    # rule's inclusive end when applied (ADR-006 §2), even a later one, so a
+    # second retirement reopens the rule. Only a rule's one fixed, in-run
+    # retirement gives a sure last posting: with more, or one that can move,
+    # the rule may post until the run ends (None).
+    retired: dict[str, date | None] = {}
+    fixed_ids = {id(row) for row in fixed_events}
+    for row in calendar_rows:
+        if row.get("kind") != "retire_scheduled" or not (name := row.get("scheduled_name", "")):
+            continue
+        movable = ((row.get("vary_target") or "").strip() == "date"
+                   or "date" in (_safe_json(row.get(DATE_REFS)) or {}))
+        if id(row) in fixed_ids:
             try:
-                when_d = parse_day(row["date"])
+                when_d: date | None = parse_day(row["date"])
             except ValueError:
                 continue  # reported by _normalize_month_columns
-            retired[name] = min(retired.get(name, when_d), when_d)
+        elif movable:
+            when_d = None
+        else:
+            continue  # dated before the run, so never applied
+        retired[name] = when_d if name not in retired else None
 
     # (aux_kind, series) -> (first month read, who reads it then)
     first_read: dict[tuple[str, str], tuple[str, str]] = {}
@@ -4484,8 +4496,11 @@ def _validate_rate_series_start(
         if row.get("amount_rule_kind") != "percent_of_balance":
             continue
         params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
+        name = row.get("name", "")
         window = _first_firing(
-            row, run_start, min(run_end, _last_posting_month(row, retired.get(row.get("name", "")))))
+            row, run_start, run_end,
+            end=_last_posting_month(row, retire_day) if (retire_day := retired.get(name)) else None,
+            retire_moves=name in retired and retired[name] is None)
         if window is None:
             continue
         first, last = window
@@ -4530,12 +4545,10 @@ def _validate_rate_series_start(
             )
 
 
-def _last_posting_month(row: Mapping[str, str], retired_on: date | None) -> date:
+def _last_posting_month(row: Mapping[str, str], retired_on: date) -> date:
     """The last month a rule retired on ``retired_on`` can post. The engine
     posts a month's rule at month-end, so one retired mid-month misses that
     month, but a biweekly rule still pays its paydays up to the day."""
-    if retired_on is None:
-        return date.max
     month = parse_month(retired_on.isoformat())
     if retired_on == month or (row.get("cadence") or "") == "biweekly":
         return month
@@ -4544,16 +4557,20 @@ def _last_posting_month(row: Mapping[str, str], retired_on: date | None) -> date
 
 def _first_firing(
     row: Mapping[str, str], run_start: date, run_end: date,
+    *, end: date | None = None, retire_moves: bool = False,
 ) -> tuple[date, date] | None:
     """The first and last months a scheduled rule can post in the run, or
     None if it never does: the first is from its start or the scenario's,
     whichever is later, to the first month its cadence fires; the last is its
-    end or the scenario's, whichever is earlier."""
+    end (``end`` when a retirement replaces it; the run's end when a
+    retirement may reopen it, ``retire_moves``) or the scenario's, whichever
+    is earlier."""
     from analysis.sim.engine import _cadence_fires  # the engine's own cadence rule
 
     try:
         rule_start = parse_month(row.get("start") or run_start.isoformat())
-        rule_end = parse_month(row["end"]) if row.get("end") else run_end
+        rule_end = (run_end if retire_moves else end if end is not None
+                    else parse_month(row["end"]) if row.get("end") else run_end)
     except ValueError:
         return None  # reported by _validate_scheduled
     cadence = row.get("cadence") or "monthly"

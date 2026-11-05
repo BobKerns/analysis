@@ -115,6 +115,34 @@ def test_a_rule_retired_before_it_first_fires_never_reads() -> None:
     assert len(_issues([annual], aux, [{**retire, "vary_target": "date"}])) == 1
 
 
+def test_a_second_retirement_reopens_the_rule() -> None:
+    """Each retirement replaces the rule's end when applied, so a later one
+    reopens it: with two, the rule may post until the run ends."""
+    aux = _rate("bonus", "2027-01-31")
+    december = _rule(series="bonus", cadence="annual", month_of_year="12")
+    first = {"kind": "retire_scheduled", "scheduled_name": "grow", "date": "2026-06-30"}
+    assert _issues([december], aux, [first]) == []
+    later = {**first, "date": "2027-06-30"}
+    [issue] = _issues([december], aux, [first, later])
+    assert "reads it from 2026-12" in issue
+
+
+def test_a_retirement_after_the_rules_end_reopens_it_until_then() -> None:
+    aux = _rate("bonus", "2027-01-31")
+    december = _rule(series="bonus", cadence="annual", month_of_year="12", end="2026-08-31")
+    assert _issues([december], aux) == []
+    retire = {"kind": "retire_scheduled", "scheduled_name": "grow", "date": "2027-06-30"}
+    assert len(_issues([december], aux, [retire])) == 1
+
+
+def test_a_retirement_that_can_move_leaves_the_rule_open() -> None:
+    aux = _rate("bonus", "2027-01-31")
+    december = _rule(series="bonus", cadence="annual", month_of_year="12", end="2026-08-31")
+    moving = {"kind": "retire_scheduled", "scheduled_name": "grow", "date": "2026-06-30",
+              "vary_target": "date"}
+    assert len(_issues([december], aux, [moving])) == 1
+
+
 def test_a_rule_retired_mid_month_misses_that_month() -> None:
     """A retirement keeps its day and is the rule's inclusive end; the rule
     posts at month-end, so a June rule retired June 15 never posts, even when

@@ -646,8 +646,10 @@ A series a `percent_of_balance` rule reads, whatever its `rate_kind`, needs a ra
 the first month the rule reads it ([#475](https://github.com/BobKerns/analysis/issues/475)), or
 the load fails, naming the series, its first row and the first reader. Each lot's growth rule
 (ADR-005 §5) reads from `scenario.start`; a hand-written rule from the first month it posts, its
-`start` or the scenario's, whichever is later, then its cadence, unless its `end`, the scenario's,
-or a `retire_scheduled` row (§3.1) comes first; a blend slice from the month its allocation set
+`start` or the scenario's, whichever is later, then its cadence, unless its `end` or the scenario's
+comes first. A `retire_scheduled` row (§3.1) replaces the rule's `end` when applied, even with a
+later date, so a rule's one fixed retirement in the run is its end, and with more than one, or one
+whose date can move, the rule counts as posting until the scenario ends; a blend slice from the month its allocation set
 applies, while the rule still posts. A `set_rate` row on the same `(aux_kind, series)` supplies a
 rate from its month, and so does a `swap_aux_table` row (§3.5) of that series. Calendar rows count
 only when dated in the run and fixed: one whose date varies or follows a `date_marker` could land
