@@ -424,3 +424,15 @@ def test_a_swap_in_the_first_month_gives_an_inflation_series_its_start_rate(
     append_calendar_row(date="2026-05-31", kind="swap_aux_table", series="late",
                         params_json='{"aux_kind": "inflation", "source_series": "early"}')
     assert _loads(test_data_dir, intent_dir, "retire_alice") == []
+
+
+def test_a_first_month_swap_from_a_series_set_that_month_gives_the_start_rate(
+    series_dir: Path, append_calendar_row: Callable[..., None], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    (series_dir / "inflation__late.csv").write_text(_HEADER + "2030-01-31,3%\n")
+    (series_dir / "inflation__later.csv").write_text(_HEADER + "2030-01-31,2%\n")
+    append_calendar_row(date="2026-05-31", kind="set_rate", series="later", amount="2%",
+                        params_json='{"aux_kind": "inflation"}')
+    append_calendar_row(date="2026-05-31", kind="swap_aux_table", series="late",
+                        params_json='{"aux_kind": "inflation", "source_series": "later"}')
+    assert _loads(test_data_dir, intent_dir, "retire_alice") == []

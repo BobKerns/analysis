@@ -4231,27 +4231,29 @@ def _validate_inflation_from_start(
     for kind, series, _, effective in aux_rows:
         if kind == "inflation" and series is not None:
             first_row[series] = min(first_row.get(series, effective), effective)
-    set_at_start = set()
+    covered = {series for series, effective in first_row.items() if effective <= first_month}
+    swaps: list[tuple[str, str]] = []  # (series, source) swapped in the first month
     for row in calendar_rows:
         kind = row.get("kind")
         params = _safe_json(row.get("params_json")) or {}
-        if params.get("aux_kind", "rate") != "inflation":
-            continue
-        if kind == "set_rate":
-            supplied = bool((row.get("amount") or "").strip())
-        elif kind == "swap_aux_table":
-            # The source's row in force then takes over (ADR-003 §3.5).
-            source = first_row.get(str(params.get("source_series") or ""))
-            supplied = source is not None and source <= first_month
-        else:
+        if params.get("aux_kind", "rate") != "inflation" or kind not in ("set_rate", "swap_aux_table"):
             continue
         try:
-            if supplied and month_end_iso(row.get("date", "")) == first_month:
-                set_at_start.add(row.get("series", ""))
+            if month_end_iso(row.get("date", "")) != first_month:
+                continue
         except ValueError:
             continue  # a marker or relative date: not known to be the first month here
+        if kind == "set_rate":
+            if (row.get("amount") or "").strip():
+                covered.add(row.get("series", ""))
+        else:
+            swaps.append((row.get("series", ""), str(params.get("source_series") or "")))
+    # A swap takes over its source's rate in force (ADR-003 §3.5), which a
+    # first-month set_rate or another swap may have supplied.
+    while new_cover := {series for series, source in swaps if source in covered} - covered:
+        covered |= new_cover
     for series, effective in sorted(first_row.items()):
-        if effective > first_month and series not in set_at_start:
+        if series not in covered:
             issues.append(
                 f"inflation__{series}.csv: its first rate is from {effective[:7]}, after the "
                 f"scenario's start ({first_month[:7]}); the run grows every inflation series "
