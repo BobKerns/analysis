@@ -4621,17 +4621,14 @@ def _validate_rate_series_start(
             # rate in force by then or the run fails (ADR-003 §3.5).
             kind = params.get("aux_kind", "")
             suppliers.append(((kind, series), when, (kind, source)))
-    # A swap's source may itself be supplied by an earlier set_rate or swap,
-    # so credit until nothing changes.
-    changed = True
-    while changed:
-        changed = False
-        for key, when, source in suppliers:
-            if key not in supplied_from or supplied_from[key] <= when:
-                continue
-            if source is None or supplied_from.get(source, "9999") <= when:
-                supplied_from[key] = when
-                changed = True
+    # A swap's source may itself be supplied by an earlier set_rate or swap.
+    # The engine applies events by date, then calendar order (their ids), so
+    # walk them that way: a later event can't supply an earlier swap.
+    for key, when, source in sorted(suppliers, key=lambda s: s[1]):
+        if key not in supplied_from or supplied_from[key] <= when:
+            continue
+        if source is None or supplied_from.get(source, "9999") <= when:
+            supplied_from[key] = when
     # A retire_scheduled event's date, which keeps its day, replaces its
     # rule's inclusive end when applied (ADR-006 §2), even a later one, so a
     # second retirement reopens the rule. Only a rule's one fixed, in-run

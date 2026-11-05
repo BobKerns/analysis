@@ -179,6 +179,8 @@ def test_a_swap_counts_only_once_its_source_has_a_rate() -> None:
     assert len(_issues([_growth("stocks")], aux, [swap])) == 1
     set_old = {"kind": "set_rate", "series": "old", "date": "2026-05-31"}
     assert _issues([_growth("stocks")], aux, [set_old, swap]) == []
+    # Same day, but the swap comes first in calendar order, so it runs first.
+    assert len(_issues([_growth("stocks")], aux, [swap, set_old])) == 1
 
 
 def test_a_retirement_after_the_scenarios_end_never_happens() -> None:
