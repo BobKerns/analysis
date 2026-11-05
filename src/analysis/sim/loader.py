@@ -1392,7 +1392,7 @@ def load_scenario(
     _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
     _validate_filing_status(scheduled_rows, aux_rows, scenario_row, issues)
     _validate_itemized_deductions(aux_rows, issues)
-    _validate_state_hsa(aux_rows, issues)
+    _validate_optional_state_tables(aux_rows, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
@@ -2882,15 +2882,21 @@ IRMAA_PARTS = ("B+D", "B", "D")
 FILING_STATUS_RULE_KINDS = frozenset({"tax_accumulator", "irmaa"})
 
 
-def _validate_state_hsa(
+def _validate_optional_state_tables(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
 ) -> None:
-    """A ``state_surcharge`` or ``state_hsa`` table (#490) is keyed by state
-    like the brackets it goes with, since one without a state is never read,
-    and a ``state_hsa`` row's treatment is one the engine knows."""
+    """A ``state_surcharge``, ``state_local_tax`` (#487) or ``state_hsa``
+    table (#490) is keyed by state like the brackets it goes with, since one
+    without a state is never read; a ``state_hsa`` row's treatment is one
+    the engine knows; and a table of bands has every filing status the
+    brackets have, since a year filed under a missing one (the survivor's
+    Single, §4.9) would silently tax nothing."""
+    bracket_statuses = {str(payload.get("filing_status")) for kind, _s, payload, _e in aux_rows
+                        if kind == "state_brackets"}
+    band_statuses: dict[tuple[str, str], set[str]] = {}
     nameless: set[str] = set()
     for kind, state, payload, effective in aux_rows:
-        if kind not in (registries.STATE_SURCHARGE, registries.STATE_HSA):
+        if kind not in registries.OPTIONAL_STATE_AUX_KINDS:
             continue
         file = f"aux/{kind}__{state}.csv" if state is not None else f"aux/{kind}.csv"
         if not state:
@@ -2903,6 +2909,15 @@ def _validate_state_hsa(
             issues.append(
                 f"{file} ({effective}): treatment {treatment!r} must be one of "
                 f"{', '.join(registries.STATE_HSA_TREATMENTS)}")
+        if kind in registries.STATE_BAND_KINDS:
+            band_statuses.setdefault((kind, state), set()).add(str(payload.get("filing_status")))
+    for (kind, state), statuses in sorted(band_statuses.items()):
+        missing = sorted(bracket_statuses - statuses)
+        if missing:
+            issues.append(
+                f"aux/{kind}__{state}.csv: no rows for filing status {', '.join(missing)}, "
+                "which the state brackets have; a year filed that way would tax nothing "
+                "here (add a 0% band for a status it doesn't tax)")
 
 
 def _validate_filing_status(
@@ -3942,7 +3957,9 @@ def _validate_swap_aux_tables(
 ) -> None:
     """A swap_aux_table row names two tables that must both be loaded: the one
     it replaces and the one replacing it, so a misspelt series fails here
-    rather than when the run reaches the row."""
+    rather than when the run reaches the row. An optional state table
+    (#490, #487) needn't exist where it is swapped in: a household moving
+    from a county with no local tax has none."""
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
     for where, row in _located(calendar_rows, "calendar.csv"):
         if row.get("kind") != "swap_aux_table":
@@ -3952,6 +3969,8 @@ def _validate_swap_aux_tables(
         if aux_kind not in registries.SWAPPABLE_AUX_KINDS or not isinstance(source, str):
             continue  # reported by _validate_swap_aux_table_row
         for label, series in (("series", row.get("series") or None), ("source_series", source)):
+            if label == "series" and aux_kind in registries.OPTIONAL_STATE_AUX_KINDS:
+                continue
             if (aux_kind, series) not in supplied:
                 file = f"{aux_kind}__{series}.csv" if series else f"{aux_kind}.csv"
                 issues.append(
