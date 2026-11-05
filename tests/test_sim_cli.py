@@ -2456,17 +2456,23 @@ def test_sim_run_jobs_matches_sequential(
 @pytest.mark.slow
 def test_sim_run_jobs_reports_failures_without_taking_down_the_pool(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
-    update_account_value: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    append_scheduled_row: Callable[..., None], retire_alice_csv: Callable[[str], Path],
     intent_dir: Path, runs_dir: Path,
 ) -> None:
     """A ramp on a series with no baseline rate fails in resolve_member for
     every member -- in worker processes, each is still reported."""
     # The series' file (#204) starts after the ramp, so there's nothing to
-    # ramp from.
+    # ramp from. Its reader starts with the ramp, which supplies its first
+    # rate in time (#475).
     retire_alice_csv("series/rate__never_before_seen_series.csv").write_text(
         "effective_date,annual_rate\n2035-01-31,3%\n"
     )
-    update_account_value("Asset_Brokerage_Joint", "default", series="never_before_seen_series")
+    append_scheduled_row(
+        name="new_series_growth", from_account="Income_Inheritance",
+        to_account="Asset_Brokerage_Joint", to_lot="default",
+        amount_rule_kind="percent_of_balance", series="never_before_seen_series",
+        tax_character="ordinary", start="2027-01-31",
+    )
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="no_baseline_ramp",
         series="never_before_seen_series", amount="4.5%",
