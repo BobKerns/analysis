@@ -28,7 +28,7 @@ from analysis.sim import (
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
-    parse_relative_date, place_month, vary_date_iso,
+    parse_month, parse_relative_date, place_month, vary_date_iso,
 )
 from analysis.sim.distributions import (
     Discrete,
@@ -1352,6 +1352,9 @@ def load_scenario(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
     _validate_inflation_from_start(aux_rows, calendar_rows, scenario_row.get("start", ""), issues)
+    _validate_rate_series_start(
+        scheduled_rows, calendar_rows, aux_rows, scenario_row, issues,
+    )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
@@ -4587,6 +4590,216 @@ def _validate_series_references(
                 "cap or account growth series -- this value has no effect "
                 "here, unless a scenario inheriting from this one reads it"
             )
+
+
+def _validate_rate_series_start(
+    scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scenario_row: Mapping[str, str],
+    issues: list[str],
+) -> None:
+    """A series a ``percent_of_balance`` rule reads needs a rate in force by
+    the first month the rule reads it, or the run fails that month with "no
+    aux row" (#475). The readers are each lot's growth rule (from
+    ``scenario.start``), hand-written rules (from their ``start`` and first
+    firing), and each slice of a fund's blend (from when its set applies). A
+    ``set_rate`` row with a fixed date also supplies a rate from its month;
+    one whose date varies, or follows a date marker, might land later, so it
+    doesn't count. A series nothing supplies at all is reported by
+    ``_validate_series_references``."""
+    try:
+        run_start = parse_month(scenario_row.get("start", ""))
+        run_end = parse_month(scenario_row.get("end", ""))
+    except ValueError:
+        return  # a missing or bad start or end is reported where it's read
+
+    supplied_from: dict[tuple[str, str], str] = {}
+    for kind, series, _, effective in aux_rows:
+        if series is not None:
+            key = (kind, series)
+            supplied_from[key] = min(supplied_from.get(key, effective), effective)
+    file_from = dict(supplied_from)
+    # The run applies a calendar event only in a month it steps through, so
+    # one dated before the start or after the end never happens; one whose
+    # date varies or follows a date marker could land later than written.
+    fixed_events = [
+        row for row in calendar_rows
+        if (when := row.get("date", ""))
+        and run_start.isoformat()[:7] <= when[:7] <= run_end.isoformat()[:7]
+        and (row.get("vary_target") or "").strip() != "date"
+        and "date" not in (_safe_json(row.get(DATE_REFS)) or {})
+    ]
+    # (target key, date, source key or None for a set_rate)
+    suppliers: list[tuple[tuple[str, str], str, tuple[str, str] | None]] = []
+    for row in fixed_events:
+        series, when = row.get("series", ""), row["date"]
+        params = _safe_json(row.get("params_json")) or {}
+        if not series:
+            continue
+        if row.get("kind") == "set_rate" and not (row.get("vary_resume") or "").strip():
+            suppliers.append(((params.get("aux_kind", "rate"), series), when, None))
+        elif row.get("kind") == "swap_aux_table" and isinstance(
+                source := params.get("source_series"), str):
+            # From its date the series reads as its source, which needs a
+            # rate in force by then or the run fails (ADR-003 §3.5).
+            kind = params.get("aux_kind", "")
+            suppliers.append(((kind, series), when, (kind, source)))
+    # A swap's source may itself be supplied by an earlier set_rate or swap.
+    # The engine applies events by date, then calendar order (their ids), so
+    # walk them that way: a later event can't supply an earlier swap.
+    for key, when, source in sorted(suppliers, key=lambda s: s[1]):
+        if key not in supplied_from or supplied_from[key] <= when:
+            continue
+        if source is None or supplied_from.get(source, "9999") <= when:
+            supplied_from[key] = when
+    # A retire_scheduled event's date, which keeps its day, replaces its
+    # rule's inclusive end when applied (ADR-006 §2), even a later one, so a
+    # second retirement reopens the rule. Only a rule's one fixed, in-run
+    # retirement gives a sure last posting: with more, or one that can move,
+    # the rule may post until the run ends (None).
+    retired: dict[str, date | None] = {}
+    fixed_ids = {id(row) for row in fixed_events}
+    for row in calendar_rows:
+        if row.get("kind") != "retire_scheduled" or not (name := row.get("scheduled_name", "")):
+            continue
+        movable = ((row.get("vary_target") or "").strip() == "date"
+                   or "date" in (_safe_json(row.get(DATE_REFS)) or {}))
+        if id(row) in fixed_ids:
+            try:
+                when_d: date | None = parse_day(row["date"])
+            except ValueError:
+                continue  # reported by _normalize_month_columns
+        elif movable:
+            when_d = None
+        else:
+            continue  # dated before the run, so never applied
+        retired[name] = when_d if name not in retired else None
+
+    # (aux_kind, series) -> (first month read, who reads it then)
+    first_read: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def reads(key: tuple[str, str], month: date, reader: str) -> None:
+        month_s = month.isoformat()
+        if key in supplied_from and (key not in first_read or month_s < first_read[key][0]):
+            first_read[key] = (month_s, reader)
+
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") != "percent_of_balance":
+            continue
+        params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
+        name = row.get("name", "")
+        window = _first_firing(row, run_start, run_end, retire_moves=name in retired)
+        if retire_day := retired.get(name):
+            window = _retired_window(row, run_start, run_end, retire_day)
+        if window is None:
+            continue
+        first, last = window
+        if ORIGIN in row:
+            reader = f"{where} ({row.get('name', '')})"
+        else:
+            # Validation has rewritten to_account to its leaf, "account:lot".
+            account, _, leaf_lot = row.get("to_account", "").partition(":")
+            lot = leaf_lot or row.get("to_lot") or registries.DEFAULT_LOT
+            what = "the payout rule for" if params.get("payout") else "the growth of"
+            reader = f"{what} {account}" + (
+                f" / {lot}" if lot != registries.DEFAULT_LOT else "")
+        rate_kind = params.get("rate_kind", "rate")
+        # A taxable lot's growth rule also reads its payouts' rates, to take
+        # them out of the total return (#468).
+        specs = [(params, row.get("series", ""), reader)] + [
+            (spec, spec.get("series", ""), f"{reader} (less its payout)")
+            for spec in params.get("less") or ()
+        ]
+        for spec, series, who in specs:
+            if blend := spec.get("blend"):
+                # Growth rules are monthly. A set applies from its as_of (the
+                # first set from the start) until the next set's.
+                for i, (as_of, slices) in enumerate(blend):
+                    begins = first if i == 0 else max(first, parse_month(as_of))
+                    if begins > last or (
+                            i + 1 < len(blend) and begins.isoformat() >= blend[i + 1][0]):
+                        continue  # applies only after the rule stops, or replaced before it's read
+                    for slice_series, _ in slices:
+                        reads((rate_kind, slice_series), begins,
+                              f"{who} ({slice_series} in its blend)")
+            elif series:
+                reads((rate_kind, series), first, who)
+
+    for (kind, series), (month_s, reader) in sorted(first_read.items()):
+        supplied = supplied_from[(kind, series)]
+        if supplied > month_s:
+            issues.append(
+                f"{kind}__{series}.csv: its first rate is from {file_from[(kind, series)][:7]}, "
+                f"but {reader} reads it from {month_s[:7]}; add a row on or before "
+                f"{month_s[:7]}, or a set_rate row with a fixed date by then"
+            )
+
+
+def _last_posting_month(row: Mapping[str, str], retired_on: date) -> date:
+    """The last month a rule retired on ``retired_on`` can post. The engine
+    posts a month's rule at month-end, so one retired mid-month misses that
+    month, but a biweekly rule still pays its paydays up to the day."""
+    month = parse_month(retired_on.isoformat())
+    if retired_on == month or (row.get("cadence") or "") == "biweekly":
+        return month
+    return add_month_ends(month, -1)
+
+
+def _retired_window(
+    row: Mapping[str, str], run_start: date, run_end: date, retired_on: date,
+) -> tuple[date, date] | None:
+    """The first and last months a rule with one fixed retirement can post.
+    The retirement takes effect only on its date: before then the rule keeps
+    its own end. So one retired after that end stops at its end and posts
+    again only in the retirement's own month, if it posts then at all."""
+    last_post = _last_posting_month(row, retired_on)
+    try:
+        own_end = parse_month(row["end"]) if row.get("end") else run_end
+    except ValueError:
+        return None  # reported by _validate_scheduled
+    if last_post <= own_end:
+        return _first_firing(row, run_start, run_end, end=last_post)
+    window = _first_firing(row, run_start, run_end)
+    if window is None and last_post == parse_month(retired_on.isoformat()):
+        window = _first_firing(row, run_start, run_end, end=last_post, after=last_post)
+    return window
+
+
+def _first_firing(
+    row: Mapping[str, str], run_start: date, run_end: date,
+    *, end: date | None = None, retire_moves: bool = False, after: date | None = None,
+) -> tuple[date, date] | None:
+    """The first and last months a scheduled rule can post in the run, or
+    None if it never does: the first is from its start or the scenario's,
+    whichever is later, to the first month its cadence fires; the last is its
+    end (``end`` when a retirement replaces it; the run's end when a
+    retirement may reopen it, ``retire_moves``) or the scenario's, whichever
+    is earlier. ``after`` starts the search no earlier than that month."""
+    from analysis.sim.engine import _cadence_fires  # the engine's own cadence rule
+
+    try:
+        rule_start = parse_month(row.get("start") or run_start.isoformat())
+        rule_end = (run_end if retire_moves else end if end is not None
+                    else parse_month(row["end"]) if row.get("end") else run_end)
+    except ValueError:
+        return None  # reported by _validate_scheduled
+    cadence = row.get("cadence") or "monthly"
+    if cadence not in registries.CADENCES:
+        return None  # reported by _validate_scheduled; the engine's rule would raise
+    try:  # parsed as the intent writer does, so "+6" is June here too
+        moy: int | None = int(row["month_of_year"]) if row.get("month_of_year") else None
+    except ValueError:
+        return None  # not a month; the intent writer refuses it
+    month = max(rule_start, run_start, after or run_start)
+    last = min(rule_end, run_end)
+    for _ in range(12):  # every cadence fires within a year of its start
+        if month > last:
+            return None
+        if cadence == "biweekly" or _cadence_fires(cadence, moy, month, rule_start):
+            return month, last
+        month = add_month_ends(month, 1)
+    return None
 
 
 def _rate_in_effect_before(

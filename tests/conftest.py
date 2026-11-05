@@ -1158,6 +1158,25 @@ def update_scheduled(retire_alice_csv: Callable[[str], Path]) -> Callable[..., N
 
 
 @pytest.fixture(scope="function")
+def append_scheduled_row(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Append a rule to the private copy's scheduled.csv, by column name:
+    ``append_scheduled_row(name="bonus", amount_rule_kind="fixed_amount", ...)``.
+    ``cadence`` defaults to monthly and ``meta_json`` to ``{}``."""
+    def _add(**fields: str) -> None:
+        unknown = set(fields) - set(SCHEDULED_CSV_HEADER)
+        assert not unknown, f"unknown scheduled.csv columns: {sorted(unknown)}"
+        path = retire_alice_csv("scheduled.csv")
+        rules = pd.read_csv(path, dtype=str, keep_default_na=False)
+        rules = rules.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+        rules.loc[len(rules)] = {
+            **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
+            "cadence": "monthly", "meta_json": "{}", **fields,
+        }
+        rules.to_csv(path, index=False)
+    return _add
+
+
+@pytest.fixture(scope="function")
 def set_scenario_meta(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Set keys of the private retire_alice copy's scenario.csv ``meta_json``,
     keeping the others: ``set_scenario_meta(community_property=True)``."""
