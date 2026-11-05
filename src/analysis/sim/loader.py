@@ -1358,6 +1358,7 @@ def load_scenario(
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
+    _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -3852,6 +3853,66 @@ def _validate_state_social_security(
             issues.append(f"{where}: phaseout_end is below phaseout_start")
         elif rate is not None and rate <= 0:
             issues.append(f"{where}: phaseout_rate must be more than 0%")
+
+
+def _validate_state_retirement_exclusions(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A ``state_retirement_exclusion__<state>.csv`` row (#486) names an
+    exclusion, the income it covers, an age it starts at and its limits in
+    forms the run can read, so a typo fails at load rather than excluding
+    nothing."""
+    kind = registries.STATE_RETIREMENT_EXCLUSION
+    incomes = {*registries.STATE_EXCLUSION_INCOME, "all"}
+    tiers: set[tuple[str | None, str, str, str, str]] = set()
+    for row_kind, state, payload, effective in aux_rows:
+        if row_kind != kind:
+            continue
+        where = f"aux/{kind}__{state}.csv ({effective}, {payload.get('name')})"
+        if not state:  # no suffix, or an empty one (state_retirement_exclusion__.csv)
+            issues.append(f"aux/{kind}.csv: name the state, as {kind}__CA.csv")
+            return
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            issues.append(f"{where}: name is blank; rows with the same name are one exclusion")
+        words = [w.strip() for w in str(payload.get("income") or "").replace(",", ";").split(";")]
+        words = [w for w in words if w]
+        bad = [w for w in words if w not in incomes]
+        if not words or bad:
+            issues.append(
+                f"{where}: income {payload.get('income')!r} must list one or more of "
+                f"{', '.join(sorted(incomes))}, separated by ';'"
+            )
+        age = payload.get("min_age")
+        try:
+            years = 0.0 if age in (None, "") else float(age)
+            if not 0 <= years <= 150:  # also refuses nan and inf
+                raise ValueError(age)
+            months = round(years * 12)
+        except (TypeError, ValueError):
+            issues.append(f"{where}: min_age {age!r} must be an age in years, such as 59.5")
+            months = 0
+        status = payload.get("filing_status")
+        if status not in (None, "") and status not in registries.FILING_STATUSES:
+            issues.append(
+                f"{where}: filing_status {status!r} must be blank (every status) or one of "
+                f"{', '.join(registries.FILING_STATUSES)}"
+            )
+        for column in ("amount", "income_limit", "phaseout"):
+            if (payload.get(column) or 0) < 0:
+                issues.append(f"{where}: {column} must not be negative")
+        if payload.get("phaseout") is not None and payload.get("income_limit") is None:
+            issues.append(f"{where}: a phaseout needs the income_limit it starts at")
+        less_ss = str(payload.get("less_ss") or "").strip().lower()
+        if less_ss not in ("", "yes", "no", "true", "false"):
+            issues.append(f"{where}: less_ss {payload.get('less_ss')!r} must be yes or blank")
+        elif less_ss in ("yes", "true") and payload.get("amount") is None:
+            issues.append(f"{where}: less_ss needs an amount for Social Security to reduce")
+        tier = (state, effective, name, str(status or ""), str(months))
+        if tier in tiers:
+            issues.append(f"{where}: two rows for the same exclusion, filing status and min_age")
+        tiers.add(tier)
 
 
 def _validate_swap_aux_tables(

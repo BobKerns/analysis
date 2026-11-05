@@ -54,9 +54,12 @@ the state taxes it: the federally taxable amount less an exclusion that can
 phase out with income. Two more are optional: `state_surcharge__XX.csv`, a
 surtax on high income (California's 1% over $1 million, Massachusetts's 4%),
 and `state_hsa__XX.csv`, for a state that taxes health savings accounts
-(California). Many states have rules this leaves out; the table
-says which matter most for a retired household. It reflects state law as of
-2026; check the
+(California). A state's retirement income exclusions, by age, kind of income
+and household income, go in another optional table,
+`state_retirement_exclusion__XX.csv`; a "Partial" row below whose gap is such
+an exclusion needs that table written. Many states have rules this leaves
+out; the table says which matter most for a retired household. It reflects
+state law as of 2026; check the
 state's own revenue department before relying on a figure.
 
 | Status | Meaning |
