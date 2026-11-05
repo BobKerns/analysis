@@ -16,7 +16,7 @@ import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from analysis.sim import registries
+from analysis.sim import registries, series_files
 from analysis.sim.asset_classes import is_lot_key
 from analysis.sim.lineage import (
     TEMPLATE_AUX_DIR, is_pool, load_order, pool_components, reading_order, scenario_dir, template_names,
@@ -164,14 +164,19 @@ def series_names(data_dir: Path, scenario: str, kind: str | None = None) -> list
     """The series of ``kind`` (``rate``, ``inflation``, ...), or of any kind,
     that the scenario's ``series/`` and ``aux/`` folders and the shared
     ``aux/`` (and the code repository's ``templates/aux/``, #317) have a
-    file for: ``<kind>__<name>.csv``."""
+    file for: ``<kind>__<name>.csv``. A rate or inflation series the
+    scenario has emptied (``sim series delete``, #471) is left out, since it
+    has no rates here."""
     folders = [TEMPLATE_AUX_DIR, data_dir / "aux"]
     for d in _lineage_dirs(data_dir, scenario):
         folders += [d / "series", d / "aux"]
-    names = set()
+    found: set[tuple[str, str]] = set()
     for stem in _stems(folders, f"{kind}__*.csv" if kind else "*__*.csv"):
-        names.add(stem.split("__", 1)[1])
-    return sorted(names)
+        kind_of, _, name = stem.partition("__")
+        found.add((kind_of, name))
+    emptied = {key for key, series in series_files.scenario_series(data_dir, scenario).items()
+               if series.empty}
+    return sorted({name for _, name in found - emptied})
 
 
 def tag_tokens(
