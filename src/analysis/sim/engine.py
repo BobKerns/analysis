@@ -2925,6 +2925,8 @@ class _TaxEstimate:
     ltcg_brackets: list[tuple[int, int]]
     ordinary_income: int
     ltcg_income: int
+    """The net long-term gain the scope taxes: a state's exclusion is off it."""
+    ltcg_exclusion: int
     ss_income: int
     taxable_ss: int
     business: Any
@@ -2966,7 +2968,14 @@ def _year_tax_estimate(
         "standard_deduction" if scope == "federal" else registries.STATE_STANDARD_DEDUCTION,
     ))
     ss_threshold_aux = str(params.get("ss_threshold_aux", "ss_taxation_thresholds"))
-    ltcg_bracket_aux = str(params.get("ltcg_bracket_aux", "ltcg_brackets"))
+    ltcg_bracket_aux = str(params.get(
+        "ltcg_bracket_aux",
+        "ltcg_brackets" if scope == "federal" else registries.STATE_LTCG_BRACKETS,
+    ))
+    stcg_bracket_aux = params.get(
+        "stcg_bracket_aux", None if scope == "federal" else registries.STATE_STCG_BRACKETS)
+    ltcg_exclusion_aux = params.get(
+        "ltcg_exclusion_aux", None if scope == "federal" else registries.STATE_LTCG_EXCLUSION)
     bracket_aux = str(
         params.get(
             "bracket_aux",
@@ -3019,9 +3028,38 @@ def _year_tax_estimate(
     capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
     # A Schedule C loss offsets the year's other income (#231).
     ordinary_income = other_ordinary + business.net + capital.stcg - capital.loss_deduction
+    # A state's gain tables and exclusion (#485) are keyed by state, like its
+    # standard deduction, so they follow bracket_series.
+    gain_series = None if scope == "federal" else bracket_series
+    exclusion_rows = _active_aux_rows(
+        aux, str(ltcg_exclusion_aux), gain_series, as_of) if ltcg_exclusion_aux else []
+
+    def net_ltcg(gain: int) -> int:
+        """The long-term gain ``gain`` less what the state excludes of it."""
+        if not exclusion_rows or gain <= 0:
+            return gain
+        row = exclusion_rows[0]
+        excluded = gain * int(row["exclusion_micros"]) // 1_000_000
+        if row.get("max_exclusion") is not None:
+            excluded = min(excluded, int(row["max_exclusion"]))
+        excluded = max(excluded, int(row.get("min_exclusion") or 0))
+        return gain - min(excluded, gain)
+
     # Qualified dividends are taxed with long-term gains (IRC §1(h)(11)), but
-    # a capital loss doesn't offset them: they join after the netting.
-    ltcg_income = capital.ltcg + qualified_dividends
+    # a capital loss doesn't offset them: they join after the netting. A
+    # state has no such preference: its gain rules (#485) are for gains, so
+    # its dividends are ordinary income.
+    if scope == "federal":
+        gain_dividends = qualified_dividends
+    else:
+        gain_dividends = 0
+        ordinary_income += qualified_dividends
+
+    def taxed_ltcg(extra_gain: int) -> int:
+        """The income taxed with long-term gain, with ``extra_gain`` more gain."""
+        return net_ltcg(capital.ltcg + extra_gain) + gain_dividends
+
+    ltcg_income = taxed_ltcg(0)
 
     ss_tiers: tuple[int, int] | None = None
     if scope == "federal" and ss_income > 0:
@@ -3080,13 +3118,17 @@ def _year_tax_estimate(
         (int(r["floor"]), int(r["marginal_rate_micros"]))
         for r in bracket_rows
     )
-    ltcg_rows = [
-        r for r in _indexed_tax_rows(aux, ltcg_bracket_aux, None, tax_year, growth_cache)
-        if r.get("filing_status") == filing_status
-    ] if scope == "federal" else []
-    ltcg_brackets = sorted(
-        (int(r["floor"]), int(r["marginal_rate_micros"])) for r in ltcg_rows
-    )
+    def gain_brackets(kind: str | None) -> list[tuple[int, int]]:
+        if kind is None:
+            return []
+        return sorted(
+            (int(r["floor"]), int(r["marginal_rate_micros"]))
+            for r in _indexed_tax_rows(aux, str(kind), gain_series, tax_year, growth_cache)
+            if r.get("filing_status") == filing_status
+        )
+
+    ltcg_brackets = gain_brackets(ltcg_bracket_aux)
+    stcg_brackets = gain_brackets(stcg_bracket_aux)
 
     def taxable_ss_for(ordinary: int, ltcg: int) -> int:
         if ss_tiers is None:
@@ -3096,19 +3138,27 @@ def _year_tax_estimate(
             tier1=ss_tiers[0], tier2=ss_tiers[1],
         )
 
+    def band_tax(low: int, high: int, table: list[tuple[int, int]]) -> int:
+        return _progressive_tax_cents(high, table) - _progressive_tax_cents(low, table)
+
     def tax_on(taxable: int, ltcg: int) -> int:
         """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term gain."""
-        if not (ltcg_brackets and ltcg > 0):
-            return _progressive_tax_cents(taxable, brackets)
         # Long-term gains sit on top of ordinary taxable income and are taxed at
-        # the preferential rates for the band each part lands in.
-        gain_taxable = min(ltcg, taxable)
-        ordinary_taxable = taxable - gain_taxable
-        return (
-            _progressive_tax_cents(ordinary_taxable, brackets)
-            + _progressive_tax_cents(taxable, ltcg_brackets)
-            - _progressive_tax_cents(ordinary_taxable, ltcg_brackets)
-        )
+        # the preferential rates for the band each part lands in; a state's
+        # short-term gain rates (#485) take the slice just below them. A gain
+        # without a table of its own keeps its place, at the ordinary rates.
+        if not (ltcg_brackets or stcg_brackets):
+            return _progressive_tax_cents(taxable, brackets)
+        gain_taxable = min(max(0, ltcg), taxable)
+        below_gain = taxable - gain_taxable
+        short_taxable = min(capital.stcg, below_gain) if stcg_brackets else 0
+        ordinary_taxable = below_gain - short_taxable
+        tax = _progressive_tax_cents(ordinary_taxable, brackets)
+        if short_taxable > 0:
+            tax += band_tax(ordinary_taxable, below_gain, stcg_brackets)
+        if gain_taxable > 0:
+            tax += band_tax(below_gain, taxable, ltcg_brackets or brackets)
+        return tax
 
     taxable_ss = taxable_ss_for(ordinary_income, ltcg_income)
     income_before_nol = ordinary_income + ltcg_income + taxable_ss - deduction
@@ -3127,7 +3177,8 @@ def _year_tax_estimate(
     # The loss that carries: the business loss less the income it absorbed.
     # The deduction never adds to it (a nonbusiness deduction offsets only
     # nonbusiness income, §172(d)(4)), nor does the capital-loss deduction.
-    nonbusiness_income = other_ordinary + capital.stcg + ltcg_income + taxable_ss
+    nonbusiness_income = (other_ordinary + capital.stcg + ltcg_income
+                          + qualified_dividends - gain_dividends + taxable_ss)
     nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
     tax_liability = tax_on(taxable_income, ltcg_income)
 
@@ -3135,23 +3186,28 @@ def _year_tax_estimate(
         """This year's taxable income, and its ordinary part, with more
         ordinary income and long-term gain on top. More income can use more
         of a carried-in NOL under its limit, so that is worked out again."""
-        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
+        ordinary, ltcg = ordinary_income + extra_ordinary, taxed_ltcg(extra_ltcg)
         before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
         used = min(nol_in, max(0, before_nol) * nol_limit_percent // 100)
         taxable = max(0, before_nol - used)
-        return taxable, taxable - min(ltcg, taxable)
+        below_gain = taxable - min(ltcg, taxable)
+        # A state's separately taxed short-term gain (#485) isn't ordinary.
+        short = min(capital.stcg, below_gain) if stcg_brackets else 0
+        return taxable, below_gain - short
 
     def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
         """This year's tax with more ordinary income and long-term gain on top."""
-        return tax_on(taxable_with(extra_ordinary, extra_ltcg)[0], ltcg_income + extra_ltcg)
+        return tax_on(
+            taxable_with(extra_ordinary, extra_ltcg)[0], taxed_ltcg(extra_ltcg))
 
     def agi_with(extra_ordinary: int, extra_ltcg: int) -> int:
-        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
+        ordinary, ltcg = ordinary_income + extra_ordinary, taxed_ltcg(extra_ltcg)
         return ordinary + ltcg + taxable_ss_for(ordinary, ltcg)
 
     return _TaxEstimate(
         scope=scope, filing_status=filing_status, brackets=brackets, ltcg_brackets=ltcg_brackets,
-        ordinary_income=ordinary_income, ltcg_income=ltcg_income, ss_income=ss_income,
+        ordinary_income=ordinary_income, ltcg_income=ltcg_income,
+        ltcg_exclusion=capital.ltcg - net_ltcg(capital.ltcg), ss_income=ss_income,
         taxable_ss=taxable_ss, business=business, capital=capital,
         standard_deduction=standard_deduction, itemized_deduction=itemized_deduction,
         deduction=deduction, nol_in=nol_in, nol_used=nol_used, nol_new=nol_new,
@@ -3199,6 +3255,13 @@ def _apply_tax_accumulator(
       is used. "state_deductions" falls back to "federal_deductions" when the
       scenario has no "state_deductions" rows at all.
     - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
+    - ltcg_bracket_aux: defaults to "ltcg_brackets" (federal) or
+      "state_ltcg_brackets" (state, with bracket_series's series); without
+      such a table long-term gain is taxed as ordinary income
+    - stcg_bracket_aux, ltcg_exclusion_aux (#485): a state's own short-term
+      gain rates and long-term gain exclusion, defaulting to
+      "state_stcg_brackets" and "state_ltcg_exclusion" with bracket_series's
+      series (state only)
     - nol_limit_percent: how much of a year's taxable income a carried net
       operating loss may offset (#231); defaults to 80 (federal, IRC §172) or
       100 (state; California, for one, has no 80% limit)
@@ -3302,6 +3365,7 @@ def _apply_tax_accumulator(
         f"{scope}_nol_used": nol_used,
         f"{scope}_nol_carryover": nol_in - nol_used + nol_new,
         f"{scope}_ltcg_income": ltcg_income,
+        f"{scope}_ltcg_exclusion": est.ltcg_exclusion,
         f"{scope}_capital_loss_deduction": capital.loss_deduction,
         f"{scope}_capital_loss_carryover": capital.carryover_st + capital.carryover_lt,
         f"{scope}_ss_income": ss_income,
@@ -4465,6 +4529,7 @@ _LOOKED_BACK_AUX_KINDS = frozenset({"inflation"})
 def _swap_aux_table(
     con, ev_id: int, ev_date: str, payload: dict[str, Any],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    *, require_in_force: bool = True,
 ) -> None:
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
@@ -4493,7 +4558,7 @@ def _swap_aux_table(
             f"swap_aux_table event id={ev_id}: no aux rows for "
             f"kind={aux_kind!r} series={source_series!r}"
         )
-    if source[0][0] > ev_date:
+    if require_in_force and source[0][0] > ev_date:
         raise EngineError(
             f"swap_aux_table event id={ev_id}: series {source_series!r} has no "
             f"{aux_kind} row effective on or before {ev_date}, so there is "
@@ -4525,15 +4590,20 @@ def _swap_aux_table(
     )
     aux[(aux_kind, series)] = kept + written
     if aux_kind == "state_brackets":
-        # A move to another state takes its standard deduction too (#248):
-        # the new state's state_standard_deduction__<state>, or, with none,
-        # the federal fallback rather than the old state's figure.
-        deduction = registries.STATE_STANDARD_DEDUCTION
-        if aux.get((deduction, source_series)):
-            _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": deduction}, aux)
-        elif aux.pop((deduction, series), None):
-            con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
-                        (deduction, series))
+        # A move to another state takes its standard deduction (#248) and gain
+        # rules (#485) too: the new state's tables, or, with none, the
+        # fallback (the federal deduction, gains as ordinary income) rather
+        # than the old state's.
+        for companion in registries.STATE_COMPANION_KINDS:
+            if aux.get((companion, source_series)):
+                # A gain rule that starts later applies from its own date;
+                # until then the gains are ordinary income.
+                _swap_aux_table(
+                    con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux,
+                    require_in_force=companion == registries.STATE_STANDARD_DEDUCTION)
+            elif aux.pop((companion, series), None):
+                con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
+                            (companion, series))
 
 
 def _apply_calendar_event(
