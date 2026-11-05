@@ -268,7 +268,8 @@ short-term, by when the lot was bought. Everything out of a traditional
 IRA is ordinary income, and from seventy five, required minimum
 distributions make sure it comes out. A Roth taxes nothing, once its
 five-year rule is met. And at a death, a brokerage lot's basis steps up,
-so the gain until then is never taxed.
+so that gain is never taxed: all of it for the person's own lot, half for
+a joint one, or all of it where joint property is community property.
 
 ## Scene `gains`: Selling
 
