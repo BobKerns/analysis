@@ -391,12 +391,15 @@ tax year, by looking back over everything that happened that year (the
   state's standard deduction from `state_standard_deduction__CA.csv` (named
   for the same state as the brackets). Without
   that file the federal standard deduction is used, and loading warns,
-  since most states' deduction is much smaller. Long-term gains are taxed
-  as ordinary income. State taxable income leaves out Social Security,
-  unless your state taxes it: then add `state_social_security__CA.csv`
-  (named for your state), which starts from the federally taxable amount
-  and leaves out an exclusion that phases out with income. The `aux/`
-  README shows how to write one.
+  since most states' deduction is much smaller. Capital gains are taxed
+  as ordinary income unless the state's own tables say otherwise: a share
+  of long-term gain excluded (`state_ltcg_exclusion__XX.csv`), or gain
+  rates of its own (`state_ltcg_brackets__XX.csv`,
+  `state_stcg_brackets__XX.csv`). State taxable income leaves out Social
+  Security unless your state taxes it: then add
+  `state_social_security__XX.csv`, which starts from the federally taxable
+  amount and leaves out an exclusion that phases out with income. The
+  `aux/` README describes them all.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year.
 - **RMDs** are calculated from the account's lot balances on the previous
