@@ -1262,6 +1262,7 @@ def load_scenario(
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
     )
     life_tables_ok = _validate_life_tables(aux_rows, issues)
+    _validate_state_gain_tables(aux_rows, issues)
     life_tables: dict[str | None, list[tuple[str, dict[str, Any]]]] = {}
     for kind, name, payload, eff in aux_rows:
         if kind == life_table.LIFE_TABLE_KIND:
@@ -5121,6 +5122,37 @@ def _solve_life_table(
         issues.append(f"{where}: life_table age_at_death {row['age_at_death']}: {e}")
     except ValueError:
         return  # the bad birthdate or start is reported where it's read
+
+
+def _validate_state_gain_tables(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """A state's gain tables (#485) are named for the state, as its
+    brackets are, and an exclusion row's figures make sense."""
+    kinds = (registries.STATE_LTCG_BRACKETS, registries.STATE_STCG_BRACKETS,
+             registries.STATE_LTCG_EXCLUSION)
+    unnamed: set[str] = set()
+    for kind, series, payload, effective in aux_rows:
+        if kind not in kinds:
+            continue
+        if series is None:
+            if kind not in unnamed:
+                unnamed.add(kind)
+                issues.append(
+                    f"aux/{kind}.csv: name the state, as its brackets are "
+                    f"(aux/{kind}__CA.csv beside aux/state_brackets__CA.csv)"
+                )
+            continue
+        if kind != registries.STATE_LTCG_EXCLUSION:
+            continue
+        where = f"aux/{kind}__{series}.csv ({effective[:7]})"
+        if not 0 <= payload["exclusion_micros"] <= 1_000_000:
+            issues.append(f"{where}: exclusion must be 0% to 100%")
+        low, high = payload.get("min_exclusion"), payload.get("max_exclusion")
+        if (low is not None and low < 0) or (high is not None and high < 0):
+            issues.append(f"{where}: min_exclusion and max_exclusion can't be negative")
+        elif low is not None and high is not None and low > high:
+            issues.append(f"{where}: min_exclusion is more than max_exclusion")
 
 
 def _validate_life_tables(

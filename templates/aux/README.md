@@ -304,4 +304,25 @@ taxable income at which its rate starts, with the gain stacked on top of ordinar
 income: the 0% band ends where the 15% band's floor begins, and so on (the shipped figures
 are the 2026 thresholds; check them against the current IRS tables). It is optional and only
 affects federal tax: without it long-term gains are taxed as ordinary income. Short-term
-gains (`stcg`, for a lot held a year or less) are always taxed as ordinary income.
+gains (`stcg`, for a lot held a year or less) are taxed federally as ordinary income.
+
+## A state's capital gains
+
+A state tax rule taxes gains as ordinary income unless the state's own tables, named for
+the state like its brackets, say otherwise. None ship; check the state's revenue department
+for its current rule before writing one.
+
+- `state_ltcg_exclusion__<state>.csv`: `effective_date`, `exclusion`, `min_exclusion`,
+  `max_exclusion`. The state leaves `exclusion` (a percent) of the year's net long-term
+  gain out of its income, at least `min_exclusion` and at most `max_exclusion` dollars
+  (blank for no minimum or no cap), never more than the gain: `50%` for Arkansas, `100%`
+  for Missouri, `0%` with a `min_exclusion` for a flat amount.
+- `state_ltcg_brackets__<state>.csv`: the state's own long-term gain rates, in the shape of
+  `ltcg_brackets.csv`, stacked on top of the state's taxable income: Montana's lower rates,
+  or Hawaii's cap (its brackets, with each rate over 7.25% written as 7.25%).
+- `state_stcg_brackets__<state>.csv`: the same for net short-term gain, which is stacked
+  just below the long-term gain (Massachusetts' 8.5%). A surtax on high income, such as
+  Massachusetts' 4% over about $1 million, is a top row in each of the state's tables.
+
+A move to another state (`swap_aux_table` of `state_brackets`) takes these with it: the new
+state's tables, or none if it has none.
