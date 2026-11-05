@@ -41,8 +41,8 @@ from analysis.expenses.baseline import (
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
-    sensitivity, setup_listings, shortfalls, strategy_code, strategy_files, strategy_guide, symbols, units, working_set,
-    ytd_guide,
+    sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files, strategy_guide, symbols,
+    units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -13991,6 +13991,571 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
         except (OSError, ValueError) as exc:
             raise click.ClickException(str(exc)) from None
     _echo_renamed("series", old, new, changed)
+
+
+# ---------- series files: list, show, add, edit, delete, revert (#471) ----------
+
+_SERIES_KIND_MEANINGS = {
+    "rate": "a growth rate, for an account's, lot's, symbol's or asset class's series",
+    "inflation": "an inflation rate, for a scheduled rule's or chain step's series",
+}
+
+_SERIES_KIND_OPTION = click.option(
+    "--kind", type=click.Choice(series_files.SERIES_KINDS), default=None,
+    help="rate or inflation; needed only when the name has both.")
+
+
+def _series_month(text: str) -> str:
+    """A series row's effective month as written to its file: the month's
+    last day, as the loader stores it. Raises ``ValueError``."""
+    return month_end_iso(text)
+
+
+def _series_rate(text: str) -> str:
+    """An annual rate as written to a series file (``4.5%``); the ``%`` may be
+    left off here, since the value is named as a percent. Raises ``ValueError``."""
+    return units.micros_to_percent(units.percent_to_micros(text, require_sign=False))
+
+
+def _series_row_month(row: Mapping[str, str]) -> str:
+    """A row's effective month, for matching and sorting; as written if it
+    doesn't parse (the loader reports it)."""
+    try:
+        return _series_month(row.get("effective_date", ""))
+    except ValueError:
+        return row.get("effective_date", "")
+
+
+def _parse_series_sets(values: Iterable[str]) -> list[tuple[str, str]]:
+    """``--set YYYY-MM=RATE`` values as (month, rate) cells."""
+    parsed = []
+    for value in values:
+        month, sep, rate = value.partition("=")
+        if not sep:
+            raise click.ClickException(f"--set takes YYYY-MM=RATE, like 2027-01=4.5%: {value!r}")
+        try:
+            parsed.append((_series_month(month), _series_rate(rate)))
+        except ValueError as exc:
+            raise click.ClickException(f"--set {value}: {exc}") from None
+    return parsed
+
+
+def _set_series_row(rows: list[dict[str, str]], month: str, rate: str,
+                    keep: dict[str, str] | None = None) -> None:
+    """Give ``rows`` ``rate`` from ``month``: that month's row changes, or a
+    new one goes in, in date order, with ``keep``'s other cells (the row it
+    replaces)."""
+    for row in rows:
+        if _series_row_month(row) == month:
+            row.update(effective_date=month, annual_rate=rate)
+            return
+    rows.append({**(keep or {}), "effective_date": month, "annual_rate": rate})
+    rows.sort(key=_series_row_month)
+
+
+def _remove_series_row(rows: list[dict[str, str]], month: str, name: str) -> None:
+    for index, row in enumerate(rows):
+        if _series_row_month(row) == month:
+            del rows[index]
+            return
+    raise click.ClickException(f"series {name!r} has no row for {month[:7]}")
+
+
+def _scenario_start(data: Path, scenario: str) -> str | None:
+    """The scenario's start month as the load merges it (a template's only
+    where no data repo scenario sets one), or None."""
+    summary = next((s for s in sc.scenario_summaries(data, templates=True) if s.name == scenario), None)
+    return summary.start.month if summary is not None and summary.start is not None else None
+
+
+def _rate_at(rows: Sequence[Mapping[str, str]], month: str | None) -> str:
+    """The rate in force in ``month``, from rows in date order: blank before
+    the first row, or with no month to look at."""
+    if month is None:
+        return ""
+    try:
+        when = _series_month(month)
+    except ValueError:
+        return ""
+    found = ""
+    for row in sorted(rows, key=_series_row_month):  # the engine reads them in date order
+        if _series_row_month(row) <= when:
+            found = row.get("annual_rate", "")
+    return found
+
+
+def _series_where(file: series_files.SeriesFile) -> str:
+    return f"{file.folder}/{file.filename} in {file.defined_in}"
+
+
+def _series_label(series: series_files.Series) -> str:
+    return f"{series.kind} series {series.name!r}"
+
+
+def _pick_series(
+    data: Path, scenario: str, name: str | None, kind: str | None, *,
+    wanted: Callable[[series_files.Series], bool], what: str = "series",
+    offer: Callable[[series_files.Series], bool] | None = None,
+) -> series_files.Series:
+    """The series ``name`` (of ``kind``, when given) among those ``wanted``
+    accepts. Without ``name``, it is asked for, from those ``offer`` (else
+    ``wanted``) accepts; a name with both a rate and an inflation series
+    asks which, or at a script needs ``--kind``."""
+    found = [series for (k, _), series in series_files.scenario_series(data, scenario).items()
+             if (kind is None or k == kind) and wanted(series)]
+    if name is None:
+        name = _ask_name("series", sorted({series.name for series in found if (offer or wanted)(series)}),
+                         prompt=what)
+    name = name.strip()
+    matches = [series for series in found if series.name == name]
+    if not matches:
+        every = series_files.scenario_series(data, scenario)
+        emptied = [s for (k, n), s in every.items() if n == name and (kind is None or k == kind) and s.empty]
+        if emptied:
+            series = emptied[0]
+            raise click.ClickException(
+                f"{_series_label(series)} is empty in {scenario} ({_series_where(series.read)}): it "
+                f"has no rates here. `sim series add {name}` gives it some"
+                + (f"; `sim series revert {name}` inherits the parent's again" if series.revertible else "")
+            )
+        kinds = f"{kind} " if kind else ""
+        raise click.ClickException(f"no {kinds}series {name!r} in {scenario} (see `sim series list`)")
+    if len(matches) == 1:
+        chosen = matches[0]
+    elif not _interactive():
+        raise click.ClickException(
+            f"{scenario} has both a rate and an inflation series {name!r}; say which with --kind")
+    else:
+        picked = _ask_choice(f"which {name!r}? (rate/inflation)",
+                             {series.kind: _SERIES_KIND_MEANINGS[series.kind] for series in matches})
+        chosen = next(series for series in matches if series.kind == picked)
+    # Read again after the prompts, so the rows a caller edits are the ones
+    # on disk when it snapshots the files' bytes.
+    return series_files.scenario_series(data, scenario).get((chosen.kind, chosen.name), chosen)
+
+
+def _own_series_path(ref_path: Path, file: series_files.SeriesFile) -> Path:
+    """Where the scenario at ``ref_path`` keeps its own copy of ``file``'s series."""
+    return ref_path / file.folder / file.filename
+
+
+def _series_unchanged(edit: StagedEdit, before: Mapping[Path, bytes | None]) -> None:
+    """Refuse a series edit whose files changed since they were read, while
+    its prompts waited: writing then would undo that change. A file outside
+    the scenarios (shared aux/, templates) isn't staged, so is compared on disk."""
+    for path, was in before.items():
+        try:
+            _require_unchanged(edit, path, was)
+        except ValueError:
+            if _file_bytes(path) != was:
+                raise click.ClickException(
+                    f"changed on disk while this edit was in progress; nothing was written: {path}") from None
+
+
+def _series_readers(data: Path, scenario: str, name: str) -> list[str]:
+    """Where the scenario's lineage names series ``name`` in a ``series``
+    column: each file and line. A lot of a symbol reads a series by the
+    symbol's name, with no column naming it, so isn't listed."""
+    scenarios = data / "scenarios"
+    found = []
+    for each in load_order(scenarios, scenario):
+        folder = _folder_of(scenarios, each)
+        files = [*(folder / f for f in rename.SERIES_COLUMNS), *chain_edit.chain_files(folder)]
+        for path in files:
+            with contextlib.suppress(OSError, _csv.Error, UnicodeDecodeError):
+                with path.open(newline="", encoding="utf-8") as fh:
+                    for line, row in enumerate(_csv.DictReader(fh), start=2):
+                        if (row.get("series") or "").strip() == name:
+                            found.append(f"{each}: {path.relative_to(folder)}:{line}")
+    return found
+
+
+@series_group_command.command("list")
+@_SERIES_KIND_OPTION
+@click.option("-a", "--all", "show_all", is_flag=True,
+              help="Also list the series this scenario has emptied (sim series delete).")
+@_scenario_options
+def series_list(kind: str | None, show_all: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """List the rate and inflation series the scenario reads: how many rows
+    each has, its rate at the scenario's start, and the file it comes from.
+
+    A scenario's own series/ file hides an ancestor's of the same name
+    (ADR-003 §4.1d); Overrides names the scenario whose file it hides.
+    """
+    from rich.markup import escape
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    start = _scenario_start(data, ref.name)
+    listed = [series for (k, _), series in series_files.scenario_series(data, ref.name).items()
+              if (kind is None or k == kind) and (show_all or not series.empty)]
+    if not listed:
+        click.echo(f"no {kind + ' ' if kind else ''}series for {ref.name}")
+        return
+    table = Table(title=f"series ({ref.name})", header_style="bold")
+    for column, justify in (("Series", "left"), ("Kind", "left"), ("Rows", "right"),
+                            (f"At start{f' ({start[:7]})' if start else ''}", "right"),
+                            ("File", "left"), ("Defined in", "left"), ("Overrides", "left")):
+        table.add_column(column, justify=justify)
+    for series in listed:
+        # Every folder's file with rates, since the loader reads them all;
+        # an empty series names the file that empties it.
+        parts = [part for part in series.parts if not part.read.empty] or [series]
+        belows = [part.below for part in parts if part.own and part.below is not None]
+        table.add_row(
+            escape(series.name), series.kind, "empty" if series.empty else str(len(series.rows)),
+            escape(_rate_at(series.rows, start)),
+            escape(", ".join(f"{part.read.folder}/{part.read.filename}" for part in parts)),
+            escape(", ".join(dict.fromkeys(part.read.defined_in for part in parts))),
+            escape(", ".join(dict.fromkeys(below.defined_in for below in belows))),
+        )
+    _print_wide(table)
+
+
+@series_group_command.command("show")
+@click.argument("series", required=False, type=completion.SeriesName(kind_param="kind"))
+@_SERIES_KIND_OPTION
+@_scenario_options
+def series_show(series: str | None, kind: str | None, scenario: str | None, data_dir: Path | None) -> None:
+    """Show SERIES's rows, the file they come from, and what names it.
+
+    Without SERIES, it is asked for.
+    """
+    from rich.markup import escape
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    found = _pick_series(data, ref.name, series, kind, wanted=lambda s: not s.empty)
+    # The loader reads the name's file in each folder that has one, so each
+    # is shown, with where it comes from.
+    for part in found.parts:
+        file = part.read
+        click.echo(f"{_series_label(found)}: {_shown(file.path)} ({file.defined_in})")
+        below = part.below if part.own else None
+        if below is not None:
+            click.echo(f"  overrides {_series_where(below)}")
+        if file.empty:
+            click.echo("  (empty)")
+            continue
+        table = Table(header_style="bold")
+        extra = [c for c in file.header if c not in series_files.HEADER]
+        for column in ("From", "Annual rate", *extra):
+            table.add_column(column, justify="right" if column == "Annual rate" else "left")
+        for row in file.rows:
+            table.add_row(escape(_series_row_month(row)[:7]), escape(row.get("annual_rate", "")),
+                          *(escape(row.get(c, "")) for c in extra))
+        _print_wide(table)
+    readers = _series_readers(data, ref.name, found.name)
+    if readers:
+        click.echo("named by:")
+        for reader in readers:
+            click.echo(f"  {reader}")
+    else:
+        click.echo("named by: no series column (a lot may still read it by its symbol's name)")
+
+
+def _ask_series_rows(rows: list[dict[str, str]], start: str | None) -> None:
+    """Ask for rows to add to a new series until a blank month: each a month
+    and the annual rate from then on."""
+    first = True
+    while True:
+        default = (start or "")[:7] if first else ""
+        month_text = _prompt_with_completion(
+            "from month (YYYY-MM)" if first else "next change, from month (YYYY-MM; blank: done)",
+            default=default).strip()
+        if not month_text:
+            if rows:
+                return
+            continue
+        try:
+            month = _series_month(month_text)
+        except ValueError as exc:
+            click.echo(f"  {exc}")
+            continue
+        while True:
+            try:
+                rate = _series_rate(_prompt_with_completion("  annual rate (e.g. 4.5%)").strip())
+                break
+            except ValueError as exc:
+                click.echo(f"  {exc}")
+        _set_series_row(rows, month, rate)
+        first = False
+
+
+@series_group_command.command("add")
+@click.argument("series", required=False)
+@_SERIES_KIND_OPTION
+@click.option("--rate", default=None, help="The annual rate, as a percent (4.5%).")
+@click.option("--from", "from_month", default=None, metavar="YYYY-MM",
+              help="The month --rate starts (default: the scenario's start).")
+@click.option("--set", "sets", multiple=True, metavar="YYYY-MM=RATE",
+              help="A rate from a month on; repeat for each change.")
+@_scenario_options
+def series_add(
+    series: str | None, kind: str | None, rate: str | None, from_month: str | None,
+    sets: tuple[str, ...], scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Add a rate or inflation series, series/<kind>__SERIES.csv, to the
+    scenario.
+
+    `--rate 4.5%` is a series at one rate; `--set 2030-01=3%` adds a change
+    from a month on. Whatever is left out is asked for: the name, the kind,
+    then each month and rate until a blank month.
+
+    A series of that name and kind the scenario already has is changed with
+    `sim series edit`. One it has emptied (`sim series delete`) can be added
+    again.
+    """
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    if series is None:
+        series = _ask_new_name("name of the new series")
+    series = series.strip()
+    if problem := rename.name_problem("series", series):
+        raise click.ClickException(problem)
+    if kind is None:
+        kind = _ask_choice("kind (rate/inflation)", _SERIES_KIND_MEANINGS)
+    existing = series_files.scenario_series(data, ref.name).get((kind, series))
+    if existing is not None and not existing.empty:
+        raise click.ClickException(
+            f"{ref.name} already has {_series_label(existing)} ({_series_where(existing.read)}); "
+            f"`sim series edit {series}` changes it")
+    start = _scenario_start(data, ref.name)
+    target = ref.path / (existing.read.folder if existing is not None else "series") / f"{kind}__{series}.csv"
+    before = {target: _file_bytes(target)}
+    rows: list[dict[str, str]] = []
+    if rate is not None:
+        when = from_month or start
+        if not when:
+            raise click.ClickException("the scenario has no start; say when --rate starts with --from")
+        try:
+            _set_series_row(rows, _series_month(when), _series_rate(rate))
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+    elif from_month is not None:
+        raise click.ClickException("--from goes with --rate")
+    for month, value in _parse_series_sets(sets):
+        _set_series_row(rows, month, value)
+    if not rows:
+        _ask_series_rows(rows, start)
+    folder = existing.read.folder if existing is not None else "series"
+    path = ref.path / folder / f"{kind}__{series}.csv"
+    header = existing.read.header if existing is not None else series_files.HEADER
+    with _scenario_edit(data, ref.name) as edit:
+        _series_unchanged(edit, before)
+        series_files.write(edit.path(path), header, rows)
+    if existing is not None:
+        click.echo(f"gave emptied {kind} series {series!r} {len(rows)} row(s) in {_shown(path)}")
+    else:
+        click.echo(f"added {kind} series {series!r}, {len(rows)} row(s), in {_shown(path)}")
+
+
+def _echo_series_rows(series: series_files.Series, rows: Sequence[Mapping[str, str]]) -> None:
+    click.echo(f"{_series_label(series)}:")
+    for number, row in enumerate(rows, start=1):
+        click.echo(f"  {number}. from {_series_row_month(row)[:7]}: {row.get('annual_rate', '')}")
+
+
+def _ask_series_edits(series: series_files.Series, rows: list[dict[str, str]], start: str | None) -> bool:
+    """Change ``rows`` as asked, until a blank answer: True to write them,
+    False (q) to leave the series as it was."""
+    help_ = "N changes row N, + adds a row, -N removes row N, q quits; Enter writes"
+    while True:
+        _echo_series_rows(series, rows)
+        answer = _prompt_with_completion(f"change ({help_})", default="").strip()
+        if not answer:
+            return True
+        if answer.lower() in ("q", "quit"):
+            return False
+        number = answer.removeprefix("-")
+        index = int(number) - 1 if number.isdigit() and 1 <= int(number) <= len(rows) else None
+        if answer == "+":
+            month_default, rate_default = ("" if rows else (start or "")[:7]), ""
+        elif index is not None and answer.startswith("-"):
+            del rows[index]
+            continue
+        elif index is not None:
+            month_default = _series_row_month(rows[index])[:7]
+            rate_default = rows[index].get("annual_rate", "")
+        else:
+            click.echo(f"  {help_}" + (f" (rows 1 to {len(rows)})" if rows else ""))
+            continue
+        try:
+            month = _series_month(_prompt_with_completion("  from month (YYYY-MM)",
+                                                          default=month_default or None))
+            rate = _series_rate(_prompt_with_completion("  annual rate (e.g. 4.5%)",
+                                                        default=rate_default or None))
+        except ValueError as exc:
+            click.echo(f"  {exc}; nothing changed")
+            continue
+        keep = rows.pop(index) if index is not None else None
+        _set_series_row(rows, month, rate, keep)
+
+
+@series_group_command.command("edit")
+@click.argument("series", required=False, type=completion.SeriesName(kind_param="kind"))
+@_SERIES_KIND_OPTION
+@click.option("--set", "sets", multiple=True, metavar="YYYY-MM=RATE",
+              help="The rate from a month on: changes that month's row, or adds one. Repeatable.")
+@click.option("--remove", "removes", multiple=True, metavar="YYYY-MM",
+              help="Remove that month's row. Repeatable.")
+@_scenario_options
+def series_edit(
+    series: str | None, kind: str | None, sets: tuple[str, ...], removes: tuple[str, ...],
+    scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Change a series' rows.
+
+    Options change those rows and write at once. With none, the rows are
+    shown, numbered; change, add and remove rows, as often as needed, and
+    write when done.
+
+    A series the scenario inherits is changed by an override: the whole
+    file, edited, written to this scenario's own folder, so the parent
+    keeps its own. `sim series revert` drops the override.
+
+    Without SERIES, it is asked for.
+    """
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    found = _pick_series(data, ref.name, series, kind, wanted=lambda s: not s.empty, what="series to edit")
+    live = [part for part in found.parts if not part.read.empty]
+    if len(live) > 1:
+        # The loader reads both files' rows as one series; editing one would
+        # leave the other's rows in force unseen.
+        raise click.ClickException(
+            f"{_series_label(found)} has rates in more than one file ("
+            + ", ".join(_series_where(part.read) for part in live)
+            + "), which the loader reads together; merge them into one file by hand first")
+    # With one folder's file live, that is the one to edit, even when the
+    # other folder's (series/, shown first) is empty.
+    part = live[0] if live else found
+    file = part.read
+    path = _own_series_path(ref.path, file)
+    before = {p: _file_bytes(p) for p in (file.path, path)}
+    rows = [dict(row) for row in file.rows]
+    if sets or removes:
+        for month_text in removes:
+            try:
+                month = _series_month(month_text)
+            except ValueError as exc:
+                raise click.ClickException(f"--remove {month_text}: {exc}") from None
+            _remove_series_row(rows, month, found.name)
+        for month, value in _parse_series_sets(sets):
+            _set_series_row(rows, month, value)
+    else:
+        _echo_guided_scenario(ref.name, path, defaulted=scenario is None)
+        if not part.own:
+            click.echo(f"  It comes from {_series_where(file)}: writing puts this "
+                       "scenario's own copy of the whole file here.")
+        if not _ask_series_edits(found, rows, _scenario_start(data, ref.name)):
+            click.echo("nothing was written")
+            return
+    if not rows:
+        raise click.ClickException(
+            f"that leaves {_series_label(found)} no rows; `sim series delete {found.name}` empties it")
+    if rows == file.rows:
+        click.echo("no change; nothing was written")
+        return
+    with _scenario_edit(data, ref.name) as edit:
+        _series_unchanged(edit, before)
+        series_files.write(edit.path(path), file.header, rows)
+    if part.own:
+        click.echo(f"updated {_series_label(found)} in {_shown(path)}")
+    else:
+        click.echo(f"wrote an override of {_series_label(found)} (from {file.defined_in}) to {_shown(path)}")
+
+
+@series_group_command.command("delete")
+@click.argument("series", required=False, type=completion.SeriesName(kind_param="kind"))
+@_SERIES_KIND_OPTION
+@click.option("--yes", is_flag=True, help="Don't ask first.")
+@_scenario_options
+def series_delete(
+    series: str | None, kind: str | None, yes: bool, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Delete a series from the scenario, and from the scenarios built on it.
+
+    A series only this scenario has is removed. One it inherits, or has its
+    own copy of over an inherited one, is emptied: the scenario's own file
+    keeps just its header. An empty series is as good as none, but it also
+    hides the inherited one, so a scenario that reads the series has to
+    supply its own, and the parent's is never used by mistake.
+    `sim series revert` inherits the parent's again.
+
+    A scenario that still reads the series would no longer load, so the
+    delete is refused, naming what reads it. The shared cpi series can't be
+    deleted: CPI-constant dollars need it.
+
+    Without SERIES, it is asked for.
+    """
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    found = _pick_series(data, ref.name, series, kind, wanted=lambda s: not s.empty, what="series to delete")
+    if (found.kind, found.name) == ("inflation", "cpi"):
+        raise click.ClickException(
+            "cpi can't be deleted: CPI-constant dollars need it (`sim series edit cpi` "
+            "gives this scenario its own rates)")
+    # The loader reads a name's series/ and aux/ files both, so each folder
+    # that still has rates for it is emptied, or its file removed.
+    parts = [s for s in found.parts if not s.empty]
+    below = next((s.below for s in parts if s.below is not None), None)
+    shown = ", ".join(_shown(_own_series_path(ref.path, s.read)) for s in parts)
+    # The confirmation can wait a while: what is changed must still be as read.
+    before = {p: _file_bytes(p) for s in parts for p in (s.read.path, _own_series_path(ref.path, s.read))}
+    if below is None:
+        prompt = f"delete {_series_label(found)} ({shown})?"
+    else:
+        prompt = f"empty {_series_label(found)} in {ref.name}, hiding {_series_where(below)}?"
+    if not yes and not click.confirm(prompt, default=False):
+        click.echo("aborted")
+        return
+    with _scenario_edit(data, ref.name) as edit:
+        _series_unchanged(edit, before)
+        for part in parts:
+            staged = edit.path(_own_series_path(ref.path, part.read))
+            if part.below is None:
+                staged.unlink()
+            else:
+                series_files.write(staged, part.read.header, [])
+    if below is None:
+        click.echo(f"deleted {_series_label(found)}: removed {shown}")
+        return
+    click.echo(f"emptied {_series_label(found)} in {shown}: {ref.name} and the scenarios "
+               f"built on it have no {found.name!r} unless they supply their own")
+    click.echo(f"`sim series revert {found.name}` inherits {below.defined_in}'s again")
+
+
+@series_group_command.command("revert")
+@click.argument("series", required=False, type=completion.OWN_SERIES)
+@_SERIES_KIND_OPTION
+@_scenario_options
+def series_revert(series: str | None, kind: str | None, scenario: str | None, data_dir: Path | None) -> None:
+    """Drop the scenario's own file of SERIES, an override or an emptied
+    one, so it inherits its parent's series again.
+
+    A series only this scenario has has nothing to inherit: `sim series
+    delete` removes it.
+
+    Without SERIES, it is asked for.
+    """
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    found = _pick_series(data, ref.name, series, kind, wanted=lambda s: s.any_own,
+                         what="series to revert", offer=lambda s: s.revertible)
+    parts = [s for s in found.parts if s.own]
+    below = found.inherited
+    if below is None:
+        raise click.ClickException(
+            f"{ref.name} doesn't inherit a {found.kind} series {found.name!r}: its own is the only "
+            f"one, so there's nothing to revert to; `sim series delete {found.name}` removes it")
+    with _scenario_edit(data, ref.name) as edit:
+        for part in parts:
+            edit.path(part.read.path).unlink()
+    click.echo(f"removed {', '.join(_shown(s.read.path) for s in parts)}: "
+               f"{ref.name} inherits {_series_where(below)} again")
 
 
 def _yield_of(data: Path, edit: StagedEdit, name: str, affected: list[str]) -> str | None:
