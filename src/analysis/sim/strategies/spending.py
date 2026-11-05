@@ -1,10 +1,11 @@
 """Spending strategies (#387): ``threshold``, ``guardrail``, ``ceiling_floor``,
-and amortization, ``amortize`` (#459).
+amortization, ``amortize`` (#459), and an answer to a guard rail,
+``cut_on_breach`` (#377).
 
 Each owns the scheduled rules carrying its ``rules`` tag (the household's
 plan for that spending) and moves their level by one yearly factor, set in
-``year_start`` and applied to every posting in ``scale``. The plan's mix
-across the rules is kept; only its level moves, so the spending report can
+``year_start`` (``on_breach`` for ``cut_on_breach``) and applied to every
+posting in ``scale``. The plan's mix across the rules is kept; only its level moves, so the spending report can
 set what was spent against what was budgeted.
 """
 
@@ -17,7 +18,7 @@ from datetime import date
 from typing import Any
 
 from analysis.sim.strategy_api import (
-    Context, Decision, Dollars, Percent, RuleView, ScenarioView, Spend, Strategy, StrategyError, Tag,
+    BreachView, Context, Decision, Dollars, Percent, RuleView, ScenarioView, Spend, Strategy, StrategyError, Tag,
     percent, register,
 )
 
@@ -173,6 +174,50 @@ class Guardrail(_Spending):
             "portfolio": balance, "budget": budget, "rate": checked, "initial_rate": initial,
             "last_return": last, "factor": factor,
         })
+
+
+@register
+class CutOnBreach(_Spending):
+    """Answer a guard rail (#377): while a rail the ``trigger`` names is
+    past its line, spend ``cut`` less on the owned rules; while a positive
+    rail is past (room to spend), spend ``increase`` more. Each January's
+    breach (#441) says how last year ended, so the level holds for the year
+    after one past the line and returns to plan after a year back inside. A
+    rail to stay inside wins over a positive one when both are past. The
+    level is flat while past, not compounded year after year as the
+    ``guardrail`` kind's cuts are."""
+
+    kind = "cut_on_breach"
+
+    @dataclass(frozen=True)
+    class Params:
+        cut: Percent = percent("10%")
+        """How much less to spend while a rail to stay inside is past."""
+        increase: Percent = percent("0%")
+        """How much more to spend while a positive rail is past; 0% ignores positive rails."""
+
+    def on_breach(self, ctx: Context, breach: BreachView) -> Decision | None:
+        p = self.params
+        past: dict[str, str] = ctx.memory.setdefault("past", {})
+        key = f"{breach.rail}:{breach.margin_kind}"
+        if breach.state == "left":
+            past.pop(key, None)
+        else:
+            past[key] = breach.sense
+        start = ctx.memory.get("factor", 1.0)
+        if "negative" in past.values():
+            factor = 1 - p.cut / 1_000_000
+        elif "positive" in past.values():
+            factor = 1 + p.increase / 1_000_000
+        else:
+            factor = 1.0
+        ctx.memory["factor"] = factor
+        answer = "" if factor == start else (
+            "back to plan" if factor == 1.0 else f"now {factor:.0%} of plan")
+        return Decision([], note=f"{breach.rail} {breach.margin_kind} {breach.state}"
+                        + (f": {answer}" if answer else ""),
+                        detail={"margin": breach.margin, "years_past": breach.years_past,
+                                "factor": factor})
 
 
 @register

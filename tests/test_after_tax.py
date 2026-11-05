@@ -236,6 +236,19 @@ def test_sim_networth_is_after_tax_unless_pre_tax(report_run_file: Path) -> None
 
 
 
+@pytest.mark.parametrize("command", ["networth", "explain"])
+def test_a_file_that_is_not_a_run_is_refused_cleanly(command: str, tmp_path: Path) -> None:
+    # An ensemble batch's draws.sqlite3 sits beside its member runs (#377).
+    draws = tmp_path / "draws.sqlite3"
+    con = sqlite3.connect(draws)
+    con.execute("CREATE TABLE draw (member INTEGER)")
+    con.close()
+    result = CliRunner().invoke(main, ["sim", command, "--runfile", str(draws)])
+    assert result.exit_code != 0
+    assert "isn't a run file" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
 def _explain_year_end(run_file: Path, *extra: str) -> dict[str, tuple[str, str]]:
     """explain's year-end rows: each year's nominal and CPI-constant figure."""
     result = CliRunner().invoke(main, ["sim", "explain", str(run_file), *extra])

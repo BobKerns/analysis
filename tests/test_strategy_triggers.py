@@ -6,9 +6,9 @@ the run so far, records a ``breach_event`` and asks the strategy's
 
 ``alice_triggers`` (from the ``strategy_scenarios`` fixture) builds on
 ``alice_spending`` with a ``tight`` rail (spending above $60,000 a year in
-today's dollars, from 2027) and a ``cut_on_breach`` strategy (a data-repo
-kind) owning the ``flex:optional`` rules: after a year past the line it cuts
-them by half until a year comes back inside. The ``guardrail`` strategy
+today's dollars, from 2027) and a ``cut_on_breach`` strategy (the built-in,
+#377, with a 50% cut) owning the ``flex:optional`` rules: after a year past
+the line it cuts them by half until a year comes back inside. The ``guardrail`` strategy
 inherited from ``alice_spending`` is switched off."""
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def test_each_january_reports_last_years_margin_and_the_answer_cuts(run_strategy
     months = _query(run, (
         "SELECT s.month, d.hook, d.note FROM strategy_decision d JOIN simulation_step s "
         "ON s.id = d.step_id WHERE d.breach_event_id IS NOT NULL ORDER BY d.id"))
-    assert months[0] == ("2028-01-31", "on_breach", "tight annual entered")
+    assert months[0] == ("2028-01-31", "on_breach", "tight annual entered: now 50% of plan")
     assert len(months) == len(told)
 
 
@@ -126,6 +126,63 @@ def test_a_cumulative_trigger_watches_the_running_total(run_strategy_scenario, s
     assert told == [("cumulative",)]
 
 
+# ---------- the built-in cut_on_breach (#377) ----------
+
+def _share_of_plan(run: Path) -> dict[int, float]:
+    """Each year's delivered over budgeted spending on the owned rules."""
+    return {int(year): delivered / budgeted for year, budgeted, delivered in _query(run, (
+        "SELECT substr(s.month, 1, 4), SUM(b.budgeted_cents), SUM(b.delivered_cents) "
+        "FROM spending_baseline b JOIN simulation_step s ON s.id = b.step_id "
+        "GROUP BY 1 ORDER BY 1"))}
+
+
+def _room_rail(strategy_csv: Callable[[str, str], Path]) -> None:
+    """Add ``room``, a positive rail every year is past: spending below $1M."""
+    with strategy_csv(SCENARIO, "guard_rails.csv").open("a", newline="") as f:
+        f.write("room,spending,,,below,1000000.00,cpi_constant,positive,2027-01,,Room to spend\n")
+
+
+def test_cut_on_breach_cuts_ten_percent_by_default(run_strategy_scenario, strategy_csv) -> None:
+    _rewrite(strategy_csv(SCENARIO, RESPOND), params_json="")
+    share = _share_of_plan(run_strategy_scenario(SCENARIO))
+    assert share[2027] == 1.0  # past in 2027, answered from January 2028
+    assert share[2028] == pytest.approx(0.9, abs=1e-6)
+
+
+def test_cut_on_breach_returns_to_plan_after_a_year_back_inside(
+        run_strategy_scenario, strategy_csv) -> None:
+    _threshold(strategy_csv, "105000.00")  # 2028 is back inside (see above)
+    share = _share_of_plan(run_strategy_scenario(SCENARIO))
+    assert share[2028] == pytest.approx(0.5, abs=1e-6)
+    assert share[2029] == 1.0
+
+
+def test_cut_on_breach_spends_more_while_a_positive_rail_is_past(
+        run_strategy_scenario, strategy_csv) -> None:
+    _room_rail(strategy_csv)
+    _rewrite(strategy_csv(SCENARIO, RESPOND), trigger="room:annual",
+             params_json='{"increase": "10%"}')
+    run = run_strategy_scenario(SCENARIO)
+    assert _share_of_plan(run)[2028] == pytest.approx(1.1, abs=1e-6)
+    notes = [n for (n,) in _query(run, "SELECT note FROM strategy_decision "
+                                       "WHERE hook = 'on_breach' ORDER BY id")]
+    assert notes[0] == "room annual entered: now 110% of plan"
+
+
+def test_cut_on_breach_ignores_a_positive_rail_without_an_increase(
+        run_strategy_scenario, strategy_csv) -> None:
+    _room_rail(strategy_csv)
+    _rewrite(strategy_csv(SCENARIO, RESPOND), trigger="room:annual", params_json="")
+    assert set(_share_of_plan(run_strategy_scenario(SCENARIO)).values()) == {1.0}
+
+
+def test_cut_on_breach_a_rail_to_stay_inside_wins(run_strategy_scenario, strategy_csv) -> None:
+    _room_rail(strategy_csv)
+    _rewrite(strategy_csv(SCENARIO, RESPOND), trigger="tight:annual room:annual",
+             params_json='{"cut": "50%", "increase": "10%"}')
+    assert _share_of_plan(run_strategy_scenario(SCENARIO))[2028] == pytest.approx(0.5, abs=1e-6)
+
+
 MOVER = '''
 from analysis.sim.strategy_api import Decision, LotRef, Strategy, Transfer, register
 
@@ -146,7 +203,7 @@ class Mover(Strategy):
 
 def test_on_breach_may_move_money(run_strategy_scenario, strategy_csv, strategy_module) -> None:
     strategy_module("mover", MOVER)
-    _rewrite(strategy_csv(SCENARIO, RESPOND), kind="mover", rules="")
+    _rewrite(strategy_csv(SCENARIO, RESPOND), kind="mover", rules="", params_json="")
     run = run_strategy_scenario(SCENARIO)
     legs = _query(run, (
         "SELECT t.date, t.amount FROM transfer_event t JOIN strategy_decision d "
@@ -200,7 +257,7 @@ class Sweep(Strategy):
 def test_a_month_start_sweep_reads_history_and_rail(
         run_strategy_scenario, strategy_csv, strategy_module) -> None:
     strategy_module("sweep", SWEEP)
-    _rewrite(strategy_csv(SCENARIO, RESPOND), kind="sweep", rules="")
+    _rewrite(strategy_csv(SCENARIO, RESPOND), kind="sweep", rules="", params_json="")
     run = run_strategy_scenario(SCENARIO)
     sweeps = _query(run, (
         "SELECT s.month, d.chosen_cents, json_extract(d.detail_json, '$.history') "
@@ -297,10 +354,10 @@ def test_strategy_edit_sets_and_clears_a_trigger(strategy_scenarios, strategy_cs
 
 def test_strategy_add_asks_a_breach_kind_for_its_trigger(strategy_scenarios, strategy_csv) -> None:
     strategy_csv(SCENARIO, RESPOND).unlink()
-    # kind, rule tag, trigger, then the cut (its default)
+    # kind, rule tag, trigger, then the cut and the increase (their defaults)
     result = CliRunner().invoke(
         main, ["sim", "strategy", "add", "again", "--scenario", SCENARIO, "--data-dir", str(strategy_scenarios)],
-        input="cut_on_breach\nflex:optional\ntight:cumulative\n\n")
+        input="cut_on_breach\nflex:optional\ntight:cumulative\n\n\n")
     assert result.exit_code == 0, result.output
     assert "guard rails: budget, four_percent, gk_lower, gk_upper, tight" in result.output
     with strategy_csv(SCENARIO, "strategies/again.csv").open(newline="") as f:
