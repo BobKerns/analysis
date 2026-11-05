@@ -2956,6 +2956,8 @@ class _TaxEstimate:
     hsa_growth: int = 0
     """A state that taxes an HSA (#490): the year's HSA growth it counts as
     long-term gain, which is no sale."""
+    local_tax: int = 0
+    """A state rule's local income tax (#487), part of ``tax_liability``."""
 
 
 def _year_tax_estimate(
@@ -3207,6 +3209,14 @@ def _year_tax_estimate(
             aux, registries.STATE_SURCHARGE, bracket_series, tax_year, growth_cache)
         if r.get("filing_status") == filing_status
     ) if scope == "state" and bracket_series is not None else []
+    # A local income tax (#487) is bands on the state's taxable income too,
+    # but its own, reported apart from the state's.
+    local = sorted(
+        (int(r["floor"]), int(r["marginal_rate_micros"]))
+        for r in _indexed_tax_rows(
+            aux, registries.STATE_LOCAL_TAX, bracket_series, tax_year, growth_cache)
+        if r.get("filing_status") == filing_status
+    ) if scope == "state" and bracket_series is not None else []
 
     def taxable_ss_for(extra_ordinary: int, extra_gain: int) -> int:
         """Taxable Social Security with more ordinary income and long-term
@@ -3230,7 +3240,7 @@ def _year_tax_estimate(
     def tax_on(taxable: int, ltcg: int, stcg: int) -> int:
         """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term
         gain and up to ``stcg`` more of it short-term gain."""
-        extra = _progressive_tax_cents(taxable, surcharge)
+        extra = _progressive_tax_cents(taxable, surcharge) + _progressive_tax_cents(taxable, local)
         # Long-term gains sit on top of ordinary taxable income and are taxed at
         # the preferential rates for the band each part lands in; a state's
         # short-term gain rates (#485) take the slice just below them. A gain
@@ -3303,6 +3313,7 @@ def _year_tax_estimate(
         tax_with=tax_with, taxable_with=taxable_with, agi_with=agi_with,
         retirement_exclusion=excluded,
         hsa_withdrawn=hsa_withdrawn, hsa_growth=hsa_growth.get(tax_year, 0),
+        local_tax=_progressive_tax_cents(taxable_income, local),
     )
 
 
@@ -3730,7 +3741,8 @@ def _apply_tax_accumulator(
         f"{scope}_ss_income": ss_income,
         f"{scope}_taxable_ss": taxable_ss,
         f"{scope}_adjusted_gross_income": ordinary_income + ltcg_income + taxable_ss,
-        **({f"{scope}_retirement_exclusion": est.retirement_exclusion}
+        **({f"{scope}_retirement_exclusion": est.retirement_exclusion,
+            f"{scope}_local_tax": est.local_tax}
            if scope == "state" else {}),
         f"{scope}_standard_deduction": standard_deduction,
         f"{scope}_itemized_deduction": itemized_deduction,
@@ -5066,10 +5078,11 @@ def _swap_aux_table(
         # A move to another state takes its other tables too: its standard
         # deduction (#248), gain rules (#485), Social Security table (#484),
         # retirement income exclusions (#486), surcharge and HSA treatment
-        # (#490). Where the new state has none, the old state's go: the
-        # deduction falls back to the federal one, gains are ordinary income,
-        # Social Security is untaxed, nothing is excluded, there's no
-        # surcharge, and the HSA follows the federal rules.
+        # (#490) and local income tax (#487). Where the new state has none,
+        # the old state's go: the deduction falls back to the federal one,
+        # gains are ordinary income, Social Security is untaxed, nothing is
+        # excluded, there's no surcharge or local tax, and the HSA follows
+        # the federal rules.
         for companion in registries.STATE_COMPANION_KINDS:
             if companion in _OPTIONAL_STATE_AUX_KINDS:
                 _move_optional_state_table(con, ev_id, ev_date, companion, series,
@@ -5085,9 +5098,11 @@ def _swap_aux_table(
                             (companion, series))
 
 
-_OPTIONAL_STATE_AUX_KINDS = frozenset({registries.STATE_SURCHARGE, registries.STATE_HSA})
-"""A state's tables (#490) that a state may lack, or may start only after a
-move: then it has no surcharge, and its HSA follows the federal rules."""
+_OPTIONAL_STATE_AUX_KINDS = frozenset(
+    {registries.STATE_SURCHARGE, registries.STATE_HSA, registries.STATE_LOCAL_TAX})
+"""A state's tables (#490, #487) that a state may lack, or may start only
+after a move: then it has no surcharge or local tax, and its HSA follows the
+federal rules."""
 
 
 def _move_optional_state_table(
@@ -5109,7 +5124,8 @@ def _move_optional_state_table(
         if kind == registries.STATE_HSA:
             in_force = [(ev_date, {"treatment": "federal"})]
         else:
-            # No surcharge: a 0% band for each filing status the old one had.
+            # No surcharge or local tax: a 0% band for each filing status
+            # the old one had.
             statuses = sorted({str(row[1].get("filing_status")) for row in kept})
             in_force = [(ev_date, {"filing_status": status, "bracket_index": 0, "floor": 0,
                                    "marginal_rate_micros": 0, "floor_series": None})

@@ -541,7 +541,9 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     are no adjustments such as half of self-employment tax; state AGI leaves
     out Social Security and, in ``state_exclusion`` (shown only when some
     year has one), the state's retirement income exclusions (#486). The
-    state columns appear only when the run computes state tax. A run that charges IRMAA (#253) adds ``fed_magi`` and
+    state columns appear only when the run computes state tax. A local
+    income tax (#487), paid with the state's, is ``local_tax``, shown only
+    when some year has one; ``state_tax`` then leaves it out. A run that charges IRMAA (#253) adds ``fed_magi`` and
     ``irmaa_tier``, the tier that year's MAGI set for the premiums two years
     later (0 below the first), blank for a year whose premiums the run ends
     before charging. ``effective_rate`` is total tax over federal AGI. Liability
@@ -559,9 +561,15 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
         if excluded.fillna(0).ne(0).any().any():
             frame.insert(frame.columns.get_loc("state_agi"), "state_exclusion",
                          excluded["state_retirement_exclusion"])
+        # A local income tax (#487) is paid with the state's, but shown
+        # apart from it, only when some year has one.
+        local = _tax_buckets(rc, ["state_local_tax"]).reindex(frame.index)["state_local_tax"]
+        if local.fillna(0).ne(0).any():
+            frame["state_tax"] -= local.fillna(0)
+            frame.insert(frame.columns.get_loc("state_tax") + 1, "local_tax", local)
     # A scenario may compute federal tax and not state tax: a blank is "not
     # computed", so the total is blank only when neither is.
-    taxes = [c for c in ("fed_tax", "state_tax") if c in frame.columns]
+    taxes = [c for c in ("fed_tax", "state_tax", "local_tax") if c in frame.columns]
     frame["total_tax"] = frame[taxes].sum(axis=1, min_count=1)
     # A business (#231) adds its federal Schedule C result, the expenses a
     # hobby couldn't deduct, and the loss carried forward: each only when

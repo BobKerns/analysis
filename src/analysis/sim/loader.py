@@ -2885,12 +2885,14 @@ FILING_STATUS_RULE_KINDS = frozenset({"tax_accumulator", "irmaa"})
 def _validate_state_hsa(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
 ) -> None:
-    """A ``state_surcharge`` or ``state_hsa`` table (#490) is keyed by state
-    like the brackets it goes with, since one without a state is never read,
-    and a ``state_hsa`` row's treatment is one the engine knows."""
+    """A ``state_surcharge``, ``state_local_tax`` (#487) or ``state_hsa``
+    table (#490) is keyed by state like the brackets it goes with, since one
+    without a state is never read, and a ``state_hsa`` row's treatment is one
+    the engine knows."""
     nameless: set[str] = set()
     for kind, state, payload, effective in aux_rows:
-        if kind not in (registries.STATE_SURCHARGE, registries.STATE_HSA):
+        if kind not in (registries.STATE_SURCHARGE, registries.STATE_LOCAL_TAX,
+                        registries.STATE_HSA):
             continue
         file = f"aux/{kind}__{state}.csv" if state is not None else f"aux/{kind}.csv"
         if not state:

@@ -539,8 +539,8 @@ def tax_summary(
     tax: Mapping[str, pd.DataFrame], ss: pd.DataFrame, nw: pd.DataFrame, baseline: str,
 ) -> pd.DataFrame:
     """Per scenario over the whole run, what a plan costs in tax and what it
-    buys: lifetime ``fed_tax`` and ``state_tax`` (state only when a run
-    computes it), ``total_tax`` and ``Δ tax`` (less the baseline's), lifetime
+    buys: lifetime ``fed_tax``, ``state_tax`` and ``local_tax`` (state and
+    local only when a run computes them, #487), ``total_tax`` and ``Δ tax`` (less the baseline's), lifetime
     ``gross_ss`` and ``Δ ss``, then ``Δ ss net of tax`` (Δ ss less Δ tax),
     and ``final_net_worth``, ``nw``'s last month each run has."""
     def lifetime(column: str) -> pd.Series:
@@ -549,8 +549,9 @@ def tax_summary(
     total = _total_tax(tax).sum()
     gross_ss = ss.sum(min_count=1)
     columns: dict[str, pd.Series] = {"fed_tax": lifetime("fed_tax")}
-    if any("state_tax" in t for t in tax.values()):
-        columns["state_tax"] = lifetime("state_tax")
+    for column in ("state_tax", "local_tax"):
+        if any(column in t for t in tax.values()):
+            columns[column] = lifetime(column)
     columns |= {
         "total_tax": total,
         "Δ tax": total - total[baseline],
