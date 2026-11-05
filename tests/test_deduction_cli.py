@@ -392,3 +392,22 @@ def test_a_nearer_itemization_made_during_the_prompts_aborts(
 
     assert result.exit_code != 0
     assert "changed while this was being edited" in result.output
+
+
+def test_the_shared_money_formatter_keeps_its_columns() -> None:
+    # sim deduction once redefined it, changing other commands' tables.
+    assert cli._fmt_cents(None) == "-"
+    assert cli._fmt_cents(800000) == f" ${'8,000':>14}.00"
+
+
+def test_a_reference_in_an_overridden_itemization_is_ignored(test_data_dir: Path) -> None:
+    _itemization(test_data_dir, "medical", "@deductions_2028")
+    assert CliRunner().invoke(main, ["sim", "scenario", "create", "child", "retire_alice",
+                                     "--data-dir", str(test_data_dir)]).exit_code == 0
+    own = test_data_dir / "scenarios" / "child" / "itemizations" / "medical.csv"
+    own.parent.mkdir(parents=True, exist_ok=True)
+    own.write_text("Item,Value\nx,10.00\n", encoding="utf-8")
+
+    result = _sim(test_data_dir, "child", "add", "2028", "--item", "a=1")
+
+    assert result.exit_code == 0, result.output

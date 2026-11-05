@@ -16315,14 +16315,6 @@ _STATE_OPTION = click.option(
 )
 
 
-def _fmt_cents(cents: int | None) -> str:
-    if cents is None:
-        return "error"
-    sign = "-" if cents < 0 else ""
-    dollars, rem = divmod(abs(cents), 100)
-    return f"{sign}${dollars:,}.{rem:02d}"
-
-
 def _check_deduction_year(text: str) -> int:
     text = str(text).strip()
     if not (len(text) == 4 and text.isdigit()):
@@ -16387,10 +16379,13 @@ def _other_references(
     in the file in force. A deduction file of the same kind that file
     shadows doesn't count: this scenario never reads it."""
     own_lines = deductions.year_lines(target.found.path, year)
+    # An itemization another of that name overrides is never read either.
+    read = {i.path for i in setup_listings.itemizations(data_dir, scenario_dir)}
     return [ref for ref in setup_listings.itemization_references(data_dir, scenario_dir).get(name, [])
             if not (ref.path == target.found.path and ref.line in own_lines)
             and not (ref.path.name == f"{target.kind}.csv" and ref.path.parent.name == "aux"
-                     and ref.path != target.found.path)]
+                     and ref.path != target.found.path)
+            and not (ref.path.parent.name == "itemizations" and ref.path not in read)]
 
 
 def _deduction_items_name(
@@ -16543,7 +16538,7 @@ def deduction_list(state: bool, scenario: str | None, data_dir: Path | None) -> 
     for column, justify in (("Year", "left"), ("Amount", "left"), ("Total", "right")):
         table.add_column(column, justify=justify)
     for item in listed:
-        table.add_row(str(item.year), escape(item.amount), escape(_fmt_cents(item.total_cents)))
+        table.add_row(str(item.year), escape(item.amount), escape(_compact_cents(item.total_cents)))
     _print_wide(table)
     if found.path is not None:
         click.echo(f"from {_shown(found.path)} ({found.defined_in})")
@@ -16606,7 +16601,7 @@ def deduction_add(
     _write_deduction(data_dir_p, scenario_name, scenario_dir, target, rows, written)
     _, after = deductions.listing(data_dir_p, scenario_dir, target.kind)
     total = next((d.total_cents for d in after if d.year == year_n), None)
-    click.echo(f"added {year_n}'s itemized deductions, {cell} ({_fmt_cents(total)}), "
+    click.echo(f"added {year_n}'s itemized deductions, {cell} ({_compact_cents(total)}), "
                f"to {_shown(target.own)}{_deduction_origin(target)}")
 
 
@@ -16686,7 +16681,7 @@ def deduction_edit(
     _, after = deductions.listing(data_dir_p, scenario_dir, target.kind)
     total = next((d.total_cents for d in after if d.year == year_n), None)
     gone = f" (itemizations/{dropped}.csv removed)" if dropped else ""
-    click.echo(f"{year_n}'s itemized deductions are now {cell} ({_fmt_cents(total)}), "
+    click.echo(f"{year_n}'s itemized deductions are now {cell} ({_compact_cents(total)}), "
                f"in {_shown(target.own)}{gone}{_deduction_origin(target)}")
 
 
