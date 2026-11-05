@@ -3076,14 +3076,15 @@ def _year_tax_estimate(
         else _RetirementExclusion()
     )
 
-    def net_income(extra_ordinary: int, extra_gain: int) -> tuple[int, int]:
-        """Ordinary income and the income taxed with long-term gain, with
-        more of each on top, less the retirement exclusions."""
+    def net_income(extra_ordinary: int, extra_gain: int) -> tuple[int, int, int]:
+        """Ordinary income, the income taxed with long-term gain, and the
+        net short-term gain within the ordinary income, with more ordinary
+        income and long-term gain on top, less the retirement exclusions."""
         ordinary, ltcg = gross_ordinary + extra_ordinary, taxed_ltcg(extra_gain)
-        off_ordinary, off_ltcg = exclusion.excluded(ordinary, ltcg)
-        return ordinary - off_ordinary, ltcg - off_ltcg
+        off_ordinary, off_ltcg, off_short = exclusion.split(ordinary, ltcg)
+        return ordinary - off_ordinary, ltcg - off_ltcg, capital.stcg - off_short
 
-    ordinary_income, ltcg_income = net_income(0, 0)
+    ordinary_income, ltcg_income, stcg_income = net_income(0, 0)
     excluded = gross_ordinary + taxed_ltcg(0) - ordinary_income - ltcg_income
 
     ss_tiers: tuple[int, int] | None = None
@@ -3161,8 +3162,9 @@ def _year_tax_estimate(
     def band_tax(low: int, high: int, table: list[tuple[int, int]]) -> int:
         return _progressive_tax_cents(high, table) - _progressive_tax_cents(low, table)
 
-    def tax_on(taxable: int, ltcg: int) -> int:
-        """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term gain."""
+    def tax_on(taxable: int, ltcg: int, stcg: int) -> int:
+        """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term
+        gain and up to ``stcg`` more of it short-term gain."""
         # Long-term gains sit on top of ordinary taxable income and are taxed at
         # the preferential rates for the band each part lands in; a state's
         # short-term gain rates (#485) take the slice just below them. A gain
@@ -3171,7 +3173,7 @@ def _year_tax_estimate(
             return _progressive_tax_cents(taxable, brackets)
         gain_taxable = min(max(0, ltcg), taxable)
         below_gain = taxable - gain_taxable
-        short_taxable = min(capital.stcg, below_gain) if stcg_brackets else 0
+        short_taxable = min(stcg, below_gain) if stcg_brackets else 0
         ordinary_taxable = below_gain - short_taxable
         tax = _progressive_tax_cents(ordinary_taxable, brackets)
         if short_taxable > 0:
@@ -3200,28 +3202,28 @@ def _year_tax_estimate(
     nonbusiness_income = (other_ordinary + capital.stcg + taxed_ltcg(0)
                           + qualified_dividends - gain_dividends + taxable_ss - excluded)
     nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
-    tax_liability = tax_on(taxable_income, ltcg_income)
+    tax_liability = tax_on(taxable_income, ltcg_income, stcg_income)
 
     def taxable_with(extra_ordinary: int, extra_ltcg: int) -> tuple[int, int]:
         """This year's taxable income, and its ordinary part, with more
         ordinary income and long-term gain on top. More income can use more
         of a carried-in NOL under its limit, so that is worked out again."""
-        ordinary, ltcg = net_income(extra_ordinary, extra_ltcg)
+        ordinary, ltcg, stcg = net_income(extra_ordinary, extra_ltcg)
         before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
         used = min(nol_in, max(0, before_nol) * nol_limit_percent // 100)
         taxable = max(0, before_nol - used)
         below_gain = taxable - min(ltcg, taxable)
         # A state's separately taxed short-term gain (#485) isn't ordinary.
-        short = min(capital.stcg, below_gain) if stcg_brackets else 0
+        short = min(stcg, below_gain) if stcg_brackets else 0
         return taxable, below_gain - short
 
     def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
         """This year's tax with more ordinary income and long-term gain on top."""
-        ltcg = net_income(extra_ordinary, extra_ltcg)[1]
-        return tax_on(taxable_with(extra_ordinary, extra_ltcg)[0], ltcg)
+        _, ltcg, stcg = net_income(extra_ordinary, extra_ltcg)
+        return tax_on(taxable_with(extra_ordinary, extra_ltcg)[0], ltcg, stcg)
 
     def agi_with(extra_ordinary: int, extra_ltcg: int) -> int:
-        ordinary, ltcg = net_income(extra_ordinary, extra_ltcg)
+        ordinary, ltcg, _ = net_income(extra_ordinary, extra_ltcg)
         return ordinary + ltcg + taxable_ss_for(ordinary, ltcg)
 
     return _TaxEstimate(
@@ -3268,14 +3270,20 @@ class _RetirementExclusion(NamedTuple):
 
     def excluded(self, ordinary: int, ltcg: int) -> tuple[int, int]:
         """How much of ``ordinary`` income and ``ltcg`` the exclusions take
+        off (``split``, without its short-term part)."""
+        return self.split(ordinary, ltcg)[:2]
+
+    def split(self, ordinary: int, ltcg: int) -> tuple[int, int, int]:
+        """How much of ``ordinary`` income and ``ltcg`` the exclusions take
         off, with household income ``ordinary + ltcg`` for their income
-        tests. A grant uses up only the income it actually leaves out, so a
-        later one can cover what an earlier one's test denied. Gain beyond
+        tests, and how much of the ordinary part is short-term gain. A grant
+        uses up only the income it actually leaves out, so a later one can
+        cover what an earlier one's test denied. Gain beyond
         the net capital gain (a loss offset it) isn't left out at all; the
         rest comes off the long-term gain first, and never more than there
         is."""
         if not self.grants:
-            return 0, 0
+            return 0, 0, 0
         income = ordinary + ltcg
         pools = {person: dict(by_kind) for person, by_kind in self.pools.items()}
         total = gains = 0
@@ -3298,7 +3306,10 @@ class _RetirementExclusion(NamedTuple):
                 gains += take if kind == "capital_gain" else 0
         total = min(total, max(0, income))
         off_ordinary = min(total - min(gains, max(0, ltcg)), max(0, ordinary))
-        return off_ordinary, min(total - off_ordinary, max(0, ltcg))
+        off_ltcg = min(total - off_ordinary, max(0, ltcg))
+        # Gain left out past the long-term gain is short-term gain, which is
+        # part of ordinary income: a state's short-term rates (#485) skip it.
+        return off_ordinary, off_ltcg, min(max(0, gains - off_ltcg), off_ordinary)
 
 
 _EXCLUSION_POOL_BY_CHARACTER: dict[str, tuple[str, int]] = {

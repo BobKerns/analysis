@@ -342,3 +342,13 @@ def test_a_secondary_persons_income_is_theirs(state_ira: Path, tmp_path: Path) -
         assert _bucket(con, 2026, "state_retirement_exclusion") == 20_000_00
     finally:
         con.close()
+
+
+def test_an_excluded_short_term_gain_leaves_the_short_term_rates() -> None:
+    """Gain left out past the long-term gain is short-term gain, so a
+    state's short-term rates (#485) don't reach the wages left behind."""
+    exclusion = _RetirementExclusion(
+        _pools(capital_gain=20_000), (_grant("capital_gain"),), net_gain=20_000)
+    assert exclusion.split(120_000, 0) == (20_000, 0, 20_000)
+    # Long-term gain goes first; only the rest is short-term.
+    assert exclusion.split(115_000, 5_000) == (15_000, 5_000, 15_000)
