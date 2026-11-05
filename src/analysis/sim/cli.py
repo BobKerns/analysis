@@ -14107,13 +14107,17 @@ def _pick_series(
         kinds = f"{kind} " if kind else ""
         raise click.ClickException(f"no {kinds}series {name!r} in {scenario} (see `sim series list`)")
     if len(matches) == 1:
-        return matches[0]
-    if not _interactive():
+        chosen = matches[0]
+    elif not _interactive():
         raise click.ClickException(
             f"{scenario} has both a rate and an inflation series {name!r}; say which with --kind")
-    picked = _ask_choice(f"which {name!r}? (rate/inflation)",
-                         {series.kind: _SERIES_KIND_MEANINGS[series.kind] for series in matches})
-    return next(series for series in matches if series.kind == picked)
+    else:
+        picked = _ask_choice(f"which {name!r}? (rate/inflation)",
+                             {series.kind: _SERIES_KIND_MEANINGS[series.kind] for series in matches})
+        chosen = next(series for series in matches if series.kind == picked)
+    # Read again after the prompts, so the rows a caller edits are the ones
+    # on disk when it snapshots the files' bytes.
+    return series_files.scenario_series(data, scenario).get((chosen.kind, chosen.name), chosen)
 
 
 def _own_series_path(ref_path: Path, file: series_files.SeriesFile) -> Path:
@@ -14181,12 +14185,16 @@ def series_list(kind: str | None, show_all: bool, scenario: str | None, data_dir
                             ("File", "left"), ("Defined in", "left"), ("Overrides", "left")):
         table.add_column(column, justify=justify)
     for series in listed:
-        file = series.read
-        below = series.below if series.own else None
+        # Every folder's file with rates, since the loader reads them all;
+        # an empty series names the file that empties it.
+        parts = [part for part in series.parts if not part.read.empty] or [series]
+        belows = [part.below for part in parts if part.own and part.below is not None]
         table.add_row(
-            escape(series.name), series.kind, "empty" if series.empty else str(len(file.rows)),
-            escape(_rate_at(series.rows, start)), escape(f"{file.folder}/{file.filename}"),
-            escape(file.defined_in), escape(below.defined_in if below else ""),
+            escape(series.name), series.kind, "empty" if series.empty else str(len(series.rows)),
+            escape(_rate_at(series.rows, start)),
+            escape(", ".join(f"{part.read.folder}/{part.read.filename}" for part in parts)),
+            escape(", ".join(dict.fromkeys(part.read.defined_in for part in parts))),
+            escape(", ".join(dict.fromkeys(below.defined_in for below in belows))),
         )
     _print_wide(table)
 

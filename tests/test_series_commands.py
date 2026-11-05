@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner, Result
@@ -436,3 +437,33 @@ def test_a_first_month_swap_from_a_series_set_that_month_gives_the_start_rate(
     append_calendar_row(date="2026-05-31", kind="swap_aux_table", series="late",
                         params_json='{"aux_kind": "inflation", "source_series": "later"}')
     assert _loads(test_data_dir, intent_dir, "retire_alice") == []
+
+
+def test_list_counts_and_names_every_folders_file_with_rates(
+    sim: Callable[..., Result], test_scenarios_dir: Path, series_dir: Path,
+) -> None:
+    (series_dir / "rate__spare.csv").write_text(_HEADER)
+    aux = test_scenarios_dir / "retire_alice" / "aux"
+    aux.mkdir()
+    (aux / "rate__spare.csv").write_text(_HEADER + "2026-01-31,1%\n2030-01-31,2%\n")
+    line = next(line for line in sim("series", "list").output.splitlines() if " spare " in line)
+    assert " 2 " in line and "aux/rate__spare.csv" in line and "series/rate__spare.csv" not in line, line
+
+
+def test_edit_uses_the_rows_on_disk_after_asking_for_the_name(
+    sim: Callable[..., Result], series_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import cli as sim_cli
+
+    path = series_dir / "rate__spare.csv"
+    path.write_text(_HEADER + "2026-01-31,1%\n2030-01-31,2%\n")
+    ask = sim_cli._ask_name
+
+    def ask_after_a_change(*args: Any, **kwargs: Any) -> str:
+        path.write_text(_HEADER + "2026-01-31,1%\n2030-01-31,2%\n2035-01-31,3%\n")
+        return ask(*args, **kwargs)
+
+    monkeypatch.setattr(sim_cli, "_ask_name", ask_after_a_change)
+    result = sim("series", "edit", "--remove", "2030-01", input="spare\n")
+    assert result.exit_code == 0, result.output
+    assert path.read_text() == _HEADER + "2026-01-31,1%\n2035-01-31,3%\n"
