@@ -428,7 +428,12 @@ tax year, by looking back over everything that happened that year (the
   Security unless your state taxes it: then add
   `state_social_security__XX.csv`, which starts from the federally taxable
   amount and leaves out an exclusion that phases out with income. The
-  `aux/` README describes them all.
+  `aux/` README describes them all. Two more tables, also named for the
+  state, are optional: `state_surcharge__CA.csv` adds California's 1% on
+  taxable income over $1 million, and `state_hsa__CA.csv` says California
+  doesn't recognize health savings accounts, so its tax doesn't deduct what
+  goes into an HSA, taxes the account's growth each year (a fall is a
+  capital loss), and leaves what comes out alone.
 - **State retirement income exclusions**: most states leave some pension,
   IRA and 401(k) income out, often from an age, up to an amount per person,
   and sometimes only below a household income. Add your state's rules as
@@ -902,8 +907,10 @@ date,kind,series,params_json
 From July 2031 on, everything that read the `CA` brackets reads the `WA`
 ones instead, including their later dated changes. With two states'
 brackets in `aux/`, the state `tax_accumulator` rule must say which it reads:
-`"bracket_series": "CA"` in its `params_json`. Do the same for
-`state_deductions` if you use it. Any aux table works the same way: a new
+`"bracket_series": "CA"` in its `params_json`. The state's standard
+deduction, surcharge and HSA tables move with its brackets by themselves:
+the new state's if it has them, otherwise none (the federal standard
+deduction stands in). Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new
 federal bracket table on the date a law takes effect, or another inflation
 series.
 

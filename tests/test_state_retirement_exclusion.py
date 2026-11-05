@@ -14,6 +14,7 @@ import pytest
 
 from analysis.sim.engine import (
     _ExclusionGrant,
+    _person_income,
     _RetirementExclusion,
     _taxable_social_security_cents,
     run_scenario,
@@ -405,3 +406,26 @@ def test_state_taxable_social_security_reads_income_before_the_exclusion(
         assert _bucket(con, year, "state_taxable_ss") == expected
     finally:
         con.close()
+
+
+def test_hsa_flows_are_not_retirement_income(ledger_con: sqlite3.Connection) -> None:
+    """An HSA withdrawal is ``other`` income, not a retirement account's;
+    where the state taxes the HSA like a brokerage account (#490) it left
+    the HSA's flows out of income, so they aren't income to exclude."""
+    ledger_con.executemany(
+        "INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)",
+        [(1, "Asset_Checking", "asset", "cash"), (2, "Asset_HSA", "asset", "hsa"),
+         (3, "Expense_Medical", "expense", "healthcare"),
+         (4, "Asset_TraditionalIRA", "asset", "retirement")])
+    for frm, to, amount, character in ((1, 2, 8_000_00, "tax_deferred_in"),
+                                       (2, 3, 12_000_00, "tax_deferred_out"),
+                                       (4, 1, 5_000_00, "tax_deferred_out")):
+        ledger_con.execute(
+            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
+            "VALUES (1, '2026-06-30', ?, ?, ?, ?, ?, ?, 0, ?, 'rule')",
+            (frm, to, frm, to, amount, amount, character))
+    pools, _ = _person_income(ledger_con, 2026, ["alice"])
+    assert (pools["alice"]["retirement_account"], pools["alice"]["other"]) == (5_000_00, 4_000_00)
+    pools, _ = _person_income(ledger_con, 2026, ["alice"], hsa_taxed=True)
+    assert (pools["alice"]["retirement_account"], pools["alice"]["other"]) == (5_000_00, 0)

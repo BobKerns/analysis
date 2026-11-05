@@ -51,8 +51,11 @@ tables say how: a share of long-term gain excluded, and gain rates of its own
 ([the `aux/` README](./templates/aux/README.md#a-states-capital-gains)).
 Social Security is left out unless `state_social_security__XX.csv` says how
 the state taxes it: the federally taxable amount less an exclusion that can
-phase out with income. A state's retirement income exclusions, by age, kind
-of income and household income, go in another optional table,
+phase out with income. Two more are optional: `state_surcharge__XX.csv`, a
+surtax on high income (California's 1% over $1 million, Massachusetts's 4%),
+and `state_hsa__XX.csv`, for a state that taxes health savings accounts
+(California). A state's retirement income exclusions, by age, kind of income
+and household income, go in another optional table,
 `state_retirement_exclusion__XX.csv`; a "Partial" row below whose gap is such
 an exclusion needs that table written. Many states have rules this leaves
 out; the table says which matter most for a retired household. It reflects
@@ -74,7 +77,7 @@ state's own revenue department before relying on a figure.
 | Alaska | No tax | |
 | Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
 | Arkansas | Partial | Retirement income exclusion |
-| California | Shipped | Personal exemption credits; 1% surcharge over $1 million; tax on HSA growth |
+| California | Shipped | Personal exemption credits |
 | Colorado | Partial | Pension and annuity subtraction; Social Security taxed below 65 |
 | Connecticut | Partial | Social Security's 25% cap above the income limit; pension and IRA exemptions phased by income; exemption phase-outs |
 | Delaware | Partial | Pension exclusion |
