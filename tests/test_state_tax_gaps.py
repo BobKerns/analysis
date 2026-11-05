@@ -101,6 +101,10 @@ def test_a_state_that_taxes_an_hsa_undoes_its_deduction_and_taxes_its_growth(
     # the growth is income.
     state = _estimate(ledger, _aux(hsa="taxable"), "state")
     assert (state.ordinary_income, state.ltcg_income) == (100_000_00, 1_000_00)
+    # The after-tax drawdown prices its shares on top of the year's other
+    # income: the HSA's withdrawal and growth aren't what the shares replace.
+    assert (state.hsa_withdrawn, state.hsa_growth) == (2_000_00, 1_000_00)
+    assert (federal.hsa_withdrawn, federal.hsa_growth) == (0, 0)
 
 
 def test_an_hsa_that_falls_is_a_capital_loss_for_the_state(ledger: sqlite3.Connection) -> None:

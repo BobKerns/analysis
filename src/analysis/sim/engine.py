@@ -2947,6 +2947,12 @@ class _TaxEstimate:
     agi_with: Callable[[int, int], int]
     """The year's AGI (and so IRMAA's MAGI, #253) with more ordinary income
     and long-term gain on top."""
+    hsa_withdrawn: int = 0
+    """A state that taxes an HSA (#490): the year's HSA withdrawals, which
+    it leaves out of income though they are ``tax_deferred_out``."""
+    hsa_growth: int = 0
+    """A state that taxes an HSA (#490): the year's HSA growth it counts as
+    long-term gain, which is no sale."""
 
 
 def _year_tax_estimate(
@@ -3026,6 +3032,7 @@ def _year_tax_estimate(
     other_ordinary, ss_income, qualified_dividends = _tax_year_income_buckets(con, tax_year=tax_year)
     business = _business_result(con, tax_year=tax_year)
     hsa_growth: dict[int, int] = {}
+    hsa_withdrawn = 0
     if scope == "state" and bracket_series is not None:
         # A state that doesn't recognize an HSA (#490) taxes it like a
         # brokerage account: no deduction going in, its growth each year,
@@ -3036,7 +3043,8 @@ def _year_tax_estimate(
         ]
         hsa_growth = _hsa_growth_by_year(con, taxed_years)
         if tax_year in taxed_years:
-            other_ordinary -= _hsa_deferred_flows(con, tax_year)
+            contributed, hsa_withdrawn = _hsa_deferred_flows(con, tax_year)
+            other_ordinary += contributed - hsa_withdrawn
     capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit, extra_ltcg=hsa_growth)
     # A Schedule C loss offsets the year's other income (#231).
     ordinary_income = other_ordinary + business.net + capital.stcg - capital.loss_deduction
@@ -3231,6 +3239,7 @@ def _year_tax_estimate(
         deduction=deduction, nol_in=nol_in, nol_used=nol_used, nol_new=nol_new,
         taxable_income=taxable_income, tax_liability=tax_liability,
         tax_with=tax_with, taxable_with=taxable_with, agi_with=agi_with,
+        hsa_withdrawn=hsa_withdrawn, hsa_growth=hsa_growth.get(tax_year, 0),
     )
 
 
@@ -3339,8 +3348,10 @@ def _apply_tax_accumulator(
             "WHERE tax_character = 'tax_deferred_out' "
             "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ?",
             (tax_year,),
-        ).fetchone()[0])
-        realized = max(0, est.capital.ltcg)
+        ).fetchone()[0]) - est.hsa_withdrawn
+        # A state that taxes an HSA counts its growth as gain (#490), but
+        # nothing was sold: the drawdown's gains are other money.
+        realized = max(0, est.capital.ltcg - max(0, est.hsa_growth))
         drawdown_pricing[(scope, tax_year)] = (
             lambda ordinary, gains, tax_with=est.tax_with, drawn=drawn, realized=realized:
             tax_with(ordinary - drawn, gains - realized))
@@ -4001,14 +4012,13 @@ def _hsa_growth_by_year(con, years: Collection[int]) -> dict[int, int]:
     )}
 
 
-def _hsa_deferred_flows(con, tax_year: int) -> int:
-    """``tax_year``'s ordinary income the federal rules leave out or take in
-    for an HSA, which a state that taxes one undoes: contributions
-    (``tax_deferred_in``) deducted, less withdrawals (``tax_deferred_out``)
-    taxed."""
+def _hsa_deferred_flows(con, tax_year: int) -> tuple[int, int]:
+    """``tax_year``'s HSA contributions (``tax_deferred_in``), which the
+    federal rules deduct, and withdrawals (``tax_deferred_out``), which they
+    tax: a state that taxes an HSA undoes both."""
     row = con.execute(
-        "SELECT COALESCE(SUM(CASE WHEN te.tax_character = 'tax_deferred_out' THEN te.amount "
-        "ELSE -te.amount END), 0) "
+        "SELECT COALESCE(SUM(CASE WHEN te.tax_character = 'tax_deferred_in' THEN te.amount END), 0), "
+        "COALESCE(SUM(CASE WHEN te.tax_character = 'tax_deferred_out' THEN te.amount END), 0) "
         "FROM transfer_event te "
         "JOIN account fa ON fa.id = te.from_account JOIN account ta ON ta.id = te.to_account "
         "WHERE ((te.tax_character = 'tax_deferred_in' AND ta.subkind = 'hsa') "
@@ -4016,7 +4026,7 @@ def _hsa_deferred_flows(con, tax_year: int) -> int:
         f"  AND {_HSA_YEAR} = ?",
         (tax_year,),
     ).fetchone()
-    return int(row[0])
+    return int(row[0]), int(row[1])
 
 
 class BusinessResult(NamedTuple):
