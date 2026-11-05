@@ -392,8 +392,11 @@ tax year, by looking back over everything that happened that year (the
   for the same state as the brackets). Without
   that file the federal standard deduction is used, and loading warns,
   since most states' deduction is much smaller. State taxable income
-  leaves out Social Security, and long-term gains are taxed as ordinary
-  income.
+  leaves out Social Security, and capital gains are taxed as ordinary
+  income unless the state's own tables say otherwise: a share of long-term
+  gain excluded (`state_ltcg_exclusion__XX.csv`), or gain rates of its own
+  (`state_ltcg_brackets__XX.csv`, `state_stcg_brackets__XX.csv`). The
+  `aux/` README describes them.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year.
 - **RMDs** are calculated from the account's lot balances on the previous
