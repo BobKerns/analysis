@@ -404,6 +404,25 @@ after every other rule of its month (#252)."""
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
 
+STATE_LTCG_BRACKETS = "state_ltcg_brackets"
+"""A state's own rates on long-term gain (#485), stacked on top of its
+taxable income as ``ltcg_brackets`` is federally: a lower rate (Montana), a
+rate cap (Hawaii) or a rate of its own (Massachusetts)."""
+
+STATE_STCG_BRACKETS = "state_stcg_brackets"
+"""A state's own rates on net short-term gain (#485), stacked between its
+other ordinary income and its long-term gain (Massachusetts' 8.5%)."""
+
+STATE_LTCG_EXCLUSION = "state_ltcg_exclusion"
+"""The part of a net long-term gain a state leaves out of its income (#485):
+a percent, at least ``min_exclusion`` and at most ``max_exclusion``."""
+
+STATE_COMPANION_KINDS: tuple[str, ...] = (
+    STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS, STATE_LTCG_EXCLUSION,
+)
+"""The aux kinds keyed by state like ``state_brackets``, whose series is the
+brackets' series, so a move to another state swaps them along (#248, #485)."""
+
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
 
@@ -415,6 +434,8 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     "federal_brackets": {"floor_series": "floor"},
     "state_brackets": {"floor_series": "floor"},
     "ltcg_brackets": {"floor_series": "floor"},
+    STATE_LTCG_BRACKETS: {"floor_series": "floor"},
+    STATE_STCG_BRACKETS: {"floor_series": "floor"},
     "standard_deduction": {"amount_series": "amount"},
     STATE_STANDARD_DEDUCTION: {"amount_series": "amount"},
 }
@@ -443,6 +464,18 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # gains are taxed as ordinary income.
     "ltcg_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # A state's own gain rates (#485), the same shape as ltcg_brackets and
+    # keyed by state like state_brackets. Optional: without them a state
+    # taxes its gains as ordinary income.
+    STATE_LTCG_BRACKETS:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    STATE_STCG_BRACKETS:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # The share of a net long-term gain a state excludes (#485): `exclusion`
+    # percent of it, raised to `min_exclusion` and capped at `max_exclusion`
+    # (dollars, blank for none), never more than the gain. Fixed in law, so
+    # not indexed.
+    STATE_LTCG_EXCLUSION: ("effective_date", "exclusion", "min_exclusion", "max_exclusion"),
     "standard_deduction": ("effective_date", "filing_status", "amount"),
     # The state's own standard deduction (#248), which is often far smaller
     # than the federal one. A state tax rule falls back to standard_deduction
@@ -517,6 +550,9 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "federal_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     "state_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     "ltcg_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_LTCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_STCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_LTCG_EXCLUSION: {"exclusion": ("exclusion_micros", "percent")},
     "rmd_factors": {"factor": ("factor_micros", "number")},
     "rate": {"annual_rate": ("annual_rate_micros", "percent")},
     "inflation": {"annual_rate": ("annual_rate_micros", "percent")},
@@ -542,6 +578,9 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "federal_brackets": frozenset({"floor"}),
     "ltcg_brackets": frozenset({"floor"}),
     "state_brackets": frozenset({"floor"}),
+    STATE_LTCG_BRACKETS: frozenset({"floor"}),
+    STATE_STCG_BRACKETS: frozenset({"floor"}),
+    STATE_LTCG_EXCLUSION: frozenset({"min_exclusion", "max_exclusion"}),
     "standard_deduction": frozenset({"amount"}),
     STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
     "federal_deductions": frozenset({"amount"}),
