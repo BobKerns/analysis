@@ -1274,6 +1274,7 @@ def load_scenario(
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
+    _validate_inflation_from_start(aux_rows, calendar_rows, scenario_row.get("start", ""), issues)
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
@@ -4244,6 +4245,53 @@ def _safe_json(raw: str | None) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _validate_inflation_from_start(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    calendar_rows: list[dict[str, str]], start: str, issues: list[str],
+) -> None:
+    """Every inflation series needs a rate in force at the scenario's start:
+    the run grows each one's index from its first month, read or not, so a
+    series whose first row comes later would fail that month (#471). A
+    set_rate or swap_aux_table row in the first month supplies one too: the
+    run applies the month's calendar events before it grows the indexes."""
+    try:
+        first_month = month_end_iso(start)
+    except ValueError:
+        return  # a missing or bad start is reported where it's read
+    first_row: dict[str, str] = {}
+    for kind, series, _, effective in aux_rows:
+        if kind == "inflation" and series is not None:
+            first_row[series] = min(first_row.get(series, effective), effective)
+    covered = {series for series, effective in first_row.items() if effective <= first_month}
+    swaps: list[tuple[str, str]] = []  # (series, source) swapped in the first month
+    for row in calendar_rows:
+        kind = row.get("kind")
+        params = _safe_json(row.get("params_json")) or {}
+        if params.get("aux_kind", "rate") != "inflation" or kind not in ("set_rate", "swap_aux_table"):
+            continue
+        try:
+            if month_end_iso(row.get("date", "")) != first_month:
+                continue
+        except ValueError:
+            continue  # a marker or relative date: not known to be the first month here
+        if kind == "set_rate":
+            if (row.get("amount") or "").strip():
+                covered.add(row.get("series", ""))
+        else:
+            swaps.append((row.get("series", ""), str(params.get("source_series") or "")))
+    # A swap takes over its source's rate in force (ADR-003 §3.5), which a
+    # first-month set_rate or another swap may have supplied.
+    while new_cover := {series for series, source in swaps if source in covered} - covered:
+        covered |= new_cover
+    for series, effective in sorted(first_row.items()):
+        if series not in covered:
+            issues.append(
+                f"inflation__{series}.csv: its first rate is from {effective[:7]}, after the "
+                f"scenario's start ({first_month[:7]}); the run grows every inflation series "
+                f"from the start, so it needs a row on or before {first_month[:7]}"
+            )
 
 
 def _validate_series_references(
