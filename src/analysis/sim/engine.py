@@ -3357,6 +3357,19 @@ def _person_income(
                 ss[person] += share
             else:
                 pools[person][pool] += sign * share
+    # A realized loss recorded apart from its sale (#199) offsets its lot
+    # owner's gains, as the household's netting does.
+    for owner, amount in con.execute(
+        "SELECT a.owner, SUM(cl.amount) FROM capital_loss cl "
+        "JOIN account_lot l ON l.id = cl.lot_id JOIN account a ON a.id = l.account_id "
+        "WHERE COALESCE(cl.tax_year, CAST(substr(cl.date, 1, 4) AS INTEGER)) = ? "
+        "GROUP BY 1",
+        (tax_year,),
+    ):
+        shares = [(owner, int(amount))] if owner in pools else list(
+            zip(people, _split_cents(int(amount), len(people)), strict=True))
+        for person, share in shares:
+            pools[person]["capital_gain"] -= share
     for by_kind in pools.values():
         for pool, amount in by_kind.items():
             by_kind[pool] = max(0, amount)
@@ -3377,8 +3390,8 @@ def _retirement_exclusion(
     """``state``'s retirement income exclusions for ``tax_year`` (#486), from
     the ``kind`` table in force (``state_retirement_exclusion__<state>``).
 
-    Each person who files (role ``primary``, or everyone with a birthdate if
-    no one is) gets, of each exclusion (rows sharing a ``name``, applied in
+    Each of the household's people (role ``primary`` or ``secondary``, or
+    everyone with a birthdate if no one is) gets, of each exclusion (rows sharing a ``name``, applied in
     file order), the age tier with the highest ``min_age`` they reach by
     December 31. It covers their income of the kinds it lists, in that
     order, up to its ``amount`` (all of it when blank, and less their Social
@@ -3390,10 +3403,12 @@ def _retirement_exclusion(
     ]
     if not rows:
         return _RetirementExclusion()
+    # The household's actual people (primary and secondary, as a strategy's
+    # household is), or everyone with a birthdate if no one is marked.
     birthdates = {
         person: (_parse_date(born) if born else None)
         for person, born, role in con.execute("SELECT id, birthdate, role FROM person")
-        if role == "primary"
+        if role in registries.PERSON_ROLES
     } or {
         person: _parse_date(born)
         for person, born in con.execute("SELECT id, birthdate FROM person WHERE birthdate != ''")

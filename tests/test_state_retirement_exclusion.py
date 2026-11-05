@@ -325,3 +325,20 @@ def test_a_move_to_a_state_whose_exclusions_start_later(
         assert _bucket(con, 2030, "state_retirement_exclusion") == 5_000_00
     finally:
         con.close()
+
+
+def test_a_secondary_persons_income_is_theirs(state_ira: Path, tmp_path: Path) -> None:
+    """A ``secondary`` person is one of the household's people too, so
+    Alice's IRA draw stays hers when she is marked secondary, not split
+    with Bill, who is short of 59½."""
+    persons = state_ira / "persons.csv"
+    persons.write_text(persons.read_text(encoding="utf-8").replace(
+        "alice,Alice (fake),1965-03-15,f,primary", "alice,Alice (fake),1965-03-15,f,secondary"),
+        encoding="utf-8")
+    assert "secondary" in persons.read_text(encoding="utf-8")
+    _exclusions(state_ira, "2025-01,pension,retirement_account,59.5,20000,,,,\n")
+    con, _ = _run(state_ira, tmp_path)
+    try:
+        assert _bucket(con, 2026, "state_retirement_exclusion") == 20_000_00
+    finally:
+        con.close()
