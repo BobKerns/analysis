@@ -238,6 +238,35 @@ sim calendar rename <old> <new>      # a row's name, and rows correlated with it
 sim series rename <old> <new>        # its series/ files too
 ```
 
+A scenario's growth-rate and inflation series have their own commands. Each
+change is written only if the scenario, and every scenario built on it,
+still loads:
+
+```sh
+sim series list                       # what the scenario reads, and from where
+sim series show <name>                # its rows, and what names it
+sim series add <name> --kind rate --rate 4.5% --set 2030-01=3.5%
+sim series edit <name> --set 2030-01=3% --remove 2035-01
+sim series delete <name>              # asks first; --yes doesn't
+sim series revert <name>              # inherit the parent's again
+```
+
+`add` and `edit` ask for whatever you leave out. `edit` with no options
+shows the rows, numbered: type a number to change that row, `+` to add one,
+`-` and a number to remove one, and press Enter on a blank line to write.
+Editing a series the scenario inherits writes the scenario's own copy of
+the whole file, which replaces the parent's for this scenario and those
+built on it.
+
+`delete` removes a series only this scenario has. One it inherits is
+*emptied* instead: the scenario's own file keeps just its header. An empty
+series is as good as none, but it also hides the parent's, so a scenario
+built on this one that reads the series has to supply its own. That keeps
+the parent's rates from being used by mistake. `sim series revert` drops
+the scenario's own file, emptied or not, so it inherits the parent's again.
+Deleting a series that something still reads is refused, naming what reads
+it, and `cpi` can't be deleted.
+
 Everything below works the same way, whether you are editing `base` directly,
 or editing a derived scenario's own files.
 

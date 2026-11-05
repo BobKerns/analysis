@@ -23,7 +23,7 @@ from typing import Any
 import click
 from click.shell_completion import CompletionItem
 
-from analysis.sim import names, registries
+from analysis.sim import names, registries, series_files
 from analysis.sim.loader import read_current_scenario
 
 __all__ = [
@@ -391,6 +391,21 @@ class SeriesName(NameType):
         super().__init__(lister, "series", plural="series",
                          known=(lambda ctx, data_dir: ["fixed"]) if fixed else None)  # noqa: ARG005
 
+
+
+def _own_series(ctx: click.Context, data_dir: Path) -> Sequence[str]:
+    """The series the scenario has its own file of over an inherited one,
+    emptied or not: what ``sim series revert`` can drop (#471)."""
+    scenario = _scenario(ctx, data_dir)
+    if not scenario:
+        return []
+    wanted = _line_params(ctx).get("kind")
+    return sorted({name for (kind, name), series in series_files.scenario_series(data_dir, scenario).items()
+                   if series.revertible
+                   and (not isinstance(wanted, str) or kind == wanted)})
+
+
+OWN_SERIES = NameType(_own_series, "series", plural="series")
 
 # The types of the params that the guides' field lists turn into options
 # (``scheduled edit``, ``lot add|edit``), by param name.
