@@ -539,6 +539,12 @@ lots use).
   `aux/` only — the code repository's `templates/aux/`. A match
   replaces the entire file; there is no row-level merge across tiers (unlike
   `accounts.csv`/`account_lots.csv`/etc., which do merge by key, §4.5).
+- **An empty file is an empty series.** A file with only its header supplies no rows, so the
+  scenario has none of that series, exactly as if there were no file, except that it also hides
+  the ancestor's file of the same name: a scenario built on it that reads the series has to
+  supply its own, and the ancestor's rates are never used by mistake. `sim series delete`
+  writes one when the scenario inherits the series; `sim series revert` removes the scenario's
+  own file so the inherited one applies again ([#471](https://github.com/BobKerns/analysis/issues/471)).
 - **A derived scenario without its own override inherits its parent's.** Overriding a
   file only where it first needs to differ, and leaving every descendant to inherit that
   override, is the intended shape. For `series/` this is not optional: since there is no
@@ -657,7 +663,7 @@ Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation
   `effective_date`, `annual_rate` (percent)
 - **`rate__<series>_yield.csv`** (optional, [#468](https://github.com/BobKerns/analysis/issues/468)): a rate series' yield, the part of its return a taxable lot is paid each year as dividends or interest (§2.2): `rate__stock_us_yield.csv` for `stock_us`, `rate__<SYMBOL>_yield.csv` for a symbol. Same columns, varied by `set_rate` rows like any rate. The `t_market_series` template ships the stock and bond classes' yields; the `t_market_ensemble` template varies the bond yield with the bond factor and holds the stock yields.
 - **`inflation__<series>.csv`**:
-  `effective_date`, `annual_rate` (percent; deterministic projection; future ensembles substitute realizations)
+  `effective_date`, `annual_rate` (percent; deterministic projection; future ensembles substitute realizations). Every inflation series needs a row on or before the scenario's `start`, read or not: the run grows each one's index from the first month, so the loader rejects one whose first row is later, unless a calendar row with `aux_kind` `inflation` sets it in the first month (a `set_rate`, or a `swap_aux_table` whose source has a rate in force then), since the run applies that month's calendar before it grows the indexes.
 - **`filing_status.csv`**:
   `effective_date`, `filing_status`: the household's status, one row per change, so one row per date. The templates ship it with only its header. A scenario with a `tax_accumulator` or `irmaa` rule (§2.6, §2.11) needs a row in force by the end of its first year, and a date with two rows is a load error. A taxpayer's death still makes MFJ or MFS Single from the next year without a row (§4.9).
 - **`rmd_start_age.csv`**:
@@ -1344,3 +1350,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#467](https://github.com/BobKerns/analysis/issues/467): tax brackets, standard deductions and long-term gain bands are indexed for inflation by an optional `floor_series`/`amount_series` per row, `cpi` in the templates (§4.4).
 - [#434](https://github.com/BobKerns/analysis/issues/434): each basis step-up records the rule that decided it, and `accounts.ipynb` shows the run's step-ups (§4.9).
 - [#485](https://github.com/BobKerns/analysis/issues/485): a state's capital gains: aux kinds `state_ltcg_exclusion`, `state_ltcg_brackets` and `state_stcg_brackets`, keyed by state and swapped with its brackets; `tax_year_summary` bucket `<scope>_ltcg_exclusion` (§2.6, §3.5, §4.4).
+- [#471](https://github.com/BobKerns/analysis/issues/471): a header-only `series/` (or `aux/`) file empties the inherited series, which a scenario reading it must then supply; `sim series` adds, edits, deletes and reverts series (§4.1d); an inflation series needs a rate at the scenario's start (§4.4).
