@@ -256,6 +256,20 @@ def test_the_notebook_table_lists_each_step_up_with_its_rule(step_up_run: Path) 
     assert "$" in table.to_html()
 
 
+def test_an_empty_lot_at_a_death_is_left_out(step_up_run: Path) -> None:
+    # A lot already drawn to zero steps nothing up; the engine still records
+    # it, but explain and the notebook skip it (#377).
+    con = sqlite3.connect(step_up_run)
+    try:
+        con.execute("INSERT INTO basis_step_up(step_id, date, lot_id, person, balance, basis_before, "
+                    "basis_after, rule) "
+                    "SELECT step_id, date, lot_id, person, 0, 0, 0, rule FROM basis_step_up LIMIT 1")
+        con.commit()
+        assert len(step_ups.basis_step_ups(con) or []) == 2
+    finally:
+        con.close()
+
+
 def test_a_run_without_step_ups_shows_no_table(retire_alice_run_file: Path) -> None:
     with RunConnection(retire_alice_run_file) as rc:
         assert rc.basis_step_ups() == []

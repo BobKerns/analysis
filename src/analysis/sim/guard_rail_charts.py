@@ -243,8 +243,13 @@ def ensemble_guard_rail_figure(
     if years is not None:
         span = [y for y in span if years[0] <= y <= years[1]]
     x = np.arange(len(span))
+    # A positive rail's overshoot is room to spend, which in good futures
+    # grows far past any rail to stay inside's (#377), so mixed rails put the
+    # positive ones on their own axis rather than flatten the others.
+    mixed = len({r.rail.positive for r in shown}) > 1
     for column, (form, suffix) in enumerate((("Annual", ""), ("Cumulative", " cum"))):
         top, bottom = axes[0, column], axes[1, column]
+        room = bottom.twinx() if mixed else bottom
         for r in shown:
             frame = frames[r.rail.name].reindex(span)
             color, style = colors[r.rail.name], "--" if r.rail.positive else "-"
@@ -253,8 +258,17 @@ def ensemble_guard_rail_figure(
                      marker="o", markersize=4, label=label)
             top.plot(x, frame["ever_past" + suffix], color=color, linestyle=":", linewidth=1.5,
                      label="_ever")
-            bottom.plot(x, frame["rms_over" + suffix], color=color, linestyle=style, linewidth=2,
-                        marker="o", markersize=4, label=label)
+            line = dict(color=color, linestyle=style, linewidth=2, marker="o", markersize=4)
+            if r.rail.positive and mixed:
+                room.plot(x, frame["rms_over" + suffix], **line)
+                bottom.plot([], [], label=label + ", right axis", **line)  # one legend for both axes
+            else:
+                bottom.plot(x, frame["rms_over" + suffix], label=label, **line)
+        if mixed:
+            room.set_ylabel("positive rails")
+            room.grid(False)
+            _thousands(room)
+            include_zero(room)
         # One key for every rail's dotted line, not one per rail.
         top.plot([], [], color="grey", linestyle=":", linewidth=1.5, label="ever past, so far")
         top.set_title(f"{form}: share of members past the rail")

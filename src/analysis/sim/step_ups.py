@@ -50,7 +50,9 @@ class BasisStepUp:
 
 def basis_step_ups(con: sqlite3.Connection) -> list[BasisStepUp] | None:
     """The run's step-ups in the order they happened. None for a run file from before step-ups, which has no
-    table; an empty list for a run with no deaths, or none that stepped up."""
+    table; an empty list for a run with no deaths, or none that stepped up.
+    A lot that was empty at the death (no balance, no basis) is left out
+    (#377): the engine records it, but it stepped nothing up."""
     columns = {row[1] for row in con.execute("PRAGMA table_info(basis_step_up)")}
     if not columns:
         return None
@@ -60,7 +62,8 @@ def basis_step_ups(con: sqlite3.Connection) -> list[BasisStepUp] | None:
         f"       b.balance, b.basis_before, b.basis_after, {rule} "
         "FROM basis_step_up b JOIN account_lot m ON m.id = b.lot_id "
         "JOIN account a ON a.id = m.account_id "
-        "LEFT JOIN person p ON p.id = b.person ORDER BY b.id"
+        "LEFT JOIN person p ON p.id = b.person "
+        "WHERE NOT (b.balance = 0 AND b.basis_before = 0 AND b.basis_after = 0) ORDER BY b.id"
     ).fetchall()
     return [
         BasisStepUp(str(month)[:10], account_with_lot(name, subkind, lot), str(person),
