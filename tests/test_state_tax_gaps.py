@@ -176,6 +176,12 @@ def test_the_templates_ship_the_california_tables(
     with pytest.raises(LoadError, match=r"state_hsa__.csv: name the state"):
         load_test_copy()
     nameless.unlink()
+    nameless = write_aux("state_surcharge.csv",
+                         "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+                         "2026-01-31,MFJ,0,1000000.00,1%\n")
+    with pytest.raises(LoadError, match=r"state_surcharge.csv: name the state"):
+        load_test_copy()
+    nameless.unlink()
     write_aux("state_hsa__CA.csv", "effective_date,treatment\n2026-01-31,exempt\n")
     with pytest.raises(LoadError, match=r"state_hsa__CA.csv \(2026-01-31\): treatment 'exempt'"):
         load_test_copy()

@@ -420,17 +420,20 @@ tax year, by looking back over everything that happened that year (the
   state's standard deduction from `state_standard_deduction__CA.csv` (named
   for the same state as the brackets). Without
   that file the federal standard deduction is used, and loading warns,
-  since most states' deduction is much smaller. State taxable income
-  leaves out Social Security, and capital gains are taxed as ordinary
-  income unless the state's own tables say otherwise: a share of long-term
-  gain excluded (`state_ltcg_exclusion__XX.csv`), or gain rates of its own
-  (`state_ltcg_brackets__XX.csv`, `state_stcg_brackets__XX.csv`). The
-  `aux/` README describes them. Two more tables, also named for the state,
-  are optional: `state_surcharge__CA.csv` adds California's 1% on taxable
-  income over $1 million, and `state_hsa__CA.csv` says California doesn't
-  recognize health savings accounts, so its tax doesn't deduct what goes
-  into an HSA, taxes the account's growth each year (a fall is a capital
-  loss), and leaves what comes out alone.
+  since most states' deduction is much smaller. Capital gains are taxed
+  as ordinary income unless the state's own tables say otherwise: a share
+  of long-term gain excluded (`state_ltcg_exclusion__XX.csv`), or gain
+  rates of its own (`state_ltcg_brackets__XX.csv`,
+  `state_stcg_brackets__XX.csv`). State taxable income leaves out Social
+  Security unless your state taxes it: then add
+  `state_social_security__XX.csv`, which starts from the federally taxable
+  amount and leaves out an exclusion that phases out with income. The
+  `aux/` README describes them all. Two more tables, also named for the
+  state, are optional: `state_surcharge__CA.csv` adds California's 1% on
+  taxable income over $1 million, and `state_hsa__CA.csv` says California
+  doesn't recognize health savings accounts, so its tax doesn't deduct what
+  goes into an HSA, taxes the account's growth each year (a fall is a
+  capital loss), and leaves what comes out alone.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year.
 - **RMDs** are calculated from the account's lot balances on the previous

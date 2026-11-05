@@ -8,6 +8,7 @@ import json
 import pkgutil
 import re
 import shutil
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,13 +18,17 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim import notebook_ui
 from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.loader import last_good_run_path, latest_run_path, read_run_status
 from analysis.sim.notebook_ui.pickers import (
     Connections,
     MultiScenarioConnections,
     TimeRangePicker,
     display_warning,
     multi_scenario_picker,
+    latest_run_ref,
+    newer_runs_warning,
     observe_while_shown,
+    open_run_line,
     scenario_picker,
     warning_html,
 )
@@ -435,3 +440,153 @@ def test_a_rebuild_moving_a_shared_control_redraws_no_old_widget() -> None:
 
     assert (time_range.min, time_range.max) == (2030, 2040)
     assert stale == []
+
+
+def _failed_copy(good: Path, stamp: str, reason: str) -> Path:
+    """A copy of run file ``good`` under a newer ``stamp``, marked failed."""
+    _old_stamp, rest = good.name.split("_", 1)
+    failed = good.with_name(f"{stamp}_{rest}")
+    shutil.copyfile(good, failed)
+    con = sqlite3.connect(failed)
+    try:
+        con.execute("UPDATE simulation_run SET status = 'failed', failure_reason = ? "
+                    "WHERE id = 1", (reason,))
+        con.commit()
+    finally:
+        con.close()
+    return failed
+
+
+def test_scenario_picker_opens_the_last_good_run_and_flags_a_newer_failed_one(
+    test_data_dir: Path, retire_alice_test_run: Path, runs_dir: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    failed = _failed_copy(good, "99991231T235959Z", "Boom: no such account")
+
+    _widget, container, _dropdown = scenario_picker(test_data_dir, "retire_alice")
+    try:
+        assert container.run is not None
+        assert container.run.run_path == good
+        line = open_run_line("retire_alice", good)
+        assert line is not None
+        assert f"run `{good.name}`, finished " in line
+        warning = newer_runs_warning("retire_alice", good)
+        assert warning is not None
+        assert "failed (Boom: no such account)" in warning
+        assert f"sim explain --runfile {failed}" in warning
+        assert newer_runs_warning("retire_alice", failed) is None
+    finally:
+        container.close()
+
+
+def test_a_scenario_with_no_good_run_opens_its_latest_and_says_it_failed(
+    retire_alice_test_run: Path, runs_dir: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    failed = _failed_copy(good, "99991231T235959Z", "Boom")
+    good.unlink()
+
+    assert last_good_run_path(runs_dir, "retire_alice") == failed
+    line = open_run_line("retire_alice", failed)
+    assert line is not None
+    assert "**failed (Boom)**" in line
+    assert newer_runs_warning("retire_alice", failed) is None
+
+
+def test_a_scenario_with_only_good_runs_has_no_warning(
+    retire_alice_test_run: Path, runs_dir: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    assert last_good_run_path(runs_dir, "retire_alice") == good
+    assert newer_runs_warning("retire_alice", good) is None
+
+
+def test_open_run_line_names_an_ensemble_members_batch(
+    test_data_dir: Path, ensemble_recipe: str,
+) -> None:
+    _widget, container, _dropdown = scenario_picker(test_data_dir, ensemble_recipe)
+    try:
+        assert container.run is not None
+        member = container.run.run_path
+        batch = member.parent.name
+        line = open_run_line(ensemble_recipe, member)
+        assert line is not None
+        assert f"batch `{batch}` (`--batch {batch}`), `member_0000`, finished " in line
+        assert newer_runs_warning(ensemble_recipe, member) is None
+    finally:
+        container.close()
+
+
+def test_multi_scenario_picker_opens_each_scenarios_last_good_run(
+    test_data_dir: Path, retire_alice_test_run: Path, runs_dir: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    _failed_copy(good, "99991231T235959Z", "Boom")
+    _widget, container = multi_scenario_picker(test_data_dir, "retire_alice", ["base"])
+    try:
+        assert container.connections["retire_alice"].run_path == good
+    finally:
+        for rc in container.connections.values():
+            rc.close()
+
+
+def test_read_run_status_reads_a_run_under_a_folder_with_a_hash(
+    retire_alice_test_run: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    folder = tmp_path / "data#copy"
+    folder.mkdir()
+    copy = folder / good.name
+    shutil.copyfile(good, copy)
+
+    assert read_run_status(copy).status == "succeeded"
+    assert sorted(p.name for p in tmp_path.iterdir() if p.is_file()) == []
+
+
+def test_newer_runs_warning_quotes_a_run_path_with_a_space(
+    retire_alice_test_run: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    folder = tmp_path / "my runs"
+    folder.mkdir()
+    copy = folder / good.name
+    shutil.copyfile(good, copy)
+    failed = _failed_copy(copy, "99991231T235959Z", "Boom")
+
+    warning = newer_runs_warning("retire_alice", copy)
+    assert warning is not None
+    assert f"sim explain --runfile &#x27;{failed}&#x27;" in warning
+
+
+def test_the_scenario_summary_names_the_latest_run_not_the_opened_one(
+    test_data_dir: Path, retire_alice_test_run: Path, runs_dir: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    failed = _failed_copy(good, "99991231T235959Z", "Boom")
+
+    _widget, container, _dropdown = scenario_picker(test_data_dir, "retire_alice")
+    try:
+        assert container.scenario_ref.run_path == good
+        summary = latest_run_ref(container.scenario_ref).describe()
+        assert f"| latest run | `{failed}`" in summary
+    finally:
+        container.close()
+
+
+def test_open_run_line_escapes_a_failure_reason_that_looks_like_a_tag(
+    retire_alice_test_run: Path, runs_dir: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    failed = _failed_copy(good, "99991231T235959Z", "bad value <object object at 0x1>")
+
+    line = open_run_line("retire_alice", failed)
+    assert line is not None
+    assert "&lt;object object at 0x1&gt;" in line

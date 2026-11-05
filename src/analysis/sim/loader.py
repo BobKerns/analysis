@@ -244,18 +244,95 @@ def latest_run_path(
     ``higher_base``'s runs. A zero-byte file is a name a run has reserved
     (``locks.reserve_run_path``) but not begun writing, so it is skipped.
     """
-    from analysis.sim.locks import run_name_key
-
     if scenario and wait:
         _await_fresh(Path(runs_dir), scenario)
+    runs = run_files(runs_dir, scenario)
+    return runs[-1] if runs else None
+
+
+def run_files(runs_dir: Path | str, scenario: str | None = None) -> list[Path]:
+    """The started run files under ``runs_dir`` (of ``scenario``, when
+    given), oldest first; see :func:`latest_run_path` for how they are
+    named and matched. Never waits for a background build."""
+    from analysis.sim.locks import run_name_key
 
     glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
     re_pattern = (re.compile(rf"[^_]+_{re.escape(scenario)}_[^_]*[.]sqlite3") if scenario
                   else re.compile(".*"))
     runs = (r for r in Path(runs_dir).glob(glob_pattern)
             if re_pattern.fullmatch(r.name) and _started(r))
-    runs = sorted(runs, key=lambda r: run_name_key(r.name))
-    return runs[-1] if runs else None
+    return sorted(runs, key=lambda r: run_name_key(r.name))
+
+
+@dataclass(frozen=True)
+class RunStatus:
+    """A run file's ``simulation_run`` status (#437), as ``sim list`` shows it."""
+
+    path: Path
+    status: str
+    """``succeeded``, ``failed``, ``running`` (still going, or interrupted),
+    or ``unreadable`` when the file can't be read as a run."""
+    finished_at: str | None
+    """UTC, ``YYYY-MM-DDTHH:MM:SSZ``; None until the run ends."""
+    failure_reason: str | None
+
+
+def read_run_status(path: Path | str) -> RunStatus:
+    """``path``'s run status; never raises for a damaged or half-written file."""
+    path = Path(path)
+    try:
+        # as_uri escapes a '#' or '?' in the path, which would end it.
+        con = connect_sim_file(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            row = con.execute("SELECT status, finished_at, failure_reason "
+                              "FROM simulation_run WHERE id = 1").fetchone()
+        finally:
+            con.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            return RunStatus(path, "unreadable", None, None)
+        row = None  # just created: its run hasn't written its tables yet
+    except sqlite3.DatabaseError:
+        return RunStatus(path, "unreadable", None, None)
+    if row is None:
+        return RunStatus(path, "running", None, None)
+    status, finished_at, failure_reason = row
+    return RunStatus(path, status, finished_at, failure_reason)
+
+
+def last_good_run_path(
+    runs_dir: Path | str, name: str, *, wait: bool = True,
+) -> Path | None:
+    """The run a notebook opens for scenario ``name`` (#437): like
+    :func:`scenario_run_path`, but passing over newer runs that didn't
+    succeed, since a failed run holds only the months before it failed.
+    When none of its runs succeeded, its latest; :func:`runs_not_succeeded_after`
+    names what was passed over."""
+    runs_dir = Path(runs_dir)
+    if wait:
+        _await_fresh(runs_dir, name)
+    runs = run_files(runs_dir, name)
+    for run in reversed(runs):
+        if read_run_status(run).status == "succeeded":
+            return run
+    return runs[-1] if runs else _latest_ensemble_member_zero(runs_dir, name, wait=False)
+
+
+def runs_not_succeeded_after(
+    runs_dir: Path | str, name: str, run_path: Path | str,
+) -> list[RunStatus]:
+    """Scenario ``name``'s runs newer than ``run_path`` that didn't succeed,
+    newest first (#437): what :func:`last_good_run_path` passed over. None
+    for an ensemble member, whose batch lists its members' statuses."""
+    from analysis.sim.locks import run_name_key
+
+    run_path = Path(run_path)
+    if run_path.parent.resolve() != Path(runs_dir).resolve():
+        return []
+    after = run_name_key(run_path.name)
+    newer = (read_run_status(r) for r in reversed(run_files(runs_dir, name))
+             if run_name_key(r.name) > after)
+    return [s for s in newer if s.status != "succeeded"]
 
 
 def _started(run: Path) -> bool:
@@ -1277,6 +1354,7 @@ def load_scenario(
     _validate_inflation_from_start(aux_rows, calendar_rows, scenario_row.get("start", ""), issues)
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
+    _validate_state_social_security(aux_rows, issues)
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -1799,11 +1877,12 @@ def _read_aux_files(
         cols = registries.AUX_KIND_COLUMNS[kind]
         money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
         micros_cols = registries.AUX_MICROS_COLUMNS.get(kind, {})
+        optional_cols = registries.AUX_OPTIONAL_COLUMNS.get(kind, frozenset())
         if _legacy_units_header(csv_path, label, issues):
             continue
         rows = _read_csv(csv_path, issues, label=label)
         for where, row in _located(rows, label):
-            missing = [c for c in cols if c not in row]
+            missing = [c for c in cols if c not in row and c not in optional_cols]
             if missing:
                 issues.append(
                     f"{where}: missing columns {missing}"
@@ -1814,8 +1893,10 @@ def _read_aux_files(
             for c in cols:
                 if c == "effective_date":
                     continue
-                raw = row[c]
-                if c in micros_cols:
+                raw = row.get(c) or ""
+                if c in optional_cols and not raw.strip():
+                    payload[micros_cols[c][0] if c in micros_cols else c] = None
+                elif c in micros_cols:
                     key, unit = micros_cols[c]
                     try:
                         payload[key] = _AUX_MICROS_PARSERS[unit](raw)
@@ -2799,17 +2880,21 @@ FILING_STATUS_RULE_KINDS = frozenset({"tax_accumulator", "irmaa"})
 def _validate_state_hsa(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
 ) -> None:
-    """A ``state_hsa`` row's treatment is one the engine knows (#490), and the
-    table is keyed by state like the brackets it goes with."""
+    """A ``state_surcharge`` or ``state_hsa`` table (#490) is keyed by state
+    like the brackets it goes with, since one without a state is never read,
+    and a ``state_hsa`` row's treatment is one the engine knows."""
+    nameless: set[str] = set()
     for kind, state, payload, effective in aux_rows:
-        if kind != registries.STATE_HSA:
+        if kind not in (registries.STATE_SURCHARGE, registries.STATE_HSA):
             continue
         file = f"aux/{kind}__{state}.csv" if state is not None else f"aux/{kind}.csv"
         if not state:
-            issues.append(f"{file}: name the state, as in {kind}__CA.csv")
+            if file not in nameless:
+                nameless.add(file)
+                issues.append(f"{file}: name the state, as in {kind}__CA.csv")
             continue
         treatment = payload.get("treatment")
-        if treatment not in registries.STATE_HSA_TREATMENTS:
+        if kind == registries.STATE_HSA and treatment not in registries.STATE_HSA_TREATMENTS:
             issues.append(
                 f"{file} ({effective}): treatment {treatment!r} must be one of "
                 f"{', '.join(registries.STATE_HSA_TREATMENTS)}")
@@ -3736,6 +3821,34 @@ def _warn_state_standard_deduction(
                 f"{where}: after the move to {state}, state tax uses the federal standard "
                 f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv"
             )
+
+
+def _validate_state_social_security(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A state_social_security row (#484) phases its exclusion out one way:
+    to nothing at phaseout_end, or by phaseout_rate per dollar, both from
+    phaseout_start."""
+    for kind, state, payload, effective in aux_rows:
+        if kind != registries.STATE_SOCIAL_SECURITY:
+            continue
+        where = (f"aux/{kind}__{state}.csv" if state else f"aux/{kind}.csv") + (
+            f" ({effective}, {payload.get('filing_status')})")
+        percent = payload.get("exclusion_micros")
+        if percent is not None and not 0 <= percent <= 1_000_000:
+            issues.append(f"{where}: exclusion_percent must be 0% to 100%")
+        start, end = payload.get("phaseout_start"), payload.get("phaseout_end")
+        rate = payload.get("phaseout_rate_micros")
+        if start is None and (end is not None or rate is not None):
+            issues.append(f"{where}: phaseout_end and phaseout_rate need a phaseout_start")
+        elif start is not None and (end is None) == (rate is None):
+            issues.append(f"{where}: give phaseout_end or phaseout_rate with phaseout_start, "
+                          "not both or neither")
+        elif start is not None and end is not None and end < start:
+            issues.append(f"{where}: phaseout_end is below phaseout_start")
+        elif rate is not None and rate <= 0:
+            issues.append(f"{where}: phaseout_rate must be more than 0%")
 
 
 def _validate_swap_aux_tables(
