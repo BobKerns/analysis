@@ -384,8 +384,9 @@ Here, forty thousand dollars in January 2030, a year before the yearly
 ones start, into a stock index fund. Dash dash subkind says the new lot is
 a Roth IRA. The money leaving the IRA is taxed as income that year, and
 the new lot's basis is what was converted. Alice is over fifty nine and a
-half; someone younger should give each conversion its own lot, since each
-starts its own five-year clock.
+half. For someone younger, each conversion has its own five-year wait
+before it can come out without a penalty; the simulator doesn't model
+that penalty yet.
 
 ## Scene `location-table`: By account type
 

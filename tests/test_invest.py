@@ -224,6 +224,19 @@ def test_a_mistyped_series_writes_no_new_symbol(
     assert result.exit_code == 0, result.output
 
 
+def test_a_mistyped_guided_series_writes_no_new_symbol(
+    invest: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    """The guided answer is checked before the new symbol is written too."""
+    args = ("Asset_Savings", "Asset_Roth_Alice", "fund", "--subkind", "roth_ira",
+            "--symbol", "ABCDX", "--symbol-name", "Example fund", "--no-fetch")
+    result = invest(*args, answers=("100", "", "no_such"))
+    assert result.exit_code != 0 and "no rate series 'no_such'" in result.output, result.output
+    assert not _rows(test_data_dir / "securities.csv", symbol="ABCDX")
+    result = invest(*args, answers=("100", "", "stock_us"))
+    assert result.exit_code == 0, result.output
+
+
 def test_a_lot_bought_on_a_day_is_acquired_at_its_month_end(
     invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
 ) -> None:

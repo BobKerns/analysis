@@ -16496,8 +16496,18 @@ def invest_command(
         raise click.ClickException(
             f"{when} is before the scenario starts ({start[:7]}); for a holding it starts "
             "with, use `sim account lot add`")
-    # Before a new symbol is written, so a mistyped --series leaves nothing
-    # behind to block the corrected retry; a guided answer is checked below.
+    # Settled before a new symbol is written, so a mistyped series, given or
+    # answered, leaves nothing behind to block the corrected retry.
+    dollars = _money_cell(amount)
+    found = None if new_account else _overlay_rows(scenario_dir, "accounts.csv").get(account)
+    symbol_grows = symbol is not None and (symbol in growing or bool(weights))
+    # A lot with no series of its own grows at its account's, if the account
+    # has a growth character (a retirement lot takes its subkind's).
+    account_grows = found is not None and bool(found.row.get("series")) \
+        and (bool(found.row.get("tax_character")) or retirement)
+    if lot_series is None and not symbol_grows and not account_grows and guided:
+        lot_series = _ask("growth series (optional; an asset class's, such as stock_us)",
+                          rate_series, default="") or None
     if lot_series is not None and lot_series not in rate_series:
         raise click.ClickException(f"no rate series {lot_series!r}; known: {', '.join(rate_series)}")
 
@@ -16515,18 +16525,6 @@ def invest_command(
                 f"{added.symbol}: prices not fetched, so nothing else was written; fetch them "
                 f"with `sim prices fetch {added.symbol}`, then run sim invest again")
 
-    dollars = _money_cell(amount)
-    found = None if new_account else _overlay_rows(scenario_dir, "accounts.csv").get(account)
-    symbol_grows = symbol is not None and (symbol in growing or bool(weights))
-    # A lot with no series of its own grows at its account's, if the account
-    # has a growth character (a retirement lot takes its subkind's).
-    account_grows = found is not None and bool(found.row.get("series")) \
-        and (bool(found.row.get("tax_character")) or retirement)
-    if lot_series is None and not symbol_grows and not account_grows and guided:
-        lot_series = _ask("growth series (optional; an asset class's, such as stock_us)",
-                          rate_series, default="") or None
-    if lot_series is not None and lot_series not in rate_series:
-        raise click.ClickException(f"no rate series {lot_series!r}; known: {', '.join(rate_series)}")
     grows = symbol_grows or lot_series is not None
     if not grows and not account_grows:
         click.echo(
