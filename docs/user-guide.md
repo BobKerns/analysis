@@ -238,6 +238,35 @@ sim calendar rename <old> <new>      # a row's name, and rows correlated with it
 sim series rename <old> <new>        # its series/ files too
 ```
 
+A scenario's growth-rate and inflation series have their own commands. Each
+change is written only if the scenario, and every scenario built on it,
+still loads:
+
+```sh
+sim series list                       # what the scenario reads, and from where
+sim series show <name>                # its rows, and what names it
+sim series add <name> --kind rate --rate 4.5% --set 2030-01=3.5%
+sim series edit <name> --set 2030-01=3% --remove 2035-01
+sim series delete <name>              # asks first; --yes doesn't
+sim series revert <name>              # inherit the parent's again
+```
+
+`add` and `edit` ask for whatever you leave out. `edit` with no options
+shows the rows, numbered: type a number to change that row, `+` to add one,
+`-` and a number to remove one, and press Enter on a blank line to write.
+Editing a series the scenario inherits writes the scenario's own copy of
+the whole file, which replaces the parent's for this scenario and those
+built on it.
+
+`delete` removes a series only this scenario has. One it inherits is
+*emptied* instead: the scenario's own file keeps just its header. An empty
+series is as good as none, but it also hides the parent's, so a scenario
+built on this one that reads the series has to supply its own. That keeps
+the parent's rates from being used by mistake. `sim series revert` drops
+the scenario's own file, emptied or not, so it inherits the parent's again.
+Deleting a series that something still reads is refused, naming what reads
+it, and `cpi` can't be deleted.
+
 Everything below works the same way, whether you are editing `base` directly,
 or editing a derived scenario's own files.
 
@@ -391,12 +420,15 @@ tax year, by looking back over everything that happened that year (the
   state's standard deduction from `state_standard_deduction__CA.csv` (named
   for the same state as the brackets). Without
   that file the federal standard deduction is used, and loading warns,
-  since most states' deduction is much smaller. State taxable income
-  leaves out Social Security, and capital gains are taxed as ordinary
-  income unless the state's own tables say otherwise: a share of long-term
-  gain excluded (`state_ltcg_exclusion__XX.csv`), or gain rates of its own
-  (`state_ltcg_brackets__XX.csv`, `state_stcg_brackets__XX.csv`). The
-  `aux/` README describes them.
+  since most states' deduction is much smaller. Capital gains are taxed
+  as ordinary income unless the state's own tables say otherwise: a share
+  of long-term gain excluded (`state_ltcg_exclusion__XX.csv`), or gain
+  rates of its own (`state_ltcg_brackets__XX.csv`,
+  `state_stcg_brackets__XX.csv`). State taxable income leaves out Social
+  Security unless your state taxes it: then add
+  `state_social_security__XX.csv`, which starts from the federally taxable
+  amount and leaves out an exclusion that phases out with income. The
+  `aux/` README describes them all.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year.
 - **RMDs** are calculated from the account's lot balances on the previous
