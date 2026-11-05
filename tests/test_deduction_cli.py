@@ -468,3 +468,39 @@ def test_a_blank_lot_is_the_default_lot_when_overriding(test_data_dir: Path) -> 
         test_data_dir, test_data_dir / "scenarios" / "child", effective=True)
 
     assert "deductions_2028" not in refs
+
+
+def _effective(data: Path) -> dict[str, list[setup_listings.ItemizationReference]]:
+    return setup_listings.itemization_references(
+        data, data / "scenarios" / "child", effective=True)
+
+
+def test_a_chain_the_child_replaces_in_the_other_role_is_ignored(test_data_dir: Path) -> None:
+    _child(test_data_dir)  # first: the files below are only read, never loaded
+    parent = test_data_dir / "scenarios" / "retire_alice" / "chains" / "source" / "budget.csv"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.write_text("step,account,maximum\n1,Asset_Checking,@deductions_2028\n", encoding="utf-8")
+    own = test_data_dir / "scenarios" / "child" / "chains" / "destination" / "budget.csv"
+    own.parent.mkdir(parents=True, exist_ok=True)
+    own.write_text("step,account,maximum\n1,Asset_Checking,\n", encoding="utf-8")
+
+    assert "deductions_2028" not in _effective(test_data_dir)
+
+
+def test_an_itemization_named_like_a_merged_file_is_replaced_whole(test_data_dir: Path) -> None:
+    _child(test_data_dir)
+    _itemization(test_data_dir, "accounts", "@deductions_2028")
+    own = test_data_dir / "scenarios" / "child" / "itemizations" / "accounts.csv"
+    own.parent.mkdir(parents=True, exist_ok=True)
+    own.write_text("Item,Value\n", encoding="utf-8")
+
+    assert "deductions_2028" not in _effective(test_data_dir)
+
+
+def test_a_chain_template_the_loader_skips_is_ignored(test_data_dir: Path) -> None:
+    _child(test_data_dir)
+    draft = test_data_dir / "scenarios" / "child" / "chains" / "source" / "_draft.csv"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("step,account,maximum\n1,Asset_Checking,@deductions_2028\n", encoding="utf-8")
+
+    assert "deductions_2028" not in _effective(test_data_dir)

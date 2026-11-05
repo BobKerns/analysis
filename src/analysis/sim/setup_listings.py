@@ -386,11 +386,19 @@ def _overridden(ref: ItemizationReference, data_dir: Path, lineage: list[Path]) 
     file, or, for a file merged row by row, its row's value in that column."""
     owner = next((i for i, folder in enumerate(lineage) if ref.path.is_relative_to(folder)), None)
     rel = ref.path.relative_to(data_dir if owner is None else lineage[owner])
-    nearer = [folder / rel for folder in lineage[(-1 if owner is None else owner) + 1:]]
+    later = lineage[(-1 if owner is None else owner) + 1:]
+    if owner is not None and rel.parent.parent.name == "chains":
+        # A chain is replaced by name, whichever role folder holds it.
+        nearer = [folder / "chains" / role / rel.name
+                  for folder in later for role in registries.CHAIN_ROLES]
+    else:
+        nearer = [folder / rel for folder in later]
     nearer = [path for path in nearer if path.is_file()]
     if not nearer:
         return False
-    keys = _ROW_KEYS.get(ref.path.name)
+    # Only the scenario-level files merge row by row; an itemization or aux
+    # table of the same file name is replaced whole.
+    keys = _ROW_KEYS.get(ref.path.name) if len(rel.parts) == 1 else None
     if keys is None or owner is None:
         return True
     header, rows = _csv_rows(ref.path)
@@ -405,6 +413,19 @@ def _overridden(ref: ItemizationReference, data_dir: Path, lineage: list[Path]) 
             if _row_key(near, keys) == key:
                 return True
     return False
+
+
+def _ignored(ref: ItemizationReference, data_dir: Path, lineage: list[Path]) -> bool:
+    """Whether the loader skips ``ref``'s file: a chain file outside a role
+    folder, or a template whose name starts with ``_``
+    (``loader._read_chain_files``)."""
+    owner = next((folder for folder in lineage if ref.path.is_relative_to(folder)), None)
+    if owner is None:
+        return False
+    rel = ref.path.relative_to(owner)
+    return rel.parts[0] == "chains" and (
+        len(rel.parts) != 3 or rel.parts[1] not in registries.CHAIN_ROLES
+        or ref.path.stem.startswith("_"))
 
 
 def itemization_references(
@@ -436,7 +457,8 @@ def itemization_references(
             continue  # the loader reports an unreadable file; a listing skips it
     if effective:
         found = {name: kept for name, refs in found.items()
-                 if (kept := [ref for ref in refs if not _overridden(ref, data_dir, lineage)])}
+                 if (kept := [ref for ref in refs if not _ignored(ref, data_dir, lineage)
+                           and not _overridden(ref, data_dir, lineage)])}
     return found
 
 
