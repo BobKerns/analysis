@@ -244,18 +244,95 @@ def latest_run_path(
     ``higher_base``'s runs. A zero-byte file is a name a run has reserved
     (``locks.reserve_run_path``) but not begun writing, so it is skipped.
     """
-    from analysis.sim.locks import run_name_key
-
     if scenario and wait:
         _await_fresh(Path(runs_dir), scenario)
+    runs = run_files(runs_dir, scenario)
+    return runs[-1] if runs else None
+
+
+def run_files(runs_dir: Path | str, scenario: str | None = None) -> list[Path]:
+    """The started run files under ``runs_dir`` (of ``scenario``, when
+    given), oldest first; see :func:`latest_run_path` for how they are
+    named and matched. Never waits for a background build."""
+    from analysis.sim.locks import run_name_key
 
     glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
     re_pattern = (re.compile(rf"[^_]+_{re.escape(scenario)}_[^_]*[.]sqlite3") if scenario
                   else re.compile(".*"))
     runs = (r for r in Path(runs_dir).glob(glob_pattern)
             if re_pattern.fullmatch(r.name) and _started(r))
-    runs = sorted(runs, key=lambda r: run_name_key(r.name))
-    return runs[-1] if runs else None
+    return sorted(runs, key=lambda r: run_name_key(r.name))
+
+
+@dataclass(frozen=True)
+class RunStatus:
+    """A run file's ``simulation_run`` status (#437), as ``sim list`` shows it."""
+
+    path: Path
+    status: str
+    """``succeeded``, ``failed``, ``running`` (still going, or interrupted),
+    or ``unreadable`` when the file can't be read as a run."""
+    finished_at: str | None
+    """UTC, ``YYYY-MM-DDTHH:MM:SSZ``; None until the run ends."""
+    failure_reason: str | None
+
+
+def read_run_status(path: Path | str) -> RunStatus:
+    """``path``'s run status; never raises for a damaged or half-written file."""
+    path = Path(path)
+    try:
+        # as_uri escapes a '#' or '?' in the path, which would end it.
+        con = connect_sim_file(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            row = con.execute("SELECT status, finished_at, failure_reason "
+                              "FROM simulation_run WHERE id = 1").fetchone()
+        finally:
+            con.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            return RunStatus(path, "unreadable", None, None)
+        row = None  # just created: its run hasn't written its tables yet
+    except sqlite3.DatabaseError:
+        return RunStatus(path, "unreadable", None, None)
+    if row is None:
+        return RunStatus(path, "running", None, None)
+    status, finished_at, failure_reason = row
+    return RunStatus(path, status, finished_at, failure_reason)
+
+
+def last_good_run_path(
+    runs_dir: Path | str, name: str, *, wait: bool = True,
+) -> Path | None:
+    """The run a notebook opens for scenario ``name`` (#437): like
+    :func:`scenario_run_path`, but passing over newer runs that didn't
+    succeed, since a failed run holds only the months before it failed.
+    When none of its runs succeeded, its latest; :func:`runs_not_succeeded_after`
+    names what was passed over."""
+    runs_dir = Path(runs_dir)
+    if wait:
+        _await_fresh(runs_dir, name)
+    runs = run_files(runs_dir, name)
+    for run in reversed(runs):
+        if read_run_status(run).status == "succeeded":
+            return run
+    return runs[-1] if runs else _latest_ensemble_member_zero(runs_dir, name, wait=False)
+
+
+def runs_not_succeeded_after(
+    runs_dir: Path | str, name: str, run_path: Path | str,
+) -> list[RunStatus]:
+    """Scenario ``name``'s runs newer than ``run_path`` that didn't succeed,
+    newest first (#437): what :func:`last_good_run_path` passed over. None
+    for an ensemble member, whose batch lists its members' statuses."""
+    from analysis.sim.locks import run_name_key
+
+    run_path = Path(run_path)
+    if run_path.parent.resolve() != Path(runs_dir).resolve():
+        return []
+    after = run_name_key(run_path.name)
+    newer = (read_run_status(r) for r in reversed(run_files(runs_dir, name))
+             if run_name_key(r.name) > after)
+    return [s for s in newer if s.status != "succeeded"]
 
 
 def _started(run: Path) -> bool:
