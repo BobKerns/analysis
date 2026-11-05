@@ -14,7 +14,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
-from analysis.sim import cli
+from analysis.sim import cli, setup_listings
 
 
 def _sim(data: Path, scenario: str, *args: str, answers: Sequence[str] = ()) -> Result:
@@ -409,5 +409,48 @@ def test_a_reference_in_an_overridden_itemization_is_ignored(test_data_dir: Path
     own.write_text("Item,Value\nx,10.00\n", encoding="utf-8")
 
     result = _sim(test_data_dir, "child", "add", "2028", "--item", "a=1")
+
+    assert result.exit_code == 0, result.output
+
+
+def _child(data: Path) -> None:
+    created = CliRunner().invoke(main, ["sim", "scenario", "create", "child", "retire_alice",
+                                        "--data-dir", str(data)])
+    assert created.exit_code == 0, created.output
+
+
+def test_a_scheduled_amount_the_child_overrides_is_ignored(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+    parent = test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv"
+    header, first = parent.read_text(encoding="utf-8").splitlines()[:2]
+    columns = header.split(",")
+    cells = next(csv.reader([first]))
+    # The parent's first rule takes the year's list as its amount ...
+    shared = list(cells)
+    shared[columns.index("amount")] = "@deductions_2028"
+    lines = parent.read_text(encoding="utf-8").splitlines()
+    lines[1] = ",".join(shared)
+    parent.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _child(test_data_dir)
+    child = test_data_dir / "scenarios" / "child" / "scheduled.csv"
+    own = list(cells)  # ... and the child's override of it a literal.
+    own[columns.index("amount")] = "100.00"
+    child.write_text(header + "\n" + ",".join(own) + "\n", encoding="utf-8")
+
+    refs = setup_listings.itemization_references(
+        test_data_dir, test_data_dir / "scenarios" / "child", effective=True)
+
+    assert not any(ref.path == parent for ref in refs.get("deductions_2028", []))
+
+
+def test_a_whole_file_the_child_replaces_is_ignored(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--item", "a=1").exit_code == 0
+    # The parent's state deductions use the year's list; the child's own don't.
+    assert _sim(test_data_dir, "retire_alice", "add", "2028", "--state",
+                "@deductions_2028").exit_code == 0
+    _child(test_data_dir)
+    assert _sim(test_data_dir, "child", "edit", "2028", "--state", "--amount", "5").exit_code == 0
+
+    result = _sim(test_data_dir, "child", "edit", "2028", "--item", "a=2")
 
     assert result.exit_code == 0, result.output

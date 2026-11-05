@@ -16941,16 +16941,12 @@ def _other_references(
     data_dir: Path, scenario_dir: Path, target: _DeductionEdit, name: str, year: int,
 ) -> list[setup_listings.ItemizationReference]:
     """The money cells referencing ``@name`` besides tax ``year``'s own row
-    in the file in force. A deduction file of the same kind that file
-    shadows doesn't count: this scenario never reads it."""
+    in the file in force. A row or file a nearer scenario overrides doesn't
+    count: this scenario never reads it."""
     own_lines = deductions.year_lines(target.found.path, year)
-    # An itemization another of that name overrides is never read either.
-    read = {i.path for i in setup_listings.itemizations(data_dir, scenario_dir)}
-    return [ref for ref in setup_listings.itemization_references(data_dir, scenario_dir).get(name, [])
-            if not (ref.path == target.found.path and ref.line in own_lines)
-            and not (ref.path.name == f"{target.kind}.csv" and ref.path.parent.name == "aux"
-                     and ref.path != target.found.path)
-            and not (ref.path.parent.name == "itemizations" and ref.path not in read)]
+    refs = setup_listings.itemization_references(data_dir, scenario_dir, effective=True)
+    return [ref for ref in refs.get(name, [])
+            if not (ref.path == target.found.path and ref.line in own_lines)]
 
 
 def _deduction_items_name(

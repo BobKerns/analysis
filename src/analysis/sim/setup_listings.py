@@ -352,12 +352,64 @@ def _referencing_files(data_dir: Path, scenario_dir: Path) -> Iterable[Path]:
             yield from sorted((data_dir / shared).rglob("*.csv"))
 
 
-def itemization_references(data_dir: Path, scenario_dir: Path) -> dict[str, list[ItemizationReference]]:
+_ROW_KEYS: dict[str, tuple[str, ...]] = {
+    "accounts.csv": ("name",),
+    "account_lots.csv": ("account_name", "lot"),
+    "scheduled.csv": ("name",),
+    "year_to_date.csv": ("name",),
+}
+"""The files whose rows a nearer scenario overrides one by one, by these
+columns, as the loader merges them; any other file a nearer one of the
+same path replaces whole."""
+
+
+def _csv_rows(path: Path) -> tuple[list[str], dict[int, list[str]]]:
+    """``path``'s header and its rows by line (the header is line 1)."""
+    try:
+        with path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            header = [column.strip() for column in next(reader, [])]
+            return header, {line: cells for line, cells in enumerate(reader, start=2)}
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return [], {}
+
+
+def _overridden(ref: ItemizationReference, data_dir: Path, lineage: list[Path]) -> bool:
+    """Whether a nearer scenario replaces what ``ref`` sits in: its whole
+    file, or, for a file merged row by row, its row's value in that column."""
+    owner = next((i for i, folder in enumerate(lineage) if ref.path.is_relative_to(folder)), None)
+    rel = ref.path.relative_to(data_dir if owner is None else lineage[owner])
+    nearer = [folder / rel for folder in lineage[(-1 if owner is None else owner) + 1:]]
+    nearer = [path for path in nearer if path.is_file()]
+    if not nearer:
+        return False
+    keys = _ROW_KEYS.get(ref.path.name)
+    if keys is None or owner is None:
+        return True
+    header, rows = _csv_rows(ref.path)
+    row = dict(zip(header, (cell.strip() for cell in rows.get(ref.line, [])), strict=False))
+    key = tuple(row.get(column, "") for column in keys)
+    for path in nearer:
+        near_header, near_rows = _csv_rows(path)
+        if ref.column.strip() not in near_header:
+            continue
+        for cells in near_rows.values():
+            near = dict(zip(near_header, (cell.strip() for cell in cells), strict=False))
+            if tuple(near.get(column, "") for column in keys) == key:
+                return True
+    return False
+
+
+def itemization_references(
+    data_dir: Path, scenario_dir: Path, *, effective: bool = False,
+) -> dict[str, list[ItemizationReference]]:
     """Every ``@name`` in a money column (``_money_columns``) of the CSVs
     the scenario reads -- its lineage's folders and the shared aux/ and
     itemizations/ -- by the name it references. A row a later scenario
-    overrides is still reported, in its own file."""
+    overrides is still reported, in its own file, unless ``effective``:
+    then only what the scenario reads, past every override, is."""
     found: dict[str, list[ItemizationReference]] = {}
+    lineage = _lineage_dirs(scenario_dir) if effective else []
     for path in _referencing_files(data_dir, scenario_dir):
         money = _money_columns(path)
         if not money:
@@ -375,6 +427,9 @@ def itemization_references(data_dir: Path, scenario_dir: Path) -> dict[str, list
                             )
         except (OSError, UnicodeDecodeError, csv.Error):
             continue  # the loader reports an unreadable file; a listing skips it
+    if effective:
+        found = {name: kept for name, refs in found.items()
+                 if (kept := [ref for ref in refs if not _overridden(ref, data_dir, lineage)])}
     return found
 
 
