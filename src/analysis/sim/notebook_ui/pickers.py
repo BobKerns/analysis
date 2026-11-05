@@ -169,7 +169,9 @@ def open_run_line(name: str, run_path: Path | None) -> str | None:
         line = f"`{name}`: run `{run_path.name}`"
     if status.status == "succeeded":
         return line + (f", finished {finished}" if finished else "")
-    return (line + f" **{_failure(status)}**"
+    # Escaped: StyledMarkdown passes HTML through, and a failure reason
+    # can hold a repr such as "<object object at 0x...>".
+    return (line + f" **{html_lib.escape(_failure(status))}**"
             + (f" at {finished}" if finished else "")
             + "; its results stop where it ended")
 

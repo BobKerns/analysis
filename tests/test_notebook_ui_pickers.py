@@ -578,3 +578,15 @@ def test_the_scenario_summary_names_the_latest_run_not_the_opened_one(
         assert f"| latest run | `{failed}`" in summary
     finally:
         container.close()
+
+
+def test_open_run_line_escapes_a_failure_reason_that_looks_like_a_tag(
+    retire_alice_test_run: Path, runs_dir: Path,
+) -> None:
+    good = latest_run_path(runs_dir, "retire_alice", wait=False)
+    assert good is not None
+    failed = _failed_copy(good, "99991231T235959Z", "bad value <object object at 0x1>")
+
+    line = open_run_line("retire_alice", failed)
+    assert line is not None
+    assert "&lt;object object at 0x1&gt;" in line
