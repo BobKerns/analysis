@@ -653,13 +653,14 @@ the first month the rule reads it ([#475](https://github.com/BobKerns/analysis/i
 the load fails, naming the series, its first row and the first reader. Each lot's growth rule
 (ADR-005 §5) reads from `scenario.start`; a hand-written rule from the first month it posts, its
 `start` or the scenario's, whichever is later, then its cadence, unless its `end` or the scenario's
-comes first. A `retire_scheduled` row (§3.1) replaces the rule's `end` when applied, even with a
-later date, so a rule's one fixed retirement in the run is its end, and with more than one, or one
-whose date can move, the rule counts as posting until the scenario ends; a blend slice from the month its allocation set
-applies, while the rule still posts. A `set_rate` row on the same `(aux_kind, series)` supplies a
-rate from its month, and so does a `swap_aux_table` row (§3.5) of that series. Calendar rows count
-only when dated in the run and fixed: one whose date varies or follows a `date_marker` could land
-later.
+comes first. A `retire_scheduled` row (§3.1) replaces the rule's `end` on its date, even with a
+later date, so a rule's one fixed retirement in the run is its end, except that one after the
+rule's own `end` reopens it only in the retirement's month; with more than one, or one whose date
+can move, the rule counts as posting until the scenario ends. A blend slice reads from the month
+its allocation set applies, while the rule still posts. A `set_rate` row on the same
+`(aux_kind, series)` supplies a rate from its month, and so does a `swap_aux_table` row (§3.5) of
+that series once its source has a rate. Calendar rows count only when dated in the run and fixed:
+one whose date varies or follows a `date_marker` could land later.
 
 Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_lots.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it. A symbol is also upper case, as tickers are: a lower-case spelling would be a second symbol that no price file or allocation matches, so the loader rejects one in `securities.csv`, `allocations.csv`, `account_lots.csv` or a `security_price__<symbol>.csv` filename (`_validate_symbol_case`), and the commands that write a symbol upper-case it.
 

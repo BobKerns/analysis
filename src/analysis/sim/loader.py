@@ -4488,27 +4488,41 @@ def _validate_rate_series_start(
             supplied_from[key] = min(supplied_from.get(key, effective), effective)
     file_from = dict(supplied_from)
     # The run applies a calendar event only in a month it steps through, so
-    # one dated before the start never happens; one whose date varies or
-    # follows a date marker could land later than written.
+    # one dated before the start or after the end never happens; one whose
+    # date varies or follows a date marker could land later than written.
     fixed_events = [
         row for row in calendar_rows
-        if (when := row.get("date", "")) and when[:7] >= run_start.isoformat()[:7]
+        if (when := row.get("date", ""))
+        and run_start.isoformat()[:7] <= when[:7] <= run_end.isoformat()[:7]
         and (row.get("vary_target") or "").strip() != "date"
         and "date" not in (_safe_json(row.get(DATE_REFS)) or {})
     ]
+    # (target key, date, source key or None for a set_rate)
+    suppliers: list[tuple[tuple[str, str], str, tuple[str, str] | None]] = []
     for row in fixed_events:
         series, when = row.get("series", ""), row["date"]
         params = _safe_json(row.get("params_json")) or {}
-        if row.get("kind") == "set_rate" and not (row.get("vary_resume") or "").strip():
-            key = (params.get("aux_kind", "rate"), series)
-        elif row.get("kind") == "swap_aux_table":
-            # From its date the series reads as its source, which the run
-            # requires to have a row in force by then (ADR-003 §3.5).
-            key = (params.get("aux_kind", ""), series)
-        else:
+        if not series:
             continue
-        if series and key in supplied_from:
-            supplied_from[key] = min(supplied_from[key], when)
+        if row.get("kind") == "set_rate" and not (row.get("vary_resume") or "").strip():
+            suppliers.append(((params.get("aux_kind", "rate"), series), when, None))
+        elif row.get("kind") == "swap_aux_table" and isinstance(
+                source := params.get("source_series"), str):
+            # From its date the series reads as its source, which needs a
+            # rate in force by then or the run fails (ADR-003 §3.5).
+            kind = params.get("aux_kind", "")
+            suppliers.append(((kind, series), when, (kind, source)))
+    # A swap's source may itself be supplied by an earlier set_rate or swap,
+    # so credit until nothing changes.
+    changed = True
+    while changed:
+        changed = False
+        for key, when, source in suppliers:
+            if key not in supplied_from or supplied_from[key] <= when:
+                continue
+            if source is None or supplied_from.get(source, "9999") <= when:
+                supplied_from[key] = when
+                changed = True
     # A retire_scheduled event's date, which keeps its day, replaces its
     # rule's inclusive end when applied (ADR-006 §2), even a later one, so a
     # second retirement reopens the rule. Only a rule's one fixed, in-run
@@ -4545,10 +4559,9 @@ def _validate_rate_series_start(
             continue
         params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
         name = row.get("name", "")
-        window = _first_firing(
-            row, run_start, run_end,
-            end=_last_posting_month(row, retire_day) if (retire_day := retired.get(name)) else None,
-            retire_moves=name in retired and retired[name] is None)
+        window = _first_firing(row, run_start, run_end, retire_moves=name in retired)
+        if retire_day := retired.get(name):
+            window = _retired_window(row, run_start, run_end, retire_day)
         if window is None:
             continue
         first, last = window
@@ -4603,16 +4616,36 @@ def _last_posting_month(row: Mapping[str, str], retired_on: date) -> date:
     return add_month_ends(month, -1)
 
 
+def _retired_window(
+    row: Mapping[str, str], run_start: date, run_end: date, retired_on: date,
+) -> tuple[date, date] | None:
+    """The first and last months a rule with one fixed retirement can post.
+    The retirement takes effect only on its date: before then the rule keeps
+    its own end. So one retired after that end stops at its end and posts
+    again only in the retirement's own month, if it posts then at all."""
+    last_post = _last_posting_month(row, retired_on)
+    try:
+        own_end = parse_month(row["end"]) if row.get("end") else run_end
+    except ValueError:
+        return None  # reported by _validate_scheduled
+    if last_post <= own_end:
+        return _first_firing(row, run_start, run_end, end=last_post)
+    window = _first_firing(row, run_start, run_end)
+    if window is None and last_post == parse_month(retired_on.isoformat()):
+        window = _first_firing(row, run_start, run_end, end=last_post, after=last_post)
+    return window
+
+
 def _first_firing(
     row: Mapping[str, str], run_start: date, run_end: date,
-    *, end: date | None = None, retire_moves: bool = False,
+    *, end: date | None = None, retire_moves: bool = False, after: date | None = None,
 ) -> tuple[date, date] | None:
     """The first and last months a scheduled rule can post in the run, or
     None if it never does: the first is from its start or the scenario's,
     whichever is later, to the first month its cadence fires; the last is its
     end (``end`` when a retirement replaces it; the run's end when a
     retirement may reopen it, ``retire_moves``) or the scenario's, whichever
-    is earlier."""
+    is earlier. ``after`` starts the search no earlier than that month."""
     from analysis.sim.engine import _cadence_fires  # the engine's own cadence rule
 
     try:
@@ -4626,7 +4659,7 @@ def _first_firing(
         return None  # reported by _validate_scheduled; the engine's rule would raise
     month_of_year = row.get("month_of_year", "")
     moy = int(month_of_year) if month_of_year.isdigit() else None
-    month = max(rule_start, run_start)
+    month = max(rule_start, run_start, after or run_start)
     last = min(rule_end, run_end)
     for _ in range(12):  # every cadence fires within a year of its start
         if month > last:

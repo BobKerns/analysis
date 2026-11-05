@@ -127,12 +127,17 @@ def test_a_second_retirement_reopens_the_rule() -> None:
     assert "reads it from 2026-12" in issue
 
 
-def test_a_retirement_after_the_rules_end_reopens_it_until_then() -> None:
+def test_a_retirement_after_the_rules_end_reopens_it_only_in_its_own_month() -> None:
+    """The retirement takes effect on its date, not before: a rule that ended
+    in August stays stopped until then, and posts again only if its cadence
+    fires in the retirement's own month."""
     aux = _rate("bonus", "2027-01-31")
     december = _rule(series="bonus", cadence="annual", month_of_year="12", end="2026-08-31")
     assert _issues([december], aux) == []
     retire = {"kind": "retire_scheduled", "scheduled_name": "grow", "date": "2027-06-30"}
-    assert len(_issues([december], aux, [retire])) == 1
+    assert _issues([december], aux, [retire]) == []
+    assert len(_issues([december], aux, [{**retire, "date": "2026-12-31"}])) == 1
+    assert _issues([december], aux, [{**retire, "date": "2026-12-15"}]) == []
 
 
 def test_a_retirement_that_can_move_leaves_the_rule_open() -> None:
@@ -163,6 +168,26 @@ def test_a_swap_supplies_the_series_from_its_date() -> None:
     aux = _rate("stocks", "2027-01-31") + _rate("old", "2026-01-31")
     assert _issues([_growth("stocks")], aux, [swap]) == []
     assert len(_issues([_growth("stocks")], aux, [{**swap, "date": "2026-07-31"}])) == 1
+
+
+def test_a_swap_counts_only_once_its_source_has_a_rate() -> None:
+    """A swap whose source has no rate by its date fails the run, so it
+    supplies nothing, unless an earlier set_rate gives the source one."""
+    swap = {"kind": "swap_aux_table", "series": "stocks", "date": "2026-05-31",
+            "params_json": '{"aux_kind": "rate", "source_series": "old"}'}
+    aux = _rate("stocks", "2027-01-31") + _rate("old", "2026-09-30")
+    assert len(_issues([_growth("stocks")], aux, [swap])) == 1
+    set_old = {"kind": "set_rate", "series": "old", "date": "2026-05-31"}
+    assert _issues([_growth("stocks")], aux, [set_old, swap]) == []
+
+
+def test_a_retirement_after_the_scenarios_end_never_happens() -> None:
+    """It doesn't count as a second retirement that might reopen the rule."""
+    aux = _rate("bonus", "2027-01-31")
+    december = _rule(series="bonus", cadence="annual", month_of_year="12")
+    retire = {"kind": "retire_scheduled", "scheduled_name": "grow", "date": "2026-08-31"}
+    late = {**retire, "date": "2041-12-31"}
+    assert _issues([december], aux, [retire, late]) == []
 
 
 def test_rate_kind_names_the_series_kind() -> None:
