@@ -984,7 +984,9 @@ at the data repo root, shared by every scenario:
   symbol.
 - **what it holds**, in `allocations.csv`: its share in each asset class.
   These drive `sim allocation` and how a fund lot grows (at the blend of its
-  classes' rate series). Without them the symbol shows as `unclassified`.
+  classes' rate series). Without them the symbol shows as `unclassified`,
+  unless its lot grows at an asset class's own series (`stock_us`, `bond`,
+  ...), which classes it as that class.
 - **its prices**, in `prices/security_price__ABCDX.csv`. A price is needed
   only when a lot gives `quantity` instead of `opening_balance`.
 
@@ -1172,7 +1174,12 @@ The source can be an account (with `--source-lot` if it has several lots) or
 a source chain. The date defaults to the scenario's first month and can't be
 earlier; a day within the month still buys at its end. If the lot's symbol
 grows and the account has no `tax_character` yet, the command sets one, as it
-does for a new account. A new account takes `--account-subkind` and
+does for a new account. The lot grows at its symbol's rate series or allocation,
+else at the account's series. `--series` names a rate series for it instead,
+such as an asset class's (`--series stock_us`); it replaces the symbol's, as a
+lot's `series` does in `account_lots.csv`. A lot with
+none of these would hold its dollars flat for the whole run, so the command
+asks for a series when it is asking, and otherwise warns. A new account takes `--account-subkind` and
 `--owner` (`joint` unless you say otherwise, but a retirement account needs a
 person). A new symbol takes `--symbol-name` and `--weight`, as for
 `sim symbol add`, and its prices are fetched unless you pass `--no-fetch`; if
@@ -1187,7 +1194,7 @@ income, and the new lot's basis is the amount converted:
 
 ```sh
 sim invest Asset_TraditionalIRA_Alice Asset_Roth_Alice conv_2027 \
-    --subkind roth_ira --amount 20000 --date 2027-01
+    --subkind roth_ira --series stock --amount 20000 --date 2027-01
 ```
 
 #### Converting up to a bracket, every year

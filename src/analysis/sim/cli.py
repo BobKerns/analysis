@@ -17359,6 +17359,9 @@ def _ask(text: str, choices: list[str] | None = None, default: str | None = None
               help="A new symbol's share in one asset class (repeatable), as for `sim symbol add`.")
 @click.option("--fetch/--no-fetch", default=True, show_default=True,
               help="Fetch a new symbol's prices.")
+@click.option("--series", "lot_series", type=completion.SeriesName("rate"), default=None,
+              help="A rate series the lot grows at, such as an asset class's (stock_us); "
+                   "it replaces the symbol's own rate series or allocation.")
 @click.option("--subkind", "lot_subkind", default=None,
               type=click.Choice(sorted(registries.RETIREMENT_LOT_SUBKINDS)),
               help="The lot's subkind, in a retirement account: Roth or traditional, IRA or 401k.")
@@ -17372,7 +17375,7 @@ def _ask(text: str, choices: list[str] | None = None, default: str | None = None
 def invest_command(
     source: str | None, account: str | None, lot: str | None, source_lot: str | None,
     amount: str | None, when: str | None, symbol: str | None, symbol_name: str | None,
-    weight_specs: tuple[str, ...], fetch: bool, lot_subkind: str | None,
+    weight_specs: tuple[str, ...], fetch: bool, lot_series: str | None, lot_subkind: str | None,
     account_subkind: str | None, owner: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Invest AMOUNT from SOURCE in a new LOT of ACCOUNT, on a date.
@@ -17383,6 +17386,10 @@ def invest_command(
     (--symbol-name, --weight, and its prices unless --no-fetch). SOURCE is an
     account or a source chain. Whatever is left out is asked for, and the
     equivalent command is printed.
+
+    The lot grows at --series when given (it replaces the symbol's), else at
+    its symbol's rate series or allocation, else at its account's series. A lot with none of these would
+    hold its dollars flat, so it is asked for (guided) or warned about.
 
     For a holding the scenario starts with, use `sim account lot add` instead.
     """
@@ -17395,9 +17402,9 @@ def invest_command(
         lot_info = _lot_info(con)
         chains = _interior_chains(con, "source")
         known_symbols = [r[0] for r in con.execute("SELECT symbol FROM security ORDER BY symbol")]
-        growing = {r[0] for r in con.execute(
-            "SELECT symbol FROM security_allocation UNION SELECT series FROM aux_table WHERE kind = 'rate'"
-        ) if r[0]}
+        rate_series = sorted({r[0] for r in con.execute(
+            "SELECT DISTINCT series FROM aux_table WHERE kind = 'rate'") if r[0]})
+        growing = {r[0] for r in con.execute("SELECT symbol FROM security_allocation") if r[0]} | set(rate_series)
         start = con.execute("SELECT start FROM scenario").fetchone()[0]
         persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
         people = [r[0] for r in con.execute(  # who may own a retirement account (#217)
@@ -17495,6 +17502,20 @@ def invest_command(
         raise click.ClickException(
             f"{when} is before the scenario starts ({start[:7]}); for a holding it starts "
             "with, use `sim account lot add`")
+    # Settled before a new symbol is written, so a mistyped series, given or
+    # answered, leaves nothing behind to block the corrected retry.
+    dollars = _money_cell(amount)
+    found = None if new_account else _overlay_rows(scenario_dir, "accounts.csv").get(account)
+    symbol_grows = symbol is not None and (symbol in growing or bool(weights))
+    # A lot with no series of its own grows at its account's, if the account
+    # has a growth character (a retirement lot takes its subkind's).
+    account_grows = found is not None and bool(found.row.get("series")) \
+        and (bool(found.row.get("tax_character")) or retirement)
+    if lot_series is None and not symbol_grows and not account_grows and guided:
+        lot_series = _ask("growth series (optional; an asset class's, such as stock_us)",
+                          rate_series, default="") or None
+    if lot_series is not None and lot_series not in rate_series:
+        raise click.ClickException(f"no rate series {lot_series!r}; known: {', '.join(rate_series)}")
 
     if new_symbol:
         assert symbol is not None
@@ -17510,11 +17531,15 @@ def invest_command(
                 f"{added.symbol}: prices not fetched, so nothing else was written; fetch them "
                 f"with `sim prices fetch {added.symbol}`, then run sim invest again")
 
-    dollars = _money_cell(amount)
-    grows = symbol is not None and (symbol in growing or bool(weights))
+    grows = symbol_grows or lot_series is not None
+    if not grows and not account_grows:
+        click.echo(
+            f"warning: lot {lot!r} has nothing to grow by, so it will hold its {dollars} flat: "
+            + (f"{symbol} has no allocation or rate series" if symbol else "it has no symbol")
+            + f", and {account!r} no growth series. Give it --series (such as stock_us) "
+            "or a symbol with an allocation.", err=True)
     # An existing account with no growth character has no lot that grows yet,
     # so this lot sets it, as a new account's first lot does.
-    found = None if new_account else _overlay_rows(scenario_dir, "accounts.csv").get(account)
     set_character = grows and (new_account or (found is not None and not found.row.get("tax_character")))
     growth = ""
     if set_character:
@@ -17538,7 +17563,7 @@ def invest_command(
             "lot": lot if investment or lot != registries.DEFAULT_LOT else "",
             "subkind": lot_subkind or "", "symbol": symbol or "",
             # The purchase posts at month end, so the lot is acquired then too.
-            "acquired": month_end_iso(when),
+            "acquired": month_end_iso(when), "series": lot_series or "",
             "opening_balance": "0.00",
         })
         _append_csv_row(edit.path(scenario_dir / "calendar.csv"), registries.CALENDAR_HEADER, {
@@ -17554,7 +17579,8 @@ def invest_command(
     if guided:
         words = ["sim", "invest", source, account, lot, "--amount", dollars, "--date", when]
         for option, value in (("--source-lot", source_lot), ("--symbol", symbol),
-                              ("--symbol-name", symbol_name), ("--subkind", lot_subkind)):
+                              ("--symbol-name", symbol_name), ("--series", lot_series),
+                              ("--subkind", lot_subkind)):
             if value:
                 words += [option, value]
         for spec in weight_specs:

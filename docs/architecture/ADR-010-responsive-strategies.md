@@ -160,8 +160,10 @@ A strategy with a trigger must have an `on_breach` hook. Rails no trigger names 
 
 1. The lot's symbol's `allocations.csv` set in force: the latest `as_of` on or before the month, else the earliest.
 2. Else the lot's `<account>:<lot>` key in `allocations.csv`: a lot with no symbol (one that grows at a rate series) is classed by a row whose `symbol` is, say, `Asset_IRA_Alice:stable` (Bob, 2026-10-21). A ticker has no colon, so the two can't collide. Price fetching, symbol completion and symbol listings skip these keys, and renaming the account or the lot rewrites them (keeping the old key too while a scenario the rename doesn't reach still has the old name, since the file is shared).
-3. Else the class the symbol means (`CASH`, `CD`) or the account subkind's (cash, real estate, ...).
-4. Else `unclassified`.
+3. Else the class the symbol means (`CASH`, `CD`).
+4. Else the class the lot's growth series is named for: a lot growing at `stock_us` or `bond` is that class (the series of its growth rule, ADR-005 §5; at load, the lot's or its account's `series`).
+5. Else the account subkind's (cash, real estate, ...).
+6. Else `unclassified`.
 
 A lot in a strategy's portfolio that ends up `unclassified` is a load error naming the row to add (Bob: "resolve by adding to allocations.csv"), since it would skew every share.
 
@@ -329,3 +331,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: a strategy's `trigger` column, rails checked each January on the run so far, the `on_breach` and `month_start` hooks, `ctx.history` and `ctx.rail` (API version 4), `strategy_trigger` and `breach_event`, guard rails in a triggered lineage's tree, `sim strategy log --breaches`, the explain and guard-rails report lines (§1–§4, §3.3, §7, §8).
 - [#459](https://github.com/BobKerns/analysis/issues/459): amortization spending: the built-in `amortize` (VPW, the RMD method, a survival horizon), `ctx.survival_years`, `life_expectancy` and `rmd_divisor`, `ScenarioView`'s people, aux tables and portfolio classes (API version 5) (§3, §4, §6.4).
 - [#463](https://github.com/BobKerns/analysis/issues/463): down-market and bucket rules: the built-ins `down_market` (Guyton's withdrawal rule) and `buckets` (a cash reserve refilled inside each account), with a `monthly` or `annual` cadence, `ctx.trailing_return` and `ScenarioView.portfolio_lots` (API version 6) (§3, §4, §6.5).
+- [#371](https://github.com/BobKerns/analysis/issues/371): a lot is classed by the asset class its growth series is named for, before its account subkind (§5).

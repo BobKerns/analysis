@@ -374,7 +374,7 @@ def _owned_rules(
 def check_portfolio_classes(
     prepared: Sequence[PreparedStrategy], *,
     kinds: StrategyKinds,
-    lots: Sequence[tuple[str, str, str | None, str, str, frozenset[str]]],
+    lots: Sequence[tuple[str, str, str | None, str, str, frozenset[str], str | None]],
     sets: Mapping[str, Sequence[tuple[str, Mapping[str, float]]]],
     start: str,
     issues: list[str],
@@ -382,18 +382,19 @@ def check_portfolio_classes(
     """Every asset lot in a strategy's tagged portfolio has an asset class
     (Bob, #326): an ``unclassified`` lot would silently skew the shares, so
     say which row to add. ``lots`` is ``(account, lot, symbol, account kind,
-    account subkind, account tags)``."""
+    account subkind, account tags, growth series)``."""
     for s in prepared:
         unit_of = param_units(kinds.get(s.kind).Params)
         for key, unit in unit_of.items():
             if unit is None or unit.name != "tag" or key not in s.params:
                 continue
             tag = s.params[key]
-            for account, lot, symbol, kind, subkind, tags in lots:
+            for account, lot, symbol, kind, subkind, tags, series in lots:
                 if kind != "asset" or tag not in tags:
                     continue
                 weights = class_weights(
                     symbol=symbol, account=account, lot=lot, subkind=subkind, sets=sets, date=start,
+                    series=series,
                 )
                 if UNCLASSIFIED in weights:
                     issues.append(
