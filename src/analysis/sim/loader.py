@@ -4657,8 +4657,10 @@ def _first_firing(
     cadence = row.get("cadence") or "monthly"
     if cadence not in registries.CADENCES:
         return None  # reported by _validate_scheduled; the engine's rule would raise
-    month_of_year = row.get("month_of_year", "")
-    moy = int(month_of_year) if month_of_year.isdigit() else None
+    try:  # parsed as the intent writer does, so "+6" is June here too
+        moy: int | None = int(row["month_of_year"]) if row.get("month_of_year") else None
+    except ValueError:
+        return None  # not a month; the intent writer refuses it
     month = max(rule_start, run_start, after or run_start)
     last = min(rule_end, run_end)
     for _ in range(12):  # every cadence fires within a year of its start

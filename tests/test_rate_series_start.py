@@ -286,3 +286,11 @@ def test_the_loader_takes_a_set_rate_at_the_start(
     append_calendar_row(date="2026-05-31", kind="set_rate", series="brokerage_growth",
                         amount="5%")
     load_test_copy()
+
+
+def test_a_signed_month_of_year_is_read_as_the_intent_writer_reads_it() -> None:
+    """int("+6") is 6, so a January-start annual rule with "+6" first fires
+    in June, as the engine runs it."""
+    aux = _rate("bonus", "2026-06-30")
+    rule = _rule(series="bonus", cadence="annual", month_of_year="+6", start="2026-05-31")
+    assert _issues([rule], aux) == []
