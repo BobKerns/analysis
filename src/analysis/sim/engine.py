@@ -3081,7 +3081,10 @@ def _year_tax_estimate(
         net short-term gain within the ordinary income, with more ordinary
         income and long-term gain on top, less the retirement exclusions."""
         ordinary, ltcg = gross_ordinary + extra_ordinary, taxed_ltcg(extra_gain)
-        off_ordinary, off_ltcg, off_short = exclusion.split(ordinary, ltcg)
+        # Gain taken away (the drawdown estimate replaces posted gain) can't
+        # be left out; gain added isn't in anyone's income by kind.
+        net_gain = min(exclusion.net_gain, capital.stcg + net_ltcg(capital.ltcg + extra_gain))
+        off_ordinary, off_ltcg, off_short = exclusion.split(ordinary, ltcg, net_gain)
         return ordinary - off_ordinary, ltcg - off_ltcg, capital.stcg - off_short
 
     ordinary_income, ltcg_income, stcg_income = net_income(0, 0)
@@ -3298,10 +3301,13 @@ class _RetirementExclusion(NamedTuple):
         off (``split``, without its short-term part)."""
         return self.split(ordinary, ltcg)[:2]
 
-    def split(self, ordinary: int, ltcg: int) -> tuple[int, int, int]:
+    def split(self, ordinary: int, ltcg: int,
+              net_gain: int | None = None) -> tuple[int, int, int]:
         """How much of ``ordinary`` income and ``ltcg`` the exclusions take
         off, with household income ``ordinary + ltcg`` for their income
-        tests, and how much of the ordinary part is short-term gain. A grant
+        tests, and how much of the ordinary part is short-term gain;
+        ``net_gain`` stands in for the year's net gain (an estimate with
+        less gain than was posted). A grant
         uses up only the income it actually leaves out, so a later one can
         cover what an earlier one's test denied. Gain beyond
         the net capital gain (a loss offset it) isn't left out at all; the
@@ -3312,11 +3318,12 @@ class _RetirementExclusion(NamedTuple):
         income = ordinary + ltcg
         pools = {person: dict(by_kind) for person, by_kind in self.pools.items()}
         total = gains = 0
+        gain_limit = max(0, self.net_gain if net_gain is None else net_gain)
         for grant in self.grants:
             left = pools[grant.person]
             # Gain past what losses left of the net gain isn't income to
             # cover, so it mustn't use up a grant's cap.
-            net_left = max(0, max(0, self.net_gain) - gains)
+            net_left = max(0, gain_limit - gains)
             covered = [(kind, min(left[kind], net_left) if kind == "capital_gain" else left[kind])
                        for kind in grant.income]
             eligible = sum(amount for _, amount in covered)
@@ -3330,7 +3337,9 @@ class _RetirementExclusion(NamedTuple):
                 granted -= take
                 gains += take if kind == "capital_gain" else 0
         total = min(total, max(0, income))
-        off_ordinary = min(total - min(gains, max(0, ltcg)), max(0, ordinary))
+        # When income is below the gain left out (a business loss), the
+        # total is all gain and none of it comes off ordinary income.
+        off_ordinary = max(0, min(total - min(gains, max(0, ltcg)), max(0, ordinary)))
         off_ltcg = min(total - off_ordinary, max(0, ltcg))
         # Gain left out past the long-term gain is short-term gain, which is
         # part of ordinary income: a state's short-term rates (#485) skip it.

@@ -359,6 +359,22 @@ def test_an_excluded_short_term_gain_leaves_the_short_term_rates() -> None:
     assert exclusion.split(115_000, 5_000) == (15_000, 5_000, 15_000)
 
 
+def test_gain_an_estimate_takes_away_is_not_excluded() -> None:
+    """The drawdown estimate replaces posted gain: with the $20,000 gain
+    taken out, the exclusion leaves the wages alone."""
+    exclusion = _RetirementExclusion(
+        _pools(capital_gain=20_000), (_grant("capital_gain"),), net_gain=20_000)
+    assert exclusion.split(100_000, 0, net_gain=0) == (0, 0, 0)
+    assert exclusion.split(100_000, 10_000, net_gain=10_000) == (0, 10_000, 0)
+
+
+def test_a_loss_below_the_gain_leaves_no_negative_exclusion() -> None:
+    """A $10,000 business loss and $20,000 of gain: $10,000 of income, all
+    of it gain, comes off the gain and nothing off ordinary income."""
+    exclusion = _RetirementExclusion(
+        _pools(capital_gain=20_000), (_grant("capital_gain"),), net_gain=20_000)
+    assert exclusion.split(-10_000, 20_000) == (0, 10_000, 0)
+
 
 def test_state_taxable_social_security_reads_income_before_the_exclusion(
     state_ira: Path, tmp_path: Path,
