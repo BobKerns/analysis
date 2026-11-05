@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.engine import EngineError, run_scenario
+from analysis.sim.engine import EngineError, _state_ss_exclusion, run_scenario
 from analysis.sim.loader import growth_rule_name, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -2099,3 +2099,67 @@ def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
     run_path = tmp_path / "r.sqlite3"
     with pytest.raises(EngineError, match="vary_distribution"):
         run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+
+
+@pytest.mark.parametrize(("row", "agi", "excluded"), [
+    # No phase-out: the whole share, at any income.
+    ({"exclusion_micros": 1_000_000}, 500_000_00, 10_000_00),
+    ({"exclusion_micros": 0}, 0, 0),
+    # Linear phase-out: half way through the range keeps half.
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 80_000_00,
+      "phaseout_end": 90_000_00}, 85_000_00, 5_000_00),
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 80_000_00,
+      "phaseout_end": 90_000_00}, 80_000_00, 10_000_00),
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 80_000_00,
+      "phaseout_end": 90_000_00}, 95_000_00, 0),
+    # A cliff: phaseout_end equal to phaseout_start.
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 100_000_00,
+      "phaseout_end": 100_000_00}, 100_000_01, 0),
+    # A rate: $2 of exclusion lost per dollar over.
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 50_000_00,
+      "phaseout_rate_micros": 2_000_000}, 52_000_00, 6_000_00),
+])
+def test_state_ss_exclusion(row: dict[str, int], agi: int, excluded: int) -> None:
+    """How much of $10,000 of federally taxable Social Security a state's
+    state_social_security row leaves out (#484)."""
+    assert _state_ss_exclusion(row, 10_000_00, agi) == excluded
+
+
+def test_state_social_security_table_taxes_it(
+    add_state_tax: Callable[[], None], write_aux: Callable[[str, str], Path],
+    run_test_copy: Callable[[], Path],
+) -> None:
+    """With no state_social_security table a state taxes no Social Security;
+    with one it taxes the federally taxable amount less its exclusion, here
+    none, or a whole one lost at once above $0 of income (#484)."""
+    add_state_tax()
+
+    def summaries(table: str | None) -> dict[int, tuple[int, int]]:
+        """Each year with Social Security: (state taxable SS, state tax)."""
+        if table is not None:
+            write_aux("state_social_security__CA.csv", table)
+        run = run_test_copy()
+        con = sqlite3.connect(run)
+        try:
+            years = [r[0] for r in con.execute(
+                "SELECT year FROM tax_year_summary "
+                "WHERE bucket = 'state_ss_income' AND amount > 0 ORDER BY year")]
+            return {y: (_summary(con, y, "state_taxable_ss"),
+                        _summary(con, y, "state_tax_liability")) for y in years}
+        finally:
+            con.close()
+            run.unlink()  # run_test_copy writes the same file each time
+
+    exempt = summaries(None)
+    assert exempt
+    assert all(taxable == 0 for taxable, _ in exempt.values())
+    header = ("effective_date,filing_status,exclusion_percent,"
+              "phaseout_start,phaseout_end,phaseout_rate\n")
+    none_excluded = summaries(header + "2020-01-31,MFJ,0%,,,\n2020-01-31,Single,0%,,,\n")
+    assert none_excluded.keys() == exempt.keys()
+    assert any(taxable > 0 for taxable, _ in none_excluded.values())
+    assert all(none_excluded[y][1] >= exempt[y][1] for y in exempt)
+    assert any(none_excluded[y][1] > exempt[y][1] for y in exempt)
+    assert summaries(
+        header + "2020-01-31,MFJ,100%,0,0,\n2020-01-31,Single,100%,0,0,\n",
+    ) == none_excluded

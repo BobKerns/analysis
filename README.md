@@ -41,16 +41,19 @@ To read a formatted `.md` file:
 ## State and territory income tax
 
 The simulator works out a state's income tax the same way for every state:
-federal-style income less Social Security, with capital gains taxed as
-ordinary income by default, less the state's standard deduction, run through the state's
+federal-style income, with capital gains taxed as ordinary income by
+default, less the state's standard deduction, run through the state's
 brackets ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)). A
 state needs two tables in `aux/`, `state_brackets__XX.csv` and
 `state_standard_deduction__XX.csv`, and a `tax_accumulator` rule with `scope`
 `state`. Where a state treats capital gains differently, up to three more
 tables say how: a share of long-term gain excluded, and gain rates of its own
-([the `aux/` README](./templates/aux/README.md#a-states-capital-gains)). Many
-states have rules this leaves out; the table says which matter
-most for a retired household. It reflects state law as of 2026; check the
+([the `aux/` README](./templates/aux/README.md#a-states-capital-gains)).
+Social Security is left out unless `state_social_security__XX.csv` says how
+the state taxes it: the federally taxable amount less an exclusion that can
+phase out with income. Many states have rules this leaves out; the table
+says which matter most for a retired household. It reflects state law as of
+2026; check the
 state's own revenue department before relying on a figure.
 
 | Status | Meaning |
@@ -70,7 +73,7 @@ state's own revenue department before relying on a figure.
 | Arkansas | Partial | Retirement income exclusion |
 | California | Shipped | Personal exemption credits; 1% surcharge over $1 million; tax on HSA growth |
 | Colorado | Partial | Pension and annuity subtraction; Social Security taxed below 65 |
-| Connecticut | Partial | Social Security, pension and IRA exemptions phased by income; exemption phase-outs |
+| Connecticut | Partial | Social Security's 25% cap above the income limit; pension and IRA exemptions phased by income; exemption phase-outs |
 | Delaware | Partial | Pension exclusion |
 | District of Columbia | Tables needed | |
 | Florida | No tax | |
@@ -87,15 +90,15 @@ state's own revenue department before relying on a figure.
 | Maryland | Partial | County income tax; pension exclusion; capital gains surtax |
 | Massachusetts | Partial | Personal exemptions |
 | Michigan | Partial | City income tax; retirement deduction |
-| Minnesota | Partial | Social Security taxed |
+| Minnesota | Partial | Social Security subtraction phases out in $4,000 steps (modeled as a straight line) |
 | Mississippi | Partial | Retirement income and IRA distributions exempt |
 | Missouri | Partial | Short-term gain exemption; pension exemptions |
-| Montana | Partial | Social Security taxed |
+| Montana | Tables needed | |
 | Nebraska | Tables needed | |
 | Nevada | No tax | |
 | New Hampshire | No tax | |
 | New Jersey | Partial | Pension and IRA exclusion with an income cliff; personal exemptions |
-| New Mexico | Partial | Social Security taxed above an income limit |
+| New Mexico | Tables needed | |
 | New York | Partial | Pension and IRA exclusion from age 59½; New York City and Yonkers taxes |
 | North Carolina | Tables needed | |
 | North Dakota | Tables needed | |
@@ -103,13 +106,13 @@ state's own revenue department before relying on a figure.
 | Oklahoma | Partial | Retirement income exclusion |
 | Oregon | Partial | Federal tax subtraction; retirement credit; Portland-area taxes |
 | Pennsylvania | Partial | Retirement income exempt; separate income classes; local taxes |
-| Rhode Island | Partial | Social Security taxed below full retirement age or above an income limit; pension modification |
+| Rhode Island | Partial | Social Security exemption's full-retirement-age test; pension modification |
 | South Carolina | Partial | Retirement and age deductions |
 | South Dakota | No tax | |
 | Tennessee | No tax | |
 | Texas | No tax | |
-| Utah | Partial | Taxpayer credit in place of a deduction; Social Security taxed, with a credit |
-| Vermont | Partial | Social Security taxed above an income limit |
+| Utah | Partial | Taxpayer credit in place of a deduction |
+| Vermont | Tables needed | |
 | Virginia | Partial | Age deduction from 65 |
 | Washington | Partial | No income tax, but a capital gains tax (retirement accounts and homes exempt) |
 | West Virginia | Partial | Senior income exclusion |

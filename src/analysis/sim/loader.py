@@ -1354,6 +1354,7 @@ def load_scenario(
     _validate_inflation_from_start(aux_rows, calendar_rows, scenario_row.get("start", ""), issues)
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
+    _validate_state_social_security(aux_rows, issues)
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -1875,11 +1876,12 @@ def _read_aux_files(
         cols = registries.AUX_KIND_COLUMNS[kind]
         money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
         micros_cols = registries.AUX_MICROS_COLUMNS.get(kind, {})
+        optional_cols = registries.AUX_OPTIONAL_COLUMNS.get(kind, frozenset())
         if _legacy_units_header(csv_path, label, issues):
             continue
         rows = _read_csv(csv_path, issues, label=label)
         for where, row in _located(rows, label):
-            missing = [c for c in cols if c not in row]
+            missing = [c for c in cols if c not in row and c not in optional_cols]
             if missing:
                 issues.append(
                     f"{where}: missing columns {missing}"
@@ -1890,8 +1892,10 @@ def _read_aux_files(
             for c in cols:
                 if c == "effective_date":
                     continue
-                raw = row[c]
-                if c in micros_cols:
+                raw = row.get(c) or ""
+                if c in optional_cols and not raw.strip():
+                    payload[micros_cols[c][0] if c in micros_cols else c] = None
+                elif c in micros_cols:
                     key, unit = micros_cols[c]
                     try:
                         payload[key] = _AUX_MICROS_PARSERS[unit](raw)
@@ -3793,6 +3797,34 @@ def _warn_state_standard_deduction(
                 f"{where}: after the move to {state}, state tax uses the federal standard "
                 f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv"
             )
+
+
+def _validate_state_social_security(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A state_social_security row (#484) phases its exclusion out one way:
+    to nothing at phaseout_end, or by phaseout_rate per dollar, both from
+    phaseout_start."""
+    for kind, state, payload, effective in aux_rows:
+        if kind != registries.STATE_SOCIAL_SECURITY:
+            continue
+        where = (f"aux/{kind}__{state}.csv" if state else f"aux/{kind}.csv") + (
+            f" ({effective}, {payload.get('filing_status')})")
+        percent = payload.get("exclusion_micros")
+        if percent is not None and not 0 <= percent <= 1_000_000:
+            issues.append(f"{where}: exclusion_percent must be 0% to 100%")
+        start, end = payload.get("phaseout_start"), payload.get("phaseout_end")
+        rate = payload.get("phaseout_rate_micros")
+        if start is None and (end is not None or rate is not None):
+            issues.append(f"{where}: phaseout_end and phaseout_rate need a phaseout_start")
+        elif start is not None and (end is None) == (rate is None):
+            issues.append(f"{where}: give phaseout_end or phaseout_rate with phaseout_start, "
+                          "not both or neither")
+        elif start is not None and end is not None and end < start:
+            issues.append(f"{where}: phaseout_end is below phaseout_start")
+        elif rate is not None and rate <= 0:
+            issues.append(f"{where}: phaseout_rate must be more than 0%")
 
 
 def _validate_swap_aux_tables(
