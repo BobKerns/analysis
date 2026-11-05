@@ -363,6 +363,13 @@ columns, as the loader merges them; any other file a nearer one of the
 same path replaces whole."""
 
 
+def _row_key(row: dict[str, str], keys: tuple[str, ...]) -> tuple[str, ...]:
+    """A row's key as the loader merges on it: a blank lot is the default
+    lot (``loader._default_lots``)."""
+    return tuple((row.get(column, "") or registries.DEFAULT_LOT) if column == "lot"
+                 else row.get(column, "") for column in keys)
+
+
 def _csv_rows(path: Path) -> tuple[list[str], dict[int, list[str]]]:
     """``path``'s header and its rows by line (the header is line 1)."""
     try:
@@ -388,14 +395,14 @@ def _overridden(ref: ItemizationReference, data_dir: Path, lineage: list[Path]) 
         return True
     header, rows = _csv_rows(ref.path)
     row = dict(zip(header, (cell.strip() for cell in rows.get(ref.line, [])), strict=False))
-    key = tuple(row.get(column, "") for column in keys)
+    key = _row_key(row, keys)
     for path in nearer:
         near_header, near_rows = _csv_rows(path)
         if ref.column.strip() not in near_header:
             continue
         for cells in near_rows.values():
             near = dict(zip(near_header, (cell.strip() for cell in cells), strict=False))
-            if tuple(near.get(column, "") for column in keys) == key:
+            if _row_key(near, keys) == key:
                 return True
     return False
 

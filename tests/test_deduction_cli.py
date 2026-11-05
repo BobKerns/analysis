@@ -454,3 +454,17 @@ def test_a_whole_file_the_child_replaces_is_ignored(test_data_dir: Path) -> None
     result = _sim(test_data_dir, "child", "edit", "2028", "--item", "a=2")
 
     assert result.exit_code == 0, result.output
+
+
+def test_a_blank_lot_is_the_default_lot_when_overriding(test_data_dir: Path) -> None:
+    _child(test_data_dir)  # first: the files below are only read, never loaded
+    parent = test_data_dir / "scenarios" / "retire_alice"
+    (parent / "account_lots.csv").write_text(
+        "account_name,lot,opening_balance\nAsset_Checking,,@deductions_2028\n", encoding="utf-8")
+    (test_data_dir / "scenarios" / "child" / "account_lots.csv").write_text(
+        "account_name,lot,opening_balance\nAsset_Checking,default,100.00\n", encoding="utf-8")
+
+    refs = setup_listings.itemization_references(
+        test_data_dir, test_data_dir / "scenarios" / "child", effective=True)
+
+    assert "deductions_2028" not in refs
