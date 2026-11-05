@@ -685,7 +685,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
         from_account="Asset_Checking", to_account="Expense_Taxes_State", cadence="annual",
         month_of_year="4", amount_rule_kind="tax_accumulator", tax_character="none",
         start="2027-04-30", priority="400", meta_json="{}",
-        params_json='{"year":"previous","scope":"state"}',
+        params_json='{"year":"previous","scope":"state","bracket_series":"CA"}',
     )
     retire_alice_csv("year_to_date.csv").write_text(
         "name,from_account,to_account,amount,tax_character\n"

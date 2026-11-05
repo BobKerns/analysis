@@ -1270,8 +1270,9 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
     """Give the private retire_alice copy a state income tax: an
     Expense_Taxes_State account and a ``tax_accumulator`` rule (scope state)
     paying the previous year's state tax each April. ``bracket_series`` names
-    the state when more than one ``state_brackets`` table exists."""
-    def _add(bracket_series: str | None = None) -> None:
+    the state: California, the prototype's, unless the test says otherwise
+    (None leaves it out)."""
+    def _add(bracket_series: str | None = "CA") -> None:
         params = {"year": "previous", "scope": "state"}
         if bracket_series:
             params["bracket_series"] = bracket_series

@@ -415,10 +415,13 @@ tax year, by looking back over everything that happened that year (the
   `cpi` from then on (`floor_series`/`amount_series`, see the `aux/`
   README). The Social Security thresholds and the $3,000 capital loss limit
   stay fixed, as they are in law.
-- **State tax** works the same way as federal tax, using
-  `state_brackets__CA.csv` (or your own state's file, in `aux/`) and the
-  state's standard deduction from `state_standard_deduction__CA.csv` (named
-  for the same state as the brackets). Without
+- **State tax** works the same way as federal tax, using the brackets of
+  the state the rule names (`"bracket_series": "CA"` in its `params_json`),
+  `state_brackets__CA.csv` for California, and the state's standard
+  deduction from `state_standard_deduction__CA.csv` (named for the same
+  state). Tables for California, the District of Columbia, Idaho, Kansas,
+  Nebraska and North Carolina come with the simulator; for another state,
+  put its files in your `aux/`. Without
   that file the federal standard deduction is used, and loading warns,
   since most states' deduction is much smaller. Capital gains are taxed
   as ordinary income unless the state's own tables say otherwise: a share
@@ -905,9 +908,9 @@ date,kind,series,params_json
 ```
 
 From July 2031 on, everything that read the `CA` brackets reads the `WA`
-ones instead, including their later dated changes. With two states'
-brackets in `aux/`, the state `tax_accumulator` rule must say which it reads:
-`"bracket_series": "CA"` in its `params_json`. The state's standard
+ones instead, including their later dated changes. The state
+`tax_accumulator` rule names the state it starts in, `"bracket_series":
+"CA"` in its `params_json`. The state's standard
 deduction, surcharge and HSA tables move with its brackets by themselves:
 the new state's if it has them, otherwise none (the federal standard
 deduction stands in). Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new

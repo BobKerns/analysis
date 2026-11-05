@@ -269,7 +269,8 @@ RULE = KindSpec(
         Field(
             "params_json", "parameters (JSON object)", type="json", option="--params-json",
             required=needs("params_json"),
-            help='tax_accumulator: e.g. {"year":"previous","scope":"federal"}. '
+            help='tax_accumulator: e.g. {"year":"previous","scope":"federal"}; '
+                 'a state one names its state: {"scope":"state","bracket_series":"CA"}. '
                  'rmd drawing from a chain: {"subject_account":"<account>"}.',
         ),
         Field("tags", "tags", type="tags", option="--tags", required=False,
