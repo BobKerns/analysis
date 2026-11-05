@@ -157,6 +157,7 @@ def test_tax_by_year_shows_the_federal_income_it_taxed_without_a_state_rule(repo
     assert constant.loc[2030, "fed_agi"] < tax.loc[2030, "fed_agi"]
     reconciliation = reports.tax_reconciliation(report_run)
     assert reconciliation.loc[2026, "fed_liability"] == pytest.approx(liability[2026])
+    assert not any(c.startswith("state_") for c in reconciliation.columns)
 
 
 def test_tax_by_year_adds_the_states_own_figures(
@@ -168,7 +169,9 @@ def test_tax_by_year_adds_the_states_own_figures(
     with open_scenario(test_data_dir, "retire_alice") as scenario_conn, \
             open_run(run_file, scenario_conn, scenarios_dir=test_data_dir / "scenarios") as rc:
         tax = reports.tax_by_year(rc)
+        reconciliation = reports.tax_reconciliation(rc)
     assert {"state_agi", "state_deduction", "state_income", "state_tax"} <= set(tax)
+    assert "state_liability" in reconciliation.columns
     assert tax.loc[2026, "state_deduction"] == pytest.approx(11_080)
     assert tax.loc[2026, "total_tax"] == pytest.approx(tax.loc[2026, "state_tax"])
 

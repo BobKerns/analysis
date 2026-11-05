@@ -1391,6 +1391,7 @@ def load_scenario(
     _validate_retirement_owners(accounts, persons, issues)
     _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
     _validate_filing_status(scheduled_rows, aux_rows, scenario_row, issues)
+    _validate_itemized_deductions(aux_rows, issues)
     _validate_state_hsa(aux_rows, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
     _validate_business(
@@ -2944,6 +2945,25 @@ def _validate_filing_status(
             issues.append(
                 f"{where}: taxes by filing status, but aux/{kind}.csv has no row in force "
                 f"by {year_end}; add one with the household's status (MFJ, Single or MFS)")
+
+
+def _validate_itemized_deductions(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """An itemized-deduction row is one tax year's total, counted in that
+    year only (#370), so a year takes one row."""
+    # By table: a series (`federal_deductions__<series>.csv`, for a
+    # swap_aux_table) is a table of its own, with its own years.
+    years: dict[tuple[str, str, str], list[str]] = {}
+    for kind, series, _payload, effective in aux_rows:
+        if kind in ("federal_deductions", "state_deductions"):
+            years.setdefault((kind, series or "", effective[:4]), []).append(effective[:7])
+    for (kind, series, year), dates in sorted(years.items()):
+        if len(dates) > 1:
+            table = f"{kind}__{series}" if series else kind
+            issues.append(
+                f"aux/{table}.csv: {year} has {len(dates)} rows ({', '.join(dates)}); "
+                "a tax year takes one itemized total")
 
 
 def _validate_irmaa(
