@@ -167,6 +167,7 @@ Kitces
 klinger
 kokoro
 Kolmogorov
+KPERS
 kstest
 labelbottom
 labelcolor

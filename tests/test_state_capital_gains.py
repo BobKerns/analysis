@@ -153,7 +153,8 @@ def test_the_ordinary_part_of_taxable_income_leaves_out_separately_taxed_short_t
     con = sqlite3.connect(run)
     con.row_factory = sqlite3.Row
     try:
-        est = _year_tax_estimate(con, {"scope": "state"}, aux=_load_aux(con), tax_year=2026, tid=0)
+        est = _year_tax_estimate(con, {"scope": "state", "bracket_series": "CA"},
+                                 aux=_load_aux(con), tax_year=2026, tid=0)
     finally:
         con.close()
     taxable, ordinary = est.taxable_with(0, 0)

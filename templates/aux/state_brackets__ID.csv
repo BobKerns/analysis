@@ -1,0 +1,7 @@
+effective_date,filing_status,bracket_index,floor,marginal_rate,floor_series
+2025-01-31,MFJ,0,0.00,0%,cpi
+2025-01-31,MFJ,1,9622.00,5.3%,cpi
+2025-01-31,Single,0,0.00,0%,cpi
+2025-01-31,Single,1,4811.00,5.3%,cpi
+2025-01-31,MFS,0,0.00,0%,cpi
+2025-01-31,MFS,1,4811.00,5.3%,cpi

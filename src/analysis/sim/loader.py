@@ -1356,6 +1356,7 @@ def load_scenario(
         scheduled_rows, calendar_rows, aux_rows, scenario_row, issues,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
+    _validate_state_rule_names_state(scheduled_rows, aux_rows, issues)
     _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
@@ -3800,6 +3801,32 @@ def _validate_swap_aux_table_row(
                 "scheduled_name", "param_date", "tax_character"):
         if (row.get(col) or "").strip():
             issues.append(f"{where}: swap_aux_table takes no {col}; leave it blank")
+
+
+def _validate_state_rule_names_state(
+    scheduled_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A state tax rule reads the brackets its ``bracket_series`` names. The
+    code repository ships several states' tables (#483), so with more than
+    one to choose from a rule that names none would fail only when it first
+    runs; say so at load instead."""
+    states = sorted({series for kind, series, *_ in aux_rows
+                     if kind == "state_brackets" and series is not None})
+    if len(states) < 2:
+        return
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") != "tax_accumulator":
+            continue
+        params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
+        if (params.get("scope") != "state" or params.get("bracket_series")
+                or params.get("bracket_aux", "state_brackets") != "state_brackets"):
+            continue
+        issues.append(
+            f"{where} ({row.get('name', '')}): a state tax rule must name its state: "
+            f"add \"bracket_series\": \"XX\" to its params_json, one of {', '.join(states)}"
+        )
 
 
 def _warn_state_standard_deduction(

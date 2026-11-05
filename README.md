@@ -46,7 +46,8 @@ default, less the state's standard deduction, run through the state's
 brackets ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)). A
 state needs two tables in `aux/`, `state_brackets__XX.csv` and
 `state_standard_deduction__XX.csv`, and a `tax_accumulator` rule with `scope`
-`state`. Where a state treats capital gains differently, up to three more
+`state` that names the state (`"bracket_series": "XX"` in its
+`params_json`). Where a state treats capital gains differently, up to three more
 tables say how: a share of long-term gain excluded, and gain rates of its own
 ([the `aux/` README](./templates/aux/README.md#a-states-capital-gains)).
 Social Security is left out unless `state_social_security__XX.csv` says how
@@ -81,15 +82,15 @@ state's own revenue department before relying on a figure.
 | Colorado | Partial | Pension and annuity subtraction; Social Security taxed below 65 |
 | Connecticut | Partial | Social Security's 25% cap above the income limit; pension and IRA exemptions phased by income; exemption phase-outs |
 | Delaware | Partial | Pension exclusion |
-| District of Columbia | Tables needed | |
+| District of Columbia | Shipped | Extra deduction at 65 |
 | Florida | No tax | |
 | Georgia | Partial | Retirement income exclusion from age 62 |
 | Hawaii | Partial | Pension exemption |
-| Idaho | Tables needed | |
+| Idaho | Shipped | Public pension deduction from 65; grocery credit |
 | Illinois | Partial | Retirement income and IRA distributions exempt |
 | Indiana | Partial | County income tax; age exemptions |
 | Iowa | Partial | Retirement income exempt from age 55 |
-| Kansas | Tables needed | |
+| Kansas | Shipped | Public pension exemption; larger standard deduction from 65 |
 | Kentucky | Partial | Pension exclusion; local taxes |
 | Louisiana | Partial | Retirement income exclusion from age 65 |
 | Maine | Partial | Pension deduction |
@@ -100,13 +101,13 @@ state's own revenue department before relying on a figure.
 | Mississippi | Partial | Retirement income and IRA distributions exempt |
 | Missouri | Partial | Short-term gain exemption; pension exemptions |
 | Montana | Tables needed | |
-| Nebraska | Tables needed | |
+| Nebraska | Shipped | Personal exemption credit |
 | Nevada | No tax | |
 | New Hampshire | No tax | |
 | New Jersey | Partial | Pension and IRA exclusion with an income cliff; personal exemptions |
 | New Mexico | Tables needed | |
 | New York | Partial | Pension and IRA exclusion from age 59½; New York City and Yonkers taxes |
-| North Carolina | Tables needed | |
+| North Carolina | Shipped | Exclusion for government pensions vested before August 1989 |
 | North Dakota | Tables needed | |
 | Ohio | Partial | Municipal and school district taxes; retirement credits |
 | Oklahoma | Partial | Retirement income exclusion |
