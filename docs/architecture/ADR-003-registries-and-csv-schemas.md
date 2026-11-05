@@ -648,6 +648,20 @@ The folder a kind lives in is a convention for humans and for what's most likely
 per-scenario override, not something the loader validates by kind — a misplaced file still
 loads correctly (it just won't be found via the tier it "should" have used).
 
+A series a `percent_of_balance` rule reads, whatever its `rate_kind`, needs a rate in force by
+the first month the rule reads it ([#475](https://github.com/BobKerns/analysis/issues/475)), or
+the load fails, naming the series, its first row and the first reader. Each lot's growth rule
+(ADR-005 §5) reads from `scenario.start`; a hand-written rule from the first month it posts, its
+`start` or the scenario's, whichever is later, then its cadence, unless its `end` or the scenario's
+comes first. A `retire_scheduled` row (§3.1) replaces the rule's `end` on its date, even with a
+later date, so a rule's one fixed retirement in the run is its end, except that one after the
+rule's own `end` reopens it only in the retirement's month; with more than one, or one whose date
+can move, the rule counts as posting until the scenario ends. A blend slice reads from the month
+its allocation set applies, while the rule still posts. A `set_rate` row on the same
+`(aux_kind, series)` supplies a rate from its month, and so does a `swap_aux_table` row (§3.5) of
+that series once its source has a rate. Calendar rows count only when dated in the run and fixed:
+one whose date varies or follows a `date_marker` could land later.
+
 Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_lots.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it. A symbol is also upper case, as tickers are: a lower-case spelling would be a second symbol that no price file or allocation matches, so the loader rejects one in `securities.csv`, `allocations.csv`, `account_lots.csv` or a `security_price__<symbol>.csv` filename (`_validate_symbol_case`), and the commands that write a symbol upper-case it.
 
 - **`federal_brackets.csv`**, **`state_brackets__<state>.csv`**:
@@ -1352,6 +1366,7 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#468](https://github.com/BobKerns/analysis/issues/468): a taxable brokerage lot pays dividends and interest each year from `<series>_yield` rate series, through the built-in `dividends` and `investment_interest` accounts; the new `qualified_dividend` character is taxed at long-term gain rates (§2.2, §2.6, §4.4, §4.6); negative growth sells no shares and is an unrealized loss (§2.2); a series' yield is renamed with it (§7).
 - [#467](https://github.com/BobKerns/analysis/issues/467): tax brackets, standard deductions and long-term gain bands are indexed for inflation by an optional `floor_series`/`amount_series` per row, `cpi` in the templates (§4.4).
 - [#434](https://github.com/BobKerns/analysis/issues/434): each basis step-up records the rule that decided it, and `accounts.ipynb` shows the run's step-ups (§4.9).
+- [#475](https://github.com/BobKerns/analysis/issues/475): the loader refuses a series a `percent_of_balance` rule reads before its first rate (§4.4).
 - [#485](https://github.com/BobKerns/analysis/issues/485): a state's capital gains: aux kinds `state_ltcg_exclusion`, `state_ltcg_brackets` and `state_stcg_brackets`, keyed by state and swapped with its brackets; `tax_year_summary` bucket `<scope>_ltcg_exclusion` (§2.6, §3.5, §4.4).
 - [#484](https://github.com/BobKerns/analysis/issues/484): aux kind `state_social_security`, keyed by state like `state_brackets`: a state rule with one taxes the federally taxable Social Security less an income-limited exclusion; without one, none (§2.6, §3.5, §4.4).
 - [#490](https://github.com/BobKerns/analysis/issues/490): aux kinds `state_surcharge` (bands whose rates add to a state's brackets) and `state_hsa` (a state that taxes an HSA), each keyed by state and swapped with `state_brackets` (§2.6, §3.5, §4.4).
