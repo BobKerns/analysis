@@ -329,21 +329,27 @@ deduction. None of these five taxes Social Security, so none needs a
   indexed. The standard deduction follows the federal one ($16,100, or
   $32,200 joint, for 2026), so it grows with `cpi`. The extra deduction at
   65 or blind isn't modeled.
-- **Idaho:** 5.3% above a zero band, which is indexed: the rows carry the
-  2025 band ($4,811, or $9,622 joint) and grow it with `cpi`. The standard
+- **Idaho:** 5.3% above a zero band, which is indexed. Idaho hasn't
+  published its 2026 band, so the 2026 rows carry the 2025 one ($4,811, or
+  $9,622 joint), about $7 of tax high, and grow it with `cpi` from there. The standard
   deduction follows the federal one. The deduction for some public pensions
   from 65 and the grocery credit aren't modeled.
 - **Kansas:** 5.2%, then 5.58% over $23,000 ($46,000 joint), not indexed.
   The deduction is the standard deduction plus the personal exemption:
   $3,605 + $9,160 single, $8,240 + $18,320 joint, $4,120 + $9,160 separate.
+  A household that itemizes gets the greater of that and its itemized
+  deductions, so it loses the exemption Kansas allows on top: until
+  exemptions are modeled (#488), add the exemption to a Kansas
+  `state_deductions.csv` row.
   Kansas's own public pensions (KPERS, federal civil service, military) are
   exempt, and from 65 the standard deduction is larger; neither is modeled.
   A 2025 law cuts the rates when revenue allows; it didn't for 2026.
 - **Nebraska:** 2.46%, 3.51%, then 4.55% for 2026 and 3.99% from 2027, the
-  bands indexed. The 2027 rows repeat the 2026 floors until Nebraska
-  publishes its own, so for 2027 they lag one year's indexing. Standard
-  deduction $8,850, or $17,700 joint. The personal exemption credit isn't
-  modeled.
+  bands indexed. Standard deduction $8,850, or $17,700 joint, for 2026; the
+  2027 rows use the $9,100 and $18,200 of Nebraska's draft 2027 estimated
+  tax form, and estimate the 2027 floors by growing 2026's by the same
+  ratio, to the nearest $10, until Nebraska publishes them. The personal
+  exemption credit isn't modeled.
 - **North Carolina:** a flat 3.99% for 2026, 3.49% for 2027-2029, 3.24% for
   2030-2032 and 2.99% from 2033 (Session Law 2026-41). Standard deduction
   $12,750, or $25,500 joint, not indexed. The exclusion for government

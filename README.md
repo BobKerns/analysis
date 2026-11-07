@@ -91,7 +91,7 @@ state's own revenue department before relying on a figure.
 | Illinois | Partial | Retirement income and IRA distributions exempt |
 | Indiana | Partial | County income tax; age exemptions |
 | Iowa | Partial | Retirement income exempt from age 55 |
-| Kansas | Shipped | Public pension exemption; larger standard deduction from 65 |
+| Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing |
 | Kentucky | Partial | Pension exclusion; local taxes |
 | Louisiana | Partial | Retirement income exclusion from age 65 |
 | Maine | Partial | Pension deduction |

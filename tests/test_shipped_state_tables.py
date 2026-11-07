@@ -77,3 +77,16 @@ def test_a_rule_naming_a_shipped_state_taxes_by_its_tables(
     else:
         assert summary["state_tax_liability"] == _progressive_tax_cents(
             taxable, _brackets(state, "2026-01-31"))
+
+
+def test_shipped_tables_need_no_inflation_before_2026(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Every scenario with a tax rule checks every indexed table's series,
+    read or not, so a table dated before 2026 would fail one whose own CPI
+    starts in January 2026."""
+    write_aux("inflation__cpi.csv", "effective_date,annual_rate\n2026-01-31,2.5%\n")
+    add_state_tax()
+
+    load_test_copy()
