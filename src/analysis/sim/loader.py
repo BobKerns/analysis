@@ -2889,11 +2889,12 @@ def _validate_optional_state_tables(
     table (#490) is keyed by state like the brackets it goes with, since one
     without a state is never read; a ``state_hsa`` row's treatment is one
     the engine knows; and a table of bands has every filing status the
-    brackets have, since a year filed under a missing one (the survivor's
-    Single, §4.9) would silently tax nothing."""
+    brackets have at each of its effective dates, since only the latest
+    date's rows are in force, and a year filed under a missing status (the
+    survivor's Single, §4.9) would silently tax nothing."""
     bracket_statuses = {str(payload.get("filing_status")) for kind, _s, payload, _e in aux_rows
                         if kind == "state_brackets"}
-    band_statuses: dict[tuple[str, str], set[str]] = {}
+    band_statuses: dict[tuple[str, str, str], set[str]] = {}
     nameless: set[str] = set()
     for kind, state, payload, effective in aux_rows:
         if kind not in registries.OPTIONAL_STATE_AUX_KINDS:
@@ -2910,12 +2911,14 @@ def _validate_optional_state_tables(
                 f"{file} ({effective}): treatment {treatment!r} must be one of "
                 f"{', '.join(registries.STATE_HSA_TREATMENTS)}")
         if kind in registries.STATE_BAND_KINDS:
-            band_statuses.setdefault((kind, state), set()).add(str(payload.get("filing_status")))
-    for (kind, state), statuses in sorted(band_statuses.items()):
+            band_statuses.setdefault((kind, state, effective), set()).add(
+                str(payload.get("filing_status")))
+    for (kind, state, effective), statuses in sorted(band_statuses.items()):
         missing = sorted(bracket_statuses - statuses)
         if missing:
             issues.append(
-                f"aux/{kind}__{state}.csv: no rows for filing status {', '.join(missing)}, "
+                f"aux/{kind}__{state}.csv ({effective}): no rows for filing status "
+                f"{', '.join(missing)}, "
                 "which the state brackets have; a year filed that way would tax nothing "
                 "here (add a 0% band for a status it doesn't tax)")
 
@@ -3959,8 +3962,10 @@ def _validate_swap_aux_tables(
     it replaces and the one replacing it, so a misspelt series fails here
     rather than when the run reaches the row. An optional state table
     (#490, #487) needn't exist where it is swapped in: a household moving
-    from a county with no local tax has none."""
+    from a county with no local tax has none. It must still be swapped into
+    a state the brackets name, or the move would change no tax."""
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    states = {series for kind, series in supplied if kind == "state_brackets" and series}
     for where, row in _located(calendar_rows, "calendar.csv"):
         if row.get("kind") != "swap_aux_table":
             continue
@@ -3970,6 +3975,11 @@ def _validate_swap_aux_tables(
             continue  # reported by _validate_swap_aux_table_row
         for label, series in (("series", row.get("series") or None), ("source_series", source)):
             if label == "series" and aux_kind in registries.OPTIONAL_STATE_AUX_KINDS:
+                if series not in states and (aux_kind, series) not in supplied:
+                    issues.append(
+                        f"{where}: swap_aux_table series {series or '(blank)'} names no "
+                        f"state with brackets ({', '.join(sorted(states)) or 'none'}), so "
+                        f"swapping {aux_kind} into it would change no tax")
                 continue
             if (aux_kind, series) not in supplied:
                 file = f"{aux_kind}__{series}.csv" if series else f"{aux_kind}.csv"

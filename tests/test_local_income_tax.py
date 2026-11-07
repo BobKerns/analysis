@@ -136,8 +136,20 @@ def test_load_rejects_a_local_tax_missing_a_filing_status(
     """Brackets for MFJ, Single and MFS, a local tax for MFJ only: the
     survivor's Single years would tax nothing, so it fails to load."""
     write_aux("state_local_tax__CA.csv", LOCAL_HEADER + "2026-01-31,MFJ,0,0.00,3%\n")
-    with pytest.raises(LoadError, match=r"state_local_tax__CA.csv: no rows for filing status "
-                                        r"MFS, Single"):
+    with pytest.raises(LoadError, match=r"state_local_tax__CA.csv \(2026-01-31\): no rows for "
+                                        r"filing status MFS, Single"):
+        load_test_copy()
+
+
+def test_load_rejects_a_later_local_tax_update_missing_a_filing_status(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Only the latest date's rows are in force, so an update that leaves a
+    status out drops it even though an earlier date had it."""
+    write_aux("state_local_tax__CA.csv",
+              _local_rows("3%") + "2028-01-31,MFJ,0,0.00,3.2%\n")
+    with pytest.raises(LoadError, match=r"state_local_tax__CA.csv \(2028-01-31\): no rows for "
+                                        r"filing status MFS, Single"):
         load_test_copy()
 
 
@@ -161,6 +173,20 @@ def test_a_county_move_needs_no_local_tax_before_it(
                         params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
                                                 "source_series": "CA-misspelt"}))
     with pytest.raises(LoadError, match=r"source_series names state_local_tax__CA-misspelt.csv"):
+        load_test_copy()
+
+
+def test_a_county_move_into_no_state_is_rejected(
+    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Swapped into a series no state's brackets name, the local tax would
+    never be read, so the move would change nothing."""
+    write_aux("state_local_tax__CA-county.csv", _local_rows("3%"))
+    append_calendar_row(date="2028-01", kind="swap_aux_table", series="CAA",
+                        params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
+                                                "source_series": "CA-county"}))
+    with pytest.raises(LoadError, match=r"series CAA names no state with brackets"):
         load_test_copy()
 
 
