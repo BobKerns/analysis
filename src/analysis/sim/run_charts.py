@@ -262,17 +262,18 @@ def gains_figure(frame: pd.DataFrame, title: str, *, deaths: Sequence[Death] = (
 
 
 def tax_figure(frame: pd.DataFrame, title: str, *, deaths: Sequence[Death] = ()) -> Figure:
-    """Federal and state tax stacked by year (``reports.tax_by_year``), with
-    the effective rate (total tax over federal AGI) on the right-hand axis."""
+    """Federal, state and local tax (#487) stacked by year
+    (``reports.tax_by_year``), with the effective rate (total tax over
+    federal AGI) on the right-hand axis."""
     fig = Figure(figsize=_FIGSIZE)
-    columns = [c for c in ("fed_tax", "state_tax") if c in frame.columns]
+    columns = [c for c in ("fed_tax", "state_tax", "local_tax") if c in frame.columns]
     if frame.empty or not columns:
         return _nothing(fig, "tax")
     ax = fig.subplots()
-    labels = {"fed_tax": "federal", "state_tax": "state"}
+    labels = {"fed_tax": "federal", "state_tax": "state", "local_tax": "local"}
+    colors = {"fed_tax": "#9467bd", "state_tax": "#e377c2", "local_tax": "#f7b6d2"}
     frame[columns].fillna(0).rename(columns=labels).plot(
-        kind="bar", stacked=True, ax=ax,
-        color=[{"fed_tax": "#9467bd", "state_tax": "#e377c2"}[c] for c in columns])
+        kind="bar", stacked=True, ax=ax, color=[colors[c] for c in columns])
     ax.axhline(0, color="grey", linewidth=0.8)
     _money_axis(ax, title)
     include_zero(ax)

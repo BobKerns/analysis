@@ -438,6 +438,17 @@ tax year, by looking back over everything that happened that year (the
   doesn't recognize health savings accounts, so its tax doesn't deduct what
   goes into an HSA, taxes the account's growth each year (a fall is a
   capital loss), and leaves what comes out alone.
+- **Local income tax**: some counties and cities tax income on top of the
+  state (a Maryland county, New York City, an Indiana county, the Portland
+  area). Where the local tax is figured on the state's taxable income, put
+  your own county's or city's rates in `aux/state_local_tax__<state>.csv`, in
+  the columns of the state's brackets: one band for a flat county rate, the
+  city's brackets, or a 0% band below a threshold, with rows for each
+  filing status your state brackets have. It is paid with the
+  state's tax, and `sim report tax` shows it as `local_tax`, apart from
+  `state_tax`. A local tax only on wages, or with a base of its own
+  (Philadelphia's on investment income, Yonkers's share of the state tax),
+  isn't modeled.
 - **State retirement income exclusions**: most states leave some pension,
   IRA and 401(k) income out, often from an age, up to an amount per person,
   and sometimes only below a household income. Add your state's rules as
@@ -915,9 +926,14 @@ From July 2031 on, everything that read the `CA` brackets reads the `WA`
 ones instead, including their later dated changes. The state
 `tax_accumulator` rule names the state it starts in (`sim tax state` sets
 it). The state's standard
-deduction, surcharge and HSA tables move with its brackets by themselves:
-the new state's if it has them, otherwise none (the federal standard
-deduction stands in). Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new
+deduction, surcharge, local tax and HSA tables move with its brackets by
+themselves: the new state's if it has them, otherwise none (the federal
+standard deduction stands in). A move to another county in the same state
+swaps the local tax alone: write the new county's as, say,
+`aux/state_local_tax__CA-county.csv`, and swap it in with
+`"aux_kind": "state_local_tax", "source_series": "CA-county"`. You needn't
+have a local tax table before the move; for a move to a county with no local
+tax, swap in one with a single 0% band for each filing status. Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new
 federal bracket table on the date a law takes effect, or another inflation
 series.
 
@@ -1839,7 +1855,7 @@ the rest. `sim networth --chart` draws every month, after-tax net worth with
 the pre-tax total dashed above it, so the gap is the tax still owed.
 `sim report income --chart` stacks the income by group above economic income
 carried down to the change in net worth; with `--year`, it draws a bar per
-group. `sim report tax --chart` stacks federal and state tax with the
+group. `sim report tax --chart` stacks federal, state and any local tax with the
 effective rate on its own axis (with `--reconciliation`, each April's balance
 due and refund). `sim report spending --chart` draws delivered spending as a
 bar per year with the plan as a dashed line over them. `sim allocation --chart` draws a pie of the asset classes, a

@@ -56,7 +56,10 @@ the state taxes it: the federally taxable amount less an exclusion that can
 phase out with income. Two more are optional: `state_surcharge__XX.csv`, a
 surtax on high income (California's 1% over $1 million, Massachusetts's 4%),
 and `state_hsa__XX.csv`, for a state that taxes health savings accounts
-(California). A state's retirement income exclusions, by age, kind of income
+(California). A local income tax on the state's taxable income, such as a
+Maryland county's or New York City's, goes in `state_local_tax__XX.csv`,
+written for your own county or city; one with a base of its own, or one
+only on wages, is left out. A state's retirement income exclusions, by age, kind of income
 and household income, go in another optional table,
 `state_retirement_exclusion__XX.csv`; a "Partial" row below whose gap is such
 an exclusion needs that table written. Many states have rules this leaves
@@ -89,15 +92,15 @@ state's own revenue department before relying on a figure.
 | Hawaii | Partial | Pension exemption |
 | Idaho | Shipped | Public pension deduction from 65; grocery credit |
 | Illinois | Partial | Retirement income and IRA distributions exempt |
-| Indiana | Partial | County income tax; age exemptions |
+| Indiana | Partial | Age exemptions; county tax needs `state_local_tax__IN.csv` |
 | Iowa | Partial | Retirement income exempt from age 55 |
 | Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing |
-| Kentucky | Partial | Pension exclusion; local taxes |
+| Kentucky | Partial | Pension exclusion; local occupational taxes (mostly on wages) |
 | Louisiana | Partial | Retirement income exclusion from age 65 |
 | Maine | Partial | Pension deduction |
-| Maryland | Partial | County income tax; pension exclusion; capital gains surtax |
+| Maryland | Partial | Pension exclusion; capital gains surtax; county tax needs `state_local_tax__MD.csv` |
 | Massachusetts | Partial | Personal exemptions |
-| Michigan | Partial | City income tax; retirement deduction |
+| Michigan | Partial | City income taxes (a base of their own); retirement deduction |
 | Minnesota | Partial | Social Security subtraction phases out in $4,000 steps (modeled as a straight line) |
 | Mississippi | Partial | Retirement income and IRA distributions exempt |
 | Missouri | Partial | Short-term gain exemption; pension exemptions |
@@ -107,13 +110,13 @@ state's own revenue department before relying on a figure.
 | New Hampshire | No tax | |
 | New Jersey | Partial | Pension and IRA exclusion with an income cliff; personal exemptions |
 | New Mexico | Tables needed | |
-| New York | Partial | Pension and IRA exclusion from age 59½; New York City and Yonkers taxes |
+| New York | Partial | Pension and IRA exclusion from age 59½; Yonkers surcharge (a share of state tax); New York City tax needs `state_local_tax__NY.csv` |
 | North Carolina | Shipped | Exclusion for government pensions vested before August 1989 |
 | North Dakota | Tables needed | |
-| Ohio | Partial | Municipal and school district taxes; retirement credits |
+| Ohio | Partial | Municipal and earned-income school district taxes; retirement credits; a traditional school district tax needs `state_local_tax__OH.csv` |
 | Oklahoma | Partial | Retirement income exclusion |
-| Oregon | Partial | Federal tax subtraction; retirement credit; Portland-area taxes |
-| Pennsylvania | Partial | Retirement income exempt; separate income classes; local taxes |
+| Oregon | Partial | Federal tax subtraction; retirement credit; Portland-area taxes need `state_local_tax__OR.csv` |
+| Pennsylvania | Partial | Retirement income exempt; separate income classes; local wage taxes; Philadelphia's tax on investment income |
 | Rhode Island | Partial | Social Security exemption's full-retirement-age test; pension modification |
 | South Carolina | Partial | Retirement and age deductions |
 | South Dakota | No tax | |

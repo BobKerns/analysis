@@ -2956,6 +2956,8 @@ class _TaxEstimate:
     hsa_growth: int = 0
     """A state that taxes an HSA (#490): the year's HSA growth it counts as
     long-term gain, which is no sale."""
+    local_tax: int = 0
+    """A state rule's local income tax (#487), part of ``tax_liability``."""
 
 
 def _year_tax_estimate(
@@ -3197,16 +3199,24 @@ def _year_tax_estimate(
 
     ltcg_brackets = gain_brackets(ltcg_bracket_aux)
     stcg_brackets = gain_brackets(stcg_bracket_aux)
+    def state_bands(kind: str) -> list[tuple[int, int]]:
+        """A state's bands of ``kind`` keyed by its brackets' series, whose
+        rates add to the brackets'; none for a federal rule."""
+        if scope != "state" or bracket_series is None:
+            return []
+        return sorted(
+            (int(r["floor"]), int(r["marginal_rate_micros"]))
+            for r in _indexed_tax_rows(aux, kind, bracket_series, tax_year, growth_cache)
+            if r.get("filing_status") == filing_status
+        )
+
     # A state's surcharge on high incomes (#490) adds its rates to the
     # brackets'. Its own bands, rather than more bracket rows, because its
     # floor needn't be indexed or fall between the same brackets for every
-    # filing status (California's $1 million).
-    surcharge = sorted(
-        (int(r["floor"]), int(r["marginal_rate_micros"]))
-        for r in _indexed_tax_rows(
-            aux, registries.STATE_SURCHARGE, bracket_series, tax_year, growth_cache)
-        if r.get("filing_status") == filing_status
-    ) if scope == "state" and bracket_series is not None else []
+    # filing status (California's $1 million). A local income tax (#487) is
+    # bands on the state's taxable income too, reported apart from it.
+    surcharge = state_bands(registries.STATE_SURCHARGE)
+    local = state_bands(registries.STATE_LOCAL_TAX)
 
     def taxable_ss_for(extra_ordinary: int, extra_gain: int) -> int:
         """Taxable Social Security with more ordinary income and long-term
@@ -3230,7 +3240,7 @@ def _year_tax_estimate(
     def tax_on(taxable: int, ltcg: int, stcg: int) -> int:
         """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term
         gain and up to ``stcg`` more of it short-term gain."""
-        extra = _progressive_tax_cents(taxable, surcharge)
+        extra = _progressive_tax_cents(taxable, surcharge) + _progressive_tax_cents(taxable, local)
         # Long-term gains sit on top of ordinary taxable income and are taxed at
         # the preferential rates for the band each part lands in; a state's
         # short-term gain rates (#485) take the slice just below them. A gain
@@ -3303,6 +3313,7 @@ def _year_tax_estimate(
         tax_with=tax_with, taxable_with=taxable_with, agi_with=agi_with,
         retirement_exclusion=excluded,
         hsa_withdrawn=hsa_withdrawn, hsa_growth=hsa_growth.get(tax_year, 0),
+        local_tax=_progressive_tax_cents(taxable_income, local),
     )
 
 
@@ -3730,7 +3741,8 @@ def _apply_tax_accumulator(
         f"{scope}_ss_income": ss_income,
         f"{scope}_taxable_ss": taxable_ss,
         f"{scope}_adjusted_gross_income": ordinary_income + ltcg_income + taxable_ss,
-        **({f"{scope}_retirement_exclusion": est.retirement_exclusion}
+        **({f"{scope}_retirement_exclusion": est.retirement_exclusion,
+            f"{scope}_local_tax": est.local_tax}
            if scope == "state" else {}),
         f"{scope}_standard_deduction": standard_deduction,
         f"{scope}_itemized_deduction": itemized_deduction,
@@ -5021,7 +5033,7 @@ def _swap_aux_table(
             f"swap_aux_table event id={ev_id}: requires params_json aux_kind "
             "and source_series"
         )
-    if aux_kind in _OPTIONAL_STATE_AUX_KINDS:
+    if aux_kind in registries.OPTIONAL_STATE_AUX_KINDS:
         # Swapped alone too, the earlier years keep their rows (#490).
         _move_optional_state_table(con, ev_id, ev_date, aux_kind, series, str(source_series), aux)
         return
@@ -5066,12 +5078,13 @@ def _swap_aux_table(
         # A move to another state takes its other tables too: its standard
         # deduction (#248), gain rules (#485), Social Security table (#484),
         # retirement income exclusions (#486), surcharge and HSA treatment
-        # (#490). Where the new state has none, the old state's go: the
-        # deduction falls back to the federal one, gains are ordinary income,
-        # Social Security is untaxed, nothing is excluded, there's no
-        # surcharge, and the HSA follows the federal rules.
+        # (#490) and local income tax (#487). Where the new state has none,
+        # the old state's go: the deduction falls back to the federal one,
+        # gains are ordinary income, Social Security is untaxed, nothing is
+        # excluded, there's no surcharge or local tax, and the HSA follows
+        # the federal rules.
         for companion in registries.STATE_COMPANION_KINDS:
-            if companion in _OPTIONAL_STATE_AUX_KINDS:
+            if companion in registries.OPTIONAL_STATE_AUX_KINDS:
                 _move_optional_state_table(con, ev_id, ev_date, companion, series,
                                            str(source_series), aux)
             elif aux.get((companion, source_series)):
@@ -5083,11 +5096,6 @@ def _swap_aux_table(
             elif aux.pop((companion, series), None):
                 con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
                             (companion, series))
-
-
-_OPTIONAL_STATE_AUX_KINDS = frozenset({registries.STATE_SURCHARGE, registries.STATE_HSA})
-"""A state's tables (#490) that a state may lack, or may start only after a
-move: then it has no surcharge, and its HSA follows the federal rules."""
 
 
 def _move_optional_state_table(
@@ -5109,7 +5117,8 @@ def _move_optional_state_table(
         if kind == registries.STATE_HSA:
             in_force = [(ev_date, {"treatment": "federal"})]
         else:
-            # No surcharge: a 0% band for each filing status the old one had.
+            # No surcharge or local tax: a 0% band for each filing status
+            # the old one had.
             statuses = sorted({str(row[1].get("filing_status")) for row in kept})
             in_force = [(ev_date, {"filing_status": status, "bracket_index": 0, "floor": 0,
                                    "marginal_rate_micros": 0, "floor_series": None})
