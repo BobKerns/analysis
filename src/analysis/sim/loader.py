@@ -3979,7 +3979,8 @@ def _validate_swap_aux_tables(
                     issues.append(
                         f"{where}: swap_aux_table series {series or '(blank)'} names no "
                         f"state with brackets ({', '.join(sorted(states)) or 'none'}), so "
-                        f"swapping {aux_kind} into it would change no tax")
+                        f"swapping {aux_kind} into it would change no tax (check the "
+                        f"series' spelling, or add aux/state_brackets__<series>.csv for a new state)")
                 continue
             if (aux_kind, series) not in supplied:
                 file = f"{aux_kind}__{series}.csv" if series else f"{aux_kind}.csv"

@@ -186,7 +186,7 @@ def test_a_county_move_into_no_state_is_rejected(
     append_calendar_row(date="2028-01", kind="swap_aux_table", series="CAA",
                         params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
                                                 "source_series": "CA-county"}))
-    with pytest.raises(LoadError, match=r"series CAA names no state with brackets"):
+    with pytest.raises(LoadError, match=r"series CAA names no state with brackets.*check the series' spelling"):
         load_test_copy()
 
 
