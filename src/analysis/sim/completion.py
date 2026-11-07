@@ -358,6 +358,16 @@ def _expense_categories(ctx: click.Context | None, data_dir: Path | None) -> lis
 # Unchecked: a batch may hold a category outside the fixed list, which the
 # command checks against the batch itself.
 EXPENSE_CATEGORY = NameType(_expense_categories, "expense category", check=False)
+
+
+def _states(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
+    from analysis.sim import states
+
+    return [*(s.code for s in states.STATES), *(s.name for s in states.STATES)]
+
+
+# A state's code or name in any case: the command checks it (#483).
+STATE = NameType(_states, "state", check=False)
 AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS), "aux kind")  # noqa: ARG005
 
 

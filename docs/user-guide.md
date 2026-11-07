@@ -416,10 +416,11 @@ tax year, by looking back over everything that happened that year (the
   README). The Social Security thresholds and the $3,000 capital loss limit
   stay fixed, as they are in law.
 - **State tax** works the same way as federal tax, using the brackets of
-  the state the rule names (`"bracket_series": "CA"` in its `params_json`),
-  `state_brackets__CA.csv` for California, and the state's standard
-  deduction from `state_standard_deduction__CA.csv` (named for the same
-  state). Tables for California, the District of Columbia, Idaho, Kansas,
+  the state the rule names: choose it with `sim tax state`, which asks for
+  the state by name and adds a state tax rule like the federal one if
+  there is none. For California the rule reads `state_brackets__CA.csv`
+  and the state's standard deduction from
+  `state_standard_deduction__CA.csv` (named for the same state). Tables for California, the District of Columbia, Idaho, Kansas,
   Nebraska and North Carolina come with the simulator; for another state,
   put its files in your `aux/`. Without
   that file the federal standard deduction is used, and loading warns,
@@ -899,8 +900,11 @@ blank means `none`. Set `tax_character` to override any of these.
 A rule that should start on a future date needs no calendar event: give its
 `scheduled.csv` row that `start` date.
 
-For a move, put the new state's brackets beside the old ones, as
-`aux/state_brackets__WA.csv` say, and swap them in on the moving date:
+For a move, `sim tax move 2031-07 Washington` asks for anything left out
+and writes the calendar row. The new state needs its tables, as
+`aux/state_brackets__WA.csv` say, unless they ship or it has no income tax
+(its rule then reads a 0% table, `state_brackets__none.csv`). The row it
+writes swaps them in on the moving date:
 
 ```csv
 date,kind,series,params_json
@@ -909,8 +913,8 @@ date,kind,series,params_json
 
 From July 2031 on, everything that read the `CA` brackets reads the `WA`
 ones instead, including their later dated changes. The state
-`tax_accumulator` rule names the state it starts in, `"bracket_series":
-"CA"` in its `params_json`. The state's standard
+`tax_accumulator` rule names the state it starts in (`sim tax state` sets
+it). The state's standard
 deduction, surcharge and HSA tables move with its brackets by themselves:
 the new state's if it has them, otherwise none (the federal standard
 deduction stands in). Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new

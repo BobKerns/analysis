@@ -46,8 +46,9 @@ default, less the state's standard deduction, run through the state's
 brackets ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)). A
 state needs two tables in `aux/`, `state_brackets__XX.csv` and
 `state_standard_deduction__XX.csv`, and a `tax_accumulator` rule with `scope`
-`state` that names the state (`"bracket_series": "XX"` in its
-`params_json`). Where a state treats capital gains differently, up to three more
+`state` that names the state. `sim tax state` chooses the state, and adds the
+rule if the scenario has none; `sim tax move` records a move to another
+state. Where a state treats capital gains differently, up to three more
 tables say how: a share of long-term gain excluded, and gain rates of its own
 ([the `aux/` README](./templates/aux/README.md#a-states-capital-gains)).
 Social Security is left out unless `state_social_security__XX.csv` says how

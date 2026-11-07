@@ -3825,7 +3825,8 @@ def _validate_state_rule_names_state(
             continue
         issues.append(
             f"{where} ({row.get('name', '')}): a state tax rule must name its state: "
-            f"add \"bracket_series\": \"XX\" to its params_json, one of {', '.join(states)}"
+            "run `sim tax state` to choose it (it sets \"bracket_series\" in the rule's "
+            f"params_json, one of {', '.join(states)})"
         )
 
 

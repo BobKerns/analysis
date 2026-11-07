@@ -315,8 +315,11 @@ Six states' brackets and standard deductions ship here, each pair named for
 its state: California (`__CA`), the District of Columbia (`__DC`), Idaho
 (`__ID`), Kansas (`__KS`), Nebraska (`__NE`) and North Carolina (`__NC`).
 With more than one to choose from, a state `tax_accumulator` rule must name
-its state in its `params_json`, `"bracket_series": "CA"` for instance; it
-won't load without it. The tables carry each state's 2026 law, checked
+its state, as `"bracket_series": "CA"` in its `params_json`; it won't load
+without it. `sim tax state` sets it, asking for the state by name.
+`state_brackets__none.csv` and `state_standard_deduction__none.csv` are a 0%
+table for a state with no income tax, which `sim tax state` and
+`sim tax move` choose for such a state, so a move there needs no tables. The tables carry each state's 2026 law, checked
 against its revenue department's 2026 publications in November 2026. A
 state's personal exemption, where it has one, is folded into the standard
 deduction. None of these five taxes Social Security, so none needs a

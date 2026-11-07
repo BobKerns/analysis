@@ -15,7 +15,7 @@ from analysis.sim.engine import _progressive_tax_cents, run_scenario
 from analysis.sim.lineage import TEMPLATE_AUX_DIR
 from analysis.sim.loader import LoadError, LoadResult
 
-_STATES = ["CA", "DC", "ID", "KS", "NC", "NE"]
+_STATES = ["CA", "DC", "ID", "KS", "NC", "NE", "none"]
 
 
 def _brackets(state: str, effective_date: str, status: str = "MFJ") -> list[tuple[int, int]]:
@@ -54,7 +54,7 @@ def test_a_state_rule_that_names_no_state_fails_the_load(
     add_state_tax(bracket_series=None)
 
     with pytest.raises(LoadError, match=r"tax_state_prev_year.*must name its state.*"
-                                        r"one of CA, DC, ID, KS, NC, NE"):
+                                        r"sim tax state.*one of CA, DC, ID, KS, NC, NE, none"):
         load_test_copy()
 
 

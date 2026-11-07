@@ -305,6 +305,7 @@ def _preflight(real: Path, name: str, intent_dir: Path) -> sqlite3.Connection:
 @contextmanager
 def staged_edit(
     data_dir: Path | str, scenario: str | None, *, template_parent: bool = False,
+    repair: bool = False,
 ) -> Generator[StagedEdit]:
     """Stage an edit to the data dir's scenario CSVs; write it only if it loads.
 
@@ -318,6 +319,11 @@ def staged_edit(
     :class:`EditRejected` with nothing written. If a file the edit would write
     changed on disk meanwhile, :class:`ConcurrentEdit` is raised, also with
     nothing written; otherwise the changed files are copied back. If the body raises, nothing is written.
+
+    With ``repair``, a scenario that doesn't load as it stands is edited
+    anyway, and the edit must make it load: for a command whose job is to
+    fix what the loader asks for (``sim tax state``, #483). The body then
+    gets no intent connection.
 
     ``scenario`` may be a template only with ``template_parent``: the
     preflight of a scenario created from one, which writes only the new
@@ -337,9 +343,14 @@ def staged_edit(
             if found := _load_issues(real, name)[0]:
                 raise ScenarioAlreadyBroken(name, found)
         else:
-            con = _preflight(real, name, intent_dir)
-            con.row_factory = sqlite3.Row
-            stack.callback(con.close)
+            try:
+                con = _preflight(real, name, intent_dir)
+            except ScenarioAlreadyBroken:
+                if not repair:
+                    raise
+            else:
+                con.row_factory = sqlite3.Row
+                stack.callback(con.close)
 
         stage = Path(stack.enter_context(tempfile.TemporaryDirectory())) / real.name
         stage.mkdir()
