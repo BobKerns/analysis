@@ -257,7 +257,8 @@ Bucket studies (Estrada; Pfau and Kitces) find a bucket plan behaves like a fixe
 A spending kind (§6.2) with an `on_breach` hook (§3.3), so a household can answer a guard rail without writing Python. Parameters: `cut` (default 10%, Guyton and Klinger's adjustment) and `increase` (default 0%).
 
 - While a rail its `trigger` names is past (`entered` or `continued`), the owned rules post `1 − cut` of plan; while only a positive rail is past (room to spend), `1 + increase`, and with `increase` 0% a positive rail changes nothing. A rail to stay inside wins when both are past. Each rail and margin kind in the trigger is tracked on its own.
-- The breach is last year's, told in January, so the level holds for the year after one past the line, and spending returns to plan for the year after one back inside (`left`).
+- The breach is last year's, told in January, so the level holds for the year after one past the line, and spending returns to plan for the year after one back inside (`left`). A rail that stops covering the years (past its `end`, or after the household's last death) is never told `left`, so `year_start` drops any rail that didn't cover last year (`ctx.rail`).
+- It replaces the example data-repo kind of the same name that §3.3 and the user guide used to show; a data repo that still has that module gets the usual "already defined (built-in)" load error, and the guide says how to keep its 50% cut.
 - The level is flat while past, not compounded: a second year past is still `cut` below plan. That is the answer to "keep spending down while we're over the line", where `guardrail` (§6.2) compounds its cuts against its own initial rate.
 - Notes read like `gk_upper annual entered: now 90% of plan` and `gk_upper annual left: back to plan`.
 

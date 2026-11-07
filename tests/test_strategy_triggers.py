@@ -157,6 +157,18 @@ def test_cut_on_breach_returns_to_plan_after_a_year_back_inside(
     assert share[2029] == 1.0
 
 
+def test_cut_on_breach_returns_to_plan_when_the_rail_ends(run_strategy_scenario, strategy_csv) -> None:
+    # Past every year, but the rail ends with 2028: 2029 is still cut (2028
+    # was past), and 2030 follows the plan, though no `left` was told.
+    _rewrite(strategy_csv(SCENARIO, "guard_rails.csv"), end="2028-12")
+    run = run_strategy_scenario(SCENARIO)
+    share = _share_of_plan(run)
+    assert share[2029] == pytest.approx(0.5, abs=1e-6)
+    assert share[2030] == 1.0
+    notes = [n for (n,) in _query(run, "SELECT note FROM strategy_decision "
+                                       "WHERE hook = 'year_start' ORDER BY id")]
+    assert notes == ["tight ended: back to plan"]
+
 def test_cut_on_breach_spends_more_while_a_positive_rail_is_past(
         run_strategy_scenario, strategy_csv) -> None:
     _room_rail(strategy_csv)

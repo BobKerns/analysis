@@ -1570,6 +1570,12 @@ past, the cut wins. A kind of your own in the data repo's `strategies/`
 folder can answer differently, for example by skipping a trip whole or
 moving money, with an `on_breach` hook (ADR-010 §3.3).
 
+Earlier versions of this guide showed `cut_on_breach` as a kind to write
+yourself, with a 50% cut. If your data repo still has
+`strategies/cut_on_breach.py`, loading now says the kind is already
+built in. Delete the file, and to keep the half cut, give each strategy
+that uses it `sim strategy edit NAME --param cut=50%`.
+
 Alice and Bill want to hold spending to $60,000 a year in today's
 dollars, and trim the extras when they go over:
 

@@ -17,6 +17,8 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
+import numpy as np
+
 from analysis.sim.strategy_api import (
     BreachView, Context, Decision, Dollars, Percent, RuleView, ScenarioView, Spend, Strategy, StrategyError, Tag,
     percent, register,
@@ -182,7 +184,8 @@ class CutOnBreach(_Spending):
     past its line, spend ``cut`` less on the owned rules; while a positive
     rail is past (room to spend), spend ``increase`` more. Each January's
     breach (#441) says how last year ended, so the level holds for the year
-    after one past the line and returns to plan after a year back inside. A
+    after one past the line and returns to plan after a year back inside, or
+    after a year the rail no longer covers (past its ``end``). A
     rail to stay inside wins over a positive one when both are past. The
     level is flat while past, not compounded year after year as the
     ``guardrail`` kind's cuts are."""
@@ -197,27 +200,52 @@ class CutOnBreach(_Spending):
         """How much more to spend while a positive rail is past; 0% ignores positive rails."""
 
     def on_breach(self, ctx: Context, breach: BreachView) -> Decision | None:
-        p = self.params
         past: dict[str, str] = ctx.memory.setdefault("past", {})
         key = f"{breach.rail}:{breach.margin_kind}"
         if breach.state == "left":
             past.pop(key, None)
         else:
             past[key] = breach.sense
+        answer = self._settle(ctx)
+        return Decision([], note=f"{breach.rail} {breach.margin_kind} {breach.state}"
+                        + (f": {answer}" if answer else ""),
+                        detail={"margin": breach.margin, "years_past": breach.years_past,
+                                "factor": ctx.memory["factor"]})
+
+    def year_start(self, ctx: Context) -> Decision | None:
+        """A rail that stopped covering last year (past its ``end``, or after
+        the household's last death) is never told ``left``, so drop any such
+        rail still recorded as past (#377)."""
+        past: dict[str, str] = ctx.memory.get("past", {})
+        ended = []
+        for key in list(past):
+            rail = key.rsplit(":", 1)[0]
+            years = ctx.rail(rail)
+            at = np.flatnonzero(years.years == ctx.year - 1)
+            if not len(at) or np.isnan(years.margin[0, at[0]]):
+                del past[key]
+                ended.append(rail)
+        if not ended:
+            return None
+        answer = self._settle(ctx)
+        return Decision([], note=f"{', '.join(ended)} ended" + (f": {answer}" if answer else ""),
+                        detail={"factor": ctx.memory["factor"]})
+
+    def _settle(self, ctx: Context) -> str:
+        """Set the factor from the rails recorded as past; what changed, or ''."""
+        p = self.params
+        past = ctx.memory.get("past", {}).values()
         start = ctx.memory.get("factor", 1.0)
-        if "negative" in past.values():
+        if "negative" in past:
             factor = 1 - p.cut / 1_000_000
-        elif "positive" in past.values():
+        elif "positive" in past:
             factor = 1 + p.increase / 1_000_000
         else:
             factor = 1.0
         ctx.memory["factor"] = factor
-        answer = "" if factor == start else (
-            "back to plan" if factor == 1.0 else f"now {factor:.0%} of plan")
-        return Decision([], note=f"{breach.rail} {breach.margin_kind} {breach.state}"
-                        + (f": {answer}" if answer else ""),
-                        detail={"margin": breach.margin, "years_past": breach.years_past,
-                                "factor": factor})
+        if factor == start:
+            return ""
+        return "back to plan" if factor == 1.0 else f"now {factor:.0%} of plan"
 
 
 @register
