@@ -10292,16 +10292,18 @@ def report_tax_command(
     as_graph: bool, graph_file: Path | None, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Show federal and state tax by year, and the income each was figured on.
+    """Show federal, state and local tax by year, and the income each was figured on.
 
     For federal, and for state when the run computes it: AGI, the larger of
     the standard and itemized deduction, the taxable income (income) the brackets
-    taxed, and the tax. effective_rate is total tax over federal AGI. Tax
-    belongs to the year the income was earned in; its balance due or refund
-    settles the April after (see --reconciliation).
+    taxed, and the tax. A local income tax, paid with the state's, is
+    local_tax, shown only when some year has one; state_tax then leaves it
+    out. effective_rate is total tax over federal AGI. Tax belongs to the
+    year the income was earned in; its balance due or refund settles the
+    April after (see --reconciliation).
 
-    --chart draws federal and state tax stacked by year with the effective
-    rate; with --reconciliation, each April's balance due and refund.
+    --chart draws federal, state and local tax stacked by year with the
+    effective rate; with --reconciliation, each April's balance due and refund.
     """
     years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)

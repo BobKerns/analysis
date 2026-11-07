@@ -409,6 +409,13 @@ STATE_SURCHARGE = "state_surcharge"
 shape of its brackets, whose rates add to the brackets' (California's 1%
 over $1 million)."""
 
+STATE_LOCAL_TAX = "state_local_tax"
+"""The aux kind of a local income tax (#487): a county's or city's bands on
+the state's taxable income, in the shape of its brackets (Maryland's county
+rate, New York City's brackets). Keyed by state like the brackets, since a
+household lives in one locality, and paid with the state's tax, as most
+are filed on the state return; reported apart from it."""
+
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""
 
@@ -453,10 +460,22 @@ state taxes none of it."""
 STATE_COMPANION_KINDS: tuple[str, ...] = (
     STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS, STATE_LTCG_EXCLUSION,
     STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA, STATE_RETIREMENT_EXCLUSION,
+    STATE_LOCAL_TAX,
 )
 """The aux kinds keyed by state like ``state_brackets``, whose series is the
 brackets' series, so a move to another state swaps them along (#248, #484,
-#485, #486, #490)."""
+#485, #486, #487, #490)."""
+
+OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset(
+    {STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX})
+"""The state tables a state may lack, or may start only after a move (#490,
+#487): then it has no surcharge or local tax, and its HSA follows the
+federal rules. A move keeps the old state's rows for the years before it,
+and the table it swaps into needn't exist yet."""
+
+STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX})
+"""The state tables of bands whose rates add to the brackets' (#490, #487):
+a filing status the brackets have and the table lacks would tax nothing."""
 
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
@@ -469,6 +488,7 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     "federal_brackets": {"floor_series": "floor"},
     "state_brackets": {"floor_series": "floor"},
     STATE_SURCHARGE: {"floor_series": "floor"},
+    STATE_LOCAL_TAX: {"floor_series": "floor"},
     "ltcg_brackets": {"floor_series": "floor"},
     STATE_LTCG_BRACKETS: {"floor_series": "floor"},
     STATE_STCG_BRACKETS: {"floor_series": "floor"},
@@ -502,6 +522,10 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # brackets whose rates add to theirs, read with the brackets' series.
     # California's is one band, 1% over $1 million, not indexed.
     STATE_SURCHARGE:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # A local income tax (#487): bands in the shape of the brackets on the
+    # state's taxable income, read with the brackets' series.
+    STATE_LOCAL_TAX:
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
     # How a state treats an HSA (#490), read with the brackets' series:
     # `treatment` is one of STATE_HSA_TREATMENTS. Without a table, `federal`.
@@ -618,6 +642,7 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "federal_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     "state_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_SURCHARGE: {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_LOCAL_TAX: {"marginal_rate": ("marginal_rate_micros", "percent")},
     "ltcg_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_LTCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_STCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
@@ -655,6 +680,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     STATE_STCG_BRACKETS: frozenset({"floor"}),
     STATE_LTCG_EXCLUSION: frozenset({"min_exclusion", "max_exclusion"}),
     STATE_SURCHARGE: frozenset({"floor"}),
+    STATE_LOCAL_TAX: frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
     STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
     STATE_RETIREMENT_EXCLUSION: frozenset({"amount", "income_limit", "phaseout"}),
