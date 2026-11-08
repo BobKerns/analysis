@@ -1190,6 +1190,12 @@ in advance, and with `--yes` and no `--symbol` nothing is written.
 
 ### 4.12 Make a new investment, or a Roth conversion
 
+**Video.** *Investments* walks through this section and §4.2 and §4.11
+with Alice and Bill: the lots in each account, buying a fund, how each lot
+grows, where the tax falls, and a Roth conversion into a stock fund:
+[English](https://www.youtube.com/watch?v=O_W-DNmeSRs),
+[Japanese (日本語)](https://www.youtube.com/watch?v=vhOpASCNACg).
+
 `sim invest` sets up a purchase the scenario makes later in one command. It
 writes a new lot, holding the symbol you name and acquired on the date, and a
 calendar `one_off_transfer` that moves the money into it. If the account or
