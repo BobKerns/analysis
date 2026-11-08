@@ -136,7 +136,7 @@ every other scenario.
 | File | What it is |
 | --- | --- |
 | `federal_brackets.csv` | US federal ordinary-income tax brackets. One row per (effective_date, filing_status, bracket_index). |
-| `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. |
+| `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. Six states ship; see "The states that ship" below. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
 | `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state `tax_accumulator` rule, keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
 | `state_social_security__<state>.csv` | Optional: how the state taxes Social Security, keyed by state like `state_brackets__<state>.csv`. Without it (California, and most states) a state rule taxes none. With it, the state starts from the federally taxable amount and leaves out `exclusion_percent` of it, for each filing status. Optional `phaseout_start` (federal AGI) starts taking the exclusion away: evenly down to nothing at `phaseout_end` (the same figure for a cliff, as in New Mexico), or by `phaseout_rate` of each dollar over (a credit in a flat-rate state such as Utah: the credit's phase-out rate divided by the tax rate). A state that follows the federal amount (Montana) writes `0%`. `phaseout_start_series`/`phaseout_end_series` index the limits like `floor_series`. Columns: `effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,phaseout_rate`. Age tests (Colorado, Rhode Island) aren't modeled. Check the figures with the state's revenue department. |
@@ -309,6 +309,52 @@ income: the 0% band ends where the 15% band's floor begins, and so on (the shipp
 are the 2026 thresholds; check them against the current IRS tables). It is optional and only
 affects federal tax: without it long-term gains are taxed as ordinary income. Short-term
 gains (`stcg`, for a lot held a year or less) are taxed federally as ordinary income.
+
+## The states that ship
+
+Six states' brackets and standard deductions ship here, each pair named for
+its state: California (`__CA`), the District of Columbia (`__DC`), Idaho
+(`__ID`), Kansas (`__KS`), Nebraska (`__NE`) and North Carolina (`__NC`).
+With more than one to choose from, a state `tax_accumulator` rule must name
+its state, as `"bracket_series": "CA"` in its `params_json`; it won't load
+without it. `sim tax state` sets it, asking for the state by name.
+`state_brackets__none.csv` and `state_standard_deduction__none.csv` are a 0%
+table for a state with no income tax, which `sim tax state` and
+`sim tax move` choose for such a state, so a move there needs no tables. The tables carry each state's 2026 law, checked
+against its revenue department's 2026 publications in November 2026. A
+state's personal exemption, where it has one, is folded into the standard
+deduction. None of these five taxes Social Security, so none needs a
+`state_social_security` table.
+
+- **District of Columbia:** brackets the same for every filing status, not
+  indexed. The standard deduction follows the federal one ($16,100, or
+  $32,200 joint, for 2026), so it grows with `cpi`. The extra deduction at
+  65 or blind isn't modeled.
+- **Idaho:** 5.3% above a zero band, which is indexed. Idaho hasn't
+  published its 2026 band, so the 2026 rows carry the 2025 one ($4,811, or
+  $9,622 joint), about $7 of tax high, and grow it with `cpi` from there. The standard
+  deduction follows the federal one. The deduction for some public pensions
+  from 65 and the grocery credit aren't modeled.
+- **Kansas:** 5.2%, then 5.58% over $23,000 ($46,000 joint), not indexed.
+  The deduction is the standard deduction plus the personal exemption:
+  $3,605 + $9,160 single, $8,240 + $18,320 joint, $4,120 + $9,160 separate.
+  A household that itemizes gets the greater of that and its itemized
+  deductions, so it loses the exemption Kansas allows on top: until
+  exemptions are modeled (#488), add the exemption to a Kansas
+  `state_deductions.csv` row.
+  Kansas's own public pensions (KPERS, federal civil service, military) are
+  exempt, and from 65 the standard deduction is larger; neither is modeled.
+  A 2025 law cuts the rates when revenue allows; it didn't for 2026.
+- **Nebraska:** 2.46%, 3.51%, then 4.55% for 2026 and 3.99% from 2027, the
+  bands indexed. Standard deduction $8,850, or $17,700 joint, for 2026; the
+  2027 rows use the $9,100 and $18,200 of Nebraska's draft 2027 estimated
+  tax form, and estimate the 2027 floors by growing 2026's by the same
+  ratio, to the nearest $10, until Nebraska publishes them. The personal
+  exemption credit isn't modeled.
+- **North Carolina:** a flat 3.99% for 2026, 3.49% for 2027-2029, 3.24% for
+  2030-2032 and 2.99% from 2033 (Session Law 2026-41). Standard deduction
+  $12,750, or $25,500 joint, not indexed. The exclusion for government
+  pensions vested before August 1989 (Bailey) isn't modeled.
 
 ## A state's capital gains
 
