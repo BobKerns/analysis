@@ -1,5 +1,5 @@
 """The states and territories a household can live in, for choosing the
-state a state tax rule reads (#483): each one's postal code, name and how
+state a state tax reads (#483): each one's postal code, name and how
 far the simulator models its income tax. The README's "State and territory
 income tax" tables say the same; ``tests/test_tax_state.py`` keeps the two
 in step."""
@@ -15,7 +15,7 @@ PARTIAL = "Partial"  # the tables work, but some of its rules aren't modeled
 FEDERAL_RULE = "Federal rule"  # a territory whose tax mirrors the federal one
 NOT_SUPPORTED = "Not supported"  # a tax code of its own the model can't express
 
-# The bracket_series a state tax rule reads after a move to a state with no
+# The bracket_series a state tax reads after a move to a state with no
 # income tax: templates/aux/ ships it as a 0% table.
 NO_TAX_SERIES = "none"
 

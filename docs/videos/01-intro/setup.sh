@@ -13,9 +13,8 @@ sim account lot edit Asset_Brokerage_Joint default --series stock_us
 sim account lot edit Asset_TraditionalIRA_Alice default --series bond
 sim account lot edit Asset_Roth_Alice default --series stock
 sim account lot edit Asset_Roth_Bill default --series stock
-sim scheduled add 2027-04-30 Asset_Checking Expense_Taxes_Federal --kind tax_accumulator \
-    --name federal_tax --cadence annual --month-of-year 4 --params-json '{"year": "previous"}' \
-    --description "federal income tax for the year before"
+sim tax add federal --source-chain Asset_Checking --destination Expense_Taxes_Federal \
+    --start 2027-04 --description "federal income tax for the year before"
 git add -A && git commit -q -m "Invest the savings; add federal income tax"
 sim run
 

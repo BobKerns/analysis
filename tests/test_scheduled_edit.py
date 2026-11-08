@@ -437,13 +437,13 @@ def test_add_an_annual_kind_defaults_to_annual_in_december(
     test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
 ) -> None:
     result = _sim(
-        test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", "Expense_Living",
-        "--kind", "tax_accumulator", "--params-json", '{"year":"previous","scope":"federal"}',
-        "--name", "tax_test",
+        test_data_dir, "retire_alice", "add", "2027-01", "Asset_TraditionalIRA_Alice",
+        "Asset_Checking", "--from-lot", "default", "--kind", "rmd", "--person", "alice",
+        "--name", "rmd_test",
     )
 
     assert result.exit_code == 0, result.output
-    row = _rule(scheduled(), "tax_test")
+    row = _rule(scheduled(), "rmd_test")
     assert (row["cadence"], row["month_of_year"]) == ("annual", "12")
 
 
@@ -454,14 +454,9 @@ def test_add_an_annual_kind_defaults_to_annual_in_december(
 ])
 def test_add_irmaa_takes_its_tax_character_from_where_it_is_paid(
     test_data_dir: Path, scheduled: Callable[[], pd.DataFrame], from_account: str,
-    character: str,
+    character: str, write_tax: Callable[..., Path],
 ) -> None:
-    taxes = _sim(
-        test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", "Expense_Living",
-        "--kind", "tax_accumulator", "--params-json", '{"year":"previous","scope":"federal"}',
-        "--name", "tax_test",
-    )
-    assert taxes.exit_code == 0, taxes.output
+    write_tax(test_data_dir / "scenarios" / "retire_alice")
 
     result = _sim(
         test_data_dir, "retire_alice", "add", "2030-03", from_account, "Expense_Healthcare",

@@ -42,7 +42,7 @@ __all__ = [
     "register", "sale_gain",
 ]
 
-API_VERSION = 6
+API_VERSION = 7
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
@@ -55,7 +55,9 @@ and ``annual_return``. 3 (#421) added ``year_end``, :class:`Transfer`,
 and ``ctx.rail``. 5 (#459) added ``ctx.survival_years``,
 ``ctx.life_expectancy`` and ``ctx.rmd_divisor``, and :class:`ScenarioView`'s
 ``people``, ``aux`` and ``portfolio_classes``. 6 (#463) added
-``ctx.trailing_return`` and :class:`ScenarioView`'s ``portfolio_lots``."""
+``ctx.trailing_return`` and :class:`ScenarioView`'s ``portfolio_lots``. 7
+(#507) replaced :class:`ScenarioView`'s ``tax_rules`` (counts by scope) with
+``taxes``, the set of the scenario's tax jurisdictions."""
 
 
 class StrategyError(Exception):
@@ -789,8 +791,9 @@ class ScenarioView:
 
     accounts: Mapping[str, tuple[str, str]]
     """Each account's ``(kind, subkind)``."""
-    tax_rules: Mapping[str, int]
-    """How many ``tax_accumulator`` rules each scope (``federal``, ``state``) has."""
+    taxes: frozenset[str]
+    """The scenario's tax jurisdictions (``federal``, ``state``): a
+    ``taxes/<jurisdiction>.csv`` file each (#507)."""
     people: Mapping[str, tuple[str | None, str | None, str | None]] = field(default_factory=dict)
     """Each person's ``(role, sex, life table)`` from persons.csv and
     lifespan.csv, blank as None: the table is the name a lifespan row gives

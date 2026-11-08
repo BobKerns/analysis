@@ -27,7 +27,7 @@ import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from analysis.sim import chain_edit, registries
+from analysis.sim import chain_edit, registries, strategy_files
 from analysis.sim.dates import RelativeDate, parse_relative_date
 from analysis.sim.lineage import default_description, is_template, load_order, parse_parents
 from analysis.sim.lineage import TEMPLATE_AUX_DIR
@@ -223,7 +223,10 @@ def rename_account(scenario_dir: Path, old: str, new: str) -> list[str]:
     """Rename account ``old`` to ``new`` throughout one scenario folder;
     returns the files changed, relative to it."""
     changed = [*_rename_in(scenario_dir, ACCOUNT_COLUMNS, old, new),
-               *_rename_in_chains(scenario_dir, chain_edit.ACCOUNT_COLUMNS, old, new)]
+               *_rename_in_chains(scenario_dir, chain_edit.ACCOUNT_COLUMNS, old, new),
+               *(f"{registries.TAXES_DIR}/{path.name}"
+                 for path in strategy_files.own_files(scenario_dir, registries.TAXES_DIR)
+                 if chain_edit.rename_cells(path, chain_edit.TAX_FILE_COLUMNS, old, new))]
     if _rename_subject_account(scenario_dir / "scheduled.csv", old, new) and "scheduled.csv" not in changed:
         changed.append("scheduled.csv")
     return changed
