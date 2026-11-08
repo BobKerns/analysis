@@ -111,6 +111,7 @@ state/
 | `year_to_date` | ✓ | ✓ (snapshot) |
 | `ensemble_manifest`, `ensemble_draw`, `ensemble_tail_scale`, `ensemble_path_shock` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
 | `strategy`, `strategy_source`, `strategy_trigger`, `strategy_vary`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
+| `load_warning` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
 | `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
@@ -121,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 57) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 58) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -642,6 +643,21 @@ CREATE TABLE ensemble_path_shock (
 
 A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<mode>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
 
+### Load warnings
+
+The loader's non-fatal warnings, kept with the intent so they can be read after the fact (#432): a run file's snapshot carries them, `sim explain` prints them, and the notebooks show them beside the scenario picker. `kind` `warning` is what every `sim load`/`run`/`check` prints (a fallback taken, a partial allocation); `unused` is a thing defined but not read yet, which only `sim check` prints at load ([ADR-004](ADR-004-reproducibility-and-activation.md) §6). An ensemble member's intent is a copy of its recipe's, so it carries the recipe's warnings. A file from before schema 58 has no table, and reads as having none.
+
+```sql
+-- #432: the load's non-fatal warnings, in the order raised, so they can be
+-- read after the fact (sim explain, the notebooks). 'unused' is a thing
+-- defined but not read yet (#204), which only `sim check` prints at load.
+CREATE TABLE load_warning (
+    id      INTEGER PRIMARY KEY,
+    kind    TEXT NOT NULL CHECK (kind IN ('warning','unused')),
+    message TEXT NOT NULL
+);
+```
+
 ### Intent manifest (intent files only)
 
 Single-row table; the intent file's identity card.
@@ -940,6 +956,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `ensemble_draw` | One row per resolved `vary_distribution` row: which `calendar_event` (`name`) or lifespan (`lifespan:<person>`), which target (`amount`/`date`/`age_at_death`), and the drawn value ([ADR-006](ADR-006-ensemble-scenarios.md)); `quantile` is the OAT override quantile for a sensitivity member's perturbed row ([ADR-007](ADR-007-sensitivity-analysis.md)); `z`, `noise` and `u` are its score, its own noise and its probability ([ADR-008](ADR-008-correlated-parameters.md) §6). Present only in a resolved member's intent/run files. |
 | `ensemble_tail_scale` | A random member's t-copula scale `S` per tree root, its own and each process year's ([ADR-008](ADR-008-correlated-parameters.md) §6). |
 | `ensemble_path_shock` | Each process path year's noise, score, scale, shock and rate ([ADR-006](ADR-006-ensemble-scenarios.md) §4a). |
+| `load_warning` | The load's non-fatal warnings, and its notes on things defined but not read yet (`kind` `unused`), in the order raised. |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views
@@ -1129,3 +1146,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
 - [#468](https://github.com/BobKerns/analysis/issues/468): the tax character `qualified_dividend` on `scheduled_transaction` and `year_to_date` (Intent layer DDL; schema 56).
 - [#434](https://github.com/BobKerns/analysis/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 57).
+- [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 58).

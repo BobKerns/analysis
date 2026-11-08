@@ -39,6 +39,7 @@ from .schema import connect_sim_file
 
 if TYPE_CHECKING:
     from analysis.sim.lifespan_curves import PersonLifespan
+    from analysis.sim.load_warnings import LoadWarnings
     from analysis.sim.shortfalls import NegativeBalance
     from analysis.sim.step_ups import BasisStepUp
 
@@ -402,6 +403,16 @@ class _TagReader:
 
     def _ensure_fresh(self) -> None:
         """Hook for subclasses; default no-op (run files don't mutate)."""
+
+    def load_warnings(self) -> LoadWarnings:
+        """The warnings the load recorded in this intent or run file (#432),
+        as ``sim explain`` lists them: see ``load_warnings.read``."""
+        from analysis.sim import load_warnings
+
+        self._ensure_fresh()
+        # Its own read-only connection, opened on the calling thread: a
+        # widget redraw can come from a kernel subshell (see _read_sql).
+        return self._cached("load_warnings", lambda: load_warnings.read_file(self._db_path))
 
     def lot_growth_series(self) -> dict[tuple[str, str], str]:
         """Each lot's growth series, by (account, lot): the series its

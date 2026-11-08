@@ -33,7 +33,7 @@ from IPython.display import HTML, clear_output, display
 from analysis.frames import clip_years, index_years
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
-from analysis.sim import shortfalls
+from analysis.sim import load_warnings, shortfalls
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
@@ -130,6 +130,41 @@ def shortfall_banner(rc: RunConnection | None, scenario: str | None = None) -> s
         "run: the debit posts and the balance goes below zero.",
         lines,
     )
+
+
+def load_warnings_html(found: load_warnings.LoadWarnings) -> str | None:
+    """The HTML listing a load's warnings (#432) in a warning box, then its
+    notes on things defined but not read yet folded away, since those are
+    often deliberate (#204); None for a load with neither."""
+    parts = []
+    if found.warnings:
+        parts.append(warning_html(
+            f"**{load_warnings.count_phrase(found)}.** The load went ahead; "
+            "`sim check` prints the same.", found.warnings))
+    if found.unused:
+        n = len(found.unused)
+        parts.append(styled_html(
+            "<details><summary>"
+            f"{n} thing{'' if n == 1 else 's'} defined but not read yet "
+            "(often deliberate: work in progress, or meant for a child scenario)</summary>"
+            '<pre style="margin:4px 0 0; white-space:pre-wrap;">'
+            + html_lib.escape("\n".join(found.unused)) + "</pre></details>"))
+    return "".join(parts) or None
+
+
+def load_warnings_line(rc: RunConnection | None, scenario: str | None = None) -> str | None:
+    """One line of HTML counting the warnings recorded when ``rc``'s
+    scenario was loaded for it (#432), pointing to where they're listed;
+    None for a run with none. Things defined but not read yet aren't
+    counted: they're often deliberate, and only ``sim check`` prints them."""
+    if rc is None:
+        return None
+    found = rc.load_warnings()
+    if not found.warnings:
+        return None
+    return warning_html(
+        f"**{load_warnings.count_phrase(found)}** when this run's scenario was loaded: "
+        f"`scenario_overview.ipynb` lists them, and so does `{explain_command(rc, scenario)}`.")
 
 
 def _local_time(utc: str | None) -> str | None:
@@ -639,6 +674,12 @@ def scenario_picker(
                 banner = shortfall_banner(container.run, name)
                 if banner is not None:
                     display(HTML(banner))
+            # A notebook reading only the intent lists the load's warnings
+            # (scenario_overview); one reading a run counts its own load's.
+            warned = (load_warnings_html(container.scenario.load_warnings()) if not require_run
+                      else load_warnings_line(container.run, name))
+            if warned is not None:
+                display(HTML(warned))
             if show_metadata:
                 rc = container.run
                 if rc is not None:
@@ -933,6 +974,11 @@ def multi_scenario_picker(
             if lines:
                 display_warning("**Negative balances** (a shortfall doesn't stop a run; "
                                 "`sim explain` lists them):", lines)
+            lines = [f"{name}: {load_warnings.count_phrase(found)} ({explain_command(rc, name)})"
+                     for name, rc in container.connections.items()
+                     if name in container.scenarios and (found := rc.load_warnings()).warnings]
+            if lines:
+                display_warning("**Load warnings** (`scenario_overview.ipynb` lists them):", lines)
 
     def _on_change(*_) -> None:
         old_connections = dict(container.connections)

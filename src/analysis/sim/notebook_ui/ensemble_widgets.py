@@ -5,6 +5,7 @@ breakpoints."""
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ import ipywidgets as widgets
 import pandas as pd
 from IPython.display import clear_output, display
 
-from analysis.sim import registries, reports, shortfalls, units
+from analysis.sim import load_warnings, registries, reports, shortfalls, units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
@@ -431,6 +432,18 @@ def shortfall_message(found: shortfalls.MemberShortfalls) -> str | None:
             "A shortfall doesn't stop a run; `sim explain --runfile <member>` lists a member's.")
 
 
+def load_warnings_message(member_path: Path) -> str | None:
+    """The ensemble widget's line counting the warnings recorded when the
+    recipe was loaded (#432), read from one member's run (every member's
+    intent is a copy of the recipe's); None when there were none."""
+    found = load_warnings.read_file(member_path)
+    if not found.warnings:
+        return None
+    return (f"**{load_warnings.count_phrase(found)}** when the recipe was loaded: "
+            "`scenario_overview.ipynb` lists them, and so does "
+            f"`sim explain --runfile {shlex.quote(str(member_path))}`.")
+
+
 AFTER_TAX_NET_WORTH = "After-tax net worth"
 
 
@@ -581,10 +594,13 @@ def ensemble_widget(*_,
                 description = description_view(con, data_dir=resolved_data_dir)
         loading.note(f"Reading {recipe}'s negative balances")
         shortfall = shortfall_message(batch_shortfalls(batch_dir, store.stems))
+        warned = load_warnings_message(batch_dir / f"{store.stems[0]}.sqlite3")
         clear_output(wait=True)
         display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
         if shortfall is not None:
             display_warning(shortfall)
+        if warned is not None:
+            display_warning(warned)
         if description is not None:
             display(description)
         # A pyplot-free Figure, rendered to a PNG here: pyplot's

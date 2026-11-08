@@ -1860,6 +1860,19 @@ def without_template_aux(tmp_path_factory: pytest.TempPathFactory, monkeypatch: 
     monkeypatch.setattr("analysis.sim.loader.TEMPLATE_AUX_DIR", tmp_path_factory.mktemp("no_template_aux"))
 
 
+@pytest.fixture(scope="function")
+def state_tax_without_its_deduction(
+    test_data_dir: Path, add_state_tax: Callable[..., None], without_template_aux: None,
+) -> None:
+    """The private retire_alice copy, loading with one warning (#432): a
+    California state tax rule with no state_standard_deduction__CA table, so
+    it falls back to the federal deduction (#248) and the load warns that
+    "state tax uses the federal standard deduction". The prototype's idle
+    latent factors add their one note on things defined but not read yet."""
+    add_state_tax()
+    (test_data_dir / "aux" / "state_standard_deduction__CA.csv").unlink()
+
+
 @pytest.fixture(scope="session")
 def research_bundles(repo_root: Path) -> Path:
     """Research bundles as the finance-research plugin writes them (#344),
