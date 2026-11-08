@@ -22,7 +22,6 @@ from analysis.sim.connection import (
     RunConnection,
     event_month,
 )
-from analysis.sim.drift import has_table
 
 __all__ = [
     "FlowSide", "INCOME_REPORT_CATEGORIES", "SPENDING_BASELINE", "UNTAGGED", "event_groups",
@@ -167,8 +166,6 @@ def shortfall_events(rc: RunConnection) -> pd.DataFrame:
     its unspent budget would have reached."""
     columns = ["amount", "reason_kind", "reason_id", "account", "subkind", "month"]
     con = rc._con
-    if not has_table(con, SPENDING_BASELINE):
-        return pd.DataFrame(columns=columns)
     frame = pd.read_sql_query(
         "SELECT b.budgeted_cents - b.delivered_cents AS amount, 'rule' AS reason_kind, "
         "       b.scheduled_transaction_id AS reason_id, c.name AS account, "
@@ -214,5 +211,4 @@ def spending_by_month(rc: RunConnection, *, by: str = "category") -> tuple[pd.Da
 def uses_spending_strategies(rc: RunConnection) -> bool:
     """Whether a strategy owned any of the run's scheduled rules: without
     one, the run's spending is its plan."""
-    return (has_table(rc._con, SPENDING_BASELINE)
-            and rc._con.execute(f"SELECT 1 FROM {SPENDING_BASELINE} LIMIT 1").fetchone() is not None)
+    return rc._con.execute(f"SELECT 1 FROM {SPENDING_BASELINE} LIMIT 1").fetchone() is not None

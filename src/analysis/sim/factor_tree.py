@@ -96,10 +96,8 @@ def factor_tree(con: sqlite3.Connection) -> FactorTree:
     links = correlation_links(con)
     cur = con.cursor()
     cur.row_factory = sqlite3.Row
-    columns = {row[1] for row in con.execute("PRAGMA table_info(calendar_event)")}
-    nu = "vary_tail_dependence" if "vary_tail_dependence" in columns else "NULL"
     rows = cur.execute(
-        f"SELECT name, description, {nu} AS nu FROM calendar_event WHERE kind = ? ORDER BY id",
+        "SELECT name, description, vary_tail_dependence AS nu FROM calendar_event WHERE kind = ? ORDER BY id",
         (LATENT_FACTOR_KIND,),
     ).fetchall()
     names = {row["name"] for row in rows}
@@ -116,13 +114,12 @@ def factor_tree(con: sqlite3.Connection) -> FactorTree:
             "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL AND name IS NOT NULL "
             "ORDER BY id")
     ]
-    if "vary_distribution" in {row[1] for row in con.execute("PRAGMA table_info(person_lifespan)")}:
-        varying += [
-            Varying(LIFESPAN_NODE_PREFIX + row["person"], f"{row['person']}'s age at death",
-                    row["vary_distribution"])
-            for row in cur.execute(
-                "SELECT * FROM person_lifespan WHERE vary_distribution IS NOT NULL ORDER BY person")
-        ]
+    varying += [
+        Varying(LIFESPAN_NODE_PREFIX + row["person"], f"{row['person']}'s age at death",
+                row["vary_distribution"])
+        for row in cur.execute(
+            "SELECT * FROM person_lifespan WHERE vary_distribution IS NOT NULL ORDER BY person")
+    ]
     varying += [Varying(row["name"], f"strategy {row['strategy']}", row["vary_distribution"])
                 for row in strategy_vary_rows(con)]
     return FactorTree(factors, varying, links)

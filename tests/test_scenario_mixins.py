@@ -199,10 +199,6 @@ def test_a_single_parent_shows_no_mixins() -> None:
     )
 
 
-def test_a_file_from_before_lineage_was_recorded_shows_none() -> None:
-    assert lineage_markdown({"description": "old"}) == ""
-
-
 def test_a_mixins_set_rate_warns_alone_and_is_read_by_its_child(
     prototype_data: Path, derive_scenario: Callable[..., Path],
     test_data_dir: Path, intent_dir: Path,

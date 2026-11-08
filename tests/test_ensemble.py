@@ -754,13 +754,6 @@ def test_sensitivity_batch_manifest_round_trips(tmp_path: Path) -> None:
     assert manifest["rows"] == ["a", "b"]
 
 
-def test_read_batch_manifest_defaults_old_batches_to_monte_carlo(tmp_path: Path) -> None:
-    (tmp_path / "batch_manifest.json").write_text('{"member_count": 3, "failures": []}')
-    manifest = read_batch_manifest(tmp_path)
-    assert manifest is not None
-    assert manifest["mode"] == "monte_carlo"
-
-
 # --- #31: shaped truncated_normal and triangular rows -------------------------------
 
 

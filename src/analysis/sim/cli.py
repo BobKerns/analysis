@@ -834,27 +834,15 @@ def _refuse_mixin_only_run(name: str, users: Sequence[str]) -> NoReturn:
 
 def _intent_is_mixin_only(intent_path: Path) -> bool:
     """Whether the intent was loaded from a mix-in only scenario, as the
-    loader recorded (``scenario.mixin_only``). An intent from before schema
-    50 has no such column; there only a root mix-in was one, loaded with no
-    parents on ``MIXIN_BASE``."""
+    loader recorded (``scenario.mixin_only``)."""
     con = connect_sim_file(intent_path)
     try:
-        try:
-            row = con.execute("SELECT mixin_only FROM scenario").fetchone()
-            return bool(row and row[0])
-        except sqlite3.OperationalError:
-            row = con.execute("SELECT parents_json, load_order_json FROM scenario").fetchone()
+        row = con.execute("SELECT mixin_only FROM scenario").fetchone()
     except sqlite3.Error:
         return False
     finally:
         con.close()
-    if row is None:
-        return False
-    try:
-        parents, order = json.loads(row[0] or "[]"), json.loads(row[1] or "[]")
-    except json.JSONDecodeError:
-        return False
-    return not parents and len(order) > 1 and order[0] == MIXIN_BASE
+    return bool(row and row[0])
 
 
 def _prune_state(data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:
@@ -4259,11 +4247,9 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
     year-end strategy (#421), what its moves moved and the gain they
     realized (a harvest's, or a cash gift's sale); a triggered one (#441),
     how often each rail was past, answered and back inside. Says nothing
-    for a run with none, or one from before them."""
-    if not _has_table(con, "strategy_decision"):
-        return
+    for a run with none."""
     rows = con.execute(
-        f"SELECT s.name, s.kind, {strategy_guide.owns_sql(con)}, COUNT(d.id), "
+        f"SELECT s.name, s.kind, {strategy_guide.owns_sql()}, COUNT(d.id), "
         "       COALESCE(SUM(d.asked_cents), 0), COALESCE(SUM(d.chosen_cents), 0), "
         "       COALESCE(SUM(d.fallback_cents), 0) "
         "FROM strategy s LEFT JOIN chain c ON c.id = s.chain_id "
@@ -4271,17 +4257,14 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
     ).fetchall()
     if not rows:
         return
-    year_end: dict[str, tuple[int, int]] = {}
-    if "'year_end'" in (con.execute(
-            "SELECT sql FROM sqlite_master WHERE name = 'strategy_decision'").fetchone() or ("",))[0]:
-        year_end = {
-            name: (moved, gain) for name, moved, gain in con.execute(
-                "SELECT s.name, SUM(d.chosen_cents), COALESCE(SUM(("
-                "  SELECT SUM(t.amount) FROM transfer_event t WHERE t.strategy_decision_id = d.id "
-                "  AND t.tax_character IN ('ltcg', 'stcg'))), 0) "
-                "FROM strategy_decision d JOIN strategy s ON s.id = d.strategy_id "
-                "WHERE d.hook = 'year_end' GROUP BY s.id")
-        }
+    year_end: dict[str, tuple[int, int]] = {
+        name: (moved, gain) for name, moved, gain in con.execute(
+            "SELECT s.name, SUM(d.chosen_cents), COALESCE(SUM(("
+            "  SELECT SUM(t.amount) FROM transfer_event t WHERE t.strategy_decision_id = d.id "
+            "  AND t.tax_character IN ('ltcg', 'stcg'))), 0) "
+            "FROM strategy_decision d JOIN strategy s ON s.id = d.strategy_id "
+            "WHERE d.hook = 'year_end' GROUP BY s.id")
+    }
     breach_lines: dict[str, list[str]] = {}
     told = strategy_guide.breaches(con)
     for key in sorted(set(zip(told["strategy"], told["rail"], told["margin_kind"], strict=True))):
@@ -4309,13 +4292,10 @@ def _echo_strategies(con: sqlite3.Connection) -> None:
 
 def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
     """The run's basis step-ups at a death (#255): the month, the lot, whose
-    death, its basis before and after, and the rule that applied (#434). A
-    run file from before them has no table, and says nothing."""
+    death, its basis before and after, and the rule that applied (#434)."""
     from analysis.sim.step_ups import basis_step_ups
 
     found = basis_step_ups(con)
-    if found is None:
-        return
     if not found:
         click.echo("basis step-ups at a death: none")
         return
@@ -4325,9 +4305,8 @@ def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
     for s in found:
         line = (f"  {s.month[:7]}  {s.account:<{width}}  {s.person:<{who}}"
                 f"  balance {_compact_cents(s.balance_cents)}"
-                f"  basis {_compact_cents(s.basis_before_cents)} -> {_compact_cents(s.basis_after_cents)}")
-        if s.rule is not None:
-            line += f"  ({s.rule_label})"
+                f"  basis {_compact_cents(s.basis_before_cents)} -> {_compact_cents(s.basis_after_cents)}"
+                f"  ({s.rule_label})")
         click.echo(line)
 
 
@@ -10523,8 +10502,7 @@ def report_guard_rails_command(
         results = guard_rails.evaluate_run(rc, rails, mode)
         deaths = _chart_deaths(rc, as_graph, graph_file)
         name = rc.label
-        spells = (strategy_guide.breach_episodes(rc._con)
-                  if _has_table(rc._con, "breach_event") else [])
+        spells = strategy_guide.breach_episodes(rc._con)
     shown = [r for r in results if r.applies]
     for r in results:
         if not r.applies:
@@ -18262,9 +18240,6 @@ def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, d
                + (f" (and {registries.STRATEGY_VARY_DIR}/{strategy_name}.csv)" if varied else ""))
 
 
-_has_table = drift.has_table
-
-
 @strategy_group_command.command("log")
 @click.argument("target", type=completion.SCENARIO_OR_RUNFILE, metavar="[SCENARIO | RUNFILE]", required=False)
 @click.option("--strategy", "strategy_name", type=completion.STRATEGY, default=None,
@@ -18288,9 +18263,6 @@ def strategy_log_command(
     path = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
     try:
-        if not _has_table(con, "strategy_decision"):
-            click.echo(f"no strategies in {path.name} (a run from before them)")
-            return
         if breaches:
             told = strategy_guide.breaches(con, strategy=strategy_name)
             if year is not None:

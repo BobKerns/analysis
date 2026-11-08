@@ -537,7 +537,7 @@ CREATE TABLE ensemble_draw (
     -- for a random draw or a row resolved to its central value.
     quantile            REAL,
     -- The row's vary_distribution, which resolving clears from calendar_event
-    -- (ADR-007 §5); NULL in files written before schema 28.
+    -- (ADR-007 §5).
     distribution        TEXT,
     -- ADR-008 §6: the row's standard normal score in its correlation tree;
     -- NULL for a row outside every tree.

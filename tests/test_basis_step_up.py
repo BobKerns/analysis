@@ -265,7 +265,7 @@ def test_an_empty_lot_at_a_death_is_left_out(step_up_run: Path) -> None:
                     "basis_after, rule) "
                     "SELECT step_id, date, lot_id, person, 0, 0, 0, rule FROM basis_step_up LIMIT 1")
         con.commit()
-        assert len(step_ups.basis_step_ups(con) or []) == 2
+        assert len(step_ups.basis_step_ups(con)) == 2
     finally:
         con.close()
 
@@ -277,23 +277,6 @@ def test_a_run_without_step_ups_shows_no_table(retire_alice_run_file: Path) -> N
     # Something to display, so the last scenario's table is cleared (#434).
     assert isinstance(empty, widgets.HTML)
     assert empty.value == ""
-
-
-def test_a_run_from_before_the_rule_shows_its_step_ups_without_one(step_up_run: Path) -> None:
-    with sqlite3.connect(step_up_run) as con:
-        con.execute("ALTER TABLE basis_step_up DROP COLUMN rule")
-    found = step_ups.run_basis_step_ups(step_up_run)
-    assert found is not None
-    assert [(s.account, s.rule, s.rule_label) for s in found] == [
-        (f"{BROKERAGE} (default)", None, "-"), ("Asset_Home", None, "-")]
-
-
-def test_a_run_from_before_step_ups_has_none(step_up_run: Path) -> None:
-    with sqlite3.connect(step_up_run) as con:
-        con.execute("DROP TABLE basis_step_up")
-    assert step_ups.run_basis_step_ups(step_up_run) is None
-    with RunConnection(step_up_run) as rc:
-        assert rc.basis_step_ups() == []
 
 
 # -- Deaths on charts (#255) --------------------------------------------------
