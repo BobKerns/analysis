@@ -380,6 +380,12 @@ met a word gets an answer about how it's used here.
 
 ## 3. How tax is handled
 
+**Video.** *Taxes* walks through this section and §4.9, §4.12 and §4.14
+with Alice and Bill: what the plan pays in tax, a Roth conversion,
+Medicare's surcharge and a big medical year:
+[English](https://www.youtube.com/watch?v=nw0-pCtZ9yc),
+[Japanese (日本語)](https://www.youtube.com/watch?v=S1_TNzzaOR0).
+
 Tax is not calculated as each rule fires. Instead, it is calculated once per
 tax year, by looking back over everything that happened that year (the
 `transfer_event` ledger).
@@ -1192,6 +1198,12 @@ which ticker to write them under (blank writes nothing); `--symbol` answers
 in advance, and with `--yes` and no `--symbol` nothing is written.
 
 ### 4.12 Make a new investment, or a Roth conversion
+
+**Video.** *Investments* walks through this section and §4.2 and §4.11
+with Alice and Bill: the lots in each account, buying a fund, how each lot
+grows, where the tax falls, and a Roth conversion into a stock fund:
+[English](https://www.youtube.com/watch?v=O_W-DNmeSRs),
+[Japanese (日本語)](https://www.youtube.com/watch?v=vhOpASCNACg).
 
 `sim invest` sets up a purchase the scenario makes later in one command. It
 writes a new lot, holding the symbol you name and acquired on the date, and a
