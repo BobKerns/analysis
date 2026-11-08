@@ -141,9 +141,7 @@ def _strategy_number(kind: str, value: float) -> str:
 
 def _strategy_kinds(con: sqlite3.Connection) -> dict[str, str]:
     """Each varied strategy parameter's node and the ``kind`` it is displayed
-    by: ``strategy:<its stored unit>`` (#408). None in a file before schema 53."""
-    if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'strategy_vary'").fetchone() is None:
-        return {}
+    by: ``strategy:<its stored unit>`` (#408)."""
     return {name: STRATEGY_NODE_PREFIX + unit
             for name, unit in con.execute("SELECT name, unit FROM strategy_vary")}
 
@@ -590,10 +588,8 @@ def _member_draws(
         con = connect_sim_file(rc.run_path)
         try:
             index = con.execute("SELECT member_index FROM ensemble_manifest").fetchone()
-            columns = {c[1] for c in con.execute("PRAGMA table_info(ensemble_draw)")}
-            z = "z" if "z" in columns else "NULL"  # files written before ADR-008
             draws = con.execute(
-                f"SELECT calendar_event_name, vary_target, drawn_value, {z} FROM ensemble_draw"
+                "SELECT calendar_event_name, vary_target, drawn_value, z FROM ensemble_draw"
             ).fetchall()
         finally:
             con.close()
@@ -846,9 +842,8 @@ def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str], set[str
     (non-factor) varying rows, and the roots of its t-copula trees (#68)."""
     con = connect_sim_file(run_path)
     try:
-        columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
         links = correlation_links(con)
-        t_roots = set() if "vary_tail_dependence" not in columns else {
+        t_roots = {
             name for (name,) in con.execute(
                 "SELECT name FROM calendar_event "
                 "WHERE vary_tail_dependence IS NOT NULL AND name IS NOT NULL"
@@ -1152,16 +1147,13 @@ def _lifespan_record(
     return record
 
 
-def _strategy_records(con: sqlite3.Connection, has_distribution: bool) -> list[dict[str, object]]:
+def _strategy_records(con: sqlite3.Connection) -> list[dict[str, object]]:
     """``parameters``' rows for the varied strategy parameters (#408): what
     each acts on is its strategy, its center the authored value (the base
     case, not the median)."""
     from analysis.sim.ensemble import build_distribution, strategy_vary_rows
 
-    drawn = dict(con.execute(
-        f"SELECT calendar_event_name, {'distribution' if has_distribution else 'NULL'} "
-        "FROM ensemble_draw"
-    ).fetchall())
+    drawn = dict(con.execute("SELECT calendar_event_name, distribution FROM ensemble_draw").fetchall())
     records: list[dict[str, object]] = []
     for row in strategy_vary_rows(con, resolved=True):
         if row["name"] not in drawn:
@@ -1203,11 +1195,11 @@ def _base_ages(connections: dict[str, RunConnection]) -> dict[str, float]:
 
 def _describe_process(row: sqlite3.Row) -> str:
     """A process row's path (ADR-006 §4a), e.g. ``ar1, persistence 0.5,
-    shock 2.00%``; blank for a held draw, or a file before schema 33."""
-    if "vary_process" not in row.keys() or not row["vary_process"]:
+    shock 2.00%``; blank for a held draw."""
+    if not row["vary_process"]:
         return ""
     shock = _spread(row["kind"], "amount", row["vary_shock_sd"])
-    start = (row["vary_process_start"] if "vary_process_start" in row.keys() else None)
+    start = row["vary_process_start"]
     return (f"{row['vary_process']}, persistence {row['vary_persistence']:g}, shock {shock}"
             + (f", from the {start} rate" if start else ""))
 
@@ -1227,8 +1219,7 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
     actually ``drawn`` across its members.
 
     Read from the batch's own member files, so it describes what was run --
-    not the recipe as it stands now. A batch written before schema 28
-    doesn't record the distribution, so its description columns are blank."""
+    not the recipe as it stands now."""
     from analysis.sim.loader import batch_mode
 
     connections = load_ensemble(batch_dir)
@@ -1236,22 +1227,19 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
         con = connect_sim_file(next(iter(connections.values())).run_path)
         con.row_factory = sqlite3.Row
         try:
-            has_distribution = any(
-                col[1] == "distribution" for col in con.execute("PRAGMA table_info(ensemble_draw)")
-            )
             rows = con.execute(
                 "SELECT d.calendar_event_name AS name, d.vary_target AS target, "
-                f"{'d.distribution' if has_distribution else 'NULL'} AS distribution, c.* "
+                "d.distribution AS distribution, c.* "
                 "FROM ensemble_draw d JOIN calendar_event c ON c.name = d.calendar_event_name "
                 "ORDER BY name"
             ).fetchall()
             lifespans = con.execute(
-                f"SELECT calendar_event_name, {'distribution' if has_distribution else 'NULL'} "
+                "SELECT calendar_event_name, distribution "
                 "FROM ensemble_draw WHERE vary_target = ?", (LIFESPAN_TARGET,),
             ).fetchall()
             base_ages = _base_ages(connections) if lifespans else {}
             records = [_lifespan_record(con, name, dist, base_ages) for name, dist in lifespans]
-            records += _strategy_records(con, has_distribution)
+            records += _strategy_records(con)
         finally:
             con.close()
         for row in rows:
@@ -1264,10 +1252,8 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
                 "description": row["description"] or "",
                 "correlate_with": row["vary_correlate_with"] or "",
                 "rho": "" if row["vary_correlation"] is None else f"{row['vary_correlation']:+g}",
-                # On a t-copula tree's root (#68); files before schema 32 have none.
-                "nu": f"{row['vary_tail_dependence']:g}"
-                if "vary_tail_dependence" in row.keys() and row["vary_tail_dependence"] is not None
-                else "",
+                # On a t-copula tree's root (#68).
+                "nu": "" if row["vary_tail_dependence"] is None else f"{row['vary_tail_dependence']:g}",
             }
             dist = _row_distribution(row, target) if row["distribution"] else None
             if dist is not None:

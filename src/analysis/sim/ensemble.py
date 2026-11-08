@@ -277,12 +277,10 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
 def _process_params(row: sqlite3.Row) -> tuple[float, int, str | None] | None:
     """A process row's ``(phi, shock SD in micros, start)`` (ADR-006
     §4a), or ``None`` for a held draw; ``start`` is ``current`` or ``None``
-    for a stationary start. Intent files written before #115 have no
-    process columns at all, nor before #280 a start."""
-    if "vary_process" not in row.keys() or not row["vary_process"]:
+    for a stationary start."""
+    if not row["vary_process"]:
         return None
-    start = row["vary_process_start"] if "vary_process_start" in row.keys() else None
-    return float(row["vary_persistence"]), int(row["vary_shock_sd"]), start or None
+    return float(row["vary_persistence"]), int(row["vary_shock_sd"]), row["vary_process_start"] or None
 
 
 def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list[date]:
@@ -626,16 +624,9 @@ def _resolve_lifespan(
     return round(value * 12) / 12, quantile, u
 
 
-def _has_columns(con: sqlite3.Connection, table: str, *columns: str) -> bool:
-    present = {c[1] for c in con.execute(f"PRAGMA table_info({table})")}
-    return set(columns) <= present
-
-
 def _lifespan_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
     """The varying lifespans (#221), each with its person's birthdate and its
-    correlation node name; none in a file written before schema 40."""
-    if not _has_columns(con, "person_lifespan", "vary_distribution"):
-        return []
+    correlation node name."""
     cur = con.cursor()
     cur.row_factory = sqlite3.Row
     return cur.execute(
@@ -646,18 +637,9 @@ def _lifespan_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _has_table(con: sqlite3.Connection, table: str) -> bool:
-    return con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-    ).fetchone() is not None
-
-
 def strategy_vary_rows(con: sqlite3.Connection, *, resolved: bool = False) -> list[sqlite3.Row]:
     """The varied strategy parameters (#408), each with its strategy's name;
-    with ``resolved``, those a member already drew too. None in a file
-    written before schema 53."""
-    if not _has_table(con, "strategy_vary"):
-        return []
+    with ``resolved``, those a member already drew too."""
     cur = con.cursor()
     cur.row_factory = sqlite3.Row
     where = "" if resolved else "WHERE v.vary_distribution IS NOT NULL "
@@ -692,41 +674,35 @@ def varying_names(con: sqlite3.Connection) -> list[str]:
     names = [name for (name,) in con.execute(
         "SELECT name FROM calendar_event WHERE vary_distribution IS NOT NULL AND name IS NOT NULL"
     )]
-    if _has_columns(con, "person_lifespan", "vary_distribution"):
-        names += [LIFESPAN_NODE_PREFIX + person for (person,) in con.execute(
-            "SELECT person FROM person_lifespan WHERE vary_distribution IS NOT NULL"
-        )]
+    names += [LIFESPAN_NODE_PREFIX + person for (person,) in con.execute(
+        "SELECT person FROM person_lifespan WHERE vary_distribution IS NOT NULL"
+    )]
     names += [row["name"] for row in strategy_vary_rows(con)]
     return sorted(names)
 
 
 def correlation_links(con: sqlite3.Connection) -> dict[str, Link]:
     """Each varying calendar row's, factor's or lifespan's (#221) link to its
-    correlation parent (ADR-008); tolerant of files from before either set
-    of columns existed."""
-    links: dict[str, Link] = {}
-    if _has_columns(con, "calendar_event", "vary_correlate_with"):
-        links.update({
-            name: Link(parent, rho) for name, parent, rho in con.execute(
-                "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
-                "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
-            )
-        })
-    if _has_columns(con, "person_lifespan", "vary_correlate_with"):
-        links.update({
-            LIFESPAN_NODE_PREFIX + person: Link(parent, rho)
-            for person, parent, rho in con.execute(
-                "SELECT person, vary_correlate_with, vary_correlation FROM person_lifespan "
-                "WHERE vary_correlate_with IS NOT NULL"
-            )
-        })
-    if _has_table(con, "strategy_vary"):
-        links.update({
-            name: Link(parent, rho) for name, parent, rho in con.execute(
-                "SELECT name, vary_correlate_with, vary_correlation FROM strategy_vary "
-                "WHERE vary_correlate_with IS NOT NULL"
-            )
-        })
+    correlation parent (ADR-008)."""
+    links = {
+        name: Link(parent, rho) for name, parent, rho in con.execute(
+            "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
+            "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
+        )
+    }
+    links.update({
+        LIFESPAN_NODE_PREFIX + person: Link(parent, rho)
+        for person, parent, rho in con.execute(
+            "SELECT person, vary_correlate_with, vary_correlation FROM person_lifespan "
+            "WHERE vary_correlate_with IS NOT NULL"
+        )
+    })
+    links.update({
+        name: Link(parent, rho) for name, parent, rho in con.execute(
+            "SELECT name, vary_correlate_with, vary_correlation FROM strategy_vary "
+            "WHERE vary_correlate_with IS NOT NULL"
+        )
+    })
     return links
 
 
@@ -780,9 +756,6 @@ def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[s
 def _tail_dependence(con: sqlite3.Connection) -> dict[str, float]:
     """Each t-copula tree's ``nu``, by its root's name (ADR-008 §1). The
     loader allows ``vary_tail_dependence`` only on a root."""
-    columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
-    if "vary_tail_dependence" not in columns:  # files written before #68
-        return {}
     return dict(con.execute(
         "SELECT name, vary_tail_dependence FROM calendar_event "
         "WHERE vary_tail_dependence IS NOT NULL AND name IS NOT NULL"
@@ -1314,15 +1287,12 @@ def write_batch_manifest(
 
 def read_batch_manifest(batch_dir: Path) -> dict[str, Any] | None:
     """``write_batch_manifest``'s record for this batch, or ``None`` for a
-    batch generated before it existed (or synthesized directly by a test,
-    bypassing ``_run_ensemble``)."""
+    batch without one (interrupted before it was written, or synthesized
+    directly by a test, bypassing ``_run_ensemble``)."""
     path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
     if not path.is_file():
         return None
-    manifest = json.loads(path.read_text())
-    # Batches written before ADR-007 carry no mode; they're all Monte Carlo.
-    manifest.setdefault("mode", "monte_carlo")
-    return manifest
+    return json.loads(path.read_text())
 
 
 def member_run_statuses(batch_dir: Path) -> dict[str, str]:

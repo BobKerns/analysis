@@ -334,10 +334,9 @@ def _add_balances(out: MemberSeries, con: sqlite3.Connection, months: pd.Datetim
 def _add_classes(out: MemberSeries, con: sqlite3.Connection, months: pd.DatetimeIndex) -> None:
     """Each portfolio's cents per asset class by month (``drift.class_dollars``),
     and the run's target sets and the strategies steering to them."""
-    if allocation_drift.has_table(con, "allocation_target"):
-        out.targets = [tuple(row) for row in con.execute(
-            "SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")]
-        out.watches = allocation_drift.watches(con)
+    out.targets = [tuple(row) for row in con.execute(
+        "SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")]
+    out.watches = allocation_drift.watches(con)
     iso = months.strftime("%Y-%m-%d")
     for portfolio, frame in allocation_drift.class_dollars(con).items():
         cents = np.rint(frame.reindex(iso).fillna(0.0).to_numpy(dtype=float) * 100).astype(np.int64)

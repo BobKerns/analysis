@@ -755,19 +755,6 @@ def test_parameters_describes_a_monte_carlo_batch(mc_batch: Path) -> None:
     assert not any(c.startswith("value@") for c in table.columns)
 
 
-def test_parameters_tolerates_batches_before_schema_28(oat_batch: Path) -> None:
-    import sqlite3
-
-    for member in oat_batch.glob("member_*.sqlite3"):
-        con = sqlite3.connect(member)
-        con.execute("ALTER TABLE ensemble_draw DROP COLUMN distribution")
-        con.commit()
-        con.close()
-    table = sensitivity.parameters(oat_batch)
-    assert (table["distribution"] == "").all() and (table["range"] == "").all()
-    assert table.loc["gift", "value@0.1"] == "$12,000"
-
-
 
 def test_parameters_describes_shape_and_moments(
     test_data_dir: Path, append_calendar_row: Callable[..., None],

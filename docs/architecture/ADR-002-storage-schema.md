@@ -1060,7 +1060,9 @@ Indexes are deliberately conservative — chosen for the queries the views gener
 
 ### Schema changes
 
-There are no migrations: the database files are always generated, never upgraded. The schema is applied whole (`apply_intent_schema` / `apply_run_schema`), and `SCHEMA_VERSION` in `schema.py` is bumped on each change. An intent file is rebuilt from the CSVs on every `sim load`, so it always matches the current code. A run file isn't upgraded: to compare runs across a schema change, re-run the older scenario. Generating from the CSVs every time is simpler and more reliable than maintaining migrations, and the CSVs are the source of truth anyway.
+There are no migrations: the database files are always generated, never upgraded. The schema is applied whole (`apply_intent_schema` / `apply_run_schema`), and `SCHEMA_VERSION` in `schema.py` is bumped on each change, including a change to a batch's `draws.sqlite3` (`draws_db.DRAWS_DDL`). An intent file is rebuilt from the CSVs on every `sim load`, so it always matches the current code. A run file isn't upgraded: to compare runs across a schema change, re-run the older scenario. Generating from the CSVs every time is simpler and more reliable than maintaining migrations, and the CSVs are the source of truth anyway.
+
+Readers assume the current schema. Code that reads an intent file, a run file, an ensemble member or a batch's draws database has no fallback for a file written under an earlier `SCHEMA_VERSION`, such as a missing table or column, and no test fakes one: an older file is re-run, not read. The two batch caches are rebuilt instead of read when out of date: `draws.sqlite3` when its `batch.schema_version` isn't the current one, the series store when another code version wrote it ([ADR-006](ADR-006-ensemble-scenarios.md) §8). A reader still tells an intent file from a run file by the tables only a run file has. This is the practice before the simulator's public release; after it, other people's files will outlive a schema change, and readers will need a policy for them.
 
 ## Consequences
 
@@ -1129,3 +1131,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
 - [#468](https://github.com/BobKerns/analysis/issues/468): the tax character `qualified_dividend` on `scheduled_transaction` and `year_to_date` (Intent layer DDL; schema 56).
 - [#434](https://github.com/BobKerns/analysis/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 57).
+- Readers assume the current schema until public release: no fallbacks for files from an earlier `SCHEMA_VERSION`, and a draws database from another version is gathered again (Schema changes).

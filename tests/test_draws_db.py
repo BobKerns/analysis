@@ -366,18 +366,18 @@ def test_a_date_marker_is_a_node_that_affects_the_rows_dated_from_it(
     assert node == [("row", "date_marker", "day_ordinal", "ep_off")]
 
 
-def test_a_draws_database_from_before_pools_is_gathered_again(mc_batch: Path) -> None:
-    """One built before ADR-009 has no member.component: `ensemble draws`
-    rebuilds it rather than failing on the per-component queries."""
+def test_a_draws_database_from_another_schema_version_is_gathered_again(mc_batch: Path) -> None:
+    """It is a cache (ADR-002 §Schema changes): `ensemble draws` rebuilds
+    one built under another SCHEMA_VERSION rather than reading it."""
     from click.testing import CliRunner
 
     from analysis.cli import main
-    from analysis.sim.draws_db import draws_db_current
+    from analysis.sim.draws_db import build_draws_db, draws_db_current
 
-    path = draws_db_path(mc_batch)
-    path.unlink(missing_ok=True)
+    path = build_draws_db(mc_batch)
+    assert draws_db_current(mc_batch)
     with sqlite3.connect(path) as con:
-        con.execute("CREATE TABLE member (member_index INTEGER PRIMARY KEY)")
+        con.execute("UPDATE batch SET schema_version = schema_version - 1")
     assert not draws_db_current(mc_batch)
     result = CliRunner().invoke(main, [
         "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(mc_batch.parent.parent.parent)])

@@ -1042,12 +1042,12 @@ class RunConnection(Connection):
     def basis_step_ups(self) -> list[BasisStepUp]:
         """The run's basis step-ups at a death (#434), as ``sim explain``
         lists them: see ``step_ups.basis_step_ups``. Empty for a run with
-        none, or from before they were recorded."""
+        none."""
         from analysis.sim import step_ups
 
         # Its own read-only connection on the calling thread, as negative_balances.
         return self._cached("basis_step_ups",
-                            lambda: step_ups.run_basis_step_ups(self.run_path) or [])
+                            lambda: step_ups.run_basis_step_ups(self.run_path))
 
     def deaths(self) -> list[Death]:
         """Each person's death in this run (#255), from ``lifespan.csv``: the

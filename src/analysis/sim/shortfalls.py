@@ -64,7 +64,7 @@ class NegativeBalance:
 
 def recorded_events(con: sqlite3.Connection) -> list[dict]:
     """The run's ``negative_balance_warnings`` entries as the engine wrote
-    them; none for a run without any, or from before they were recorded."""
+    them; none for a run without any."""
     row = con.execute(
         "SELECT json_extract(run_args_json, '$.negative_balance_warnings') "
         "FROM simulation_run WHERE id = 1"

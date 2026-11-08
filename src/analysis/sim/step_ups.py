@@ -30,7 +30,7 @@ class BasisStepUp:
     """One lot's basis step-up at a death. ``account`` names the lot too
     when it's worth naming (``shortfalls.account_with_lot``); ``person`` is
     the decedent's id and ``display`` their display name; ``rule`` is a key
-    of ``RULES``, or None in a run file from before it was recorded."""
+    of ``RULES``."""
 
     month: str
     account: str
@@ -39,27 +39,21 @@ class BasisStepUp:
     balance_cents: int
     basis_before_cents: int
     basis_after_cents: int
-    rule: str | None
+    rule: str
 
     @property
     def rule_label(self) -> str:
-        if self.rule is None:
-            return "-"
         return RULES.get(self.rule, self.rule)
 
 
-def basis_step_ups(con: sqlite3.Connection) -> list[BasisStepUp] | None:
-    """The run's step-ups in the order they happened. None for a run file from before step-ups, which has no
-    table; an empty list for a run with no deaths, or none that stepped up.
+def basis_step_ups(con: sqlite3.Connection) -> list[BasisStepUp]:
+    """The run's step-ups in the order they happened; empty for a run with
+    no deaths, or none that stepped up.
     A lot that was empty at the death (no balance, no basis) is left out
     (#377): the engine records it, but it stepped nothing up."""
-    columns = {row[1] for row in con.execute("PRAGMA table_info(basis_step_up)")}
-    if not columns:
-        return None
-    rule = "b.rule" if "rule" in columns else "NULL"
     rows = con.execute(
-        f"SELECT b.date, a.name, a.subkind, m.lot, b.person, COALESCE(p.display, b.person), "
-        f"       b.balance, b.basis_before, b.basis_after, {rule} "
+        "SELECT b.date, a.name, a.subkind, m.lot, b.person, COALESCE(p.display, b.person), "
+        "       b.balance, b.basis_before, b.basis_after, b.rule "
         "FROM basis_step_up b JOIN account_lot m ON m.id = b.lot_id "
         "JOIN account a ON a.id = m.account_id "
         "LEFT JOIN person p ON p.id = b.person "
@@ -72,7 +66,7 @@ def basis_step_ups(con: sqlite3.Connection) -> list[BasisStepUp] | None:
     ]
 
 
-def run_basis_step_ups(run_path: Path) -> list[BasisStepUp] | None:
+def run_basis_step_ups(run_path: Path) -> list[BasisStepUp]:
     """``basis_step_ups`` of the run file at ``run_path``, read only."""
     con = sqlite3.connect(f"file:{run_path}?mode=ro", uri=True)
     try:
