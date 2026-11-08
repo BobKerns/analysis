@@ -2957,7 +2957,7 @@ def _validate_filing_status(
         kinds.add(kind)
         needs.setdefault(kind, f"{where} ({row.get('name', '')})")
     for where, row in _located(tax_rows, registries.TAXES_DIR):
-        kind = str(_tax_params(row).get("filing_status_aux", "filing_status"))
+        kind = str(tax_files.params(row).get("filing_status_aux", "filing_status"))
         kinds.add(kind)
         needs.setdefault(kind, where)
     by_kind: dict[str, dict[str, list[str]]] = {}
@@ -3366,7 +3366,7 @@ def _validate_fill_bracket(
     ``scope`` names. It has no priority: it always runs after every other rule
     of its month, since the year's RMD has to come out before any of the
     IRA can be converted. Run after the rows' references have been resolved."""
-    tax_rules = {row["name"]: _tax_params(row) for row in tax_rows}
+    tax_rules = {row["name"]: tax_files.params(row) for row in tax_rows}
     rmd_months: dict[str, list[int]] = {}  # traditional lot -> its RMD rules' months
     for _, row in _located(rows, "scheduled.csv"):
         if row.get("amount_rule_kind") == "rmd" and row.get("month_of_year", "").isdigit():
@@ -3821,8 +3821,8 @@ def _validate_state_rule_names_state(
     if len(states) < 2:
         return
     for where, row in _located(tax_rows, registries.TAXES_DIR):
-        params = _tax_params(row)
-        if (params["scope"] != "state" or params.get("bracket_series")
+        params = tax_files.params(row)
+        if (row["name"] != "state" or params.get("bracket_series")
                 or params.get("bracket_aux", "state_brackets") != "state_brackets"):
             continue
         issues.append(
@@ -3849,8 +3849,8 @@ def _warn_state_standard_deduction(
     states = sorted(series for kind, series in supplied
                     if kind == "state_brackets" and series is not None)
     for where, row in _located(tax_rows, registries.TAXES_DIR):
-        params = _tax_params(row)
-        if params["scope"] != "state":
+        params = tax_files.params(row)
+        if row["name"] != "state":
             continue
         state_rule = True
         if "standard_deduction_aux" in params:
@@ -5134,12 +5134,6 @@ def _validate_taxes(
                 issues.append(f"{where}: params_json takes no {key!r}: {why}")
 
 
-def _tax_params(row: Mapping[str, str]) -> dict[str, Any]:
-    """A jurisdiction's calculator params, with its ``scope`` (its name) for
-    the code that still reads one, as the ``tax_accumulator`` rule's had."""
-    return {**(_safe_json(row.get("params_json") or "{}") or {}), "scope": row["name"]}
-
-
 def _read_strategy_vary_files(
     data_dir: Path, scenarios_dir: Path, scenario_name: str, issues: list[str],
 ) -> dict[str, tuple[str, list[tuple[str, dict[str, str]]]]]:
@@ -5196,7 +5190,7 @@ def _validate_strategies(
         except ValueError:
             rule_tags = frozenset()  # reported with the scheduled rows
         rules.append((r.get("name", ""), r.get("amount_rule_kind", ""), rule_tags))
-    tax_scopes = dict.fromkeys((r["name"] for r in tax_rows), 1)
+    taxes = frozenset(r["name"] for r in tax_rows)
     by_account = {a["name"]: a for a in accounts}
     life_tables = {row.get("person", ""): (row.get("life_table") or "").strip() or None for row in lifespan_rows}
     class_sets = _allocation_class_sets(allocations)
@@ -5218,7 +5212,7 @@ def _validate_strategies(
             portfolio_lots.setdefault(tag, []).append(dict(weights))
     scenario = strategy_api.ScenarioView(
         accounts={a["name"]: (a.get("kind", ""), a.get("subkind", "")) for a in accounts},
-        tax_rules=tax_scopes,
+        taxes=taxes,
         people={p.get("id", ""): ((p.get("role") or "").strip() or None, (p.get("sex") or "").strip() or None,
                                   life_tables.get(p.get("id", "")))
                 for p in persons},

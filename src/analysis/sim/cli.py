@@ -42,7 +42,7 @@ from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
     sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files, strategy_guide, symbols,
-    states, tax_files, units, working_set, ytd_guide,
+    states, tax_files, tax_guide, units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -18494,16 +18494,6 @@ def _tax_summary(row: Mapping[str, str]) -> str:
             f"{row.get('destination', '')} each {row.get('schedule') or 'april'}{when}{params}")
 
 
-def _tax_params(found: _Overlaid | None) -> dict[str, Any]:
-    if found is None:
-        return {}
-    try:
-        params = json.loads(found.row.get("params_json") or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return params if isinstance(params, dict) else {}
-
-
 def _tax_home(found: _Overlaid, scenario_name: str) -> str:
     """The scenario whose own file defines a jurisdiction as ``scenario_name`` sees it."""
     return scenario_name if found.index is not None else (found.inherited_from or scenario_name)
@@ -18529,30 +18519,44 @@ def _write_tax(
     return path
 
 
-def _ask_tax_fields(
-    data: Path, scenario: str, row: dict[str, str], *, adding: bool,
-) -> dict[str, str]:
-    """Each field of a jurisdiction's row, asked with its current value (or
-    a default) offered."""
-    endpoints = names.chain_names(data, scenario, accounts=True)
-    row = dict(row)
-    row["source_chain"] = _prompt_with_completion(
-        "paid from (an account or source chain)", choices=endpoints,
-        default=row["source_chain"] or "Asset_Checking").strip()
-    expenses = [a for a in names.account_names(data, scenario) if a.startswith("Expense_")]
-    row["destination"] = _prompt_with_completion(
-        "paid into (an expense account)", choices=expenses, default=row["destination"]).strip()
-    row["start"] = click.prompt("first April it settles (YYYY-MM; blank: the scenario's start)",
-                                default=row["start"], show_default=False).strip()
-    row["end"] = click.prompt("last month it settles (YYYY-MM; blank: the end)",
-                              default=row["end"], show_default=False).strip()
-    row["params_json"] = click.prompt("params_json (blank: none)", default=row["params_json"],
-                                      show_default=False).strip()
-    row["description"] = click.prompt(
-        "description", default=row["description"] or ("" if not adding else
-                                                      f"{row['kind']} income tax for the year before"),
-        show_default=False).strip()
-    return row
+def _json_object(text: str) -> None:
+    """Refuse ``text`` unless it is a JSON object."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise click.ClickException(f"not JSON: {error.msg}") from None
+    if not isinstance(value, dict):
+        raise click.ClickException("params_json is a JSON object, {...}")
+
+
+def _tax_guide() -> calendar_guide.Guide:
+    return calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(text, choices=choices, default=default),
+        checkers={"month": _validate_month_date, "json": _json_object},
+    )
+
+
+def _tax_spec(
+    data: Path, scenario_dir: Path, scenario: str, command: str, jurisdiction: str | None,
+    free: Sequence[str] = (),
+) -> calendar_guide.KindSpec:
+    """The questions for ``sim tax add|edit``, completing from the scenario:
+    a destination is one of its expense accounts. For ``add``, the default
+    destination is the account whose subkind is the jurisdiction's tax
+    (``taxes_federal``, ``taxes_state``) and the default source the other
+    jurisdiction's, if it has one."""
+    accounts = _overlay_rows(scenario_dir, "accounts.csv")
+    expenses = sorted(n for n, a in accounts.items() if a.row.get("kind") == "expense")
+    source = destination = None
+    if command == "add":
+        taxes = _tax_rows(scenario_dir)
+        source = next((t.row["source_chain"] for t in taxes.values() if t.row.get("source_chain")), None)
+        if jurisdiction is not None:
+            destination = next((n for n, a in accounts.items()
+                                if a.row.get("subkind") == f"taxes_{jurisdiction}"), None)
+    return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
+                          expenses=expenses, jurisdictions=free, source=source,
+                          destination=destination)
 
 
 _TAX_OPTIONS = (
@@ -18612,29 +18616,41 @@ def tax_add_command(
 ) -> None:
     """Add an income tax to the scenario, as taxes/JURISDICTION.csv: it
     settles the year before each April, paying what is due from the source
-    into the destination. Whatever is left out is asked for, unless
-    --destination is given. For a state, `sim tax state` also picks its
-    tables."""
+    into the destination. Given JURISDICTION, --source-chain and
+    --destination, it writes at once; otherwise it asks for each field and
+    then shows them, to write or change. For a state, `sim tax state` also
+    picks its tables."""
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     existing = _tax_rows(ref.path)
-    free = [n for n in registries.TAX_JURISDICTIONS if n not in existing]
-    if jurisdiction is None:
-        jurisdiction = _ask_name("tax jurisdiction", free, prompt="jurisdiction to add")
     if jurisdiction in existing:
         raise click.ClickException(f"{ref.name} already has a {jurisdiction} tax (sim tax edit {jurisdiction})")
-    kind = next(k for k, j in registries.TAX_KINDS.items() if j == jurisdiction)
-    row = {**dict.fromkeys(registries.TAX_CSV_HEADER, ""), "kind": kind,
-           "source_chain": source_chain or "", "destination": destination or "",
-           "start": start or "", "end": end or "", "params_json": params_json or "",
-           "description": description or ""}
-    if destination is None:
-        accounts = _overlay_rows(ref.path, "accounts.csv")
-        row["destination"] = next((n for n, a in accounts.items()
-                                   if a.row.get("subkind") == f"taxes_{jurisdiction}"), "")
-        row = _ask_tax_fields(data, ref.name, row, adding=True)
-    path = _write_tax(data, ref.name, jurisdiction, row)
-    click.echo(f"added {jurisdiction} tax ({_shown(path)}): {_tax_summary(row)}")
+    given = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
+             "params_json": params_json, "description": description}
+
+    def write(answers: Mapping[str, str]) -> None:
+        name = answers["jurisdiction"]
+        row = tax_guide.row_of(name, answers)
+        path = _write_tax(data, ref.name, name, row)
+        click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(row)}")
+
+    if jurisdiction is not None and source_chain is not None and destination is not None:
+        write({"jurisdiction": jurisdiction, **{k: v or "" for k, v in given.items()}})
+        return
+    free = [n for n in registries.TAX_JURISDICTIONS if n not in existing]
+    if not free:
+        raise click.ClickException(f"{ref.name} already has every tax jurisdiction (sim tax edit)")
+    answers: dict[str, str] = {k: v for k, v in given.items() if v is not None}
+    if jurisdiction is not None:
+        answers["jurisdiction"] = jurisdiction
+    guide = _tax_guide()
+    spec = _tax_spec(data, ref.path, ref.name, "add", jurisdiction, free)
+    if "jurisdiction" not in answers:  # the defaults follow from it
+        answers["jurisdiction"] = guide.ask_field(spec, spec.fields[0], calendar_guide.GuideContext(), answers)
+        spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free)
+    ctx = calendar_guide.GuideContext()
+    guide.complete(spec, ctx, answers)
+    guide.review(spec, ctx, answers, lambda _params: write(answers), scenario=ref.name)
 
 
 def _pick_tax(data: Path, scenario: str | None, jurisdiction: str | None, prompt: str) -> tuple[_Overlaid, str]:
@@ -18658,26 +18674,33 @@ def tax_edit_command(
     end: str | None, params_json: str | None, description: str | None, scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Change a tax jurisdiction. With no options, asks for each field with
-    its current value as the default; options change just those. An
-    inherited one is written into this scenario as a whole-file override."""
+    """Change a tax jurisdiction. Options write at once. With none, it
+    shows the fields and asks which to change. An inherited one is written
+    into this scenario as a whole-file override."""
     data = _resolve_data_dir(data_dir)
     found, scenario_name = _pick_tax(data, scenario, jurisdiction, "jurisdiction to edit")
     name = found.row["name"]
     row = {c: found.row.get(c, "") for c in registries.TAX_CSV_HEADER}
+
+    def write(new: dict[str, str]) -> None:
+        if new == row:
+            click.echo(f"{name} tax unchanged")
+            return
+        _write_tax(data, scenario_name, name, new)
+        inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
+        click.echo(f"changed {name} tax{inherited}: {_tax_summary(new)}")
+
     changes = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
                "params_json": params_json, "description": description}
-    if all(v is None for v in changes.values()):
-        click.echo(f"{name}: {_tax_summary(row)}")
-        new = _ask_tax_fields(data, scenario_name, row, adding=False)
-    else:
-        new = {**row, **{k: v.strip() for k, v in changes.items() if v is not None}}
-    if new == row:
-        click.echo(f"{name} tax unchanged")
+    if any(v is not None for v in changes.values()):
+        write({**row, **{k: v.strip() for k, v in changes.items() if v is not None}})
         return
-    _write_tax(data, scenario_name, name, new)
-    inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
-    click.echo(f"changed {name} tax{inherited}: {_tax_summary(new)}")
+    folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
+    spec = _tax_spec(data, folder, scenario_name, "edit", name)
+    answers = tax_guide.answers_of(row)
+    click.echo(f"{name}: {_tax_summary(row)}")
+    _tax_guide().review(spec, calendar_guide.GuideContext(), answers,
+                        lambda _params: write(tax_guide.row_of(name, answers, row)), show_command=False)
 
 
 @tax_group_command.command("delete")
@@ -18688,9 +18711,10 @@ def tax_edit_command(
 @_LISTING_DATA_DIR_OPTION
 def tax_delete_command(jurisdiction: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
     """Delete a tax jurisdiction's file from the scenario. An inherited one
-    is deleted where it is defined; deleting this scenario's override of one
-    restores the inherited definition. Rules that measure with it (a
-    fill_bracket, irmaa) stop the scenario loading, so the change is refused."""
+    is refused: delete it in the scenario that defines it. Deleting this
+    scenario's override of one restores the inherited definition. Rules that
+    measure with it (a fill_bracket, irmaa) stop the scenario loading, so the
+    change is refused."""
     data = _resolve_data_dir(data_dir)
     found, scenario_name = _pick_tax(data, scenario, jurisdiction, "jurisdiction to delete")
     name = found.row["name"]
@@ -18789,7 +18813,7 @@ def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[st
             "opened": federal.row.get("start", ""),
             "meta_json": "{}",
         }
-    params = _tax_params(federal)
+    params = tax_files.params(federal.row)
     for key in ("bracket_aux", "standard_deduction_aux", "itemized_deduction_aux",
                 "ltcg_bracket_aux", "filing_status_aux"):
         params.pop(key, None)
@@ -18830,7 +18854,7 @@ def tax_state_command(
     ref = _resolve_scenario(data_dir_p, scenario)
     scenario_dir, scenario_name = ref.path, ref.name
     found = _tax_rows(scenario_dir).get("state")
-    current = str(_tax_params(found).get("bracket_series") or "")
+    current = str(tax_files.params(found.row if found else None).get("bracket_series") or "")
     if found is None:
         click.echo(f"Scenario {scenario_name} has no state tax.")
     elif not current:
@@ -18859,7 +18883,7 @@ def tax_state_command(
             click.echo(f"Already {_state_label(series)}: nothing to change.")
             return
         row = {column: found.row.get(column, "") for column in registries.TAX_CSV_HEADER}
-        row["params_json"] = json.dumps({**_tax_params(found), "bracket_series": series},
+        row["params_json"] = json.dumps({**tax_files.params(found.row), "bracket_series": series},
                                         separators=(",", ":"))
         home = scenario_name if here else _tax_home(found, scenario_name)
         where = "an override in" if home == scenario_name and found.index is None else "it in"
@@ -18910,7 +18934,8 @@ def tax_move_command(
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    start = str(_tax_params(_tax_rows(scenario_dir).get("state")).get("bracket_series") or "")
+    state_tax = _tax_rows(scenario_dir).get("state")
+    start = str(tax_files.params(state_tax.row if state_tax else None).get("bracket_series") or "")
     if not start:
         raise click.ClickException(
             "choose the state you live in first (sim tax state); nothing was written")

@@ -10,13 +10,16 @@ template the loader skips.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from analysis.sim import registries
 from analysis.sim.strategy_files import LineageFile
 from analysis.sim.strategy_files import lineage_files as _lineage_files
 
-__all__ = ["LineageFile", "definition_path", "lineage_files", "name_problem"]
+__all__ = ["LineageFile", "definition_path", "lineage_files", "name_problem", "params"]
 
 
 def definition_path(scenario_dir: Path, name: str) -> Path:
@@ -35,3 +38,15 @@ def name_problem(name: str) -> str | None:
         return (f"a tax jurisdiction is one of {', '.join(registries.TAX_JURISDICTIONS)} "
                 f"(the file's name), not {name!r}")
     return None
+
+
+def params(row: Mapping[str, str] | None) -> dict[str, Any]:
+    """A jurisdiction row's ``params_json`` as a dict: {} when blank, not
+    JSON or not an object (the loader reports those)."""
+    if row is None:
+        return {}
+    try:
+        value = json.loads(row.get("params_json") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}

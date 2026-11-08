@@ -13,8 +13,10 @@ and leaves `scheduled.csv`:
 The settlement keeps the rule's place in the month only for the default
 priority (400) and the April, previous-year schedule. A rule that differs
 (another month, `year` "current" or a year, a priority, a lot, tags, a
-year-to-date amount, a calendar row naming it, two of one scope in a folder)
-is reported, and nothing is written until it is fixed by hand.
+year-to-date amount, two of one scope in a folder, a calendar row naming
+it, or a descendant scenario's partial override of it) is reported, and
+nothing is written until it is fixed by hand. A ``fill_bracket`` rule's
+``tax_rule`` param is dropped: its ``scope`` names the jurisdiction now.
 
 Usage: scripts/migrate_507_taxes.py [DATA_DIR] [--write]
 
@@ -32,6 +34,8 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from analysis.sim.lineage import load_order
 
 RULE_KIND = "tax_accumulator"
 TAX_HEADER = (
@@ -70,14 +74,6 @@ class Plan:
     problems: list[str] = field(default_factory=list)
 
 
-def _rule_names_in_calendars(folder: Path) -> set[str]:
-    path = folder / "calendar.csv"
-    if not path.is_file():
-        return set()
-    header, rows, _ = _read(path)
-    return {_cell(header, row, "scheduled_name") for row in rows} - {""}
-
-
 def _jurisdiction(path: Path, header: list[str], row: list[str], problems: list[str]) -> tuple[str, list[str]] | None:
     """The jurisdiction a tax rule becomes and its file's row, or None (with
     the problems) when it can't move as it is."""
@@ -107,6 +103,9 @@ def _jurisdiction(path: Path, header: list[str], row: list[str], problems: list[
         if _cell(header, row, column) not in ("", "0"):
             problems.append(f"{where}: {column} {_cell(header, row, column)!r} has no "
                             "place in a jurisdiction file")
+    for column in ("from_account", "to_account"):
+        if not _cell(header, row, column):
+            problems.append(f"{where}: {column} is blank; move it by hand")
     if len(problems) > before:
         return None
     cells = {
@@ -121,25 +120,73 @@ def _jurisdiction(path: Path, header: list[str], row: list[str], problems: list[
     return scope, [cells[column] for column in TAX_HEADER]
 
 
+def _tax_rule_names(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    header, rows, _ = _read(path)
+    return {_cell(header, row, "name") for row in rows
+            if _cell(header, row, "amount_rule_kind") == RULE_KIND} - {""}
+
+
+def _without_tax_rule(header: list[str], row: list[str]) -> list[str] | None:
+    """``row`` with ``tax_rule`` dropped from its params_json, or None when
+    it has none."""
+    index = header.index("params_json") if "params_json" in header else -1
+    if not 0 <= index < len(row):
+        return None
+    try:
+        params = json.loads(row[index] or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(params, dict) or "tax_rule" not in params:
+        return None
+    params.pop("tax_rule")
+    return [*row[:index], json.dumps(params, separators=(",", ":")), *row[index + 1:]]
+
+
+def _scenario_name(scenarios: Path, folder: Path) -> str | None:
+    return folder.name if folder.parent == scenarios else None
+
+
 def plan(data_dir: Path) -> Plan:
     result = Plan()
     found = 0
-    for path in sorted(p for p in data_dir.rglob("scheduled.csv") if ".git" not in p.parts):
-        header, rows, newline = _read(path)
-        if "amount_rule_kind" not in header:
+    scenarios = data_dir / "scenarios"
+    # Every scenario folder: one with a scheduled.csv or a calendar.csv (a
+    # descendant may have only the calendar row naming a parent's rule).
+    folders = sorted({p.parent for name in ("scheduled.csv", "calendar.csv")
+                      for p in data_dir.rglob(name) if ".git" not in p.parts})
+    own_rules = {f: _tax_rule_names(f / "scheduled.csv") for f in folders}
+    for folder in folders:
+        # The tax rules this scenario sees: its own and its lineage's.
+        name_of = _scenario_name(scenarios, folder)
+        lineage = [scenarios / n for n in load_order(scenarios, name_of)] if name_of else [folder]
+        seen = set().union(*(own_rules.get(f, set()) for f in lineage))
+        calendar = folder / "calendar.csv"
+        if calendar.is_file():
+            cal_header, cal_rows, _ = _read(calendar)
+            for named in sorted({_cell(cal_header, r, "scheduled_name") for r in cal_rows} & seen):
+                result.problems.append(
+                    f"{calendar}: a row names tax rule {named!r}, which becomes a jurisdiction "
+                    "file; change that row by hand")
+        path = folder / "scheduled.csv"
+        if not path.is_file():
             continue
-        kept, moved = [], {}
-        named = _rule_names_in_calendars(path.parent)
+        header, rows, newline = _read(path)
+        kept, moved, changed = [], {}, False
         for row in rows:
+            name = _cell(header, row, "name")
             if _cell(header, row, "amount_rule_kind") != RULE_KIND:
+                if name in seen:
+                    result.problems.append(
+                        f"{path} ({name}): overrides the tax rule {name!r} a parent defines; "
+                        "merge it into that rule's taxes/ file by hand")
+                elif (fixed := _without_tax_rule(header, row)) is not None:
+                    row, changed = fixed, True
+                    result.report.append(f"{path}: rule {name!r} drops its tax_rule param")
                 kept.append(row)
                 continue
             found += 1
-            name = _cell(header, row, "name")
-            if name in named:
-                result.problems.append(
-                    f"{path.parent / 'calendar.csv'}: a row names tax rule {name!r}, "
-                    "which becomes a jurisdiction file; change that row by hand")
             made = _jurisdiction(path, header, row, result.problems)
             if made is None:
                 continue
@@ -155,7 +202,7 @@ def plan(data_dir: Path) -> Plan:
             moved[scope] = name
             result.writes[target] = _render(TAX_HEADER, [cells], newline)
             result.report.append(f"{path}: rule {name!r} -> {target.relative_to(data_dir)}")
-        if moved:
+        if moved or changed:
             result.writes[path] = _render(header, kept, newline)
     if not found:
         result.problems.append(f"{data_dir}: no {RULE_KIND} rules left; already migrated?")

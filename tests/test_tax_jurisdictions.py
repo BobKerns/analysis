@@ -107,25 +107,28 @@ _HEADER = ("name,from_account,to_account,cadence,month_of_year,amount_rule_kind,
            "start,end,params_json,description")
 
 
-def test_the_migration_moves_each_tax_rule_to_its_file(tmp_path: Path) -> None:
-    folder = tmp_path / "scenarios" / "base"
-    folder.mkdir(parents=True)
-    (folder / "scheduled.csv").write_text(
+_FED = ('fed,Asset_Checking,Expense_Taxes_Federal,annual,4,tax_accumulator,400,2027-04-30,,'
+        '"{""year"":""previous"",""scope"":""federal""}",federal tax')
+
+
+def test_the_migration_moves_each_tax_rule_to_its_file(
+    new_scenario_file: Callable[[str, str, str], Path],
+) -> None:
+    scheduled = new_scenario_file("base", "scheduled.csv", (
         f"{_HEADER}\n"
         "living,Asset_Checking,Expense_Living,monthly,,fixed_amount,200,2026-01-31,,,\n"
-        'fed,Asset_Checking,Expense_Taxes_Federal,annual,4,tax_accumulator,400,2027-04-30,,'
-        '"{""year"":""previous"",""scope"":""federal""}",federal tax\n'
+        f"{_FED}\n"
         'st,Asset_Checking,Expense_Taxes_State,annual,4,tax_accumulator,,2027-04-30,2040-04-30,'
-        '"{""scope"":""state"",""bracket_series"":""CA""}",state tax\n'
-    )
+        '"{""scope"":""state"",""bracket_series"":""CA""}",state tax\n'))
+    folder, data_dir = scheduled.parent, scheduled.parents[2]
     migration = _migration()
 
-    planned = migration.plan(tmp_path)
+    planned = migration.plan(data_dir)
     assert planned.problems == []
     assert not (folder / "taxes").exists()  # a dry run writes nothing
     migration.apply(planned)
 
-    assert (folder / "scheduled.csv").read_text().splitlines() == [
+    assert scheduled.read_text().splitlines() == [
         _HEADER, "living,Asset_Checking,Expense_Living,monthly,,fixed_amount,200,2026-01-31,,,"]
     assert (folder / "taxes" / "federal.csv").read_text().splitlines() == [
         "kind,upstream,source_chain,destination,schedule,start,end,params_json,description",
@@ -134,23 +137,53 @@ def test_the_migration_moves_each_tax_rule_to_its_file(tmp_path: Path) -> None:
     assert (folder / "taxes" / "state.csv").read_text().splitlines()[1] == (
         'state_tables,,Asset_Checking,Expense_Taxes_State,april,2027-04-30,2040-04-30,'
         '"{""bracket_series"":""CA""}",state tax')
-    assert migration.plan(tmp_path).problems == [
-        f"{tmp_path}: no tax_accumulator rules left; already migrated?"]
+    assert migration.plan(data_dir).problems == [
+        f"{data_dir}: no tax_accumulator rules left; already migrated?"]
 
 
-def test_the_migration_refuses_a_rule_that_settles_differently(tmp_path: Path) -> None:
-    folder = tmp_path / "scenarios" / "base"
-    folder.mkdir(parents=True)
-    scheduled = folder / "scheduled.csv"
-    scheduled.write_text(
+def test_the_migration_refuses_a_rule_that_settles_differently(
+    new_scenario_file: Callable[[str, str, str], Path],
+) -> None:
+    scheduled = new_scenario_file("base", "scheduled.csv", (
         f"{_HEADER}\n"
         'fed,Asset_Checking,Expense_Taxes_Federal,annual,12,tax_accumulator,300,2027-12-31,,'
-        '"{""year"":""current""}",\n'
-    )
-    problems = _migration().plan(tmp_path).problems
+        '"{""year"":""current""}",\n'))
+    problems = _migration().plan(scheduled.parents[2]).problems
     where = f"{scheduled} (fed)"
     assert problems == [
         f"{where}: year 'current': a jurisdiction settles the year before, each April",
         f"{where}: not annual in April: a jurisdiction settles each April",
         f"{where}: priority 300: a settlement takes the default rule's place (400)",
     ]
+
+
+def test_the_migration_refuses_what_a_child_scenario_says_about_its_parents_rule(
+    new_scenario_file: Callable[[str, str, str], Path],
+) -> None:
+    base = new_scenario_file("base", "scheduled.csv", f"{_HEADER}\n{_FED}\n")
+    new_scenario_file("child", "scenario.csv", "name,parent_scenario\nchild,base\n")
+    override = new_scenario_file("child", "scheduled.csv", "name,end\nfed,2035-04\n")
+    calendar = new_scenario_file(
+        "child", "calendar.csv", "name,event_kind,date,scheduled_name\n,retire_scheduled,2030-01,fed\n")
+    assert _migration().plan(base.parents[2]).problems == [
+        f"{calendar}: a row names tax rule 'fed', which becomes a jurisdiction file; "
+        "change that row by hand",
+        f"{override} (fed): overrides the tax rule 'fed' a parent defines; "
+        "merge it into that rule's taxes/ file by hand",
+    ]
+
+
+def test_the_migration_drops_fill_brackets_tax_rule(
+    new_scenario_file: Callable[[str, str, str], Path],
+) -> None:
+    scheduled = new_scenario_file("base", "scheduled.csv", (
+        f"{_HEADER}\n{_FED}\n"
+        'roth,Asset_IRA,Asset_Roth,annual,12,fill_bracket,,2027-12-31,,'
+        '"{""scope"":""federal"",""tax_rule"":""fed"",""rate"":""22%""}",\n'))
+    migration = _migration()
+    planned = migration.plan(scheduled.parents[2])
+    assert planned.problems == []
+    migration.apply(planned)
+    assert scheduled.read_text().splitlines()[1:] == [
+        'roth,Asset_IRA,Asset_Roth,annual,12,fill_bracket,,2027-12-31,,'
+        '"{""scope"":""federal"",""rate"":""22%""}",']

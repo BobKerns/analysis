@@ -30,7 +30,7 @@ def _rate(micros: int) -> str:
 
 def _federal_rule(scenario: ScenarioView, what: str) -> list[str]:
     """The load problem when ``ctx.tax`` would have no federal tax to read."""
-    if scenario.tax_rules.get("federal", 0):
+    if "federal" in scenario.taxes:
         return []
     return [f"{what} measures with the federal tax (taxes/federal.csv), and there is none"]
 

@@ -358,7 +358,8 @@ def run_scenario(
             taxes_settled = False
             for txn in txns:
                 if not taxes_settled and (
-                        txn[6] == "fill_bracket" or txn[18] > registries.TAX_SETTLEMENT_PRIORITY):
+                        txn[_SCHED_RULE_KIND] == "fill_bracket"
+                        or txn[_SCHED_PRIORITY] > registries.TAX_SETTLEMENT_PRIORITY):
                     settle_taxes()
                     taxes_settled = True
                 (tid, _name, frm, to_chain, cadence, moy, rule_kind,
@@ -1591,6 +1592,12 @@ class Txn(NamedTuple):
     ytd_amount: int | None
     ytd_preroll: int
     inflation_cadence: str | None
+
+
+# Positions in the `txns` rows of the fields that place the month's tax
+# settlement among its rules.
+_SCHED_RULE_KIND = Txn._fields.index("amount_rule_kind")
+_SCHED_PRIORITY = Txn._fields.index("priority")
 
 
 def _rule_fire_count(

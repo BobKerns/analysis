@@ -265,8 +265,10 @@ def test_add_writes_the_federal_tax_file(
 def test_add_asks_for_what_is_left_out(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
-    # Enter takes each default: Asset_Checking, the taxes_federal account.
-    result = _tax(test_data_dir, "add", answers=["federal", "", "", "", "", "", ""])
+    # Nothing to default the source from; Enter takes the rest: the
+    # taxes_federal account, blanks, the suggested description; then write.
+    result = _tax(test_data_dir, "add",
+                  answers=["federal", "Asset_Checking", "", "", "", "", "", "write"])
 
     assert result.exit_code == 0, result.output
     [row] = pd.read_csv(retire_alice_csv("taxes/federal.csv"), dtype=str,
@@ -309,3 +311,17 @@ def test_delete_refuses_an_inherited_tax(
 
     assert result.exit_code != 0
     assert "inherited from retire_alice: delete it there" in result.output
+
+
+def test_a_guided_edit_shows_the_fields_and_changes_the_one_named(
+    test_data_dir: Path, add_tax: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    add_tax()
+
+    result = _tax(test_data_dir, "edit", "federal", answers=["end", "2035-04", "write"])
+
+    assert result.exit_code == 0, result.output
+    assert "source-chain" in result.output and "write this row" in result.output
+    [row] = pd.read_csv(retire_alice_csv("taxes/federal.csv"), dtype=str,
+                        keep_default_na=False).to_dict("records")
+    assert (row["end"], row["source_chain"]) == ("2035-04", "Asset_Checking")
