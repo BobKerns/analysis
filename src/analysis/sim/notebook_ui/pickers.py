@@ -595,6 +595,8 @@ def scenario_picker(
     show_metadata: bool = False,
     show_description: bool = False,
     show_shortfalls: bool = True,
+    show_load_warnings: bool = True,
+    list_load_warnings: bool = False,
 ) -> tuple[widgets.VBox, SingleScenarioConnections, widgets.Dropdown]:
     """A ``Scenario:`` dropdown that keeps a live connection pair in sync.
 
@@ -621,6 +623,14 @@ def scenario_picker(
         Whether to list the run's negative-balance warnings (#431) below the
         scenario reference, as ``sim explain`` does; a run with none, or no
         run, shows nothing.
+    show_load_warnings : bool, default True
+        Whether to show the warnings recorded when the scenario was loaded
+        (#432): a one-line count of the open run's, pointing to where
+        they're listed; a run with none, or no run, shows nothing.
+    list_load_warnings : bool, default False
+        List the intent's load warnings in full instead of counting the
+        run's, with its notes on things defined but not read yet folded
+        away, as ``scenario_overview.ipynb`` does (ADR-004 §6).
 
     When the selected scenario is an ensemble recipe with generated members
     and ``require_run`` is true, a second ``Member:`` dropdown appears,
@@ -674,12 +684,11 @@ def scenario_picker(
                 banner = shortfall_banner(container.run, name)
                 if banner is not None:
                     display(HTML(banner))
-            # A notebook reading only the intent lists the load's warnings
-            # (scenario_overview); one reading a run counts its own load's.
-            warned = (load_warnings_html(container.scenario.load_warnings()) if not require_run
-                      else load_warnings_line(container.run, name))
-            if warned is not None:
-                display(HTML(warned))
+            if show_load_warnings:
+                warned = (load_warnings_html(container.scenario.load_warnings()) if list_load_warnings
+                          else load_warnings_line(container.run, name))
+                if warned is not None:
+                    display(HTML(warned))
             if show_metadata:
                 rc = container.run
                 if rc is not None:

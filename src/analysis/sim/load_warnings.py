@@ -15,6 +15,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from analysis.sim.drift import has_table
+
 WARNING = "warning"
 UNUSED = "unused"
 
@@ -43,8 +45,7 @@ def write(con: sqlite3.Connection, warnings: Iterable[str], unused: Iterable[str
 def read(con: sqlite3.Connection) -> LoadWarnings:
     """The warnings recorded in an intent or run file; none for a file from
     before they were recorded (schema 58)."""
-    if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
-                   "AND name = 'load_warning'").fetchone() is None:
+    if not has_table(con, "load_warning"):
         return LoadWarnings()
     rows = con.execute("SELECT kind, message FROM load_warning ORDER BY id").fetchall()
     return LoadWarnings(

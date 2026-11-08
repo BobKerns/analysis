@@ -56,7 +56,7 @@ own data, that setup belongs in a fixture instead.
 """
 
 from __future__ import annotations
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping, Sequence
 import json
 import os
 from pathlib import Path
@@ -1384,14 +1384,26 @@ def _sim(*args: str) -> None:
 
 
 @pytest.fixture(scope="function")
-def retire_alice_test_run(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Path:
+def sim_load_test_copy(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
+    """Callable running ``sim load`` on a scenario of the private data copy
+    (default retire_alice), after a test has edited it, into the function's
+    state dir beside ``test_data_dir``: where a picker opened on
+    ``test_data_dir`` looks. Extra arguments (``--no-run``) go on the
+    command line. Returns the scenario's runs folder."""
+    def _load(*extra: str, scenario: str = "retire_alice") -> Path:
+        _sim("load", scenario, "--data-dir", str(test_data_dir),
+             "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+             "--allow-dirty-data", *extra)
+        return runs_dir / scenario
+    return _load
+
+
+@pytest.fixture(scope="function")
+def retire_alice_test_run(sim_load_test_copy: Callable[..., Path]) -> Path:
     """retire_alice from the private data copy, loaded and run into the
     function's state dir, beside ``test_data_dir``: where a picker opened on
     ``test_data_dir`` looks. Returns its runs folder."""
-    _sim("load", "retire_alice", "--data-dir", str(test_data_dir),
-         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-         "--allow-dirty-data")
-    return runs_dir / "retire_alice"
+    return sim_load_test_copy()
 
 
 @pytest.fixture(scope="function")
@@ -1807,7 +1819,11 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     member files with a batch manifest (``complete=False`` leaves the last
     member out); ``fake_state("intent", ...)`` a member-intent batch; a
     batch of either kind goes in its ``mode``'s folder (#454). Each
-    run file holds just a ``simulation_run`` row with the status. Every file
+    run file holds just a ``simulation_run`` row with the status, so it reads
+    as a file from before load warnings were recorded (#432), unless
+    ``load_warned={member: [warning, ...]}`` gives a member some; a run
+    batch given ``pool=[component, ...]`` (one per member) is a pool batch's
+    (ADR-009), its manifest saying where each member came from. Every file
     and folder written gets the stamp as its mtime, so nothing reads as still
     being written (retention.ACTIVE_WINDOW)."""
     import os
@@ -1816,17 +1832,23 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     from analysis.sim.ensemble import write_batch_manifest
     from analysis.sim.loader import batches_dir
 
-    def _run_file(path: Path, status: str) -> None:
+    def _run_file(path: Path, status: str, warned: Sequence[str] | None = None) -> None:
         con = sqlite3.connect(path)
         try:
             con.execute("CREATE TABLE simulation_run (id INTEGER PRIMARY KEY, status TEXT)")
             con.execute("INSERT INTO simulation_run VALUES (1, ?)", (status,))
+            if warned is not None:
+                con.execute("CREATE TABLE load_warning (id INTEGER PRIMARY KEY, kind TEXT, message TEXT)")
+                con.executemany("INSERT INTO load_warning (kind, message) VALUES ('warning', ?)",
+                                [(w,) for w in warned])
             con.commit()
         finally:
             con.close()
 
     def _fake(kind: str, scenario_name: str, stamp: str, *, status: str = "succeeded",
-              members: int = 2, complete: bool = True, mode: str = "monte_carlo") -> Path:
+              members: int = 2, complete: bool = True, mode: str = "monte_carlo",
+              load_warned: Mapping[int, Sequence[str]] | None = None,
+              pool: Sequence[str] | None = None) -> Path:
         made = datetime.strptime(stamp, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
         if kind == "run":
             path = runs_dir / f"{stamp}_{scenario_name}_abc1234.sqlite3"
@@ -1838,13 +1860,14 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
         path.mkdir(parents=True)
         written = members if complete else members - 1
         for i in range(written):
-            _run_file(path / f"member_{i:04d}.sqlite3", status)
+            _run_file(path / f"member_{i:04d}.sqlite3", status, (load_warned or {}).get(i))
         if kind == "batch":
             if mode == "sensitivity":
                 write_batch_manifest(path, member_count=members, failures=[], mode=mode,
                                      quantiles=(0.1, 0.9), rows=[])
             else:
-                write_batch_manifest(path, member_count=members, failures=[], mode=mode)
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode,
+                                     pool={"member_components": list(pool)} if pool else None)
         for child in [*path.iterdir(), path]:
             os.utime(child, (made, made))
         return path
