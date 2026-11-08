@@ -136,7 +136,7 @@ Each January after the run's first month, the engine evaluates every triggered r
 | `continued` | Past it again | One more |
 | `left` | Back inside after being past | 0 |
 
-A year inside after a year inside tells nothing, and a year the rail doesn't cover (before its `start`, after its `end`) clears the count. Each state is a `breach_event` row (§4) and a call to `on_breach(ctx, breach)` with a `BreachView`: the rail and its description, the margin kind, the year, the measure, the line and the margin (CPI-constant cents), the rail's `sense`, the state and `years_past`. A strategy usually records what to do in its memory (the example kind `cut_on_breach` cuts the rules it owns while past), and may also move money as `year_end` does; its decision points at the breach it answered.
+A year inside after a year inside tells nothing, and a year the rail doesn't cover (before its `start`, after its `end`) clears the count. Each state is a `breach_event` row (§4) and a call to `on_breach(ctx, breach)` with a `BreachView`: the rail and its description, the margin kind, the year, the measure, the line and the margin (CPI-constant cents), the rail's `sense`, the state and `years_past`. A strategy usually records what to do in its memory (the built-in `cut_on_breach`, §6.6, cuts the rules it owns while past), and may also move money as `year_end` does; its decision points at the breach it answered.
 
 A strategy with a trigger must have an `on_breach` hook. Rails no trigger names are never evaluated during a run and stay a lens on it, read from the data repo by the reports.
 
@@ -252,6 +252,15 @@ Where money comes from in a bad market, not how much is spent (#463). Both read 
 
 Bucket studies (Estrada; Pfau and Kitces) find a bucket plan behaves like a fixed allocation with a rule for what to sell: letting cash run down in a crash raises the stock share, which helps when the crash recovers and hurts when it doesn't, and most of the benefit is that the household can see its next two years safe. Modeled as written, a household can weigh it against `rebalance` in its own scenario with `sim compare`. Notes read like `took $4,169 from Asset_Brokerage_Joint:sweep (cash)`, `refilled cash to $96,878 (2 years): $6,582 from stocks (+7.2% over 12 months)`, `stocks -18.4% over 12 months, bonds not refilled: refilled cash to $98,709 (2 years): $6,652 from bonds` and `skipped Asset_Brokerage_Joint:default (-12.5%) over 12 months: took $4,215 from Asset_Roth_Alice:bonds`.
 
+#### 6.6 Answering a rail: `cut_on_breach`
+
+A spending kind (§6.2) with an `on_breach` hook (§3.3), so a household can answer a guard rail without writing Python. Parameters: `cut` (default 10%, Guyton and Klinger's adjustment) and `increase` (default 0%).
+
+- While a rail its `trigger` names is past (`entered` or `continued`), the owned rules post `1 − cut` of plan; while only a positive rail is past (room to spend), `1 + increase`, and with `increase` 0% a positive rail changes nothing. A rail to stay inside wins when both are past. Each rail and margin kind in the trigger is tracked on its own.
+- The breach is last year's, told in January, so the level holds for the year after one past the line, and spending returns to plan for the year after one back inside (`left`). A rail that stops covering the years (past its `end`, or after the household's last death) is never told `left`, so `year_start` drops any rail that didn't cover last year (`ctx.rail`).
+- The level is flat while past, not compounded: a second year past is still `cut` below plan. That is the answer to "keep spending down while we're over the line", where `guardrail` (§6.2) compounds its cuts against its own initial rate.
+- Notes read like `gk_upper annual entered: now 90% of plan` and `gk_upper annual left: back to plan`.
+
 ### 7. Commands
 
 `edit` is guided and names complete, as elsewhere (ADR-003 §7):
@@ -332,3 +341,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#459](https://github.com/BobKerns/analysis/issues/459): amortization spending: the built-in `amortize` (VPW, the RMD method, a survival horizon), `ctx.survival_years`, `life_expectancy` and `rmd_divisor`, `ScenarioView`'s people, aux tables and portfolio classes (API version 5) (§3, §4, §6.4).
 - [#463](https://github.com/BobKerns/analysis/issues/463): down-market and bucket rules: the built-ins `down_market` (Guyton's withdrawal rule) and `buckets` (a cash reserve refilled inside each account), with a `monthly` or `annual` cadence, `ctx.trailing_return` and `ScenarioView.portfolio_lots` (API version 6) (§3, §4, §6.5).
 - [#371](https://github.com/BobKerns/analysis/issues/371): a lot is classed by the asset class its growth series is named for, before its account subkind (§5).
+- [#377](https://github.com/BobKerns/analysis/issues/377): the built-in `cut_on_breach` answers a triggered rail with a flat cut, or a raise on a positive rail (§3.3, §6.6).

@@ -4060,6 +4060,25 @@ def _run_target_options(fn):
     return fn
 
 
+def _checked_run_file(path: Path) -> Path:
+    """``path``, if it is a run file; a clean error for any other file, such
+    as an ensemble batch's ``draws.sqlite3`` (#377)."""
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            found = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'simulation_run'"
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.DatabaseError:
+        found = None
+    if found is None:
+        raise click.ClickException(
+            f"{_shown(path)} isn't a run file; an ensemble's member runs are its member_NNNN.sqlite3 files")
+    return path
+
+
 def _resolve_run_target(
     target: str | None, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> Path:
@@ -4069,9 +4088,9 @@ def _resolve_run_target(
     if runfile is not None:
         if target is not None:
             raise click.ClickException("give a scenario or --runfile, not both")
-        return runfile
+        return _checked_run_file(runfile)
     if target is not None and Path(target).is_file():
-        return Path(target)
+        return _checked_run_file(Path(target))
     ref = _resolve_scenario(_resolve_data_dir(data_dir), target, runs_dir=runs_dir)
     if ref.run_path is None:
         raise click.ClickException(

@@ -233,7 +233,7 @@ def test_a_data_repo_kind_snapshots_every_module(
         modules = [m for (m,) in con.execute("SELECT module FROM strategy_source ORDER BY module")]
     finally:
         con.close()
-    assert modules == ["_helpers", "cut_on_breach", "last_leaf"]
+    assert modules == ["_helpers", "last_leaf"]
 
 
 _DRAW = "strategies/draw_by_allocation.csv"

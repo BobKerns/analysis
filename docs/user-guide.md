@@ -1457,7 +1457,7 @@ spend that year.
    `sim scheduled tag add travel flex:optional`, and the same for gifts.
    Only `fixed_amount` rules can be owned.
 2. `sim strategy add` asks for the kind, the rule tag (`flex:optional`) and
-   its parameters. Four are built in:
+   its parameters. Five are built in:
    - `threshold` spends the tagged rules only in a year that starts with
      the portfolio above a minimum (and, if you like, not after a year it
      lost money).
@@ -1481,6 +1481,8 @@ spend that year.
      (until the chance either of them is alive falls to 10%, from the life
      table) or `rmd` (the portfolio over the IRS divisor). `ceiling` and
      `floor` limit how much the tagged spending changes in a year.
+   - `cut_on_breach` spends less while a guard rail is past, and can
+     spend more while a positive one is (§4.19).
 
 A cut is shared proportionally across the rules a strategy owns: a 10% cut
 makes a $5,000 trip $4,500. If that isn't how you'd cut, for example a trip
@@ -1571,35 +1573,18 @@ change what it does from then on, or move money right away.
 A trigger names a rail and which margin to watch: `RAIL:annual` (last
 year's own) or `RAIL:cumulative` (everything since the rail began). Only a
 strategy whose kind has an `on_breach` hook can have one; `sim strategy
-kinds` lists each kind's hooks. None of the built-in kinds has one yet, so
-a trigger needs a kind of your own in the data repo's `strategies/`
-folder. For example, a kind that halves the travel and gift rules it owns
-for every year after one past the line, until a year comes back inside:
-
-```python
-from dataclasses import dataclass
-from analysis.sim.strategy_api import Decision, Percent, Spend, Strategy, percent, register
-
-
-@register
-class CutOnBreach(Strategy):
-    """Cut the owned rules by ``cut`` in the years after one past the line."""
-
-    kind = "cut_on_breach"
-
-    @dataclass(frozen=True)
-    class Params:
-        cut: Percent = percent("50%")
-
-    def on_breach(self, ctx, breach):
-        ctx.memory["cutting"] = breach.state != "left"
-        return Decision([], note=f"{breach.rail} {breach.state}")
-
-    def scale(self, ctx, rule, amount):
-        if not ctx.memory.get("cutting"):
-            return None
-        return Decision([Spend(amount * (1_000_000 - self.params.cut) // 1_000_000)])
-```
+kinds` lists each kind's hooks. The built-in `cut_on_breach` is a
+spending strategy (§4.17) that answers one: while a rail its trigger names
+is past, the rules it owns spend `cut` less (10% unless you say), and the
+year after one back inside they spend as planned again. The cut is flat,
+not compounded: a second year past is still 10% below plan. On a positive
+rail, one where past it is room to spend, they spend `increase` more
+instead (0% unless you say, so a positive rail does nothing until you
+give one). A trigger can name several rails (`--trigger "gk_upper:annual
+gk_lower:annual"`); when a rail to stay inside and a positive one are both
+past, the cut wins. A kind of your own in the data repo's `strategies/`
+folder can answer differently, for example by skipping a trip whole or
+moving money, with an `on_breach` hook (ADR-010 §3.3).
 
 Alice and Bill want to hold spending to $60,000 a year in today's
 dollars, and trim the extras when they go over:
@@ -1608,6 +1593,10 @@ dollars, and trim the extras when they go over:
 sim guard-rail add tight --measure spending --side above --threshold 60000 --basis cpi_constant
 sim strategy add respond --kind cut_on_breach --rules flex:optional --trigger tight:annual
 ```
+
+`sim strategy add` asks for the cut and the increase unless you give them
+(`--param cut=15%`), and `sim strategy edit respond --param cut=20%`
+changes one.
 
 `sim strategy log --breaches` lists every January's finding: the year, the
 state (`entered`, `continued` or `left`), how many years in a row it has

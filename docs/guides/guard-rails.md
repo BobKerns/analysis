@@ -68,9 +68,13 @@ gk_upper,withdrawals,above,6%,portfolio,negative,2031-01
 gk_lower,withdrawals,below,4%,portfolio,positive,2031-01
 ```
 
-The cuts and raises themselves are not modeled yet: a rail only reports.
-Strategies that respond to a rail are planned
-([#326](https://github.com/BobKerns/analysis/issues/326)).
+A rail only reports. To act on these rails, a `cut_on_breach` strategy
+whose trigger names them cuts the spending it owns while `gk_upper` is past
+and, with an `increase`, raises it while `gk_lower` is
+([user guide §4.19](../user-guide.md)). The `guardrail` spending strategy
+applies Guyton and Klinger's own rule instead, from its initial rate,
+compounding each cut and raise, without reading these rails
+([user guide §4.17](../user-guide.md)).
 
 **A budget**: spending in today's dollars, a ceiling, or a floor (a spending
 level the household doesn't want to fall under):
