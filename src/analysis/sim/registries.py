@@ -68,12 +68,13 @@ TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state")
 the federal one."""
 TAX_SCHEDULES: tuple[str, ...] = ("april",)
 """``april``: each April, the tax still due for the year before."""
-TAX_SETTLEMENT_PRIORITY = 400
-"""Where a month's tax settlement falls among its scheduled rules: after
-those whose priority is at most this (income, spending, a mortgage), before
-the rest (an RMD, a death's transfers) and ``fill_bracket``. The place the
-``tax_accumulator`` rule had (#507), so moving to jurisdiction files changes
-no balance."""
+MONTH_PHASES: tuple[str, ...] = ("rules", "tax_settlement", "fill_bracket")
+"""The order a month posts in, after its strategy hooks, each phase whole
+before the next (#507). The scheduled rules come first, in priority order
+among themselves. The tax settlement (each April, the year before's tax)
+follows every rule, so no rule's order is tied to it. ``fill_bracket``'s
+conversions come last: an RMD can't be converted, so it must come out first,
+and the conversion's target needs the year's whole income."""
 
 # Canonical year_to_date.csv column order (ADR-003 §4.10).
 YEAR_TO_DATE_CSV_HEADER: tuple[str, ...] = (

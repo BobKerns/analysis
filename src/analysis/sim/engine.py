@@ -167,10 +167,14 @@ def run_scenario(
                 "FROM scheduled_transaction ORDER BY priority, id"
             ).fetchall()
         ]
-        # A fill_bracket conversion runs after everything else in its month
-        # (#252): the year's RMD has to come out first (an RMD can't be
-        # converted), and its target needs the year's whole income.
-        txns.sort(key=lambda r: r[6] == "fill_bracket")
+        # A month posts in registries.MONTH_PHASES order: its rules (by
+        # priority among themselves), the tax settlement (None here), then
+        # fill_bracket's conversions.
+        month_steps: list[list[Any] | None] = [
+            step for phase in registries.MONTH_PHASES
+            for step in ([None] if phase == "tax_settlement"
+                         else [t for t in txns if _month_phase(t) == phase])
+        ]
         txn_by_name: dict[str, list[Any]] = {
             r[1]: r for r in txns
         }
@@ -353,15 +357,10 @@ def run_scenario(
                             refill_ctx=refill_ctx, drawdown_pricing=drawdown_pricing,
                         )
 
-            # The month's tax settlement takes the place among its rules the
-            # tax_accumulator rule had (registries.TAX_SETTLEMENT_PRIORITY).
-            taxes_settled = False
-            for txn in txns:
-                if not taxes_settled and (
-                        txn[_SCHED_RULE_KIND] == "fill_bracket"
-                        or txn[_SCHED_PRIORITY] > registries.TAX_SETTLEMENT_PRIORITY):
+            for txn in month_steps:
+                if txn is None:
                     settle_taxes()
-                    taxes_settled = True
+                    continue
                 (tid, _name, frm, to_chain, cadence, moy, rule_kind,
                  p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json,
@@ -540,8 +539,6 @@ def run_scenario(
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
-            if not taxes_settled:
-                settle_taxes()
 
             if strategy_runtime and month.month == 12:
                 # Year-end actions see the year's income complete (#421): every
@@ -1594,10 +1591,12 @@ class Txn(NamedTuple):
     inflation_cadence: str | None
 
 
-# Positions in the `txns` rows of the fields that place the month's tax
-# settlement among its rules.
 _SCHED_RULE_KIND = Txn._fields.index("amount_rule_kind")
-_SCHED_PRIORITY = Txn._fields.index("priority")
+
+
+def _month_phase(txn: Sequence[Any]) -> str:
+    """The ``registries.MONTH_PHASES`` phase a scheduled rule posts in."""
+    return "fill_bracket" if txn[_SCHED_RULE_KIND] == "fill_bracket" else "rules"
 
 
 def _rule_fire_count(
