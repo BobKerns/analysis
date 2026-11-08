@@ -330,10 +330,10 @@ Sleep 400ms
 Enter
 Wait
 Sleep 3s
-Type "clear && sim run lives-mc"
+Type "clear && sim run lives-mc --commit"
 Sleep 400ms
 Enter
-Wait
+Wait@180s
 Sleep 3s
 Type "clear && sim ensemble guard-rails lives-mc --chart"
 Sleep 400ms
@@ -399,10 +399,10 @@ Sleep 400ms
 Enter
 Wait
 Sleep 10s
-Type "clear && sim run respond-mc"
+Type "clear && sim run respond-mc --commit"
 Sleep 400ms
 Enter
-Wait
+Wait@180s
 Sleep 4s
 ```
 
@@ -410,7 +410,8 @@ A new ensemble, respond MC, builds on lives MC, so its futures are the
 same ones. Alice and Bill tag their living expenses flex optional: the
 spending they could trim. Sim strategy add respond, kind cut on breach,
 on the rules tagged flex optional, triggered by GK upper's yearly
-margin: cut ten percent, raise nothing. Then they run it.
+margin: cut ten percent, raise nothing. Then they run it; dash dash
+commit saves the changes first, so the run can be reproduced.
 
 ## Scene `breaches`: What it did, in one future
 
@@ -465,8 +466,8 @@ Sim ensemble compare sets the two ensembles side by side, future by
 future. Before 2033 they're the same, apart from a few hundred dollars of
 estimated tax. After that, the worst five percent of futures end each
 year about a hundred thousand dollars better off by 2050. Sim ensemble
-spending shows the cost: across the run, cuts in fifty four percent of
-futures, in fifteen percent of years on average, and in the worst
+spending shows the cost: across the run, cuts in fifty five percent of
+futures, in sixteen percent of years on average, and in the worst
 futures, their worst year's spending about eight thousand dollars lower.
 
 ## Scene `nb`: The notebooks

@@ -2908,13 +2908,15 @@ def ensemble_spending(
         raise click.BadParameter(f"{category!r} is not one of: {', '.join(offered)}",
                                  param_hint="'--category'")
     delivered, budgeted = store.spending(mode, category)
-    # A household that has ended spends nothing; leave those years out (#377).
-    ends = store.household_end_years()
+    # A household that has ended spends nothing; leave the years after it out,
+    # and its partial last year out of the dollar figures (#377).
+    ends = store.household_ends()
+    partial = reports.partial_last_years(ends)
     delivered, budgeted = reports.while_alive(delivered, ends), reports.while_alive(budgeted, ends)
     what = f"{category} spending" if category else "spending"
     click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); "
                f"{what} against the plan, {_DOLLAR_LABELS[mode]}")
-    table = reports.ensemble_spending_table(delivered, budgeted)
+    table = reports.ensemble_spending_table(delivered, budgeted, partial)
     if table.empty:
         click.echo("(no spending in the members)")
         return
@@ -2923,7 +2925,7 @@ def ensemble_spending(
         **{c: (lambda v: f"{v:,.0f}") for c in table.columns if c not in shares},
         **{c: (lambda v: f"{v:.0%}") for c in shares},
     }))
-    summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years())
+    summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years(), partial)
     click.echo(f"worst whole year per member: median ${summary['worst_year_median']:,.0f}, "
                f"CVaR 5% ${summary['worst_year_cvar05']:,.0f}, 20% ${summary['worst_year_cvar20']:,.0f}")
     click.echo(f"of plan over the run: median {summary['of_plan_median']:.1%}, "
@@ -2933,7 +2935,8 @@ def ensemble_spending(
         from analysis.sim.spending_charts import ensemble_spending_figure
 
         _draw_figure(ensemble_spending_figure(
-            delivered, budgeted, f"{what.capitalize()} against the plan ({scenario_name})",
+            reports.without_years(delivered, partial), reports.without_years(budgeted, partial),
+            f"{what.capitalize()} against the plan ({scenario_name})",
             ylabel=_DOLLAR_LABELS[mode], deaths=store.base_case_deaths()), graph_file, "ensemble-")
 
 

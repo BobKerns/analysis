@@ -601,10 +601,11 @@ class EnsembleSeries:
         raw = self._meta.get("reserve")
         return None if raw is None else units.json_dollars_to_cents(raw) / 100
 
-    def household_end_years(self) -> dict[str, int]:
-        """Stem -> the year each member's household ended (its last death),
-        for the members whose household ends within the run."""
-        return {m.stem: m.household_end.year for m in self._members.values()
+    def household_ends(self) -> dict[str, date]:
+        """Stem -> each member's household's final month (the last month
+        anyone was alive), for the members whose household ends within the
+        run."""
+        return {m.stem: m.household_end for m in self._members.values()
                 if m.household_end is not None}
 
     def base_case_deaths(self) -> list[Death]:

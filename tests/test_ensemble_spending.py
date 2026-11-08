@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import date
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,7 +18,9 @@ from analysis.sim.reports import (
     ensemble_spending_summary,
     ensemble_spending_table,
     spending_by_year,
+    partial_last_years,
     while_alive,
+    without_years,
 )
 from analysis.sim.series_db import open_series
 from analysis.sim.types import DollarMode
@@ -105,21 +108,27 @@ def test_ensemble_spending_table_and_summary() -> None:
 
 def test_years_after_a_household_ends_are_left_out() -> None:
     """A household that has ended spends nothing; that isn't a cut or the
-    worst year (#377). Member c ends in 2031, and no member covers 2032."""
+    worst year (#377). Member c's last month is June 2031: 2031 counts
+    toward its cuts but not toward the dollar figures or its worst year.
+    Member b's is December 2031, so it spent all of 2031. No member covers
+    2032."""
     years = pd.Index([2030, 2031, 2032], name="year")
-    delivered = pd.DataFrame({"a": [100.0, 90.0, 0.0], "b": [100.0, 100.0, 0.0], "c": [80.0, 0.0, 0.0]},
+    delivered = pd.DataFrame({"a": [100.0, 90.0, 0.0], "b": [100.0, 70.0, 0.0], "c": [80.0, 40.0, 0.0]},
                              index=years)
     budgeted = pd.DataFrame(100.0, index=years, columns=delivered.columns)
-    ends = {"a": 2032, "b": 2032, "c": 2031}
+    budgeted.loc[2031, "c"] = 50.0
+    ends = {"a": date(2031, 12, 1), "b": date(2031, 12, 1), "c": date(2031, 6, 1)}
+    partial = partial_last_years(ends)
+    assert partial == {"c": 2031}
     delivered, budgeted = while_alive(delivered, ends), while_alive(budgeted, ends)
     assert list(delivered.index) == [2030, 2031]
-    assert pd.isna(delivered.loc[2031, "c"]) and delivered.loc[2031, "a"] == 90
-    table = ensemble_spending_table(delivered, budgeted)
-    assert table.loc[2031, "p5"] > 0 and table.loc[2031, "cvar05"] == 90
-    assert table.loc[2031, "cut"] == pytest.approx(1 / 2)
-    summary = ensemble_spending_summary(delivered, budgeted)
-    assert summary["worst_year_cvar05"] == 80
-    assert summary["members_ever_cut"] == pytest.approx(2 / 3)
+    table = ensemble_spending_table(delivered, budgeted, partial)
+    assert table.loc[2031, "cvar05"] == 70 and table.loc[2031, "budgeted"] == 100
+    assert table.loc[2031, "cut"] == pytest.approx(1)
+    summary = ensemble_spending_summary(delivered, budgeted, partial=partial)
+    assert summary["worst_year_cvar05"] == 70 and summary["worst_year_median"] == 80
+    assert summary["members_ever_cut"] == pytest.approx(1)
+    assert pd.isna(without_years(delivered, partial).loc[2031, "c"])
 
 
 def test_a_small_cut_still_counts_as_cut() -> None:

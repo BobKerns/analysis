@@ -918,8 +918,10 @@ def ensemble_spending_widget(*_,
         mode = DollarMode(dollar_picker.value)
         loading.note(f"Reading {recipe}'s spending")
         delivered, budgeted = store.spending(mode, picked)
-        # A household that has ended spends nothing; leave those years out (#377).
-        ends = store.household_end_years()
+        # A household that has ended spends nothing; leave the years after it out,
+        # and its partial last year out of the dollar figures (#377).
+        ends = store.household_ends()
+        partial = reports.partial_last_years(ends)
         delivered, budgeted = reports.while_alive(delivered, ends), reports.while_alive(budgeted, ends)
         low, high = time_range.value
         what = f"{picked} spending" if picked else "spending"
@@ -932,14 +934,15 @@ def ensemble_spending_widget(*_,
             display(StyledMarkdown("_No spending in the members._"))
             return
         show_figure(ensemble_spending_figure(
-            delivered, budgeted, f"{what.capitalize()} against the plan ({recipe})", ylabel=unit,
+            reports.without_years(delivered, partial), reports.without_years(budgeted, partial),
+            f"{what.capitalize()} against the plan ({recipe})", ylabel=unit,
             years=(low, high), deaths=store.base_case_deaths()))
-        table = reports.ensemble_spending_table(delivered, budgeted)
+        table = reports.ensemble_spending_table(delivered, budgeted, partial)
         table = time_range.clip(table)
         shares = ("of_plan", "cut")
         display(table.style.format({**{c: "${:,.0f}" for c in table.columns if c not in shares},
                                     **dict.fromkeys(shares, "{:.0%}")}))
-        summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years())
+        summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years(), partial)
         display(StyledMarkdown(
             f"Worst whole year per member: median ${summary['worst_year_median']:,.0f}, CVaR 5% "
             f"${summary['worst_year_cvar05']:,.0f}, 20% ${summary['worst_year_cvar20']:,.0f}. "

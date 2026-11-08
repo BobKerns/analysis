@@ -1526,8 +1526,10 @@ its spending section sets each run's spending, and its plan, side by side.
 For an ensemble, `sim ensemble spending` shows the spread of spending across
 the members by year, the average of the worst 5% and 20% (CVaR), how often
 members had to cut, and each member's worst full year. A member whose
-household has ended (every lifespan over) counts only in the years before
-its end: spending nothing then is neither a cut nor a worst year. The notebooks draw
+household has ended (every lifespan over) counts only up to its final
+month: spending nothing after it is neither a cut nor a worst year, and a
+final year that ends before December counts toward cuts but not toward
+the dollar figures. The notebooks draw
 the same: `net_worth.ipynb` for one run, `scenario_compare.ipynb` for runs
 side by side, and `ensemble.ipynb` across the members.
 The design is in
