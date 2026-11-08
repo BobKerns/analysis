@@ -12200,8 +12200,8 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
         table.add_column(column)
     for name, steps in sorted(cmap.steps.items()):
         try:
-            defined = chain_edit.defining_scenario(ref.scenarios_dir, ref.name, name) or ""
-            where = "this scenario" if defined == ref.name else escape(defined)
+            # The same text the notebook's chain table shows (#433).
+            where = escape(setup_listings.chain_defined_in(ref.path, name))
         except chain_edit.AmbiguousChain as exc:
             where = f"[red]{escape(str(exc))}[/red]"
         uses = cmap.uses.get(name, [])

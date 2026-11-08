@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from analysis.sim import readme, registries, units
+from analysis.sim import chain_edit, readme, registries, units
 from analysis.sim.dates import final_month_for_age
 from analysis.sim.lineage import load_order, read_parents
 from analysis.sim.lineage import scenario_dir as _scenario_dir
@@ -36,7 +36,8 @@ if TYPE_CHECKING:
     from analysis.sim.scenario import ScenarioDate, ScenarioValue
 
 __all__ = [
-    "THIS_SCENARIO", "SHARED",
+    "THIS_SCENARIO", "SHARED", "BUILT_IN",
+    "defined_in", "row_origins", "chain_defined_in", "calendar_origins",
     "CalendarListing", "calendar_listing", "calendar_target", "vary_summary",
     "PersonListing", "person_listing",
     "YtdListing", "ytd_listing",
@@ -51,6 +52,11 @@ SHARED = "shared"
 """``defined_in`` of a file in the data repo's shared folder, outside any scenario."""
 
 
+BUILT_IN = "built in"
+"""``defined_in`` of a row no scenario writes but the loader adds itself: a
+growth account a lot's gains are booked against, or a lot's growth rule."""
+
+
 def defined_in(index: int | None, inherited_from: str | None) -> str:
     """Where a row comes from, as the listings show it: :data:`THIS_SCENARIO`,
     the ancestor it is inherited from, or ``overrides <ancestor>`` for the
@@ -58,6 +64,41 @@ def defined_in(index: int | None, inherited_from: str | None) -> str:
     if index is None:
         return inherited_from or ""
     return f"overrides {inherited_from}" if inherited_from else THIS_SCENARIO
+
+
+def row_origins(scenario_dir: Path, filename: str, key: str = "name") -> dict[str, str]:
+    """``defined_in`` of every row of ``filename`` (accounts.csv,
+    scheduled.csv) by ``key``, merged down the load order as the loader and
+    the edit commands merge it (#433)."""
+    return {name: defined_in(found.index, found.inherited_from)
+            for name, found in overlay_rows(scenario_dir, filename, key).items()}
+
+
+def chain_defined_in(scenario_dir: Path, name: str) -> str:
+    """Where chain ``name`` is defined, as ``sim chain list`` shows it: a
+    chain file replaces the whole chain, so the last scenario in the load
+    order with a file for it; ``overrides <ancestor>`` when that is the
+    scenario itself and an ancestor has one too. "" for a chain no file
+    defines. Raises ``chain_edit.AmbiguousChain`` for a folder with two files
+    for the name."""
+    definers = [
+        each for each in load_order(scenario_dir.parent, scenario_dir.name)
+        if chain_edit.chain_file(_scenario_dir(scenario_dir.parent, each), name) is not None
+    ]
+    if not definers:
+        return ""
+    if definers[-1] != scenario_dir.name:
+        return definers[-1]
+    return defined_in(0, definers[-2] if len(definers) > 1 else None)
+
+
+def calendar_origins(scenario_dir: Path) -> list[tuple[str, str, str]]:
+    """``(kind, name, defined_in)`` of every merged calendar row, in the order
+    the loader writes them to ``calendar_event`` (the overlay follows the
+    load's own merge), so a caller can line them up with the intent's rows
+    after checking that the kinds and names agree (#433)."""
+    return [(entry.row["kind"], entry.row["name"], defined_in(entry.index, entry.inherited_from))
+            for entry in scenario_calendar_rows(scenario_dir)]
 
 
 # ---------- calendar ----------

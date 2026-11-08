@@ -27,8 +27,10 @@ from analysis.sim.notebook_ui.scenario_plots import (
     show_ytd_view,
 )
 from analysis.sim.readme import description_view
+from analysis.sim.notebook_ui.accounts_plots import show_account_setup
 from analysis.sim.notebook_ui.scenario_view import (
     calendar_view,
+    manifest_view,
     UNUSED,
     chain_table,
     chains_view,
@@ -214,15 +216,18 @@ def test_calendar_view_has_separate_account_and_lot_columns(
     assert set(events_without_accounts["lot_1"]) == {"-"}
 
 
-def test_optional_scheduled_columns_default_to_name_and_description(test_data_dir: Path) -> None:
+def test_optional_scheduled_columns_default_to_name_description_and_defined_in(
+    test_data_dir: Path,
+) -> None:
     assert SCHEDULED_OPTIONAL_COLUMNS == {
-        "id": False, "name": True, "priority": False, "description": True,
+        "id": False, "name": True, "priority": False, "description": True, "defined_in": True,
     }
     with open_scenario(test_data_dir, "retire_alice") as scenario:
         box = show_scheduled_view(scenario)
     checkboxes = box.children[0].children
     assert [(c.description, c.value) for c in checkboxes] == [
         ("id", False), ("name", True), ("priority", False), ("description", True),
+        ("defined_in", True),
     ]
     checkboxes[0].value = True       # toggling must not raise
     checkboxes[3].value = False
@@ -426,3 +431,115 @@ def test_overview_tables_show_authored_text_not_html(
     assert "Payment &lt;pending&gt;" in html
     assert "&lt;pending&gt;" in html.replace("Payment &lt;pending&gt;", "")
     assert "Note &lt;b&gt;" in html
+
+
+# ---------- where each row is defined, and the lineage (#433) ----------
+
+
+def _append_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame = pd.concat([frame, pd.DataFrame(rows)], ignore_index=True).fillna("")
+    frame.to_csv(path, index=False)
+
+
+def _parent_row(parent: Path, filename: str, name: str, **changes: str) -> dict[str, str]:
+    """``name``'s whole row in ``parent``'s ``filename``, with ``changes``:
+    a blank cell in an override would replace the inherited value."""
+    frame = pd.read_csv(parent / filename, dtype=str, keep_default_na=False)
+    return {**frame[frame["name"] == name].iloc[0].to_dict(), **changes}
+
+
+@pytest.fixture
+def overriding_child(test_data_dir: Path, test_child_scenario: Path) -> Path:
+    """``child`` of retire_alice overriding one scheduled rule, one account
+    and the chain, and adding a calendar row of its own."""
+    parent = test_data_dir / "scenarios" / "retire_alice"
+    _append_csv(test_child_scenario / "scheduled.csv",
+                [_parent_row(parent, "scheduled.csv", "healthcare", amount="1500.00")])
+    _append_csv(test_child_scenario / "accounts.csv",
+                [_parent_row(parent, "accounts.csv", "Asset_Savings")])
+    chain = Path("chains/source/asset_checking_liquidity.csv")
+    (test_child_scenario / chain).parent.mkdir(parents=True, exist_ok=True)
+    (test_child_scenario / chain).write_text((parent / chain).read_text())
+    _append_csv(test_child_scenario / "calendar.csv", [{
+        "date": "2031-01-31", "kind": "retire_scheduled", "scheduled_name": "living",
+        "description": "child's own row",
+    }])
+    return test_child_scenario
+
+
+def test_overview_views_say_where_each_row_is_defined(
+    test_data_dir: Path, overriding_child: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import accounts_plots
+
+    shown: list[object] = []
+    monkeypatch.setattr(accounts_plots, "display", shown.append)
+    with open_scenario(test_data_dir, "child") as scenario:
+        scheduled = scheduled_view(scenario).set_index("name")["defined_in"]
+        chains = chain_table(scenario)
+        calendar = calendar_view(scenario)
+        show_account_setup(scenario)
+    assert scheduled["healthcare"] == "overrides retire_alice"
+    assert scheduled["living"] == "retire_alice"
+    # A lot's growth rule is the loader's own.
+    growth = [name for name in scheduled.index if name.startswith("growth_")]
+    assert growth and set(scheduled[growth]) == {setup_listings.BUILT_IN}
+    assert list(chains["defined_in"]) == ["overrides retire_alice", ""]
+    by_description = calendar.set_index("description")["defined_in"]
+    assert by_description["child's own row"] == setup_listings.THIS_SCENARIO
+    assert by_description["Alice retires"] == "retire_alice"
+    assert "t_inflation_factors" in set(calendar["defined_in"])
+    accounts = shown[-1].data["defined_in"]  # ty: ignore[unresolved-attribute] -- a Styler
+    assert accounts["Asset_Savings"] == "overrides retire_alice"
+    assert accounts["Asset_Checking"] == "retire_alice"
+    assert accounts["interest_income"] == setup_listings.BUILT_IN
+
+
+def test_calendar_defined_in_is_a_dash_when_the_folders_changed_since_the_load(
+    test_data_dir: Path, overriding_child: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with open_scenario(test_data_dir, "child") as scenario:
+        origins = setup_listings.calendar_origins(scenario.ref.path)
+        monkeypatch.setattr(setup_listings, "calendar_origins", lambda _path: origins[:-1])
+        calendar = calendar_view(scenario)
+    assert set(calendar["defined_in"]) == {"-"}
+
+
+def test_sim_chain_list_says_a_chain_overrides_its_ancestors(
+    test_data_dir: Path, overriding_child: Path,
+) -> None:
+    from click.testing import CliRunner
+
+    from analysis.sim.cli import sim_group_command
+
+    result = CliRunner().invoke(sim_group_command, [
+        "chain", "list", "--scenario", "child", "--data-dir", str(test_data_dir)])
+    assert result.exit_code == 0, result.output
+    assert "overrides retire_alice" in result.output
+
+
+def test_manifest_view_shows_the_lineage_and_what_scenario_show_does(
+    test_data_dir: Path, test_grandchild_scenario: Path,
+) -> None:
+    with open_scenario(test_data_dir, "grandchild") as scenario:
+        view = manifest_view(scenario)["value"]
+    assert view["parent"] == "child"
+    assert view["mix-ins"] == "none"
+    assert view["load order"].endswith("base → retire_alice → child → grandchild")
+    assert view["seed"] == "42 (inherited)"
+    assert view["ensemble size"] == "0 (not an ensemble)"
+    assert view["reserve"] == "(not set)"
+    assert view["run file"] == "none (not run yet)"
+
+
+def test_manifest_view_names_the_run_file_the_notebooks_open(test_data_dir: Path) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        # Only its name and a byte matter: the view names the file, never opens it.
+        run = scenario.ref.runs_dir / "20300101T000000Z_retire_alice_abc123.sqlite3"
+        run.parent.mkdir(parents=True, exist_ok=True)
+        run.write_bytes(b"x")
+        view = manifest_view(scenario)["value"]
+    assert view["parent"] == "base"
+    assert view["seed"] == "42"
+    assert view["run file"].startswith(f"{run.name} (")

@@ -13,6 +13,7 @@ from IPython.display import clear_output, display
 from ipywidgets import widgets
 import pandas as pd
 
+from analysis.sim import setup_listings
 from analysis.sim.accounts import CASHFLOW_KINDS, KIND_LABELS, account_summary_by_kind, accounts_dataframe
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.connection import RunConnection, ScenarioConnection
@@ -180,7 +181,8 @@ def to_month(date: str) -> str:
 
 def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, **_):
     """
-    Show the account setup for the given scenario as of the specified date.
+    Show the account setup for the given scenario as of the specified date,
+    with where each account is defined (``defined_in``).
 
     Parameters
     ----------
@@ -195,6 +197,10 @@ def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, *
         The output widget containing the account setup display.
     """
     df = accounts_dataframe(scenario, as_of=as_of).copy()
+    # Where each account comes from, as the edit commands find it (#433); an
+    # account in no accounts.csv is one the loader adds itself.
+    origins = setup_listings.row_origins(scenario.ref.path, "accounts.csv")
+    df["defined_in"] = [origins.get(name, setup_listings.BUILT_IN) for name in df.index]
     output = widgets.Output()
     with output:
         display(account_summary_by_kind(df).style.format({
