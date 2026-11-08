@@ -12207,12 +12207,14 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
     table = Table(title=f"chains ({ref.name})", header_style="bold", show_lines=True)
     for column in ("Chain", "Role", "Steps", "Defined in", "Used by"):
         table.add_column(column)
+    # The same text the notebook's chain table shows (#433).
+    origins = setup_listings.chain_origins(ref.scenarios_dir, ref.name)
     for name, steps in sorted(cmap.steps.items()):
-        try:
-            defined = chain_edit.defining_scenario(ref.scenarios_dir, ref.name, name) or ""
-            where = "this scenario" if defined == ref.name else escape(defined)
-        except chain_edit.AmbiguousChain as exc:
-            where = f"[red]{escape(str(exc))}[/red]"
+        origin = origins.get(name, "")
+        if isinstance(origin, chain_edit.AmbiguousChain):
+            where = f"[red]{escape(str(origin))}[/red]"
+        else:
+            where = escape(origin)
         uses = cmap.uses.get(name, [])
         # Names come from the data and may hold '[', so only "nothing" and a
         # clash are markup.

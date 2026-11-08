@@ -1800,7 +1800,7 @@ None of them need you to write any code.
 
 | Notebook | What it shows |
 | --- | --- |
-| `scenario_overview.ipynb` | The scenario's setup, without needing a run: people, accounts, chains, scheduled rules, calendar events, year-to-date rows, itemizations and tags. Good for checking a scenario is set up the way you intended, before running it. |
+| `scenario_overview.ipynb` | The scenario's setup, without needing a run: its lineage (parent, mix-ins, load order), seed, size and reserve, and which run file the other notebooks open; people, accounts, chains, scheduled rules, calendar events, year-to-date rows, itemizations and tags, each row marked with the scenario it is defined in. Good for checking a scenario is set up the way you intended, before running it. |
 | `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, the portfolio by asset class, and the stored prices: lots whose balance disagrees with quantity × price, every symbol with its name, allocation and latest price, and one symbol's price history. |
 | `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, economic income down to the change in net worth, tax by year with its effective rate, and where the run stands against its guard rails. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, where they cross over (break-even), gross Social Security, and tax by year. |

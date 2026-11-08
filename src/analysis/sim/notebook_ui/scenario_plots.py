@@ -54,8 +54,8 @@ def scrollable(styled) -> widgets.Output:
 def show_chains(sc, **_):
     """
     The named chains from the scenario connection ``sc``, one row per step,
-    each chain a block under a rule, with its role and what uses it on its
-    first row (``sim chain list`` in table form).
+    each chain a block under a rule, with its role, what uses it and where it
+    is defined on its first row (``sim chain list`` in table form).
 
     A step's ``series`` is the inflation series (such as ``cpi``) that grows
     its ``maximum`` from the scenario's start, compounding at its ``cadence``.
@@ -82,7 +82,8 @@ def show_chains(sc, **_):
                                  {"selector": "", "props": [("border-collapse", "collapse")]}])
               .format({"maximum": "${:,.2f}", "percent": "{:,.2f}%",
                        "chain": _breakable, "draw_from": _breakable,
-                       "lot": _breakable, "series": _breakable, "used_by": used_by},
+                       "lot": _breakable, "series": _breakable, "used_by": used_by,
+                       "defined_in": _breakable},
                       na_rep="-"))
     return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
 
@@ -203,13 +204,15 @@ def show_chain_flow(sc, chain: str | None = None, **_):
     return widgets.VBox([widgets.HBox([picker, depth, rules]), chart])
 
 
-SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}
+SCHEDULED_OPTIONAL_COLUMNS = {
+    "id": False, "name": True, "priority": False, "description": True, "defined_in": True,
+}
 """Scheduled-view columns a checkbox can hide, with whether each starts shown."""
 
 
 _SCHEDULED_TEXT_COLUMNS = [
     "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
-    "amount_rule_kind", "tax_character", "description",
+    "amount_rule_kind", "tax_character", "description", "defined_in",
 ]
 _SCHEDULED_NOWRAP_COLUMNS = ["id", "priority", "amount", "start", "end"]
 
@@ -233,7 +236,7 @@ def scheduled_styler(view: pd.DataFrame, hidden: Collection[str] = ()):
 def show_scheduled_view(sc, **_):
     """
     Show the scheduled items from the scenario connection `sc`, with a checkbox
-    for each optional column (id, name, priority, description) so the table can
+    for each optional column (id, name, priority, description, defined_in) so the table can
     be narrowed to fit a small screen. The table scrolls sideways if it is still
     too wide.
     """
@@ -269,7 +272,7 @@ def show_calendar_view(sc, **_):
     formats = {
         "date": truncate(7),
         **{c: _breakable for c in ("kind", "target", "account_1", "lot_1",
-                                   "account_2", "lot_2", "description")},
+                                   "account_2", "lot_2", "description", "defined_in")},
     }
     styled = view.style.hide(axis="index").format(formats, na_rep="-")
     styled = _fit_to_width(styled, nowrap=["date", "amount"])
