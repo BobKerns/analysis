@@ -1,0 +1,48 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "O_W-DNmeSRs"
+uploaded = 2026-11-08T21:14:03Z
+scenes = [
+  ["title", 13.96],
+  ["contents", 18.00],
+  ["lots", 29.22],
+  ["holdings", 31.04],
+  ["symbol", 26.39],
+  ["invest", 29.36],
+  ["growth", 33.61],
+  ["allocation", 41.56],
+  ["taxes", 49.91],
+  ["gains", 37.36],
+  ["location", 25.46],
+  ["roth-lots", 38.36],
+  ["invest-roth", 38.36],
+  ["location-table", 25.28],
+  ["nb-accounts", 21.67],
+  ["ai", 18.27],
+  ["end", 8.48],
+]
+
+[ja]
+video = "vhOpASCNACg"
+uploaded = 2026-11-08T21:14:19Z
+scenes = [
+  ["title", 17.79],
+  ["contents", 21.45],
+  ["lots", 36.61],
+  ["holdings", 31.20],
+  ["symbol", 35.84],
+  ["invest", 29.28],
+  ["growth", 39.29],
+  ["allocation", 41.56],
+  ["taxes", 59.91],
+  ["gains", 42.15],
+  ["location", 32.86],
+  ["roth-lots", 38.20],
+  ["invest-roth", 44.99],
+  ["location-table", 29.60],
+  ["nb-accounts", 21.67],
+  ["ai", 24.23],
+  ["end", 8.24],
+]
