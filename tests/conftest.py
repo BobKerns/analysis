@@ -1819,8 +1819,8 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     member files with a batch manifest (``complete=False`` leaves the last
     member out); ``fake_state("intent", ...)`` a member-intent batch; a
     batch of either kind goes in its ``mode``'s folder (#454). Each
-    run file holds just a ``simulation_run`` row with the status, so it reads
-    as a file from before load warnings were recorded (#432), unless
+    run file holds just a ``simulation_run`` row with the status and an
+    empty ``load_warning`` table (#432), unless
     ``load_warned={member: [warning, ...]}`` gives a member some; a run
     batch given ``pool=[component, ...]`` (one per member) is a pool batch's
     (ADR-009), its manifest saying where each member came from. Every file
@@ -1837,8 +1837,8 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
         try:
             con.execute("CREATE TABLE simulation_run (id INTEGER PRIMARY KEY, status TEXT)")
             con.execute("INSERT INTO simulation_run VALUES (1, ?)", (status,))
-            if warned is not None:
-                con.execute("CREATE TABLE load_warning (id INTEGER PRIMARY KEY, kind TEXT, message TEXT)")
+            con.execute("CREATE TABLE load_warning (id INTEGER PRIMARY KEY, kind TEXT, message TEXT)")
+            if warned:
                 con.executemany("INSERT INTO load_warning (kind, message) VALUES ('warning', ?)",
                                 [(w,) for w in warned])
             con.commit()

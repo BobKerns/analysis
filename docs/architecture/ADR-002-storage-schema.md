@@ -645,7 +645,7 @@ A batch also gathers its members' provenance into one file, `state/runs/<ensembl
 
 ### Load warnings
 
-The loader's non-fatal warnings, kept with the intent so they can be read after the fact (#432): a run file's snapshot carries them, `sim explain` prints them, and the notebooks show them beside the scenario picker. `kind` `warning` is what every `sim load`/`run`/`check` prints (a fallback taken, a partial allocation); `unused` is a thing defined but not read yet, which only `sim check` prints at load ([ADR-004](ADR-004-reproducibility-and-activation.md) §6). An ensemble member's intent is a copy of its recipe's, so it carries the recipe's warnings. A file from before schema 58 has no table, and reads as having none.
+The loader's non-fatal warnings, kept with the intent so they can be read after the fact (#432): a run file's snapshot carries them, `sim explain` prints them, and the notebooks show them beside the scenario picker. `kind` `warning` is what every `sim load`/`run`/`check` prints (a fallback taken, a partial allocation); `unused` is a thing defined but not read yet, which only `sim check` prints at load ([ADR-004](ADR-004-reproducibility-and-activation.md) §6). An ensemble member's intent is a copy of its recipe's, so it carries the recipe's warnings.
 
 ```sql
 -- #432: the load's non-fatal warnings, in the order raised, so they can be

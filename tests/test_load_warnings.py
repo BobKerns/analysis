@@ -37,11 +37,6 @@ def test_a_clean_load_records_no_warnings(retire_alice_run_file: Path) -> None:
     assert found.warnings == () and len(found.unused) == 1
 
 
-def test_a_file_from_before_the_table_reads_as_none(fake_state: Callable[..., Path]) -> None:
-    found = load_warnings.read_file(fake_state("run", "alice", "2026-10-01T120000Z"))
-    assert found == load_warnings.LoadWarnings() and not found
-
-
 @pytest.mark.usefixtures("state_tax_without_its_deduction")
 def test_sim_explain_lists_the_loads_warnings(run_test_copy: Callable[[], Path]) -> None:
     run = run_test_copy()
