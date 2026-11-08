@@ -31,6 +31,7 @@ import traitlets
 
 from analysis.frames import index_years
 from analysis.sim import accounts
+from analysis.sim.lineage import lineage_fingerprint
 from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, Death, DollarMode, ItemType
 
 from . import registries
@@ -1481,6 +1482,9 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         return self
 
     scenarios_dir: Path
+    loaded_fingerprint: tuple[tuple[str, int, int], ...]
+    """The lineage folders' files as the intent was loaded from them
+    (``lineage.lineage_fingerprint``), so a view can tell when they've changed."""
 
     def __init__(self, data_dir: Path | str,
                  scenario: str | None = None,
@@ -1512,6 +1516,8 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         old = getattr(self, "_con", None)
         if old is not None:
             old.close()
+        # Taken before the load, so an edit during it reads as a change too.
+        self.loaded_fingerprint = lineage_fingerprint(self.scenarios_dir, self._scenario_name)
         load_scenario(
             self.data_dir, self._scenario_name,
             intent_dir=self._intent_dir,

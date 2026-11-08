@@ -436,35 +436,22 @@ def test_overview_tables_show_authored_text_not_html(
 # ---------- where each row is defined, and the lineage (#433) ----------
 
 
-def _append_csv(path: Path, rows: list[dict[str, str]]) -> None:
-    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-    frame = pd.concat([frame, pd.DataFrame(rows)], ignore_index=True).fillna("")
-    frame.to_csv(path, index=False)
-
-
-def _parent_row(parent: Path, filename: str, name: str, **changes: str) -> dict[str, str]:
-    """``name``'s whole row in ``parent``'s ``filename``, with ``changes``:
-    a blank cell in an override would replace the inherited value."""
-    frame = pd.read_csv(parent / filename, dtype=str, keep_default_na=False)
-    return {**frame[frame["name"] == name].iloc[0].to_dict(), **changes}
-
-
 @pytest.fixture
-def overriding_child(test_data_dir: Path, test_child_scenario: Path) -> Path:
+def overriding_child(
+    test_data_dir: Path, test_child_scenario: Path, scheduled_override: Callable[..., str],
+    retire_alice_rows: Callable[..., str], append_calendar_row_to: Callable[..., None],
+) -> Path:
     """``child`` of retire_alice overriding one scheduled rule, one account
     and the chain, and adding a calendar row of its own."""
     parent = test_data_dir / "scenarios" / "retire_alice"
-    _append_csv(test_child_scenario / "scheduled.csv",
-                [_parent_row(parent, "scheduled.csv", "healthcare", amount="1500.00")])
-    _append_csv(test_child_scenario / "accounts.csv",
-                [_parent_row(parent, "accounts.csv", "Asset_Savings")])
+    (test_child_scenario / "scheduled.csv").write_text(scheduled_override(healthcare="1500.00"))
+    (test_child_scenario / "accounts.csv").write_text(retire_alice_rows("accounts.csv", "Asset_Savings"))
     chain = Path("chains/source/asset_checking_liquidity.csv")
     (test_child_scenario / chain).parent.mkdir(parents=True, exist_ok=True)
     (test_child_scenario / chain).write_text((parent / chain).read_text())
-    _append_csv(test_child_scenario / "calendar.csv", [{
-        "date": "2031-01-31", "kind": "retire_scheduled", "scheduled_name": "living",
-        "description": "child's own row",
-    }])
+    append_calendar_row_to(test_child_scenario / "calendar.csv", date="2031-01-31",
+                           kind="retire_scheduled", scheduled_name="living",
+                           description="child's own row")
     return test_child_scenario
 
 
@@ -543,3 +530,94 @@ def test_manifest_view_names_the_run_file_the_notebooks_open(test_data_dir: Path
     assert view["parent"] == "base"
     assert view["seed"] == "42"
     assert view["run file"].startswith(f"{run.name} (")
+
+
+def test_origins_are_dashes_when_a_row_is_gone_from_the_folders_since_the_load(
+    test_data_dir: Path, overriding_child: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import accounts_plots
+
+    shown: list[object] = []
+    monkeypatch.setattr(accounts_plots, "display", shown.append)
+    parent = test_data_dir / "scenarios" / "retire_alice"
+    with open_scenario(test_data_dir, "child") as scenario:
+        for filename, name in (("scheduled.csv", "living"), ("accounts.csv", "Asset_Checking")):
+            rows = pd.read_csv(parent / filename, dtype=str, keep_default_na=False)
+            rows[rows["name"] != name].to_csv(parent / filename, index=False)
+        scheduled = scheduled_view(scenario)
+        show_account_setup(scenario)
+    # Not "built in": the intent's rule is one a scenario wrote.
+    assert set(scheduled["defined_in"]) == {setup_listings.UNCONFIRMED}
+    accounts = shown[-1].data["defined_in"]  # ty: ignore[unresolved-attribute] -- a Styler
+    assert set(accounts) == {setup_listings.UNCONFIRMED}
+
+
+def test_every_origin_is_a_dash_once_the_folders_differ_from_the_load(
+    test_data_dir: Path, overriding_child: Path,
+    scheduled_override: Callable[..., str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import accounts_plots
+
+    shown: list[object] = []
+    monkeypatch.setattr(accounts_plots, "display", shown.append)
+    with open_scenario(test_data_dir, "child") as scenario:
+        assert "folders" not in manifest_view(scenario).index
+        assert scheduled_view(scenario).set_index("name")["defined_in"]["living"] == "retire_alice"
+        # The same names, so only the files' stamps show the edit.
+        (overriding_child / "scheduled.csv").write_text(scheduled_override(healthcare="1600.00"))
+        views = {
+            "scheduled": scheduled_view(scenario)["defined_in"],
+            "calendar": calendar_view(scenario)["defined_in"],
+            "chains": chain_table(scenario)["defined_in"],
+        }
+        show_account_setup(scenario)
+        manifest = manifest_view(scenario)["value"]
+    views["accounts"] = shown[-1].data["defined_in"]  # ty: ignore[unresolved-attribute] -- a Styler
+    for view, column in views.items():
+        assert set(column) - {""} == {setup_listings.UNCONFIRMED}, view
+    assert "open it again" in manifest["folders"]
+
+
+def test_manifest_view_shows_the_intent_lineage_after_the_folders_change(
+    test_data_dir: Path, test_grandchild_scenario: Path,
+) -> None:
+    with open_scenario(test_data_dir, "grandchild") as scenario:
+        meta = test_grandchild_scenario / "scenario.csv"
+        rows = pd.read_csv(meta, dtype=str, keep_default_na=False)
+        rows["parent_scenario"] = "retire_alice"
+        rows["seed"] = "7"
+        rows.to_csv(meta, index=False)
+        view = manifest_view(scenario)["value"]
+    assert view["parent"] == "child"
+    assert view["load order"].endswith("retire_alice → child → grandchild")
+    # The intent's seed; no longer confirmed as inherited by the folders.
+    assert view["seed"] == "42"
+
+
+def test_manifest_view_still_shows_once_the_scenario_folder_is_gone(
+    test_data_dir: Path, test_grandchild_scenario: Path,
+) -> None:
+    import shutil
+
+    with open_scenario(test_data_dir, "grandchild") as scenario:
+        shutil.rmtree(test_grandchild_scenario)
+        view = manifest_view(scenario)["value"]
+    assert view["parent"] == "child"
+    assert view["seed"] == "42"
+
+
+def test_a_run_file_gone_since_it_was_found_has_no_stamp(tmp_path: Path) -> None:
+    assert setup_listings.stamped(tmp_path / "pruned.sqlite3") is None
+
+
+def test_chain_origins_name_a_chain_with_two_files_in_one_folder(
+    test_data_dir: Path, overriding_child: Path,
+) -> None:
+    from analysis.sim import chain_edit
+
+    source = overriding_child / "chains" / "source" / "asset_checking_liquidity.csv"
+    destination = overriding_child / "chains" / "destination" / source.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(source.read_text())
+    origins = setup_listings.chain_origins(test_data_dir / "scenarios", "child")
+    assert isinstance(origins["asset_checking_liquidity"], chain_edit.AmbiguousChain)

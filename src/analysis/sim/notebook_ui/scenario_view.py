@@ -10,44 +10,62 @@ plain, display-ready DataFrames -- these are intent-side facts (unlike
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
-from analysis.sim import chain_edit, chain_map, registries, setup_listings
+from analysis.sim import chain_map, lineage, registries, setup_listings
 from analysis.sim.connection import ScenarioConnection
 
 
 def manifest_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
     """The intent file's identity card, plus the scenario row it was built
-    from, and what ``sim scenario show`` adds (#433): its parent, mix-ins and
-    load order, seed, ensemble size and reserve, each marked ``(inherited)``
-    when an ancestor sets it, and the run file the run-based notebooks open
-    for it (its latest run, else member 0 of its latest ensemble batch)."""
+    from (#433): its parent, mix-ins and load order, seed, ensemble size and
+    reserve, and the run file the run-based notebooks open for it (its
+    latest run, else member 0 of its latest ensemble batch).
+
+    Every value is the intent's own, so the table says what the intent was
+    built from even after the folders change. ``(inherited)`` is what ``sim
+    scenario show`` reads from the folders, so it is added only where they
+    still give the same value; ``folders`` says when they no longer match."""
     manifest = sc.items("intent_manifest").iloc[0]
     scenario = sc.items("scenario").iloc[0]
-    shown = setup_listings.scenario_show(sc.data_dir, sc.ref.path, None)
+    parents = json.loads(scenario["parents_json"] or "[]")
+    meta = json.loads(scenario["meta_json"] or "{}")
+    try:
+        shown = setup_listings.scenario_show(sc.data_dir, sc.ref.path, None)
+    except (OSError, ValueError):
+        shown = None  # the folders can't say; the intent still can
 
-    def mark(value: object, inherited: bool) -> str:
+    def mark(value: object, field: str) -> str:
+        found = getattr(shown, field, None)
+        if field == "reserve":
+            inherited = found is not None and found == (value, True)
+        else:
+            inherited = found is not None and found.value == value and found.inherited
         return f"{value} (inherited)" if inherited else str(value)
 
-    run_path = sc.ref.run.latest()
+    seed = None if pd.isna(scenario["seed"]) else int(scenario["seed"])
+    size = meta.get("ensemble_size")
     rows = {
         "scenario": manifest["scenario_name"],
         "description": scenario.get("description") or "",
-        "parent": shown.parent or "none (a root scenario)",
-        "mix-ins": ", ".join(shown.mixins) or "none",
-        "load order": " → ".join(shown.load_order),
+        "parent": parents[0] if parents else "none (a root scenario)",
+        "mix-ins": ", ".join(parents[1:]) or "none",
+        "load order": " → ".join(json.loads(scenario["load_order_json"] or "[]")),
         "start": scenario["start"],
         "end": scenario["end"],
-        "seed": mark(shown.seed.value, shown.seed.inherited) if shown.seed else "(not set)",
-        "ensemble size": (mark(shown.ensemble_size.value, shown.ensemble_size.inherited)
-                          if shown.ensemble_size else "0 (not an ensemble)"),
-        "reserve": mark(*shown.reserve) if shown.reserve else "(not set)",
-        "run file": _run_file_text(run_path, sc.ref.runs_dir),
+        "seed": mark(seed, "seed") if seed is not None else "(not set)",
+        "ensemble size": mark(size, "ensemble_size") if size else "0 (not an ensemble)",
+        "reserve": (mark(setup_listings.reserve_text(meta["reserve"]), "reserve")
+                    if "reserve" in meta else "(not set)"),
+        "run file": _run_file_text(sc),
+    }
+    if folders_changed(sc):
+        rows["folders"] = "changed since the scenario was opened: open it again to see them"
+    rows |= {
         "schema_version": manifest["schema_version"],
         "code_version": manifest["code_version"][:12],
         "data_version": manifest["data_version"][:12],
@@ -60,17 +78,25 @@ def manifest_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
     return pd.DataFrame(rows.items(), columns=["field", "value"]).set_index("field")
 
 
-def _run_file_text(run_path: Path | None, runs_dir: Path) -> str:
-    """A run file under ``runs_dir`` relative to it, with when it was written;
-    ``none`` when the scenario has no run yet."""
-    if run_path is None:
+def _run_file_text(sc: ScenarioConnection) -> str:
+    """The run file the run-based notebooks open, relative to the runs
+    folder, with when it was written; ``none`` when there is none."""
+    found = setup_listings.stamped(sc.ref.run.latest())
+    if found is None:
         return "none (not run yet)"
+    path, when = found
     try:
-        shown = run_path.relative_to(runs_dir)
+        path = path.relative_to(sc.ref.runs_dir)
     except ValueError:
-        shown = run_path
-    when = datetime.fromtimestamp(run_path.stat().st_mtime)
-    return f"{shown} ({when:%Y-%m-%d %H:%M})"
+        pass
+    return f"{path} ({when:%Y-%m-%d %H:%M})"
+
+
+def folders_changed(sc: ScenarioConnection) -> bool:
+    """Whether any file in ``sc``'s lineage folders was written, added or
+    removed since its intent was loaded from them, so where a row is
+    defined can no longer be read off the folders (#433)."""
+    return lineage.lineage_fingerprint(sc.scenarios_dir, sc.ref.name) != sc.loaded_fingerprint
 
 
 def persons_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
@@ -199,17 +225,14 @@ def chain_table(sc: ScenarioConnection) -> pd.DataFrame:
     steps["used_by"] = steps["chain"].map(
         lambda name: "\n".join(chain_map.use_text(cmap, u) for u in cmap.uses.get(name, ())) or UNUSED
     )
-    steps["defined_in"] = steps["chain"].map(lambda name: _chain_defined_in(sc, name))
+    if folders_changed(sc):
+        steps["defined_in"] = setup_listings.UNCONFIRMED
+    else:
+        origins = setup_listings.chain_origins(sc.ref.scenarios_dir, sc.ref.name)
+        steps["defined_in"] = steps["chain"].map(lambda name: str(origins.get(name, "")))
     for column in ("chain", "role", "used_by", "defined_in"):
         steps[column] = steps[column].where(first, "")
     return steps
-
-
-def _chain_defined_in(sc: ScenarioConnection, name: str) -> str:
-    try:
-        return setup_listings.chain_defined_in(sc.ref.path, name)
-    except chain_edit.AmbiguousChain as exc:
-        return str(exc)
 
 
 _SCHEDULED_COLS = [
@@ -233,8 +256,10 @@ def scheduled_view(sc: ScenarioConnection) -> pd.DataFrame:
     ``built in`` for a lot's growth rule, which the loader adds.
     """
     scheduled = sc.items("scheduled").copy()
-    origins = setup_listings.row_origins(sc.ref.path, "scheduled.csv")
-    scheduled["defined_in"] = scheduled["name"].map(lambda name: origins.get(name, setup_listings.BUILT_IN))
+    scheduled["defined_in"] = checked_origins(
+        sc, "scheduled.csv", list(scheduled["name"]),
+        set(scheduled["name"][scheduled["from_name"].isin(setup_listings.loader_accounts())]),
+    )
     resolve = _chain_targets(sc)
     for column, side in (("from_name", "from"), ("to_name", "to")):
         targets = [resolve(name) for name in scheduled[column]]
@@ -304,20 +329,36 @@ def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
         registries.format_calendar_amount(kind, amount)
         for kind, amount in zip(events["kind"], events["amount"], strict=True)
     ]
-    events = events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True)
+    # Stable, so rows on one date keep the load's order.
+    events = events[_CALENDAR_COLS].sort_values("date", kind="stable").reset_index(drop=True)
     events[_CALENDAR_COLS] = events[_CALENDAR_COLS].fillna("-")
     return events
+
+
+def checked_origins(sc: ScenarioConnection, filename: str, names: list[str],
+                    built_in: Collection[str]) -> list[str]:
+    """``defined_in`` for the intent's ``names`` rows of ``filename``,
+    :data:`~setup_listings.UNCONFIRMED` throughout once the folders differ
+    from the load (:func:`setup_listings.checked_origins`)."""
+    if folders_changed(sc):
+        return [setup_listings.UNCONFIRMED] * len(names)
+    return setup_listings.checked_origins(
+        setup_listings.row_origins(sc.ref.path, filename), names, built_in)
 
 
 def _calendar_defined_in(sc: ScenarioConnection, events: pd.DataFrame) -> list[str]:
     """Each intent calendar row's ``defined_in``, lined up with the folders'
     merged rows by position: the loader writes them in its merge order, which
-    the overlay follows. Checked by kind and name, so a scenario edited since
-    its load shows ``-`` instead of another row's origin."""
+    the overlay follows. ``-`` throughout once the folders differ from the
+    load (:func:`folders_changed`); where that can't be known, a check by kind
+    and name still catches most edits since the load."""
+    unconfirmed = [setup_listings.UNCONFIRMED] * len(events)
+    if folders_changed(sc):
+        return unconfirmed
     origins = setup_listings.calendar_origins(sc.ref.path)
     names = ["" if pd.isna(name) else str(name) for name in events["name"]]
     if [(kind, name) for kind, name, _ in origins] != list(zip(events["kind"], names, strict=True)):
-        return ["-"] * len(events)
+        return unconfirmed
     return [where for _kind, _name, where in origins]
 
 

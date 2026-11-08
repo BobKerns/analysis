@@ -787,6 +787,18 @@ def derive_template_scenario(template_data_dir: Path) -> Callable[..., Path]:
 
 
 @pytest.fixture(scope="session")
+def retire_alice_rows(prototype_data: Path) -> Callable[..., str]:
+    """``filename``'s text holding just the prototype retire_alice rows
+    ``names`` (by ``name``), whole: an override that changes nothing, which
+    still makes the scenario writing it the row's definer."""
+    def _rows(filename: str, *names: str) -> str:
+        rows = pd.read_csv(prototype_data / "scenarios" / "retire_alice" / filename,
+                           dtype=str, keep_default_na=False)
+        return rows[rows["name"].isin(names)].to_csv(index=False)
+    return _rows
+
+
+@pytest.fixture(scope="session")
 def scheduled_override(prototype_data: Path) -> Callable[..., str]:
     """scheduled.csv text repeating the prototype retire_alice rows named as
     keywords with only their ``amount`` changed -- an override replaces a row
@@ -1062,6 +1074,13 @@ def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[st
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,fund,"))
     write_series("stock_us", "2026-01-31,8%")
     write_series("bond", "2026-01-31,4%")
+
+
+@pytest.fixture(scope="session")
+def append_calendar_row_to() -> Callable[..., None]:
+    """Append a row to any scenario's calendar.csv, by column name:
+    ``append_calendar_row_to(child / "calendar.csv", kind=..., ...)``."""
+    return _append_calendar_row_to
 
 
 @pytest.fixture(scope="function")

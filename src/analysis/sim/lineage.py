@@ -239,3 +239,20 @@ def lineage_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = Fal
         return order
 
     return visit(scenario_name, ())
+
+
+def lineage_fingerprint(scenarios_dir: Path, scenario_name: str) -> tuple[tuple[str, int, int], ...]:
+    """Every file in the folders of ``scenario_name``'s load order, with its
+    modification time and size: equal before and after an interval exactly
+    when no file there was written, added or removed meanwhile. So a
+    connection can tell its loaded intent from folders edited since (#433)
+    without git, and with uncommitted edits."""
+    found = []
+    for name in load_order(scenarios_dir, scenario_name):
+        folder = scenario_dir(scenarios_dir, name)
+        for path in sorted(folder.rglob("*")) if folder.is_dir() else ():
+            if path.is_file():
+                stat = path.stat()
+                found.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(found)
+
