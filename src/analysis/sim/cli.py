@@ -2908,11 +2908,8 @@ def ensemble_spending(
         raise click.BadParameter(f"{category!r} is not one of: {', '.join(offered)}",
                                  param_hint="'--category'")
     delivered, budgeted = store.spending(mode, category)
-    # A household that has ended spends nothing; leave the years after it out,
-    # and its partial last year out of the dollar figures (#377).
-    ends = store.household_ends()
-    partial = reports.partial_last_years(ends)
-    delivered, budgeted = reports.while_alive(delivered, ends), reports.while_alive(budgeted, ends)
+    # A household's partial final year counts toward cuts, not dollar figures (#377).
+    partial = store.partial_last_years()
     what = f"{category} spending" if category else "spending"
     click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} member(s); "
                f"{what} against the plan, {_DOLLAR_LABELS[mode]}")

@@ -111,24 +111,29 @@ def test_years_after_a_household_ends_are_left_out() -> None:
     worst year (#377). Member c's last month is June 2031: 2031 counts
     toward its cuts but not toward the dollar figures or its worst year.
     Member b's is December 2031, so it spent all of 2031. No member covers
-    2032."""
+    2032. Member d's household ended before the run's first year."""
     years = pd.Index([2030, 2031, 2032], name="year")
-    delivered = pd.DataFrame({"a": [100.0, 90.0, 0.0], "b": [100.0, 70.0, 0.0], "c": [80.0, 40.0, 0.0]},
-                             index=years)
+    delivered = pd.DataFrame({"a": [100.0, 90.0, 0.0], "b": [100.0, 70.0, 0.0], "c": [80.0, 40.0, 0.0],
+                              "d": [0.0, 0.0, 0.0]}, index=years)
     budgeted = pd.DataFrame(100.0, index=years, columns=delivered.columns)
     budgeted.loc[2031, "c"] = 50.0
-    ends = {"a": date(2031, 12, 1), "b": date(2031, 12, 1), "c": date(2031, 6, 1)}
+    ends = {"a": date(2031, 12, 1), "b": date(2031, 12, 1), "c": date(2031, 6, 1), "d": date(2029, 3, 1)}
     partial = partial_last_years(ends)
-    assert partial == {"c": 2031}
+    assert partial == {"c": 2031, "d": 2029}
     delivered, budgeted = while_alive(delivered, ends), while_alive(budgeted, ends)
-    assert list(delivered.index) == [2030, 2031]
+    assert list(delivered.index) == [2030, 2031] and delivered["d"].isna().all()
+    assert pd.isna(without_years(delivered, partial).loc[2031, "c"])
     table = ensemble_spending_table(delivered, budgeted, partial)
-    assert table.loc[2031, "cvar05"] == 70 and table.loc[2031, "budgeted"] == 100
-    assert table.loc[2031, "cut"] == pytest.approx(1)
+    assert list(table["members"]) == [3, 3]
+    assert table.loc[2031, "p5"] == pytest.approx(71) and table.loc[2031, "cvar05"] == 70
+    assert table.loc[2031, "budgeted"] == 100 and table.loc[2031, "cut"] == pytest.approx(1)
     summary = ensemble_spending_summary(delivered, budgeted, partial=partial)
     assert summary["worst_year_cvar05"] == 70 and summary["worst_year_median"] == 80
     assert summary["members_ever_cut"] == pytest.approx(1)
-    assert pd.isna(without_years(delivered, partial).loc[2031, "c"])
+    assert summary["of_plan_median"] == pytest.approx(0.85)
+    # Only 2031 is a whole year: c has none, so its partial ones stand in.
+    summary = ensemble_spending_summary(delivered, budgeted, [2031], partial)
+    assert summary["worst_year_median"] == 70 and summary["worst_year_cvar05"] == 40
 
 
 def test_a_small_cut_still_counts_as_cut() -> None:
@@ -264,3 +269,18 @@ def test_the_spending_compare_widget_sets_runs_side_by_side(
     finally:
         for rc in connections.values():
             rc.close()
+
+
+def test_tail_means_leave_out_members_a_row_lacks() -> None:
+    """A NaN is a member the row doesn't cover; a row with none is NaN, not
+    a warning (#377)."""
+    import warnings
+
+    from analysis.sim.ensemble import tail_means
+
+    frame = pd.DataFrame({"a": [10.0, float("nan")], "b": [float("nan"), float("nan")], "c": [30.0, float("nan")]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tails = tail_means(frame)
+    assert tails.loc[0, "cvar05"] == 10 and tails.loc[0, "cvar20"] == 10
+    assert tails.loc[1].isna().all()

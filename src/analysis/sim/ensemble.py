@@ -1501,15 +1501,19 @@ def tail_means(frame: pd.DataFrame, levels: tuple[float, ...] = TAIL_LEVELS) -> 
     columns (one per member), as columns ``cvar05``, ``cvar20``. The worst
     share is rounded up to whole members, at least one. A tail's mean is
     steadier than the single breakpoint at its edge, and says how bad the
-    bad futures are, not just where they start (#163)."""
-    ordered = np.sort(frame.to_numpy(dtype=float), axis=1)
-    n = ordered.shape[1]
-    return pd.DataFrame(
+    bad futures are, not just where they start (#163). A NaN (a member a
+    row doesn't cover, such as a household that has ended) is left out of
+    that row, and a row with no members is NaN."""
+    ordered = np.sort(frame.to_numpy(dtype=float), axis=1)  # NaN sorts last
+    n = (~np.isnan(ordered)).sum(axis=1)
+    taken = np.arange(ordered.shape[1])[None, :]
+    out = {}
+    for q in levels:
         # The epsilon keeps 0.2 * 80 at 16 rather than float-rounding to 17.
-        {f"cvar{q * 100:02g}": ordered[:, :max(1, math.ceil(q * n - 1e-9))].mean(axis=1)
-         for q in levels},
-        index=frame.index,
-    )
+        k = np.maximum(1, np.ceil(q * n - 1e-9)).astype(int)
+        sums = np.where(taken < k[:, None], ordered, 0.0).sum(axis=1)
+        out[f"cvar{q * 100:02g}"] = np.where(n > 0, sums / k, np.nan)
+    return pd.DataFrame(out, index=frame.index)
 
 
 def reserve_shares(frame: pd.DataFrame, reserve: float) -> pd.DataFrame:

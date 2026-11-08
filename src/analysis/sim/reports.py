@@ -464,16 +464,6 @@ def without_years(frame: pd.DataFrame, years: Mapping[str, int] | None) -> pd.Da
     return out
 
 
-def _row_tails(frame: pd.DataFrame) -> pd.DataFrame:
-    """``tail_means`` row by row over the members each row has (not NaN)."""
-    from analysis.sim.ensemble import tail_means
-
-    if not frame.isna().to_numpy().any():
-        return tail_means(frame)
-    rows = [tail_means(row.dropna().to_frame().T).iloc[0] for _, row in frame.iterrows()]
-    return pd.DataFrame(rows, index=frame.index)
-
-
 def ensemble_spending_table(
     delivered: pd.DataFrame, budgeted: pd.DataFrame, partial: Mapping[str, int] | None = None,
 ) -> pd.DataFrame:
@@ -482,21 +472,26 @@ def ensemble_spending_table(
     (``EnsembleSeries.spending``). Per year, across members: delivered
     spending's 5th, 50th and 95th percentiles and the mean of its worst 5%
     and 20% (``cvar05``, ``cvar20``, as for net worth), the median budget,
+    ``members``, how many members' households are alive that year (late
+    rows rest on fewer),
     the median ``of_plan`` (delivered over budgeted), and ``cut``, the
     share of members spending below their plan. A member blanked by
     ``while_alive`` counts in none of them that year; one in ``partial``
     (``partial_last_years``) counts in ``of_plan`` and ``cut`` that year but
     not in the dollar columns."""
+    from analysis.sim.ensemble import tail_means
+
     if delivered.empty:
         return pd.DataFrame()
     of_plan = (delivered / budgeted.where(budgeted != 0)).fillna(1.0)
     dollars, plan = without_years(delivered, partial), without_years(budgeted, partial)
     out = pd.DataFrame({
+        "members": delivered.notna().sum(axis=1),
         "p5": dollars.quantile(0.05, axis=1),
         "median": dollars.median(axis=1),
         "p95": dollars.quantile(0.95, axis=1),
     })
-    out = out.join(_row_tails(dollars))
+    out = out.join(tail_means(dollars))
     out["budgeted"] = plan.median(axis=1)
     out["of_plan"] = of_plan.where(delivered.notna()).median(axis=1)
     out["cut"] = _cut(delivered, budgeted).where(delivered.notna()).mean(axis=1)
@@ -525,6 +520,10 @@ def ensemble_spending_summary(
     worst, but counts toward its cuts."""
     from analysis.sim.ensemble import TAIL_LEVELS, tail_means
 
+    # A member whose household ended before any year counted has nothing to
+    # say; leave it out of every figure alike.
+    delivered = delivered.dropna(axis=1, how="all")
+    budgeted = budgeted.reindex(columns=delivered.columns)
     if delivered.empty:
         return {}
     whole_only = without_years(delivered, partial)

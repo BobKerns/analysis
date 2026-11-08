@@ -89,9 +89,8 @@ sim account lot edit Asset_Checking --minimum-balance 5000 --refill-chain spendi
 sim calendar add transfer 2031-06 Asset_Checking Expense_Living 40000 --description "a new car"
 sim calendar add set-amount 2036-01 living 6500 --description "less travel"
 
-# Video 7's additions: RMD cash beyond $30,000 in checking is swept into the
-# brokerage's stocks, and `convert` fills the 12% bracket from Alice's IRA
-# into a new Roth each year from 2031 to 2036.
+# Video 7's sweep (not its Roth conversion): RMD cash beyond $30,000 in
+# checking is swept into the brokerage's stocks.
 sim account lot edit Asset_Checking --maximum-balance 30000 \
     --overflow-chain Asset_Brokerage_Joint --overflow-lot stocks > /dev/null
 git add -A && git commit -q -m "Video 7's base"

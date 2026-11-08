@@ -918,11 +918,8 @@ def ensemble_spending_widget(*_,
         mode = DollarMode(dollar_picker.value)
         loading.note(f"Reading {recipe}'s spending")
         delivered, budgeted = store.spending(mode, picked)
-        # A household that has ended spends nothing; leave the years after it out,
-        # and its partial last year out of the dollar figures (#377).
-        ends = store.household_ends()
-        partial = reports.partial_last_years(ends)
-        delivered, budgeted = reports.while_alive(delivered, ends), reports.while_alive(budgeted, ends)
+        # A household's partial final year counts toward cuts, not dollar figures (#377).
+        partial = store.partial_last_years()
         low, high = time_range.value
         what = f"{picked} spending" if picked else "spending"
         unit = f"{mode.label} dollars"
@@ -940,7 +937,7 @@ def ensemble_spending_widget(*_,
         table = reports.ensemble_spending_table(delivered, budgeted, partial)
         table = time_range.clip(table)
         shares = ("of_plan", "cut")
-        display(table.style.format({**{c: "${:,.0f}" for c in table.columns if c not in shares},
+        display(table.style.format({**{c: "${:,.0f}" for c in table.columns if c not in (*shares, "members")},
                                     **dict.fromkeys(shares, "{:.0%}")}))
         summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years(), partial)
         display(StyledMarkdown(
