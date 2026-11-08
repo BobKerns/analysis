@@ -49,7 +49,7 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance",
-    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death", "fill_bracket", "irmaa"}
+    "mortgage_payment", "ss_benefit", "rmd", "on_death", "fill_bracket", "irmaa"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -174,10 +174,8 @@ def run_scenario(
         txn_by_name: dict[str, list[Any]] = {
             r[1]: r for r in txns
         }
-        tax_rules: list[tuple[str, dict[str, Any]]] = [
-            (r[1], json.loads(r[13]) if r[13] else {}) for r in txns
-            if r[6] == "tax_accumulator"
-        ]
+        jurisdictions = _tax_jurisdictions(con)
+        tax_rules: list[tuple[str, dict[str, Any]]] = [(j.name, j.params) for j in jurisdictions]
 
         year_to_date_rows = con.execute(
             "SELECT id, from_lot_id, to_lot_id, amount, tax_character, year "
@@ -252,8 +250,7 @@ def run_scenario(
         if strategy_runtime:
             # ctx.tax (#421): the estimator the settlement uses, as fill_bracket does.
             strategy_runtime.tax = _StrategyTax(
-                con, [(r[0], r[1], json.loads(r[13]) if r[13] else {})
-                      for r in txns if r[6] == "tax_accumulator"],
+                con, [(j.id, j.name, j.params) for j in jurisdictions],
                 aux=aux, person_lifespan=person_lifespan, taxpayers=taxpayers, irmaa=irmaa,
             )
 
@@ -341,7 +338,29 @@ def run_scenario(
 
             opening_balances = dict(balances)
 
+            def settle_taxes(step_id=step_id, month_s=month_s, month=month) -> None:
+                for j in jurisdictions:
+                    if _tax_settles(j, month):
+                        _settle_tax(
+                            con, balances, account_kinds, step_id, month_s, month,
+                            j.params, from_id=chain_graph.leaf_lot.get(j.source_chain),
+                            to_id=_tax_destination(chain_graph, j), aux=aux,
+                            tax_char="none", tid=j.id, graph=chain_graph,
+                            source_chain_id=j.source_chain,
+                            account_tax_treatment=account_tax_treatment,
+                            account_subkind=account_subkind, account_name=account_name,
+                            person_lifespan=person_lifespan, taxpayers=taxpayers,
+                            refill_ctx=refill_ctx, drawdown_pricing=drawdown_pricing,
+                        )
+
+            # The month's tax settlement takes the place among its rules the
+            # tax_accumulator rule had (registries.TAX_SETTLEMENT_PRIORITY).
+            taxes_settled = False
             for txn in txns:
+                if not taxes_settled and (
+                        txn[6] == "fill_bracket" or txn[18] > registries.TAX_SETTLEMENT_PRIORITY):
+                    settle_taxes()
+                    taxes_settled = True
                 (tid, _name, frm, to_chain, cadence, moy, rule_kind,
                  p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json,
@@ -500,23 +519,6 @@ def run_scenario(
                             params, from_account, to, rule_lifespan,
                             tax_char, tid, refill_ctx=refill_ctx,
                         )
-                    case "tax_accumulator":
-                        if cadence != "annual":
-                            raise EngineError(
-                                f"tax_accumulator id={tid}: cadence must be 'annual'"
-                            )
-                        assert to is not None  # only fixed_amount may target an interior chain
-                        _apply_tax_accumulator(
-                            con, balances, account_kinds, step_id, month_s, month,
-                            params, from_id=from_account, to_id=to, aux=aux,
-                            tax_char=tax_char, tid=tid, graph=chain_graph,
-                            source_chain_id=frm,
-                            account_tax_treatment=account_tax_treatment,
-                            account_subkind=account_subkind, account_name=account_name,
-                            tax_year=tax_year,
-                            person_lifespan=person_lifespan, taxpayers=taxpayers,
-                            refill_ctx=refill_ctx, drawdown_pricing=drawdown_pricing,
-                        )
                     case "fill_bracket":
                         if from_account is None or to is None:
                             raise EngineError(
@@ -537,6 +539,8 @@ def run_scenario(
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
+            if not taxes_settled:
+                settle_taxes()
 
             if strategy_runtime and month.month == 12:
                 # Year-end actions see the year's income complete (#421): every
@@ -566,7 +570,7 @@ def run_scenario(
 
         # Tax tail: the scenario's declared end year deserves a correct
         # reconciliation too, but that only fires the following April. Run
-        # tax_accumulator rules one extra year past scenario.end purely to
+        # the tax settlements one extra year past scenario.end purely to
         # compute tax_year_summary for the final year -- no simulation_step,
         # account_state, or transfer_event rows are written, so "simulation
         # data" queries stay bounded to <= scenario.end as usual.
@@ -575,43 +579,14 @@ def run_scenario(
         for tail_month in _month_ends(
             date(end_date.year + 1, 1, 1), date(end_date.year + 1, 12, 31),
         ):
-            tail_month_s = tail_month.isoformat()
-            for txn in txns:
-                (tid, _name, frm, to_chain, cadence, moy, rule_kind,
-                 _p_interest_acct, _p_person, _p_series, _p_rate_micros,
-                 _p_claim_age, _p_amount_cents, ext_json,
-                 tax_char, _tax_year, t_start, t_end, _prio, _t_base_date,
-                 _t_ytd_amount, _t_ytd_preroll, _t_inflation_cadence) = txn
-                rule_start = _parse_scheduled_date(t_start, tid, _name, "start")
-                rule_end = (
-                    _parse_scheduled_date(t_end, tid, _name, "end")
-                    if t_end is not None else None
-                )
-                if rule_kind != "tax_accumulator":
+            for j in jurisdictions:
+                if not _tax_settles(j, tail_month):
                     continue
-                tail_to = chain_graph.leaf_lot.get(to_chain)
-                if tail_to is None:
-                    raise EngineError(
-                        f"tax_accumulator id={tid}: tax settlement destination must "
-                        "resolve to a concrete account"
-                    )
-                if tail_month_s < t_start:
-                    continue
-                if t_end is not None and tail_month_s > t_end:
-                    continue
-                fire_count = _cadence_count(
-                    cadence, moy, tail_month,
-                    rule_start, rule_end,
-                )
-                if fire_count == 0:
-                    continue
-                params = json.loads(ext_json) if ext_json else {}
-                _apply_tax_accumulator(
+                _settle_tax(
                     con, balances, account_kinds, tail_last_step_id,
-                    tail_month_s, tail_month,
-                    params, from_id=None, to_id=tail_to, aux=aux,
-                    tax_char=tax_char, tid=tid, post_transfer=False,
-                    tax_year=_tax_year,
+                    tail_month.isoformat(), tail_month,
+                    j.params, from_id=None, to_id=_tax_destination(chain_graph, j), aux=aux,
+                    tax_char="none", tid=j.id, post_transfer=False,
                     person_lifespan=person_lifespan, taxpayers=taxpayers,
                     drawdown_pricing=drawdown_pricing,
                 )
@@ -2132,7 +2107,7 @@ def _lookup_energy_credit(
     credit available," not as a default rate. Returns the raw payload
     (``rate_micros``, ``cap`` in cents); it's up to the caller to apply it
     to whatever project cost is being credited. Not wired to a call site
-    yet -- see ADR note on where credits should apply (tax_accumulator
+    yet -- see ADR note on where credits should apply (the tax settlement
     reduction vs. a standalone income-like leg).
     """
     return _lookup_by_series_key(aux, "energy_credits", "category", category, month_s)
@@ -2916,7 +2891,7 @@ def _settle_accounts(
 
 @dataclass(frozen=True)
 class _TaxEstimate:
-    """One tax year's income tax as ``tax_accumulator`` computes it, from
+    """One tax year's income tax as its jurisdiction computes it, from
     the transfers posted so far, with ways to ask what more income would do
     (#251's after-tax drawdown, #252's fill_bracket)."""
     scope: str
@@ -2967,8 +2942,8 @@ def _year_tax_estimate(
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
 ) -> _TaxEstimate:
-    """``tax_year``'s tax for a ``tax_accumulator`` rule's ``params`` (see
-    ``_apply_tax_accumulator``), from the transfers posted so far. When
+    """``tax_year``'s tax for a tax jurisdiction's ``params`` (see
+    ``_settle_tax``), from the transfers posted so far. When
     ``tax_with``/``taxable_with`` add income, they work out again how much of
     a carried-in net operating loss it can use under the rule's limit, and
     how much more Social Security becomes taxable."""
@@ -3011,7 +2986,7 @@ def _year_tax_estimate(
             bracket_series = state_series[0]
         elif len(state_series) > 1:
             raise EngineError(
-                f"tax_accumulator id={tid}: bracket_series required for state_brackets"
+                f"taxes/{scope}.csv: bracket_series required for state_brackets"
             )
 
     def loss_limit(year: int) -> int:
@@ -3028,7 +3003,7 @@ def _year_tax_estimate(
         )
         if row is None:
             raise EngineError(
-                f"tax_accumulator id={tid}: {year} has a net capital loss, but no "
+                f"taxes/{scope}.csv: {year} has a net capital loss, but no "
                 f"capital_loss_limit row for filing_status={status!r} effective on "
                 f"or before {year}-12-31 (aux/capital_loss_limit.csv)"
             )
@@ -3126,7 +3101,7 @@ def _year_tax_estimate(
         ]
         if not rows:
             raise EngineError(
-                f"tax_accumulator id={tid}: no {registries.STATE_SOCIAL_SECURITY}__"
+                f"taxes/{scope}.csv: no {registries.STATE_SOCIAL_SECURITY}__"
                 f"{bracket_series} row for filing_status={filing_status!r} in {tax_year}"
             )
         state_ss = rows[0]
@@ -3137,7 +3112,7 @@ def _year_tax_estimate(
         thresholds = [r for r in thresholds if r.get("filing_status") == filing_status]
         if not thresholds:
             raise EngineError(
-                f"tax_accumulator id={tid}: missing ss thresholds for filing_status={filing_status!r}"
+                f"taxes/{scope}.csv: missing ss thresholds for filing_status={filing_status!r}"
             )
         ss_tiers = (int(thresholds[0]["tier1_floor"]), int(thresholds[0]["tier2_floor"]))
 
@@ -3155,7 +3130,7 @@ def _year_tax_estimate(
     deduction_rows = [r for r in deduction_rows if r.get("filing_status") == filing_status]
     if not deduction_rows:
         raise EngineError(
-            f"tax_accumulator id={tid}: missing standard deduction for filing_status={filing_status!r}"
+            f"taxes/{scope}.csv: missing standard deduction for filing_status={filing_status!r}"
         )
     standard_deduction = int(deduction_rows[0]["amount"])
 
@@ -3181,7 +3156,7 @@ def _year_tax_estimate(
     bracket_rows = [r for r in bracket_rows if r.get("filing_status") == filing_status]
     if not bracket_rows:
         raise EngineError(
-            f"tax_accumulator id={tid}: missing brackets kind={bracket_aux!r} "
+            f"taxes/{scope}.csv: missing brackets kind={bracket_aux!r} "
             f"series={bracket_series!r} filing_status={filing_status!r}"
         )
     brackets: list[tuple[int, int]] = sorted(
@@ -3267,7 +3242,7 @@ def _year_tax_estimate(
     nol_limit_percent = int(params.get("nol_limit_percent", 80 if scope == "federal" else 100))
     if not 0 <= nol_limit_percent <= 100:
         raise EngineError(
-            f"tax_accumulator nol_limit_percent must be 0 to 100, got {nol_limit_percent}"
+            f"taxes/{scope}.csv: nol_limit_percent must be 0 to 100, got {nol_limit_percent}"
         )
     nol_in = _summary_amount(con, tax_year - 1, f"{scope}_nol_carryover")
     nol_used = min(nol_in, max(0, income_before_nol) * nol_limit_percent // 100)
@@ -3581,7 +3556,50 @@ def _exclusion_less_ss(row: Mapping[str, Any]) -> bool:
     return str(row.get("less_ss") or "").strip().lower() in ("yes", "true")
 
 
-def _apply_tax_accumulator(
+class TaxJurisdiction(NamedTuple):
+    """A ``tax_jurisdiction`` row (#507) as the engine reads it."""
+    id: int
+    name: str
+    kind: str
+    source_chain: int
+    destination_chain: int
+    schedule: str
+    start: str
+    end: str | None
+    params: dict[str, Any]
+    """The calculator's params, with ``scope``: the jurisdiction's name."""
+
+
+def _tax_jurisdictions(con) -> list[TaxJurisdiction]:
+    """The scenario's tax jurisdictions, in the order they settle."""
+    order = {name: i for i, name in enumerate(registries.TAX_JURISDICTIONS)}
+    rows = [
+        TaxJurisdiction(
+            jid, name, kind, source, destination, schedule, start, end,
+            {**json.loads(params or "{}"), "scope": name},
+        )
+        for jid, name, kind, source, destination, schedule, start, end, params in con.execute(
+            'SELECT id, name, kind, source_chain_id, destination_chain_id, schedule, start, '
+            '"end", params_json FROM tax_jurisdiction')
+    ]
+    return sorted(rows, key=lambda j: (order.get(j.name, len(order)), j.name))
+
+
+def _tax_settles(j: TaxJurisdiction, month: date) -> bool:
+    """Whether jurisdiction ``j`` settles in ``month``: each April
+    (``schedule`` april) from its start to its end."""
+    month_s = month.isoformat()
+    return month.month == 4 and j.start <= month_s and (j.end is None or month_s <= j.end)
+
+
+def _tax_destination(graph: ChainGraph, j: TaxJurisdiction) -> int:
+    lot = graph.leaf_lot.get(j.destination_chain)
+    if lot is None:
+        raise EngineError(f"taxes/{j.name}.csv: the destination must be an account")
+    return lot
+
+
+def _settle_tax(
     con,
     balances: dict[int, int],
     account_kinds: dict[int, str],
@@ -3597,17 +3615,19 @@ def _apply_tax_accumulator(
     tid: int,
     post_transfer: bool = True,
     graph=None, source_chain_id=None, account_tax_treatment=None,
-    account_subkind=None, account_name=None, tax_year=None,
+    account_subkind=None, account_name=None,
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
     refill_ctx: RefillContext | None = None,
     drawdown_pricing: dict[tuple[str, int], Callable[[int, int], int]] | None = None,
 ) -> None:
-    """Compute and optionally pay forecasted income tax for a target year.
+    """Compute and optionally pay a tax jurisdiction's income tax for the
+    year before ``month`` (#507: ``taxes/<jurisdiction>.csv``, settled each
+    April). ``tid`` is the jurisdiction's id, the payment's ``reason_id``
+    (``reason_kind`` ``tax``).
 
     Supported params:
-    - year: "previous" (default), "current", or explicit year integer
-    - scope: "federal" (default) or "state"
+    - scope: the jurisdiction, "federal" or "state" (its file's name)
     - filing_status_aux: defaults to "filing_status"
     - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
     - bracket_series: optional, required when state_brackets has multiple series
@@ -3643,24 +3663,13 @@ def _apply_tax_accumulator(
     ``_record_drawdown_taxes`` to price the after-tax drawdown once the run
     ends.
     """
-    year_mode = str(params.get("year", "previous"))
     scope = str(params.get("scope", "federal"))
-    if scope not in {"federal", "state"}:
+    if scope not in registries.TAX_JURISDICTIONS:
         raise EngineError(
-            f"tax_accumulator id={tid}: scope must be 'federal' or 'state' (got {scope!r})"
+            f"tax jurisdiction id={tid}: must be one of "
+            f"{', '.join(registries.TAX_JURISDICTIONS)} (got {scope!r})"
         )
-
-    if year_mode == "previous":
-        tax_year = month.year - 1
-    elif year_mode == "current":
-        tax_year = month.year
-    else:
-        try:
-            tax_year = int(year_mode)
-        except ValueError as e:
-            raise EngineError(
-                f"tax_accumulator id={tid}: invalid year={year_mode!r}"
-            ) from e
+    tax_year = month.year - 1
 
     est = _year_tax_estimate(
         con, params, aux=aux, tax_year=tax_year, tid=tid,
@@ -3714,7 +3723,7 @@ def _apply_tax_accumulator(
             _post_transfer(
                 con, balances, account_kinds, step_id, month_s,
                 from_id, to_id, tax_due, tax_char, tid, tax_year=tax_year,
-                refill_ctx=refill_ctx,
+                refill_ctx=refill_ctx, reason_kind="tax",
             )
         else:
             # The engine passes these with every chain source.
@@ -3723,7 +3732,7 @@ def _apply_tax_accumulator(
             _chain_draw(
                 con, balances, account_kinds, account_tax_treatment,
                 account_subkind, account_name, step_id, month_s, graph,
-                source_chain_id, tax_due, to_id, reason_kind="rule", reason_id=tid,
+                source_chain_id, tax_due, to_id, reason_kind="tax", reason_id=tid,
                 tax_year=tax_year, refill_ctx=refill_ctx,
             )
 
@@ -3773,7 +3782,7 @@ a whole IRA takes a few thousand steps at most."""
 
 class _StrategyTax:
     """What ``ctx.tax`` reads (#421): a tax year's estimate by scope, from
-    the scope's one ``tax_accumulator`` rule; income so far by character;
+    the scope's tax jurisdiction (#507); income so far by character;
     the settled summary of a year; IRMAA's tier floors."""
 
     def __init__(
@@ -3791,9 +3800,9 @@ class _StrategyTax:
     def estimate(self, scope: str, year: int) -> _TaxEstimate:
         matches = [(tid, params) for tid, _name, params in self.rules
                    if str(params.get("scope", "federal")) == scope]
-        if len(matches) != 1:
+        if not matches:
             raise strategy_api.StrategyError(
-                f"ctx.tax needs one {scope} tax_accumulator rule (the scenario has {len(matches)})")
+                f"ctx.tax needs the {scope} tax (taxes/{scope}.csv), and the scenario has none")
         tid, params = matches[0]
         return _year_tax_estimate(
             self.con, {**params, "scope": scope}, aux=self.aux, tax_year=year, tid=tid,
@@ -3829,18 +3838,16 @@ def _fill_bracket_tax_rule(
     tax_rules: Sequence[tuple[str, dict[str, Any]]], params: Mapping[str, Any],
     tid: int, name: str,
 ) -> dict[str, Any]:
-    """The ``tax_accumulator`` rule whose settings a fill_bracket measures
-    with: ``tax_rule`` by name, or the one rule of its scope."""
+    """The params of the tax jurisdiction a fill_bracket measures with: the
+    one its ``scope`` names."""
     scope = str(params.get("scope", "federal"))
-    wanted = params.get("tax_rule")
-    matches = [rule for rule_name, rule in tax_rules
-               if str(rule.get("scope", "federal")) == scope and (rule_name == wanted or not wanted)]
-    if len(matches) != 1:
-        raise EngineError(
-            f"fill_bracket id={tid} ({name!r}): needs one {scope} tax_accumulator rule "
-            f"to measure with (found {len(matches)}); name it with tax_rule in params_json"
-        )
-    return {**matches[0], "scope": scope}
+    for jurisdiction, rule in tax_rules:
+        if jurisdiction == scope:
+            return rule
+    raise EngineError(
+        f"fill_bracket id={tid} ({name!r}): measures with the {scope} tax, "
+        f"and the scenario has none (taxes/{scope}.csv)"
+    )
 
 
 def _largest_within(measure: Callable[[int], int], target: int, cap: int) -> int:
@@ -4099,8 +4106,8 @@ class IrmaaContext:
         ).fetchone()
         if row is None:
             raise EngineError(
-                f"irmaa id={tid}: no federal MAGI for {year}; a federal tax_accumulator "
-                f"rule must compute {year} before January {year + IRMAA_YEARS_BACK}"
+                f"irmaa id={tid}: no federal MAGI for {year}; the federal tax "
+                f"(taxes/federal.csv) must compute {year} before January {year + IRMAA_YEARS_BACK}"
             )
         return int(row[0])
 
@@ -4531,12 +4538,12 @@ def _active_filing_status(
         if died:
             return "Single"
         raise EngineError(
-            f"tax_accumulator id={tid}: no filing_status row effective <= {table_year}-12-31"
+            f"tax jurisdiction id={tid}: no filing_status row effective <= {table_year}-12-31"
         )
     status = rows[0].get("filing_status")
     if not status:
         raise EngineError(
-            f"tax_accumulator id={tid}: filing_status payload missing filing_status"
+            f"tax jurisdiction id={tid}: filing_status payload missing filing_status"
         )
     return "Single" if died and status in ("MFJ", "MFS") else str(status)
 

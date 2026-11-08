@@ -31,7 +31,7 @@ __all__ = [
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
     "RULE_TAG", "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES",
     "SENSITIVITY_ROW", "STRATEGY",
-    "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET",
+    "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET", "TAX_JURISDICTION",
     "TARGET_SET_OR_NEW", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
 ]
 
@@ -267,6 +267,7 @@ ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=T
 RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
 YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
 STRATEGY = NameType(_in_scenario(names.strategy_names), "strategy")
+TAX_JURISDICTION = NameType(_in_scenario(names.tax_jurisdiction_names), "tax jurisdiction")
 TARGET_SET = NameType(_in_scenario(names.target_set_names), "target set")
 TARGET_SET_OR_NEW = NameType(_in_scenario(names.target_set_names), "target set", check=False)
 STRATEGY_KIND = NameType(lambda ctx, data_dir: names.strategy_kind_names(data_dir), "strategy kind")  # noqa: ARG005

@@ -790,7 +790,9 @@ class ScenarioView:
     accounts: Mapping[str, tuple[str, str]]
     """Each account's ``(kind, subkind)``."""
     tax_rules: Mapping[str, int]
-    """How many ``tax_accumulator`` rules each scope (``federal``, ``state``) has."""
+    """1 for each tax jurisdiction the scenario has (``federal``, ``state``;
+    ``taxes/<jurisdiction>.csv``, #507). A mapping of counts, from when a
+    scope's tax was a rule and a scenario could have two."""
     people: Mapping[str, tuple[str | None, str | None, str | None]] = field(default_factory=dict)
     """Each person's ``(role, sex, life table)`` from persons.csv and
     lifespan.csv, blank as None: the table is the name a lifespan row gives

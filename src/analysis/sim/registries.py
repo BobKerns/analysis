@@ -25,8 +25,13 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
-    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death", "fill_bracket", "irmaa",
+    "ss_benefit", "mortgage_payment", "on_death", "fill_bracket", "irmaa",
 }
+
+# The rule kind income tax had before jurisdiction files (#507): a scheduled
+# row of it is refused at load, naming the migration script.
+RETIRED_TAX_RULE_KIND = "tax_accumulator"
+
 
 # Rule kinds whose catch-up for the months before scenario.start can be
 # replayed from the rule itself (`ytd_preroll`, ADR-003 §4.10); any kind
@@ -42,6 +47,33 @@ SCHEDULED_CSV_HEADER: tuple[str, ...] = (
     "tax_character", "tax_year", "start", "end", "priority", "ytd_amount", "ytd_preroll",
     "description", "meta_json", "params_json", "tags",
 )
+
+# A scenario's income tax jurisdictions (#506, #507, ADR-003 §4.15): one file
+# each, taxes/<jurisdiction>.csv, of one row. The file name is the
+# jurisdiction's, which prefixes its tax_year_summary buckets. Each says which
+# calculator computes its tax, the jurisdictions it builds on, and how it is
+# paid: from `source_chain` into the `destination` expense account, on its
+# `schedule`.
+TAXES_DIR = "taxes"
+TAX_CSV_HEADER: tuple[str, ...] = (
+    "kind", "upstream", "source_chain", "destination", "schedule", "start", "end",
+    "params_json", "description",
+)
+TAX_KINDS: dict[str, str] = {"federal": "federal", "state_tables": "state"}
+"""Each calculator kind and the jurisdiction it computes. Until calculators
+are pluggable (#507), a kind computes one jurisdiction, whose file has that
+name."""
+TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state")
+"""The jurisdictions, in the order they settle: a state's return builds on
+the federal one."""
+TAX_SCHEDULES: tuple[str, ...] = ("april",)
+"""``april``: each April, the tax still due for the year before."""
+TAX_SETTLEMENT_PRIORITY = 400
+"""Where a month's tax settlement falls among its scheduled rules: after
+those whose priority is at most this (income, spending, a mortgage), before
+the rest (an RMD, a death's transfers) and ``fill_bracket``. The place the
+``tax_accumulator`` rule had (#507), so moving to jurisdiction files changes
+no balance."""
 
 # Canonical year_to_date.csv column order (ADR-003 §4.10).
 YEAR_TO_DATE_CSV_HEADER: tuple[str, ...] = (
@@ -238,7 +270,7 @@ RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_40
 # facts, a refill draw, a month-end overflow sweep, or a strategy's year-end
 # move (#421; reason_id is its strategy_decision row).
 REASON_KINDS: tuple[str, ...] = (
-    "rule", "initial", "ytd", "ytd_rule", "refill", "overflow", "strategy",
+    "rule", "initial", "ytd", "ytd_rule", "refill", "overflow", "strategy", "tax",
 )
 
 type AssetClass = Literal[
@@ -387,7 +419,6 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     "ss_benefit": 200,
     "fixed_amount": 200,
     "mortgage_payment": 300,
-    "tax_accumulator": 400,
     "rmd": 500,
     "on_death": 900,
     # Reads a finished year's MAGI (two years back), so its order in a
@@ -550,7 +581,7 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     STATE_LTCG_EXCLUSION: ("effective_date", "exclusion", "min_exclusion", "max_exclusion"),
     "standard_deduction": ("effective_date", "filing_status", "amount"),
     # The state's own standard deduction (#248), which is often far smaller
-    # than the federal one. A state tax rule falls back to standard_deduction
+    # than the federal one. A state tax falls back to standard_deduction
     # when there is no state_standard_deduction__<state> for its brackets'
     # state, and the loader warns that it did.
     STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount"),
@@ -575,7 +606,7 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
         "income_limit", "phaseout", "less_ss",
     ),
     # Itemized deductions: a dated total, no filing_status split (unlike
-    # standard_deduction). Optional; when present, the tax_accumulator rule uses
+    # standard_deduction). Optional; when present, a tax jurisdiction uses
     # whichever is greater, itemized or standard. `amount` may be a literal
     # figure or an itemizations/<name>.csv rollup (`@name`), same as any other
     # aux money column. `state_deductions` defaults to `federal_deductions`'s

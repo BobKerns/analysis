@@ -55,7 +55,7 @@ def test_no_filing_status_row_is_an_error_unless_a_taxpayer_died() -> None:
 
 def test_the_standard_deduction_switches_after_the_year_of_death(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
-    runs_dir: Path,
+    runs_dir: Path, add_tax: Callable[..., Path],
 ) -> None:
     import pandas as pd
 
@@ -68,17 +68,7 @@ def test_the_standard_deduction_switches_after_the_year_of_death(
     scenario_df.to_csv(scenario_csv, index=False)
 
     retire_alice_csv("lifespan.csv").write_text("person,age_at_death\nalice,63.25\n")
-    scheduled = retire_alice_csv("scheduled.csv")
-
-    df = pd.read_csv(scheduled, dtype=str, keep_default_na=False)
-    df.loc[len(df)] = {
-        **dict.fromkeys(df.columns, ""), "name": "tax_federal_prev_year",
-        "from_account": "Asset_Checking", "to_account": "Expense_Taxes_Federal",
-        "cadence": "annual", "month_of_year": "4", "amount_rule_kind": "tax_accumulator",
-        "tax_character": "none", "start": "2027-04-30", "priority": "400", "meta_json": "{}",
-        "params_json": '{"year":"previous","scope":"federal"}',
-    }
-    df.to_csv(scheduled, index=False)
+    add_tax()
 
     run = run_scenario(load_test_copy().intent_path, runs_dir / "r.sqlite3", run_by="T",
                        allow_dirty_data=True, allow_dirty_code=True)

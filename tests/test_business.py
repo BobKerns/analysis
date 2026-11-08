@@ -182,10 +182,9 @@ def test_a_chain_step_takes_no_business_character(
 def test_the_nol_limit_must_be_a_percentage(
     business_scenarios: Path, run_file: Callable[[str], Path],
 ) -> None:
-    path = business_scenarios / "alice_business" / "scheduled.csv"
+    path = business_scenarios / "alice_business" / "taxes" / "federal.csv"
     frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-    frame.loc[frame["name"] == "federal_tax", "params_json"] = (
-        '{"year": "previous", "nol_limit_percent": 150}')
+    frame.loc[0, "params_json"] = '{"nol_limit_percent": 150}'
     frame.to_csv(path, index=False)
     with pytest.raises(EngineError, match="nol_limit_percent must be 0 to 100, got 150"):
         run_file("alice_business")

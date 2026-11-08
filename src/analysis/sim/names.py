@@ -225,6 +225,13 @@ def strategy_names(data_dir: Path, scenario: str) -> list[str]:
     return sorted(_stems(d / registries.STRATEGIES_DIR for d in dirs))
 
 
+def tax_jurisdiction_names(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's tax jurisdictions, its own and inherited: a file each
+    in ``taxes/`` (#507), in the order they settle."""
+    found = _stems(d / registries.TAXES_DIR for d in _lineage_dirs(data_dir, scenario))
+    return [name for name in registries.TAX_JURISDICTIONS if name in found]
+
+
 def strategy_vary_nodes(data_dir: Path, scenario: str) -> list[str]:
     """The scenario's varied strategy parameters' correlation nodes,
     ``strategy:<name>.<param>`` (#408), its own and inherited."""

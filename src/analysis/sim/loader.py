@@ -14,7 +14,7 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Callable, Collection, Generator, Iterable, Mapping
+from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -24,7 +24,7 @@ from typing import Any, NamedTuple
 
 from analysis.sim import (
     asset_classes, guard_rails, life_table, registries, strategy_api, strategy_code, strategy_files,
-    strategy_load, units,
+    strategy_load, tax_files, units,
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
@@ -1301,6 +1301,7 @@ def load_scenario(
         scenario_row["description"] = description
     chains = _read_chain_files(data_dir, scenario_name, issues)
     strategy_rows = _read_strategy_files(data_dir, scenarios_dir, scenario_name, issues)
+    tax_rows = _read_tax_files(data_dir, scenarios_dir, scenario_name, issues)
     vary_files = _read_strategy_vary_files(data_dir, scenarios_dir, scenario_name, issues)
     target_rows = _read_lineage_overlay(
         data_dir, scenarios_dir, scenario_name, "targets.csv",
@@ -1334,6 +1335,7 @@ def load_scenario(
     )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
+    _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues)
     _validate_calendar(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -1349,15 +1351,15 @@ def load_scenario(
         life_tables=life_tables if life_tables_ok else None,
     )
     _validate_series_references(
-        scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
+        scheduled_rows, calendar_rows, aux_rows, chains, issues, unused, taxed=bool(tax_rows),
     )
     _validate_inflation_from_start(aux_rows, calendar_rows, scenario_row.get("start", ""), issues)
     _validate_rate_series_start(
         scheduled_rows, calendar_rows, aux_rows, scenario_row, issues,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
-    _validate_state_rule_names_state(scheduled_rows, aux_rows, issues)
-    _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
+    _validate_state_rule_names_state(tax_rows, aux_rows, issues)
+    _warn_state_standard_deduction(tax_rows, calendar_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_chains(
@@ -1366,7 +1368,7 @@ def load_scenario(
         retirement_accounts=frozenset(
             a["name"] for a in accounts if a.get("subkind") == registries.RETIREMENT_SUBKIND),
     )
-    _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues)
+    _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues, tax_rows=tax_rows)
     roth_leaves = frozenset(
         leaves.leaf_of[(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)]
         for m in value_rows
@@ -1375,7 +1377,7 @@ def load_scenario(
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
     _validate_fill_bracket(
-        scheduled_rows, chains, issues, roth_leaves=roth_leaves,
+        scheduled_rows, chains, tax_rows, issues, roth_leaves=roth_leaves,
         traditional_leaves=frozenset(
             leaves.leaf_of[(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)]
             for m in value_rows
@@ -1390,8 +1392,8 @@ def load_scenario(
             and isinstance(payload.get("tier"), int)),
     )
     _validate_retirement_owners(accounts, persons, issues)
-    _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
-    _validate_filing_status(scheduled_rows, aux_rows, scenario_row, issues)
+    _validate_irmaa(scheduled_rows, tax_rows, aux_rows, persons, scenario_row, issues, warnings)
+    _validate_filing_status(scheduled_rows, tax_rows, aux_rows, scenario_row, issues)
     _validate_itemized_deductions(aux_rows, issues)
     _validate_optional_state_tables(aux_rows, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
@@ -1407,6 +1409,7 @@ def load_scenario(
         start=scenario_row.get("start", ""), issues=issues, unused=unused,
         persons=persons, lifespan_rows=lifespan_rows,
         aux_kinds=frozenset(f"{kind}__{table}" if table else kind for kind, table, _p, _e in aux_rows),
+        tax_rows=tax_rows,
     )
     strategy_varies, strategy_links = strategy_load.prepare_vary(
         vary_files, strategy_rows=strategy_rows, prepared=strategies, kinds=strategy_kinds,
@@ -1465,6 +1468,7 @@ def load_scenario(
             lineage_order=load_order_names,
             mixin_only=is_mixin_only(scenarios_dir, scenario_name),
             scheduled_rows=scheduled_rows,
+            tax_rows=tax_rows,
             chains=chains,
             calendar_rows=calendar_rows,
             lifespan_rows=lifespan_rows,
@@ -1596,6 +1600,7 @@ _MONTH_COLUMNS: dict[str, tuple[str, ...]] = {
     "calendar.csv": ("date", "param_date", "vary_resume"),
     "allocations.csv": ("as_of",),
     "strategies": ("start", "end"),
+    "taxes": ("start", "end"),
     "targets.csv": ("as_of",),
 }
 """Per-file columns that name a month (#34): ``YYYY-MM`` or ``YYYY-MM-DD``,
@@ -2640,6 +2645,12 @@ def _validate_scheduled(
                 "home_sale, basis_of the home), take the exclusion (excluded_gain, "
                 "with a maximum) and then the gain (ltcg)"
             )
+        elif kind == registries.RETIRED_TAX_RULE_KIND:
+            issues.append(
+                f"{where} ({name}): income tax is a jurisdiction file now, not a "
+                f"{kind} rule (#507): taxes/federal.csv or taxes/state.csv. "
+                "scripts/migrate_507_taxes.py moves a data repo's rules (dry run, then --write)"
+            )
         elif kind not in registries.AMOUNT_RULE_KINDS:
             issues.append(f"{where} ({name}): unknown amount_rule_kind '{kind}'")
         cad = row.get("cadence", "")
@@ -2880,7 +2891,7 @@ IRMAA_PARAMS = frozenset({"parts", "filing_status_aux"})
 IRMAA_PARTS = ("B+D", "B", "D")
 
 
-FILING_STATUS_RULE_KINDS = frozenset({"tax_accumulator", "irmaa"})
+FILING_STATUS_RULE_KINDS = frozenset({"irmaa"})
 
 
 def _validate_optional_state_tables(
@@ -2926,6 +2937,7 @@ def _validate_optional_state_tables(
 
 def _validate_filing_status(
     rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     scenario_row: dict[str, str], issues: list[str],
 ) -> None:
@@ -2944,6 +2956,10 @@ def _validate_filing_status(
         kind = str(params.get("filing_status_aux", "filing_status"))
         kinds.add(kind)
         needs.setdefault(kind, f"{where} ({row.get('name', '')})")
+    for where, row in _located(tax_rows, registries.TAXES_DIR):
+        kind = str(_tax_params(row).get("filing_status_aux", "filing_status"))
+        kinds.add(kind)
+        needs.setdefault(kind, where)
     by_kind: dict[str, dict[str, list[str]]] = {}
     for kind, _series, payload, effective in aux_rows:
         if kind in kinds:
@@ -2987,6 +3003,7 @@ def _validate_itemized_deductions(
 
 def _validate_irmaa(
     rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     persons: list[dict[str, str]], scenario_row: dict[str, str],
     issues: list[str], warnings: list[str],
@@ -3003,11 +3020,7 @@ def _validate_irmaa(
         return
     people = {p.get("id", "") for p in persons
               if (p.get("role") or "").strip() in registries.PERSON_ROLES}
-    federal = sum(
-        row.get("amount_rule_kind") == "tax_accumulator"
-        and (_safe_json(row.get("params_json")) or {}).get("scope", "federal") == "federal"
-        for row in rows
-    )
+    federal = any(row["name"] == "federal" for row in tax_rows)
     for where, row in rules:
         where = f"{where} ({row.get('name', '')})"
         if row.get("person", "") not in people:
@@ -3018,13 +3031,8 @@ def _validate_irmaa(
             issues.append(f"{where}: irmaa takes no amount; its tier table sets it")
         if not federal:
             issues.append(
-                f"{where}: irmaa reads the MAGI a federal tax_accumulator rule computes, "
-                "and there is none")
-        elif federal > 1:
-            # Each would record its own federal_magi over the other's.
-            issues.append(
-                f"{where}: irmaa reads the MAGI a federal tax_accumulator rule computes, "
-                f"and there are {federal}; it needs exactly one")
+                f"{where}: irmaa reads the MAGI the federal tax computes, "
+                "and there is none (taxes/federal.csv)")
         params = _safe_json(row.get("params_json") or "{}")
         if params is None:
             issues.append(f"{where}: params_json is not a JSON object")
@@ -3313,7 +3321,7 @@ def _validate_rmd_rules(
 
 
 FILL_BRACKET_PARAMS = frozenset(
-    {"scope", "max_amount", "max_marginal_rate", "tax_rule", "irmaa_tier"})
+    {"scope", "max_amount", "max_marginal_rate", "irmaa_tier"})
 
 
 def _bracket_rates(
@@ -3347,28 +3355,24 @@ def _tax_rule_bracket_table(
 
 def _validate_fill_bracket(
     rows: list[dict[str, str]], chains: dict[str, tuple[str, list[dict[str, str]]]],
-    issues: list[str], *,
+    tax_rows: list[dict[str, str]], issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
     irmaa_tiers: frozenset[int] = frozenset(),
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
     one Roth lot, once a year, to a target that is either a bracket (``rate``)
-    or a taxable income (``amount``), measured with a ``tax_accumulator`` rule
-    of its scope. It has no priority: it always runs after every other rule
+    or a taxable income (``amount``), measured with the tax jurisdiction its
+    ``scope`` names. It has no priority: it always runs after every other rule
     of its month, since the year's RMD has to come out before any of the
     IRA can be converted. Run after the rows' references have been resolved."""
-    tax_rules: list[tuple[str, str, dict[str, Any]]] = []
+    tax_rules = {row["name"]: _tax_params(row) for row in tax_rows}
     rmd_months: dict[str, list[int]] = {}  # traditional lot -> its RMD rules' months
     for _, row in _located(rows, "scheduled.csv"):
         if row.get("amount_rule_kind") == "rmd" and row.get("month_of_year", "").isdigit():
             source = row.get("from_account", "")
             for leaf in _chain_leaf_names(source, chains) if source in chains else {source}:
                 rmd_months.setdefault(leaf, []).append(int(row["month_of_year"]))
-        if row.get("amount_rule_kind") == "tax_accumulator":
-            params = _safe_json(row.get("params_json")) or {}
-            tax_rules.append(
-                (row.get("name", ""), str(params.get("scope", "federal")), params))
     for where, row in _located(rows, "scheduled.csv"):
         if row.get("amount_rule_kind") != "fill_bracket":
             continue
@@ -3411,7 +3415,11 @@ def _validate_fill_bracket(
         if params is None:
             issues.append(f"{where}: params_json is not a JSON object")
             continue
-        unknown = sorted(set(params) - FILL_BRACKET_PARAMS)
+        if "tax_rule" in params:
+            issues.append(
+                f"{where}: fill_bracket takes no tax_rule: its scope names the tax "
+                "jurisdiction it measures with (#507)")
+        unknown = sorted(set(params) - FILL_BRACKET_PARAMS - {"tax_rule"})
         if unknown:
             issues.append(
                 f"{where}: unknown params_json key(s) {', '.join(unknown)} "
@@ -3441,45 +3449,23 @@ def _validate_fill_bracket(
                     f"{where}: irmaa_tier {tier} is the top tier or above "
                     f"(aux/{registries.IRMAA_TIERS}.csv tops out at {max(irmaa_tiers)}), "
                     "so it caps nothing")
-            if not any(s == "federal" for _, s, _ in tax_rules):
+            if "federal" not in tax_rules:
                 issues.append(
-                    f"{where}: irmaa_tier measures MAGI with a federal tax_accumulator rule, "
-                    "and there is none")
-        irmaa_rules = any(r.get("amount_rule_kind") == "irmaa" for r in rows)
-        if (params.get("scope", "federal") != "federal"
-                and ("irmaa_tier" in params or ("max_marginal_rate" in params and irmaa_rules))
-                and sum(s == "federal" for _, s, _ in tax_rules) > 1):
-            # MAGI is federal whatever the scope; with a state target there
-            # is no tax_rule naming which federal rule measures it.
-            issues.append(
-                f"{where}: a state fill_bracket that watches IRMAA measures MAGI with the "
-                "federal tax_accumulator rule, and there is more than one")
+                    f"{where}: irmaa_tier measures MAGI with the federal tax, "
+                    "and there is none (taxes/federal.csv)")
         if "max_marginal_rate" in params:
             try:
                 if not 0 <= units.percent_to_micros(str(params["max_marginal_rate"])) <= 1_000_000:
                     raise ValueError("must be from 0% to 100%")
             except ValueError as e:
                 issues.append(f"{where}: max_marginal_rate {e}")
-        wanted = params.get("tax_rule")
-        named = [s for n, s, _ in tax_rules if n == wanted]
-        matches = [(n, p) for n, s, p in tax_rules if s == scope and (n == wanted or not wanted)]
-        if wanted and not named:
-            issues.append(f"{where}: tax_rule '{wanted}' is not a tax_accumulator rule")
-        elif wanted and not matches:
+        if scope not in tax_rules:
             issues.append(
-                f"{where}: tax_rule '{wanted}' is a {named[0]} rule, not a {scope} one")
-        elif not matches:
-            issues.append(
-                f"{where}: fill_bracket measures with a {scope} tax_accumulator rule, "
-                "and there is none"
+                f"{where}: fill_bracket measures with the {scope} tax, "
+                f"and there is none (taxes/{scope}.csv)"
             )
-        elif len(matches) > 1:
-            issues.append(
-                f"{where}: there are {len(matches)} {scope} tax_accumulator rules "
-                f"({', '.join(n for n, _ in matches)}); name one with tax_rule in params_json"
-            )
-        table = _tax_rule_bracket_table(matches[0][1], scope, bracket_rates) if len(
-            matches) == 1 else None
+            continue
+        table = _tax_rule_bracket_table(tax_rules[scope], scope, bracket_rates)
         rates = bracket_rates.get(table) if table else None
         rate = row.get("rate_micros")
         if rate and rates and int(rate) not in rates:
@@ -3822,11 +3808,11 @@ def _validate_swap_aux_table_row(
 
 
 def _validate_state_rule_names_state(
-    scheduled_rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     issues: list[str],
 ) -> None:
-    """A state tax rule reads the brackets its ``bracket_series`` names. The
+    """A state tax reads the brackets its ``bracket_series`` names. The
     code repository ships several states' tables (#483), so with more than
     one to choose from a rule that names none would fail only when it first
     runs; say so at load instead."""
@@ -3834,41 +3820,37 @@ def _validate_state_rule_names_state(
                      if kind == "state_brackets" and series is not None})
     if len(states) < 2:
         return
-    for where, row in _located(scheduled_rows, "scheduled.csv"):
-        if row.get("amount_rule_kind") != "tax_accumulator":
-            continue
-        params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
-        if (params.get("scope") != "state" or params.get("bracket_series")
+    for where, row in _located(tax_rows, registries.TAXES_DIR):
+        params = _tax_params(row)
+        if (params["scope"] != "state" or params.get("bracket_series")
                 or params.get("bracket_aux", "state_brackets") != "state_brackets"):
             continue
         issues.append(
-            f"{where} ({row.get('name', '')}): a state tax rule must name its state: "
-            "run `sim tax state` to choose it (it sets \"bracket_series\" in the rule's "
+            f"{where}: a state tax must name its state: "
+            "run `sim tax state` to choose it (it sets \"bracket_series\" in the file's "
             f"params_json, one of {', '.join(states)})"
         )
 
 
 def _warn_state_standard_deduction(
-    scheduled_rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
     calendar_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     warnings: list[str],
 ) -> None:
-    """A state tax rule with no state_standard_deduction__<state> table for
+    """A state tax with no state_standard_deduction__<state> table for
     its brackets' state uses the federal standard deduction (#248), which
     overstates most states' (California's is about a third of it), so its
     tax comes out low. A move to a state (a swap_aux_table of its
     state_brackets) with no such table falls back the same way; without a
-    state tax rule, nothing reads either table, so a move says nothing."""
+    state tax, nothing reads either table, so a move says nothing."""
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
     state_rule = False
     states = sorted(series for kind, series in supplied
                     if kind == "state_brackets" and series is not None)
-    for where, row in _located(scheduled_rows, "scheduled.csv"):
-        if row.get("amount_rule_kind") != "tax_accumulator":
-            continue
-        params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
-        if params.get("scope") != "state":
+    for where, row in _located(tax_rows, registries.TAXES_DIR):
+        params = _tax_params(row)
+        if params["scope"] != "state":
             continue
         state_rule = True
         if "standard_deduction_aux" in params:
@@ -3877,7 +3859,7 @@ def _warn_state_standard_deduction(
         if state is None or (registries.STATE_STANDARD_DEDUCTION, state) in supplied:
             continue  # no state to name: the run reports the missing bracket_series
         warnings.append(
-            f"{where} ({row.get('name', '')}): state tax uses the federal standard "
+            f"{where}: state tax uses the federal standard "
             f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv "
             "(effective_date, filing_status, amount) with the state's own"
         )
@@ -4544,6 +4526,7 @@ def _validate_series_references(
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     issues: list[str],
     unused_warnings: list[str],
+    *, taxed: bool = False,
 ) -> None:
     """Cross-check every `(aux_kind, series)` pair a scheduled.csv rule or a
     chains/*.csv step reads against every pair something actually supplies,
@@ -4656,8 +4639,8 @@ def _validate_series_references(
                         f"no series/inflation__{series}.csv in this scenario or a parent"
                     )
 
-    if any(row.get("amount_rule_kind") == "tax_accumulator" for row in scheduled_rows):
-        # A tax rule grows each indexed tax table's figures by the series
+    if taxed:
+        # A tax jurisdiction grows each indexed tax table's figures by the series
         # its rows name (#467), from the month after the table's date, so
         # the series needs a rate in effect by then.
         first_rate: dict[str, str] = {}
@@ -5053,6 +5036,110 @@ def _read_strategy_files(
     return rows
 
 
+def _read_tax_files(
+    data_dir: Path, scenarios_dir: Path, scenario_name: str, issues: list[str],
+) -> list[dict[str, str]]:
+    """Each tax jurisdiction, ``taxes/<name>.csv`` (#507), as the load order
+    leaves it: one row, its ``name`` the file's, in settlement order."""
+    rows: dict[str, dict[str, str]] = {}
+    for name, found in sorted(tax_files.lineage_files(scenarios_dir, scenario_name, strict=True).items()):
+        label = _data_label(found.path, data_dir)
+        own = _read_csv(found.path, issues, label=label)
+        if problem := tax_files.name_problem(name):
+            issues.append(f"{label}: {problem}")
+            continue
+        if len(own) != 1:
+            issues.append(f"{label}: a tax file holds one row, its definition (found {len(own)})")
+            continue
+        if "name" in own[0]:
+            issues.append(f"{label}: no name column: the file's name is the jurisdiction's")
+            continue
+        unknown = sorted(set(own[0]) - set(registries.TAX_CSV_HEADER) - {ORIGIN})
+        if unknown:
+            issues.append(f"{label}: unknown column(s) {', '.join(unknown)} "
+                          f"(known: {', '.join(registries.TAX_CSV_HEADER)})")
+        own[0].setdefault(ORIGIN, label)
+        _normalize_month_columns(own, registries.TAXES_DIR, issues)
+        rows[name] = {"name": name, **own[0]}
+    return [rows[name] for name in registries.TAX_JURISDICTIONS if name in rows]
+
+
+TAX_RETIRED_PARAMS: dict[str, str] = {
+    "scope": "the file's name is its jurisdiction",
+    "year": "a jurisdiction pays the year before each April (schedule)",
+}
+"""``tax_accumulator`` params a jurisdiction file doesn't take (#507), and why."""
+
+
+def _validate_taxes(
+    tax_rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
+    accounts: list[dict[str, str]], scenario_row: Mapping[str, str], issues: list[str],
+) -> None:
+    """``taxes/<jurisdiction>.csv`` (#507, ADR-003 §4.15): a calculator kind
+    for the jurisdiction, upstream jurisdictions the scenario has and that
+    settle before it, a source chain or account to pay from, an account to
+    pay into, a known schedule, and calculator params that are a JSON
+    object. Resolves ``source_chain`` and ``destination`` to leaf names in
+    place, and fills a blank ``start`` with the scenario's and a blank
+    ``schedule`` with ``april``."""
+    defined = [row["name"] for row in tax_rows]
+    kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
+    for row in tax_rows:
+        where = row.get(ORIGIN) or f"{registries.TAXES_DIR}/{row['name']}.csv"
+        name = row["name"]
+        kind = row.get("kind", "")
+        if registries.TAX_KINDS.get(kind) != name:
+            fits = [k for k, j in registries.TAX_KINDS.items() if j == name]
+            issues.append(f"{where}: kind {kind!r} doesn't compute the {name} tax "
+                          f"(it takes kind {', '.join(fits)})")
+        for up in (row.get("upstream") or "").split():
+            if up == name:
+                issues.append(f"{where}: upstream names the jurisdiction itself")
+            elif up not in defined:
+                issues.append(f"{where}: upstream {up!r} is not a jurisdiction of this scenario "
+                              f"(it has {', '.join(defined)})")
+            elif defined.index(up) > defined.index(name):
+                issues.append(f"{where}: upstream {up!r} settles after {name}, so {name} "
+                              "can't build on it")
+        source = row.get("source_chain", "")
+        if not source:
+            issues.append(f"{where}: source_chain names the chain or account the tax is paid from")
+        elif problem := _resolve_ref(row, "source_chain", "", leaves, chain_names):
+            issues.append(f"{where}: source_chain {problem}")
+        destination = row.get("destination", "")
+        if not destination:
+            issues.append(f"{where}: destination names the expense account the tax is paid into")
+        elif destination in chain_names:
+            issues.append(f"{where}: destination '{destination}' is a chain; the tax is paid "
+                          "into an account")
+        elif problem := _resolve_ref(row, "destination", "", leaves, chain_names):
+            issues.append(f"{where}: destination {problem}")
+        elif kinds.get(destination) not in (None, "expense"):
+            issues.append(f"{where}: destination '{destination}' is a {kinds[destination]} account; "
+                          "the tax is paid into an expense account")
+        schedule = row.get("schedule") or registries.TAX_SCHEDULES[0]
+        if schedule not in registries.TAX_SCHEDULES:
+            issues.append(f"{where}: schedule {schedule!r} must be one of "
+                          f"{', '.join(registries.TAX_SCHEDULES)}")
+        row["schedule"] = schedule
+        row["start"] = row.get("start") or scenario_row.get("start", "")
+        if row.get("end") and row["start"] and row["end"] < row["start"]:
+            issues.append(f"{where}: end {row['end'][:7]} is before start {row['start'][:7]}")
+        params = _safe_json(row.get("params_json") or "{}")
+        if params is None:
+            issues.append(f"{where}: params_json is not a JSON object")
+            continue
+        for key, why in TAX_RETIRED_PARAMS.items():
+            if key in params:
+                issues.append(f"{where}: params_json takes no {key!r}: {why}")
+
+
+def _tax_params(row: Mapping[str, str]) -> dict[str, Any]:
+    """A jurisdiction's calculator params, with its ``scope`` (its name) for
+    the code that still reads one, as the ``tax_accumulator`` rule's had."""
+    return {**(_safe_json(row.get("params_json") or "{}") or {}), "scope": row["name"]}
+
+
 def _read_strategy_vary_files(
     data_dir: Path, scenarios_dir: Path, scenario_name: str, issues: list[str],
 ) -> dict[str, tuple[str, list[tuple[str, dict[str, str]]]]]:
@@ -5086,6 +5173,7 @@ def _validate_strategies(
     persons: list[dict[str, str]],
     lifespan_rows: list[dict[str, str]],
     aux_kinds: frozenset[str],
+    tax_rows: Sequence[Mapping[str, str]] = (),
 ) -> tuple[strategy_code.StrategyKinds, list[strategy_load.PreparedStrategy]]:
     """``strategies/<name>.csv`` and ``targets.csv`` (#326, ADR-003 §4.12-4.13).
 
@@ -5108,11 +5196,7 @@ def _validate_strategies(
         except ValueError:
             rule_tags = frozenset()  # reported with the scheduled rows
         rules.append((r.get("name", ""), r.get("amount_rule_kind", ""), rule_tags))
-    tax_scopes: dict[str, int] = {}
-    for r in scheduled_rows:
-        if r.get("amount_rule_kind") == "tax_accumulator":
-            scope = str((_safe_json(r.get("params_json")) or {}).get("scope", "federal"))
-            tax_scopes[scope] = tax_scopes.get(scope, 0) + 1
+    tax_scopes = dict.fromkeys((r["name"] for r in tax_rows), 1)
     by_account = {a["name"]: a for a in accounts}
     life_tables = {row.get("person", ""): (row.get("life_table") or "").strip() or None for row in lifespan_rows}
     class_sets = _allocation_class_sets(allocations)
@@ -5258,6 +5342,7 @@ def _validate_chain_roles(
     calendar_rows: list[dict[str, str]],
     value_rows: list[dict[str, str]],
     issues: list[str],
+    *, tax_rows: Sequence[dict[str, str]] = (),
 ) -> None:
     """Each named chain is used the way its role says (ADR-003 §4.7): a
     source chain is drawn from, a destination chain paid into, and a chain's
@@ -5273,6 +5358,7 @@ def _validate_chain_roles(
     for rows, filename, from_col, to_col in (
         (scheduled_rows, "scheduled.csv", "from_account", "to_account"),
         (calendar_rows, "calendar.csv", "account_1", "account_2"),
+        (tax_rows, registries.TAXES_DIR, "source_chain", "destination"),
     ):
         for where, row in _located(rows, filename):
             where = f"{where} ({row.get('name', '')})" if row.get("name") else where
@@ -5815,6 +5901,7 @@ def _write_intent(
     lifespan_rows: list[dict[str, str]],
     ytd_rows: list[dict[str, str]],
     money_resolver: _MoneyReferenceResolver,
+    tax_rows: Sequence[dict[str, str]] = (),
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     now = _now_iso()
@@ -6075,6 +6162,18 @@ def _write_intent(
                      "scheduled_transaction_tag", "scheduled_transaction_id",
                      tag_cache)
     counts["scheduled_transaction"] = len(scheduled_rows)
+
+    for t in tax_rows:
+        con.execute(
+            "INSERT INTO tax_jurisdiction(name, kind, upstream, source_chain_id, "
+            "destination_chain_id, schedule, start, \"end\", params_json, description) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (t["name"], t["kind"], " ".join((t.get("upstream") or "").split()),
+             chain_ids[t["source_chain"]], chain_ids[t["destination"]], t["schedule"],
+             t["start"], t.get("end") or None, t.get("params_json") or "{}",
+             t.get("description") or ""),
+        )
+    counts["tax_jurisdiction"] = len(tax_rows)
 
     for kind, series, payload, eff in aux_rows:
         con.execute(

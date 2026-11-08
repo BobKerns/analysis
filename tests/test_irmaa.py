@@ -59,12 +59,13 @@ def _monthly(tier: int, year: int) -> int:
 @pytest.fixture
 def irmaa_run(
     retire_alice_csv: Callable[[str], Path], fund_asset_savings: Callable[..., None],
-    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_tax: Callable[..., Path],
 ) -> Run:
-    """Run retire_alice with a federal tax rule, an irmaa rule for each of
+    """Run retire_alice with the federal tax, an irmaa rule for each of
     Alice and Bill from the start, and the given extra scheduled rows (each
     a dict of scheduled.csv columns). ``magi`` sets meta_json irmaa.magi."""
     fund_asset_savings("1000000.00")
+    add_tax()
     path = retire_alice_csv("scheduled.csv")
     scenario_path = retire_alice_csv("scenario.csv")
     blank = dict.fromkeys(SCHEDULED_CSV_HEADER, "")
@@ -75,13 +76,6 @@ def irmaa_run(
         scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
         scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
         rows = [{
-            **blank, "name": "tax_federal", "from_account": "Asset_Checking",
-            "to_account": "Expense_Taxes_Federal", "cadence": "annual",
-            "month_of_year": "4", "amount_rule_kind": "tax_accumulator",
-            "tax_character": "none", "start": "2027-04-30", "meta_json": "{}",
-            "params_json": '{"year":"previous","scope":"federal"}',
-        }]
-        rows += [{
             **blank, "name": f"irmaa_{person}", "from_account": "Asset_Checking",
             "to_account": "Expense_Healthcare", "cadence": "monthly",
             "amount_rule_kind": "irmaa", "person": person, "tax_character": "none",
@@ -279,22 +273,17 @@ def test_the_first_premium_years_without_prior_magi_charge_nothing(irmaa_run: Ru
 @pytest.fixture
 def load_with(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+    add_tax: Callable[..., Path],
 ) -> Callable[..., LoadResult]:
     """Load retire_alice with an irmaa rule for Alice (cells over the
-    defaults) and, unless ``tax`` is false, a federal tax rule."""
+    defaults) and, unless ``tax`` is false, the federal tax."""
     def _load(*, tax: bool = True, meta: object = None, **cells: str) -> LoadResult:
         path = retire_alice_csv("scheduled.csv")
         scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
         scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
         blank = dict.fromkeys(SCHEDULED_CSV_HEADER, "")
         if tax:
-            scheduled.loc[len(scheduled)] = {
-                **blank, "name": "tax_federal", "from_account": "Asset_Checking",
-                "to_account": "Expense_Taxes_Federal", "cadence": "annual",
-                "month_of_year": "4", "amount_rule_kind": "tax_accumulator",
-                "tax_character": "none", "start": "2027-04-30", "meta_json": "{}",
-                "params_json": '{"year":"previous"}',
-            }
+            add_tax()
         scheduled.loc[len(scheduled)] = {
             **blank, "name": "irmaa_alice", "from_account": "Asset_Checking",
             "to_account": "Expense_Healthcare", "cadence": "monthly",
@@ -325,23 +314,6 @@ def test_the_loader_checks_an_irmaa_rule(
 ) -> None:
     with pytest.raises(LoadError, match=message):
         load_with(tax=tax, **cells)
-
-
-def test_an_irmaa_rule_needs_exactly_one_federal_tax_rule(
-    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
-) -> None:
-    path = retire_alice_csv("scheduled.csv")
-    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
-    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
-    scheduled.loc[len(scheduled)] = {
-        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "name": "tax_federal_too",
-        "from_account": "Asset_Checking", "to_account": "Expense_Taxes_Federal",
-        "cadence": "annual", "month_of_year": "12", "amount_rule_kind": "tax_accumulator",
-        "tax_character": "none", "start": "2027-12-31", "meta_json": "{}",
-        "params_json": '{"year":"current"}'}
-    scheduled.to_csv(path, index=False)
-    with pytest.raises(LoadError, match="and there are 2; it needs exactly one"):
-        load_with()
 
 
 def test_a_rule_starting_after_the_first_two_years_needs_no_prior_magi(
@@ -466,25 +438,21 @@ def test_irmaa_tier_at_the_top_tier_caps_nothing_and_is_refused(
     assert "irmaa_tier 5 is the top tier or above" in "\n".join(error.value.issues)
 
 
-def test_a_state_fill_bracket_watching_irmaa_needs_one_federal_rule(
+def test_a_state_fill_bracket_watching_irmaa_needs_the_federal_tax(
     load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+    add_tax: Callable[..., Path],
 ) -> None:
     path = retire_alice_csv("scheduled.csv")
     scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
     scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
-    blank = {**dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}"}
-    for name in ("federal_a", "federal_b"):
-        scheduled.loc[len(scheduled)] = {
-            **blank, "name": name, "from_account": "Asset_Checking",
-            "to_account": "Expense_Living", "cadence": "annual", "month_of_year": "12",
-            "amount_rule_kind": "tax_accumulator", "tax_character": "none",
-            "start": "2027-01-31", "params_json": '{"year":"current","scope":"federal"}'}
     scheduled.loc[len(scheduled)] = {
-        **blank, **_conversion(2031, scope="state", irmaa_tier=0)}
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}",
+        **_conversion(2031, scope="state", irmaa_tier=0)}
     scheduled.to_csv(path, index=False)
+    add_tax("state", destination="Expense_Taxes_Federal", params_json={"bracket_series": "CA"})
     with pytest.raises(LoadError) as error:
-        load_with()
-    assert "measures MAGI with the federal tax_accumulator rule, and there is more than one" in (
+        load_with(tax=False)
+    assert "irmaa_tier measures MAGI with the federal tax, and there is none" in (
         "\n".join(error.value.issues))
 
 

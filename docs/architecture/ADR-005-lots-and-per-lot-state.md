@@ -159,7 +159,7 @@ Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage
 - [ADR-002](ADR-002-storage-schema.md): replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
 - [ADR-003](ADR-003-registries-and-csv-schemas.md): §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §2.3 interim `rmd` guard; §4.7 taxable-lot withdrawals made per lot.
 - [ADR-001](ADR-001-overall-architecture.md): `AccountState` row in the domain-object table becomes a view over per-lot state.
-- [ADR-003](ADR-003-registries-and-csv-schemas.md): the `tax_character` registry gains `stcg`; §4.4 gains the `ltcg_brackets` aux kind; the `tax_accumulator` rule (§2.6) taxes long-term gains at those rates when present.
+- [ADR-003](ADR-003-registries-and-csv-schemas.md): the `tax_character` registry gains `stcg`; §4.4 gains the `ltcg_brackets` aux kind; income tax (§2.6) taxes long-term gains at those rates when present.
 
 ## Consequences
 
@@ -170,7 +170,7 @@ Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage
 ## Open questions deferred
 
 - Runtime-created lots, and cost-basis lot selection (FIFO / HIFO / specific) as a policy on multi-lot withdrawals.
-- `on_death` sweeps and the other account-level rule kinds (`ss_benefit`, `tax_accumulator`, `mortgage_payment`) all need auditing for one-balance-per-account assumptions; the plan's Phase 0 does this.
+- `on_death` sweeps and the other account-level rule kinds (`ss_benefit`, income tax, `mortgage_payment`) all need auditing for one-balance-per-account assumptions; the plan's Phase 0 does this.
 - Namespace collision between account names and symbols in `aux_table` rate series (lookup order in §5 covers it, but an account and a ticker with the same name would be ambiguous).
 - Quicken import is per account; multi-lot accounts need a per-security import.
 

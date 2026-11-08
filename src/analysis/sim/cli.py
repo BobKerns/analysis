@@ -42,7 +42,7 @@ from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide, guard_rails,
     lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
     sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files, strategy_guide, symbols,
-    states, units, working_set, ytd_guide,
+    states, tax_files, units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -166,6 +166,7 @@ from analysis.sim.overlay import (
     overlay_rows as _overlay_rows,
     scenario_calendar_rows as _scenario_calendar_rows,
     strategy_rows as _strategy_rows,
+    tax_rows as _tax_rows,
 )
 from analysis.frames import clip_years, index_years, named_rows, row_years
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, ItemType
@@ -5249,7 +5250,8 @@ def items(
             "SELECT te.date, fa.name, fa.subkind, fm.lot, te.from_account, te.from_lot_id, "
             "ta.name, ta.subkind, tm.lot, te.to_account, te.to_lot_id, "
             "te.amount, te.requested_cents, te.remainder_cents, te.tax_character, "
-            "te.reason_kind, s.name, s.amount_rule_kind "
+            "te.reason_kind, COALESCE(s.name, tj.name), "
+            "COALESCE(s.amount_rule_kind, tj.kind) "
             "FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account "
             "JOIN account ta ON ta.id = te.to_account "
@@ -5257,6 +5259,7 @@ def items(
             "JOIN account_lot tm ON tm.id = te.to_lot_id "
             "LEFT JOIN scheduled_transaction s "
             "  ON s.id = te.reason_id AND te.reason_kind IN ('rule', 'ytd_rule') "
+            "LEFT JOIN tax_jurisdiction tj ON tj.id = te.reason_id AND te.reason_kind = 'tax' "
             "WHERE ((? IS NULL AND ? IN (te.from_account, te.to_account)) "
             "       OR ? IN (te.from_lot_id, te.to_lot_id)) "
             "  AND te.date BETWEEN ? AND ? "
@@ -8326,9 +8329,9 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--name", "row_name", default=None,
               help="scheduled.csv name (default: derived from accounts and date).")
 @click.option("--cadence", type=click.Choice(sorted(registries.CADENCES)), default=None,
-              help="Default: monthly; annual for rmd and tax_accumulator.")
+              help="Default: monthly; annual for rmd and fill_bracket.")
 @click.option("--month-of-year", type=click.IntRange(1, 12), default=None,
-              help="For annual cadence; defaults to 12 for rmd and tax_accumulator, "
+              help="For annual cadence; defaults to 12 for rmd and fill_bracket, "
                    "else the start month.")
 @click.option("--end", "end_date", default="",
               help="Optional end date (YYYY-MM or YYYY-MM-DD).")
@@ -8361,7 +8364,7 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
               help="Default: the kind's band (ADR-003 §5): 200 for fixed_amount.")
 @click.option("--description", default="")
 @click.option("--params-json", default=None,
-              help="JSON object: required for tax_accumulator; subject_account for an rmd from a chain.")
+              help="JSON object: subject_account for an rmd from a chain.")
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary household:rwk').")
 def scheduled_add(
@@ -9262,6 +9265,8 @@ def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = 
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
     ]
     paths.extend((path, chain_edit.ACCOUNT_COLUMNS) for path in chain_edit.chain_files(scenario_dir))
+    paths.extend((path, chain_edit.TAX_FILE_COLUMNS)
+                 for path in strategy_files.own_files(scenario_dir, registries.TAXES_DIR))
 
     for path, fields in paths:
         if not path.exists():
@@ -9288,6 +9293,8 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
     ]
     paths.extend((path, chain_edit.ACCOUNT_COLUMNS) for path in chain_edit.chain_files(scenario_dir))
+    paths.extend((path, chain_edit.TAX_FILE_COLUMNS)
+                 for path in strategy_files.own_files(scenario_dir, registries.TAXES_DIR))
 
     for path, fields in paths:
         if not path.exists():
@@ -9302,7 +9309,9 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
                 [not _is_growth_rate_row(row, series) for _, row in df.iterrows()],
                 index=df.index, dtype=bool,
             )
-        if not keep.all():
+        if not keep.all() and path.parent.name == registries.TAXES_DIR and not keep.any():
+            path.unlink()  # a jurisdiction is its file's one row
+        elif not keep.all():
             df.loc[keep].to_csv(path, index=False)
 
     values_path = scenario_dir / "account_lots.csv"
@@ -18473,28 +18482,224 @@ def target_delete_command(
     click.echo(f"deleted target set {target_set}{' as of ' + key[:7] if key else ''} from {ref.name}")
 
 
-# ---------- tax: the household's state (#483) ----------
+# ---------- tax: the scenario's tax jurisdictions (#507) and its state (#483) ----------
 
 
-class _StateRule(NamedTuple):
-    name: str
-    found: _Overlaid  # the rule as the load order leaves it
-    params: dict[str, Any]
+def _tax_summary(row: Mapping[str, str]) -> str:
+    """One line for a tax jurisdiction file's row."""
+    when = f" from {row.get('start') or 'the start'}" + (f" to {row['end']}" if row.get("end") else "")
+    upstream = f" after {row['upstream']}" if row.get("upstream") else ""
+    params = f" {row['params_json']}" if row.get("params_json") else ""
+    return (f"{row.get('kind', '')}{upstream}: paid from {row.get('source_chain', '')} into "
+            f"{row.get('destination', '')} each {row.get('schedule') or 'april'}{when}{params}")
 
 
-def _state_tax_rules(scenario_dir: Path) -> list[_StateRule]:
-    """The scenario's state ``tax_accumulator`` rules, as its load order leaves them."""
-    rules = []
-    for name, found in _overlay_rows(scenario_dir, "scheduled.csv").items():
-        if found.row.get("amount_rule_kind") != "tax_accumulator":
-            continue
-        try:
-            params = json.loads(found.row.get("params_json") or "{}")
-        except json.JSONDecodeError:
-            continue
-        if isinstance(params, dict) and params.get("scope") == "state":
-            rules.append(_StateRule(name, found, params))
-    return rules
+def _tax_params(found: _Overlaid | None) -> dict[str, Any]:
+    if found is None:
+        return {}
+    try:
+        params = json.loads(found.row.get("params_json") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return params if isinstance(params, dict) else {}
+
+
+def _tax_home(found: _Overlaid, scenario_name: str) -> str:
+    """The scenario whose own file defines a jurisdiction as ``scenario_name`` sees it."""
+    return scenario_name if found.index is not None else (found.inherited_from or scenario_name)
+
+
+def _write_tax(
+    data: Path, scenario: str, name: str, row: Mapping[str, str] | None, *,
+    new_account: Mapping[str, str] | None = None, remember: bool = True, repair: bool = False,
+) -> Path:
+    """Write ``row`` as ``scenario``'s own ``taxes/<name>.csv`` (#507), or
+    with ``row`` None remove it, and add ``new_account``, as one staged
+    edit: the loader checks the result."""
+    ref = _resolve_scenario(data, scenario, remember=False)
+    folder = _folder_of(ref.scenarios_dir, ref.name)
+    path = tax_files.definition_path(folder, name)
+    with _scenario_edit(data, ref.name, remember=remember, repair=repair) as edit:
+        if new_account is not None:
+            _append_csv_row(edit.path(folder / "accounts.csv"), registries.ACCOUNTS_CSV_HEADER,
+                            dict(new_account))
+        staged = edit.path(path)
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        strategy_guide.write_rows(staged, registries.TAX_CSV_HEADER, [row] if row is not None else [])
+    return path
+
+
+def _ask_tax_fields(
+    data: Path, scenario: str, row: dict[str, str], *, adding: bool,
+) -> dict[str, str]:
+    """Each field of a jurisdiction's row, asked with its current value (or
+    a default) offered."""
+    endpoints = names.chain_names(data, scenario, accounts=True)
+    row = dict(row)
+    row["source_chain"] = _prompt_with_completion(
+        "paid from (an account or source chain)", choices=endpoints,
+        default=row["source_chain"] or "Asset_Checking").strip()
+    expenses = [a for a in names.account_names(data, scenario) if a.startswith("Expense_")]
+    row["destination"] = _prompt_with_completion(
+        "paid into (an expense account)", choices=expenses, default=row["destination"]).strip()
+    row["start"] = click.prompt("first April it settles (YYYY-MM; blank: the scenario's start)",
+                                default=row["start"], show_default=False).strip()
+    row["end"] = click.prompt("last month it settles (YYYY-MM; blank: the end)",
+                              default=row["end"], show_default=False).strip()
+    row["params_json"] = click.prompt("params_json (blank: none)", default=row["params_json"],
+                                      show_default=False).strip()
+    row["description"] = click.prompt(
+        "description", default=row["description"] or ("" if not adding else
+                                                      f"{row['kind']} income tax for the year before"),
+        show_default=False).strip()
+    return row
+
+
+_TAX_OPTIONS = (
+    click.option("--source-chain", "source_chain", type=completion.ENDPOINT, default=None,
+                 help="The account or source chain the tax is paid from."),
+    click.option("--destination", type=completion.ACCOUNT, default=None,
+                 help="The expense account the tax is paid into."),
+    click.option("--start", default=None, help="First month it settles in (YYYY-MM; '' for the scenario's start)."),
+    click.option("--end", default=None, help="Last month it settles in (YYYY-MM; '' for the end)."),
+    click.option("--params-json", "params_json", default=None,
+                 help="The jurisdiction's parameters, a JSON object ('' for none), e.g. "
+                      "'{\"bracket_series\": \"CA\"}' for a state."),
+    click.option("--description", default=None, help="What it is for."),
+    click.option("--scenario", type=completion.SCENARIO, default=None,
+                 help="Scenario folder name (default: the current scenario)."),
+    _LISTING_DATA_DIR_OPTION,
+)
+
+
+def _tax_options(f: Callable[..., None]) -> Callable[..., None]:
+    for option in reversed(_TAX_OPTIONS):
+        f = option(f)
+    return f
+
+
+@sim_group_command.group(name="tax")
+def tax_group_command() -> None:
+    """The scenario's income taxes: a file per jurisdiction in taxes/
+    (federal.csv, state.csv), the state it lives in, and moves to another."""
+
+
+@tax_group_command.command("list")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@_LISTING_DATA_DIR_OPTION
+def tax_list_command(scenario: str | None, data_dir: Path | None) -> None:
+    """List the scenario's tax jurisdictions, in the order they settle, and
+    the scenario each is inherited from."""
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    rows = _tax_rows(ref.path)
+    if not rows:
+        click.echo(f"no income taxes in {ref.name} (`sim tax add federal` adds the federal one)")
+        return
+    for name in (n for n in registries.TAX_JURISDICTIONS if n in rows):
+        found = rows[name]
+        where = f"  [from {found.inherited_from}]" if found.inherited_from and found.index is None else ""
+        click.echo(f"{name:<7}  {_tax_summary(found.row)}{where}")
+
+
+@tax_group_command.command("add")
+@click.argument("jurisdiction", required=False, type=click.Choice(registries.TAX_JURISDICTIONS))
+@_tax_options
+def tax_add_command(
+    jurisdiction: str | None, source_chain: str | None, destination: str | None, start: str | None,
+    end: str | None, params_json: str | None, description: str | None, scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Add an income tax to the scenario, as taxes/JURISDICTION.csv: it
+    settles the year before each April, paying what is due from the source
+    into the destination. Whatever is left out is asked for, unless
+    --destination is given. For a state, `sim tax state` also picks its
+    tables."""
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    existing = _tax_rows(ref.path)
+    free = [n for n in registries.TAX_JURISDICTIONS if n not in existing]
+    if jurisdiction is None:
+        jurisdiction = _ask_name("tax jurisdiction", free, prompt="jurisdiction to add")
+    if jurisdiction in existing:
+        raise click.ClickException(f"{ref.name} already has a {jurisdiction} tax (sim tax edit {jurisdiction})")
+    kind = next(k for k, j in registries.TAX_KINDS.items() if j == jurisdiction)
+    row = {**dict.fromkeys(registries.TAX_CSV_HEADER, ""), "kind": kind,
+           "source_chain": source_chain or "", "destination": destination or "",
+           "start": start or "", "end": end or "", "params_json": params_json or "",
+           "description": description or ""}
+    if destination is None:
+        accounts = _overlay_rows(ref.path, "accounts.csv")
+        row["destination"] = next((n for n, a in accounts.items()
+                                   if a.row.get("subkind") == f"taxes_{jurisdiction}"), "")
+        row = _ask_tax_fields(data, ref.name, row, adding=True)
+    path = _write_tax(data, ref.name, jurisdiction, row)
+    click.echo(f"added {jurisdiction} tax ({_shown(path)}): {_tax_summary(row)}")
+
+
+def _pick_tax(data: Path, scenario: str | None, jurisdiction: str | None, prompt: str) -> tuple[_Overlaid, str]:
+    ref = _resolve_scenario(data, scenario)
+    rows = _tax_rows(ref.path)
+    if jurisdiction is None:
+        jurisdiction = _ask_name("tax jurisdiction", [n for n in registries.TAX_JURISDICTIONS if n in rows],
+                                 prompt=prompt)
+    found = rows.get(jurisdiction.strip())
+    if found is None:
+        raise click.ClickException(
+            f"no {jurisdiction} tax in {ref.name}; it has: {', '.join(rows) or 'none'}")
+    return found, ref.name
+
+
+@tax_group_command.command("edit")
+@click.argument("jurisdiction", required=False, type=completion.TAX_JURISDICTION)
+@_tax_options
+def tax_edit_command(
+    jurisdiction: str | None, source_chain: str | None, destination: str | None, start: str | None,
+    end: str | None, params_json: str | None, description: str | None, scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Change a tax jurisdiction. With no options, asks for each field with
+    its current value as the default; options change just those. An
+    inherited one is written into this scenario as a whole-file override."""
+    data = _resolve_data_dir(data_dir)
+    found, scenario_name = _pick_tax(data, scenario, jurisdiction, "jurisdiction to edit")
+    name = found.row["name"]
+    row = {c: found.row.get(c, "") for c in registries.TAX_CSV_HEADER}
+    changes = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
+               "params_json": params_json, "description": description}
+    if all(v is None for v in changes.values()):
+        click.echo(f"{name}: {_tax_summary(row)}")
+        new = _ask_tax_fields(data, scenario_name, row, adding=False)
+    else:
+        new = {**row, **{k: v.strip() for k, v in changes.items() if v is not None}}
+    if new == row:
+        click.echo(f"{name} tax unchanged")
+        return
+    _write_tax(data, scenario_name, name, new)
+    inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
+    click.echo(f"changed {name} tax{inherited}: {_tax_summary(new)}")
+
+
+@tax_group_command.command("delete")
+@click.argument("jurisdiction", required=False, type=completion.TAX_JURISDICTION)
+@click.option("--yes", is_flag=True, default=False, help="Don't ask to confirm.")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@_LISTING_DATA_DIR_OPTION
+def tax_delete_command(jurisdiction: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete a tax jurisdiction's file from the scenario. An inherited one
+    is deleted where it is defined; deleting this scenario's override of one
+    restores the inherited definition. Rules that measure with it (a
+    fill_bracket, irmaa) stop the scenario loading, so the change is refused."""
+    data = _resolve_data_dir(data_dir)
+    found, scenario_name = _pick_tax(data, scenario, jurisdiction, "jurisdiction to delete")
+    name = found.row["name"]
+    if found.index is None:
+        raise click.ClickException(f"the {name} tax is inherited from {found.inherited_from}: delete it there")
+    if not yes and not click.confirm(f"delete the {name} tax from {scenario_name}?", default=False):
+        raise click.Abort()
+    _write_tax(data, scenario_name, name, None)
+    click.echo(f"deleted the {name} tax from {scenario_name}")
 
 
 def _state_moves(data_dir: Path, scenario: str) -> list[tuple[str, str]]:
@@ -18542,7 +18747,7 @@ def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | N
             "model; nothing was written")
     if state.status == states.FEDERAL_RULE:
         click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
-                   "federal tax rule stands in for it: no state tax rule is needed.")
+                   "federal tax stands in for it: no state tax is needed.")
         return None
     if state.code in states.GAINS_TAX_ONLY and state.code not in names.series_names(
             data_dir, scenario, "state_brackets"):
@@ -18561,19 +18766,16 @@ def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | N
     return state.code
 
 
-def _new_state_rule(scenario_dir: Path) -> tuple[str, dict[str, str], dict[str, str] | None]:
-    """For a scenario with no state tax rule: the scenario to write one into
-    (where its federal rule is defined), the rule, modeled on the federal
-    one, and an Expense_Taxes_State account if it has no state tax account."""
-    rules = _overlay_rows(scenario_dir, "scheduled.csv")
-    federal = next((r for r in rules.values()
-                    if r.row.get("amount_rule_kind") == "tax_accumulator"
-                    and json.loads(r.row.get("params_json") or "{}").get("scope", "federal")
-                    == "federal"), None)
+def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[str, str], dict[str, str] | None]:
+    """For a scenario with no state tax: the scenario to write one into
+    (where its federal tax is defined), the state's row, modeled on the
+    federal one, and an Expense_Taxes_State account if it has no state tax
+    account."""
+    federal = _tax_rows(scenario_dir).get("federal")
     if federal is None:
         raise click.ClickException(
-            "this scenario has no tax rules: add the federal one first "
-            "(sim scheduled add --kind tax_accumulator). Nothing was written.")
+            "this scenario has no income tax: add the federal one first "
+            "(sim tax add federal). Nothing was written.")
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
     account = next((name for name, a in accounts.items() if a.row.get("subkind") == "taxes_state"),
                    None)
@@ -18583,39 +18785,28 @@ def _new_state_rule(scenario_dir: Path) -> tuple[str, dict[str, str], dict[str, 
         new_account = {
             **dict.fromkeys(registries.ACCOUNTS_CSV_HEADER, ""),
             "name": account, "kind": "expense", "subkind": "taxes_state",
-            "owner": "joint", "tax_treatment": "none", "opened": federal.row.get("start", ""),
+            "owner": "joint", "tax_treatment": "none",
+            "opened": federal.row.get("start", ""),
             "meta_json": "{}",
         }
-    name = federal.row["name"].replace("federal", "state")
-    if name == federal.row["name"]:
-        name = "tax_state"
-    while name in rules:
-        name += "_"
-    params = {**json.loads(federal.row.get("params_json") or "{}"), "scope": "state"}
+    params = _tax_params(federal)
     for key in ("bracket_aux", "standard_deduction_aux", "itemized_deduction_aux",
                 "ltcg_bracket_aux", "filing_status_aux"):
         params.pop(key, None)
-    rule = {
-        **{column: federal.row.get(column, "") for column in registries.SCHEDULED_CSV_HEADER},
-        "name": name, "to_account": account, "ytd_amount": "", "ytd_preroll": "",
-        "description": "State income tax", "tags": "",
-        "params_json": json.dumps(params, separators=(",", ":")),
+    row = {
+        **{column: federal.row.get(column, "") for column in registries.TAX_CSV_HEADER},
+        "kind": "state_tables", "upstream": "", "destination": account,
+        "description": "State income tax",
+        "params_json": json.dumps(params, separators=(",", ":")) if params else "",
     }
-    home = scenario_dir.name if federal.index is not None else (
-        federal.inherited_from or scenario_dir.name)
-    return home, rule, new_account
-
-
-@sim_group_command.group(name="tax")
-def tax_group_command() -> None:
-    """The state whose income tax a scenario pays, and moves to another."""
+    return _tax_home(federal, scenario_name), row, new_account
 
 
 @tax_group_command.command("state")
 @click.argument("state", required=False, type=completion.STATE)
 @click.option("--here", is_flag=True,
               help="Change this scenario only (an override), not the scenario where "
-                   "the state tax rule is defined.")
+                   "the state tax is defined.")
 @click.option("--yes", is_flag=True, help="Don't ask before writing.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
@@ -18629,24 +18820,23 @@ def tax_state_command(
 
     STATE is a name or postal code (California, CA). Left out, the current
     one is shown and a state is asked for. The choice is set on the state
-    tax rule where it is defined, so every scenario built on that one
-    lives there too; --here changes only this scenario. A scenario with no
-    state tax rule gets one, modeled on its federal tax rule. A state with
-    no income tax keeps the rule, paying nothing; a move to another state
+    tax (taxes/state.csv) where it is defined, so every scenario built on
+    that one lives there too; --here changes only this scenario. A scenario
+    with no state tax gets one, modeled on its federal tax. A state with no
+    income tax keeps the state tax, paying nothing; a move to another state
     is `sim tax move`.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data_dir_p, scenario)
     scenario_dir, scenario_name = ref.path, ref.name
-    rules = _state_tax_rules(scenario_dir)
-    current = sorted({str(r.params.get("bracket_series") or "") for r in rules})
-    if not rules:
-        click.echo(f"Scenario {scenario_name} has no state tax rule.")
-    elif current == [""]:
-        click.echo(f"Scenario {scenario_name}'s state tax rule names no state yet.")
+    found = _tax_rows(scenario_dir).get("state")
+    current = str(_tax_params(found).get("bracket_series") or "")
+    if found is None:
+        click.echo(f"Scenario {scenario_name} has no state tax.")
+    elif not current:
+        click.echo(f"Scenario {scenario_name}'s state tax names no state yet.")
     else:
-        click.echo(f"Scenario {scenario_name} lives in "
-                   f"{' and '.join(_state_label(s) for s in current if s)}.")
+        click.echo(f"Scenario {scenario_name} lives in {_state_label(current)}.")
     for when, moved_to in _state_moves(data_dir_p, scenario_name):
         click.echo(f"  then moves on {when} to {_state_label(moved_to)}")
     if state is None:
@@ -18658,71 +18848,43 @@ def tax_state_command(
     series = _state_series(data_dir_p, scenario_name, picked)
     if series is None:
         return
-    if series == states.NO_TAX_SERIES and not rules:
+    if series == states.NO_TAX_SERIES and found is None:
         click.echo(f"{states.label(picked.code)} has no income tax, and this scenario "
-                   "has no state tax rule: nothing to change.")
+                   "has no state tax: nothing to change.")
         return
 
-    # Each edit: (scenario written, own row index or None to append, the row
-    # as read, the new row), plus any account to add.
-    if rules:
-        stale = [r for r in rules if r.params.get("bracket_series") != series]
-        if not stale:
+    new_account = None
+    if found is not None:
+        if current == series:
             click.echo(f"Already {_state_label(series)}: nothing to change.")
             return
-        plan = []
-        for rule in stale:
-            row = {column: rule.found.row.get(column, "")
-                   for column in registries.SCHEDULED_CSV_HEADER}
-            row["params_json"] = json.dumps({**rule.params, "bracket_series": series},
-                                            separators=(",", ":"))
-            home = scenario_name if here or rule.found.index is not None else (
-                rule.found.inherited_from or scenario_name)
-            plan.append((home, rule, row))
-        for home, rule, _row in plan:
-            where = ("an override in" if home == scenario_name and rule.found.index is None
-                     else "it in")
-            click.echo(f"This sets state tax rule {rule.name!r} to {_state_label(series)}, "
-                       f"writing {where} scenario {home}.")
-        new_account = None
+        row = {column: found.row.get(column, "") for column in registries.TAX_CSV_HEADER}
+        row["params_json"] = json.dumps({**_tax_params(found), "bracket_series": series},
+                                        separators=(",", ":"))
+        home = scenario_name if here else _tax_home(found, scenario_name)
+        where = "an override in" if home == scenario_name and found.index is None else "it in"
+        click.echo(f"This sets the state tax to {_state_label(series)}, writing {where} "
+                   f"scenario {home}.")
     else:
-        home, row, new_account = _new_state_rule(scenario_dir)
-        params = json.loads(row["params_json"])
+        home, row, new_account = _new_state_tax(scenario_dir, scenario_name)
+        params = json.loads(row["params_json"] or "{}")
         row["params_json"] = json.dumps({**params, "bracket_series": series},
                                         separators=(",", ":"))
         if here:
             home = scenario_name
-        click.echo(f"This adds state tax rule {row['name']!r} for {_state_label(series)} to "
-                   f"scenario {home}, paying from {row['from_account']} when the "
-                   "federal one pays"
+        click.echo(f"This adds a state tax for {_state_label(series)} to scenario {home} "
+                   f"(taxes/state.csv), paying from {row['source_chain']} when the federal one pays"
                    + (f", and expense account {new_account['name']}" if new_account else "")
                    + ".")
-        plan = [(home, None, row)]
     if series == states.NO_TAX_SERIES:
-        click.echo("  The rule stays, paying nothing, so a later move can tax you again; "
-                   "`sim scheduled delete` removes it instead.")
+        click.echo("  The state tax stays, paying nothing, so a later move can tax you again; "
+                   "`sim tax delete state` removes it instead.")
     if not yes and not click.confirm("write it?", default=True):
         click.echo("aborted")
         return
-    scenarios_dir = ref.scenarios_dir
-    for home in dict.fromkeys(h for h, _r, _row in plan):
-        folder = _folder_of(scenarios_dir, home)
-        path = folder / "scheduled.csv"
-        with _scenario_edit(data_dir_p, home, remember=False, repair=True) as edit:
-            staged = edit.path(path)
-            if new_account is not None:
-                _append_csv_row(edit.path(folder / "accounts.csv"),
-                                registries.ACCOUNTS_CSV_HEADER, new_account)
-            for h, rule, row in plan:
-                if h != home:
-                    continue
-                index = rule.found.index if rule is not None and home == scenario_name else None
-                if rule is not None and home != scenario_name:
-                    # The rule's own row in the scenario that defines it.
-                    own = _overlay_rows(folder, "scheduled.csv")[rule.name]
-                    index = own.index
-                _append_csv_row(staged, registries.SCHEDULED_CSV_HEADER, row, replace=index)
-        click.echo(f"wrote {_shown(path)}")
+    path = _write_tax(data_dir_p, home, "state", row, new_account=new_account,
+                      remember=False, repair=True)
+    click.echo(f"wrote {_shown(path)}")
     click.echo(f"State tax: {_state_label(series)}.")
 
 
@@ -18742,22 +18904,16 @@ def tax_move_command(
     the new state's. The tax year of the move is taxed as the new state's
     for the whole year.
 
-    The scenario's state tax rule has to name the state it starts in first
+    The scenario's state tax has to name the state it starts in first
     (`sim tax state`). The move is a calendar.csv row in this scenario
     (swap_aux_table of its state_brackets). Arguments left out are asked for.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    starts = sorted({str(r.params.get("bracket_series") or "")
-                     for r in _state_tax_rules(scenario_dir)})
-    if not starts or "" in starts:
+    start = str(_tax_params(_tax_rows(scenario_dir).get("state")).get("bracket_series") or "")
+    if not start:
         raise click.ClickException(
             "choose the state you live in first (sim tax state); nothing was written")
-    if len(starts) > 1:
-        raise click.ClickException(
-            f"the state tax rules start in different states ({', '.join(starts)}); "
-            "use sim calendar add swap-aux-table for each. Nothing was written.")
-    start = starts[0]
     click.echo(f"Scenario {scenario_name} starts in {_state_label(start)}.")
     for when, moved_to in _state_moves(data_dir_p, scenario_name):
         click.echo(f"  then moves on {when} to {_state_label(moved_to)}")
