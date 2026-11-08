@@ -697,10 +697,7 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
 LEGACY_MICROS_COLUMNS: frozenset[str] = frozenset({
     "annual_rate_micros", "marginal_rate_micros", "rate_micros", "factor_micros",
 })
-UNITS_CONVERSION_HINT = (
-    "rates and factors are now percents and plain numbers (#130); "
-    "convert the data repo with uv run scripts/convert_units_130.py"
-)
+UNITS_CONVERSION_HINT = "rates and factors are now percents and plain numbers (#130)"
 
 # Per-aux-kind set of column names that hold dollar amounts in the CSV and must
 # be converted to integer cents during load.

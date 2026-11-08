@@ -96,7 +96,7 @@ def test_a_pre_130_column_names_the_conversion(
     issues = _issues(load_test_copy)
     for where, column in (("aux/inflation__cpi.csv", "annual_rate_micros"),
                           ("scheduled.csv", "rate_micros")):
-        assert any(i.startswith(f"{where}: column {column}") and "convert_units_130.py" in i
+        assert any(i.startswith(f"{where}: column {column}") and "(#130)" in i
                    for i in issues), issues
 
 
