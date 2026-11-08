@@ -269,7 +269,7 @@ _ITEM_SQL: dict[str, str] = {
         "       fa.subkind AS from_subkind, fm.lot AS from_lot, "
         "       ta.name AS to_name, ta.kind AS to_kind, "
         "       ta.subkind AS to_subkind, tm.lot AS to_lot, "
-        "       rule.name AS rule_name "
+        "       COALESCE(rule.name, tax.name) AS rule_name "
         "FROM transfer_event te "
         "JOIN simulation_step s ON s.id = te.step_id "
         "JOIN account fa ON fa.id = te.from_account "
@@ -278,6 +278,8 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account_lot tm ON tm.id = te.to_lot_id "
         "LEFT JOIN scheduled_transaction rule "
         "  ON te.reason_kind = 'rule' AND rule.id = te.reason_id "
+        "LEFT JOIN tax_jurisdiction tax "
+        "  ON te.reason_kind = 'tax' AND tax.id = te.reason_id "
         "ORDER BY te.id"
     ),
     "simulation_run": "SELECT * FROM simulation_run",
@@ -863,13 +865,12 @@ class RunConnection(Connection):
         unpaid = pd.Series(0.0, index=months)
         if due.empty:
             return unpaid
-        # Only a tax rule's payment settles the year: other rows can carry an
+        # Only a tax settlement settles the year: other rows can carry an
         # earlier tax_year too (a next-spring IRA contribution, say).
         paid = self._read_sql(
             "SELECT tax_year, MIN(date) AS date FROM transfer_event "
             "WHERE tax_year IS NOT NULL AND CAST(substr(date, 1, 4) AS INTEGER) > tax_year "
-            "  AND reason_kind = 'rule' AND reason_id IN ("
-            "    SELECT id FROM scheduled_transaction WHERE amount_rule_kind = 'tax_accumulator') "
+            "  AND reason_kind = 'tax' "
             "GROUP BY tax_year"
         )
         settled = dict(zip(paid["tax_year"].astype(int),
