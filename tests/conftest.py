@@ -297,19 +297,6 @@ def empty_scenarios_dir(test_scenarios_dir: Path) -> Path:
     return test_scenarios_dir
 
 @pytest.fixture(scope="function")
-def new_scenario_file(empty_scenarios_dir: Path) -> Callable[[str, str, str], Path]:
-    """``new_scenario_file(scenario, filename, text)``: write one file of a
-    scenario into ``empty_scenarios_dir`` (the folder made as needed), for a
-    data repo built file by file; the data repo is ``path.parents[2]``."""
-    def write(scenario: str, filename: str, text: str) -> Path:
-        path = empty_scenarios_dir / scenario / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
-    return write
-
-
-@pytest.fixture(scope="function")
 def state_dir(tmp_path: Path) -> Generator[Path]:
     """Create a temporary state directory within the temporary data directory for tests."""
     state_dir = tmp_path / "state"

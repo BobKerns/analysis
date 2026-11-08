@@ -1089,7 +1089,7 @@ def _read_scenario_inputs(
         if (scenario_dir / "account_values.csv").exists():
             issues.append(
                 f"{_data_label(scenario_dir / 'account_values.csv', data_dir)}: renamed to "
-                "account_lots.csv (#217); run scripts/migrate_217.py on the data repo"
+                "account_lots.csv (#217)"
             )
         value_rows = _merge_scenario_rows(
             value_rows, _default_lots(
@@ -2601,8 +2601,7 @@ def _validate_accounts(
         elif kind == "asset" and subkind in registries.RETIREMENT_LOT_SUBKINDS:
             issues.append(
                 f"{where} ({name}): subkind '{subkind}' is now account subkind "
-                f"'{registries.RETIREMENT_SUBKIND}' with lot subkind '{subkind}' (#217); "
-                "run scripts/migrate_217.py on the data repo"
+                f"'{registries.RETIREMENT_SUBKIND}' with lot subkind '{subkind}' (#217)"
             )
         elif subkind not in valid:
             issues.append(
@@ -2649,8 +2648,7 @@ def _validate_scheduled(
         elif kind == registries.RETIRED_TAX_RULE_KIND:
             issues.append(
                 f"{where} ({name}): income tax is a jurisdiction file now, not a "
-                f"{kind} rule (#507): taxes/federal.csv or taxes/state.csv. "
-                "scripts/migrate_507_taxes.py moves a data repo's rules (dry run, then --write)"
+                f"{kind} rule (#507): taxes/federal.csv or taxes/state.csv"
             )
         elif kind not in registries.AMOUNT_RULE_KINDS:
             issues.append(f"{where} ({name}): unknown amount_rule_kind '{kind}'")
