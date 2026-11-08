@@ -1030,7 +1030,7 @@ The scenario's income taxes ([#507](https://github.com/BobKerns/analysis/issues/
 | `params_json` | json | | the calculator's parameters (§2.6); `scope` (the file's name) and `year` (the schedule) are refused |
 | `description` | text | | |
 
-The loader stores each as a `tax_jurisdiction` row (ADR-002), with its chains resolved to ids. A `scheduled.csv` rule of the retired kind `tax_accumulator` is a load error naming `scripts/migrate_507_taxes.py`, which moves a data repo's rules to these files once: the April, previous-year rule at the default priority, the only one that settles the same way, moves as it is; any other is reported and left to be moved by hand. `sim tax list|add|edit|delete` read and write the files (`edit` is guided, an inherited file is overridden whole, `delete` refuses an inherited one), `sim tax state` sets the state's `bracket_series` (§2.6), and renames of an account or chain follow `source_chain` and `destination`.
+The loader stores each as a `tax_jurisdiction` row (ADR-002), with its chains resolved to ids. A `scheduled.csv` rule of the retired kind `tax_accumulator` is a load error that names these files. `sim tax list|add|edit|delete` read and write the files (`edit` is guided, an inherited file is overridden whole, `delete` refuses an inherited one), `sim tax state` sets the state's `bracket_series` (§2.6), and renames of an account or chain follow `source_chain` and `destination`.
 
 ### 5. Default priorities
 
