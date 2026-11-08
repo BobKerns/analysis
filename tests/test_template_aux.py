@@ -57,14 +57,14 @@ def test_the_templates_leave_the_filing_status_to_the_household() -> None:
     assert (TEMPLATE_AUX_DIR / "filing_status.csv").read_text() == "effective_date,filing_status\n"
 
 
-def test_a_tax_rule_without_a_filing_status_fails_the_load(
+def test_a_tax_without_a_filing_status_fails_the_load(
     load_test_copy: Callable[[], LoadResult], write_aux: Callable[[str, str], Path],
     add_state_tax: Callable[..., None],
 ) -> None:
     add_state_tax()
     write_aux("filing_status.csv", "effective_date,filing_status\n")
 
-    with pytest.raises(LoadError, match=r"tax_state_prev_year.*aux/filing_status\.csv has no row"):
+    with pytest.raises(LoadError, match=r"taxes/state\.csv.*aux/filing_status\.csv has no row"):
         load_test_copy()
 
 

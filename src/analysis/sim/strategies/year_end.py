@@ -29,12 +29,10 @@ def _rate(micros: int) -> str:
 
 
 def _federal_rule(scenario: ScenarioView, what: str) -> list[str]:
-    """The load problem when ``ctx.tax`` would have no single federal rule to read."""
-    count = scenario.tax_rules.get("federal", 0)
-    if count == 1:
+    """The load problem when ``ctx.tax`` would have no federal tax to read."""
+    if "federal" in scenario.taxes:
         return []
-    found = "there is none" if count == 0 else f"there are {count}"
-    return [f"{what} measures with the federal tax_accumulator rule, and {found}"]
+    return [f"{what} measures with the federal tax (taxes/federal.csv), and there is none"]
 
 
 def _largest_within(fits: Callable[[int], bool], cap: int) -> int:

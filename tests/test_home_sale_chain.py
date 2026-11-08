@@ -292,9 +292,9 @@ def test_short_and_long_term_results_net_before_the_limit(ledger_con: sqlite3.Co
 
 def test_the_tax_summary_shows_the_deduction_and_the_carryover(
     retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
-    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_tax: Callable[..., Path],
 ) -> None:
-    """A federal tax_accumulator for 2027 sees the brokerage loss through the
+    """The federal tax for 2027 sees the brokerage loss through the
     capital_loss_limit table."""
     _set_value(retire_alice_csv, "Asset_Brokerage_Joint", opening_cost_basis="400000.00")
     _chain(retire_alice_csv, "destination", "brokerage_sale", [
@@ -305,10 +305,7 @@ def test_the_tax_summary_shows_the_deduction_and_the_carryover(
     append_calendar_row(date="2027-01-31", kind="transfer_balance",
                         account_1="Asset_Brokerage_Joint", lot_1="default",
                         account_2="brokerage_sale", description="sell the brokerage lot")
-    _add_rule(retire_alice_csv, name="federal_tax", from_account="Asset_Checking",
-              to_account="Expense_Taxes_Federal", cadence="annual", month_of_year="4",
-              amount_rule_kind="tax_accumulator", tax_character="none", start="2028-04-30",
-              priority="400", meta_json="{}", params_json='{"year": "previous"}')
+    add_tax(start="2028-04")
     run = _run(load_test_copy, runs_dir)
     with sqlite3.connect(run) as con:
         summary = dict(con.execute(

@@ -101,7 +101,7 @@ state/
 | --- | --- | --- |
 | `person`, `account`, `security`, `security_allocation` | ✓ | ✓ (snapshot) |
 | `account_lot` | ✓ | ✓ (snapshot) |
-| `scheduled_transaction` | ✓ | ✓ (snapshot) |
+| `scheduled_transaction`, `tax_jurisdiction` | ✓ | ✓ (snapshot) |
 | `chain`, `chain_steps` | ✓ | ✓ (snapshot) |
 | `calendar`, `calendar_event` | ✓ | ✓ (snapshot) |
 | `aux_table` | ✓ | ✓ (snapshot) |
@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 58) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 59) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -159,6 +159,25 @@ CREATE TABLE strategy_source (
     module  TEXT PRIMARY KEY,
     sha256  TEXT NOT NULL,
     source  TEXT NOT NULL
+);
+
+-- The scenario's income tax jurisdictions (taxes/<name>.csv, merged over the
+-- lineage; #507). name prefixes the jurisdiction's tax_year_summary buckets;
+-- kind is the calculator; upstream the jurisdictions its return builds on,
+-- space-separated. Each April (schedule) it pays what is still due for the
+-- year before from source_chain into destination, between start and end.
+CREATE TABLE tax_jurisdiction (
+    id                   INTEGER PRIMARY KEY,
+    name                 TEXT NOT NULL UNIQUE,
+    kind                 TEXT NOT NULL,
+    upstream             TEXT NOT NULL DEFAULT '',
+    source_chain_id      INTEGER NOT NULL REFERENCES chain(id),
+    destination_chain_id INTEGER NOT NULL REFERENCES chain(id),
+    schedule             TEXT NOT NULL CHECK (schedule IN ('april')),
+    start                TEXT NOT NULL,
+    "end"                TEXT,
+    params_json          TEXT NOT NULL DEFAULT '{}',
+    description          TEXT NOT NULL DEFAULT ''
 );
 
 -- The scenario's enabled strategies (strategies/<name>.csv, merged over the
@@ -764,7 +783,8 @@ CREATE TABLE transfer_event (
     tax_year        INTEGER,
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
-                        ('rule','initial','ytd','ytd_rule','refill','overflow','strategy')),
+                        ('rule','initial','ytd','ytd_rule','refill','overflow','strategy',
+                         'tax')),
     reason_id       INTEGER,
     -- The event this leg derives from: a multi-leg rule's primary leg, a
     -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
@@ -1146,4 +1166,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
 - [#468](https://github.com/BobKerns/analysis/issues/468): the tax character `qualified_dividend` on `scheduled_transaction` and `year_to_date` (Intent layer DDL; schema 56).
 - [#434](https://github.com/BobKerns/analysis/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 57).
-- [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 58).
+- [#507](https://github.com/BobKerns/analysis/issues/507): table `tax_jurisdiction` (a scenario's `taxes/<name>.csv` files) and `transfer_event.reason_kind` `tax` for its payments, in place of the `tax_accumulator` rule (table of tables, Intent layer DDL, Ledger layer DDL; schema 58).
+- [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 59).

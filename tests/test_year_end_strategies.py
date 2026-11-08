@@ -4,7 +4,7 @@ built-in ``harvest`` and ``gift``.
 
 ``alice_year_end`` (from the ``strategy_scenarios`` fixture) builds on
 ``alice_rebalance`` (a joint brokerage of $300,000 with $200,000 basis) with
-a federal ``tax_accumulator`` settled each April, an ``Expense_Family`` gift
+a federal tax (``taxes/federal.csv``) settled each April, an ``Expense_Family`` gift
 account, and a ``harvest`` strategy filling the 0% long-term gains band."""
 
 from __future__ import annotations
@@ -363,23 +363,21 @@ def test_a_gift_goes_to_a_gift_expense_account(run_strategy_scenario, strategy_c
     ("gift", {"to": "Expense_Family", "amount": "100.00", "portfolio": "portfolio:invest",
               "in_kind": False, "max_tax": "500.00"}, "max_tax"),
 ])
-def test_tax_aware_moves_need_the_federal_tax_rule_at_load(
+def test_tax_aware_moves_need_the_federal_tax_at_load(
     run_strategy_scenario, strategy_csv, kind: str, params: dict[str, object], what: str,
 ) -> None:
     _no_harvest(strategy_csv)
     _strategy(strategy_csv, "check", kind, **params)
-    strategy_csv(SCENARIO, "scheduled.csv").write_text(
-        strategy_csv(SCENARIO, "scheduled.csv").read_text().splitlines()[0] + "\n")
-    with pytest.raises(LoadError, match=f"{what} measures with the federal tax_accumulator rule, and there is none"):
+    strategy_csv(SCENARIO, "taxes/federal.csv").unlink()
+    with pytest.raises(LoadError, match=f"{what} measures with the federal tax .taxes/federal.csv., and there is none"):
         run_strategy_scenario(SCENARIO)
 
 
-def test_losses_and_in_kind_gifts_need_no_tax_rule(run_strategy_scenario, strategy_csv) -> None:
+def test_losses_and_in_kind_gifts_need_no_tax(run_strategy_scenario, strategy_csv) -> None:
     _strategy(strategy_csv, "harvest", "harvest", portfolio="portfolio:invest", gains=False, losses=True)
     _strategy(strategy_csv, "family", "gift", to="Expense_Family", amount="100.00",
               portfolio="portfolio:invest")
-    strategy_csv(SCENARIO, "scheduled.csv").write_text(
-        strategy_csv(SCENARIO, "scheduled.csv").read_text().splitlines()[0] + "\n")
+    strategy_csv(SCENARIO, "taxes/federal.csv").unlink()
     run_strategy_scenario(SCENARIO)
 
 # ---------- reports ----------

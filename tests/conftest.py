@@ -64,6 +64,7 @@ import shutil
 import sqlite3
 import sys
 import warnings
+from typing import Any
 
 import git
 import pandas as pd
@@ -79,7 +80,7 @@ from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_sce
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
     ACCOUNT_LOTS_CSV_HEADER, CALENDAR_HEADER, GUARD_RAILS_CSV_HEADER, SCENARIO_HEADER,
-    SCHEDULED_CSV_HEADER,
+    SCHEDULED_CSV_HEADER, TAX_CSV_HEADER,
 )
 
 _ANALYSIS_ENV_VARS = (
@@ -294,6 +295,19 @@ def empty_scenarios_dir(test_scenarios_dir: Path) -> Path:
     shutil.rmtree(test_scenarios_dir)
     test_scenarios_dir.mkdir()
     return test_scenarios_dir
+
+@pytest.fixture(scope="function")
+def new_scenario_file(empty_scenarios_dir: Path) -> Callable[[str, str, str], Path]:
+    """``new_scenario_file(scenario, filename, text)``: write one file of a
+    scenario into ``empty_scenarios_dir`` (the folder made as needed), for a
+    data repo built file by file; the data repo is ``path.parents[2]``."""
+    def write(scenario: str, filename: str, text: str) -> Path:
+        path = empty_scenarios_dir / scenario / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+    return write
+
 
 @pytest.fixture(scope="function")
 def state_dir(tmp_path: Path) -> Generator[Path]:
@@ -676,7 +690,7 @@ def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
 
     retire_alice is funded to run its own base scenario through 2040
     without Asset_Checking going negative, but several tests add an extra
-    expense it wasn't sized for (a federal tax payment via tax_accumulator,
+    expense it wasn't sized for (a federal tax payment via taxes/federal.csv,
     an early death that cuts household income in half while shared
     expenses continue) -- this keeps Asset_Checking's refill chain from
     running dry before it reaches the (amply funded) IRA behind it, rather
@@ -784,6 +798,18 @@ def derive_template_scenario(template_data_dir: Path) -> Callable[..., Path]:
     """``derive_scenario`` for ``template_data_dir``: a scenario on the
     template ``base``, with template mix-ins."""
     return _deriver(template_data_dir / "scenarios")
+
+
+@pytest.fixture(scope="session")
+def retire_alice_rows(prototype_data: Path) -> Callable[..., str]:
+    """``filename``'s text holding just the prototype retire_alice rows
+    ``names`` (by ``name``), whole: an override that changes nothing, which
+    still makes the scenario writing it the row's definer."""
+    def _rows(filename: str, *names: str) -> str:
+        rows = pd.read_csv(prototype_data / "scenarios" / "retire_alice" / filename,
+                           dtype=str, keep_default_na=False)
+        return rows[rows["name"].isin(names)].to_csv(index=False)
+    return _rows
 
 
 @pytest.fixture(scope="session")
@@ -1064,6 +1090,13 @@ def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[st
     write_series("bond", "2026-01-31,4%")
 
 
+@pytest.fixture(scope="session")
+def append_calendar_row_to() -> Callable[..., None]:
+    """Append a row to any scenario's calendar.csv, by column name:
+    ``append_calendar_row_to(child / "calendar.csv", kind=..., ...)``."""
+    return _append_calendar_row_to
+
+
 @pytest.fixture(scope="function")
 def append_calendar_row(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Append a row to the private copy's calendar.csv, by column name
@@ -1265,17 +1298,54 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
                         allow_dirty_data=True, allow_dirty_code=True)
 
 
+def _write_tax_file(scenario_dir: Path, name: str = "federal", **cells: Any) -> Path:
+    """Write ``scenario_dir/taxes/<name>.csv``, a tax jurisdiction (#507):
+    paid from Asset_Checking into Expense_Taxes_Federal (or _State) each
+    April from 2027, unless ``cells`` say otherwise. ``params_json`` may be
+    a dict."""
+    params = cells.pop("params_json", {})
+    row = {
+        **dict.fromkeys(TAX_CSV_HEADER, ""),
+        "kind": "federal" if name == "federal" else "state_tables",
+        "source_chain": "Asset_Checking",
+        "destination": "Expense_Taxes_Federal" if name == "federal" else "Expense_Taxes_State",
+        "start": "2027-04",
+        "params_json": params if isinstance(params, str) else json.dumps(params),
+        **cells,
+    }
+    path = scenario_dir / "taxes" / f"{name}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([row], columns=list(TAX_CSV_HEADER)).to_csv(path, index=False)
+    return path
+
+
+@pytest.fixture(scope="session")
+def write_tax() -> Callable[..., Path]:
+    """``write_tax(scenario_dir, name="federal", **cells)``: write a tax
+    jurisdiction file (#507) into a scenario folder; see ``add_tax``."""
+    return _write_tax_file
+
+
+@pytest.fixture(scope="function")
+def add_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """Give the private retire_alice copy a tax jurisdiction (#507):
+    ``add_tax()`` is the federal tax, paid from Asset_Checking into
+    Expense_Taxes_Federal each April from 2027; ``add_tax("state",
+    params_json={"bracket_series": "CA"})`` a state one (the account must
+    exist: ``add_state_tax`` adds both). Cells override the defaults."""
+    return lambda name="federal", **cells: _write_tax_file(
+        retire_alice_csv(""), name, **cells)
+
+
 @pytest.fixture(scope="function")
 def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Give the private retire_alice copy a state income tax: an
-    Expense_Taxes_State account and a ``tax_accumulator`` rule (scope state)
+    Expense_Taxes_State account and a state jurisdiction (taxes/state.csv)
     paying the previous year's state tax each April. ``bracket_series`` names
     the state: California, the prototype's, unless the test says otherwise
     (None leaves it out)."""
     def _add(bracket_series: str | None = "CA") -> None:
-        params = {"year": "previous", "scope": "state"}
-        if bracket_series:
-            params["bracket_series"] = bracket_series
+        params = {"bracket_series": bracket_series} if bracket_series else {}
         accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str,
                                keep_default_na=False)
         accounts.loc[len(accounts)] = {
@@ -1285,18 +1355,7 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
             "meta_json": "{}",
         }
         accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
-        scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str,
-                                keep_default_na=False)
-        scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
-        scheduled.loc[len(scheduled)] = {
-            **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
-            "name": "tax_state_prev_year", "from_account": "Asset_Checking",
-            "to_account": "Expense_Taxes_State", "cadence": "annual", "month_of_year": "4",
-            "amount_rule_kind": "tax_accumulator", "tax_character": "none",
-            "start": "2027-04-30", "priority": "400", "meta_json": "{}",
-            "params_json": json.dumps(params),
-        }
-        scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+        _write_tax_file(retire_alice_csv(""), "state", params_json=params)
     return _add
 
 
@@ -1304,8 +1363,8 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
 def report_run_file(retire_alice_csv: Callable[[str], Path],
                     fund_asset_savings: Callable[..., None],
                     load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
-    """Run of a retire_alice copy that computes federal tax (a ``tax_accumulator``
-    rule paying the previous year's tax each April) and tags its spending in
+    """Run of a retire_alice copy that computes federal tax (taxes/federal.csv,
+    paying the previous year's tax each April) and tags its spending in
     role ``budget``: Expense_Living and Expense_Healthcare are ``budget:core``,
     Expense_Housing is ``budget:home``, and the ``living`` rule's own
     ``budget:fun`` overrides its account's tag. Income_Salary_Alice is
@@ -1321,15 +1380,8 @@ def report_run_file(retire_alice_csv: Callable[[str], Path],
     scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
     scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
     scheduled.loc[scheduled["name"] == "living", "tags"] = "budget:fun"
-    scheduled.loc[len(scheduled)] = {
-        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
-        "name": "tax_federal_prev_year", "from_account": "Asset_Checking",
-        "to_account": "Expense_Taxes_Federal", "cadence": "annual", "month_of_year": "4",
-        "amount_rule_kind": "tax_accumulator", "tax_character": "none",
-        "start": "2027-04-30", "priority": "400", "meta_json": "{}",
-        "params_json": '{"year":"previous","scope":"federal"}',
-    }
     scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+    _write_tax_file(retire_alice_csv(""))
 
     intent = load_test_copy().intent_path
     return run_scenario(intent, runs_dir / "report.sqlite3", run_by="TEST",

@@ -48,12 +48,12 @@ def test_a_shipped_states_2026_brackets_match_its_schedule(
     assert _progressive_tax_cents(taxable * 100, _brackets(state, "2026-01-31")) == round(tax * 100)
 
 
-def test_a_state_rule_that_names_no_state_fails_the_load(
+def test_a_state_tax_that_names_no_state_fails_the_load(
     add_state_tax: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
     add_state_tax(bracket_series=None)
 
-    with pytest.raises(LoadError, match=r"tax_state_prev_year.*must name its state.*"
+    with pytest.raises(LoadError, match=r"taxes/state.csv.*must name its state.*"
                                         r"sim tax state.*one of CA, DC, ID, KS, NC, NE, none"):
         load_test_copy()
 

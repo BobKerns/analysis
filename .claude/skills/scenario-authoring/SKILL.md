@@ -104,7 +104,7 @@ loaded.
 | A one-time transfer: windfall, gift, sale | `sim transfer add 2032-06 FROM TO 25000 --tax-character none` |
 | Move a whole balance (rollover) | `sim calendar add transfer-balance ...` |
 | An investment later | `sim invest SOURCE ACCOUNT LOT --symbol SYM --amount 10000 --date 2027-03` |
-| A Roth conversion, once or each year | `sim invest TRAD ROTH LOT --subkind roth_ira ...`, or `sim scheduled add 2029-01 TRAD ROTH --from-lot default --to-lot default --kind fill_bracket --rate 22% --end 2037-12` (needs a federal `tax_accumulator` rule in the lineage) |
+| A Roth conversion, once or each year | `sim invest TRAD ROTH LOT --subkind roth_ira ...`, or `sim scheduled add 2029-01 TRAD ROTH --from-lot default --to-lot default --kind fill_bracket --rate 22% --end 2037-12` (needs `taxes/federal.csv` in the lineage: `sim tax add federal`) |
 | Moving state | `sim calendar add swap-aux-table ...` (user guide §4.8) |
 | Lifespan | `sim person lifespan set PERSON 92` |
 | Guard rails | `sim guard-rail add NAME --measure ... --side ... --basis ... --threshold ... --sense ...`, `sim guard-rail edit NAME --threshold ...` |

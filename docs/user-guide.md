@@ -390,6 +390,15 @@ Tax is not calculated as each rule fires. Instead, it is calculated once per
 tax year, by looking back over everything that happened that year (the
 `transfer_event` ledger).
 
+Each income tax is a file in the scenario's `taxes/` folder: `federal.csv`
+for federal tax and `state.csv` for state tax. Each April the file works out
+the year before's tax and pays what is still due, from its `source_chain`
+(usually `Asset_Checking`) into its `destination` (`Expense_Taxes_Federal`).
+`sim tax add federal` writes one, asking for each field, and `sim tax list`
+shows them. A child scenario inherits its parent's files; its own file for
+a jurisdiction replaces the parent's whole. A scenario with no `taxes/`
+files pays no income tax.
+
 - **Ordinary income** includes: salary, pension, interest, the taxable part of
   Social Security, taxable withdrawals from Traditional accounts
   (`tax_deferred_out`), and short-term gains (`stcg`).
@@ -422,9 +431,9 @@ tax year, by looking back over everything that happened that year (the
   README). The Social Security thresholds and the $3,000 capital loss limit
   stay fixed, as they are in law.
 - **State tax** works the same way as federal tax, using the brackets of
-  the state the rule names: choose it with `sim tax state`, which asks for
-  the state by name and adds a state tax rule like the federal one if
-  there is none. For California the rule reads `state_brackets__CA.csv`
+  the state `taxes/state.csv` names: choose it with `sim tax state`, which
+  asks for the state by name and adds a state tax like the federal one if
+  there is none. For California it reads `state_brackets__CA.csv`
   and the state's standard deduction from
   `state_standard_deduction__CA.csv` (named for the same state). Tables for California, the District of Columbia, Idaho, Kansas,
   Nebraska and North Carolina come with the simulator; for another state,
@@ -930,7 +939,7 @@ date,kind,series,params_json
 
 From July 2031 on, everything that read the `CA` brackets reads the `WA`
 ones instead, including their later dated changes. The state
-`tax_accumulator` rule names the state it starts in (`sim tax state` sets
+tax (`taxes/state.csv`) names the state it starts in (`sim tax state` sets
 it). The state's standard
 deduction, surcharge, local tax and HSA tables move with its brackets by
 themselves: the new state's if it has them, otherwise none (the federal
@@ -1245,8 +1254,8 @@ sim scheduled add 2029-01 Asset_TraditionalIRA_Alice Asset_Roth_Alice \
     --from-lot default --to-lot default --kind fill_bracket --rate 22% --end 2037-12
 ```
 
-The scenario needs a `tax_accumulator` rule, since the conversion is measured
-with that rule's brackets, deduction and filing status. The engine finds the
+The scenario needs a federal tax (`taxes/federal.csv`), since the conversion
+is measured with its brackets, deduction and filing status. The engine finds the
 amount that brings the year's ordinary taxable income to the top of the
 bracket. It counts every effect the extra income has: more of a Social
 Security benefit becomes taxable as income rises, so a $10,000 conversion can
@@ -1264,8 +1273,8 @@ The rule has no `priority`. It runs after everything else in its month, so
 the year's RMD comes out first: an RMD can't be converted, and the first
 money out of the IRA in an RMD year counts toward it. Converting this year
 lowers next year's RMD, which is figured from this year's December 31
-balance. Its tax is paid the next April by the `tax_accumulator` rule, from
-wherever that rule draws; paying it from a taxable account rather than the
+balance. Its tax is paid the next April by the federal tax, from
+wherever that draws; paying it from a taxable account rather than the
 IRA is what makes a conversion pay off. Over 59½, converting year after year
 into one Roth lot is fine; younger than that, give each year its own lot, as
 the five-year rule (Part 2) counts from each conversion.
@@ -1315,7 +1324,7 @@ irmaa_alice,Income_SS_Alice,Expense_Healthcare,monthly,irmaa,alice,ss_benefit,20
 
 Each month it charges the surcharge for that year: Part B and Part D both,
 unless `params_json` says `{"parts": "B"}` (no drug coverage). The
-scenario also needs a federal `tax_accumulator` rule, which works out MAGI.
+scenario also needs a federal tax (`taxes/federal.csv`), which works out MAGI.
 For the first two years of a scenario, MAGI comes from years before the
 scenario starts. Give those in `scenario.csv`'s `meta_json`:
 
@@ -1572,7 +1581,7 @@ Each command asks for anything it still needs, offering what you gave as
 the answer.
 
 Harvesting gains, and a cash gift with `max_tax`, need the scenario's
-federal tax rule to estimate the year's tax; loading the scenario says so
+federal tax (`taxes/federal.csv`) to estimate the year's tax; loading the scenario says so
 if it has none.
 `sim strategy log` gives each year's decision, such as
 `realized $26,112 of long-term gain into the 0% band (room $26,112)`.
@@ -1793,7 +1802,7 @@ None of them need you to write any code.
 
 | Notebook | What it shows |
 | --- | --- |
-| `scenario_overview.ipynb` | The scenario's setup, without needing a run: people, accounts, chains, scheduled rules, calendar events, year-to-date rows, itemizations and tags. Good for checking a scenario is set up the way you intended, before running it. |
+| `scenario_overview.ipynb` | The scenario's setup, without needing a run: its lineage (parent, mix-ins, load order), seed, size and reserve, and which run file the other notebooks open; people, accounts, chains, scheduled rules, calendar events, year-to-date rows, itemizations and tags, each row marked with the scenario it is defined in. Good for checking a scenario is set up the way you intended, before running it. |
 | `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, the portfolio by asset class, and the stored prices: lots whose balance disagrees with quantity × price, every symbol with its name, allocation and latest price, and one symbol's price history. |
 | `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, economic income down to the change in net worth, tax by year with its effective rate, and where the run stands against its guard rails. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, where they cross over (break-even), gross Social Security, and tax by year. |
