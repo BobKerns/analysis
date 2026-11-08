@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.14"
+# dependencies = []
+# ///
 """One-time conversion of a simulator data repo to natural CSV units (#130).
 
 Before #130 the scenario CSVs carried rates and factors in micros and
@@ -18,7 +22,7 @@ reads them:
   gain the % sign the loader now requires on every percent: 60 -> 60%.
 - A scenario's series/README.md gets its column description updated.
 
-Usage: scripts/convert_units_130.py [DATA_DIR] [--write]
+Usage: uv run scripts/convert_units_130.py [DATA_DIR] [--write]
 
 DATA_DIR defaults to $ANALYSIS_DATA_DIR. Without --write it only reports
 what it would change. It refuses a data repo with no pre-#130 columns left,

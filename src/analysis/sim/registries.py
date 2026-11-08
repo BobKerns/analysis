@@ -699,7 +699,7 @@ LEGACY_MICROS_COLUMNS: frozenset[str] = frozenset({
 })
 UNITS_CONVERSION_HINT = (
     "rates and factors are now percents and plain numbers (#130); "
-    "convert the data repo with scripts/convert_units_130.py"
+    "convert the data repo with uv run scripts/convert_units_130.py"
 )
 
 # Per-aux-kind set of column names that hold dollar amounts in the CSV and must
