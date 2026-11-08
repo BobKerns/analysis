@@ -380,6 +380,12 @@ met a word gets an answer about how it's used here.
 
 ## 3. How tax is handled
 
+**Video.** *Taxes* walks through this section and §4.9, §4.12 and §4.14
+with Alice and Bill: what the plan pays in tax, a Roth conversion,
+Medicare's surcharge and a big medical year:
+[English](https://www.youtube.com/watch?v=nw0-pCtZ9yc),
+[Japanese (日本語)](https://www.youtube.com/watch?v=S1_TNzzaOR0).
+
 Tax is not calculated as each rule fires. Instead, it is calculated once per
 tax year, by looking back over everything that happened that year (the
 `transfer_event` ledger).
