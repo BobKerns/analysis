@@ -13,7 +13,12 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim.connection import RunConnection
-from analysis.sim.reports import ensemble_spending_summary, ensemble_spending_table, spending_by_year
+from analysis.sim.reports import (
+    ensemble_spending_summary,
+    ensemble_spending_table,
+    spending_by_year,
+    while_alive,
+)
 from analysis.sim.series_db import open_series
 from analysis.sim.types import DollarMode
 
@@ -96,6 +101,25 @@ def test_ensemble_spending_table_and_summary() -> None:
     assert summary["members_ever_cut"] == pytest.approx(2 / 3)
     assert summary["years_cut_mean"] == pytest.approx(1 / 3)
     assert summary["of_plan_worst"] == pytest.approx(0.75)
+
+
+def test_years_after_a_household_ends_are_left_out() -> None:
+    """A household that has ended spends nothing; that isn't a cut or the
+    worst year (#377). Member c ends in 2031, and no member covers 2032."""
+    years = pd.Index([2030, 2031, 2032], name="year")
+    delivered = pd.DataFrame({"a": [100.0, 90.0, 0.0], "b": [100.0, 100.0, 0.0], "c": [80.0, 0.0, 0.0]},
+                             index=years)
+    budgeted = pd.DataFrame(100.0, index=years, columns=delivered.columns)
+    ends = {"a": 2032, "b": 2032, "c": 2031}
+    delivered, budgeted = while_alive(delivered, ends), while_alive(budgeted, ends)
+    assert list(delivered.index) == [2030, 2031]
+    assert pd.isna(delivered.loc[2031, "c"]) and delivered.loc[2031, "a"] == 90
+    table = ensemble_spending_table(delivered, budgeted)
+    assert table.loc[2031, "p5"] > 0 and table.loc[2031, "cvar05"] == 90
+    assert table.loc[2031, "cut"] == pytest.approx(1 / 2)
+    summary = ensemble_spending_summary(delivered, budgeted)
+    assert summary["worst_year_cvar05"] == 80
+    assert summary["members_ever_cut"] == pytest.approx(2 / 3)
 
 
 def test_a_small_cut_still_counts_as_cut() -> None:

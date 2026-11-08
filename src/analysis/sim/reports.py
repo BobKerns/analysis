@@ -10,8 +10,9 @@ them.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 
+import numpy as np
 import pandas as pd
 
 from analysis.frames import index_years
@@ -426,6 +427,32 @@ def _cut(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> pd.DataFrame:
     return (budgeted - delivered) > _CUT_TOLERANCE
 
 
+def while_alive(frame: pd.DataFrame, ends: Mapping[str, int]) -> pd.DataFrame:
+    """``frame`` (a column per member, by year) with each member's years from
+    its household's end on blanked (NaN), and the years no member covers
+    dropped (#377). A household that has ended spends nothing, which would
+    read as the worst of all years; its last year is partial, as a run's
+    first can be (``whole_years``). ``ends`` is stem -> that year
+    (``EnsembleSeries.household_end_years``)."""
+    if not ends or frame.empty:
+        return frame
+    out = frame.copy()
+    for stem, year in ends.items():
+        if stem in out.columns:
+            out.loc[out.index >= year, stem] = np.nan
+    return out.dropna(how="all")
+
+
+def _row_tails(frame: pd.DataFrame) -> pd.DataFrame:
+    """``tail_means`` row by row over the members each row has (not NaN)."""
+    from analysis.sim.ensemble import tail_means
+
+    if not frame.isna().to_numpy().any():
+        return tail_means(frame)
+    rows = [tail_means(row.dropna().to_frame().T).iloc[0] for _, row in frame.iterrows()]
+    return pd.DataFrame(rows, index=frame.index)
+
+
 def ensemble_spending_table(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> pd.DataFrame:
     """An ensemble's spending against the plan by year (#408). ``delivered``
     and ``budgeted`` are a column per member, by year
@@ -433,9 +460,8 @@ def ensemble_spending_table(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> 
     spending's 5th, 50th and 95th percentiles and the mean of its worst 5%
     and 20% (``cvar05``, ``cvar20``, as for net worth), the median budget,
     the median ``of_plan`` (delivered over budgeted), and ``cut``, the
-    share of members spending below their plan."""
-    from analysis.sim.ensemble import tail_means
-
+    share of members spending below their plan. A member blanked by
+    ``while_alive`` counts in none of them that year."""
     if delivered.empty:
         return pd.DataFrame()
     of_plan = (delivered / budgeted.where(budgeted != 0)).fillna(1.0)
@@ -444,10 +470,10 @@ def ensemble_spending_table(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> 
         "median": delivered.median(axis=1),
         "p95": delivered.quantile(0.95, axis=1),
     })
-    out = out.join(tail_means(delivered))
+    out = out.join(_row_tails(delivered))
     out["budgeted"] = budgeted.median(axis=1)
-    out["of_plan"] = of_plan.median(axis=1)
-    out["cut"] = _cut(delivered, budgeted).mean(axis=1)
+    out["of_plan"] = of_plan.where(delivered.notna()).median(axis=1)
+    out["cut"] = _cut(delivered, budgeted).where(delivered.notna()).mean(axis=1)
     return out
 
 
@@ -474,9 +500,10 @@ def ensemble_spending_summary(
         return {}
     counted = delivered if years is None else delivered.loc[delivered.index.isin(list(years))]
     worst = (counted if not counted.empty else delivered).min(axis=0)
-    years_cut = _cut(delivered, budgeted).mean(axis=0)
+    worst = worst.where(worst.notna(), delivered.min(axis=0))  # no whole year: its partial ones
+    years_cut = _cut(delivered, budgeted).where(delivered.notna()).mean(axis=0)
     whole = delivered.sum(axis=0) / budgeted.sum(axis=0).where(budgeted.sum(axis=0) != 0)
-    tails = tail_means(worst.to_frame().T).iloc[0]
+    tails = tail_means(worst.dropna().to_frame().T).iloc[0]
     return {
         "worst_year_median": float(worst.median()),
         **{f"worst_year_cvar{q * 100:02g}": float(tails[f"cvar{q * 100:02g}"]) for q in TAIL_LEVELS},

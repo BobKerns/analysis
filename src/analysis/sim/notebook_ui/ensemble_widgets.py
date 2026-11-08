@@ -918,6 +918,9 @@ def ensemble_spending_widget(*_,
         mode = DollarMode(dollar_picker.value)
         loading.note(f"Reading {recipe}'s spending")
         delivered, budgeted = store.spending(mode, picked)
+        # A household that has ended spends nothing; leave those years out (#377).
+        ends = store.household_end_years()
+        delivered, budgeted = reports.while_alive(delivered, ends), reports.while_alive(budgeted, ends)
         low, high = time_range.value
         what = f"{picked} spending" if picked else "spending"
         unit = f"{mode.label} dollars"
