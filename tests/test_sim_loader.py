@@ -251,7 +251,7 @@ def test_scenario_ref_falls_back_to_ensemble_member_zero(tmp_path: Path) -> None
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
     ref = resolve_scenario_name(repo, "retire_alice")
-    batch_dir = ref.runs_dir / "retire_alice" / "2026-01-01T000000Z"
+    batch_dir = ref.runs_dir / "retire_alice" / "monte-carlo" / "2026-01-01T000000Z"
     batch_dir.mkdir(parents=True)
     (batch_dir / "member_0000.sqlite3").touch()
     (batch_dir / "member_0001.sqlite3").touch()
@@ -2225,3 +2225,23 @@ def test_an_account_defined_by_unrelated_scenarios_gets_a_hint(
                "default (scenarios/retire_alice/account_lots.csv line 4)" in i for i in issues)
     assert ("(Asset_Brokerage_Joint): the account is defined in both retire_alice and side, "
             "which doesn't build on retire_alice") in "\n".join(issues)
+
+
+@pytest.mark.parametrize(("cells", "message"), [
+    ("150%,,,", "exclusion_percent must be 0% to 100%"),
+    ("100%,,90000,", "need a phaseout_start"),
+    ("100%,80000,,", "not both or neither"),
+    ("100%,80000,90000,10%", "not both or neither"),
+    ("100%,80000,70000,", "phaseout_end is below phaseout_start"),
+    ("100%,80000,,0%", "phaseout_rate must be more than 0%"),
+])
+def test_state_social_security_table_is_checked(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+    cells: str, message: str,
+) -> None:
+    """A state_social_security row phases its exclusion out one way (#484)."""
+    write_aux("state_social_security__CA.csv",
+              "effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,"
+              f"phaseout_rate\n2020-01-31,MFJ,{cells}\n")
+    with pytest.raises(LoadError, match=message):
+        load_test_copy()

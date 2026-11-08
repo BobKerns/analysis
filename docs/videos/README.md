@@ -25,8 +25,9 @@ here, and on this machine when it isn't (saying so); `--docker` or `--local`
 chooses. The result is `out/videos/00-pilot.en.mp4`, with its captions
 (`00-pilot.en.srt`) and thumbnail (`00-pilot.en.jpg`) beside it. A native
 build needs `analysis video setup` once first (voice model, VHS, ttyd).
-`python -m analysis.videos` and `scripts/videos/docker.sh` are the two
-halves underneath, and work on their own too.
+`python -m analysis.videos` is the same command run only on this machine
+(the container runs it), and `scripts/videos/docker.sh` starts the
+container; both work on their own too.
 
 ## Layout
 

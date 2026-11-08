@@ -16,7 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from analysis.frames import named_rows
+from analysis.frames import index_years, named_rows
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.types import Death, DollarMode
 
@@ -24,8 +24,10 @@ __all__ = [
     "ABSENT", "META_COLUMNS", "RULE_COMPARE_COLUMNS",
     "account_definition_differences", "all_nan_columns", "balance_by_month", "breakeven_month",
     "breakeven_summary", "comparability", "drift_by_scenario", "drift_targets", "event_differences",
-    "net_worth_by_month", "rule_differences", "strategy_activity", "strategy_differences",
-    "target_differences", "uses_strategies", "variant_delta", "year_end_comparison", "year_to_date_differences",
+    "net_worth_by_month", "rule_differences", "ss_by_year", "ss_differs", "ss_gross_by_month",
+    "ss_summary", "strategy_activity", "strategy_differences", "target_differences", "tax_by_scenario",
+    "tax_comparison", "tax_differs", "tax_summary", "uses_strategies", "variant_delta",
+    "year_end_comparison", "year_to_date_differences",
 ]
 
 # ---------- are the runs comparable? ----------
@@ -440,6 +442,129 @@ def scenario_deaths(connections: Mapping[str, RunConnection], scenarios: Sequenc
         {death for name in scenarios for death in connections[name].deaths()},
         key=lambda d: (d.month, d.person),
     )
+
+
+# ---------- Social Security and tax (#335, #336) ----------
+
+
+def ss_gross_by_month(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str],
+    mode: DollarMode = DollarMode.NOMINAL,
+) -> pd.DataFrame:
+    """Gross Social Security received by month (before Medicare is withheld),
+    one column per scenario, over every run's months: zero in a month or a
+    scenario with none. In CPI-constant dollars each month's benefit takes
+    that month's CPI; a run with no CPI index gives NaN."""
+    columns: dict[str, pd.Series] = {}
+    months = pd.DatetimeIndex([], name="month")
+    for name in scenarios:
+        rc = connections[name]
+        months = months.union(pd.DatetimeIndex(rc.cpi_index().index))
+        ss = rc.ss_gross_by_month()
+        columns[name] = rc.to_cpi_constant(ss) if mode == DollarMode.CPI_CONSTANT else ss
+    frame = pd.DataFrame(columns, columns=list(scenarios))
+    frame = frame.reindex(months.union(pd.DatetimeIndex(frame.index)))
+    for name, ss in columns.items():
+        if ss.empty or ss.notna().any():
+            frame[name] = frame[name].fillna(0.0)
+    frame.index.name = "month"
+    return frame
+
+
+def ss_by_year(ss: pd.DataFrame, baseline: str, variants: Sequence[str]) -> pd.DataFrame:
+    """``ss_gross_by_month`` summed by calendar year, then a ``Δ name``
+    column per variant: its benefit less the baseline's."""
+    yearly = ss.groupby(index_years(ss)).sum(min_count=1)
+    yearly.index.name = "year"
+    for name in variants:
+        yearly[f"Δ {name}"] = yearly[name] - yearly[baseline]
+    return yearly
+
+
+def ss_summary(ss: pd.DataFrame, baseline: str) -> pd.DataFrame:
+    """Per scenario over the whole run: lifetime gross Social Security
+    (``gross_ss``), and ``Δ gross_ss``, its difference from the baseline's."""
+    lifetime = ss.sum(min_count=1)
+    frame = pd.DataFrame({"gross_ss": lifetime, "Δ gross_ss": lifetime - lifetime[baseline]})
+    frame.index.name = "scenario"
+    return frame
+
+
+def ss_differs(ss: pd.DataFrame) -> bool:
+    """Whether any scenario's monthly benefit differs from another's by a
+    dollar or more."""
+    return bool((ss.max(axis=1) - ss.min(axis=1)).ge(1).any())
+
+
+def tax_by_scenario(
+    connections: Mapping[str, RunConnection], scenarios: Sequence[str],
+    mode: DollarMode = DollarMode.NOMINAL,
+) -> dict[str, pd.DataFrame]:
+    """Each run's ``reports.tax_by_year`` (the table ``sim report tax``
+    prints), by scenario, in ``mode`` dollars."""
+    from analysis.sim.reports import tax_by_year
+
+    return {name: tax_by_year(connections[name], mode) for name in scenarios}
+
+
+def _total_tax(tax: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    """Each scenario's ``total_tax`` by tax year, zero in a year (or a run)
+    with none: a scenario without tax rules owes nothing."""
+    frame = pd.DataFrame({name: table["total_tax"] for name, table in tax.items()},
+                         columns=list(tax)).fillna(0.0)
+    frame.index.name = "year"
+    return frame
+
+
+def tax_comparison(
+    tax: Mapping[str, pd.DataFrame], baseline: str, variants: Sequence[str],
+) -> pd.DataFrame:
+    """Total tax (federal and state liability) by tax year: a column per
+    scenario, then ``Δ name``, each variant's less the baseline's (negative
+    owes less)."""
+    frame = _total_tax(tax)
+    for name in variants:
+        frame[f"Δ {name}"] = frame[name] - frame[baseline]
+    return frame
+
+
+def tax_differs(comparison: pd.DataFrame) -> pd.Series:
+    """The years of ``tax_comparison`` where some variant's tax differs from
+    the baseline's by a dollar or more."""
+    deltas = comparison[[c for c in comparison.columns if str(c).startswith("Δ ")]]
+    return deltas.abs().ge(1).any(axis=1)
+
+
+def tax_summary(
+    tax: Mapping[str, pd.DataFrame], ss: pd.DataFrame, nw: pd.DataFrame, baseline: str,
+) -> pd.DataFrame:
+    """Per scenario over the whole run, what a plan costs in tax and what it
+    buys: lifetime ``fed_tax``, ``state_tax`` and ``local_tax`` (state and
+    local only when a run computes them, #487), ``total_tax`` and ``Δ tax`` (less the baseline's), lifetime
+    ``gross_ss`` and ``Δ ss``, then ``Δ ss net of tax`` (Δ ss less Δ tax),
+    and ``final_net_worth``, ``nw``'s last month each run has."""
+    def lifetime(column: str) -> pd.Series:
+        return pd.Series({name: t[column].sum() if column in t else 0.0 for name, t in tax.items()})
+
+    total = _total_tax(tax).sum()
+    gross_ss = ss.sum(min_count=1)
+    columns: dict[str, pd.Series] = {"fed_tax": lifetime("fed_tax")}
+    for column in ("state_tax", "local_tax"):
+        if any(column in t for t in tax.values()):
+            columns[column] = lifetime(column)
+    columns |= {
+        "total_tax": total,
+        "Δ tax": total - total[baseline],
+        "gross_ss": gross_ss,
+        "Δ ss": gross_ss - gross_ss[baseline],
+        "Δ ss net of tax": (gross_ss - gross_ss[baseline]) - (total - total[baseline]),
+        "final_net_worth": pd.Series({
+            name: nw[name].dropna().iloc[-1] if name in nw and nw[name].notna().any()
+            else float("nan") for name in tax}),
+    }
+    frame = pd.DataFrame(columns, index=list(tax))
+    frame.index.name = "scenario"
+    return frame
 
 
 # ---------- strategies (#359) ----------

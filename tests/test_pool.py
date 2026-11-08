@@ -279,7 +279,7 @@ def test_a_pool_batch_links_each_member_from_its_component(pool_batch: Path, sta
     assert pl.shared_seed(record) == 7
     for j, component in enumerate(record["member_components"]):
         source = next(s for s in record["sources"] if s["component"] == component)
-        original = state_dir / "runs" / component / source["batch"] / f"member_{j:04d}.sqlite3"
+        original = state_dir / "runs" / component / "monte-carlo" / source["batch"] / f"member_{j:04d}.sqlite3"
         assert (pool_batch / original.name).stat().st_ino == original.stat().st_ino
     # The draws database keeps each component's nodes apart: only e_b draws the gift.
     frames = draws_frames(pool_batch)

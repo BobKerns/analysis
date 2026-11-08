@@ -31,6 +31,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | scheduled transactions | `analysis sim scheduled list` |
 | one-time transfers | `analysis sim transfer list` |
 | the scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `analysis sim scenario show [SCENARIO]` |
+| every run, with its status (a notebook opens a scenario's newest run that succeeded, names it under the picker, and warns of a newer one that failed) | `analysis sim list` |
 | persons and their lifespans | `analysis sim person list` |
 | each person's age-at-death distribution, and the household's last death (`lifespan.ipynb`) | `analysis sim person show [PERSON] [--graph]` |
 | calendar events of every kind, with their variation | `analysis sim calendar list [--kind KIND] [--tag TAG]` |
@@ -39,6 +40,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | a run's summary: provenance, lots, year-end net worth, negative-balance warnings, years past a guard rail | `analysis sim explain [SCENARIO \| RUNFILE]`; every notebook that opens a run lists its negative-balance warnings under the scenario picker |
 | net worth by year or month, CPI-constant (default) or nominal | `analysis sim networth [SCENARIO] [--monthly] [--dollars cpi_constant\|nominal] [--chart]` |
 | balance history of an account or lot (`accounts.ipynb`) | `analysis sim account history ACCOUNT [--lot LOT] [--yearly] [--chart]` |
+| basis step-ups at a death, with the rule that applied (`accounts.ipynb`) | `analysis sim explain [SCENARIO \| RUNFILE]` |
 | income and expenses by category (`net_worth.ipynb`) | `analysis sim report income`, `analysis sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--chart]` |
 | economic income carried down to the change in net worth, after tax or pre-tax (`net_worth.ipynb`) | `analysis sim report income [--pre-tax] [--chart]` |
 | realized vs. unrealized gains (`net_worth.ipynb`) | `analysis sim report gains [--chart]` |
@@ -49,7 +51,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | a scenario's guard rails, as defined | `analysis sim guard-rail list` |
 | every event, filtered by reason/tax/account/date | none yet (#189) |
 | an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot, and its fan chart | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]] [--log] [--chart]` |
-| two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, guard rails, strategies, spending, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--section SECTION] [--account NAME [--lot LOT]] [--chart]` |
+| two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, guard rails, strategies, spending, Social Security, tax, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--section SECTION] [--account NAME [--lot LOT]] [--chart]` |
 | an ensemble's members against its guard rails: share past, ever past, RMS overshoot (`ensemble.ipynb`) | `analysis sim ensemble guard-rails <recipe> [--rail NAME] [--chart]` |
 | an ensemble's spending against the plan across members (`ensemble.ipynb`) | `analysis sim ensemble spending <recipe> [--category NAME] [--chart]` |
 | how far an ensemble's portfolios stray from a target set (`ensemble.ipynb`) | `analysis sim ensemble drift <recipe> [--targets SET] [--asset-class CLASS] [--chart]` |

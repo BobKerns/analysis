@@ -57,6 +57,7 @@ from analysis.sim.ensemble import (
     EnsembleError, build_distribution, correlation_links, lifespan_distribution,
     member_run_statuses, read_batch_manifest,
 )
+from analysis.sim.loader import batch_recipe
 from analysis.sim.life_table import LifeTableAge
 from analysis.sim.registries import (
     DATE_MARKER_KIND, LATENT_FACTOR_KIND, LIFE_TABLE_DISTRIBUTION, LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET,
@@ -66,7 +67,7 @@ from analysis.sim.schema import SCHEMA_VERSION, connect_sim_file
 
 __all__ = [
     "DRAWS_DB_FILENAME", "DRAWS_DDL", "CHECK_QUANTILES", "build_draws_db", "draws_db_path",
-    "open_draws_db", "draws_frames", "ks_uniform",
+    "open_draws_db", "draws_frames", "ks_uniform", "row_affects",
 ]
 
 DRAWS_DB_FILENAME = "draws.sqlite3"
@@ -371,7 +372,8 @@ def _unit(target: str, kind: str | None) -> str:
     return "micros" if kind in RATE_MICROS_CALENDAR_KINDS else "cents"
 
 
-def _affects(row: sqlite3.Row) -> str:
+def row_affects(row: sqlite3.Row) -> str:
+    """What a varying calendar row acts on, in the author's own names."""
     if row["kind"] in ("one_off_transfer", "transfer_balance"):
         return f"{row['account_1']} → {row['account_2']}"
     return row["series"] or row["scheduled_name"] or ""
@@ -496,7 +498,7 @@ def _node_records(
             record.update(node_kind="row", calendar_kind=kind, unit=_unit(target, kind))
             if row is not None:
                 record.update(
-                    affects=_marker_affects(cur, name) if kind == DATE_MARKER_KIND else _affects(row),
+                    affects=_marker_affects(cur, name) if kind == DATE_MARKER_KIND else row_affects(row),
                     outcomes=_get(row, "vary_outcomes"),
                     ramp_months=_get(row, "vary_ramp_months"), process=_get(row, "vary_process"),
                     persistence=_get(row, "vary_persistence"),
@@ -641,7 +643,7 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     # own nodes, so nodes, checks and pairs are kept per component.
     pool = pool_record(batch_dir)
     origin = member_components(batch_dir) or {}
-    own_name = batch_dir.parent.name
+    own_name = batch_recipe(batch_dir)
     component_of = {m.index: origin.get(m.index, own_name) for m in members}
 
     member_rows: list[dict[str, Any]] = []
@@ -651,7 +653,7 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     # A batch whose every member failed to resolve has only its manifest:
     # it still lists them, with no nodes or draws.
     batch: dict[str, Any] = {
-        "ensemble_name": batch_dir.parent.name, "batch": batch_dir.name,
+        "ensemble_name": own_name, "batch": batch_dir.name,
         "mode": manifest.get("mode", "monte_carlo"), "member_count": manifest.get("member_count", len(members)),
     }
     # Each component's nodes are described from member 0 where it is the

@@ -330,3 +330,94 @@ def test_lot_rename_reaches_every_scenario(test_data_dir: Path, test_scenarios_d
 def test_lot_rename_of_an_unknown_lot(test_data_dir: Path) -> None:
     result = _sim(test_data_dir, "account", "lot", "rename", "Asset_Brokerage_Joint", "nope", "core")
     assert result.exit_code != 0 and "'Asset_Brokerage_Joint' has no lot 'nope'" in result.output
+
+
+def test_series_rename_follows_a_scenarios_own_tax_table(
+    test_data_dir: Path, test_scenarios_dir: Path, write_series, loads: Callable[[str], None],
+) -> None:
+    """An indexed tax table in a scenario's aux/ names its growth series (#467)."""
+    folder = test_scenarios_dir / "retire_alice"
+    (folder / "series" / "inflation__wages.csv").write_text("effective_date,annual_rate\n2026-01-31,3%\n")
+    (folder / "aux").mkdir(exist_ok=True)
+    table = folder / "aux" / "standard_deduction.csv"
+    table.write_text("effective_date,filing_status,amount,amount_series\n"
+                     "2026-01-31,MFJ,31500.00,wages\n2026-01-31,Single,15750.00,\n"
+                     "2026-01-31,MFS,15750.00,\n")
+    result = _sim(test_data_dir, "series", "rename", "wages", "pay")
+    assert result.exit_code == 0, result.output
+    assert "aux/standard_deduction.csv" in result.output
+    assert _column(table, "amount_series") == ["pay", "", ""]
+    loads("retire_alice")
+
+
+def test_series_rename_refuses_a_series_a_shared_aux_table_names(test_data_dir: Path) -> None:
+    """The templates' irmaa_tiers.csv grows its floors by irmaa_floor."""
+    result = _sim(test_data_dir, "series", "rename", "irmaa_floor", "medicare_floor", scenario="base")
+    assert result.exit_code != 0
+    assert "named by the shared" in result.output and "irmaa_tiers.csv (floor_series)" in result.output
+
+
+def test_series_rename_takes_its_yield_along(test_data_dir: Path, test_scenarios_dir: Path,
+                                             loads: Callable[[str], None]) -> None:
+    """A lot growing at a series pays out at ``<series>_yield`` (#468), found
+    by name: renaming the series renames its yield too, and a yield alone
+    can't be renamed."""
+    series = test_scenarios_dir / "retire_alice" / "series"
+    (series / "rate__brokerage_growth_yield.csv").write_text("effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth_yield", "payout")
+    assert result.exit_code != 0 and "yield series" in result.output, result.output
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth")
+    assert result.exit_code == 0, result.output
+    assert (series / "rate__broker_growth_yield.csv").is_file()
+    assert not (series / "rate__brokerage_growth_yield.csv").exists()
+    loads("retire_alice")
+
+
+def test_series_rename_takes_a_yield_only_a_child_has(test_data_dir: Path, test_scenarios_dir: Path,
+                                                      loads: Callable[[str], None]) -> None:
+    """Renamed from the parent that defines the series, the yield a child
+    scenario adds follows too."""
+    rates = "effective_date,annual_rate\n2026-01-31,6%\n"
+    (test_scenarios_dir / "base" / "series").mkdir(exist_ok=True)
+    (test_scenarios_dir / "base" / "series" / "rate__brokerage_growth.csv").write_text(rates)
+    child = test_scenarios_dir / "retire_alice" / "series"
+    (child / "rate__brokerage_growth_yield.csv").write_text("effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth", scenario="base")
+    assert result.exit_code == 0, result.output
+    assert (child / "rate__broker_growth_yield.csv").is_file()
+    assert not (child / "rate__brokerage_growth_yield.csv").exists()
+    loads("retire_alice")
+
+
+def test_series_rename_refuses_a_yield_from_outside_its_reach(test_data_dir: Path,
+                                                              test_scenarios_dir: Path) -> None:
+    """A yield a parent provides for a series only the child names can't
+    follow the rename without changing the parent's other children: refused."""
+    (test_scenarios_dir / "base" / "series").mkdir(exist_ok=True)
+    (test_scenarios_dir / "base" / "series" / "rate__brokerage_growth_yield.csv").write_text(
+        "effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth")
+    assert result.exit_code != 0 and "doesn't reach: retire_alice (from base)" in result.output, result.output
+    assert (test_scenarios_dir / "retire_alice" / "series" / "rate__brokerage_growth.csv").is_file()
+
+
+def test_series_rename_refuses_a_new_name_whose_yield_exists(test_data_dir: Path,
+                                                             test_scenarios_dir: Path) -> None:
+    """Even with no yield of its own, a series renamed onto a name that has
+    a yield would start paying it out: refused."""
+    series = test_scenarios_dir / "retire_alice" / "series"
+    (series / "rate__broker_growth_yield.csv").write_text("effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth")
+    assert result.exit_code != 0 and "'broker_growth_yield' already applies" in result.output, result.output
+
+
+def test_series_rename_refuses_a_yield_whose_series_only_a_child_has(test_data_dir: Path,
+                                                                     test_scenarios_dir: Path) -> None:
+    """Renamed from the parent that has it, a yield is still one a child's
+    lots pay at, when only the child grows at its series: refused."""
+    (test_scenarios_dir / "base" / "series").mkdir(exist_ok=True)
+    yielded = test_scenarios_dir / "base" / "series" / "rate__brokerage_growth_yield.csv"
+    yielded.write_text("effective_date,annual_rate\n2026-01-31,2%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth_yield", "payout", scenario="base")
+    assert result.exit_code != 0 and "yield series" in result.output, result.output
+    assert yielded.is_file()

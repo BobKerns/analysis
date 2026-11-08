@@ -1,6 +1,7 @@
 """``sim ensemble create`` takes mix-ins like ``sim scenario create`` (#168),
 and under an ensemble parent inherits its seed and member count rather than
-drawing new ones (#169); ``sim scenario create`` never makes an ensemble."""
+drawing new ones (#169); ``sim scenario create`` sets no member count, so
+it inherits its parents' (#369)."""
 
 from __future__ import annotations
 
@@ -93,13 +94,21 @@ def test_seed_and_new_seed_are_exclusive(test_data_dir: Path) -> None:
     assert not (test_data_dir / "scenarios" / "recipe").exists()
 
 
-def test_scenario_create_is_never_an_ensemble(test_data_dir: Path) -> None:
+def test_scenario_create_inherits_its_parents_ensemble(test_data_dir: Path) -> None:
     _create(test_data_dir, "ensemble", "recipe", "retire_alice", "--seed", "7", "--size", "5")
     _create(test_data_dir, "scenario", "what_if", "recipe")
-    assert _own(test_data_dir, "what_if") == ("", {"ensemble_size": 0})
-    # Its seed still inherits; only the size makes it not an ensemble.
-    assert ensemble_settings(test_data_dir, "what_if") == (ScenarioValue(7, inherited=True), None)
-    # And an ensemble made under it starts afresh rather than inheriting.
-    _create(test_data_dir, "ensemble", "again", "what_if")
-    seed, meta = _own(test_data_dir, "again")
-    assert seed and meta == {"ensemble_size": registries.DEFAULT_ENSEMBLE_SIZE}
+    assert _own(test_data_dir, "what_if") == ("", {})
+    assert ensemble_settings(test_data_dir, "what_if") == (
+        ScenarioValue(7, inherited=True), ScenarioValue(5, inherited=True))
+
+
+def test_a_plain_mixin_keeps_an_ensemble_in_either_order(test_data_dir: Path) -> None:
+    """#369: a what-if made by ``sim scenario create`` and mixed into an
+    ensemble, after it or before it, leaves an ensemble that pairs with it."""
+    _create(test_data_dir, "ensemble", "recipe", "retire_alice", "--seed", "7", "--size", "5")
+    _create(test_data_dir, "scenario", "what_if", "retire_alice")
+    for name, parents in (("after", ("recipe", "what_if")), ("before", ("what_if", "recipe"))):
+        _create(test_data_dir, "ensemble", name, *parents)
+        assert _own(test_data_dir, name) == ("", {})
+        assert ensemble_settings(test_data_dir, name) == (
+            ScenarioValue(7, inherited=True), ScenarioValue(5, inherited=True))

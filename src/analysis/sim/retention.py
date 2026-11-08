@@ -18,8 +18,10 @@ rules in ``$ANALYSIS_DATA_DIR/.retention.yaml``, which they create with
       - keep: 7
         since: 30 days
 
-Items are grouped per scenario and kind (single runs, run batches, intent
-batches) and ranked newest first. An item is kept when any rule keeps it, and
+Items are grouped per scenario and kind (single runs, Monte Carlo batches,
+sensitivity batches, and the member intents of each kind of batch: #454
+keeps a sensitivity batch from pushing out Monte Carlo ones) and ranked
+newest first. An item is kept when any rule keeps it, and
 a rule keeps it when any condition it gives holds (``keep: N``: among the N
 newest; ``since: <duration>``: made within that long). Whatever the rules
 say, the newest item of each group is kept (a failed run's latest attempt
@@ -46,6 +48,7 @@ from typing import Any
 import yaml
 
 from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
+from analysis.sim.loader import BATCH_MODE_DIRS
 from analysis.sim.schema import connect_sim_file
 
 __all__ = [
@@ -72,19 +75,22 @@ DEFAULT_RETENTION = """\
 # Retention rules for state/: after each `sim load` and `sim run`, old run
 # files and batches are deleted unless a rule here keeps them (ADR-004 §10).
 #
-# Items are counted per scenario, newest first. An item is kept when any rule
+# Items are counted per scenario, newest first, and Monte Carlo and
+# sensitivity batches apart. An item is kept when any rule
 # in its list keeps it, and a rule keeps it when any of its conditions holds:
 #   keep: N            among the N newest
 #   since: 7 days      made within that long (minutes, hours, days or weeks)
 # Each scenario's newest run and batch, and its newest successful ones, are
 # always kept. Delete a section's rules to keep everything of that kind.
 
-# Ensemble and sensitivity batches' member intents (state/intent/<scenario>/).
+# Ensemble and sensitivity batches' member intents
+# (state/intent/<scenario>/monte-carlo/ and .../sensitivity/).
 intents:
   - keep: 5
     since: 7 days
 
-# Single run files and ensemble/sensitivity batches (state/runs/).
+# Single run files and ensemble/sensitivity batches (state/runs/; batches in
+# state/runs/<scenario>/monte-carlo/ and .../sensitivity/, counted apart).
 runs:
   - keep: 5
     since: 7 days
@@ -101,8 +107,8 @@ logs:
 """
 
 # `sim run` names: `<stamp>[-N]_<scenario>_<data version>.sqlite3` for a
-# single run (locks.reserve_run_path), `<stamp>[-N]` for a batch folder
-# (cli._reserve_batch); -N tells apart runs made in the same second. Only names that
+# single run (locks.reserve_run_path), `<stamp>[-N]` for a batch folder in
+# its mode's folder (cli._reserve_batch, #454); -N tells apart runs made in the same second. Only names that
 # match are ever pruned, so anything else a user keeps there is left alone.
 _STAMP = r"\d{4}-\d\d-\d\dT\d{6}Z"
 _RUN_FILE = re.compile(rf"^({_STAMP})(?:-(\d+))?_(.+)_[^_]+\.sqlite3$")
@@ -152,6 +158,7 @@ class StateItem:
     path: Path
     kind: str  # "run", "batch" (state/runs) or "intent" (state/intent batch)
     scenario: str
+    mode: str  # a batch's or intent batch's mode folder (#454); "" for a run
     made: datetime
     order: tuple[str, int]  # name sort key within the same second
 
@@ -275,13 +282,13 @@ def plan_prune(
     items = [*_run_items(Path(runs_dir)), *_intent_items(Path(intent_dir))]
     for item in items:
         if item.kind != "run" and _is_pinned(item.path, retention.pins):
-            pinned_batches.add((item.scenario, item.path.name))
+            pinned_batches.add((item.scenario, item.mode, item.path.name))
 
     doomed: list[StateItem] = []
-    groups: dict[tuple[str, str], list[StateItem]] = {}
+    groups: dict[tuple[str, str, str], list[StateItem]] = {}
     for item in items:
-        groups.setdefault((item.kind, item.scenario), []).append(item)
-    for (kind, _scenario), group in sorted(groups.items()):
+        groups.setdefault((item.kind, item.scenario, item.mode), []).append(item)
+    for (kind, _scenario, _mode), group in sorted(groups.items()):
         rules = retention.intents if kind == "intent" else retention.runs
         if rules is None:
             continue
@@ -294,7 +301,8 @@ def plan_prune(
                     or _active(item.path, now)
                     or any(rule.keeps(rank, item.made, now) for rule in rules)
                     or _is_pinned(item.path, retention.pins)
-                    or (kind != "run" and (item.scenario, item.path.name) in pinned_batches)):
+                    or (kind != "run"
+                        and (item.scenario, item.mode, item.path.name) in pinned_batches)):
                 continue
             doomed.append(item)
     return doomed
@@ -321,7 +329,8 @@ def prune_state(
             result.runs.append(item.path)
         else:
             shutil.rmtree(item.path)
-            _remove_if_empty(item.path.parent)
+            _remove_if_empty(item.path.parent)  # the mode's folder
+            _remove_if_empty(item.path.parent.parent)  # the scenario's
             (result.batches if item.kind == "batch" else result.intents).append(item.path)
     return result
 
@@ -334,7 +343,7 @@ def _run_items(runs_dir: Path) -> Iterable[StateItem]:
             continue  # only what `sim run` wrote here, never what a link reaches
         match = _RUN_FILE.match(path.name)
         if match and path.is_file():
-            yield StateItem(path, "run", match[3], _stamp(match[1]),
+            yield StateItem(path, "run", match[3], "", _stamp(match[1]),
                             (match[1], int(match[2] or 1)))
         elif path.is_dir():
             yield from _batch_items(path, "batch")
@@ -349,11 +358,15 @@ def _intent_items(intent_dir: Path) -> Iterable[StateItem]:
 
 
 def _batch_items(scenario_dir: Path, kind: str) -> Iterable[StateItem]:
-    for path in scenario_dir.iterdir():
-        match = _BATCH_DIR.match(path.name)
-        if match and path.is_dir() and not path.is_symlink():
-            yield StateItem(path, kind, scenario_dir.name, _stamp(match[1]),
-                        (match[1], int(match[2] or 1)))
+    for mode in BATCH_MODE_DIRS.values():
+        folder = scenario_dir / mode
+        if not folder.is_dir() or folder.is_symlink():
+            continue
+        for path in folder.iterdir():
+            match = _BATCH_DIR.match(path.name)
+            if match and path.is_dir() and not path.is_symlink():
+                yield StateItem(path, kind, scenario_dir.name, mode, _stamp(match[1]),
+                                (match[1], int(match[2] or 1)))
 
 
 def _stamp(text: str) -> datetime:

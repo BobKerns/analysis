@@ -39,6 +39,7 @@ blockifying
 blockquotes
 Bogleheads
 BONDX
+boxstyle
 BPOS
 BUILDKIT
 businesswire
@@ -98,6 +99,7 @@ errstate
 esac
 espeak
 evals
+Evensky
 executemany
 executescript
 execv
@@ -161,9 +163,11 @@ kendalltau
 Kensho
 kernelspec
 killpg
+Kitces
 klinger
 kokoro
 Kolmogorov
+KPERS
 kstest
 labelbottom
 labelcolor
@@ -179,9 +183,11 @@ libedit
 libx
 lifetable
 linalg
+linespacing
 linestyle
 linthresh
 lognormal
+lookback
 lookthrough
 lotb
 lstsq
@@ -204,6 +210,7 @@ msecs
 mtimes
 mult
 multimonth
+Multnomah
 munknown
 nanargmin
 nanmax
@@ -237,6 +244,7 @@ paywalled
 pcon
 pdftotext
 Pewsey
+Pfau
 phonemize
 phonemized
 phonemizer

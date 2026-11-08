@@ -184,8 +184,10 @@ def test_drawdown_years_and_step_up_change_the_deferred_tax(
     assert (stepped["federal_drawdown_base"] < ten["federal_drawdown_base"]).any()
     # The traditional balances are still taxed, while there's enough of them
     # to rise above the deduction beside the later years' Social Security.
-    assert (deferred["2026":"2037"] > 0).all()
-    assert (rates.loc[:2037] > 0).all()
+    # From 2037 what's left, drawn over ten years, stays under the deduction
+    # as it rises with inflation (#467).
+    assert (deferred["2026":"2036"] > 0).all()
+    assert (rates.loc[:2036] > 0).all()
 
 
 @pytest.mark.parametrize(("settings", "message"), [
@@ -232,6 +234,19 @@ def test_sim_networth_is_after_tax_unless_pre_tax(report_run_file: Path) -> None
     ])
     assert pre.output.splitlines()[0].startswith("net worth, nominal dollars")
 
+
+
+@pytest.mark.parametrize("command", ["networth", "explain"])
+def test_a_file_that_is_not_a_run_is_refused_cleanly(command: str, tmp_path: Path) -> None:
+    # An ensemble batch's draws.sqlite3 sits beside its member runs (#377).
+    draws = tmp_path / "draws.sqlite3"
+    con = sqlite3.connect(draws)
+    con.execute("CREATE TABLE draw (member INTEGER)")
+    con.close()
+    result = CliRunner().invoke(main, ["sim", command, "--runfile", str(draws)])
+    assert result.exit_code != 0
+    assert "isn't a run file" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
 
 
 def _explain_year_end(run_file: Path, *extra: str) -> dict[str, tuple[str, str]]:

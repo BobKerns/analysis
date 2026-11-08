@@ -297,9 +297,9 @@ def test_sim_ensemble_compare_graph_draws_every_panel_the_options_ask_for(
     assert result.exit_code == 0, result.output
     (figure,) = figures
     titles = [ax.get_title() for ax in figure.axes]
-    assert len(titles) == 4
-    assert "3 paired members" in titles[0] and "CVaR" in titles[1]
-    assert "(nominal)" in titles[2] and "$1,000,000 reserve" in titles[3]
+    assert len(titles) == 3
+    assert "3 paired members" in titles[0] and "(CVaR, nominal)" in titles[1]
+    assert "$1,000,000 reserve" in titles[2]
     written = next(tmp_path.glob("ensemble-*.png"))
     assert f"wrote {written}" in result.output and written.read_bytes().startswith(PNG_MAGIC)
     assert "can't show images" in result.output
@@ -400,7 +400,7 @@ def test_sim_ensemble_compare_with_several_variants_prints_the_notebooks_two_tab
     from analysis.sim.series_db import open_series
 
     tables = RecipeTables(
-        {name: open_series(runs_dir / name / "2026-01-01T000000Z")
+        {name: open_series(runs_dir / name / "monte-carlo" / "2026-01-01T000000Z")
          for name in ("baseline", "child", "other")},
         None, None, DollarMode.CPI_CONSTANT, 1_000_000.0, after_tax=True)
     assert len(deltas) == len(tables.deltas_table("baseline", ["child", "other"]))
@@ -447,7 +447,7 @@ def test_sim_ensemble_compare_graph_draws_a_column_for_each_variant(
     assert "child − baseline, future by future (3 paired members)" in svg
     assert "other − baseline: no paired futures" in svg
     assert "(the recipes have different seeds" in svg
-    assert "other − baseline: mean of the worst 5% and 20% (CVaR)" in svg
+    assert "other − baseline: mean of the worst 5% and 20% (CVaR, " in svg
 
 
 def test_sim_ensemble_compare_graph_refuses_more_variants_than_it_draws(

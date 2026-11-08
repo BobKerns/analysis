@@ -12,7 +12,7 @@ import pytest
 
 from analysis.videos import script as scripts
 from analysis.videos import youtube
-from analysis.videos.__main__ import check
+from analysis.videos.commands import check
 from analysis.videos.script import ScriptError
 
 

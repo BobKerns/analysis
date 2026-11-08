@@ -74,7 +74,7 @@ def test_recipe_lists_leave_out_disabled_ensembles(
     from analysis.sim.notebook_ui.sensitivity_widgets import list_sensitivity_recipes
 
     for name in ("base", "retire_alice"):
-        batch = runs_dir / name / "2026-10-26T043000Z"
+        batch = runs_dir / name / "monte-carlo" / "2026-10-26T043000Z"
         batch.mkdir(parents=True)
         (batch / "batch_manifest.json").write_text('{"mode": "monte_carlo"}')
     (test_data_dir / "scenarios" / "base" / DISABLE_FILE).write_text("")

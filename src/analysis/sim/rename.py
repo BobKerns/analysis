@@ -30,6 +30,7 @@ from pathlib import Path
 from analysis.sim import chain_edit, registries
 from analysis.sim.dates import RelativeDate, parse_relative_date
 from analysis.sim.lineage import default_description, is_template, load_order, parse_parents
+from analysis.sim.lineage import TEMPLATE_AUX_DIR
 from analysis.sim.lineage import scenario_dir as _folder_of
 from analysis.sim.loader import CURRENT_SCENARIO_FILE, LoadError, load_scenario
 from analysis.sim.schema import connect_sim_file
@@ -40,7 +41,7 @@ __all__ = [
     "clashes", "copy_scenario", "describe_clashes", "generated_growth_rules", "name_problem", "relink_markdown",
     "rename_account", "rename_calendar_row", "rename_growth_rules", "rename_lot_keys", "rename_scenario",
     "rename_scheduled", "rename_series", "scenario_folders", "scheduled_defined", "scope",
-    "series_mentioned", "shared_series_files", "symbol_series",
+    "series_mentioned", "shared_series_files", "sources", "shared_series_references", "symbol_series",
 ]
 
 Defines = Callable[[Path], bool]
@@ -88,6 +89,14 @@ def clashes(scenarios_dir: Path, affected: Iterable[str], defines: Defines) -> d
                 found[each] = source
                 break
     return found
+
+
+def sources(scenarios_dir: Path, affected: Iterable[str], defines: Defines) -> dict[str, list[str]]:
+    """For each affected scenario, every scenario in its load order that
+    defines a name (itself included), nearest first; [] where none does."""
+    return {each: [source for source in reversed(load_order(scenarios_dir, each))
+                   if defines(_folder_of(scenarios_dir, source))]
+            for each in affected}
 
 
 def describe_clashes(found: dict[str, str]) -> str:
@@ -143,13 +152,14 @@ def account_defined(name: str) -> Defines:
     return lambda scenario_dir: name in _cells(scenario_dir / "accounts.csv", ("name",))
 
 
-RESERVED_ACCOUNTS = frozenset(c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values())
-"""Accounts the loader makes for declared growth when no scenario has one;
+RESERVED_ACCOUNTS = frozenset(
+    c.name for c in (*registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.PAYOUT_ACCOUNTS.values()))
+"""Accounts the loader makes for declared growth and payouts (#468) when no scenario has one;
 a rename onto one of these names would turn an account into the built-in."""
 
 
 _GROWTH_RULES = """
-SELECT st.name, a.name, l.lot
+SELECT st.name, a.name, l.lot, fa.name
 FROM scheduled_transaction st
 JOIN chain f ON f.id = st.from_account JOIN account fa ON fa.id = f.account_id
 JOIN chain t ON t.id = st.to_account JOIN account a ON a.id = t.account_id
@@ -158,9 +168,10 @@ WHERE fa.name IN ({})
 """
 
 
-def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str], str]:
-    """The growth rule the loader generates for each (account, lot) of
-    ``scenario``, by name: read from a load, since the name depends on what
+def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str, str], str]:
+    """The growth and payout (#468) rules the loader generates for each
+    (account, lot) of ``scenario``, by (account, lot, built-in account the
+    rule is from), by name: read from a load, since the name depends on what
     other rules the scenario has (``loader.growth_rule_name``). {} if the
     scenario doesn't load; the staged edit reports that."""
     scenarios = data_dir / "scenarios"
@@ -179,7 +190,7 @@ def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str
                                sorted(RESERVED_ACCOUNTS)).fetchall()
         finally:
             con.close()
-    return {(account, lot): name for name, account, lot in rows if name not in authored}
+    return {(account, lot, source): name for name, account, lot, source in rows if name not in authored}
 
 
 def rename_growth_rules(scenario_dir: Path, rules: dict[str, str]) -> list[str]:
@@ -329,6 +340,32 @@ def shared_series_files(data_dir: Path, name: str) -> list[Path]:
     return _series_files(data_dir / "aux", name)
 
 
+def _aux_series_tables(aux_dir: Path) -> list[tuple[Path, tuple[str, ...]]]:
+    """The tables in an ``aux/`` folder with columns naming an inflation
+    series (an IRMAA tier's growth, an indexed tax table's, #467), with
+    those columns."""
+    if not aux_dir.is_dir():
+        return []
+    return [(path, columns) for path in sorted(aux_dir.glob("*.csv"))
+            if (columns := registries.AUX_SERIES_REFERENCE_COLUMNS.get(path.stem.split("__", 1)[0]))]
+
+
+def shared_series_references(data_dir: Path, name: str) -> list[str]:
+    """The shared aux tables (the data repo's ``aux/``, or a template's it
+    doesn't replace) naming series ``name`` in a growth column. Every
+    scenario reads them, and a template isn't the data repo's to change."""
+    shared = {path.name: path for path, _ in _aux_series_tables(TEMPLATE_AUX_DIR)}
+    shared.update({path.name: path for path, _ in _aux_series_tables(data_dir / "aux")})
+    found = []
+    for path in shared.values():
+        columns = registries.AUX_SERIES_REFERENCE_COLUMNS[path.stem.split("__", 1)[0]]
+        for column in columns:
+            if name in _cells(path, (column,)):
+                where = "templates/aux" if path.parent == TEMPLATE_AUX_DIR else "aux"
+                found.append(f"{where}/{path.name} ({column})")
+    return found
+
+
 def series_mentioned(name: str) -> Defines:
     """A series has no single defining row: rates for it may come from a
     file, a calendar row, or both, and it is named in several columns. Any
@@ -336,7 +373,9 @@ def series_mentioned(name: str) -> Defines:
     def mentioned(scenario_dir: Path) -> bool:
         return (any(_series_files(scenario_dir / folder, name) for folder in _SERIES_FOLDERS)
                 or any(name in _cells(scenario_dir / f, cols) for f, cols in SERIES_COLUMNS.items())
-                or any(name in _cells(path, ("series",)) for path in chain_edit.chain_files(scenario_dir)))
+                or any(name in _cells(path, ("series",)) for path in chain_edit.chain_files(scenario_dir))
+                or any(name in _cells(path, columns)
+                       for path, columns in _aux_series_tables(scenario_dir / "aux")))
     return mentioned
 
 
@@ -351,8 +390,10 @@ def rename_series(scenario_dir: Path, old: str, new: str) -> list[str]:
                 raise FileExistsError(f"{scenario_dir.name} already has {folder}/{target.name}")
             path.rename(target)
             changed.append(f"{folder}/{path.name} -> {folder}/{target.name}")
+    tables = [f"aux/{path.name}" for path, columns in _aux_series_tables(scenario_dir / "aux")
+              if chain_edit.rename_cells(path, columns, old, new)]
     return [*changed, *_rename_in(scenario_dir, SERIES_COLUMNS, old, new),
-            *_rename_in_chains(scenario_dir, ("series",), old, new)]
+            *_rename_in_chains(scenario_dir, ("series",), old, new), *tables]
 
 
 # ---------- allocations.csv lot keys ----------

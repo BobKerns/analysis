@@ -111,13 +111,13 @@ def test_a_small_cut_still_counts_as_cut() -> None:
 def test_sim_ensemble_spending(cut_batch: Path, tmp_path: Path) -> None:
     graph = tmp_path / "spending.png"
     result = CliRunner().invoke(main, [
-        "sim", "ensemble", "spending", SCENARIO, "--runs-dir", str(cut_batch.parent.parent),
+        "sim", "ensemble", "spending", SCENARIO, "--runs-dir", str(cut_batch.parent.parent.parent),
         "--chart-file", str(graph), "--table"], terminal_width=200)
     assert result.exit_code == 0, result.output
     assert "3 member(s)" in result.output and "cvar05" in result.output
     assert "members ever cut 100%" in result.output
     assert graph.stat().st_size > 0
-    runs = ["--runs-dir", str(cut_batch.parent.parent)]
+    runs = ["--runs-dir", str(cut_batch.parent.parent.parent)]
     result = CliRunner().invoke(main, ["sim", "ensemble", "spending", SCENARIO, *runs,
                                        "--category", "business"])
     assert result.exit_code == 0, result.output
@@ -199,7 +199,7 @@ def test_the_ensemble_spending_widget_draws_a_batch(
 ) -> None:
     from analysis.sim.notebook_ui.ensemble_widgets import ensemble_spending_widget
 
-    box = ensemble_spending_widget(data_dir=strategy_scenarios, runs_dir=cut_batch.parent.parent,
+    box = ensemble_spending_widget(data_dir=strategy_scenarios, runs_dir=cut_batch.parent.parent.parent,
                                    default=SCENARIO)
     category = box.children[1].children[0]
     assert "other" in category.options

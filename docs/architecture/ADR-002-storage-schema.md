@@ -121,7 +121,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 55) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 57) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -455,6 +455,7 @@ CREATE TABLE scheduled_transaction (
                                  'return_of_capital','property_tax','none',
                                  'excluded_gain','home_sale',
                                  'capital_improvement','roth_nonqualified',
+                                 'qualified_dividend',
                                  'business_income','business_expense')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
@@ -554,7 +555,8 @@ CREATE TABLE year_to_date (
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
                          'excluded_gain','home_sale','capital_improvement',
-                         'roth_nonqualified','business_income','business_expense')),
+                         'roth_nonqualified','qualified_dividend',
+                         'business_income','business_expense')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
@@ -638,7 +640,7 @@ CREATE TABLE ensemble_path_shock (
 );
 ```
 
-A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
+A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<mode>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
 
 ### Intent manifest (intent files only)
 
@@ -856,7 +858,10 @@ CREATE TABLE basis_step_up (
     person          TEXT NOT NULL,
     balance         INTEGER NOT NULL,
     basis_before    INTEGER NOT NULL,
-    basis_after     INTEGER NOT NULL
+    basis_after     INTEGER NOT NULL,
+    -- #434: why, one of step_ups.RULES (owner, inherited, joint_half,
+    -- community_property, last_survivor).
+    rule            TEXT NOT NULL
 );
 
 CREATE TABLE applied_calendar_event (
@@ -926,7 +931,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
-| `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, and the basis before and after. No money moves. |
+| `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, the basis before and after, and the `rule` that decided it (`owner`, `inherited`, `joint_half`, `community_property`, `last_survivor`). No money moves. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
 | `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
@@ -1122,3 +1127,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#408](https://github.com/BobKerns/analysis/issues/408): `strategy_vary`, a strategy's varied parameters (Intent layer DDL, glossary; schema 53); a strategy is one file, `strategies/<name>.csv` (data repo layout).
 - [#421](https://github.com/BobKerns/analysis/issues/421): year-end strategy moves: `transfer_event.reason_kind` `strategy` and `strategy_decision.hook` `year_end` (Ledger layer DDL, glossary), and the expense subkind `gift` (Intent layer DDL; schema 54).
 - [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
+- [#468](https://github.com/BobKerns/analysis/issues/468): the tax character `qualified_dividend` on `scheduled_transaction` and `year_to_date` (Intent layer DDL; schema 56).
+- [#434](https://github.com/BobKerns/analysis/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 57).

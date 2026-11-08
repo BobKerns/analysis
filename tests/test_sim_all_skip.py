@@ -164,3 +164,33 @@ def test_a_disabled_scenario_is_not_built_and_changes_no_child(
     assert "disabled, not built: base" in output
     assert "=== base ===" not in output
     assert _skipped(output) == ["retire_alice"]
+
+
+@pytest.mark.slow
+def test_a_sensitivity_batch_is_current_until_its_inputs_change(
+    code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
+    commit_test_data: Callable[[], Path], intent_dir: Path,
+) -> None:
+    """#454: what the builder asks before making a sensitivity batch."""
+    data_dir = commit_test_data()
+
+    def sim(*args: str) -> None:
+        result = CliRunner().invoke(main, ["sim", *args, "--data-dir", str(data_dir)])
+        assert result.exit_code == 0, result.output
+
+    sim("ensemble", "create", "recipe", "retire_alice", "--size", "2")
+    sim("calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+        "--scenario", "recipe", "--name", "checking_rate_vary", "--vary-target", "amount",
+        "--vary-distribution", "uniform", "--vary-low", "4.0", "--vary-high", "5.0")
+    _commit(git.Repo(data_dir), {}, "recipe")
+    code = freshness.code_tree_of(code_repo)
+    assert freshness.unchanged_run(data_dir, runs_dir, "recipe", code, mode="sensitivity") is None
+    sim("run", "recipe", "--sensitivity", "--intent-dir", str(intent_dir),
+        "--runs-dir", str(runs_dir), "--allow-dirty-code")
+    stamp_runs(runs_dir)
+    fresh = freshness.unchanged_run(data_dir, runs_dir, "recipe", code, mode="sensitivity")
+    assert fresh is not None and fresh.path.parent == runs_dir / "recipe" / "sensitivity"
+    # The Monte Carlo side has nothing yet.
+    assert freshness.unchanged_run(data_dir, runs_dir, "recipe", code) is None
+    _commit(git.Repo(data_dir), {"scenarios/recipe/README.md": "changed\n"}, "edit")
+    assert freshness.unchanged_run(data_dir, runs_dir, "recipe", code, mode="sensitivity") is None

@@ -55,8 +55,12 @@ Each file has two columns:
 - `annual_rate`: the annual rate as a percent, with its sign (`4.5%`).
 
 A file here replaces the parent scenario's file of the same name; a series
-with no file here is inherited from the parent. CPI is the exception: it
+with no file here is inherited from the parent. A file with only its
+header empties the series: this scenario has none, and a scenario built on
+it that reads the series must supply its own. CPI is the exception: it
 lives in `aux/inflation__cpi.csv`, not here.
+
+`sim series list|show|add|edit|delete|revert` read and change these files.
 
 Details: ADR-003 sections 4.1d and 4.4 in the analysis code repository.
 """

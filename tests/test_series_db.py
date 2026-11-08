@@ -165,7 +165,7 @@ def test_controls_read_the_last_finished_batch_while_one_builds(
 
     seeded_ensemble_batch("baseline", 1)
     finished = seeded_ensemble_batch("child", 1)
-    building = runs_dir / "child" / "2026-01-02T000000Z"
+    building = runs_dir / "child" / "monte-carlo" / "2026-01-02T000000Z"
     building.mkdir()
     (building / "batch_manifest.json").write_text('{"mode": "monte_carlo"}')
     (building / "member_0000.sqlite3").touch()

@@ -18,17 +18,18 @@ import dataclasses
 import json
 import sqlite3
 from collections.abc import Callable, Collection, Iterator, Mapping
-from datetime import date
+from datetime import date, timedelta
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
 import numpy as np
 
-from analysis.sim import guard_rails, registries
-from analysis.sim.asset_classes import class_weights, weight_sets, weights_at
+from analysis.sim import guard_rails, life_table, registries
+from analysis.sim.dates import add_month_ends
+from analysis.sim.asset_classes import GROWTH_SERIES_SQL, class_weights, weight_sets, weights_at
 from analysis.sim.measures import RailYears
 from analysis.sim.strategy_api import (
-    BreachView, ChainView, Context, Decision, History, LotRef, LotView, PersonView, Put, Realize,
+    BreachView, ChainView, Context, Decision, History, LotRef, LotView, Mortality, PersonView, Put, Realize,
     RuleView, Spend, StepView, Strategy, StrategyError, Take, TaxView, Transfer,
 )
 from analysis.sim.types import DollarMode
@@ -91,6 +92,83 @@ class _Lots(Mapping[LotRef, LotView]):
         return ref in self._refs
 
 
+class _TableMortality(Mortality):
+    """``ctx.survival_years``, ``life_expectancy`` and ``rmd_divisor`` from
+    the intent's aux tables (#459). Each person is read from the life table
+    their lifespan row names, with its set-forward (the household's stated
+    mortality, solved at load and never redrawn), else ``life_table.csv``.
+    The lifespan's ``final_month``, which an ensemble member draws, is never
+    read: planning to it would be foreknowledge."""
+
+    def __init__(self, con: sqlite3.Connection) -> None:
+        self._con = con
+        self._birth: dict[str, date] = {}
+        self._sex: dict[str, str | None] = {}
+        for pid, birth, sex in con.execute("SELECT id, birthdate, sex FROM person"):
+            if birth:
+                self._birth[pid] = date.fromisoformat(birth)
+            self._sex[pid] = sex or None
+        columns = {row[1] for row in con.execute("PRAGMA table_info(person_lifespan)")}
+        self._lifespan: dict[str, tuple[str | None, float]] = {}
+        if {"life_table", "life_table_set_forward"} <= columns:
+            for pid, name, forward in con.execute(
+                    "SELECT person, life_table, life_table_set_forward FROM person_lifespan"):
+                self._lifespan[pid] = (name or None, forward or 0.0)
+        self._curves: dict[tuple[str, date], list[float]] = {}
+
+    def _curve(self, person: str, month: date) -> list[float]:
+        key = (person, month)
+        curve = self._curves.get(key)
+        if curve is None:
+            birth = self._birth.get(person)
+            sex = self._sex.get(person)
+            if birth is None or sex is None:
+                raise StrategyError(f"{person} needs a birthdate and a sex in persons.csv for a life table")
+            name, forward = self._lifespan.get(person, (None, 0.0))
+            try:
+                table = life_table.life_table_in(self._con, sex, month.isoformat(), name)
+            except life_table.LifeTableError as e:
+                raise StrategyError(str(e)) from None
+            curve = self._curves[key] = life_table.survival_curve(
+                table, life_table.months_since_birth(birth, month), forward)
+        return curve
+
+    def survival_years(self, probability: float, people: tuple[str, ...], month: date) -> int:
+        curves = [self._curve(p, month) for p in people]
+        longest = max(len(c) for c in curves)
+        for years in range(1, longest // 12 + 2):
+            k = 12 * years - 1
+            none_alive = 1.0
+            for c in curves:
+                none_alive *= 1.0 - (c[k] if k < len(c) else 0.0)
+            if 1.0 - none_alive < probability:
+                return years
+        return longest // 12 + 1
+
+    def life_expectancy(self, person: str, month: date) -> float:
+        curve = self._curve(person, month)
+        alive = [1.0, *curve]
+        return sum((a + b) / 2 for a, b in zip(alive, alive[1:], strict=False)) / 12
+
+    def rmd_divisor(self, person: str, month: date) -> float | None:
+        # Read each time, not cached: a swap_aux_table event can replace the
+        # table mid-run. The lookup matches the rmd rule's: the latest row in
+        # force for this age (engine._lookup_rmd_factor).
+        birth = self._birth.get(person)
+        if birth is None:
+            raise StrategyError(f"rmd_divisor: {person} has no birthdate")
+        age = month.year - birth.year
+        found = None
+        for _effective, payload_json in self._con.execute(
+                "SELECT effective_date, payload_json FROM aux_table "
+                "WHERE kind = 'rmd_factors' AND series IS NULL AND effective_date <= ? "
+                "ORDER BY effective_date, id", (month.isoformat(),)):
+            payload = json.loads(payload_json)
+            if int(payload.get("age", -1)) == age:
+                found = payload["factor_micros"] / 1_000_000
+        return found
+
+
 class StrategyRuntime:
     """Everything the engine needs to ask a run's strategies."""
 
@@ -135,6 +213,7 @@ class StrategyRuntime:
         self._started: set[int] = set()
         # ctx.people, made once a month: it changes only with the month.
         self._people_month: tuple[date, Mapping[str, PersonView]] | None = None
+        self._mortality = _TableMortality(con)
         self._people = [
             (pid, role or None, date.fromisoformat(birth) if birth else None)
             for pid, role, birth in con.execute("SELECT id, role, birthdate FROM person ORDER BY id")
@@ -196,6 +275,7 @@ class StrategyRuntime:
             (name, as_of, asset_class, weight / 1_000_000) for name, as_of, asset_class, weight
             in con.execute("SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")
         )
+        self._growth_series: dict[int, str] = dict(con.execute(GROWTH_SERIES_SQL).fetchall())
         self._weights_cache: dict[tuple[int, str], dict[str, float]] = {}
         self._roth_cache: dict[tuple[int, date], bool | None] = {}
         self._chain_views: dict[int, ChainView] = {}
@@ -281,6 +361,7 @@ class StrategyRuntime:
             cached = class_weights(
                 symbol=info.symbol, account=info.ref.account, lot=info.ref.lot,
                 subkind=info.subkind, sets=self._sets, date=month_s,
+                series=self._growth_series.get(lot_id),
             )
             self._weights_cache[key] = cached
         return cached
@@ -323,10 +404,12 @@ class StrategyRuntime:
             people=self._people_at(month),
             budget=lambda: self._budget(owned, month),
             annual_return=self._annual_return,
+            trailing_return=lambda refs, months: self._trailing_return(refs, months, month),
             tax=self._tax_view(month),
             history=History(lambda: self._history_months(month),
                             lambda refs: self._history_balances(refs, month)),
             rail=self._rail if self._rails else None,
+            mortality=self._mortality,
         )
 
     def _history_months(self, month: date) -> tuple[date, ...]:
@@ -431,12 +514,45 @@ class StrategyRuntime:
         growth = self._growth(ids, year)
         return growth / base
 
+    def _trailing_return(self, refs: tuple[LotRef, ...], months: int, month: date) -> float | None:
+        """Growth posted to ``refs`` in the ``months`` months before ``month``
+        over their balance at the end of the month before that window (#463)."""
+        first = self._first_month
+        if first is None or month <= first:
+            return None
+        ids = [self.lot_id[ref] for ref in refs if ref in self.lot_id]
+        if not ids:
+            return None
+        last = add_month_ends(month, -1)
+        since = add_month_ends(month, -months - 1)
+        if since < first:
+            base = sum(self._opening.get(i, 0) for i in ids)
+            lo = date(first.year, first.month, 1)
+        else:
+            marks = ",".join("?" * len(ids))
+            row = self._con.execute(
+                f"SELECT COALESCE(SUM(ls.balance), 0) FROM lot_state ls "
+                f"JOIN simulation_step s ON s.id = ls.step_id "
+                f"WHERE s.month = ? AND ls.lot_id IN ({marks})",
+                (since.isoformat(), *ids),
+            ).fetchone()
+            base = row[0]
+            lo = since + timedelta(days=1)
+        if base <= 0:
+            return None
+        return self._growth_between(ids, lo, last) / base
+
     def _growth(self, ids: list[int], year: int) -> int:
+        return self._growth_between(ids, date(year, 1, 1), date(year, 12, 31))
+
+    def _growth_between(self, ids: list[int], start: date, end: date) -> int:
+        """Growth posted to ``ids`` dated ``start`` through ``end``: what the
+        growth sources paid them, less what they paid back (a loss)."""
         if not self._growth_sources:
             return 0
         marks = ",".join("?" * len(ids))
         sources = ",".join("?" * len(self._growth_sources))
-        lo, hi = f"{year}-01-01", f"{year}-12-31"
+        lo, hi = start.isoformat(), end.isoformat()
         src = sorted(self._growth_sources)
         row = self._con.execute(
             f"SELECT "

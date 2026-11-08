@@ -282,6 +282,20 @@ def test_breakeven_of_no_months_is_none() -> None:
     assert breakeven_month(pd.Series([], dtype=float)) is None
 
 
+def test_breakeven_month_never_ahead_returns_none() -> None:
+    idx = pd.date_range("2026-01-31", periods=3, freq="ME")
+    series = pd.Series([-1.0, -2.0, -3.0], index=idx)
+
+    assert compare.breakeven_month(series) is None
+
+
+def test_breakeven_month_finds_first_month_that_stays_ahead() -> None:
+    idx = pd.date_range("2026-01-31", periods=4, freq="ME")
+    series = pd.Series([-1.0, 1.0, -1.0, 1.0], index=idx)
+
+    assert compare.breakeven_month(series) == idx[3]
+
+
 def test_scenario_run_path_matches_the_whole_scenario_name(runs_dir: Path) -> None:
     """``base``'s run is never ``higher_base``'s, though the file names share
     a ``_base_`` segment."""
@@ -399,3 +413,124 @@ def test_rule_differences_show_every_field_as_it_reads() -> None:
         ("ss_bill", "claim_age"): {"base": "70", "early": "67"},
     }
     assert compare.rule_differences(runs, ["base", "base"], "base").empty
+
+
+# ---------- Social Security and tax (#335, #336) ----------
+
+
+@pytest.mark.slow
+def test_sim_compare_social_security_by_year_and_over_the_run(
+    compare_runs: Callable[..., Result], test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+    derive_scenario: Callable[..., Path], scheduled_override: Callable[..., str], tmp_path: Path,
+) -> None:
+    default = compare_runs("retire_alice", "higher_pay", "--dollars", "nominal")
+    assert "Social Security" not in default.output  # the same benefits: left out unasked
+    derive_scenario("bigger_ss", "retire_alice",
+                    {"scheduled.csv": scheduled_override(ss_alice="3500.00")})
+    _invoke("run", "bigger_ss", "--data-dir", str(test_data_dir), "--intent-dir", str(intent_dir),
+            "--runs-dir", str(runs_dir), "--allow-dirty-data")
+    chart = tmp_path / "ss.svg"
+    result = compare_runs("retire_alice", "bigger_ss", "--section", "social-security",
+                          "--dollars", "nominal", "--chart-file", str(chart), "--table")
+    assert result.exit_code == 0, result.output
+    assert "Gross Social Security, nominal" in chart.read_text()
+    yearly = _section(result.output, "Gross Social Security by year (nominal):")
+    assert yearly[0].split() == ["year", "retire_alice", "bigger_ss", "Δ", "bigger_ss"]
+    assert all(line.split()[-1].startswith("$") for line in yearly[1:])  # never less
+    lifetime = _section(result.output, "Gross Social Security over the run (nominal)")
+    assert lifetime[0].split() == ["scenario", "gross_ss", "Δ", "gross_ss"]
+    assert lifetime[1].split()[-1] == "$0"
+    assert lifetime[2].split()[-1] != "$0"
+    assert "Total tax" not in result.output
+
+
+@pytest.mark.slow
+def test_sim_compare_tax_matches_sim_report_tax(
+    business_scenarios: Path, test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    from analysis.sim.connection import open_run
+    from analysis.sim.loader import scenario_run_path
+    from analysis.sim.reports import tax_by_year
+    from analysis.sim.types import DollarMode
+
+    names = ("alice_business", "alice_business_hobby")
+    for name in names:
+        _invoke("run", name, "--data-dir", str(test_data_dir), "--intent-dir", str(intent_dir),
+                "--runs-dir", str(runs_dir), "--allow-dirty-data")
+    result = CliRunner().invoke(main, [
+        "sim", "compare", *names, "--section", "tax", "--dollars", "nominal",
+        "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir)])
+    assert result.exit_code == 0, result.output
+    heading = "Total tax by tax year (nominal)"
+    rows = _section(result.output, heading)
+    assert rows[0].split() == ["year", *names, "Δ", names[1]]
+    totals = {}
+    for name in names:
+        run = scenario_run_path(runs_dir, name)
+        assert run is not None
+        with open_run(run, name, scenarios_dir=business_scenarios, data_dir=test_data_dir) as rc:
+            totals[name] = tax_by_year(rc, DollarMode.NOMINAL)["total_tax"]
+    for row in rows[1:]:
+        year, *cells = row.split()
+        for name, cell in zip(names, cells, strict=False):
+            assert cell == f"${round(totals[name][int(year)]):,}"
+    summary = _section(result.output, "Tax over the run (nominal)")
+    assert summary[0].split()[:3] == ["scenario", "fed_tax", "total_tax"]
+    hobby = summary[2].split()
+    assert hobby[0] == names[1] and hobby[3] != "$0"  # a hobby can't deduct its losses
+
+
+def test_sim_compare_chart_file_draws_one_chart(test_data_dir: Path) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "compare", "retire_alice", "base", "--section", "social-security",
+        "--section", "tax", "--chart-file", "x.png", "--data-dir", str(test_data_dir)])
+    assert result.exit_code == 2 and "--chart-file writes one chart" in result.output, result.output
+
+
+def test_compare_charts_for_the_sections_asked() -> None:
+    from analysis.sim.cli import _compare_charts
+
+    assert _compare_charts((), None) == ["net-worth"]
+    assert _compare_charts(("runs",), "Asset_Checking") == ["account"]
+    assert _compare_charts(("tax", "social-security"), None) == ["social-security", "tax"]
+    assert _compare_charts(("tax", "break-even"), None) == ["net-worth", "tax"]
+
+
+def _years(*years: int) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex([f"{year}-12-31" for year in years], name="month")
+
+
+def test_ss_by_year_and_summary_compare_each_variant_with_the_baseline() -> None:
+    ss = pd.DataFrame({"base": [10.0, 20.0], "later": [0.0, 40.0]}, index=_years(2030, 2031))
+    yearly = compare.ss_by_year(ss, "base", ["later"])
+    assert list(yearly.index) == [2030, 2031]
+    assert list(yearly["Δ later"]) == [-10.0, 20.0]
+    summary = compare.ss_summary(ss, "base")
+    assert summary.loc["later", "gross_ss"] == 40.0 and summary.loc["later", "Δ gross_ss"] == 10.0
+    assert compare.ss_differs(ss)
+    assert not compare.ss_differs(ss[["base"]].assign(same=ss["base"]))
+
+
+def test_tax_comparison_and_summary_treat_a_run_without_tax_as_owing_none() -> None:
+    years = pd.Index([2030, 2031], name="year")
+    tax = {
+        "base": pd.DataFrame({"fed_tax": [100.0, 100.0], "state_tax": [10.0, 10.0],
+                              "total_tax": [110.0, 110.0]}, index=years),
+        "convert": pd.DataFrame({"fed_tax": [300.0, 50.0], "total_tax": [300.0, 50.0]},
+                                index=years),
+        "none": pd.DataFrame(columns=["fed_tax", "total_tax"], dtype=float),
+    }
+    table = compare.tax_comparison(tax, "base", ["convert", "none"])
+    assert list(table["Δ convert"]) == [190.0, -60.0]
+    assert list(table["none"]) == [0.0, 0.0]
+    assert compare.tax_differs(table).all()
+    ss = pd.DataFrame({"base": [5.0], "convert": [5.0], "none": [0.0]}, index=_years(2031))
+    nw = pd.DataFrame({"base": [1.0, 2.0], "convert": [1.0, 3.0], "none": [0.0, 0.0]},
+                      index=_years(2030, 2031))
+    summary = compare.tax_summary(tax, ss, nw, "base")
+    assert list(summary.columns) == ["fed_tax", "state_tax", "total_tax", "Δ tax", "gross_ss", "Δ ss",
+                                     "Δ ss net of tax", "final_net_worth"]
+    assert summary.loc["convert", "Δ tax"] == 130.0
+    assert summary.loc["convert", "state_tax"] == 0.0
+    assert summary.loc["none", "Δ ss net of tax"] == -5.0 + 220.0
+    assert summary.loc["convert", "final_net_worth"] == 3.0

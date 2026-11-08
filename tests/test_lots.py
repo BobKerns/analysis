@@ -567,7 +567,7 @@ def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: s
         )
     from analysis.sim.engine import _capital_gains
 
-    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (100, 7)
+    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (100, 7, 0)
     gains = _capital_gains(ledger_con, tax_year=2026, loss_limit=lambda _year: 0)
     assert (gains.stcg, gains.ltcg) == (50, 30)
 
@@ -685,7 +685,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
         from_account="Asset_Checking", to_account="Expense_Taxes_State", cadence="annual",
         month_of_year="4", amount_rule_kind="tax_accumulator", tax_character="none",
         start="2027-04-30", priority="400", meta_json="{}",
-        params_json='{"year":"previous","scope":"state"}',
+        params_json='{"year":"previous","scope":"state","bracket_series":"CA"}',
     )
     retire_alice_csv("year_to_date.csv").write_text(
         "name,from_account,to_account,amount,tax_character\n"

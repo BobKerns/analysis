@@ -233,7 +233,7 @@ def test_a_data_repo_kind_snapshots_every_module(
         modules = [m for (m,) in con.execute("SELECT module FROM strategy_source ORDER BY module")]
     finally:
         con.close()
-    assert modules == ["_helpers", "cut_on_breach", "last_leaf"]
+    assert modules == ["_helpers", "last_leaf"]
 
 
 _DRAW = "strategies/draw_by_allocation.csv"
@@ -361,6 +361,28 @@ def test_an_unclassified_portfolio_lot_names_the_row_to_add(
     errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
     assert f"lot {IRA} in portfolio portfolio:invest has no asset class" in errors
     assert "symbol BONDX" in errors
+
+
+def test_a_lot_is_classed_by_the_series_its_growth_rule_reads(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path], intent_dir: Path,
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """A lot growing at its account's ``bond`` series is bond (#371), but a
+    rate series named for its symbol wins at expansion, and is no class: the
+    load sees the series the run will."""
+    (strategy_scenarios / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nUSSTK,,stock_us,100%\n"
+    )
+    accounts = strategy_csv("alice_rebalance", "accounts.csv")
+    accounts.write_text(accounts.read_text().replace(
+        "Asset_TraditionalIRA_Alice,asset,retirement,alice,,,",
+        "Asset_TraditionalIRA_Alice,asset,retirement,alice,,bond,"))
+    load_test_scenario("alice_rebalance")
+    series = strategy_csv("alice_rebalance", "series")
+    series.mkdir(exist_ok=True)
+    (series / "rate__BONDX.csv").write_text("effective_date,annual_rate\n2026-01-31,3%\n")
+    errors = _load_errors(strategy_scenarios, "alice_rebalance", intent_dir)
+    assert f"lot {IRA} in portfolio portfolio:invest has no asset class" in errors
 
 
 def test_an_account_lot_key_classifies_a_lot(

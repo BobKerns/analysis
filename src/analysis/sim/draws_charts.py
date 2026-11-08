@@ -21,7 +21,7 @@ from analysis.frames import named_rows
 from analysis.sim.ensemble import EnsembleError
 from analysis.sim.plotting import CATEGORICAL, GRID, INK, MUTED
 
-__all__ = ["draws_figure", "draws_view", "pair_figure", "pair_options", "pair_row", "pair_view"]
+__all__ = ["dot_style", "draws_figure", "draws_view", "pair_figure", "pair_options", "pair_row", "pair_view"]
 
 DRAWN = CATEGORICAL[0]
 
@@ -102,6 +102,16 @@ def pair_row(frames: dict[str, pd.DataFrame], a: str, b: str) -> pd.Series | Non
     return None if row.empty else row.iloc[0]
 
 
+def dot_style(points: int) -> dict[str, Any]:
+    """Scatter dots for ``points`` members: a few big outlined dots for a small
+    ensemble, smaller and translucent ones for a large one, so overlapping dots
+    don't hide the correlation's shape (#369)."""
+    if points <= 50:
+        return {"s": 36, "edgecolor": "white", "linewidth": 1}
+    return {"s": max(4.0, 36 * (50 / points) ** 0.5), "alpha": max(0.35, (50 / points) ** 0.3),
+            "linewidth": 0}
+
+
 def pair_view(frames: dict[str, pd.DataFrame], a: str, b: str, ax: Any = None) -> Any:
     """Two nodes' scores across the drawn members, with the implied and
     achieved rho in the title."""
@@ -112,7 +122,7 @@ def pair_view(frames: dict[str, pd.DataFrame], a: str, b: str, ax: Any = None) -
     pair = drawn[[a, b]].dropna()
     if ax is None:
         ax = Figure(figsize=(5, 4.6), layout="constrained").subplots()
-    ax.scatter(pair[a], pair[b], s=36, color=DRAWN, edgecolor="white", linewidth=1)
+    ax.scatter(pair[a], pair[b], color=DRAWN, **dot_style(len(pair)))
     title = f"{a} vs {b}"
     r = pair_row(frames, a, b)
     if r is not None:

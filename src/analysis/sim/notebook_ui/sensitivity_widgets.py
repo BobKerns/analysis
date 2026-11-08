@@ -24,7 +24,7 @@ from IPython.display import display
 
 from analysis.sim import sensitivity
 from analysis.sim.ensemble import EnsembleError, read_batch_manifest
-from analysis.sim.loader import batch_mode, read_disabled_scenarios
+from analysis.sim.loader import batch_mode, ensemble_batches, read_disabled_scenarios
 from analysis.sim.notebook_ui.pickers import (
     AttributionPicker,
     CorrelationMeasurePicker,
@@ -72,7 +72,7 @@ def list_batches(recipe_dir: Path) -> list[tuple[str, Path]]:
     if not recipe_dir.is_dir():
         return []
     batches = []
-    for p in sorted((p for p in recipe_dir.iterdir() if p.is_dir()), reverse=True):
+    for p in reversed(ensemble_batches(recipe_dir)):
         manifest = read_batch_manifest(p)
         members = manifest["member_count"] if manifest else len(list(p.glob("member_*.sqlite3")))
         if not members:

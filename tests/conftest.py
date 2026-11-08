@@ -846,7 +846,10 @@ def strategy_scenarios(test_data_dir: Path, test_scenarios_dir: Path, test_data:
     ``alice_year_end`` adds a federal tax rule, a gift expense account and a
     ``harvest`` year-end strategy (#421); ``alice_triggers`` adds a
     ``tight`` spending rail and a ``cut_on_breach`` strategy whose trigger
-    watches it (#441). Brings its own allocations.csv (USSTK, BONDX). Returns the data
+    watches it (#441); ``alice_buckets`` builds on retire_alice with cash,
+    bond and stock lots in the brokerage, Alice's IRA and her Roth, 7%/4%/2%
+    rate series, and a ``buckets`` strategy owning ``portfolio_draw`` (#463).
+    Brings its own allocations.csv (USSTK, BONDX). Returns the data
     directory."""
     source = test_data / "sim" / "strategies"
     for folder in (source / "scenarios").iterdir():
@@ -894,7 +897,7 @@ def strategy_ensemble(strategy_scenarios: Path, intent_dir: Path, runs_dir: Path
     def _run(name: str) -> Path:
         recipe = load_scenario(strategy_scenarios, name, intent_dir=intent_dir / "recipe",
                                allow_dirty_data=True, compute_stamps=False).intent_path
-        batch_dir = runs_dir / name / "2026-01-01T000000Z"
+        batch_dir = runs_dir / name / "monte-carlo" / "2026-01-01T000000Z"
         for i in range(3):
             member_intent = resolve_member(
                 recipe, intent_dir / f"{name}_member_{i}.sqlite3",
@@ -981,6 +984,40 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
         path.write_text(text)
         return path
     return _write
+
+
+@pytest.fixture(scope="function")
+def priced_lots(add_account_value: Callable[..., None], write_aux: Callable[[str, str], Path]) -> None:
+    """Roth_Alice gains three lots holding 10 shares of AAA: one whose balance matches
+    the price at the 2026-05-31 start ($11.50 on 05-29), one that is stale, one
+    whose symbol has no prices. A later price ($20) is in the file too."""
+    write_aux("security_price__AAA.csv",
+              "effective_date,price\n2026-05-29,11.50\n2026-09-24,20.00\n")
+    add_account_value("Asset_Roth_Alice", lot="ok", symbol="AAA", quantity="10", opening_balance="115.00")
+    add_account_value("Asset_Roth_Alice", lot="old", symbol="AAA", quantity="10", opening_balance="140.00")
+    add_account_value("Asset_Roth_Alice", lot="bare", symbol="ZZZ", quantity="10", opening_balance="50.00")
+
+
+@pytest.fixture(scope="function")
+def qqq_prices(test_data_dir: Path) -> Path:
+    """The private copy's shared prices/ gets three QQQ prices ($400 at 2025's
+    end, $580 on 2026-09-30, $609 on 2026-10-13), and securities.csv names QQQ
+    and ABCDX (which has no prices). Returns the data dir."""
+    (test_data_dir / "prices").mkdir(exist_ok=True)
+    (test_data_dir / "prices" / "security_price__QQQ.csv").write_text(
+        "effective_date,price\n2025-12-31,400.00\n2026-09-30,580.00\n2026-10-13,609.00\n")
+    (test_data_dir / "securities.csv").write_text("symbol,name\nQQQ,Nasdaq 100\nABCDX,A fund\n")
+    return test_data_dir
+
+
+@pytest.fixture(scope="function")
+def scenario_own_prices(retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None]) -> None:
+    """retire_alice gets its own prices/ file for QQQX, which the shared prices/
+    lacks, and a Roth_Alice lot holding 10 shares of it."""
+    own = retire_alice_csv("prices")
+    own.mkdir(exist_ok=True)
+    (own / "security_price__QQQX.csv").write_text("effective_date,price\n2026-05-29,10.00\n")
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="QQQX", quantity="10", opening_balance="1.00")
 
 
 @pytest.fixture(scope="function")
@@ -1121,6 +1158,25 @@ def update_scheduled(retire_alice_csv: Callable[[str], Path]) -> Callable[..., N
 
 
 @pytest.fixture(scope="function")
+def append_scheduled_row(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Append a rule to the private copy's scheduled.csv, by column name:
+    ``append_scheduled_row(name="bonus", amount_rule_kind="fixed_amount", ...)``.
+    ``cadence`` defaults to monthly and ``meta_json`` to ``{}``."""
+    def _add(**fields: str) -> None:
+        unknown = set(fields) - set(SCHEDULED_CSV_HEADER)
+        assert not unknown, f"unknown scheduled.csv columns: {sorted(unknown)}"
+        path = retire_alice_csv("scheduled.csv")
+        rules = pd.read_csv(path, dtype=str, keep_default_na=False)
+        rules = rules.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+        rules.loc[len(rules)] = {
+            **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
+            "cadence": "monthly", "meta_json": "{}", **fields,
+        }
+        rules.to_csv(path, index=False)
+    return _add
+
+
+@pytest.fixture(scope="function")
 def set_scenario_meta(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Set keys of the private retire_alice copy's scenario.csv ``meta_json``,
     keeping the others: ``set_scenario_meta(community_property=True)``."""
@@ -1214,8 +1270,9 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
     """Give the private retire_alice copy a state income tax: an
     Expense_Taxes_State account and a ``tax_accumulator`` rule (scope state)
     paying the previous year's state tax each April. ``bracket_series`` names
-    the state when more than one ``state_brackets`` table exists."""
-    def _add(bracket_series: str | None = None) -> None:
+    the state: California, the prototype's, unless the test says otherwise
+    (None leaves it out)."""
+    def _add(bracket_series: str | None = "CA") -> None:
         params = {"year": "previous", "scope": "state"}
         if bracket_series:
             params["bracket_series"] = bracket_series
@@ -1536,7 +1593,7 @@ def two_lot_ensemble_runs_dir(
         vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
-    batch_dir = runs_dir / "two_lot" / "2026-01-01T000000Z"
+    batch_dir = runs_dir / "two_lot" / "monte-carlo" / "2026-01-01T000000Z"
     for i in range(2):
         member_intent = resolve_member(
             recipe, intent_dir / f"two_lot_member_{i}.sqlite3",
@@ -1566,7 +1623,7 @@ def seeded_ensemble_batch(
     recipe = load_test_copy().intent_path
 
     def _batch(name: str, seed: int) -> Path:
-        batch_dir = runs_dir / name / "2026-01-01T000000Z"
+        batch_dir = runs_dir / name / "monte-carlo" / "2026-01-01T000000Z"
         for i in range(3):
             member_intent = resolve_member(
                 recipe, intent_dir / f"{name}_member_{i}.sqlite3",
@@ -1748,7 +1805,8 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     ``fake_state("run", "alice", "2026-10-01T120000Z", status=...)`` writes a
     single run file; ``fake_state("batch", ...)`` a run batch of ``members``
     member files with a batch manifest (``complete=False`` leaves the last
-    member out); ``fake_state("intent", ...)`` a member-intent batch. Each
+    member out); ``fake_state("intent", ...)`` a member-intent batch; a
+    batch of either kind goes in its ``mode``'s folder (#454). Each
     run file holds just a ``simulation_run`` row with the status. Every file
     and folder written gets the stamp as its mtime, so nothing reads as still
     being written (retention.ACTIVE_WINDOW)."""
@@ -1756,6 +1814,7 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     from datetime import UTC, datetime
 
     from analysis.sim.ensemble import write_batch_manifest
+    from analysis.sim.loader import batches_dir
 
     def _run_file(path: Path, status: str) -> None:
         con = sqlite3.connect(path)
@@ -1767,20 +1826,25 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
             con.close()
 
     def _fake(kind: str, scenario_name: str, stamp: str, *, status: str = "succeeded",
-              members: int = 2, complete: bool = True) -> Path:
+              members: int = 2, complete: bool = True, mode: str = "monte_carlo") -> Path:
         made = datetime.strptime(stamp, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
         if kind == "run":
             path = runs_dir / f"{stamp}_{scenario_name}_abc1234.sqlite3"
             _run_file(path, status)
             os.utime(path, (made, made))
             return path
-        path = (runs_dir if kind == "batch" else intent_dir) / scenario_name / stamp
+        recipe = (runs_dir if kind == "batch" else intent_dir) / scenario_name
+        path = batches_dir(recipe, mode) / stamp
         path.mkdir(parents=True)
         written = members if complete else members - 1
         for i in range(written):
             _run_file(path / f"member_{i:04d}.sqlite3", status)
         if kind == "batch":
-            write_batch_manifest(path, member_count=members, failures=[])
+            if mode == "sensitivity":
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode,
+                                     quantiles=(0.1, 0.9), rows=[])
+            else:
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode)
         for child in [*path.iterdir(), path]:
             os.utime(child, (made, made))
         return path

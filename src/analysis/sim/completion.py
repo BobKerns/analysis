@@ -23,7 +23,7 @@ from typing import Any
 import click
 from click.shell_completion import CompletionItem
 
-from analysis.sim import names, registries
+from analysis.sim import names, registries, series_files
 from analysis.sim.loader import read_current_scenario
 
 __all__ = [
@@ -209,7 +209,9 @@ def _sensitivity_rows(ctx: click.Context, data_dir: Path) -> list[str]:
     ensemble, else its latest sensitivity batch, under --runs-dir or the
     data repo's state/runs."""
     from analysis.sim.ensemble import read_batch_manifest
-    from analysis.sim.loader import DEFAULT_RUNS_DIR, DEFAULT_STATE_DIR, find_state_dir, latest_ensemble_batch
+    from analysis.sim.loader import (
+        DEFAULT_RUNS_DIR, DEFAULT_STATE_DIR, find_batch, find_state_dir, latest_ensemble_batch,
+    )
 
     scenario = _scenario(ctx, data_dir)
     if scenario is None or _given(ctx, "mode") == "monte_carlo":
@@ -217,7 +219,7 @@ def _sensitivity_rows(ctx: click.Context, data_dir: Path) -> list[str]:
     given = _given(ctx, "runs_dir")
     runs = Path(given) if given else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
     batch = _given(ctx, "batch")
-    batch_dir = (runs / scenario / batch if batch
+    batch_dir = (find_batch(runs / scenario, batch) if batch
                  else latest_ensemble_batch(runs / scenario, mode="sensitivity", wait=False))
     manifest = read_batch_manifest(batch_dir) if batch_dir is not None else None
     return list((manifest or {}).get("rows", []))
@@ -356,6 +358,16 @@ def _expense_categories(ctx: click.Context | None, data_dir: Path | None) -> lis
 # Unchecked: a batch may hold a category outside the fixed list, which the
 # command checks against the batch itself.
 EXPENSE_CATEGORY = NameType(_expense_categories, "expense category", check=False)
+
+
+def _states(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
+    from analysis.sim import states
+
+    return [*(s.code for s in states.STATES), *(s.name for s in states.STATES)]
+
+
+# A state's code or name in any case: the command checks it (#483).
+STATE = NameType(_states, "state", check=False)
 AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS), "aux kind")  # noqa: ARG005
 
 
@@ -389,6 +401,21 @@ class SeriesName(NameType):
         super().__init__(lister, "series", plural="series",
                          known=(lambda ctx, data_dir: ["fixed"]) if fixed else None)  # noqa: ARG005
 
+
+
+def _own_series(ctx: click.Context, data_dir: Path) -> Sequence[str]:
+    """The series the scenario has its own file of over an inherited one,
+    emptied or not: what ``sim series revert`` can drop (#471)."""
+    scenario = _scenario(ctx, data_dir)
+    if not scenario:
+        return []
+    wanted = _line_params(ctx).get("kind")
+    return sorted({name for (kind, name), series in series_files.scenario_series(data_dir, scenario).items()
+                   if series.revertible
+                   and (not isinstance(wanted, str) or kind == wanted)})
+
+
+OWN_SERIES = NameType(_own_series, "series", plural="series")
 
 # The types of the params that the guides' field lists turn into options
 # (``scheduled edit``, ``lot add|edit``), by param name.
