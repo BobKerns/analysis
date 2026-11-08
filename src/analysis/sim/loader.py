@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import (
-    asset_classes, guard_rails, life_table, registries, strategy_api, strategy_code, strategy_files,
-    strategy_load, tax_files, units,
+    asset_classes, guard_rails, life_table, load_warnings, registries, strategy_api, strategy_code,
+    strategy_files, strategy_load, tax_files, units,
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
@@ -1480,6 +1480,7 @@ def load_scenario(
             target_rows=target_rows, rail_rows=rail_rows,
         ))
         counts.update(strategy_load.write_strategy_vary(con, strategy_varies))
+        load_warnings.write(con, warnings, unused)
         _write_manifest(
             con,
             scenario_name=scenario_name,

@@ -5,6 +5,8 @@ breakpoints."""
 
 from __future__ import annotations
 
+import shlex
+import sqlite3
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -13,7 +15,7 @@ import ipywidgets as widgets
 import pandas as pd
 from IPython.display import clear_output, display
 
-from analysis.sim import registries, reports, shortfalls, units
+from analysis.sim import load_warnings, registries, reports, shortfalls, units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
@@ -23,6 +25,7 @@ from analysis.sim.ensemble import (
     summary_with_percentiles,
 )
 from analysis.sim.loader import ensemble_batches, read_disabled_scenarios
+from analysis.sim.pool import member_components
 from analysis.sim.ensemble_tables import RecipeTables
 from analysis.sim.ensemble_plots import (
     band_edges,
@@ -59,7 +62,7 @@ __all__ = [
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
     "ensemble_table_widget", "ensemble_guard_rails_widget", "ensemble_guard_rails_table_widget",
     "ensemble_drift_widget", "ensemble_spending_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
-    "RecipeSeeds", "LoadingIndicator", "batch_shortfalls",
+    "RecipeSeeds", "LoadingIndicator", "batch_load_warnings", "batch_shortfalls",
 ]
 
 
@@ -431,6 +434,57 @@ def shortfall_message(found: shortfalls.MemberShortfalls) -> str | None:
             "A shortfall doesn't stop a run; `sim explain --runfile <member>` lists a member's.")
 
 
+BatchLoadWarnings = tuple[tuple[str | None, Path, load_warnings.LoadWarnings], ...]
+"""What ``batch_load_warnings`` read: (component, member run file, its
+load's warnings), the component None for an ordinary batch."""
+
+_LOAD_WARNINGS: dict[tuple[Path, tuple[str, ...]], BatchLoadWarnings] = {}
+
+
+def batch_load_warnings(batch_dir: Path, stems: Sequence[str]) -> BatchLoadWarnings:
+    """The warnings recorded when ``batch_dir``'s recipe was loaded (#432),
+    read once per batch from one member's run: every member's intent is a
+    copy of its recipe's. A pool's members come from several recipes
+    (ADR-009), so it reads the first member of each component. A member
+    whose file can't be opened (pruned, locked) is left out rather than
+    stopping the widget's chart."""
+    key = (Path(batch_dir).resolve(), tuple(stems))
+    if key not in _LOAD_WARNINGS:
+        components = member_components(batch_dir)
+        first: dict[str | None, str] = {}
+        for stem in stems:
+            component = (components.get(int(stem.removeprefix("member_")), "?")
+                         if components is not None else None)
+            first.setdefault(component, stem)
+        read = []
+        for component, stem in first.items():
+            path = Path(batch_dir) / f"{stem}.sqlite3"
+            try:
+                read.append((component, path, load_warnings.read_file(path)))
+            except sqlite3.Error:
+                continue
+        _LOAD_WARNINGS[key] = tuple(read)
+    return _LOAD_WARNINGS[key]
+
+
+def load_warnings_message(read: BatchLoadWarnings) -> str | None:
+    """The ensemble widget's line counting the warnings ``batch_load_warnings``
+    read, pointing to where they're listed; None when there were none."""
+    warned = [(component, path, found) for component, path, found in read if found.warnings]
+    if not warned:
+        return None
+    explain = "`sim explain --runfile {}`".format
+    if len(warned) == 1 and warned[0][0] is None:
+        _, path, found = warned[0]
+        return (f"**{load_warnings.count_phrase(found)}** when the recipe was loaded: "
+                "`scenario_overview.ipynb` lists them, and so does "
+                f"{explain(shlex.quote(str(path)))}.")
+    lines = "; ".join(f"{component}: {load_warnings.count_phrase(found)} "
+                      f"({explain(shlex.quote(str(path)))})"
+                      for component, path, found in warned)
+    return f"**Load warnings** when the pool's components were loaded: {lines}."
+
+
 AFTER_TAX_NET_WORTH = "After-tax net worth"
 
 
@@ -579,12 +633,15 @@ def ensemble_widget(*_,
         if show_description:
             with RunConnection(batch_dir / f"{store.stems[0]}.sqlite3") as con:
                 description = description_view(con, data_dir=resolved_data_dir)
-        loading.note(f"Reading {recipe}'s negative balances")
+        loading.note(f"Reading {recipe}'s negative balances and load warnings")
         shortfall = shortfall_message(batch_shortfalls(batch_dir, store.stems))
+        warned = load_warnings_message(batch_load_warnings(batch_dir, store.stems))
         clear_output(wait=True)
         display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
         if shortfall is not None:
             display_warning(shortfall)
+        if warned is not None:
+            display_warning(warned)
         if description is not None:
             display(description)
         # A pyplot-free Figure, rendered to a PNG here: pyplot's

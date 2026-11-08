@@ -40,9 +40,9 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide, guard_rails,
-    lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide, scheduled_guide,
-    sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files, strategy_guide, symbols,
-    states, tax_files, tax_guide, units, working_set, ytd_guide,
+    load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
+    scheduled_guide, sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files,
+    strategy_guide, symbols, states, tax_files, tax_guide, units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -4112,8 +4112,8 @@ def explain(
     runs_dir: Path | None,
 ) -> None:
     """Dump scenario name, versions, counts, lots, year-end net worth (after
-    tax unless --pre-tax), negative-balance warnings and basis step-ups at a
-    death for a run: the scenario's latest (the current scenario's by
+    tax unless --pre-tax), the scenario's load warnings, negative-balance
+    warnings and basis step-ups at a death for a run: the scenario's latest (the current scenario's by
     default), or a run file. Sanity dump."""
     runfile = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
@@ -4180,6 +4180,7 @@ def explain(
             click.echo(f"  {year}  {'':13}{_fmt_cents(nw)}  {_fmt_cents(real):>18}")
 
         click.echo("")
+        _echo_recorded_load_warnings(con)
         _echo_negative_balance_warnings(con)
         _echo_basis_step_ups(con)
         _echo_strategies(con)
@@ -4328,6 +4329,23 @@ def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
         if s.rule is not None:
             line += f"  ({s.rule_label})"
         click.echo(line)
+
+
+def _echo_recorded_load_warnings(con: sqlite3.Connection) -> None:
+    """The warnings recorded when the run's scenario was loaded (#432), as
+    the load printed them, then the things defined but not read yet that
+    `sim check` prints; the second list only when it has any."""
+    found = load_warnings.read(con)
+    if not found.warnings:
+        click.echo("load warnings: none")
+    else:
+        click.echo(f"load warnings ({len(found.warnings)}):")
+        for warning in found.warnings:
+            click.echo(f"  {warning}")
+    if found.unused:
+        click.echo(f"defined but not read yet ({len(found.unused)}):")
+        for note in found.unused:
+            click.echo(f"  {note}")
 
 
 def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:

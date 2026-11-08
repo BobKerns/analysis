@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 58
+SCHEMA_VERSION = 59
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -577,6 +577,15 @@ CREATE TABLE ensemble_path_shock (
     rate        INTEGER NOT NULL,
     PRIMARY KEY (node, year)
 );
+
+-- #432: the load's non-fatal warnings, in the order raised, so they can be
+-- read after the fact (sim explain, the notebooks). 'unused' is a thing
+-- defined but not read yet (#204), which only `sim check` prints at load.
+CREATE TABLE load_warning (
+    id      INTEGER PRIMARY KEY,
+    kind    TEXT NOT NULL CHECK (kind IN ('warning','unused')),
+    message TEXT NOT NULL
+);
 """
 
 # Intent file's identity card (single row).
@@ -950,6 +959,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "ensemble_draw",
     "ensemble_tail_scale",
     "ensemble_path_shock",
+    "load_warning",
 )
 
 

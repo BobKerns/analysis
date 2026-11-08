@@ -1747,7 +1747,9 @@ background builds do your runs.
 
 After a run, `sim explain [scenario]` prints a short summary of the
 scenario's latest run: whether it finished successfully, the lots at the end
-of the run, net worth at each year end, and every time an account went
+of the run, net worth at each year end, the warnings its scenario's load
+printed (and the things defined but not read yet that `sim check` prints),
+every time an account went
 negative (with what its refill chain did about it), and each stretch of
 years past a guard rail (Part 4.15). This is the fastest way
 to check "did this do roughly what I expected" before opening a notebook.
@@ -1836,7 +1838,7 @@ machine too small for a notebook comfortably.
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | itemized deductions, by tax year | `sim deduction list` (`--state` for the state's) |
-| a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
+| a run's year-end net worth, its lots, its load warnings and its negative-balance warnings | `sim explain [scenario]` |
 | net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--start YEAR] [--end YEAR] [--chart]` |
 | one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH\|YEAR] [--end MONTH\|YEAR] [--yearly] [--chart]` |
 | income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged] [--start YEAR] [--end YEAR] [--chart]` |
