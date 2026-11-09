@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any, ClassVar
 
 __all__ = [
@@ -150,14 +151,17 @@ class TaxYear:
         first year it computed."""
         return self._prior(line)
 
+    @cached_property
+    def _this_year(self) -> list[IncomeItem]:
+        return [i for i in self.items if i.year == self.year]
+
     def year_items(self, *characters: str) -> list[IncomeItem]:
         """This year's items of the ``characters`` (all of them when none)."""
-        return [i for i in self.items
-                if i.year == self.year and (not characters or i.character in characters)]
+        return [i for i in self._this_year if not characters or i.character in characters]
 
     def total(self, character: str) -> int:
         """This year's total of one tax character."""
-        return sum(i.amount for i in self.items if i.year == self.year and i.character == character)
+        return sum(i.amount for i in self._this_year if i.character == character)
 
 
 @dataclass(frozen=True)
@@ -176,6 +180,12 @@ class Return:
     """A computed return: named lines in cents, each written to
     ``tax_year_summary`` as ``<jurisdiction>_<line>``, and ``memo`` lines
     kept for the engine and not written.
+
+    The engine reads two memo lines, each 0 when left out: ``drawn_ordinary``,
+    the year's ordinary income drawn from traditional money (an RMD), and
+    ``drawn_gain``, the long-term gain it realized. The after-tax drawdown's
+    share of a later year replaces them, so it isn't taxed twice. Any other
+    memo line is the calculator's own.
 
     Every calculator fills ``REQUIRED``. A what-if (:class:`Extra`) works
     out again the lines more income changes (the income lines, AGI,

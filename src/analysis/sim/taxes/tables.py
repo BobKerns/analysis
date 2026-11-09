@@ -11,6 +11,7 @@ federal return is #508's work."""
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 from analysis.sim import registries
@@ -272,11 +273,17 @@ class _TablesYear(Prepared):
             "deduction": deduction,
         }
         self._state = state
-        self._memo = {
+        growth = hsa_growth.get(ty.year, 0)
+        # A Return shares the memo, so it must not be writable.
+        self._memo = MappingProxyType({
             "hsa_withdrawn": hsa_withdrawn,
-            "hsa_growth": hsa_growth.get(ty.year, 0),
-            "realized_ltcg": capital.ltcg,
-        }
+            "hsa_growth": growth,
+            # What the year drew from traditional money (an RMD), and the
+            # gain it realized: a state that taxes an HSA counts its growth,
+            # or fall, as gain (#490), but nothing was sold.
+            "drawn_ordinary": ty.total("tax_deferred_out") - hsa_withdrawn,
+            "drawn_gain": max(0, capital.ltcg - growth),
+        })
 
     def _taxed_ltcg(self, extra_gain: int) -> int:
         """The income taxed with long-term gain, with ``extra_gain`` more gain."""

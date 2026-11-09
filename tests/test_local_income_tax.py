@@ -73,7 +73,8 @@ def _earn(con: sqlite3.Connection, year: int, amount: int) -> None:
 def _estimate(con: sqlite3.Connection, aux: Aux, scope: str = "state", year: int = 2026,
               more: int = 0) -> Return:
     params = {"scope": scope, **({"bracket_series": "CA"} if scope == "state" else {})}
-    return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1).compute(Extra(more))
+    kind = "state_tables" if scope == "state" else scope
+    return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind).compute(Extra(more))
 
 
 def test_a_local_tax_taxes_the_states_taxable_income(ledger: sqlite3.Connection) -> None:

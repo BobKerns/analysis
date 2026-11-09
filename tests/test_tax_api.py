@@ -5,11 +5,11 @@ scenario behind it, is enough to test one."""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from analysis.sim import tax_api
+from analysis.sim import strategy_api, tax_api
 from analysis.sim.tax_api import (
     Account,
     Extra,
@@ -137,3 +137,28 @@ def test_a_kind_registers_once() -> None:
 
     with pytest.raises(ValueError, match="registered twice"):
         tax_api.register(Again)
+
+
+def test_a_returns_memo_cannot_change_the_prepared_year() -> None:
+    prepared = calculator("federal").prepare(_year([_item("ordinary", 100_000_00)]))
+    memo = cast(dict[str, int], prepared.compute().memo)  # a caller that writes to it anyway
+    with pytest.raises(TypeError):
+        memo["drawn_ordinary"] = 1
+    assert prepared.compute().memo["drawn_ordinary"] == 0
+
+
+def test_a_business_character_off_a_business_account_names_the_year() -> None:
+    with pytest.raises(TaxError, match=r"^taxes/federal\.csv: 2030: business_expense must be paid "
+                                       r"out of a business account, not 'Asset_Checking'"):
+        _federal([_item("business_expense", 1_00, payer=CHECKING, payee=SALARY)])
+
+
+def test_last_year_refuses_a_line_name_from_before_api_8() -> None:
+    view = strategy_api.TaxView(
+        year=YEAR, estimator=lambda _scope: None, ytd=dict,
+        last_year=lambda: {"federal_agi": 5_00}, irmaa_floors=lambda _status: ())
+    last = view.last_year
+    assert last is not None and last["federal_agi"] == 5_00 and dict(last) == {"federal_agi": 5_00}
+    with pytest.raises(strategy_api.StrategyError, match="it is federal_agi"):
+        last.get("federal_adjusted_gross_income", 0)
+    assert last.get("federal_magi", 0) == 0  # not a renamed line: just absent

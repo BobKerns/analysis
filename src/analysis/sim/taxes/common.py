@@ -50,7 +50,7 @@ def business_result(ty: TaxYear) -> BusinessResult:
             # The loader checks the rows it can; this catches the rest.
             side = "into" if income else "out of"
             raise TaxError(
-                f"{item.character} must be paid {side} a "
+                f"taxes/{ty.jurisdiction}.csv: {item.year}: {item.character} must be paid {side} a "
                 f"{registries.BUSINESS_SUBKIND} account, not '{account.name}'"
             )
         if income:
@@ -132,10 +132,7 @@ falls, goes back to): growth of another character is taxed already."""
 def state_taxes_hsa(ty: TaxYear, state: str, year: int) -> bool:
     """Whether ``state``'s ``state_hsa`` table, as of ``year``'s end, says it
     taxes an HSA (#490); without a table it follows the federal rules."""
-    rows = ty.dated(registries.STATE_HSA, state)
-    as_of = f"{year}-12-31"
-    on = max((effective for effective, _ in rows if effective <= as_of), default=None)
-    rows = [row for effective, row in rows if effective == on]
+    rows = ty.table_as_of(registries.STATE_HSA, state, year)
     if not rows:
         return False
     return rows[0].get("treatment") == "taxable"

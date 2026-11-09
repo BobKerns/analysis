@@ -150,7 +150,8 @@ def test_the_ordinary_part_of_taxable_income_leaves_out_separately_taxed_short_t
     con.row_factory = sqlite3.Row
     try:
         ret = _prepare_tax(con, {"scope": "state", "bracket_series": "CA"},
-                           aux=_load_aux(con), tax_year=2026, tid=0).compute()
+                           aux=_load_aux(con), tax_year=2026, tid=0,
+                           kind="state_tables").compute()
     finally:
         con.close()
     assert ret.ordinary_taxable == ret.taxable_income - 20_000_00
