@@ -151,7 +151,8 @@ def test_the_ordinary_part_of_taxable_income_leaves_out_separately_taxed_short_t
     try:
         ret = _prepare_tax(con, {"scope": "state", "bracket_series": "CA"},
                            aux=_load_aux(con), tax_year=2026, tid=0,
-                           kind="state_tables").compute()
+                           kind="state_tables",
+                           jurisdictions={"federal": ("federal", {"scope": "federal"})}).compute()
     finally:
         con.close()
     assert ret.ordinary_taxable == ret.taxable_income - 20_000_00

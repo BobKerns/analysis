@@ -177,8 +177,7 @@ def run_scenario(
             r[1]: r for r in txns
         }
         jurisdictions = _tax_jurisdictions(con)
-        tax_rules: list[tuple[str, str, dict[str, Any]]] = [
-            (j.name, j.kind, j.params) for j in jurisdictions]
+        tax_rules: Jurisdictions = {j.name: (j.kind, j.params) for j in jurisdictions}
 
         year_to_date_rows = con.execute(
             "SELECT id, from_lot_id, to_lot_id, amount, tax_character, year "
@@ -254,7 +253,7 @@ def run_scenario(
         if strategy_runtime:
             # ctx.tax (#421): the estimator the settlement uses, as fill_bracket does.
             strategy_runtime.tax = _StrategyTax(
-                con, [(j.id, j.name, j.kind, j.params) for j in jurisdictions],
+                con, [(j.id, j.name, j.kind, j.params) for j in jurisdictions], tax_rules,
                 aux=aux, person_lifespan=person_lifespan, taxpayers=taxpayers, irmaa=irmaa,
             )
 
@@ -347,7 +346,8 @@ def run_scenario(
                     if _tax_settles(j, month):
                         _settle_tax(
                             con, balances, account_kinds, step_id, month_s, month,
-                            j.params, kind=j.kind, from_id=chain_graph.leaf_lot.get(j.source_chain),
+                            j.params, kind=j.kind, jurisdictions=tax_rules,
+                            from_id=chain_graph.leaf_lot.get(j.source_chain),
                             to_id=_tax_destination(chain_graph, j), aux=aux,
                             tax_char="none", tid=j.id, graph=chain_graph,
                             source_chain_id=j.source_chain,
@@ -583,7 +583,8 @@ def run_scenario(
                 _settle_tax(
                     con, balances, account_kinds, tail_last_step_id,
                     tail_month.isoformat(), tail_month,
-                    j.params, kind=j.kind, from_id=None, to_id=_tax_destination(chain_graph, j),
+                    j.params, kind=j.kind, jurisdictions=tax_rules,
+                    from_id=None, to_id=_tax_destination(chain_graph, j),
                     aux=aux,
                     tax_char="none", tid=j.id, post_transfer=False,
                     person_lifespan=person_lifespan, taxpayers=taxpayers,
@@ -2896,19 +2897,22 @@ def _settle_accounts(
                 )
 
 
-def _tax_year(
-    con, params: Mapping[str, Any], *,
-    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    tax_year: int, tid: int,
-    person_lifespan: dict[str, str] | None = None,
-    taxpayers: Collection[str] = (),
-) -> tax_api.TaxYear:
-    """``tax_year`` as a calculator sees it (#507), from the transfers
-    posted so far: its income items and those of every year before it,
-    the capital losses, the people, and the aux tables."""
-    scope = str(params.get("scope", "federal"))
-    filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
-    growth_cache: dict[tuple[str, date, date, str], int] = {}
+class _TaxLedger(NamedTuple):
+    """What a tax year reads from the run, shared by the jurisdictions one
+    prepare builds on (#508)."""
+    items: list[tax_api.IncomeItem]
+    losses: list[tax_api.CapitalLoss]
+    persons: list[tax_api.Person]
+
+
+Jurisdictions = Mapping[str, tuple[str, Mapping[str, Any]]]
+"""The scenario's tax jurisdictions by name: each one's calculator kind and
+params, for :func:`_prepare_tax` to find the ones a calculator builds on."""
+
+
+def _tax_ledger(con, tax_year: int) -> _TaxLedger:
+    """The income items, capital losses and people up to ``tax_year``, from
+    the transfers posted so far."""
     accounts = {
         aid: tax_api.Account(name, kind, subkind or "", owner,
                              json.loads(meta or "{}").get("hobby") is True)
@@ -2944,6 +2948,26 @@ def _tax_year(
     ]
     persons = [tax_api.Person(pid, born or None, role or "")
                for pid, born, role in con.execute("SELECT id, birthdate, role FROM person")]
+    return _TaxLedger(items, losses, persons)
+
+
+def _tax_year(
+    con, params: Mapping[str, Any], *,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    tax_year: int, tid: int,
+    person_lifespan: dict[str, str] | None = None,
+    taxpayers: Collection[str] = (),
+    ledger: _TaxLedger | None = None,
+    upstream: Callable[[str], tax_api.Prepared] | None = None,
+) -> tax_api.TaxYear:
+    """``tax_year`` as a calculator sees it (#507), from the transfers
+    posted so far: its income items and those of every year before it,
+    the capital losses, the people, the aux tables, and the jurisdictions
+    it builds on (``upstream``)."""
+    scope = str(params.get("scope", "federal"))
+    filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
+    growth_cache: dict[tuple[str, date, date, str], int] = {}
+    items, losses, persons = ledger or _tax_ledger(con, tax_year)
 
     def filing_status_in(year: int) -> str:
         return _active_filing_status(
@@ -2963,6 +2987,7 @@ def _tax_year(
         _prior=lambda line: _summary_amount(con, tax_year - 1, f"{scope}_{line}"),
         _series_of=lambda kind: sorted(
             series for (k, series) in aux if k == kind and series is not None),
+        **({"_upstream": upstream} if upstream is not None else {}),
     )
 
 
@@ -2970,15 +2995,42 @@ def _prepare_tax(
     con, params: Mapping[str, Any], *,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     tax_year: int, tid: int, kind: str,
+    jurisdictions: Jurisdictions | None = None,
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
+    ledger: _TaxLedger | None = None,
 ) -> tax_api.Prepared:
     """``tax_year``'s tax for a jurisdiction (#507): the calculator its
-    ``kind`` names, prepared on the year so far, ready to :meth:`compute`."""
+    ``kind`` names, prepared on the year so far, ready to :meth:`compute`.
+    A jurisdiction it builds on (#508) is found in ``jurisdictions`` and
+    prepared on the same ledger when the calculator first asks for it."""
+    scope = str(params.get("scope", "federal"))
+    ledger = ledger or _tax_ledger(con, tax_year)
+    prepared: dict[str, tax_api.Prepared] = {}
     try:
-        return tax_api.calculator(kind).prepare(_tax_year(
+        calc = tax_api.calculator(kind)
+
+        def upstream(name: str) -> tax_api.Prepared:
+            if name not in calc.upstream:
+                raise tax_api.TaxError(
+                    f"taxes/{scope}.csv: its {kind} calculator doesn't build on {name!r}")
+            if name not in prepared:
+                found = (jurisdictions or {}).get(name)
+                if found is None:
+                    raise tax_api.TaxError(
+                        f"taxes/{scope}.csv builds on the {name} tax, and the scenario "
+                        f"has none (taxes/{name}.csv)")
+                up_kind, up_params = found
+                prepared[name] = _prepare_tax(
+                    con, up_params, aux=aux, tax_year=tax_year, tid=tid, kind=up_kind,
+                    jurisdictions=jurisdictions, person_lifespan=person_lifespan,
+                    taxpayers=taxpayers, ledger=ledger)
+            return prepared[name]
+
+        return calc.prepare(_tax_year(
             con, params, aux=aux, tax_year=tax_year, tid=tid,
             person_lifespan=person_lifespan, taxpayers=taxpayers,
+            ledger=ledger, upstream=upstream,
         ))
     except tax_api.TaxError as exc:
         raise EngineError(str(exc)) from exc
@@ -3045,6 +3097,7 @@ def _settle_tax(
     params: dict[str, Any],
     *,
     kind: str,
+    jurisdictions: Jurisdictions | None = None,
     from_id: int | None,
     to_id: int,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
@@ -3109,7 +3162,7 @@ def _settle_tax(
     tax_year = month.year - 1
 
     prepared = _prepare_tax(
-        con, params, aux=aux, tax_year=tax_year, tid=tid, kind=kind,
+        con, params, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=jurisdictions,
         person_lifespan=person_lifespan, taxpayers=taxpayers,
     )
     ret = prepared.compute()
@@ -3183,12 +3236,14 @@ class _StrategyTax:
     the settled summary of a year; IRMAA's tier floors."""
 
     def __init__(
-        self, con, rules: Sequence[tuple[int, str, str, dict[str, Any]]], *,
+        self, con, rules: Sequence[tuple[int, str, str, dict[str, Any]]],
+        jurisdictions: Jurisdictions | None = None, *,
         aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
         person_lifespan: dict[str, str], taxpayers: Collection[str], irmaa: IrmaaContext,
     ) -> None:
         self.con = con
         self.rules = rules
+        self.jurisdictions = jurisdictions
         self.aux = aux
         self.person_lifespan = person_lifespan
         self.taxpayers = taxpayers
@@ -3203,6 +3258,7 @@ class _StrategyTax:
         tid, kind, params = matches[0]
         return _prepare_tax(
             self.con, {**params, "scope": scope}, aux=self.aux, tax_year=year, tid=tid, kind=kind,
+            jurisdictions=self.jurisdictions,
             person_lifespan=self.person_lifespan, taxpayers=self.taxpayers,
         )
 
@@ -3232,15 +3288,14 @@ class _StrategyTax:
 
 
 def _fill_bracket_tax_rule(
-    tax_rules: Sequence[tuple[str, str, dict[str, Any]]], params: Mapping[str, Any],
+    tax_rules: Jurisdictions, params: Mapping[str, Any],
     tid: int, name: str,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, Mapping[str, Any]]:
     """The calculator kind and params of the tax jurisdiction a fill_bracket
     measures with: the one its ``scope`` names."""
     scope = str(params.get("scope", "federal"))
-    for jurisdiction, kind, rule in tax_rules:
-        if jurisdiction == scope:
-            return kind, rule
+    if scope in tax_rules:
+        return tax_rules[scope]
     raise EngineError(
         f"fill_bracket id={tid} ({name!r}): measures with the {scope} tax, "
         f"and the scenario has none (taxes/{scope}.csv)"
@@ -3312,7 +3367,7 @@ def _apply_fill_bracket(
     step_id: int, month_s: str, month: date, params: dict[str, Any],
     from_lot: int, to_lot: int, tax_char: str, tid: int, name: str, *,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    tax_rules: Sequence[tuple[str, str, dict[str, Any]]],
+    tax_rules: Jurisdictions,
     inflation: tuple[str, date, str] | None,
     inflation_factor_cache: dict[tuple[str, date, date, str], int],
     person_lifespan: dict[str, str], taxpayers: Collection[str],
@@ -3334,7 +3389,7 @@ def _apply_fill_bracket(
     scope = str(params.get("scope", "federal"))
     kind, rule = _fill_bracket_tax_rule(tax_rules, params, tid, name)
     est = _prepare_tax(
-        con, rule, aux=aux, tax_year=tax_year, tid=tid, kind=kind,
+        con, rule, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=tax_rules,
         person_lifespan=person_lifespan, taxpayers=taxpayers,
     )
     rate = params.get("rate_micros")
@@ -3378,7 +3433,7 @@ def _apply_fill_bracket(
         else:
             kind, rule = _fill_bracket_tax_rule(tax_rules, {"scope": "federal"}, tid, name)
             magi_est = _prepare_tax(
-                con, rule, aux=aux, tax_year=tax_year, tid=tid, kind=kind,
+                con, rule, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=tax_rules,
                 person_lifespan=person_lifespan, taxpayers=taxpayers,
             )
     if "irmaa_tier" in params and irmaa is not None and magi_est is not None:

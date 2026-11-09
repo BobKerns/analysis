@@ -55,7 +55,9 @@ def _year(
     prior: Mapping[str, int] | None = None,
 ) -> TaxYear:
     """A tax year from plain data: every table in force from 2020, and
-    ``prior`` last year's return lines."""
+    ``prior`` last year's return lines. A jurisdiction it builds on (the
+    federal return a state starts from, #508) is the same year, computed by
+    the calculator of that name."""
     def keyed(kind: str, column: str, value: str, _year: int) -> dict[str, Any] | None:
         rows = [r for r in tables.get((kind, None), []) if r.get(column) == value]
         return rows[-1] if rows else None
@@ -70,6 +72,8 @@ def _year(
         _filing_status_in=lambda _year: "MFJ",
         _prior=lambda line: (prior or {}).get(line, 0),
         _series_of=lambda kind: sorted(s for k, s in tables if k == kind and s is not None),
+        _upstream=lambda name: calculator(name).prepare(
+            _year(items, jurisdiction=name, tables=tables, prior=prior)),
     )
 
 

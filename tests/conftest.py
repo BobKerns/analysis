@@ -1336,10 +1336,13 @@ def add_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
 
 
 @pytest.fixture(scope="function")
-def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+def add_state_tax(retire_alice_csv: Callable[[str], Path],
+                  fund_asset_savings: Callable[..., None]) -> Callable[..., None]:
     """Give the private retire_alice copy a state income tax: an
     Expense_Taxes_State account and a state jurisdiction (taxes/state.csv)
-    paying the previous year's state tax each April. ``bracket_series`` names
+    paying the previous year's state tax each April, and the federal one it
+    starts from (#508) when the copy has none yet, with savings to pay it
+    (``fund_asset_savings``). ``bracket_series`` names
     the state: California, the prototype's, unless the test says otherwise
     (None leaves it out)."""
     def _add(bracket_series: str | None = "CA") -> None:
@@ -1354,6 +1357,9 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
         }
         accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
         _write_tax_file(retire_alice_csv(""), "state", params_json=params)
+        if not (retire_alice_csv("") / "taxes" / "federal.csv").exists():
+            _write_tax_file(retire_alice_csv(""), "federal")
+            fund_asset_savings("1000000.00")
     return _add
 
 

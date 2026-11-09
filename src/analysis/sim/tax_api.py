@@ -103,6 +103,7 @@ class TaxYear:
     _filing_status_in: Callable[[int], str] = field(repr=False)
     _prior: Callable[[str], int] = field(repr=False)
     _series_of: Callable[[str], list[str]] = field(repr=False)
+    _upstream: Callable[[str], Prepared] = field(repr=False, default=lambda name: _no_upstream(name))
 
     @property
     def filing_status(self) -> str:
@@ -154,6 +155,13 @@ class TaxYear:
     @cached_property
     def _this_year(self) -> list[IncomeItem]:
         return [i for i in self.items if i.year == self.year]
+
+    def upstream(self, name: str) -> Prepared:
+        """The same year of jurisdiction ``name``, one this calculator
+        builds on (:attr:`TaxCalculator.upstream`), prepared on the same
+        ledger. Its :meth:`Prepared.compute` takes the same :class:`Extra`,
+        so a what-if moves both returns."""
+        return self._upstream(name)
 
     def year_items(self, *characters: str) -> list[IncomeItem]:
         """This year's items of the ``characters`` (all of them when none)."""
@@ -233,10 +241,17 @@ class Prepared:
         raise NotImplementedError
 
 
+def _no_upstream(name: str) -> Prepared:
+    raise TaxError(f"no upstream jurisdiction {name!r}: the calculator doesn't build on it")
+
+
 class TaxCalculator:
     """A tax calculator: a ``kind`` a jurisdiction file names, and how it
     turns a :class:`TaxYear` into returns."""
     kind: ClassVar[str]
+    upstream: ClassVar[tuple[str, ...]] = ()
+    """The jurisdictions whose return it builds on (:meth:`TaxYear.upstream`):
+    each must have a file in the scenario, and settles before it."""
     jurisdiction: ClassVar[str]
     """The jurisdiction it computes; until calculators are pluggable (#510)
     each kind computes one, whose file has that name."""

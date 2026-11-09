@@ -20,7 +20,7 @@ from analysis.sim.registries import SCHEDULED_CSV_HEADER
 @pytest.mark.parametrize(("name", "cells", "message"), [
     ("federal", {"kind": "state_tables"}, "kind 'state_tables' doesn't compute the federal tax"),
     ("federal", {"upstream": "federal"}, "upstream names the jurisdiction itself"),
-    ("federal", {"upstream": "state"}, "upstream 'state' is not a jurisdiction of this scenario"),
+    ("federal", {"upstream": "state"}, "upstream must be blank or empty: the federal calculator builds on no"),
     ("federal", {"source_chain": ""}, "source_chain names the chain or account the tax is paid from"),
     ("federal", {"source_chain": "Nowhere"}, "source_chain"),
     ("federal", {"destination": ""}, "destination names the expense account"),
@@ -38,6 +38,29 @@ def test_the_loader_checks_a_tax_file(
 ) -> None:
     add_tax(name, **({"kind": "federal"} if name == "local" else {}), **cells)
     with pytest.raises(LoadError, match=message):
+        load_test_copy()
+
+
+def test_a_state_needs_the_federal_return_it_starts_from(
+    add_state_tax: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_state_tax()
+    (retire_alice_csv("") / "taxes" / "federal.csv").unlink()
+    with pytest.raises(LoadError, match=r"taxes/state\.csv line 2: the state_tables calculator "
+                                        r"builds on the federal tax, .*`sim tax add federal`"):
+        load_test_copy()
+
+
+def test_a_states_upstream_column_may_only_spell_out_federal(
+    add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_state_tax()
+    add_tax("state", upstream="federal", params_json={"bracket_series": "CA"})
+    load_test_copy()
+    add_tax("state", upstream="state", params_json={"bracket_series": "CA"})
+    with pytest.raises(LoadError, match="upstream must be blank or federal"):
         load_test_copy()
 
 

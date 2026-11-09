@@ -5070,6 +5070,16 @@ TAX_RETIRED_PARAMS: dict[str, str] = {
 """``tax_accumulator`` params a jurisdiction file doesn't take (#507), and why."""
 
 
+def tax_calculator_upstream(kind: str) -> tuple[str, ...]:
+    """The jurisdictions calculator ``kind`` builds on (#508); none for an
+    unknown kind, which is reported on its own."""
+    from analysis.sim import tax_api  # noqa: PLC0415  (the calculators load on first use)
+    try:
+        return tax_api.calculator(kind).upstream
+    except tax_api.TaxError:
+        return ()
+
+
 def _validate_taxes(
     tax_rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
     accounts: list[dict[str, str]], scenario_row: Mapping[str, str], issues: list[str],
@@ -5091,15 +5101,25 @@ def _validate_taxes(
             fits = [k for k, j in registries.TAX_KINDS.items() if j == name]
             issues.append(f"{where}: kind {kind!r} doesn't compute the {name} tax "
                           f"(it takes kind {', '.join(fits)})")
-        for up in (row.get("upstream") or "").split():
+        # A calculator declares the returns it builds on (#508); the column
+        # may only spell that out, and blank takes it.
+        declared = tax_calculator_upstream(kind)
+        given = (row.get("upstream") or "").split()
+        if given and sorted(given) != sorted(declared):
+            issues.append(
+                f"{where}: upstream must be blank or {' '.join(declared) or 'empty'}: "
+                f"the {kind} calculator builds on {', '.join(declared) or 'no other jurisdiction'}")
+        for up in given or declared:
             if up == name:
                 issues.append(f"{where}: upstream names the jurisdiction itself")
             elif up not in defined:
-                issues.append(f"{where}: upstream {up!r} is not a jurisdiction of this scenario "
-                              f"(it has {', '.join(defined)})")
+                issues.append(
+                    f"{where}: the {kind} calculator builds on the {up} tax, and the scenario has "
+                    f"no {registries.TAXES_DIR}/{up}.csv (add it with `sim tax add {up}`)")
             elif defined.index(up) > defined.index(name):
                 issues.append(f"{where}: upstream {up!r} settles after {name}, so {name} "
                               "can't build on it")
+        row["upstream"] = " ".join(given or declared)
         source = row.get("source_chain", "")
         if not source:
             issues.append(f"{where}: source_chain names the chain or account the tax is paid from")

@@ -663,6 +663,7 @@ def test_long_term_gains_are_taxed_at_the_preferential_rates(
 def test_state_tax_still_treats_gains_as_ordinary(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_tax: Callable[..., Path],
+    fund_asset_savings: Callable[..., None],
 ) -> None:
     """The preferential table is federal-only: state liability ignores it."""
     import pandas as pd
@@ -676,6 +677,8 @@ def test_state_tax_still_treats_gains_as_ordinary(
         "meta_json": "{}",
     }
     accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    add_tax()  # the federal return the state starts from (#508)
+    fund_asset_savings("1000000.00")
     add_tax("state", params_json={"bracket_series": "CA"})
     retire_alice_csv("year_to_date.csv").write_text(
         "name,from_account,to_account,amount,tax_character\n"
