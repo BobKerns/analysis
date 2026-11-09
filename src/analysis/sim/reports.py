@@ -658,27 +658,27 @@ _TAX_COLUMNS = {
     f"{scope}_{bucket}": f"{_SCOPE_PREFIX[scope]}_{column}"
     for scope in ("federal", "state")
     for bucket, column in (
-        ("adjusted_gross_income", "agi"),
-        ("deduction_used", "deduction"),
+        ("agi", "agi"),
+        ("deduction", "deduction"),
         ("taxable_income", "income"),
-        ("tax_liability", "tax"),
+        ("tax", "tax"),
     )
 }
 
 
 _BUSINESS_COLUMNS = {
-    "federal_schedule_c_net": "business_net",
-    "federal_hobby_expense_disallowed": "hobby_disallowed",
+    "federal_business_net": "business_net",
+    "federal_hobby_disallowed": "hobby_disallowed",
     "federal_nol_carryover": "nol_carryover",
 }
 
 
 _RECONCILIATION_COLUMNS = {
-    "federal_tax_liability": "fed_liability",
+    "federal_tax": "fed_liability",
     "federal_tax_paid": "fed_paid",
     "federal_tax_due": "fed_due",
     "federal_tax_overpaid": "fed_refund",
-    "state_tax_liability": "state_liability",
+    "state_tax": "state_liability",
     "state_tax_paid": "state_paid",
     "state_tax_due": "state_due",
     "state_tax_overpaid": "state_refund",

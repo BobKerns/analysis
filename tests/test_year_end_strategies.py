@@ -90,7 +90,7 @@ def test_harvest_fills_the_zero_percent_band_to_the_cent(run_strategy_scenario) 
         else:
             assert taxable <= detail["band_top"]
             assert sum(detail["realized"].values()) == detail["held"]
-        assert _summary(run, year, "federal_ltcg_income") >= sum(detail["realized"].values())
+        assert _summary(run, year, "federal_ltcg_taxed") >= sum(detail["realized"].values())
 
 
 def test_harvest_raises_basis_and_keeps_the_balance(run_strategy_scenario, strategy_csv) -> None:
@@ -191,8 +191,8 @@ def test_cash_gift_is_held_to_its_tax_limit(run_strategy_scenario, strategy_csv)
     run = run_strategy_scenario(SCENARIO)
     month, moved, note, _detail = _year_ends(run)[0]
     assert month == "2026-12-31" and note.endswith(", held to $500 of tax") and 0 < moved < 1_900_000
-    extra = (_summary(run, 2026, "federal_tax_liability")
-             - _summary(base, 2026, "federal_tax_liability"))
+    extra = (_summary(run, 2026, "federal_tax")
+             - _summary(base, 2026, "federal_tax"))
     assert 49_000 < extra <= 50_000
     # Sold, not given in kind: the gain legs land in the gift account.
     characters = {c for (c,) in _query(run, (
@@ -249,7 +249,7 @@ def test_december_estimate_matches_the_april_settlement(
     assert [d[0][:4] for d in decisions] == [str(y) for y in range(2026, 2041)]
     for month, _moved, _note, detail in decisions[:-1]:
         year = int(month[:4])
-        assert detail["tax"] == _summary(run, year, "federal_tax_liability"), year
+        assert detail["tax"] == _summary(run, year, "federal_tax"), year
         assert detail["taxable"] == _summary(run, year, "federal_taxable_income"), year
         assert detail["status"] == "MFJ"
         assert detail["ytd"].get("ordinary", 0) > 0 or year > 2030

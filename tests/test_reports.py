@@ -145,7 +145,7 @@ def test_tax_by_year_shows_the_federal_income_it_taxed_without_a_state_rule(repo
     liability = report_run.tax_liability_by_year()
     assert tax.loc[2026, "total_tax"] == pytest.approx(liability[2026]) and liability[2026] > 0
     summary = report_run.items("tax_year_summary").set_index(["year", "bucket"])["amount"] / 100
-    assert tax.loc[2026, "fed_agi"] == pytest.approx(summary[2026, "federal_adjusted_gross_income"])
+    assert tax.loc[2026, "fed_agi"] == pytest.approx(summary[2026, "federal_agi"])
     assert tax.loc[2026, "fed_income"] == pytest.approx(
         max(0, tax.loc[2026, "fed_agi"] - tax.loc[2026, "fed_deduction"]))
     assert tax.loc[2026, "effective_rate"] == pytest.approx(

@@ -44,7 +44,7 @@ __all__ = [
     "register", "sale_gain",
 ]
 
-API_VERSION = 7
+API_VERSION = 8
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this

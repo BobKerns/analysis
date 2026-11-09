@@ -83,7 +83,7 @@ def test_exclusion_takes_a_persons_ira_draw_off_state_agi(
     AGI; Bill, 59, gets the age-65 exclusion of nothing."""
     con, _ = _run(state_ira, tmp_path / "without")
     try:
-        before = _bucket(con, 2026, "state_adjusted_gross_income")
+        before = _bucket(con, 2026, "state_agi")
         assert _bucket(con, 2026, "state_retirement_exclusion") == 0
     finally:
         con.close()
@@ -94,7 +94,7 @@ def test_exclusion_takes_a_persons_ira_draw_off_state_agi(
     con, _ = _run(state_ira, tmp_path / "with")
     try:
         assert _bucket(con, 2026, "state_retirement_exclusion") == 20_000_00
-        assert _bucket(con, 2026, "state_adjusted_gross_income") == before - 20_000_00
+        assert _bucket(con, 2026, "state_agi") == before - 20_000_00
     finally:
         con.close()
 
@@ -396,9 +396,9 @@ def test_state_taxable_social_security_reads_income_before_the_exclusion(
         year = 2033
         excluded = _bucket(con, year, "state_retirement_exclusion")
         assert excluded == 30_000_00
-        ss = _bucket(con, year, "state_ss_income")
+        ss = _bucket(con, year, "state_ss_benefits")
         ordinary = _bucket(con, year, "state_ordinary_income")
-        ltcg = _bucket(con, year, "state_ltcg_income")
+        ltcg = _bucket(con, year, "state_ltcg_taxed")
         tiers = {"tier1": 32_000_00, "tier2": 44_000_00}  # MFJ, prototype aux
         expected = taxable_social_security(
             ordinary_income=ordinary + excluded, ltcg_income=ltcg, ss_income=ss,
@@ -407,7 +407,7 @@ def test_state_taxable_social_security_reads_income_before_the_exclusion(
             ordinary_income=ordinary, ltcg_income=ltcg, ss_income=ss,
             tier1=tiers["tier1"], tier2=tiers["tier2"])
         assert expected != after  # the year shows the difference
-        assert _bucket(con, year, "state_taxable_ss") == expected
+        assert _bucket(con, year, "state_ss_taxable") == expected
     finally:
         con.close()
 

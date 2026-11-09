@@ -74,9 +74,9 @@ def test_a_rule_naming_a_shipped_state_taxes_by_its_tables(
     taxable = summary["state_taxable_income"]
     assert taxable > 0
     if state == "ID":  # its 2025 zero band, grown to 2026 by the run's CPI
-        assert 0 < summary["state_tax_liability"] < taxable * 0.053
+        assert 0 < summary["state_tax"] < taxable * 0.053
     else:
-        assert summary["state_tax_liability"] == progressive_tax(
+        assert summary["state_tax"] == progressive_tax(
             taxable, _brackets(state, "2026-01-31"))
 
 

@@ -318,7 +318,7 @@ def test_the_tax_summary_shows_the_deduction_and_the_carryover(
         ).fetchall())
     [(_account, loss, _character)] = _capital_losses(run)
     assert summary == {
-        "federal_capital_loss_deduction": 3_000_00,
+        "federal_capital_loss_used": 3_000_00,
         "federal_capital_loss_carryover": loss - 3_000_00,
     }
 

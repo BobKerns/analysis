@@ -120,7 +120,7 @@ def test_qualified_dividends_are_taxed_at_capital_gains_rates(report_run_file: P
     assert paid[DIVIDENDS] > 0 and paid[INTEREST] > 0
     # Dividends stack on ordinary income at the capital gains rates; interest
     # is ordinary income.
-    assert summary["federal_ltcg_income"] >= paid[DIVIDENDS]
+    assert summary["federal_ltcg_taxed"] >= paid[DIVIDENDS]
     assert summary["federal_ordinary_income"] >= paid[INTEREST]
 
 

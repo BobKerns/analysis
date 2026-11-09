@@ -644,11 +644,11 @@ def test_long_term_gains_are_taxed_at_the_preferential_rates(
     ltcg_file.write_text(kept)
     preferential = federal("preferential.sqlite3")
 
-    assert as_ordinary["federal_ltcg_income"] == 10_000_000 == preferential["federal_ltcg_income"]
+    assert as_ordinary["federal_ltcg_taxed"] == 10_000_000 == preferential["federal_ltcg_taxed"]
     taxable = preferential["federal_taxable_income"]
     ordinary_brackets = _bracket_rows(aux / "federal_brackets.csv", "MFJ")
     ltcg_brackets = _bracket_rows(aux / "ltcg_brackets.csv", "MFJ")
-    assert as_ordinary["federal_tax_liability"] == _tax_by_bracket(taxable, ordinary_brackets)
+    assert as_ordinary["federal_tax"] == _tax_by_bracket(taxable, ordinary_brackets)
 
     gain = min(10_000_000, taxable)
     base = taxable - gain
@@ -656,8 +656,8 @@ def test_long_term_gains_are_taxed_at_the_preferential_rates(
         _tax_by_bracket(base, ordinary_brackets)
         + _tax_by_bracket(taxable, ltcg_brackets) - _tax_by_bracket(base, ltcg_brackets)
     )
-    assert preferential["federal_tax_liability"] == expected
-    assert preferential["federal_tax_liability"] < as_ordinary["federal_tax_liability"]
+    assert preferential["federal_tax"] == expected
+    assert preferential["federal_tax"] < as_ordinary["federal_tax"]
 
 
 def test_state_tax_still_treats_gains_as_ordinary(
@@ -689,7 +689,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
         try:
             return con.execute(
                 "SELECT amount FROM tax_year_summary "
-                "WHERE year = 2026 AND bucket = 'state_tax_liability'"
+                "WHERE year = 2026 AND bucket = 'state_tax'"
             ).fetchone()[0]
         finally:
             con.close()

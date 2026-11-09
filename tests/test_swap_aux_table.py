@@ -304,6 +304,6 @@ def test_a_move_takes_the_states_social_security_table(
     run = _run(load_test_copy, runs_dir, "move")
     with sqlite3.connect(run) as con:
         taxable = dict(con.execute(
-            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_taxable_ss'"
+            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_ss_taxable'"
         ).fetchall())
     assert any(v > 0 for v in taxable.values()) == (taxed_in == "WA")

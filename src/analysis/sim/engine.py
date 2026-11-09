@@ -2893,20 +2893,6 @@ def _settle_accounts(
                 )
 
 
-_SUMMARY_BUCKET: dict[str, str] = {
-    "agi": "adjusted_gross_income", "tax": "tax_liability", "deduction": "deduction_used",
-    "ss_benefits": "ss_income", "ss_taxable": "taxable_ss", "ltcg_taxed": "ltcg_income",
-    "capital_loss_used": "capital_loss_deduction", "business_net": "schedule_c_net",
-    "hobby_disallowed": "hobby_expense_disallowed",
-}
-"""A return line's ``tax_year_summary`` bucket suffix, where it differs."""
-_UNWRITTEN_LINES = frozenset({"ordinary_taxable"})
-
-
-def _summary_bucket(jurisdiction: str, line: str) -> str:
-    return f"{jurisdiction}_{_SUMMARY_BUCKET.get(line, line)}"
-
-
 _KIND_OF_JURISDICTION = {name: kind for kind, name in registries.TAX_KINDS.items()}
 
 
@@ -2971,7 +2957,7 @@ def _tax_year(
         _keyed=lambda kind, column, value, year: _lookup_by_series_key(
             aux, kind, column, value, f"{year}-12-31"),
         _filing_status_in=filing_status_in,
-        _prior=lambda line: _summary_amount(con, tax_year - 1, _summary_bucket(scope, line)),
+        _prior=lambda line: _summary_amount(con, tax_year - 1, f"{scope}_{line}"),
         _series_of=lambda kind: sorted(
             series for (k, series) in aux if k == kind and series is not None),
     )
@@ -3181,8 +3167,7 @@ def _settle_tax(
 
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     summary_rows = {
-        _summary_bucket(scope, line): amount
-        for line, amount in ret.lines.items() if line not in _UNWRITTEN_LINES
+        f"{scope}_{line}": amount for line, amount in ret.lines.items()
     }
     summary_rows.update({
         f"{scope}_tax_paid": already_paid,

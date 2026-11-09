@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 59
+SCHEMA_VERSION = 60
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:

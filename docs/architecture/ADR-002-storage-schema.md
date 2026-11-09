@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 59) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 60) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -1171,3 +1171,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - Readers assume the current schema until public release: no fallbacks for files from an earlier `SCHEMA_VERSION`, and a draws database from another version is gathered again (Schema changes).
 - [#507](https://github.com/BobKerns/analysis/issues/507): table `tax_jurisdiction` (a scenario's `taxes/<name>.csv` files) and `transfer_event.reason_kind` `tax` for its payments, in place of the `tax_accumulator` rule (table of tables, Intent layer DDL, Ledger layer DDL; schema 58).
 - [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 59).
+- [#507](https://github.com/BobKerns/analysis/issues/507): the tax calculator API renames `tax_year_summary`'s income tax buckets (`<scope>_agi`, `_tax`, `_deduction`, `_ss_benefits`, `_ss_taxable`, `_ltcg_taxed`, `_capital_loss_used`, `_business_net`, `_hobby_disallowed`) and adds `<scope>_ordinary_taxable` (schema 60).
