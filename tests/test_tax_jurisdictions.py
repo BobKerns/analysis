@@ -30,13 +30,13 @@ from analysis.sim.registries import SCHEDULED_CSV_HEADER
     ("federal", {"params_json": "[]"}, "params_json is not a JSON object"),
     ("federal", {"params_json": '{"year": "current"}'}, "params_json takes no 'year'"),
     ("federal", {"params_json": '{"scope": "state"}'}, "params_json takes no 'scope'"),
-    ("local", {}, "a tax jurisdiction is one of federal, state"),
+    ("county", {}, "a tax jurisdiction is one of federal, state, local"),
 ])
 def test_the_loader_checks_a_tax_file(
     add_tax: Callable[..., Path], load_test_copy: Callable[[], LoadResult],
     name: str, cells: dict[str, str], message: str,
 ) -> None:
-    add_tax(name, **({"kind": "federal"} if name == "local" else {}), **cells)
+    add_tax(name, **({"kind": "federal"} if name == "county" else {}), **cells)
     with pytest.raises(LoadError, match=message):
         load_test_copy()
 

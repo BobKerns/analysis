@@ -236,6 +236,9 @@ class Prepared:
     filing_status: str
     brackets: Sequence[tuple[int, int]]
     ltcg_brackets: Sequence[tuple[int, int]] = ()
+    bracket_series: str | None = None
+    """The series its tables are keyed by (a state's ``bracket_series``),
+    for a jurisdiction built on it whose tables follow (#508)."""
 
     def compute(self, extra: Extra = NO_EXTRA) -> Return:
         raise NotImplementedError

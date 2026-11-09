@@ -1336,6 +1336,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues)
+    _validate_local_tax(tax_rows, aux_rows, issues)
     _validate_calendar(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -5093,6 +5094,14 @@ def _validate_taxes(
     ``schedule`` with ``april``."""
     defined = [row["name"] for row in tax_rows]
     kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
+    by_name = {row["name"]: row for row in tax_rows}
+    for row in tax_rows:
+        # A jurisdiction paid with another's (local with the state's, #508)
+        # takes its source and destination when its own are blank. Before
+        # either is resolved, so both resolve the same way.
+        if (with_row := by_name.get(registries.TAX_PAID_WITH.get(row["name"], ""))) is not None:
+            for column in ("source_chain", "destination"):
+                row[column] = row.get(column) or with_row.get(column, "")
     for row in tax_rows:
         where = row.get(ORIGIN) or f"{registries.TAXES_DIR}/{row['name']}.csv"
         name = row["name"]
@@ -5151,6 +5160,25 @@ def _validate_taxes(
         for key, why in TAX_RETIRED_PARAMS.items():
             if key in params:
                 issues.append(f"{where}: params_json takes no {key!r}: {why}")
+
+
+def _validate_local_tax(
+    tax_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """A ``state_local_tax__<XX>`` table is read by the local jurisdiction
+    alone (#508), so a scenario with one and no ``taxes/local.csv`` would
+    silently stop paying it."""
+    if any(row["name"] == "local" for row in tax_rows):
+        return
+    tables = sorted({series for kind, series, _p, _e in aux_rows
+                     if kind == registries.STATE_LOCAL_TAX and series})
+    if tables:
+        files = ", ".join(f"aux/{registries.STATE_LOCAL_TAX}__{t}.csv" for t in tables)
+        issues.append(
+            f"{files}: a local income tax is its own jurisdiction now, and the scenario has no "
+            f"{registries.TAXES_DIR}/local.csv; add it with `sim tax add local` (it is paid with "
+            "the state's tax)")
 
 
 def _read_strategy_vary_files(

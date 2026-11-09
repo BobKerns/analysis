@@ -1,6 +1,8 @@
 """Local income taxes (#487): a ``state_local_tax__<state>.csv`` table of
 bands on the state's taxable income (a county's flat rate, a city's
-brackets), paid with the state's tax and reported apart from it."""
+brackets), read by the local jurisdiction (``taxes/local.csv``, kind
+``local_bands``, #508), which builds on the state's return and is paid with
+the state's tax by default."""
 
 from __future__ import annotations
 
@@ -70,42 +72,56 @@ def _earn(con: sqlite3.Connection, year: int, amount: int) -> None:
     )
 
 
-def _estimate(con: sqlite3.Connection, aux: Aux, scope: str = "state", year: int = 2026,
+JURISDICTIONS = {
+    "federal": ("federal", {"scope": "federal"}),
+    "state": ("state_tables", {"scope": "state", "bracket_series": "CA"}),
+}
+
+
+def _estimate(con: sqlite3.Connection, aux: Aux, scope: str = "local", year: int = 2026,
               more: int = 0) -> Return:
-    params = {"scope": scope, **({"bracket_series": "CA"} if scope == "state" else {})}
-    kind = "state_tables" if scope == "state" else scope
+    kind, params = JURISDICTIONS.get(scope, ("local_bands", {"scope": "local"}))
     return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind,
-                        jurisdictions={"federal": ("federal", {"scope": "federal"})}).compute(Extra(more))
+                        jurisdictions=JURISDICTIONS).compute(Extra(more))
 
 
 def test_a_local_tax_taxes_the_states_taxable_income(ledger: sqlite3.Connection) -> None:
-    """A county's flat 3% on the state's taxable income adds to the state's
-    tax and is broken out of it; federal tax never reads it."""
+    """A county's flat 3% on the state's taxable income is the local
+    jurisdiction's tax; the state's and the federal tax never read it."""
     _earn(ledger, 2026, 110_000_00)
     taxable = 100_000_00
-    state = _estimate(ledger, _aux(_band(0, 30_000)))
-    assert state["local_tax"] == taxable * 3 // 100
-    assert state.tax == taxable * 5 // 100 + state["local_tax"]
-    assert _estimate(ledger, _aux())["local_tax"] == 0
-    federal = _estimate(ledger, _aux(_band(0, 30_000)), "federal")
-    assert (federal.lines.get("local_tax", 0), federal.tax) == (0, taxable * 5 // 100)
-    # More income pays the local rate too (the drawdown, fill_bracket).
-    assert _estimate(ledger, _aux(_band(0, 30_000)), more=100_00).tax - state.tax == 8_00
+    local = _estimate(ledger, _aux(_band(0, 30_000)))
+    assert (local.taxable_income, local.tax) == (taxable, taxable * 3 // 100)
+    assert _estimate(ledger, _aux()).tax == 0
+    for scope in ("state", "federal"):
+        ret = _estimate(ledger, _aux(_band(0, 30_000)), scope)
+        assert ("local_tax" not in ret.lines, ret.tax) == (True, taxable * 5 // 100)
+    # More income on the state's return pays the local rate too (the
+    # drawdown, fill_bracket).
+    assert _estimate(ledger, _aux(_band(0, 30_000)), more=100_00).tax - local.tax == 3_00
 
 
 def test_a_local_tax_with_brackets_and_a_threshold(ledger: sqlite3.Connection) -> None:
     """A city's own brackets, or a tax only on income above a threshold
-    (a 0% band below it), as a progressive table of its own, which adds
-    to a state surcharge rather than replacing it."""
+    (a 0% band below it), as a progressive table of its own, apart from a
+    state surcharge."""
     _earn(ledger, 2026, 1_510_000_00)
     taxable = 1_500_000_00
     aux = _aux(_band(0, 0), _band(200_000_00, 10_000), _band(400_000_00, 25_000),
                surcharge=True)
-    state = _estimate(ledger, aux)
     local = (400_000_00 - 200_000_00) // 100 + (taxable - 400_000_00) * 25 // 1000
-    assert state["local_tax"] == local
+    assert _estimate(ledger, aux).tax == local
     surcharge = (taxable - 1_000_000_00) // 100
-    assert state.tax == taxable * 5 // 100 + surcharge + local
+    assert _estimate(ledger, aux, "state").tax == taxable * 5 // 100 + surcharge
+
+
+def test_a_local_files_params_can_name_its_own_bands(ledger: sqlite3.Connection) -> None:
+    _earn(ledger, 2026, 110_000_00)
+    aux = _aux(_band(0, 30_000))
+    aux[(registries.STATE_LOCAL_TAX, "CA-city")] = [_band(0, 10_000)]
+    city = _prepare_tax(ledger, {"scope": "local", "bracket_series": "CA-city"}, aux=aux,
+                        tax_year=2026, tid=1, kind="local_bands", jurisdictions=JURISDICTIONS)
+    assert city.compute().tax == 100_000_00 // 100
 
 
 def test_a_move_takes_the_local_tax_along(ledger: sqlite3.Connection) -> None:
@@ -122,7 +138,7 @@ def test_a_move_takes_the_local_tax_along(ledger: sqlite3.Connection) -> None:
         "source_series": "other_county"}, aux)
     _swap_aux_table(ledger, 2, "2028-01-31", {
         "aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux)
-    assert [_estimate(ledger, aux, year=year)["local_tax"] for year in (2026, 2027, 2028)] == [
+    assert [_estimate(ledger, aux, year=year).tax for year in (2026, 2027, 2028)] == [
         3_000_00, 2_000_00, 0]
 
 
@@ -164,10 +180,13 @@ def _local_rows(rate: str) -> str:
 
 def test_a_county_move_needs_no_local_tax_before_it(
     write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
-    load_test_copy: Callable[[], LoadResult],
+    load_test_copy: Callable[[], LoadResult], add_state_tax: Callable[..., None],
+    add_tax: Callable[..., Path],
 ) -> None:
     """A household moving from a county with no local tax into one with a
     local tax swaps it in alone; the state had no table before."""
+    add_state_tax()
+    add_tax("local")
     write_aux("state_local_tax__CA-county.csv", _local_rows("3%"))
     append_calendar_row(date="2028-01", kind="swap_aux_table", series="CA",
                         params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
@@ -195,11 +214,11 @@ def test_a_county_move_into_no_state_is_rejected(
 
 
 def test_tax_report_shows_local_tax_apart_from_the_states(
-    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
-    run_test_copy: Callable[[], Path],
+    add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
+    write_aux: Callable[[str, str], Path], run_test_copy: Callable[[], Path],
 ) -> None:
     """``sim report tax`` adds local_tax after state_tax only when some year
-    has one; state_tax then leaves it out, and total_tax counts it once."""
+    has one, and total_tax counts it once."""
     add_state_tax(bracket_series="CA")
     first = run_test_copy()
     with RunConnection(first) as rc:
@@ -207,7 +226,9 @@ def test_tax_report_shows_local_tax_apart_from_the_states(
     assert "local_tax" not in without.columns
     first.unlink()  # run_test_copy writes one run file
     write_aux("state_local_tax__CA.csv", _local_rows("3%"))
-    with RunConnection(run_test_copy()) as rc:
+    add_tax("local")
+    run = run_test_copy()
+    with RunConnection(run) as rc:
         frame = tax_by_year(rc)
     columns = list(frame.columns)
     assert columns.index("local_tax") == columns.index("state_tax") + 1
@@ -220,3 +241,40 @@ def test_tax_report_shows_local_tax_apart_from_the_states(
     # The chart stacks it on the state's.
     legend = tax_figure(frame, "tax").axes[0].get_legend_handles_labels()[1]
     assert legend[:3] == ["federal", "state", "local"]
+    # Paid with the state's, into the same account, each its own payment
+    # in full: the state's payment doesn't count toward the local tax.
+    con = sqlite3.connect(run)
+    try:
+        summary = dict(con.execute(
+            "SELECT bucket, amount FROM tax_year_summary WHERE year = ?", (year,)).fetchall())
+        paid = dict(con.execute(
+            "SELECT j.name, SUM(t.amount) FROM transfer_event t "
+            "JOIN tax_jurisdiction j ON j.id = t.reason_id "
+            "WHERE t.reason_kind = 'tax' AND t.tax_year = ? GROUP BY j.name", (year,)).fetchall())
+    finally:
+        con.close()
+    assert summary["local_tax_paid"] == 0 and summary["local_tax_due"] == summary["local_tax"]
+    assert paid["local"] == summary["local_tax"] and paid["state"] == summary["state_tax_due"]
+    assert "local_drawdown_tax" in summary and "state_local_tax" not in summary
+
+
+def test_local_bands_without_a_local_file_name_the_command(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_state_tax()
+    write_aux("state_local_tax__CA.csv", _local_rows("3%"))
+    with pytest.raises(LoadError, match=r"aux/state_local_tax__CA\.csv: a local income tax is its "
+                                        r"own jurisdiction now.*`sim tax add local`"):
+        load_test_copy()
+
+
+def test_a_local_tax_needs_the_state_it_builds_on(
+    add_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_tax()
+    add_tax("local")
+    write_aux("state_local_tax__CA.csv", _local_rows("3%"))
+    with pytest.raises(LoadError, match=r"local_bands calculator builds on the state tax"):
+        load_test_copy()

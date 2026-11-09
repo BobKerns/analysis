@@ -598,8 +598,8 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     out Social Security and, in ``state_exclusion`` (shown only when some
     year has one), the state's retirement income exclusions (#486). The
     state columns appear only when the run computes state tax. A local
-    income tax (#487), paid with the state's, is ``local_tax``, shown only
-    when some year has one; ``state_tax`` then leaves it out. A run that charges IRMAA (#253) adds ``fed_magi`` and
+    income tax (#487), its own jurisdiction paid with the state's by default
+    (#508), is ``local_tax``, shown only when some year has one. A run that charges IRMAA (#253) adds ``fed_magi`` and
     ``irmaa_tier``, the tier that year's MAGI set for the premiums two years
     later (0 below the first), blank for a year whose premiums the run ends
     before charging. ``effective_rate`` is total tax over federal AGI. Liability
@@ -614,15 +614,14 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
         # A state retirement income exclusion (#486), only when some year has
         # one: it is what state AGI already left out.
         extra = _tax_buckets(
-            rc, ["state_retirement_exclusion", "state_local_tax"]).reindex(frame.index)
+            rc, ["state_retirement_exclusion", "local_tax"]).reindex(frame.index)
         excluded = extra["state_retirement_exclusion"]
         if excluded.fillna(0).ne(0).any():
             frame.insert(frame.columns.get_loc("state_agi"), "state_exclusion", excluded)
-        # A local income tax (#487) is paid with the state's, but shown
-        # apart from it, only when some year has one.
-        local = extra["state_local_tax"]
+        # A local income tax (#487) is its own jurisdiction (#508), paid
+        # with the state's by default; shown only when some year has one.
+        local = extra["local_tax"]
         if local.fillna(0).ne(0).any():
-            frame["state_tax"] -= local.fillna(0)
             frame.insert(frame.columns.get_loc("state_tax") + 1, "local_tax", local)
     # A scenario may compute federal tax and not state tax: a blank is "not
     # computed", so the total is blank only when neither is.

@@ -255,3 +255,21 @@ def test_series_fixed_means_no_inflation_on_either_target(fill_run: Rules) -> No
     assert not _conversions(fill_run({"series": "fixed"})).empty
     fixed = _conversions(fill_run({"rate": "", "amount": "250000.00", "series": "fixed"}))
     assert {fill["target"] for fill in fixed["fill"]} == {250_000_00}
+
+
+def test_a_states_max_marginal_rate_counts_the_local_tax_built_on_it(
+    fill_run: Rules, add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
+    write_aux: Callable[[str, str], Path],
+) -> None:
+    """A local tax is charged on the state's income (#508), so the next
+    dollar's cost in the state's scope includes it: at 3% local, the 8%
+    bracket costs 11% and a 10% limit stops below it."""
+    add_state_tax()
+    rule = {"rate": "9.3%", "params_json": '{"scope": "state", "max_marginal_rate": "10%"}'}
+    without = _conversions(fill_run(rule)).iloc[0]["fill"]["reached"]
+    write_aux("state_local_tax__CA.csv", "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+              + "".join(f"2020-01-31,{s},0,0.00,3%\n" for s in ("Single", "MFJ", "MFS")))
+    add_tax("local")
+    with_local = _conversions(fill_run(rule)).iloc[0]["fill"]["reached"]
+    # Far less: the local tax's payments alone move it only a little.
+    assert with_local < without // 2, (with_local, without)

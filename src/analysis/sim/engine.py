@@ -178,6 +178,10 @@ def run_scenario(
         }
         jurisdictions = _tax_jurisdictions(con)
         tax_rules: Jurisdictions = {j.name: (j.kind, j.params) for j in jurisdictions}
+        destinations = {j.name: j.destination_chain for j in jurisdictions}
+        paid_with_another = {
+            j.id for j in jurisdictions
+            if destinations.get(registries.TAX_PAID_WITH.get(j.name, "")) == j.destination_chain}
 
         year_to_date_rows = con.execute(
             "SELECT id, from_lot_id, to_lot_id, amount, tax_character, year "
@@ -355,6 +359,7 @@ def run_scenario(
                             account_subkind=account_subkind, account_name=account_name,
                             person_lifespan=person_lifespan, taxpayers=taxpayers,
                             refill_ctx=refill_ctx, drawdown_pricing=drawdown_pricing,
+                            own_payments_only=j.id in paid_with_another,
                         )
 
             for txn in month_steps:
@@ -589,6 +594,7 @@ def run_scenario(
                     tax_char="none", tid=j.id, post_transfer=False,
                     person_lifespan=person_lifespan, taxpayers=taxpayers,
                     drawdown_pricing=drawdown_pricing,
+                    own_payments_only=j.id in paid_with_another,
                 )
         _record_drawdown_taxes(con, drawdown_pricing)
 
@@ -3110,14 +3116,18 @@ def _settle_tax(
     taxpayers: Collection[str] = (),
     refill_ctx: RefillContext | None = None,
     drawdown_pricing: dict[tuple[str, int], Callable[[int, int], int]] | None = None,
+    own_payments_only: bool = False,
 ) -> None:
     """Compute and optionally pay a tax jurisdiction's income tax for the
     year before ``month`` (#507: ``taxes/<jurisdiction>.csv``, settled each
     April). ``tid`` is the jurisdiction's id, the payment's ``reason_id``
-    (``reason_kind`` ``tax``).
+    (``reason_kind`` ``tax``). ``own_payments_only``: it is paid with another
+    jurisdiction into the same account (a local tax with the state's, #508),
+    so only its own settlements count as paid toward it.
 
-    Supported params:
-    - scope: the jurisdiction, "federal" or "state" (its file's name)
+    Supported params (the built-in calculators'; a local tax reads only
+    bracket_series, which defaults to the state's):
+    - scope: the jurisdiction, "federal", "state" or "local" (its file's name)
     - filing_status_aux: defaults to "filing_status"
     - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
     - bracket_series: optional, required when state_brackets has multiple series
@@ -3177,12 +3187,19 @@ def _settle_tax(
             lambda ordinary, gains, prepared=prepared, drawn=drawn, realized=realized:
             prepared.compute(tax_api.Extra(ordinary - drawn, gains - realized)).tax)
 
+    # What was paid toward the year: everything into the destination for
+    # it, less another jurisdiction's settlements there (a local tax paid
+    # with the state's, #508). One paid with another's into the same account
+    # counts only its own settlements: the other's estimated payments are
+    # the other's.
     paid_transfers = con.execute(
         "SELECT COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
         "WHERE to_lot_id = ? "
-        "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ?",
-        (to_id, tax_year),
+        "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ? "
+        "  AND NOT (reason_kind = 'tax' AND COALESCE(reason_id, -1) != ?) "
+        "  AND (? = 0 OR reason_kind = 'tax')",
+        (to_id, tax_year, tid, int(own_payments_only)),
     ).fetchone()[0]
     already_paid = int(paid_transfers or 0)
     tax_due = max(0, tax_liability - already_paid)
@@ -3302,6 +3319,18 @@ def _fill_bracket_tax_rule(
     )
 
 
+def _built_on(tax_rules: Jurisdictions, scope: str) -> list[tuple[str, Mapping[str, Any]]]:
+    """The kind and params of each jurisdiction that builds on ``scope``'s
+    return, directly or through another, in settlement order."""
+    built: list[str] = []
+    for name in registries.TAX_JURISDICTIONS:
+        if name in tax_rules and name != scope:
+            upstream = tax_api.calculator(tax_rules[name][0]).upstream
+            if scope in upstream or any(b in upstream for b in built):
+                built.append(name)
+    return [tax_rules[name] for name in built]
+
+
 def _largest_within(measure: Callable[[int], int], target: int, cap: int) -> int:
     """The largest amount from 0 to ``cap`` whose ``measure`` (never falling
     as the amount grows) is at or under ``target``, by bisection; 0 when even
@@ -3381,7 +3410,8 @@ def _apply_fill_bracket(
     conversion grows (more of it can make more Social Security taxable), so
     the largest amount under the target is found by bisection. Then
     ``max_amount`` and the lot's balance cap it, and ``max_marginal_rate``
-    stops it where the next $100's tax would cost more than that rate.
+    stops it where the next $100's tax would cost more than that rate; a
+    state's counts the local tax built on it too (#508).
     ``irmaa_tier`` keeps the year's MAGI within that IRMAA tier (#253), and
     ``max_marginal_rate`` counts the surcharge a tier floor adds two years
     later, spread over the money converted past it."""
@@ -3448,8 +3478,17 @@ def _apply_fill_bracket(
         if magi_est is not None and irmaa is not None:
             def cliff(x: int, e: tax_api.Prepared = magi_est) -> int:
                 return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).agi, month_s, tid)
+        # A state's rate counts the taxes charged on its income, a local tax
+        # (#508), since the same dollar pays them. A federal rate stays the
+        # federal tax's: a state builds on it, but its rate is its own.
+        measured_with = [est, *(
+            _prepare_tax(con, built_rule, aux=aux, tax_year=tax_year, tid=tid, kind=built_kind,
+                         jurisdictions=tax_rules, person_lifespan=person_lifespan,
+                         taxpayers=taxpayers)
+            for built_kind, built_rule in _built_on(tax_rules, scope))] if scope != "federal" else [est]
         amount = _within_marginal_rate(
-            lambda ordinary, ltcg: est.compute(tax_api.Extra(ordinary, ltcg)).tax,
+            lambda ordinary, ltcg: sum(
+                p.compute(tax_api.Extra(ordinary, ltcg)).tax for p in measured_with),
             cliff, amount, limit)
     event_id = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_lot, to_lot, amount,

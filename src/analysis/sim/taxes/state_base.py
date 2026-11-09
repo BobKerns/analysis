@@ -142,10 +142,6 @@ class StateYear(Prepared):
         return common.stacked_tax(
             taxable, income.ltcg, income.stcg, self.brackets, self.ltcg_brackets, self.stcg_brackets)
 
-    def tax_lines(self, taxable: int, income: Income) -> Mapping[str, int]:
-        """More lines that report on the tax (a part of it), written beside it."""
-        return {}
-
     def credits(self, tax: int, income: Income, basis: Basis) -> int:
         """Credits against ``tax``; none by default."""
         return 0
@@ -188,7 +184,6 @@ class StateYear(Prepared):
             "taxable_income": taxable,
             "ordinary_taxable": common.ordinary_taxable(
                 taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),
-            **self.tax_lines(taxable, income),
             "credits": credits,
             "tax": tax - credits,
         }

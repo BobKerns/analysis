@@ -2,8 +2,8 @@
 from federal AGI (#508) and adjusts it by tables keyed by the state
 (``bracket_series``): qualified dividends as ordinary income, an HSA it
 taxes, its own capital-gain netting and exclusion, retirement exclusions and
-a Social Security exclusion; then its deduction, brackets, gain tables,
-surcharge and local tax."""
+a Social Security exclusion; then its deduction, brackets, gain tables
+and surcharge. A local tax on it is :mod:`analysis.sim.taxes.local`."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class StateTablesYear(FederalStateYear):
         ty, params = self.ty, self.ty.params
         where = common.where(ty)
         bracket_aux = str(params.get("bracket_aux", "state_brackets"))
-        series = self._series = common.bracket_series(ty, bracket_aux)
+        series = self.bracket_series = common.bracket_series(ty, bracket_aux)
         self.brackets = common.brackets(ty, bracket_aux, series)
         # A state's gain tables and exclusion (#485) are keyed by state, like
         # its standard deduction, so they follow bracket_series.
@@ -83,17 +83,15 @@ class StateTablesYear(FederalStateYear):
         # brackets'. Its own bands, rather than more bracket rows, because
         # its floor needn't be indexed or fall between the same brackets for
         # every filing status (California's $1 million). A local income tax
-        # (#487) is bands on the state's taxable income too, reported apart
-        # from it.
+        # is its own jurisdiction (local_bands, #508).
         self._surcharge = bands(registries.STATE_SURCHARGE)
-        self._local = bands(registries.STATE_LOCAL_TAX)
 
     def deductions(self) -> Mapping[str, int]:
         ty, params = self.ty, self.ty.params
         standard_aux = str(params.get("standard_deduction_aux", registries.STATE_STANDARD_DEDUCTION))
         # A state's standard deduction is keyed by state, like its brackets
         # (state_standard_deduction__CA.csv), so it follows bracket_series.
-        series = self._series if standard_aux == registries.STATE_STANDARD_DEDUCTION else None
+        series = self.bracket_series if standard_aux == registries.STATE_STANDARD_DEDUCTION else None
         if series is not None and not ty.has_table(standard_aux, series):
             # The loader warned: the federal figure stands in for the state's.
             standard_aux, series = "standard_deduction", None
@@ -163,11 +161,7 @@ class StateTablesYear(FederalStateYear):
         }
 
     def tax(self, taxable: int, income: Income) -> int:
-        return (super().tax(taxable, income) + common.progressive_tax(taxable, self._surcharge)
-                + common.progressive_tax(taxable, self._local))
-
-    def tax_lines(self, taxable: int, income: Income) -> Mapping[str, int]:
-        return {"local_tax": common.progressive_tax(taxable, self._local)}
+        return super().tax(taxable, income) + common.progressive_tax(taxable, self._surcharge)
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
         memo = basis.federal.memo

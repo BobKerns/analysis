@@ -277,6 +277,34 @@ def test_add_asks_for_what_is_left_out(
     assert row["description"] == "federal income tax for the year before"
 
 
+def test_add_local_asks_nothing_the_state_sets(
+    test_data_dir: Path, add_state_tax: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """A local tax (#508) is paid with the state's and reads the state's
+    bands, so `sim tax add local` writes at once; it needs the state."""
+    alone = _tax(test_data_dir, "add", "local")
+    assert alone.exit_code != 0
+    assert "builds on the state tax, and retire_alice has none (sim tax add state first)" in alone.output
+
+    add_state_tax()
+    result = _tax(test_data_dir, "add", "local")
+    assert result.exit_code == 0, result.output
+    [row] = pd.read_csv(retire_alice_csv("taxes/local.csv"), dtype=str,
+                        keep_default_na=False).to_dict("records")
+    assert (row["kind"], row["source_chain"], row["destination"]) == ("local_bands", "", "")
+    write_aux("state_local_tax__CA.csv", "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+              + "".join(f"2020-01-31,{s},0,0.00,1%\n" for s in ("Single", "MFJ", "MFS")))
+    load_test_copy()
+
+    listed = CliRunner().invoke(main, ["sim", "tax", "list", "retire_alice",
+                                       "--data-dir", str(test_data_dir)])
+    assert listed.exit_code == 0, listed.output
+    assert "state    state_tables on federal: paid from Asset_Checking" in listed.output
+    assert ("local    local_bands on state: paid from the state tax's source into the "
+            "state tax's destination") in listed.output
+
+
 def test_list_edit_and_delete(
     test_data_dir: Path, add_tax: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
     test_child_scenario: Path,
