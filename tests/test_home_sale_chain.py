@@ -17,7 +17,9 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim.chain_edit import CHAIN_COLUMNS
-from analysis.sim.engine import EngineError, _capital_gains, run_scenario
+from analysis.sim.engine import EngineError, run_scenario
+from analysis.sim.tax_api import TaxYear
+from analysis.sim.taxes.common import capital_gains
 from analysis.sim.loader import LoadError, LoadResult
 
 SALE = {
@@ -260,13 +262,13 @@ def _loss(con: sqlite3.Connection, year: int, character: str, amount: int) -> No
 
 
 def test_a_capital_loss_offsets_three_thousand_a_year_and_carries_the_rest(
-    ledger_con: sqlite3.Connection,
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
 ) -> None:
     _loss(ledger_con, 2026, "ltcg", 10_000_00)
     _gain(ledger_con, 2027, "ltcg", 2_000_00)
 
     def gains(year: int) -> tuple[int, int, int, int]:
-        result = _capital_gains(ledger_con, tax_year=year, loss_limit=lambda _y: 3_000_00)
+        result = capital_gains(tax_year_of(ledger_con, year), loss_limit=lambda _y: 3_000_00)
         return result.ltcg, result.loss_deduction, result.carryover_st, result.carryover_lt
 
     assert gains(2026) == (0, 3_000_00, 0, 7_000_00)
@@ -276,17 +278,19 @@ def test_a_capital_loss_offsets_three_thousand_a_year_and_carries_the_rest(
     assert gains(2029) == (0, 0, 0, 0)
 
 
-def test_short_and_long_term_results_net_before_the_limit(ledger_con: sqlite3.Connection) -> None:
+def test_short_and_long_term_results_net_before_the_limit(
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
+) -> None:
     """A short-term loss offsets a long-term gain; a loss left over keeps the
     character of the side that had it, and the deduction uses short-term first."""
     _gain(ledger_con, 2026, "ltcg", 4_000_00)
     _loss(ledger_con, 2026, "stcg", 1_000_00)
-    netted = _capital_gains(ledger_con, tax_year=2026, loss_limit=lambda _y: 3_000_00)
+    netted = capital_gains(tax_year_of(ledger_con, 2026), loss_limit=lambda _y: 3_000_00)
     assert (netted.stcg, netted.ltcg, netted.loss_deduction) == (0, 3_000_00, 0)
 
     _loss(ledger_con, 2027, "stcg", 2_000_00)
     _gain(ledger_con, 2027, "ltcg", -5_000_00)  # a withdrawal at a loss posts a negative leg
-    both = _capital_gains(ledger_con, tax_year=2027, loss_limit=lambda _y: 3_000_00)
+    both = capital_gains(tax_year_of(ledger_con, 2027), loss_limit=lambda _y: 3_000_00)
     assert (both.loss_deduction, both.carryover_st, both.carryover_lt) == (3_000_00, 0, 4_000_00)
 
 
@@ -314,7 +318,7 @@ def test_the_tax_summary_shows_the_deduction_and_the_carryover(
         ).fetchall())
     [(_account, loss, _character)] = _capital_losses(run)
     assert summary == {
-        "federal_capital_loss_deduction": 3_000_00,
+        "federal_capital_loss_used": 3_000_00,
         "federal_capital_loss_carryover": loss - 3_000_00,
     }
 

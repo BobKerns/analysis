@@ -145,7 +145,7 @@ def test_a_premium_year_charges_the_tier_of_magi_two_years_earlier(irmaa_run: Ru
 
 def test_magi_is_agi_while_tax_exempt_interest_is_not_modeled(irmaa_run: Run) -> None:
     summary = _summary(irmaa_run())
-    assert (summary["federal_magi"] == summary["federal_adjusted_gross_income"]).all()
+    assert (summary["federal_magi"] == summary["federal_agi"]).all()
 
 
 def test_years_before_the_run_read_magi_from_meta_json(irmaa_run: Run) -> None:

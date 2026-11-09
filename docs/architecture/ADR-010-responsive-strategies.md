@@ -42,7 +42,7 @@ A draw is decided from the month's state at the moment it is asked (Bob, 2026-10
 
 ### 3. The API (`analysis.sim.strategy_api`)
 
-This module is the only part of the simulator a strategy imports. Engine internals change behind it; `API_VERSION` (now 7: 2 added the spending hooks and context, 3 the year-end hook, its moves and `ctx.tax`, 4 `on_breach`, `month_start`, `ctx.history` and `ctx.rail`, 5 the life and RMD tables and more of `ScenarioView`, 6 `trailing_return`, 7 `ScenarioView.taxes` in place of `tax_rules`) changes only when a strategy written for the previous version could break. A module may set `API_VERSION` to the version it was written for, and one newer than the code is refused at load.
+This module is the only part of the simulator a strategy imports. Engine internals change behind it; `API_VERSION` (now 8: 2 added the spending hooks and context, 3 the year-end hook, its moves and `ctx.tax`, 4 `on_breach`, `month_start`, `ctx.history` and `ctx.rail`, 5 the life and RMD tables and more of `ScenarioView`, 6 `trailing_return`, 7 `ScenarioView.taxes` in place of `tax_rules`, 8 the renamed `ctx.tax.last_year` lines) changes only when a strategy written for the previous version could break. A module may set `API_VERSION` to the version it was written for, and one newer than the code is refused at load.
 
 **Parameters.** `Params` fields are typed with units that follow the CSV rules: `Percent` (written `"5%"`, received as millionths), `Dollars` (`"1200.00"`, received as cents), `Tag` (an account tag `role:name` some account carries), `TargetSet` (a set in `targets.csv`), `Account` (an account the scenario defines); any other field is a plain JSON value. A field may be optional (`Dollars | None = None`), taking `null` for none. The loader converts and checks them against `Params`, so a strategy never parses a string, and a bad value is a load error naming the row.
 
@@ -109,7 +109,7 @@ A strategy must be a pure function of its context, parameters and memory: no clo
 
 #### 3.2 The tax view
 
-`ctx.tax` reads this year's income tax through the estimator the April settlement uses (`_year_tax_estimate`, shared with `fill_bracket` and the after-tax drawdown), so a strategy and the settlement can't disagree. Each answer is about the year as it stands when the hook is asked, with more income on top; in December, after every rule, `estimate()` is what the following April settles, unless something posts between.
+`ctx.tax` reads this year's income tax through the jurisdiction's tax calculator, the one the April settlement uses (`analysis.sim.tax_api`, shared with `fill_bracket` and the after-tax drawdown), so a strategy and the settlement can't disagree. Each answer is about the year as it stands when the hook is asked, with more income on top; in December, after every rule, `estimate()` is what the following April settles, unless something posts between.
 
 | Member | What it gives |
 | --- | --- |
@@ -120,7 +120,7 @@ A strategy must be a pure function of its context, parameters and memory: no clo
 | `bracket_top(rate, scope=...)` | The ordinary taxable income where this year's bracket at `rate` ends |
 | `ltcg_band_top(rate)` | The taxable income where this year's long-term gains band at `rate` ends; `0%`'s is the most a gain can be realized under tax-free |
 | `irmaa_floors()` | This year's IRMAA tier floors for the filing status, empty without `irmaa_tiers` |
-| `last_year` | Last year's `tax_year_summary`, or None before it is settled |
+| `last_year` | Last year's `tax_year_summary`, or None before it is settled: each jurisdiction's return lines as `<scope>_<line>` (ADR-003 §2.6), such as `federal_agi`, `federal_tax` and `state_ordinary_taxable` |
 
 A scope reads its tax jurisdiction (`taxes/<scope>.csv`, ADR-003 §4.15); asking a scenario without it is a `StrategyError`, which fails the run. Extra long-term gain doesn't net against a capital-loss carryover, so in a year with one, `estimate` overstates what a harvest costs.
 
@@ -343,3 +343,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#371](https://github.com/BobKerns/analysis/issues/371): a lot is classed by the asset class its growth series is named for, before its account subkind (§5).
 - [#377](https://github.com/BobKerns/analysis/issues/377): the built-in `cut_on_breach` answers a triggered rail with a flat cut, or a raise on a positive rail (§3.3, §6.6).
 - [#507](https://github.com/BobKerns/analysis/issues/507): `ctx.tax` reads the tax jurisdiction files (`taxes/<scope>.csv`) in place of `tax_accumulator` rules, and `ScenarioView.taxes` (the set of jurisdictions) replaces `tax_rules` (API version 7) (§3.2, §4).
+- [#507](https://github.com/BobKerns/analysis/issues/507): `API_VERSION` 8: `ctx.tax.last_year` carries the tax calculators' line names (`federal_agi`, `federal_tax`, ...) and `<scope>_ordinary_taxable` (§3).

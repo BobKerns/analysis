@@ -72,9 +72,10 @@ import pytest
 
 from analysis.sim import scenario
 from analysis.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
-from analysis.sim.engine import run_scenario
+from analysis.sim.engine import _load_aux, _tax_year, run_scenario
 from analysis.sim.ensemble import resolve_member
 from analysis.sim.schema import apply_run_schema
+from analysis.sim.tax_api import TaxYear
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
@@ -641,6 +642,16 @@ def ledger_con() -> Generator[sqlite3.Connection]:
         yield con
     finally:
         con.close()
+
+
+@pytest.fixture(scope="session")
+def tax_year_of() -> Callable[..., TaxYear]:
+    """``tax_year_of(con, year, scope="federal", **params)``: tax year
+    ``year`` of a run file or ``ledger_con`` as a tax calculator sees it
+    (#507), for testing the calculators' pieces on a ledger built by hand."""
+    def build(con: sqlite3.Connection, year: int, scope: str = "federal", **params: Any) -> TaxYear:
+        return _tax_year(con, {"scope": scope, **params}, aux=_load_aux(con), tax_year=year, tid=0)
+    return build
 
 
 @pytest.fixture(scope="function")

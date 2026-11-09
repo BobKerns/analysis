@@ -84,20 +84,20 @@ GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
 DEFAULT_SETTLE_TAX_BUCKETS = ["federal_tax_due", "state_tax_due"]
 DEFAULT_TAX_SUMMARY_BUCKETS: dict[str, str] = {
-    "federal_tax_liability": "federal tax",
-    "state_tax_liability": "state tax",
-    "federal_ss_income": "SS gross",
-    "federal_taxable_ss": "SS taxed",
+    "federal_tax": "federal tax",
+    "state_tax": "state tax",
+    "federal_ss_benefits": "SS gross",
+    "federal_ss_taxable": "SS taxed",
 }
 _TAX_RECONCILIATION_BUCKETS = [
-    "federal_tax_liability", "state_tax_liability",
+    "federal_tax", "state_tax",
     "federal_tax_paid", "state_tax_paid",
     "federal_tax_due", "state_tax_due",
     "federal_tax_overpaid", "state_tax_overpaid",
 ]
 _TAX_RECONCILIATION_RENAME = {
-    "federal_tax_liability": "federal_liability",
-    "state_tax_liability": "state_liability",
+    "federal_tax": "federal_liability",
+    "state_tax": "state_liability",
     "federal_tax_paid": "federal_withheld_or_paid",
     "state_tax_paid": "state_withheld_or_paid",
     "federal_tax_due": "federal_reconciliation_due",
@@ -1209,7 +1209,7 @@ class RunConnection(Connection):
         realized taxable gains: they are taxed the year they're paid, but
         never reach cash, so ``distribution_coverage`` leaves them out.
         Social Security is split into taxable/non-taxable by this run's own
-        ``federal_taxable_ss`` (the provisional-income test), not a flat
+        ``federal_ss_taxable`` (the provisional-income test), not a flat
         assumption. Also includes ``expenses``/``distribution_coverage``
         (realized cash vs. that year's spending). A run whose strategies
         harvested gains (#421: sold and rebought, so no cash moved) adds a
@@ -1263,15 +1263,15 @@ class RunConnection(Connection):
             gains_yearly.index.name = "year"
 
             tax_summary = self.items("tax_year_summary")
-            federal_taxable_ss = (
+            federal_ss_taxable = (
                 tax_summary.loc[
-                    tax_summary["bucket"] == "federal_taxable_ss", ["year", "amount"]
+                    tax_summary["bucket"] == "federal_ss_taxable", ["year", "amount"]
                 ].set_index("year")["amount"]
                 / 100
             )
             ss_total = gains_yearly["social_security"]
             ss_taxable = (
-                federal_taxable_ss.reindex(gains_yearly.index).fillna(0).clip(upper=ss_total)
+                federal_ss_taxable.reindex(gains_yearly.index).fillna(0).clip(upper=ss_total)
             )
             ss_nontaxable = ss_total - ss_taxable
 
@@ -1308,7 +1308,7 @@ class RunConnection(Connection):
             return (
                 tax_summary.loc[
                     tax_summary["bucket"].isin(
-                        ["federal_tax_liability", "state_tax_liability"]
+                        ["federal_tax", "state_tax"]
                     ),
                     ["year", "amount"],
                 ]

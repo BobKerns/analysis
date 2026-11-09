@@ -96,7 +96,7 @@ def _summary(run: Path) -> pd.DataFrame:
 
 def _ordinary_taxable(summary: pd.DataFrame, year: int) -> int:
     taxable = summary.loc[year, "federal_taxable_income"]
-    return int(taxable - min(summary.loc[year, "federal_ltcg_income"], taxable))
+    return int(taxable - min(summary.loc[year, "federal_ltcg_taxed"], taxable))
 
 
 def _ira_balance_after(run: Path, event_id: int) -> int:
@@ -134,7 +134,7 @@ def test_taxable_social_security_is_solved_for_not_subtracted(fill_run: Rules) -
     run = fill_run({"start": "2033-01-31"})
     summary = _summary(run)
     without = _summary(fill_run({"start": "2034-01-31"}))
-    assert summary.loc[2033, "federal_taxable_ss"] > without.loc[2033, "federal_taxable_ss"]
+    assert summary.loc[2033, "federal_ss_taxable"] > without.loc[2033, "federal_ss_taxable"]
     assert _ordinary_taxable(summary, 2033) == _top_22(run, 2033)
 
 

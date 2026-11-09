@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.engine import EngineError, _state_ss_exclusion, run_scenario
+from analysis.sim.engine import EngineError, run_scenario
+from analysis.sim.taxes.common import state_ss_exclusion
 from analysis.sim.loader import LoadError, growth_rule_name, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1344,7 +1345,7 @@ def test_the_federal_tax_computes_and_writes_its_summary(
 
         liability = con.execute(
             "SELECT amount FROM tax_year_summary "
-            "WHERE year = 2026 AND bucket = 'federal_tax_liability'"
+            "WHERE year = 2026 AND bucket = 'federal_tax'"
         ).fetchone()
         due = con.execute(
             "SELECT amount FROM tax_year_summary "
@@ -1415,7 +1416,7 @@ def test_itemized_deduction_is_used_when_greater_than_standard(
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 40_000_00
         assert _summary(con, 2026, "federal_standard_deduction") == 31_500_00
-        assert _summary(con, 2026, "federal_deduction_used") == 40_000_00
+        assert _summary(con, 2026, "federal_deduction") == 40_000_00
     finally:
         con.close()
 
@@ -1431,9 +1432,9 @@ def test_an_itemized_deduction_counts_only_in_its_own_year(
     )
     con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
     try:
-        assert _summary(con, 2026, "federal_deduction_used") == 40_000_00
+        assert _summary(con, 2026, "federal_deduction") == 40_000_00
         assert _summary(con, 2027, "federal_itemized_deduction") == 0
-        assert _summary(con, 2027, "federal_deduction_used") == 32_200_00
+        assert _summary(con, 2027, "federal_deduction") == 32_200_00
     finally:
         con.close()
 
@@ -1477,7 +1478,7 @@ def test_standard_deduction_is_used_when_greater_than_itemized(
     con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 10_000_00
-        assert _summary(con, 2026, "federal_deduction_used") == 31_500_00
+        assert _summary(con, 2026, "federal_deduction") == 31_500_00
     finally:
         con.close()
 
@@ -1490,7 +1491,7 @@ def test_no_itemized_deductions_file_behaves_as_before(
     con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 0
-        assert _summary(con, 2026, "federal_deduction_used") == 31_500_00
+        assert _summary(con, 2026, "federal_deduction") == 31_500_00
     finally:
         con.close()
 
@@ -1510,7 +1511,7 @@ def test_itemized_deduction_amount_can_reference_an_itemization(
     con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 35_000_00
-        assert _summary(con, 2026, "federal_deduction_used") == 35_000_00
+        assert _summary(con, 2026, "federal_deduction") == 35_000_00
     finally:
         con.close()
 
@@ -2050,7 +2051,7 @@ def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
         # would normally fire 2041-04-30, past the scenario end.
         liability_2040 = con.execute(
             "SELECT amount FROM tax_year_summary "
-            "WHERE year = 2040 AND bucket = 'federal_tax_liability'"
+            "WHERE year = 2040 AND bucket = 'federal_tax'"
         ).fetchone()
         assert liability_2040 is not None
 
@@ -2131,7 +2132,7 @@ def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
 def test_state_ss_exclusion(row: dict[str, int], agi: int, excluded: int) -> None:
     """How much of $10,000 of federally taxable Social Security a state's
     state_social_security row leaves out (#484)."""
-    assert _state_ss_exclusion(row, 10_000_00, agi) == excluded
+    assert state_ss_exclusion(row, 10_000_00, agi) == excluded
 
 
 def test_state_social_security_table_taxes_it(
@@ -2152,9 +2153,9 @@ def test_state_social_security_table_taxes_it(
         try:
             years = [r[0] for r in con.execute(
                 "SELECT year FROM tax_year_summary "
-                "WHERE bucket = 'state_ss_income' AND amount > 0 ORDER BY year")]
-            return {y: (_summary(con, y, "state_taxable_ss"),
-                        _summary(con, y, "state_tax_liability")) for y in years}
+                "WHERE bucket = 'state_ss_benefits' AND amount > 0 ORDER BY year")]
+            return {y: (_summary(con, y, "state_ss_taxable"),
+                        _summary(con, y, "state_tax")) for y in years}
         finally:
             con.close()
             run.unlink()  # run_test_copy writes the same file each time

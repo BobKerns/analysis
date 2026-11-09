@@ -3339,7 +3339,7 @@ def _tax_rule_bracket_table(
     params: Mapping[str, Any], scope: str, rates: Mapping[tuple[str, str | None], set[int]],
 ) -> tuple[str, str | None] | None:
     """The (aux kind, series) a tax rule reads its brackets from, as
-    ``engine._year_tax_estimate`` picks it, or None when that is decided only
+    the ``state_tables`` and ``federal`` calculators pick it, or None when that is decided only
     at run time (a state rule with several bracket series and none named)."""
     kind = str(params.get("bracket_aux") or (
         "federal_brackets" if scope == "federal" else "state_brackets"))
