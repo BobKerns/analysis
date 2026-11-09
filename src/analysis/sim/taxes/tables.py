@@ -319,12 +319,12 @@ class _TablesYear(Prepared):
             return taxable
         return taxable - common.state_ss_exclusion(self._state_ss, taxable, ordinary + ltcg + taxable)
 
-    def _tax_on(self, taxable: int, ltcg: int, stcg: int) -> int:
+    def _tax_on(self, taxable: int, ltcg: int, stcg: int, local: int) -> int:
         """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term
-        gain and up to ``stcg`` more of it short-term gain."""
+        gain and up to ``stcg`` more of it short-term gain, plus the
+        ``local`` tax on it."""
         brackets, ltcg_brackets, stcg_brackets = self.brackets, self.ltcg_brackets, self._stcg_brackets
-        extra = (common.progressive_tax(taxable, self._surcharge)
-                 + common.progressive_tax(taxable, self._local))
+        extra = common.progressive_tax(taxable, self._surcharge) + local
         # Long-term gains sit on top of ordinary taxable income and are
         # taxed at the preferential rates for the band each part lands in; a
         # state's short-term gain rates (#485) take the slice just below
@@ -355,6 +355,7 @@ class _TablesYear(Prepared):
         # A state's separately taxed short-term gain (#485) isn't ordinary.
         short = min(stcg, below_gain) if self._stcg_brackets else 0
         agi = ordinary + ltcg + taxable_ss
+        local = common.progressive_tax(taxable, self._local)
         lines = {
             "ordinary_income": ordinary,
             "ltcg_taxed": ltcg,
@@ -365,12 +366,12 @@ class _TablesYear(Prepared):
             **self._fixed,
             "taxable_income": taxable,
             "ordinary_taxable": below_gain - short,
-            "tax": self._tax_on(taxable, ltcg, stcg),
+            "tax": self._tax_on(taxable, ltcg, stcg, local),
         }
         if self._state:
             lines["retirement_exclusion"] = (
                 self._gross_ordinary + extra.ordinary + self._taxed_ltcg(extra.ltcg) - ordinary - ltcg)
-            lines["local_tax"] = common.progressive_tax(taxable, self._local)
+            lines["local_tax"] = local
         else:
             # IRMAA's MAGI (#253): AGI plus tax-exempt interest, which the
             # model has no character for yet (#265), so it is AGI.
