@@ -2925,7 +2925,10 @@ def _tax_year(
         tax_api.IncomeItem(int(year), character, account(frm), account(to), int(amount))
         for year, character, frm, to, amount in con.execute(
             f"SELECT {year_of} AS y, tax_character, from_account, to_account, SUM(amount) "
-            "FROM transfer_event WHERE y <= ? GROUP BY y, tax_character, from_account, to_account",
+            # A transfer of character none is never income; leaving those out
+            # (most of the ledger) keeps a tax year quick to build.
+            "FROM transfer_event WHERE tax_character <> 'none' AND y <= ? "
+            "GROUP BY y, tax_character, from_account, to_account",
             (tax_year,),
         )
     ]

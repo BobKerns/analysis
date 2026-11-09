@@ -55,7 +55,8 @@ class Account:
 class IncomeItem:
     """The year's transfers of one ``character`` from one account to
     another, summed. ``year`` is the tax year they count in (a transfer's
-    ``tax_year``, else its date's)."""
+    ``tax_year``, else its date's). Transfers of character ``none`` are
+    never income, so no item has it."""
     year: int
     character: str
     payer: Account
