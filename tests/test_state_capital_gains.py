@@ -14,13 +14,9 @@ from pathlib import Path
 import pytest
 
 from analysis.sim import units
-from analysis.sim.engine import (
-    _load_aux,
-    _progressive_tax_cents,
-    _year_tax_estimate,
-    run_scenario,
-)
+from analysis.sim.engine import _load_aux, _prepare_tax, run_scenario
 from analysis.sim.loader import LoadError, LoadResult
+from analysis.sim.taxes.common import progressive_tax
 
 _BRACKETS_HEADER = "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
 _EXCLUSION_HEADER = "effective_date,exclusion,min_exclusion,max_exclusion\n"
@@ -100,7 +96,7 @@ def test_a_state_long_term_gain_rate_taxes_the_gain_stacked_on_top(
     taxable = preferential["state_taxable_income"]
     assert taxable == as_ordinary["state_taxable_income"]
     gain = min(100_000_00, taxable)
-    expected = _progressive_tax_cents(taxable - gain, _ca_brackets(test_data_dir)) + gain * 3 // 100
+    expected = progressive_tax(taxable - gain, _ca_brackets(test_data_dir)) + gain * 3 // 100
     assert preferential["state_tax_liability"] == expected
     assert preferential["state_tax_liability"] < as_ordinary["state_tax_liability"]
 
@@ -115,7 +111,7 @@ def test_a_state_short_term_gain_rate_taxes_the_slice_below_long_term_gain(
     taxable = summary["state_taxable_income"]
     ordinary = taxable - 100_000_00 - 20_000_00
     assert ordinary > 0  # the test means both gains to be wholly taxed
-    expected = (_progressive_tax_cents(ordinary, _ca_brackets(test_data_dir))
+    expected = (progressive_tax(ordinary, _ca_brackets(test_data_dir))
                 + 20_000_00 * 85 // 1000 + 100_000_00 * 5 // 100)
     assert summary["state_tax_liability"] == expected
 
@@ -130,9 +126,9 @@ def test_short_term_rates_alone_keep_long_term_gain_on_top_at_ordinary_rates(
     ordinary = taxable - 100_000_00 - 20_000_00
     assert ordinary > 0
     brackets = _ca_brackets(test_data_dir)
-    expected = (_progressive_tax_cents(ordinary, brackets) + 20_000_00 * 85 // 1000
-                + _progressive_tax_cents(taxable, brackets)
-                - _progressive_tax_cents(taxable - 100_000_00, brackets))
+    expected = (progressive_tax(ordinary, brackets) + 20_000_00 * 85 // 1000
+                + progressive_tax(taxable, brackets)
+                - progressive_tax(taxable - 100_000_00, brackets))
     assert summary["state_tax_liability"] == expected
 
 
@@ -153,13 +149,11 @@ def test_the_ordinary_part_of_taxable_income_leaves_out_separately_taxed_short_t
     con = sqlite3.connect(run)
     con.row_factory = sqlite3.Row
     try:
-        est = _year_tax_estimate(con, {"scope": "state", "bracket_series": "CA"},
-                                 aux=_load_aux(con), tax_year=2026, tid=0)
+        ret = _prepare_tax(con, {"scope": "state", "bracket_series": "CA"},
+                           aux=_load_aux(con), tax_year=2026, tid=0).compute()
     finally:
         con.close()
-    taxable, ordinary = est.taxable_with(0, 0)
-    assert taxable == est.taxable_income
-    assert ordinary == taxable - 20_000_00
+    assert ret.ordinary_taxable == ret.taxable_income - 20_000_00
 
 
 def test_without_gain_tables_a_state_taxes_gains_as_ordinary_income(
@@ -167,7 +161,7 @@ def test_without_gain_tables_a_state_taxes_gains_as_ordinary_income(
 ) -> None:
     summary = state_gains(stcg="20000.00")
     assert summary["state_ltcg_exclusion"] == 0
-    assert summary["state_tax_liability"] == _progressive_tax_cents(
+    assert summary["state_tax_liability"] == progressive_tax(
         summary["state_taxable_income"], _ca_brackets(test_data_dir))
 
 

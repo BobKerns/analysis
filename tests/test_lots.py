@@ -15,6 +15,7 @@ import pytest
 from analysis.sim import units
 from analysis.sim.engine import _post_transfer
 from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
+from analysis.sim.tax_api import TaxYear
 
 BROKERAGE = "Asset_Brokerage_Joint"
 
@@ -555,8 +556,10 @@ def test_gain_on_a_lot_held_longer_is_long_term(ledger_con: sqlite3.Connection) 
     assert _sell_from_lot(ledger_con, None, "2026-12-31")[1] == (4_000_00, "ltcg")
 
 
-def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import _tax_year_income_buckets
+def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
+) -> None:
+    from analysis.sim.taxes.common import capital_gains, income_buckets
 
     for character, amount in (("ordinary", 100), ("stcg", 50), ("ltcg", 30), ("ss_benefit", 7)):
         ledger_con.execute(
@@ -565,10 +568,9 @@ def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: s
             "VALUES (1, '2026-06-30', 1, 2, 1, 2, ?, ?, 0, ?, 'rule')",
             (amount, amount, character),
         )
-    from analysis.sim.engine import _capital_gains
-
-    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (100, 7, 0)
-    gains = _capital_gains(ledger_con, tax_year=2026, loss_limit=lambda _year: 0)
+    year = tax_year_of(ledger_con, 2026)
+    assert income_buckets(year) == (100, 7, 0)
+    gains = capital_gains(year, loss_limit=lambda _year: 0)
     assert (gains.stcg, gains.ltcg) == (50, 30)
 
 

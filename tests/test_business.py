@@ -17,7 +17,9 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
-from analysis.sim.engine import EngineError, _business_result, run_scenario
+from analysis.sim.engine import EngineError, run_scenario
+from analysis.sim.tax_api import TaxError, TaxYear
+from analysis.sim.taxes.common import business_result
 from analysis.sim.loader import LoadError
 
 
@@ -207,7 +209,9 @@ def _event(con: sqlite3.Connection, frm: int, to: int, amount: int, character: s
     )
 
 
-def test_each_business_is_judged_by_its_own_account(ledger_con: sqlite3.Connection) -> None:
+def test_each_business_is_judged_by_its_own_account(
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
+) -> None:
     """Two businesses, one a hobby: only the hobby's expenses are disallowed."""
     _account(ledger_con, 1, "business")
     _account(ledger_con, 2, "business", '{"hobby": true}')
@@ -215,15 +219,15 @@ def test_each_business_is_judged_by_its_own_account(ledger_con: sqlite3.Connecti
     _event(ledger_con, 1, 3, 500_00, "business_expense")
     _event(ledger_con, 2, 3, 300_00, "business_expense")
     _event(ledger_con, 3, 2, 100_00, "business_income")
-    assert _business_result(ledger_con, tax_year=2030) == (100_00 - 500_00, 300_00)
-    assert _business_result(ledger_con, tax_year=2031) == (0, 0)
+    assert business_result(tax_year_of(ledger_con, 2030)) == (100_00 - 500_00, 300_00)
+    assert business_result(tax_year_of(ledger_con, 2031)) == (0, 0)
 
 
 def test_the_engine_rejects_a_business_character_off_a_business_account(
-    ledger_con: sqlite3.Connection,
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
 ) -> None:
     _account(ledger_con, 1, "cash")
     _account(ledger_con, 3, "other_expense")
     _event(ledger_con, 1, 3, 500_00, "business_expense")
-    with pytest.raises(EngineError, match="must be paid out of a business account, not 'A1'"):
-        _business_result(ledger_con, tax_year=2030)
+    with pytest.raises(TaxError, match="must be paid out of a business account, not 'A1'"):
+        business_result(tax_year_of(ledger_con, 2030))

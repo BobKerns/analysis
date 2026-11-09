@@ -1,0 +1,494 @@
+"""The pieces the built-in tax calculators share (#507): the year's income
+summed from its items, capital-loss netting, a Schedule C, an HSA a state
+taxes, Social Security taxation, the brackets' tax, and a state's
+retirement income exclusions."""
+
+from __future__ import annotations
+
+import functools
+from collections.abc import Callable, Collection, Mapping, Sequence
+from datetime import date
+from typing import Any, NamedTuple
+
+from analysis.sim import registries
+from analysis.sim.tax_api import TaxError, TaxYear
+
+
+def income_buckets(ty: TaxYear) -> tuple[int, int, int]:
+    """The year's ordinary income, Social Security benefits and qualified
+    dividends (#468). Capital gains and losses are :func:`capital_gains`'s."""
+    by_char: dict[str, int] = {}
+    for item in ty.year_items():
+        by_char[item.character] = by_char.get(item.character, 0) + item.amount
+    ordinary = (
+        by_char.get("ordinary", 0)
+        + by_char.get("tax_deferred_out", 0)
+        + by_char.get("roth_nonqualified", 0)
+        - by_char.get("tax_deferred_in", 0)
+    )
+    return ordinary, by_char.get("ss_benefit", 0), by_char.get(registries.QUALIFIED_DIVIDEND, 0)
+
+
+class BusinessResult(NamedTuple):
+    """One tax year's Schedule C result (#231): receipts less deductible
+    expenses, a loss negative, and the expenses not deducted because the
+    business is a hobby."""
+    net: int
+    disallowed: int
+
+
+def business_result(ty: TaxYear) -> BusinessResult:
+    """The year's ``business_income`` into, less its ``business_expense``
+    out of, ``business`` accounts. A business whose account's meta_json says
+    ``"hobby": true`` isn't engaged in for profit (IRC §183): its receipts
+    are still income, but none of its expenses are deductible."""
+    net = disallowed = 0
+    for item in ty.year_items(registries.BUSINESS_INCOME, registries.BUSINESS_EXPENSE):
+        income = item.character == registries.BUSINESS_INCOME
+        account = item.payee if income else item.payer
+        if account.subkind != registries.BUSINESS_SUBKIND:
+            # The loader checks the rows it can; this catches the rest.
+            side = "into" if income else "out of"
+            raise TaxError(
+                f"{item.character} must be paid {side} a "
+                f"{registries.BUSINESS_SUBKIND} account, not '{account.name}'"
+            )
+        if income:
+            net += item.amount
+        elif account.hobby:
+            disallowed += item.amount
+        else:
+            net -= item.amount
+    return BusinessResult(net, disallowed)
+
+
+class CapitalGains(NamedTuple):
+    """One tax year's capital gains after netting (IRC §1211(b), §1212(b)):
+    the short- and long-term gains taxed, the loss deducted from ordinary
+    income, and the loss carried into the next year, by its character."""
+    stcg: int
+    ltcg: int
+    loss_deduction: int
+    carryover_st: int
+    carryover_lt: int
+
+
+def net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
+    """Net a year's short- and long-term results, each already less its own
+    carryover: a loss in one offsets a gain in the other, then up to the
+    limit of what's left offsets ordinary income, short-term loss first, and
+    the rest carries forward keeping its character."""
+    if st < 0 < lt or lt < 0 < st:
+        net = st + lt
+        if net >= 0:
+            st, lt = (net, 0) if st > 0 else (0, net)
+        else:
+            st, lt = (net, 0) if st < 0 else (0, net)
+    loss_st, loss_lt = max(0, -st), max(0, -lt)
+    deduction = min(limit(), loss_st + loss_lt) if loss_st + loss_lt else 0
+    used_st = min(loss_st, deduction)
+    return CapitalGains(
+        max(0, st), max(0, lt), deduction,
+        loss_st - used_st, loss_lt - (deduction - used_st),
+    )
+
+
+def capital_gains(
+    ty: TaxYear, *, loss_limit: Callable[[int], int],
+    extra_ltcg: Mapping[int, int] | None = None,
+) -> CapitalGains:
+    """The year's capital gains: its ``stcg``/``ltcg`` items (a withdrawal at
+    a loss posts a negative one) less its capital losses, netted with the
+    carryover from every earlier year, each of which used up to its own
+    year's ``loss_limit``. ``extra_ltcg`` adds a long-term result to some
+    years (a state's tax on HSA growth, #490)."""
+    totals: dict[int, list[int]] = {}
+    for year, character, amount in (
+        *((i.year, i.character, i.amount) for i in ty.items),
+        *((c.year, c.character, -c.amount) for c in ty.losses),
+    ):
+        if character in ("stcg", "ltcg") and year <= ty.year:
+            totals.setdefault(year, [0, 0])[1 if character == "ltcg" else 0] += amount
+    for year, amount in (extra_ltcg or {}).items():
+        if year <= ty.year:
+            totals.setdefault(year, [0, 0])[1] += amount
+    carry_st = carry_lt = 0
+    result = CapitalGains(0, 0, 0, 0, 0)
+    for year in range(min(totals, default=ty.year), ty.year + 1):
+        st, lt = totals.get(year, (0, 0))
+        result = net_capital(st - carry_st, lt - carry_lt, functools.partial(loss_limit, year))
+        carry_st, carry_lt = result.carryover_st, result.carryover_lt
+    return result
+
+
+_HSA_GROWTH_ACCOUNTS = frozenset(
+    registries.GROWTH_COUNTERPARTY_ACCOUNTS[character].name
+    for character in ("deferred", "tax_free")
+)
+"""The built-in accounts an HSA's untaxed growth comes from (or, when it
+falls, goes back to): growth of another character is taxed already."""
+
+
+def state_taxes_hsa(ty: TaxYear, state: str, year: int) -> bool:
+    """Whether ``state``'s ``state_hsa`` table, as of ``year``'s end, says it
+    taxes an HSA (#490); without a table it follows the federal rules."""
+    rows = ty.dated(registries.STATE_HSA, state)
+    as_of = f"{year}-12-31"
+    on = max((effective for effective, _ in rows if effective <= as_of), default=None)
+    rows = [row for effective, row in rows if effective == on]
+    if not rows:
+        return False
+    return rows[0].get("treatment") == "taxable"
+
+
+def hsa_flow_years(ty: TaxYear) -> list[int]:
+    """The years up to this one with money moving into or out of an HSA."""
+    return sorted({i.year for i in ty.items
+                   if i.year <= ty.year and "hsa" in (i.payer.subkind, i.payee.subkind)})
+
+
+def _hsa_growth(item) -> int | None:
+    """An item's net untaxed HSA growth (a fall negative), or None when it
+    isn't HSA growth."""
+    if item.payee.subkind == "hsa" and item.payer.name in _HSA_GROWTH_ACCOUNTS:
+        return item.amount
+    if item.payer.subkind == "hsa" and item.payee.name in _HSA_GROWTH_ACCOUNTS:
+        return -item.amount
+    return None
+
+
+def hsa_growth_by_year(ty: TaxYear, years: Collection[int]) -> dict[int, int]:
+    """Each of ``years``' net untaxed growth of the HSAs, a fall negative;
+    a year with none has no entry."""
+    out: dict[int, int] = {}
+    for item in ty.items:
+        if item.year in years and (growth := _hsa_growth(item)) is not None:
+            out[item.year] = out.get(item.year, 0) + growth
+    return out
+
+
+def hsa_growth_by_owner(ty: TaxYear) -> list[tuple[str | None, int]]:
+    """The year's net untaxed HSA growth by the HSA's owner, a fall
+    negative (:func:`hsa_growth_by_year`, per owner, #486)."""
+    out: dict[str | None, int] = {}
+    for item in ty.year_items():
+        if (growth := _hsa_growth(item)) is not None:
+            owner = item.payee.owner if item.payee.subkind == "hsa" else item.payer.owner
+            out[owner] = out.get(owner, 0) + growth
+    return list(out.items())
+
+
+def hsa_deferred_flows(ty: TaxYear) -> tuple[int, int]:
+    """The year's HSA contributions (``tax_deferred_in``), which the federal
+    rules deduct, and withdrawals (``tax_deferred_out``), which they tax: a
+    state that taxes an HSA undoes both."""
+    contributed = sum(i.amount for i in ty.year_items("tax_deferred_in") if i.payee.subkind == "hsa")
+    withdrawn = sum(i.amount for i in ty.year_items("tax_deferred_out") if i.payer.subkind == "hsa")
+    return contributed, withdrawn
+
+
+def taxable_social_security(
+    *, ordinary_income: int, ltcg_income: int, ss_income: int, tier1: int, tier2: int,
+) -> int:
+    """Approximate taxable Social Security amount under provisional-income rules."""
+    provisional = ordinary_income + ltcg_income + (ss_income // 2)
+    if provisional <= tier1:
+        return 0
+    if provisional <= tier2:
+        return min(ss_income // 2, (provisional - tier1) // 2)
+    base = min(ss_income // 2, (tier2 - tier1) // 2)
+    addl = ((provisional - tier2) * 85) // 100
+    return min((ss_income * 85) // 100, base + addl)
+
+
+def state_ss_exclusion(row: Mapping[str, Any], taxable_ss: int, agi: int) -> int:
+    """How much of ``taxable_ss``, the federally taxable Social Security, a
+    state leaves out by its ``state_social_security`` ``row`` (#484), at a
+    federal AGI of ``agi``: ``exclusion_percent`` of it, phased out above
+    ``phaseout_start`` to nothing at ``phaseout_end`` (at once when they are
+    equal), or less ``phaseout_rate`` of each dollar over."""
+    full = taxable_ss * int(row["exclusion_micros"]) // 1_000_000
+    start = row.get("phaseout_start")
+    if start is None or agi <= int(start):
+        return full
+    over = agi - int(start)
+    rate = row.get("phaseout_rate_micros")
+    if rate is not None:
+        return max(0, full - over * int(rate) // 1_000_000)
+    span = int(row["phaseout_end"]) - int(start)
+    if over >= span:
+        return 0
+    return full * (span - over) // span
+
+
+def progressive_tax(taxable_income: int, brackets: Sequence[tuple[int, int]]) -> int:
+    """The tax on ``taxable_income`` by ``brackets``, (floor, rate micros)
+    pairs in floor order."""
+    if taxable_income <= 0 or not brackets:
+        return 0
+    tax = 0
+    for i, (floor, rate_micros) in enumerate(brackets):
+        if taxable_income <= floor:
+            continue
+        next_floor = brackets[i + 1][0] if i + 1 < len(brackets) else None
+        upper = taxable_income if next_floor is None else min(taxable_income, next_floor)
+        taxable_slice = max(0, upper - floor)
+        if taxable_slice > 0:
+            tax += (taxable_slice * rate_micros) // 1_000_000
+    return tax
+
+
+def split_cents(amount: int, ways: int) -> list[int]:
+    """``amount`` in ``ways`` shares that differ by at most a cent."""
+    share, extra = divmod(amount, ways)
+    return [share + (i < extra) for i in range(ways)]
+
+
+class ExclusionGrant(NamedTuple):
+    """One person's exclusion (#486), before the household income is known."""
+    person: str
+    income: tuple[str, ...]
+    """The ``STATE_EXCLUSION_INCOME`` kinds it covers, in the order it uses them."""
+    cap: int | None
+    """The most it excludes; None for all of it."""
+    income_limit: int | None
+    phaseout: int | None
+
+    def after_income_test(self, amount: int, income: int) -> int:
+        """How much of the ``amount`` it covers it grants, once household
+        ``income`` is known: all of it up to ``income_limit``, then nothing
+        (a cliff) or less in a line to nothing ``phaseout`` above it."""
+        if self.income_limit is None or income <= self.income_limit:
+            return amount
+        if not self.phaseout:
+            return 0
+        return amount * max(0, self.income_limit + self.phaseout - income) // self.phaseout
+
+
+class RetirementExclusion(NamedTuple):
+    """A tax year's state retirement income exclusions (#486): each person's
+    income by kind, the grants in the order they use it, and the year's net
+    capital gain, which caps what they leave out as gain."""
+    pools: Mapping[str, Mapping[str, int]] = {}
+    grants: tuple[ExclusionGrant, ...] = ()
+    net_gain: int = 0
+
+    def excluded(self, ordinary: int, ltcg: int) -> tuple[int, int]:
+        """How much of ``ordinary`` income and ``ltcg`` the exclusions take
+        off (``split``, without its short-term part)."""
+        return self.split(ordinary, ltcg)[:2]
+
+    def split(self, ordinary: int, ltcg: int,
+              net_gain: int | None = None) -> tuple[int, int, int]:
+        """How much of ``ordinary`` income and ``ltcg`` the exclusions take
+        off, with household income ``ordinary + ltcg`` for their income
+        tests, and how much of the ordinary part is short-term gain;
+        ``net_gain`` stands in for the year's net gain (an estimate with
+        less gain than was posted). A grant uses up only the income it
+        actually leaves out, so a later one can cover what an earlier one's
+        test denied. Gain beyond the net capital gain (a loss offset it)
+        isn't left out at all; the rest comes off the long-term gain first,
+        and never more than there is."""
+        if not self.grants:
+            return 0, 0, 0
+        income = ordinary + ltcg
+        pools = {person: dict(by_kind) for person, by_kind in self.pools.items()}
+        total = gains = 0
+        gain_limit = max(0, self.net_gain if net_gain is None else net_gain)
+        for grant in self.grants:
+            left = pools[grant.person]
+            # Gain past what losses left of the net gain isn't income to
+            # cover, so it mustn't use up a grant's cap.
+            net_left = max(0, gain_limit - gains)
+            covered = [(kind, min(left[kind], net_left) if kind == "capital_gain" else left[kind])
+                       for kind in grant.income]
+            eligible = sum(amount for _, amount in covered)
+            if grant.cap is not None:
+                eligible = min(eligible, grant.cap)
+            granted = grant.after_income_test(eligible, income)
+            total += granted
+            for kind, amount in covered:
+                take = min(amount, granted)
+                left[kind] -= take
+                granted -= take
+                gains += take if kind == "capital_gain" else 0
+        total = min(total, max(0, income))
+        # When income is below the gain left out (a business loss), the
+        # total is all gain and none of it comes off ordinary income.
+        off_ordinary = max(0, min(total - min(gains, max(0, ltcg)), max(0, ordinary)))
+        off_ltcg = min(total - off_ordinary, max(0, ltcg))
+        # Gain left out past the long-term gain is short-term gain, which is
+        # part of ordinary income: a state's short-term rates (#485) skip it.
+        return off_ordinary, off_ltcg, min(max(0, gains - off_ltcg), off_ordinary)
+
+
+_EXCLUSION_POOL_BY_CHARACTER: dict[str, tuple[str, int]] = {
+    "tax_deferred_out": ("retirement_account", 1),
+    "roth_nonqualified": ("retirement_account", 1),
+    "stcg": ("capital_gain", 1),
+    "ltcg": ("capital_gain", 1),
+    registries.QUALIFIED_DIVIDEND: ("dividend", 1),
+    "tax_deferred_in": ("other", -1),
+    registries.BUSINESS_INCOME: ("other", 1),
+    registries.BUSINESS_EXPENSE: ("other", -1),
+}
+"""Which ``STATE_EXCLUSION_INCOME`` kind a taxed character's items are, and
+their sign. ``ordinary`` goes by its income account's subkind instead."""
+
+
+def _shares(owner: str | None, amount: int, people: Sequence[str],
+            pools: Mapping[str, Any]) -> list[tuple[str, int]]:
+    """``amount`` as its owner's, or split evenly among ``people`` when no
+    one of them owns it alone."""
+    if owner is not None and owner in pools:
+        return [(owner, amount)]
+    return list(zip(people, split_cents(amount, len(people)), strict=True))
+
+
+def person_income(
+    ty: TaxYear, people: Sequence[str], *, hsa_taxed: bool = False,
+) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
+    """Each person's income this year by ``STATE_EXCLUSION_INCOME`` kind
+    (never below zero), and their Social Security. An item is its paying
+    account's owner's, or else its receiving account's; one neither owns
+    alone (``joint``, or no owner) is split evenly among ``people``. An
+    HSA's flows are ``other`` income, not a retirement account's, and none
+    at all when the state taxes the HSA as a brokerage account
+    (``hsa_taxed``, #490); then its growth is its owner's capital gain."""
+    pools = {p: dict.fromkeys(registries.STATE_EXCLUSION_INCOME, 0) for p in people}
+    ss = dict.fromkeys(people, 0)
+    # Items of the same kind of account and owners are summed before they
+    # are split, so each sum loses at most a cent to the split.
+    groups: dict[tuple[Any, ...], int] = {}
+    for item in ty.year_items("ordinary", "ss_benefit", *_EXCLUSION_POOL_BY_CHARACTER):
+        key = (item.character, item.payer.kind, item.payer.subkind, item.payer.owner,
+               item.payee.owner, item.payer.hobby, item.payee.subkind)
+        groups[key] = groups.get(key, 0) + item.amount
+    for (character, kind, subkind, payer, payee, hobby, payee_subkind), amount in groups.items():
+        hsa = (subkind if character == "tax_deferred_out" else payee_subkind) == "hsa"
+        if hsa and character in ("tax_deferred_out", "tax_deferred_in") and hsa_taxed:
+            continue  # the state left these out of its income (#490)
+        if character == registries.BUSINESS_EXPENSE and hobby:
+            continue  # a hobby's expenses aren't deducted (#231), so its receipts stay income
+        if character == "ordinary":
+            pool, sign = (subkind if kind == "income" and subkind in
+                          ("pension", "interest", "dividend") else "other"), 1
+        elif character == "ss_benefit":
+            pool, sign = "ss", 1
+        else:
+            pool, sign = _EXCLUSION_POOL_BY_CHARACTER[character]
+            if hsa and character == "tax_deferred_out":
+                pool = "other"
+        owner = payer if payer in pools else payee if payee in pools else None
+        for person, share in _shares(owner, amount, people, pools):
+            if pool == "ss":
+                ss[person] += share
+            else:
+                pools[person][pool] += sign * share
+    if hsa_taxed:
+        # The state counts an HSA's growth as long-term gain (#490): its
+        # owner's, a fall offsetting their other gains.
+        for owner, amount in hsa_growth_by_owner(ty):
+            for person, share in _shares(owner, amount, people, pools):
+                pools[person]["capital_gain"] += share
+    # A realized loss recorded apart from its sale (#199) offsets its lot
+    # owner's gains, as the household's netting does.
+    losses: dict[str | None, int] = {}
+    for loss in ty.losses:
+        if loss.year == ty.year:
+            losses[loss.owner] = losses.get(loss.owner, 0) + loss.amount
+    for owner, amount in losses.items():
+        for person, share in _shares(owner, amount, people, pools):
+            pools[person]["capital_gain"] -= share
+    for by_kind in pools.values():
+        for pool, amount in by_kind.items():
+            by_kind[pool] = max(0, amount)
+    return pools, ss
+
+
+def _exclusion_age_months(row: Mapping[str, Any]) -> int:
+    """A ``state_retirement_exclusion`` row's ``min_age`` in months (59.5:
+    714); blank is any age."""
+    age = row.get("min_age")
+    return 0 if age in (None, "") else round(float(age) * 12)
+
+
+def _exclusion_income(row: Mapping[str, Any]) -> list[str]:
+    """The income kinds a ``state_retirement_exclusion`` row covers, in the
+    order it uses them up; ``all`` is every kind."""
+    kinds: list[str] = []
+    for word in str(row.get("income") or "").replace(",", ";").split(";"):
+        word = word.strip()
+        for income in registries.STATE_EXCLUSION_INCOME if word == "all" else (word,):
+            if income and income not in kinds:
+                kinds.append(income)
+    return kinds
+
+
+def _exclusion_less_ss(row: Mapping[str, Any]) -> bool:
+    return str(row.get("less_ss") or "").strip().lower() in ("yes", "true")
+
+
+def household(ty: TaxYear) -> dict[str, date | None]:
+    """The household's people and birthdates: role ``primary`` or
+    ``secondary``, as a strategy's household is, or everyone with a
+    birthdate if no one is marked."""
+    return {
+        p.id: (date.fromisoformat(p.birthdate) if p.birthdate else None)
+        for p in ty.persons if p.role in registries.PERSON_ROLES
+    } or {
+        p.id: date.fromisoformat(p.birthdate) for p in ty.persons if p.birthdate
+    }
+
+
+def retirement_exclusion(
+    ty: TaxYear, kind: str, state: str, *, net_gain: int, hsa_taxed: bool = False,
+) -> RetirementExclusion:
+    """``state``'s retirement income exclusions for the year (#486), from
+    the ``kind`` table in force (``state_retirement_exclusion__<state>``).
+
+    Each of the household's people gets, of each exclusion (rows sharing a
+    ``name``, applied in file order), the age tier with the highest
+    ``min_age`` they reach by December 31. It covers their income of the
+    kinds it lists, in that order, up to its ``amount`` (all of it when
+    blank, and less their Social Security when ``less_ss``).
+    ``RetirementExclusion.excluded`` applies the household income tests and
+    uses the income up."""
+    rows = [
+        r for r in ty.indexed(kind, state)
+        if not r.get("filing_status") or r.get("filing_status") == ty.filing_status
+    ]
+    if not rows:
+        return RetirementExclusion()
+    birthdates = household(ty)
+    people = sorted(birthdates)
+    if not people:
+        return RetirementExclusion()
+    pools, ss = person_income(ty, people, hsa_taxed=hsa_taxed)
+    tiers: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        tiers.setdefault(str(row["name"]), []).append(row)
+    grants: list[ExclusionGrant] = []
+    for name_rows in tiers.values():
+        for person in people:
+            born = birthdates[person]
+            # Whole months of age on December 31.
+            months = None if born is None else (ty.year - born.year) * 12 + 12 - born.month
+            reached = [
+                r for r in name_rows
+                if months is not None and months >= _exclusion_age_months(r)
+                or _exclusion_age_months(r) == 0
+            ]
+            if not reached:
+                continue
+            row = max(reached, key=_exclusion_age_months)
+            cap = row.get("amount")
+            if cap is not None and _exclusion_less_ss(row):
+                cap = max(0, int(cap) - ss[person])
+            limit, phaseout = row.get("income_limit"), row.get("phaseout")
+            grants.append(ExclusionGrant(
+                person, tuple(_exclusion_income(row)),
+                None if cap is None else int(cap),
+                None if limit is None else int(limit),
+                None if phaseout is None else int(phaseout)))
+    return RetirementExclusion(pools, tuple(grants), net_gain)

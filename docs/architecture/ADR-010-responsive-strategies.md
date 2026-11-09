@@ -109,7 +109,7 @@ A strategy must be a pure function of its context, parameters and memory: no clo
 
 #### 3.2 The tax view
 
-`ctx.tax` reads this year's income tax through the estimator the April settlement uses (`_year_tax_estimate`, shared with `fill_bracket` and the after-tax drawdown), so a strategy and the settlement can't disagree. Each answer is about the year as it stands when the hook is asked, with more income on top; in December, after every rule, `estimate()` is what the following April settles, unless something posts between.
+`ctx.tax` reads this year's income tax through the jurisdiction's tax calculator, the one the April settlement uses (`analysis.sim.tax_api`, shared with `fill_bracket` and the after-tax drawdown), so a strategy and the settlement can't disagree. Each answer is about the year as it stands when the hook is asked, with more income on top; in December, after every rule, `estimate()` is what the following April settles, unless something posts between.
 
 | Member | What it gives |
 | --- | --- |

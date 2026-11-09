@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from analysis.sim import units
-from analysis.sim.engine import _progressive_tax_cents, run_scenario
+from analysis.sim.engine import run_scenario
+from analysis.sim.taxes.common import progressive_tax
 from analysis.sim.lineage import TEMPLATE_AUX_DIR
 from analysis.sim.loader import LoadError, LoadResult
 
@@ -45,7 +46,7 @@ def test_every_shipped_state_has_brackets_and_a_standard_deduction() -> None:
 def test_a_shipped_states_2026_brackets_match_its_schedule(
     state: str, taxable: int, tax: float,
 ) -> None:
-    assert _progressive_tax_cents(taxable * 100, _brackets(state, "2026-01-31")) == round(tax * 100)
+    assert progressive_tax(taxable * 100, _brackets(state, "2026-01-31")) == round(tax * 100)
 
 
 def test_a_state_tax_that_names_no_state_fails_the_load(
@@ -75,7 +76,7 @@ def test_a_rule_naming_a_shipped_state_taxes_by_its_tables(
     if state == "ID":  # its 2025 zero band, grown to 2026 by the run's CPI
         assert 0 < summary["state_tax_liability"] < taxable * 0.053
     else:
-        assert summary["state_tax_liability"] == _progressive_tax_cents(
+        assert summary["state_tax_liability"] == progressive_tax(
             taxable, _brackets(state, "2026-01-31"))
 
 

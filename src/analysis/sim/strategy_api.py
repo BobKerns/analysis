@@ -29,6 +29,8 @@ from typing import (
     TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Union, get_args, get_origin, get_type_hints,
 )
 
+from analysis.sim import tax_api
+
 if TYPE_CHECKING:
     import numpy as np
 
@@ -330,11 +332,10 @@ class TaxView:
     def estimate(self, ordinary: int = 0, ltcg: int = 0, scope: str = "federal") -> TaxEstimate:
         """The year's tax with ``ordinary`` more ordinary income and ``ltcg``
         more long-term gain."""
-        est = self._est(scope)
-        taxable, ordinary_taxable = est.taxable_with(ordinary, ltcg)
+        ret = self._est(scope).compute(tax_api.Extra(ordinary, ltcg))
         return TaxEstimate(
-            tax=est.tax_with(ordinary, ltcg), taxable_income=taxable,
-            ordinary_taxable=ordinary_taxable, agi=est.agi_with(ordinary, ltcg),
+            tax=ret.tax, taxable_income=ret.taxable_income,
+            ordinary_taxable=ret.ordinary_taxable, agi=ret.agi,
         )
 
     def marginal(
@@ -350,7 +351,8 @@ class TaxView:
             raise StrategyError(f"next must be 'ordinary' or 'ltcg', not {next!r}")
         est = self._est(scope)
         more = (ordinary + step, ltcg) if next == "ordinary" else (ordinary, ltcg + step)
-        return (est.tax_with(*more) - est.tax_with(ordinary, ltcg)) * 1_000_000 // step
+        return (est.compute(tax_api.Extra(*more)).tax
+                - est.compute(tax_api.Extra(ordinary, ltcg)).tax) * 1_000_000 // step
 
     def bracket_top(self, rate: int, scope: str = "federal") -> int | None:
         """The taxable ordinary income where this year's bracket taxed at

@@ -12,18 +12,19 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.engine import (
-    _ExclusionGrant,
-    _person_income,
-    _RetirementExclusion,
-    _taxable_social_security_cents,
-    run_scenario,
-)
+from analysis.sim.engine import run_scenario
 from analysis.sim.loader import LoadError, load_scenario
 from analysis.sim.registries import (
     GROWTH_COUNTERPARTY_ACCOUNTS,
     SCHEDULED_CSV_HEADER,
     STATE_EXCLUSION_INCOME,
+)
+from analysis.sim.tax_api import TaxYear
+from analysis.sim.taxes.common import (
+    ExclusionGrant,
+    RetirementExclusion,
+    person_income,
+    taxable_social_security,
 )
 
 HEADER = "effective_date,name,income,min_age,amount,filing_status,income_limit,phaseout,less_ss\n"
@@ -140,8 +141,8 @@ def _pools(**by_kind: int) -> dict[str, dict[str, int]]:
 
 
 def _grant(*income: str, cap: int | None = None, limit: int | None = None,
-           phaseout: int | None = None) -> _ExclusionGrant:
-    return _ExclusionGrant("alice", income, cap, limit, phaseout)
+           phaseout: int | None = None) -> ExclusionGrant:
+    return ExclusionGrant("alice", income, cap, limit, phaseout)
 
 
 def test_grant_income_test() -> None:
@@ -159,19 +160,19 @@ def test_grant_income_test() -> None:
 def test_exclusion_never_exceeds_the_income() -> None:
     """Gains come off the long-term gain first, and the whole never takes
     income below zero."""
-    exclusion = _RetirementExclusion(
+    exclusion = RetirementExclusion(
         _pools(capital_gain=6_000, pension=10_000),
         (_grant("capital_gain", "pension", cap=8_000), _grant("pension", cap=5_000)),
         net_gain=6_000)
     assert exclusion.excluded(10_000, 4_000) == (9_000, 4_000)
     assert exclusion.excluded(2_000, 1_000) == (2_000, 1_000)
-    assert _RetirementExclusion().excluded(5, 5) == (0, 0)
+    assert RetirementExclusion().excluded(5, 5) == (0, 0)
 
 
 def test_a_gain_a_loss_offset_is_not_excluded() -> None:
     """$10,000 of gain legs that a carried loss wiped out leave nothing to
     exclude, and nothing comes off ordinary income in their place."""
-    exclusion = _RetirementExclusion(
+    exclusion = RetirementExclusion(
         _pools(capital_gain=10_000), (_grant("capital_gain"),), net_gain=0)
     assert exclusion.excluded(50_000, 0) == (0, 0)
 
@@ -179,7 +180,7 @@ def test_a_gain_a_loss_offset_is_not_excluded() -> None:
 def test_a_denied_exclusion_leaves_its_income_for_the_next() -> None:
     """A retirement exclusion over its $20,000 cliff takes nothing, so the
     age exclusion after it still covers $10,000 of the same IRA income."""
-    exclusion = _RetirementExclusion(
+    exclusion = RetirementExclusion(
         _pools(retirement_account=30_000),
         (_grant("retirement_account", limit=20_000), _grant(*STATE_EXCLUSION_INCOME, cap=10_000)))
     assert exclusion.excluded(30_000, 0) == (10_000, 0)
@@ -284,12 +285,11 @@ def test_tax_report_shows_the_exclusion(state_ira: Path, tmp_path: Path) -> None
 
 def test_hobby_receipts_stay_income_an_exclusion_covers(
     business_scenarios: Path, test_data_dir: Path, tmp_path: Path,
+    tax_year_of: Callable[..., TaxYear],
 ) -> None:
     """A hobby's expenses aren't deducted (#231), so they don't cancel its
     receipts in the income an exclusion of ``other`` income covers; a real
     business's do."""
-    from analysis.sim.engine import _person_income
-
     other = {}
     for scenario in ("alice_business", "alice_business_hobby"):
         load = load_scenario(test_data_dir, scenario, intent_dir=tmp_path / scenario,
@@ -300,7 +300,7 @@ def test_hobby_receipts_stay_income_an_exclusion_covers(
             receipts = con.execute(
                 "SELECT SUM(amount) FROM transfer_event WHERE tax_character = 'business_income' "
                 "AND substr(date, 1, 4) = '2032'").fetchone()[0]
-            pools, _ = _person_income(con, 2032, ["alice", "bill"])
+            pools, _ = person_income(tax_year_of(con, 2032), ["alice", "bill"])
         other[scenario] = pools["alice"]["other"]
     assert receipts > 0
     assert other["alice_business_hobby"] >= receipts > other["alice_business"]
@@ -309,7 +309,7 @@ def test_hobby_receipts_stay_income_an_exclusion_covers(
 def test_an_offset_gain_does_not_use_up_a_cap() -> None:
     """$10,000 of gain a loss wiped out leaves the whole $10,000 cap of a
     gains-and-pension exclusion for the pension."""
-    exclusion = _RetirementExclusion(
+    exclusion = RetirementExclusion(
         _pools(capital_gain=10_000, pension=10_000),
         (_grant("capital_gain", "pension", cap=10_000),), net_gain=0)
     assert exclusion.excluded(10_000, 0) == (10_000, 0)
@@ -357,7 +357,7 @@ def test_a_secondary_persons_income_is_theirs(state_ira: Path, tmp_path: Path) -
 def test_an_excluded_short_term_gain_leaves_the_short_term_rates() -> None:
     """Gain left out past the long-term gain is short-term gain, so a
     state's short-term rates (#485) don't reach the wages left behind."""
-    exclusion = _RetirementExclusion(
+    exclusion = RetirementExclusion(
         _pools(capital_gain=20_000), (_grant("capital_gain"),), net_gain=20_000)
     assert exclusion.split(120_000, 0) == (20_000, 0, 20_000)
     # Long-term gain goes first; only the rest is short-term.
@@ -367,7 +367,7 @@ def test_an_excluded_short_term_gain_leaves_the_short_term_rates() -> None:
 def test_gain_an_estimate_takes_away_is_not_excluded() -> None:
     """The drawdown estimate replaces posted gain: with the $20,000 gain
     taken out, the exclusion leaves the wages alone."""
-    exclusion = _RetirementExclusion(
+    exclusion = RetirementExclusion(
         _pools(capital_gain=20_000), (_grant("capital_gain"),), net_gain=20_000)
     assert exclusion.split(100_000, 0, net_gain=0) == (0, 0, 0)
     assert exclusion.split(100_000, 10_000, net_gain=10_000) == (0, 10_000, 0)
@@ -376,7 +376,7 @@ def test_gain_an_estimate_takes_away_is_not_excluded() -> None:
 def test_a_loss_below_the_gain_leaves_no_negative_exclusion() -> None:
     """A $10,000 business loss and $20,000 of gain: $10,000 of income, all
     of it gain, comes off the gain and nothing off ordinary income."""
-    exclusion = _RetirementExclusion(
+    exclusion = RetirementExclusion(
         _pools(capital_gain=20_000), (_grant("capital_gain"),), net_gain=20_000)
     assert exclusion.split(-10_000, 20_000) == (0, 10_000, 0)
 
@@ -400,10 +400,10 @@ def test_state_taxable_social_security_reads_income_before_the_exclusion(
         ordinary = _bucket(con, year, "state_ordinary_income")
         ltcg = _bucket(con, year, "state_ltcg_income")
         tiers = {"tier1": 32_000_00, "tier2": 44_000_00}  # MFJ, prototype aux
-        expected = _taxable_social_security_cents(
+        expected = taxable_social_security(
             ordinary_income=ordinary + excluded, ltcg_income=ltcg, ss_income=ss,
             tier1=tiers["tier1"], tier2=tiers["tier2"])
-        after = _taxable_social_security_cents(
+        after = taxable_social_security(
             ordinary_income=ordinary, ltcg_income=ltcg, ss_income=ss,
             tier1=tiers["tier1"], tier2=tiers["tier2"])
         assert expected != after  # the year shows the difference
@@ -412,7 +412,9 @@ def test_state_taxable_social_security_reads_income_before_the_exclusion(
         con.close()
 
 
-def test_hsa_flows_are_not_retirement_income(ledger_con: sqlite3.Connection) -> None:
+def test_hsa_flows_are_not_retirement_income(
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
+) -> None:
     """An HSA withdrawal is ``other`` income, not a retirement account's;
     where the state taxes the HSA like a brokerage account (#490) it left
     the HSA's flows out of income, so they aren't income to exclude."""
@@ -429,9 +431,9 @@ def test_hsa_flows_are_not_retirement_income(ledger_con: sqlite3.Connection) -> 
             "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
             "VALUES (1, '2026-06-30', ?, ?, ?, ?, ?, ?, 0, ?, 'rule')",
             (frm, to, frm, to, amount, amount, character))
-    pools, _ = _person_income(ledger_con, 2026, ["alice"])
+    pools, _ = person_income(tax_year_of(ledger_con, 2026), ["alice"])
     assert (pools["alice"]["retirement_account"], pools["alice"]["other"]) == (5_000_00, 4_000_00)
-    pools, _ = _person_income(ledger_con, 2026, ["alice"], hsa_taxed=True)
+    pools, _ = person_income(tax_year_of(ledger_con, 2026), ["alice"], hsa_taxed=True)
     assert (pools["alice"]["retirement_account"], pools["alice"]["other"]) == (5_000_00, 0)
 
 
@@ -446,7 +448,9 @@ def test_load_rejects_an_exclusion_table_without_a_state(
                       loaded_by="test", allow_dirty_data=True)
 
 
-def test_taxed_hsa_growth_is_its_owners_gain(ledger_con: sqlite3.Connection) -> None:
+def test_taxed_hsa_growth_is_its_owners_gain(
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
+) -> None:
     """Where the state taxes an HSA's growth as gain (#490), an exclusion
     covering gains covers it: Alice's HSA grew $1,000 and Bill's fell $300."""
     growth = GROWTH_COUNTERPARTY_ACCOUNTS["deferred"].name
@@ -461,7 +465,7 @@ def test_taxed_hsa_growth_is_its_owners_gain(ledger_con: sqlite3.Connection) -> 
             "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
             "VALUES (1, '2026-06-30', ?, ?, ?, ?, ?, ?, 0, 'deferred', 'rule')",
             (frm, to, frm, to, amount, amount))
-    pools, _ = _person_income(ledger_con, 2026, ["alice", "bill"], hsa_taxed=True)
+    pools, _ = person_income(tax_year_of(ledger_con, 2026), ["alice", "bill"], hsa_taxed=True)
     assert (pools["alice"]["capital_gain"], pools["bill"]["capital_gain"]) == (1_000_00, 0)
-    pools, _ = _person_income(ledger_con, 2026, ["alice", "bill"])
+    pools, _ = person_income(tax_year_of(ledger_con, 2026), ["alice", "bill"])
     assert pools["alice"]["capital_gain"] == 0

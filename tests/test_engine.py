@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.engine import EngineError, _state_ss_exclusion, run_scenario
+from analysis.sim.engine import EngineError, run_scenario
+from analysis.sim.taxes.common import state_ss_exclusion
 from analysis.sim.loader import LoadError, growth_rule_name, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -2128,10 +2129,10 @@ def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
     ({"exclusion_micros": 1_000_000, "phaseout_start": 50_000_00,
       "phaseout_rate_micros": 2_000_000}, 52_000_00, 6_000_00),
 ])
-def test_state_ss_exclusion(row: dict[str, int], agi: int, excluded: int) -> None:
+def teststate_ss_exclusion(row: dict[str, int], agi: int, excluded: int) -> None:
     """How much of $10,000 of federally taxable Social Security a state's
     state_social_security row leaves out (#484)."""
-    assert _state_ss_exclusion(row, 10_000_00, agi) == excluded
+    assert state_ss_exclusion(row, 10_000_00, agi) == excluded
 
 
 def test_state_social_security_table_taxes_it(

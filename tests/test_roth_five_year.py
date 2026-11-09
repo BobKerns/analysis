@@ -18,6 +18,8 @@ import pytest
 from analysis.sim import engine
 from analysis.sim.engine import RothLot, run_scenario
 from analysis.sim.loader import LoadError, LoadResult
+from analysis.sim.tax_api import TaxYear
+from analysis.sim.taxes.common import income_buckets
 
 ROTH = "Asset_Roth_Alice"  # Alice was born 1965-03-15, so 59½ from 2024-09-15
 
@@ -111,15 +113,16 @@ def test_a_roth_distribution_is_taxed_on_earnings_until_qualified(
 def test_nonqualified_earnings_are_ordinary_income(
     young_roth: Callable[..., None], append_calendar_row: Callable[..., None],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    tax_year_of: Callable[..., TaxYear],
 ) -> None:
     young_roth()
     append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1=ROTH, lot_1="default",
                         account_2="Asset_Checking", amount="70000.00")
     run = _run(load_test_copy, runs_dir)
     with sqlite3.connect(run) as con:
-        ordinary, _ss, _qualified = engine._tax_year_income_buckets(con, tax_year=2027)
+        ordinary, _ss, _qualified = income_buckets(tax_year_of(con, 2027))
         con.execute("DELETE FROM transfer_event WHERE tax_character = 'roth_nonqualified'")
-        without, _ss, _qualified = engine._tax_year_income_buckets(con, tax_year=2027)
+        without, _ss, _qualified = income_buckets(tax_year_of(con, 2027))
     assert ordinary - without == 1_000_000
 
 
