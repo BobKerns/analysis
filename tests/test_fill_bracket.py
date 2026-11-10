@@ -273,3 +273,84 @@ def test_a_states_max_marginal_rate_counts_the_local_tax_built_on_it(
     with_local = _conversions(fill_run(rule)).iloc[0]["fill"]["reached"]
     # Far less: the local tax's payments alone move it only a little.
     assert with_local < without // 2, (with_local, without)
+
+
+# -- max_marginal_rate's gallop ----------------------------------------------
+
+def _step_scan(
+    tax_with: Callable[[int, int], int], cliff: Callable[[int], int] | None,
+    amount: int, limit: int,
+) -> int:
+    """``max_marginal_rate`` as it was first written: one $100 step at a
+    time. The gallop must find the same amount."""
+    step_size = engine.FILL_BRACKET_STEP
+
+    def cost(x: int) -> int:
+        return tax_with(x, 0) + (cliff(x) if cliff else 0)
+
+    def ok(x: int, step: int) -> bool:
+        return (tax_with(x + step, 0) - tax_with(x, 0)) * 1_000_000 <= limit * step
+
+    taken = 0
+    while taken < amount:
+        step = min(step_size, amount - taken)
+        if not ok(taken, step):
+            break
+        if cliff is None or cliff(taken + step) == cliff(taken):
+            taken += step
+            continue
+        below = engine._largest_within(cliff, cliff(taken), taken + step)
+        end, crossing = below, True
+        while end < amount:
+            next_step = min(step_size, amount - end)
+            if not ok(end, next_step) or (not crossing and cliff(end + next_step) != cliff(end)):
+                break
+            end, crossing = end + next_step, False
+        if (cost(end) - cost(below)) * 1_000_000 <= limit * (end - below):
+            taken = end
+        else:
+            return below
+    return taken
+
+
+def _torpedo_tax(base: int, ss: int) -> Callable[[int, int], int]:
+    """Federal-style tax on ``base`` ordinary income plus a conversion, with
+    ``ss`` of Social Security taxed by the tiers: its rate climbs through
+    the torpedo and falls back once 85% of the benefit is taxed."""
+    from analysis.sim.taxes import common
+    brackets = [(0, 100_000), (23_850_00, 120_000), (96_950_00, 220_000),
+                (206_700_00, 240_000), (394_600_00, 320_000)]
+
+    def tax(extra: int, _ltcg: int) -> int:
+        ordinary = base + extra
+        taxable_ss = common.taxable_social_security(
+            ordinary_income=ordinary, ltcg_income=0, ss_income=ss,
+            tier1=32_000_00, tier2=44_000_00)
+        return common.progressive_tax(max(0, ordinary + taxable_ss - 30_000_00), brackets)
+    return tax
+
+
+@pytest.mark.parametrize("limit", [100_000, 120_000, 220_000, 230_000, 250_000, 410_000])
+@pytest.mark.parametrize("cliff_floor", [None, 41_234_56, 150_000_00])
+@pytest.mark.parametrize(("base", "ss"), [(0, 0), (10_000_00, 40_000_00), (30_000_00, 60_000_00)])
+def test_the_gallop_finds_what_stepping_does(
+    limit: int, cliff_floor: int | None, base: int, ss: int,
+) -> None:
+    tax = _torpedo_tax(base, ss)
+    cliff = None if cliff_floor is None else (lambda x, f=cliff_floor: 3_000_00 if base + x > f else 0)
+    for amount in (12_345_67, 180_000_00, 400_000_01):
+        assert engine._within_marginal_rate(tax, cliff, amount, limit) \
+            == _step_scan(tax, cliff, amount, limit)
+
+
+def test_the_gallop_takes_far_fewer_tax_computations() -> None:
+    tax = _torpedo_tax(10_000_00, 40_000_00)
+    calls = []
+
+    def counted(extra: int, ltcg: int) -> int:
+        calls.append(extra)
+        return tax(extra, ltcg)
+    assert engine._within_marginal_rate(counted, None, 300_000_00, 220_000) == \
+        _step_scan(tax, None, 300_000_00, 220_000)
+    # Stepping computes the tax twice for each of some 2,000 steps.
+    assert len(set(calls)) < 300

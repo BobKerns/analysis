@@ -346,6 +346,7 @@ def run_scenario(
             opening_balances = dict(balances)
 
             def settle_taxes(step_id=step_id, month_s=month_s, month=month) -> None:
+                shared: _SharedPrepares = {}
                 for j in jurisdictions:
                     if _tax_settles(j, month):
                         _settle_tax(
@@ -359,7 +360,7 @@ def run_scenario(
                             account_subkind=account_subkind, account_name=account_name,
                             person_lifespan=person_lifespan, taxpayers=taxpayers,
                             refill_ctx=refill_ctx, drawdown_pricing=drawdown_pricing,
-                            own_payments_only=j.id in paid_with_another,
+                            own_payments_only=j.id in paid_with_another, shared=shared,
                         )
 
             for txn in month_steps:
@@ -2965,14 +2966,17 @@ def _tax_year(
     taxpayers: Collection[str] = (),
     ledger: _TaxLedger | None = None,
     upstream: Callable[[str], tax_api.Prepared] | None = None,
+    growth_cache: dict[tuple[str, date, date, str], int] | None = None,
 ) -> tax_api.TaxYear:
     """``tax_year`` as a calculator sees it (#507), from the transfers
     posted so far: its income items and those of every year before it,
     the capital losses, the people, the aux tables, and the jurisdictions
-    it builds on (``upstream``)."""
+    it builds on (``upstream``). ``growth_cache`` is the run's inflation
+    factors, which indexing the tables reads."""
     scope = str(params.get("scope", "federal"))
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
-    growth_cache: dict[tuple[str, date, date, str], int] = {}
+    if growth_cache is None:
+        growth_cache = {}
     items, losses, persons = ledger or _tax_ledger(con, tax_year)
 
     def filing_status_in(year: int) -> str:
@@ -2997,6 +3001,11 @@ def _tax_year(
     )
 
 
+_SharedPrepares = dict[tuple[str, int], tuple["_TaxLedger", str, tax_api.Prepared]]
+"""Prepared tax years by (jurisdiction, year), with the ledger and kind
+each was prepared from (:func:`_prepare_tax`)."""
+
+
 def _prepare_tax(
     con, params: Mapping[str, Any], *,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
@@ -3005,14 +3014,24 @@ def _prepare_tax(
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
     ledger: _TaxLedger | None = None,
+    growth_cache: dict[tuple[str, date, date, str], int] | None = None,
+    shared: _SharedPrepares | None = None,
 ) -> tax_api.Prepared:
     """``tax_year``'s tax for a jurisdiction (#507): the calculator its
     ``kind`` names, prepared on the year so far, ready to :meth:`compute`.
     A jurisdiction it builds on (#508) is found in ``jurisdictions`` and
-    prepared on the same ledger when the calculator first asks for it."""
+    prepared on the same ledger when the calculator first asks for it.
+
+    ``shared`` lends prepared jurisdictions between calls in one month, so
+    a state reuses the federal year its settlement just prepared: one is
+    taken only when its ledger is the same, so nothing posted since."""
     scope = str(params.get("scope", "federal"))
     ledger = ledger or _tax_ledger(con, tax_year)
-    prepared: dict[str, tax_api.Prepared] = {}
+    if shared is None:
+        shared = {}
+    lent = shared.get((scope, tax_year))
+    if lent is not None and lent[0] == ledger and lent[1] == kind:
+        return lent[2]
     try:
         calc = tax_api.calculator(kind)
 
@@ -3020,24 +3039,24 @@ def _prepare_tax(
             if name not in calc.upstream:
                 raise tax_api.TaxError(
                     f"taxes/{scope}.csv: its {kind} calculator doesn't build on {name!r}")
-            if name not in prepared:
-                found = (jurisdictions or {}).get(name)
-                if found is None:
-                    raise tax_api.TaxError(
-                        f"taxes/{scope}.csv builds on the {name} tax, and the scenario "
-                        f"has none (taxes/{name}.csv)")
-                up_kind, up_params = found
-                prepared[name] = _prepare_tax(
-                    con, up_params, aux=aux, tax_year=tax_year, tid=tid, kind=up_kind,
-                    jurisdictions=jurisdictions, person_lifespan=person_lifespan,
-                    taxpayers=taxpayers, ledger=ledger)
-            return prepared[name]
+            found = (jurisdictions or {}).get(name)
+            if found is None:
+                raise tax_api.TaxError(
+                    f"taxes/{scope}.csv builds on the {name} tax, and the scenario "
+                    f"has none (taxes/{name}.csv)")
+            up_kind, up_params = found
+            return _prepare_tax(
+                con, up_params, aux=aux, tax_year=tax_year, tid=tid,
+                kind=up_kind, jurisdictions=jurisdictions, person_lifespan=person_lifespan,
+                taxpayers=taxpayers, ledger=ledger, growth_cache=growth_cache, shared=shared)
 
-        return calc.prepare(_tax_year(
+        prepared = calc.prepare(_tax_year(
             con, params, aux=aux, tax_year=tax_year, tid=tid,
             person_lifespan=person_lifespan, taxpayers=taxpayers,
-            ledger=ledger, upstream=upstream,
+            ledger=ledger, upstream=upstream, growth_cache=growth_cache,
         ))
+        shared[(scope, tax_year)] = (ledger, kind, prepared)
+        return prepared
     except tax_api.TaxError as exc:
         raise EngineError(str(exc)) from exc
 
@@ -3117,6 +3136,7 @@ def _settle_tax(
     refill_ctx: RefillContext | None = None,
     drawdown_pricing: dict[tuple[str, int], Callable[[int, int], int]] | None = None,
     own_payments_only: bool = False,
+    shared: _SharedPrepares | None = None,
 ) -> None:
     """Compute and optionally pay a tax jurisdiction's income tax for the
     year before ``month`` (#507: ``taxes/<jurisdiction>.csv``, settled each
@@ -3174,6 +3194,8 @@ def _settle_tax(
     prepared = _prepare_tax(
         con, params, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=jurisdictions,
         person_lifespan=person_lifespan, taxpayers=taxpayers,
+        growth_cache=refill_ctx.inflation_factor_cache if refill_ctx is not None else None,
+        shared=shared,
     )
     ret = prepared.compute()
     tax_liability = ret.tax
@@ -3277,6 +3299,7 @@ class _StrategyTax:
             self.con, {**params, "scope": scope}, aux=self.aux, tax_year=year, tid=tid, kind=kind,
             jurisdictions=self.jurisdictions,
             person_lifespan=self.person_lifespan, taxpayers=self.taxpayers,
+            growth_cache=self.irmaa.inflation_factor_cache,
         )
 
     def has_scope(self, scope: str) -> bool:
@@ -3349,6 +3372,11 @@ def _largest_within(measure: Callable[[int], int], target: int, cap: int) -> int
     return low
 
 
+FILL_BRACKET_RATE_TOLERANCE = 200
+"""How close two marginal rates (micros) must be for :func:`_gallop` to
+call them the same: a cent of rounding on a ``FILL_BRACKET_STEP``."""
+
+
 def _within_marginal_rate(
     tax_with: Callable[[int, int], int], cliff: Callable[[int], int] | None,
     amount: int, limit: int,
@@ -3359,36 +3387,88 @@ def _within_marginal_rate(
     later (#253), jumps at a tier floor, so a step that crosses one isn't
     judged alone: the span from here to where stepping would stop without
     another floor is, cliff included. Crossing pays when its average cost is
-    within the limit; otherwise the conversion stops at the floor."""
+    within the limit; otherwise the conversion stops at the floor.
+
+    The steps are taken by :func:`_gallop`, many at a time where the rate
+    doesn't change."""
+    taxes: dict[int, int] = {}
+
+    def tax(x: int) -> int:
+        if x not in taxes:
+            taxes[x] = tax_with(x, 0)
+        return taxes[x]
+
     def cost(x: int) -> int:
-        return tax_with(x, 0) + (cliff(x) if cliff else 0)
+        return tax(x) + (cliff(x) if cliff else 0)
 
     def tax_step_ok(x: int, step: int) -> bool:
-        return (tax_with(x + step, 0) - tax_with(x, 0)) * 1_000_000 <= limit * step
+        return (tax(x + step) - tax(x)) * 1_000_000 <= limit * step
+
+    def crosses(x: int, y: int) -> bool:
+        # The surcharge never falls as MAGI grows: the same at both ends,
+        # it is the same between them.
+        return cliff is not None and cliff(y) != cliff(x)
 
     taken = 0
     while taken < amount:
+        taken = _gallop(taken, amount, tax, tax_step_ok, crosses)
         step = min(FILL_BRACKET_STEP, amount - taken)
-        if not tax_step_ok(taken, step):
+        if taken >= amount or not tax_step_ok(taken, step):
             break
-        if cliff is None or cliff(taken + step) == cliff(taken):
-            taken += step
-            continue
+        assert cliff is not None
         # The step crosses a floor: the last amount still under it, then how
         # far the tax alone would let the conversion go before the next floor.
         below = _largest_within(cliff, cliff(taken), taken + step)
-        end, crossing = below, True
-        while end < amount:
-            next_step = min(FILL_BRACKET_STEP, amount - end)
-            if not tax_step_ok(end, next_step) or (
-                    not crossing and cliff(end + next_step) != cliff(end)):
-                break
-            end, crossing = end + next_step, False
+        end = below
+        first = min(FILL_BRACKET_STEP, amount - below)
+        if below < amount and tax_step_ok(below, first):
+            end = _gallop(below + first, amount, tax, tax_step_ok, crosses)
         if (cost(end) - cost(below)) * 1_000_000 <= limit * (end - below):
             taken = end
         else:
             return below
     return taken
+
+
+def _gallop(
+    x: int, amount: int, tax: Callable[[int], int],
+    step_ok: Callable[[int, int], bool], crosses: Callable[[int, int], bool],
+) -> int:
+    """Where stepping from ``x`` by ``FILL_BRACKET_STEP`` (the last step
+    short, to ``amount``) stops: before the first step that isn't
+    ``step_ok`` or that ``crosses``.
+
+    Tax is piecewise linear in the amount, so it doesn't step through a run
+    where the rate holds: it doubles a span while the rate at the span's
+    first and last steps and on average over it is the same, and halves it
+    back when not. A span that crosses an edge of a bracket or tier changes
+    one of the three, unless two edges cancel exactly within it; a change
+    of rate under ``FILL_BRACKET_RATE_TOLERANCE`` can be passed over."""
+    step = FILL_BRACKET_STEP
+
+    def rate(a: int, b: int) -> int:
+        return (tax(b) - tax(a)) * 1_000_000 // (b - a)
+
+    def flat(a: int, b: int) -> bool:
+        last = a + (b - a - 1) // step * step
+        if crosses(a, b) or not step_ok(last, b - last):
+            return False
+        r = rate(a, a + step)
+        return all(abs(rate(*span) - r) <= FILL_BRACKET_RATE_TOLERANCE
+                   for span in ((b - step, b), (a, b)))
+
+    span = step
+    while x < amount:
+        first = min(step, amount - x)
+        if not step_ok(x, first) or crosses(x, x + first):
+            return x
+        while True:
+            y = min(x + span, amount)
+            if y - x <= first or flat(x, y):
+                x, span = y, span * 2
+                break
+            span //= 2
+    return x
 
 
 def _apply_fill_bracket(
@@ -3418,9 +3498,12 @@ def _apply_fill_bracket(
     tax_year = month.year
     scope = str(params.get("scope", "federal"))
     kind, rule = _fill_bracket_tax_rule(tax_rules, params, tid, name)
+    # Every estimate here reads the same ledger, so they share their years.
+    ledger, shared = _tax_ledger(con, tax_year), {}
     est = _prepare_tax(
         con, rule, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=tax_rules,
-        person_lifespan=person_lifespan, taxpayers=taxpayers,
+        person_lifespan=person_lifespan, taxpayers=taxpayers, growth_cache=inflation_factor_cache,
+        ledger=ledger, shared=shared,
     )
     rate = params.get("rate_micros")
     if rate is not None:
@@ -3465,6 +3548,7 @@ def _apply_fill_bracket(
             magi_est = _prepare_tax(
                 con, rule, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=tax_rules,
                 person_lifespan=person_lifespan, taxpayers=taxpayers,
+                growth_cache=inflation_factor_cache, ledger=ledger, shared=shared,
             )
     if "irmaa_tier" in params and irmaa is not None and magi_est is not None:
         floors = [t.floor for t in irmaa.tiers(tax_year, magi_est.filing_status, tid)
@@ -3484,7 +3568,8 @@ def _apply_fill_bracket(
         measured_with = [est, *(
             _prepare_tax(con, built_rule, aux=aux, tax_year=tax_year, tid=tid, kind=built_kind,
                          jurisdictions=tax_rules, person_lifespan=person_lifespan,
-                         taxpayers=taxpayers)
+                         taxpayers=taxpayers, growth_cache=inflation_factor_cache,
+                         ledger=ledger, shared=shared)
             for built_kind, built_rule in _built_on(tax_rules, scope))] if scope != "federal" else [est]
         amount = _within_marginal_rate(
             lambda ordinary, ltcg: sum(
@@ -3907,7 +3992,19 @@ def _cumulative_inflation_factor(
     factor = 1_000_000
     match cadence:
         case "monthly":
-            for month in _month_ends(lo, hi):
+            months = _month_ends(lo, hi)
+            if from_date < to_date:
+                # The month stepping asks for one more month each time: start
+                # from last month's factor rather than compounding from the
+                # base again, which made a long run quadratic. The same
+                # months compound in the same order, so the result is the same.
+                last = hi if hi == _month_end(hi) else date(hi.year, hi.month, 1) - timedelta(days=1)
+                before = date(last.year, last.month, 1) - timedelta(days=1)
+                if before > lo:
+                    known = cache.get((series, from_date, before, cadence))
+                    if known is not None:
+                        factor, months = known, iter((last,))
+            for month in months:
                 if month <= lo:
                     continue
                 month_s = month.isoformat()
@@ -4030,6 +4127,11 @@ def _parse_scheduled_date(
             f"scheduled_transaction id={transaction_id} ({name!r}): invalid "
             f"{field} date {value!r}; expected YYYY-MM-DD in scheduled.csv"
         ) from exc
+
+
+def _month_end(d: date) -> date:
+    """The last day of ``d``'s month."""
+    return d.replace(day=calendar.monthrange(d.year, d.month)[1])
 
 
 def _month_ends(start: date, end: date):
@@ -4412,6 +4514,8 @@ def _apply_calendar_event(
             bucket = aux.setdefault((aux_kind, series), [])
             bucket.append((ev_date, row_payload))
             bucket.sort(key=lambda r: r[0])
+            # A factor reaching past the new rate is no longer right.
+            refill_ctx.inflation_factor_cache.clear()
         case "set_amount":
             name = payload.get("scheduled_name")
             new_amount = payload.get("amount")
