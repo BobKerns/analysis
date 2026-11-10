@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 60
+SCHEMA_VERSION = 61
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -426,8 +426,9 @@ CREATE TABLE strategy_source (
 -- The scenario's income tax jurisdictions (taxes/<name>.csv, merged over the
 -- lineage; #507). name prefixes the jurisdiction's tax_year_summary buckets;
 -- kind is the calculator; upstream the jurisdictions its return builds on,
--- space-separated. Each April (schedule) it pays what is still due for the
--- year before from source_chain into destination, between start and end.
+-- space-separated: its calculator's own, filled in by the loader (#508).
+-- Each April (schedule) it pays what is still due for the year before from
+-- source_chain into destination, between start and end.
 CREATE TABLE tax_jurisdiction (
     id                   INTEGER PRIMARY KEY,
     name                 TEXT NOT NULL UNIQUE,

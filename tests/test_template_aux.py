@@ -64,7 +64,7 @@ def test_a_tax_without_a_filing_status_fails_the_load(
     add_state_tax()
     write_aux("filing_status.csv", "effective_date,filing_status\n")
 
-    with pytest.raises(LoadError, match=r"taxes/state\.csv.*aux/filing_status\.csv has no row"):
+    with pytest.raises(LoadError, match=r"taxes/\w+\.csv.*aux/filing_status\.csv has no row"):
         load_test_copy()
 
 

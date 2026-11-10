@@ -19,13 +19,15 @@ jurisdiction, and ``upstream`` and ``schedule`` have one value each for now."""
 def spec(
     command: str, *, endpoints: Sequence[str], expenses: Sequence[str],
     jurisdictions: Sequence[str] = (), source: str | None = None,
-    destination: str | None = None,
+    destination: str | None = None, paid_with: str | None = None,
 ) -> KindSpec:
     """The questions for ``sim tax <command>``. ``endpoints`` complete the
     source (accounts and source chains), ``expenses`` the destination (the
     scenario's expense accounts). ``jurisdictions``, for ``add``, are the
     ones the scenario lacks; ``source`` and ``destination`` are the
-    defaults offered."""
+    defaults offered. ``paid_with`` names the jurisdiction one is paid with
+    (the state, for a local tax, #508): blank, they are that one's."""
+    with_help = f"Blank: the {paid_with} tax's." if paid_with else ""
     asked: tuple[Field, ...] = ()
     if jurisdictions:
         asked = (Field("jurisdiction", "jurisdiction", strict=True,
@@ -35,9 +37,10 @@ def spec(
         fields=(
             *asked,
             Field("source_chain", "paid from (an account or source chain)", option="--source-chain",
-                  default=source, choices=lambda ctx, answers: list(endpoints)),  # noqa: ARG005
+                  default=source, required=paid_with is None, help=with_help,
+                  choices=lambda ctx, answers: list(endpoints)),  # noqa: ARG005
             Field("destination", "paid into (an expense account)", option="--destination",
-                  default=destination, strict=True,
+                  default=destination, strict=True, required=paid_with is None, help=with_help,
                   choices=lambda ctx, answers: list(expenses)),  # noqa: ARG005
             Field("start", "first month it settles in", type="month", option="--start",
                   required=False, help="Blank: the scenario's start."),

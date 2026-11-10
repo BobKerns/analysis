@@ -598,8 +598,8 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     out Social Security and, in ``state_exclusion`` (shown only when some
     year has one), the state's retirement income exclusions (#486). The
     state columns appear only when the run computes state tax. A local
-    income tax (#487), paid with the state's, is ``local_tax``, shown only
-    when some year has one; ``state_tax`` then leaves it out. A run that charges IRMAA (#253) adds ``fed_magi`` and
+    income tax (#487), its own jurisdiction paid with the state's by default
+    (#508), is ``local_tax``, shown only when some year has one. A run that charges IRMAA (#253) adds ``fed_magi`` and
     ``irmaa_tier``, the tier that year's MAGI set for the premiums two years
     later (0 below the first), blank for a year whose premiums the run ends
     before charging. ``effective_rate`` is total tax over federal AGI. Liability
@@ -614,15 +614,14 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
         # A state retirement income exclusion (#486), only when some year has
         # one: it is what state AGI already left out.
         extra = _tax_buckets(
-            rc, ["state_retirement_exclusion", "state_local_tax"]).reindex(frame.index)
+            rc, ["state_retirement_exclusion", "local_tax"]).reindex(frame.index)
         excluded = extra["state_retirement_exclusion"]
         if excluded.fillna(0).ne(0).any():
             frame.insert(frame.columns.get_loc("state_agi"), "state_exclusion", excluded)
-        # A local income tax (#487) is paid with the state's, but shown
-        # apart from it, only when some year has one.
-        local = extra["state_local_tax"]
+        # A local income tax (#487) is its own jurisdiction (#508), paid
+        # with the state's by default; shown only when some year has one.
+        local = extra["local_tax"]
         if local.fillna(0).ne(0).any():
-            frame["state_tax"] -= local.fillna(0)
             frame.insert(frame.columns.get_loc("state_tax") + 1, "local_tax", local)
     # A scenario may compute federal tax and not state tax: a blank is "not
     # computed", so the total is blank only when neither is.
@@ -682,6 +681,10 @@ _RECONCILIATION_COLUMNS = {
     "state_tax_paid": "state_paid",
     "state_tax_due": "state_due",
     "state_tax_overpaid": "state_refund",
+    "local_tax": "local_liability",
+    "local_tax_paid": "local_paid",
+    "local_tax_due": "local_due",
+    "local_tax_overpaid": "local_refund",
 }
 
 
@@ -689,10 +692,12 @@ def tax_reconciliation(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL)
     """Each tax year's liability, what was withheld or paid during it, and the
     balance due or refunded at the following April's reconciliation. The
     state columns appear only when the run computes state tax, as in
-    :func:`tax_by_year`."""
+    :func:`tax_by_year`, and the local ones only when it computes a local
+    tax (#508)."""
     frame = _tax_buckets(rc, list(_RECONCILIATION_COLUMNS)).rename(columns=_RECONCILIATION_COLUMNS)
-    if frame["state_liability"].isna().all():
-        frame = frame.drop(columns=[c for c in frame.columns if c.startswith("state_")])
+    for scope in ("state", "local"):
+        if frame[f"{scope}_liability"].isna().all():
+            frame = frame.drop(columns=[c for c in frame.columns if c.startswith(f"{scope}_")])
     return _cpi(rc, frame.fillna(0), mode, annual=True)
 
 

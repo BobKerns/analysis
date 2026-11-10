@@ -82,18 +82,20 @@ GROWTH_ACCOUNT_NAMES = frozenset(
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
-DEFAULT_SETTLE_TAX_BUCKETS = ["federal_tax_due", "state_tax_due"]
+# A local tax (#508) is its own jurisdiction, no longer inside the state's.
+DEFAULT_SETTLE_TAX_BUCKETS = ["federal_tax_due", "state_tax_due", "local_tax_due"]
 DEFAULT_TAX_SUMMARY_BUCKETS: dict[str, str] = {
     "federal_tax": "federal tax",
     "state_tax": "state tax",
+    "local_tax": "local tax",
     "federal_ss_benefits": "SS gross",
     "federal_ss_taxable": "SS taxed",
 }
 _TAX_RECONCILIATION_BUCKETS = [
-    "federal_tax", "state_tax",
-    "federal_tax_paid", "state_tax_paid",
-    "federal_tax_due", "state_tax_due",
-    "federal_tax_overpaid", "state_tax_overpaid",
+    "federal_tax", "state_tax", "local_tax",
+    "federal_tax_paid", "state_tax_paid", "local_tax_paid",
+    "federal_tax_due", "state_tax_due", "local_tax_due",
+    "federal_tax_overpaid", "state_tax_overpaid", "local_tax_overpaid",
 ]
 _TAX_RECONCILIATION_RENAME = {
     "federal_tax": "federal_liability",
@@ -104,6 +106,10 @@ _TAX_RECONCILIATION_RENAME = {
     "state_tax_due": "state_reconciliation_due",
     "federal_tax_overpaid": "federal_estimated_refund",
     "state_tax_overpaid": "state_estimated_refund",
+    "local_tax": "local_liability",
+    "local_tax_paid": "local_withheld_or_paid",
+    "local_tax_due": "local_reconciliation_due",
+    "local_tax_overpaid": "local_estimated_refund",
 }
 
 
@@ -1301,14 +1307,14 @@ class RunConnection(Connection):
         return self._cached("gains_by_category", _build)
 
     def tax_liability_by_year(self) -> pd.Series:
-        """Year-indexed total (federal + state) tax liability, in dollars."""
+        """Year-indexed total (federal + state + local) tax liability, in dollars."""
 
         def _build() -> pd.Series:
             tax_summary = self.items("tax_year_summary")
             return (
                 tax_summary.loc[
                     tax_summary["bucket"].isin(
-                        ["federal_tax", "state_tax"]
+                        ["federal_tax", "state_tax", "local_tax"]
                     ),
                     ["year", "amount"],
                 ]
@@ -1320,7 +1326,7 @@ class RunConnection(Connection):
         return self._cached("tax_liability_by_year", _build)
 
     def tax_reconciliation_by_year(self) -> pd.DataFrame:
-        """Year-indexed liability/withheld/due/overpaid, federal and state, in dollars.
+        """Year-indexed liability/withheld/due/overpaid, federal, state and local, in dollars.
 
         Adds ``reconciliation_year`` (year + 1): the annual reconciliation
         payment or refund for year Y settles in April of Y+1.
@@ -1368,12 +1374,18 @@ class RunConnection(Connection):
     def tax_summary_by_year(
         self, buckets: dict[str, str] = DEFAULT_TAX_SUMMARY_BUCKETS,
     ) -> pd.DataFrame:
-        """Yearly federal/state tax and SS income/taxed-portion, plus a total-tax column."""
+        """Yearly federal/state/local tax and SS income/taxed-portion, plus a
+        total-tax column. The local tax's column is left out when there is
+        none."""
         df = self.items("tax_year_summary")
         df = df[df["bucket"].isin(buckets)]
+        if "local_tax" in buckets and not df["bucket"].eq("local_tax").any():
+            buckets = {b: label for b, label in buckets.items() if b != "local_tax"}
         wide = df.pivot(index="year", columns="bucket", values="amount") / 100
         wide = wide.rename(columns=buckets).reindex(columns=list(buckets.values()))
         wide["total tax"] = wide["federal tax"] + wide["state tax"]
+        if "local tax" in wide.columns:
+            wide["total tax"] += wide["local tax"].fillna(0)
         return wide
 
     def ss_gross_by_month(self) -> pd.Series:

@@ -110,6 +110,7 @@ from analysis.sim.loader import (
     ScenarioRef,
     batch_mode,
     batch_recipe,
+    tax_calculator_upstream,
     batches_dir,
     intent_batch_dir,
     ensemble_batches,
@@ -18500,10 +18501,16 @@ def target_delete_command(
 def _tax_summary(row: Mapping[str, str]) -> str:
     """One line for a tax jurisdiction file's row."""
     when = f" from {row.get('start') or 'the start'}" + (f" to {row['end']}" if row.get("end") else "")
-    upstream = f" after {row['upstream']}" if row.get("upstream") else ""
+    # A blank upstream is the calculator's own (#508).
+    built_on = row.get("upstream") or " ".join(tax_calculator_upstream(row.get("kind", "")))
+    upstream = f" on {built_on}" if built_on else ""
     params = f" {row['params_json']}" if row.get("params_json") else ""
-    return (f"{row.get('kind', '')}{upstream}: paid from {row.get('source_chain', '')} into "
-            f"{row.get('destination', '')} each {row.get('schedule') or 'april'}{when}{params}")
+    paid_with = registries.TAX_PAID_WITH.get(registries.TAX_KINDS.get(row.get("kind", ""), ""))
+    with_tax = f"the {paid_with} tax's" if paid_with else "no"
+    source = row.get("source_chain") or f"{with_tax} source"
+    destination = row.get("destination") or f"{with_tax} destination"
+    return (f"{row.get('kind', '')}{upstream}: paid from {source} into "
+            f"{destination} each {row.get('schedule') or 'april'}{when}{params}")
 
 
 def _tax_home(found: _Overlaid, scenario_name: str) -> str:
@@ -18568,7 +18575,8 @@ def _tax_spec(
                                 if a.row.get("subkind") == f"taxes_{jurisdiction}"), None)
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
                           expenses=expenses, jurisdictions=free, source=source,
-                          destination=destination)
+                          destination=destination,
+                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""))
 
 
 _TAX_OPTIONS = (
@@ -18597,7 +18605,8 @@ def _tax_options(f: Callable[..., None]) -> Callable[..., None]:
 @sim_group_command.group(name="tax")
 def tax_group_command() -> None:
     """The scenario's income taxes: a file per jurisdiction in taxes/
-    (federal.csv, state.csv), the state it lives in, and moves to another."""
+    (federal.csv, state.csv, local.csv), the state it lives in, and moves to
+    another."""
 
 
 @tax_group_command.command("list")
@@ -18631,7 +18640,8 @@ def tax_add_command(
     into the destination. Given JURISDICTION, --source-chain and
     --destination, it writes at once; otherwise it asks for each field and
     then shows them, to write or change. For a state, `sim tax state` also
-    picks its tables."""
+    picks its tables. A local tax is paid with the state's and reads the
+    state's local bands, so `sim tax add local` asks nothing."""
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     existing = _tax_rows(ref.path)
@@ -18646,7 +18656,20 @@ def tax_add_command(
         path = _write_tax(data, ref.name, name, row)
         click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(row)}")
 
-    if jurisdiction is not None and source_chain is not None and destination is not None:
+    def paid_with(name: str) -> bool:
+        """A jurisdiction paid with another's (local, #508) needs nothing
+        that one doesn't set: blank, it is paid the same way."""
+        other = registries.TAX_PAID_WITH.get(name)
+        if other is None:
+            return False
+        if other not in existing:
+            raise click.ClickException(
+                f"a {name} tax builds on the {other} tax, and {ref.name} has none "
+                f"(sim tax add {other} first)")
+        return True
+
+    if jurisdiction is not None and (
+            paid_with(jurisdiction) or source_chain is not None and destination is not None):
         write({"jurisdiction": jurisdiction, **{k: v or "" for k, v in given.items()}})
         return
     free = [n for n in registries.TAX_JURISDICTIONS if n not in existing]
@@ -18659,6 +18682,9 @@ def tax_add_command(
     spec = _tax_spec(data, ref.path, ref.name, "add", jurisdiction, free)
     if "jurisdiction" not in answers:  # the defaults follow from it
         answers["jurisdiction"] = guide.ask_field(spec, spec.fields[0], calendar_guide.GuideContext(), answers)
+        if paid_with(answers["jurisdiction"]):
+            write({**dict.fromkeys(given, ""), **answers})
+            return
         spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free)
     ctx = calendar_guide.GuideContext()
     guide.complete(spec, ctx, answers)
