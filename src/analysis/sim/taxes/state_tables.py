@@ -1,6 +1,6 @@
 """The ``state_tables`` tax calculator (ADR-003 §2.6): a state that starts
 from federal AGI (#508) and adjusts it by tables keyed by the state
-(``bracket_series``): qualified dividends as ordinary income, an HSA it
+the household lives in that year (``residence.csv``, #509): qualified dividends as ordinary income, an HSA it
 taxes, its own capital-gain netting and exclusion, retirement exclusions and
 a Social Security exclusion; then its deduction, brackets, gain tables
 and surcharge. A local tax on it is :mod:`analysis.sim.taxes.local`."""
@@ -25,10 +25,10 @@ class StateTablesYear(FederalStateYear):
         ty, params = self.ty, self.ty.params
         where = common.where(ty)
         bracket_aux = str(params.get("bracket_aux", "state_brackets"))
-        series = self.bracket_series = common.bracket_series(ty, bracket_aux)
+        # Every table is the state's where the household lives on the year's
+        # December 31 (#509): its brackets, gain tables and exclusion (#485).
+        series = self.series = common.state_series(ty)
         self.brackets = common.brackets(ty, bracket_aux, series)
-        # A state's gain tables and exclusion (#485) are keyed by state, like
-        # its standard deduction, so they follow bracket_series.
         self.ltcg_brackets = common.rate_table(ty, str(params.get(
             "ltcg_bracket_aux", registries.STATE_LTCG_BRACKETS)), series)
         self.stcg_brackets = common.rate_table(ty, str(params.get(
@@ -38,14 +38,11 @@ class StateTablesYear(FederalStateYear):
 
         # A state that doesn't recognize an HSA (#490) taxes it like a
         # brokerage account: no deduction going in, its growth each year,
-        # nothing coming out.
-        hsa_growth: dict[int, int] = {}
-        self._hsa_taxed = False
-        if series is not None:
-            taxed_years = [year for year in common.hsa_flow_years(ty)
-                           if common.state_taxes_hsa(ty, series, year)]
-            hsa_growth = common.hsa_growth_by_year(ty, taxed_years)
-            self._hsa_taxed = ty.year in taxed_years
+        # nothing coming out. Each year by the state it was filed in.
+        taxed_years = [year for year in common.hsa_flow_years(ty)
+                       if common.state_taxes_hsa(ty, common.state_series(ty, year), year)]
+        hsa_growth = common.hsa_growth_by_year(ty, taxed_years)
+        self._hsa_taxed = ty.year in taxed_years
         self._hsa_growth = hsa_growth.get(ty.year, 0)
         # The state nets its own gains: an HSA's growth is gain to it.
         capital = self._capital = common.capital_gains(
@@ -53,20 +50,17 @@ class StateTablesYear(FederalStateYear):
 
         # A state's retirement income exclusions (#486) come off before AGI,
         # as the states' own subtractions from income do, after its gain
-        # exclusion. Keyed by state, like the standard deduction below.
+        # exclusion.
         exclusion_aux = str(params.get(
             "retirement_exclusion_aux", registries.STATE_RETIREMENT_EXCLUSION))
-        self._exclusion = (
-            common.retirement_exclusion(
-                ty, exclusion_aux, series,
-                net_gain=capital.stcg + self._net_ltcg(capital.ltcg), hsa_taxed=self._hsa_taxed)
-            if series is not None else common.RetirementExclusion()
-        )
+        self._exclusion = common.retirement_exclusion(
+            ty, exclusion_aux, series,
+            net_gain=capital.stcg + self._net_ltcg(capital.ltcg), hsa_taxed=self._hsa_taxed)
 
         # A state taxes Social Security only by its state_social_security
-        # table (#484), keyed by state like its brackets.
+        # table (#484).
         state_ss: dict[str, Any] | None = None
-        if series is not None and ty.has_table(registries.STATE_SOCIAL_SECURITY, series):
+        if ty.has_table(registries.STATE_SOCIAL_SECURITY, series):
             rows = [r for r in ty.indexed(registries.STATE_SOCIAL_SECURITY, series)
                     if r.get("filing_status") == ty.filing_status]
             if not rows:
@@ -76,22 +70,19 @@ class StateTablesYear(FederalStateYear):
             state_ss = rows[0]
         self._state_ss = state_ss
 
-        def bands(kind: str) -> list[tuple[int, int]]:
-            return [] if series is None else common.rate_table(ty, kind, series)
-
         # A state's surcharge on high incomes (#490) adds its rates to the
         # brackets'. Its own bands, rather than more bracket rows, because
         # its floor needn't be indexed or fall between the same brackets for
         # every filing status (California's $1 million). A local income tax
         # is its own jurisdiction (local_bands, #508).
-        self._surcharge = bands(registries.STATE_SURCHARGE)
+        self._surcharge = common.rate_table(ty, registries.STATE_SURCHARGE, series)
 
     def deductions(self) -> Mapping[str, int]:
         ty, params = self.ty, self.ty.params
         standard_aux = str(params.get("standard_deduction_aux", registries.STATE_STANDARD_DEDUCTION))
         # A state's standard deduction is keyed by state, like its brackets
-        # (state_standard_deduction__CA.csv), so it follows bracket_series.
-        series = self.bracket_series if standard_aux == registries.STATE_STANDARD_DEDUCTION else None
+        # (state_standard_deduction__CA.csv).
+        series = self.series if standard_aux == registries.STATE_STANDARD_DEDUCTION else None
         if series is not None and not ty.has_table(standard_aux, series):
             # The loader warned: the federal figure stands in for the state's.
             standard_aux, series = "standard_deduction", None
@@ -179,8 +170,8 @@ class StateTablesYear(FederalStateYear):
 
 @register
 class StateTables(StateFromFederal):
-    """A state income tax from tables keyed by the state (``bracket_series``),
-    starting from federal AGI."""
+    """A state income tax from tables keyed by the state the household lives
+    in (``residence.csv``), starting from federal AGI."""
     kind = "state_tables"
     jurisdiction = "state"
     year_class = StateTablesYear

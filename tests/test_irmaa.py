@@ -449,7 +449,7 @@ def test_a_state_fill_bracket_watching_irmaa_needs_the_federal_tax(
         **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}",
         **_conversion(2031, scope="state", irmaa_tier=0)}
     scheduled.to_csv(path, index=False)
-    add_tax("state", destination="Expense_Taxes_Federal", params_json={"bracket_series": "CA"})
+    add_tax("state", destination="Expense_Taxes_Federal")
     with pytest.raises(LoadError) as error:
         load_with(tax=False)
     assert "irmaa_tier measures MAGI with the federal tax, and there is none" in (

@@ -7992,8 +7992,7 @@ def calendar_add_swap_aux_table(
 ) -> None:
     """Append a swap_aux_table event (#197): from DATE, the AUX_KIND table
     --series (blank for a kind without one) is SOURCE_SERIES's table instead
-    -- a move to another state is `swap-aux-table DATE state_brackets WA
-    --series CA`.
+    -- a change of law, say. A move to another state is `sim tax move`.
 
     Only --vary-target=date is meaningful here (there is no amount to vary).
     Arguments left out are asked for.
@@ -8012,6 +8011,10 @@ def calendar_add_swap_aux_table(
     )
     date, aux_kind, source_series = given["date"], given["aux_kind"], given["source_series"]
     date = _validate_calendar_date(date)
+    if aux_kind in registries.STATE_KEYED_AUX_KINDS:
+        raise click.ClickException(
+            f"a state's tables follow where the household lives: a move is "
+            f"`sim tax move DATE STATE` (residence.csv), not a swap of {aux_kind}")
     if aux_kind not in registries.SWAPPABLE_AUX_KINDS:
         raise click.ClickException(
             f"aux kind {aux_kind!r} can't be swapped; allowed: "
@@ -18552,12 +18555,23 @@ def _write_tax(
     folder = _folder_of(ref.scenarios_dir, ref.name)
     path = tax_files.definition_path(folder, name)
     with _scenario_edit(data, ref.name, remember=remember, repair=repair) as edit:
-        if new_account is not None:
-            _append_csv_row(edit.path(folder / "accounts.csv"), registries.ACCOUNTS_CSV_HEADER,
-                            dict(new_account))
-        staged = edit.path(path)
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        strategy_guide.write_rows(staged, registries.TAX_CSV_HEADER, [row] if row is not None else [])
+        _stage_tax(edit, data, ref.name, name, row, new_account=new_account)
+    return path
+
+
+def _stage_tax(
+    edit: StagedEdit, data: Path, scenario: str, name: str, row: Mapping[str, str] | None, *,
+    new_account: Mapping[str, str] | None = None,
+) -> Path:
+    """:func:`_write_tax`'s writes, into an edit already open."""
+    folder = _folder_of(data / "scenarios", scenario)
+    path = tax_files.definition_path(folder, name)
+    if new_account is not None:
+        _append_csv_row(edit.path(folder / "accounts.csv"), registries.ACCOUNTS_CSV_HEADER,
+                        dict(new_account))
+    staged = edit.path(path)
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    strategy_guide.write_rows(staged, registries.TAX_CSV_HEADER, [row] if row is not None else [])
     return path
 
 
@@ -18611,7 +18625,7 @@ _TAX_OPTIONS = (
     click.option("--end", default=None, help="Last month it settles in (YYYY-MM; '' for the end)."),
     click.option("--params-json", "params_json", default=None,
                  help="The jurisdiction's parameters, a JSON object ('' for none), e.g. "
-                      "'{\"bracket_series\": \"CA\"}' for a state."),
+                      "'{\"nol_limit_percent\": 100}'."),
     click.option("--description", default=None, help="What it is for."),
     click.option("--scenario", type=completion.SCENARIO, default=None,
                  help="Scenario folder name (default: the current scenario)."),
@@ -18663,8 +18677,9 @@ def tax_add_command(
     into the destination. Given JURISDICTION, --source-chain and
     --destination, it writes at once; otherwise it asks for each field and
     then shows them, to write or change. For a state, `sim tax state` also
-    picks its tables. A local tax is paid with the state's and reads the
-    state's local bands, so `sim tax add local` asks nothing."""
+    says where the household lives, which picks its tables. A local tax is
+    paid with the state's and reads the county's (or state's) local bands,
+    so `sim tax add local` asks nothing."""
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     existing = _tax_rows(ref.path)
@@ -18787,26 +18802,6 @@ def tax_delete_command(jurisdiction: str | None, yes: bool, scenario: str | None
     click.echo(f"deleted the {name} tax from {scenario_name}")
 
 
-def _state_moves(data_dir: Path, scenario: str) -> list[tuple[str, str]]:
-    """The scenario's moves: (date, state moved to) of each swap_aux_table
-    of state_brackets in its lineage's calendar.csv files."""
-    moves = []
-    for row in names.lineage_rows(data_dir, scenario, "calendar.csv"):
-        if row.get("kind") != "swap_aux_table":
-            continue
-        try:
-            params = json.loads(row.get("params_json") or "{}")
-        except json.JSONDecodeError:
-            continue
-        if isinstance(params, dict) and params.get("aux_kind") == "state_brackets":
-            moves.append((row.get("date", ""), str(params.get("source_series", ""))))
-    return moves
-
-
-def _state_label(series: str) -> str:
-    return "no income tax" if series == states.NO_TAX_SERIES else states.label(series)
-
-
 def _ask_state(data_dir: Path, scenario: str, prompt: str) -> states.State:
     """A state or territory, asked for by name or postal code with completion,
     after listing which ones this data repo has tax tables for."""
@@ -18824,8 +18819,8 @@ def _ask_state(data_dir: Path, scenario: str, prompt: str) -> states.State:
 
 
 def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | None:
-    """The bracket_series a state rule reads for living in ``state``, or None
-    (with why, echoed) when there is no rule to write for it."""
+    """The series of the tables a state tax reads for living in ``state``,
+    or None (with why, echoed) for a territory the federal tax stands in for."""
     if state.status == states.NOT_SUPPORTED:
         raise click.ClickException(
             f"{states.label(state.code)} has a tax code of its own the simulator can't "
@@ -18834,8 +18829,7 @@ def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | N
         click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
                    "federal tax stands in for it: no state tax is needed.")
         return None
-    if state.code in states.GAINS_TAX_ONLY and state.code not in names.series_names(
-            data_dir, scenario, "state_brackets"):
+    if state.code in states.GAINS_TAX_ONLY:
         click.echo(f"{states.label(state.code)} has no income tax; its capital gains tax "
                    "isn't modeled.")
         return states.NO_TAX_SERIES
@@ -18887,11 +18881,90 @@ def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[st
     return _tax_home(federal, scenario_name), row, new_account
 
 
+class _Residence(NamedTuple):
+    """A row of where the household lives (``residence.csv``, #509), with
+    the scenario whose own file has it."""
+    row: dict[str, str]
+    scenario: str
+
+    @property
+    def month(self) -> str:
+        return month_end_iso(self.row["effective_date"])[:7]
+
+    def label(self) -> str:
+        county = self.row.get("county") or ""
+        return states.label(self.row["state"]) + (f", county {county}" if county else "")
+
+
+def _residence(data_dir: Path, scenario: str) -> list[_Residence]:
+    """Where the household lives, as the load merges ``residence.csv`` over
+    the lineage: by month, a later scenario's row replacing an earlier's."""
+    scenarios = data_dir / "scenarios"
+    merged: dict[str, _Residence] = {}
+    for name in load_order(scenarios, scenario):
+        for row in strategy_guide.read_rows(
+                _folder_of(scenarios, name) / registries.RESIDENCE_FILE, registries.RESIDENCE_CSV_HEADER):
+            try:
+                merged[month_end_iso(row["effective_date"])] = _Residence(row, name)
+            except ValueError:
+                continue  # the load reports it
+    return [merged[month] for month in sorted(merged)]
+
+
+def _echo_residence(scenario: str, timeline: Sequence[_Residence]) -> None:
+    if not timeline:
+        click.echo(f"Scenario {scenario} doesn't say where the household lives.")
+        return
+    first, *moves = timeline
+    click.echo(f"Scenario {scenario} lives in {first.label()} from {first.month}.")
+    for move in moves:
+        click.echo(f"  then moves on {move.month} to {move.label()}")
+
+
+def _stage_residence(edit: StagedEdit, data: Path, scenario: str, row: Mapping[str, str],
+                     *, replacing: str | None = None) -> Path:
+    """Write ``row`` into ``scenario``'s own residence.csv in ``edit``, in
+    place of the row of its month (or of month ``replacing``), in date order."""
+    path = _folder_of(data / "scenarios", scenario) / registries.RESIDENCE_FILE
+    staged = edit.path(path)
+    month = month_end_iso(row["effective_date"])
+    gone = {month, month_end_iso(replacing)} if replacing else {month}
+    rows = [r for r in strategy_guide.read_rows(staged, registries.RESIDENCE_CSV_HEADER)
+            if _month_key(r.get("effective_date", "")) not in gone]
+    rows.append(dict(row))
+    rows.sort(key=lambda r: _month_key(r.get("effective_date", "")))
+    strategy_guide.write_rows(staged, registries.RESIDENCE_CSV_HEADER, rows)
+    return path
+
+
+def _month_key(value: str) -> str:
+    """A month column's value as the loader keys it, or as typed when it
+    doesn't parse (the load reports it)."""
+    try:
+        return month_end_iso(value)
+    except ValueError:
+        return value
+
+
+def _checked_county(data: Path, scenario: str, county: str | None) -> str:
+    """``county``, once the data repo has its local tax table; '' for none."""
+    county = (county or "").strip()
+    if county and county not in names.series_names(data, scenario, registries.STATE_LOCAL_TAX):
+        raise click.ClickException(
+            f"no aux/{registries.STATE_LOCAL_TAX}__{county}.csv: add the county's local tax "
+            "bands first (one 0% band per filing status for a county without one). "
+            "Nothing was written.")
+    return county
+
+
 @tax_group_command.command("state")
 @click.argument("state", required=False, type=completion.STATE)
+@click.option("--county", type=completion.COUNTY, default=None,
+              help="The county, for its local income tax: the <county> of an "
+                   "aux/state_local_tax__<county>.csv.")
 @click.option("--here", is_flag=True,
               help="Change this scenario only (an override), not the scenario where "
-                   "the state tax is defined.")
+                   "the residence is defined.")
 @click.option("--yes", is_flag=True, help="Don't ask before writing.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
@@ -18899,31 +18972,27 @@ def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[st
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def tax_state_command(
-    state: str | None, here: bool, yes: bool, scenario: str | None, data_dir: Path | None,
+    state: str | None, county: str | None, here: bool, yes: bool, scenario: str | None,
+    data_dir: Path | None,
 ) -> None:
-    """Show or choose the state you live in, for state income tax.
+    """Show or choose the state you live in when the scenario starts, for
+    state and local income tax.
 
-    STATE is a name or postal code (California, CA). Left out, the current
-    one is shown and a state is asked for. The choice is set on the state
-    tax (taxes/state.csv) where it is defined, so every scenario built on
-    that one lives there too; --here changes only this scenario. A scenario
-    with no state tax gets one, modeled on its federal tax. A state with no
-    income tax keeps the state tax, paying nothing; a move to another state
-    is `sim tax move`.
+    STATE is a name or postal code (California, CA). Left out, where the
+    household lives is shown and a state is asked for. It is the first row
+    of residence.csv, written where that row is defined, so every scenario
+    built on that one lives there too; --here changes only this scenario. A
+    scenario with no state tax gets one, modeled on its federal tax, unless
+    the state has no income tax. A move later on is `sim tax move`.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data_dir_p, scenario)
     scenario_dir, scenario_name = ref.path, ref.name
     found = _tax_rows(scenario_dir).get("state")
-    current = str(tax_files.params(found.row if found else None).get("bracket_series") or "")
+    timeline = _residence(data_dir_p, scenario_name)
+    _echo_residence(scenario_name, timeline)
     if found is None:
         click.echo(f"Scenario {scenario_name} has no state tax.")
-    elif not current:
-        click.echo(f"Scenario {scenario_name}'s state tax names no state yet.")
-    else:
-        click.echo(f"Scenario {scenario_name} lives in {_state_label(current)}.")
-    for when, moved_to in _state_moves(data_dir_p, scenario_name):
-        click.echo(f"  then moves on {when} to {_state_label(moved_to)}")
     if state is None:
         picked = _ask_state(data_dir_p, scenario_name, "state you live in")
     elif (picked := states.find(state)) is None:
@@ -18931,51 +19000,69 @@ def tax_state_command(
             f"not a state or territory: {state!r}; give its name or two-letter code, "
             "e.g. California or CA")
     series = _state_series(data_dir_p, scenario_name, picked)
-    if series is None:
-        return
-    if series == states.NO_TAX_SERIES and found is None:
-        click.echo(f"{states.label(picked.code)} has no income tax, and this scenario "
-                   "has no state tax: nothing to change.")
+    county = _checked_county(data_dir_p, scenario_name, county)
+    first = timeline[0] if timeline else None
+    needs_tax = found is None and series not in (None, states.NO_TAX_SERIES)
+    if (first is not None and first.row["state"] == picked.code
+            and (first.row.get("county") or "") == county and not needs_tax):
+        click.echo(f"Already {first.label()}: nothing to change.")
         return
 
-    new_account = None
-    if found is not None:
-        if current == series:
-            click.echo(f"Already {_state_label(series)}: nothing to change.")
-            return
-        row = {column: found.row.get(column, "") for column in registries.TAX_CSV_HEADER}
-        row["params_json"] = json.dumps({**tax_files.params(found.row), "bracket_series": series},
-                                        separators=(",", ":"))
-        home = scenario_name if here else _tax_home(found, scenario_name)
-        where = "an override in" if home == scenario_name and found.index is None else "it in"
-        click.echo(f"This sets the state tax to {_state_label(series)}, writing {where} "
-                   f"scenario {home}.")
-    else:
-        home, row, new_account = _new_state_tax(scenario_dir, scenario_name)
-        params = json.loads(row["params_json"] or "{}")
-        row["params_json"] = json.dumps({**params, "bracket_series": series},
-                                        separators=(",", ":"))
+    new_account = tax_row = None
+    tax_home = None
+    if needs_tax:
+        tax_home, tax_row, new_account = _new_state_tax(scenario_dir, scenario_name)
         if here:
-            home = scenario_name
-        click.echo(f"This adds a state tax for {_state_label(series)} to scenario {home} "
-                   f"(taxes/state.csv), paying from {row['source_chain']} when the federal one pays"
+            tax_home = scenario_name
+    if here:
+        home = scenario_name
+    elif first is not None:
+        home = first.scenario
+    elif tax_home is not None:
+        home = tax_home
+    else:
+        home = _tax_home(found, scenario_name) if found is not None else scenario_name
+    when = first.row["effective_date"] if first is not None else _scenario_start(data_dir_p, scenario_name)
+    if not when:
+        raise click.ClickException(f"scenario {scenario_name} has no start; nothing was written")
+    row = {"effective_date": when, "state": picked.code, "county": county,
+           "description": first.row.get("description", "") if first is not None else ""}
+    shown = states.label(picked.code) + (f", county {county}" if county else "")
+    click.echo(f"This sets where the household lives from {when[:7]} to {shown}, writing "
+               f"{registries.RESIDENCE_FILE} in scenario {home}.")
+    if tax_row is not None:
+        click.echo(f"It adds a state tax to scenario {tax_home} (taxes/state.csv), paying from "
+                   f"{tax_row['source_chain']} when the federal one pays"
                    + (f", and expense account {new_account['name']}" if new_account else "")
                    + ".")
-    if series == states.NO_TAX_SERIES:
+    elif found is not None and series in (None, states.NO_TAX_SERIES):
         click.echo("  The state tax stays, paying nothing, so a later move can tax you again; "
                    "`sim tax delete state` removes it instead.")
     if not yes and not click.confirm("write it?", default=True):
         click.echo("aborted")
         return
-    path = _write_tax(data_dir_p, home, "state", row, new_account=new_account,
-                      remember=False, repair=True)
+    # The first row is replaced where it is defined; elsewhere (--here) a row
+    # of the same month overrides it.
+    replacing = first.row["effective_date"] if first is not None and first.scenario == home else None
+    with _scenario_edit(data_dir_p, home, remember=False, repair=True) as edit:
+        path = _stage_residence(edit, data_dir_p, home, row, replacing=replacing)
+        if tax_row is not None and tax_home == home:
+            _stage_tax(edit, data_dir_p, home, "state", tax_row, new_account=new_account)
     click.echo(f"wrote {_shown(path)}")
-    click.echo(f"State tax: {_state_label(series)}.")
+    if tax_row is not None and tax_home != home:
+        tax_path = _write_tax(data_dir_p, str(tax_home), "state", tax_row, new_account=new_account,
+                              remember=False, repair=True)
+        click.echo(f"wrote {_shown(tax_path)}")
+    click.echo(f"Lives in: {shown}.")
 
 
 @tax_group_command.command("move")
 @click.argument("date", required=False, type=completion.CALENDAR_DATE)
 @click.argument("state", required=False, type=completion.STATE)
+@click.option("--county", type=completion.COUNTY, default=None,
+              help="The county moved to, for its local income tax: the <county> of an "
+                   "aux/state_local_tax__<county>.csv. A move within a state names the "
+                   "same state.")
 @click.option("--yes", is_flag=True, help="Don't ask before writing.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
@@ -18983,47 +19070,46 @@ def tax_state_command(
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def tax_move_command(
-    date: str | None, state: str | None, yes: bool, scenario: str | None, data_dir: Path | None,
+    date: str | None, state: str | None, county: str | None, yes: bool, scenario: str | None,
+    data_dir: Path | None,
 ) -> None:
-    """Move to another state on DATE (YYYY-MM): from then on, state tax is
-    the new state's. The tax year of the move is taxed as the new state's
-    for the whole year.
+    """Move to another state (or county) on DATE (YYYY-MM). A tax year is
+    filed where the household lives on December 31, so the year of the move
+    is taxed wholly where it moves to, at the next April's settlement.
 
-    The scenario's state tax has to name the state it starts in first
-    (`sim tax state`). The move is a calendar.csv row in this scenario
-    (swap_aux_table of its state_brackets). Arguments left out are asked for.
+    Where the household starts has to be set first (`sim tax state`). The
+    move is a row of this scenario's residence.csv; a row of the same month
+    is replaced. Arguments left out are asked for.
     """
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    state_tax = _tax_rows(scenario_dir).get("state")
-    start = str(tax_files.params(state_tax.row if state_tax else None).get("bracket_series") or "")
-    if not start:
+    scenario_name = _resolve_scenario(data_dir_p, scenario).name
+    timeline = _residence(data_dir_p, scenario_name)
+    if not timeline:
         raise click.ClickException(
             "choose the state you live in first (sim tax state); nothing was written")
-    click.echo(f"Scenario {scenario_name} starts in {_state_label(start)}.")
-    for when, moved_to in _state_moves(data_dir_p, scenario_name):
-        click.echo(f"  then moves on {when} to {_state_label(moved_to)}")
+    _echo_residence(scenario_name, timeline)
     if date is None:
-        date = _prompt_with_completion("date of the move (YYYY-MM)")
-    date = _validate_calendar_date(date)
+        date = _prompt_with_completion("month of the move (YYYY-MM)")
+    date = _validate_month_date(date)
+    if month_end_iso(date) <= month_end_iso(timeline[0].row["effective_date"]):
+        raise click.ClickException(
+            f"a move must come after {timeline[0].month}, where the residence starts; "
+            "`sim tax state` changes where it starts. Nothing was written.")
     if state is None:
         picked = _ask_state(data_dir_p, scenario_name, "state you move to")
     elif (picked := states.find(state)) is None:
         raise click.ClickException(
             f"not a state or territory: {state!r}; give its name or two-letter code, "
             "e.g. Washington or WA")
-    series = _state_series(data_dir_p, scenario_name, picked)
-    if series is None:
-        series = states.NO_TAX_SERIES  # a territory taxed by the federal rule alone
-    click.echo(f"This moves scenario {scenario_name} to {_state_label(series)} on {date}.")
+    _state_series(data_dir_p, scenario_name, picked)
+    county = _checked_county(data_dir_p, scenario_name, county)
+    shown = states.label(picked.code) + (f", county {county}" if county else "")
+    click.echo(f"This moves scenario {scenario_name} to {shown} on {date[:7]}.")
     if not yes and not click.confirm("write it?", default=True):
         click.echo("aborted")
         return
-    row = {
-        "date": date, "kind": "swap_aux_table", "series": start,
-        "params_json": json.dumps({"aux_kind": "state_brackets", "source_series": series}),
-        "description": f"Move to {states.label(picked.code)}", "tags": "",
-    }
-    path = scenario_dir / "calendar.csv"
-    _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
+    row = {"effective_date": date, "state": picked.code, "county": county,
+           "description": f"Move to {shown}"}
+    with _scenario_edit(data_dir_p, scenario_name, remember=False) as edit:
+        path = _stage_residence(edit, data_dir_p, scenario_name, row)
     click.echo(f"wrote the move to {_shown(path)}")

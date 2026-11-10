@@ -1,8 +1,9 @@
-"""Local income taxes (#487): a ``state_local_tax__<state>.csv`` table of
+"""Local income taxes (#487): a ``state_local_tax__<county>.csv`` table of
 bands on the state's taxable income (a county's flat rate, a city's
 brackets), read by the local jurisdiction (``taxes/local.csv``, kind
 ``local_bands``, #508), which builds on the state's return and is paid with
-the state's tax by default."""
+the state's tax by default. The county is where the household lives
+(``residence.csv``, #509); without one, the state's own table."""
 
 from __future__ import annotations
 
@@ -16,8 +17,8 @@ import pytest
 
 from analysis.sim import registries
 from analysis.sim.connection import RunConnection
-from analysis.sim.engine import EngineError, TaxRule, _prepare_tax, _swap_aux_table
-from analysis.sim.tax_api import Extra, Return
+from analysis.sim.engine import EngineError, TaxRule, _prepare_tax
+from analysis.sim.tax_api import RESIDENCE_KIND, Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.reports import tax_by_year, tax_reconciliation
 from analysis.sim.run_charts import tax_figure
@@ -34,9 +35,14 @@ def _band(floor: int, rate_micros: int, effective: str = "2026-01-31"):
                         "marginal_rate_micros": rate_micros, "floor_series": None})
 
 
+def _lives(*rows: tuple[str, str, str | None]) -> list[tuple[str, dict[str, Any]]]:
+    """Residence rows (#509): (from, state, county)."""
+    return [(effective, {"state": state, "county": county}) for effective, state, county in rows]
+
+
 def _aux(*local: tuple[str, dict[str, Any]], surcharge: bool = False) -> Aux:
-    """A state with a 5% flat bracket and a $10,000 deduction, and a federal
-    one with the same, for an MFJ household."""
+    """A household in California with a 5% flat bracket and a $10,000
+    deduction, and a federal tax with the same, for an MFJ household."""
     flat = [_band(0, 50_000)]
     deduction = [("2026-01-31", {"filing_status": "MFJ", "amount": 10_000_00})]
     aux: Aux = {
@@ -45,6 +51,7 @@ def _aux(*local: tuple[str, dict[str, Any]], surcharge: bool = False) -> Aux:
         ("standard_deduction", None): deduction,
         ("state_brackets", "CA"): flat,
         (registries.STATE_STANDARD_DEDUCTION, "CA"): deduction,
+        (RESIDENCE_KIND, None): _lives(("2026-01-31", "CA", None)),
     }
     if local:
         aux[(registries.STATE_LOCAL_TAX, "CA")] = list(local)
@@ -74,7 +81,7 @@ def _earn(con: sqlite3.Connection, year: int, amount: int) -> None:
 
 JURISDICTIONS = {
     "federal": TaxRule("federal", {"scope": "federal"}, 1),
-    "state": TaxRule("state_tables", {"scope": "state", "bracket_series": "CA"}, 2),
+    "state": TaxRule("state_tables", {"scope": "state"}, 2),
 }
 
 
@@ -115,29 +122,27 @@ def test_a_local_tax_with_brackets_and_a_threshold(ledger: sqlite3.Connection) -
     assert _estimate(ledger, aux, "state").tax == taxable * 5 // 100 + surcharge
 
 
-def test_a_local_files_params_can_name_its_own_bands(ledger: sqlite3.Connection) -> None:
+def test_a_county_names_its_own_bands(ledger: sqlite3.Connection) -> None:
+    """A county where the household lives reads its own table; with none
+    named, the state's."""
     _earn(ledger, 2026, 110_000_00)
     aux = _aux(_band(0, 30_000))
     aux[(registries.STATE_LOCAL_TAX, "CA-city")] = [_band(0, 10_000)]
-    city = _prepare_tax(ledger, {"scope": "local", "bracket_series": "CA-city"}, aux=aux,
-                        tax_year=2026, tid=1, kind="local_bands", jurisdictions=JURISDICTIONS)
-    assert city.compute().tax == 100_000_00 // 100
+    aux[(RESIDENCE_KIND, None)] = _lives(("2026-01-31", "CA", "CA-city"))
+    assert _estimate(ledger, aux).tax == 100_000_00 // 100
 
 
 def test_a_move_takes_the_local_tax_along(ledger: sqlite3.Connection) -> None:
-    """A move to another county swaps the local table alone; a move to
-    another state takes the new state's, or none, keeping the old one for
-    the years before the move."""
+    """A move to another county reads its table; a move to another state
+    its, or none. Each year is taxed where the household lives on its
+    December 31, whenever it is computed."""
     for year in (2026, 2027, 2028):
         _earn(ledger, year, 110_000_00)
     aux = _aux(_band(0, 30_000))
     aux[(registries.STATE_LOCAL_TAX, "other_county")] = [_band(0, 20_000)]
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
-    _swap_aux_table(ledger, 1, "2027-01-31", {
-        "aux_kind": registries.STATE_LOCAL_TAX, "series": "CA",
-        "source_series": "other_county"}, aux)
-    _swap_aux_table(ledger, 2, "2028-01-31", {
-        "aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux)
+    aux[(RESIDENCE_KIND, None)] = _lives(
+        ("2026-01-31", "CA", None), ("2027-12-31", "CA", "other_county"), ("2028-01-31", "WA", None))
     assert [_estimate(ledger, aux, year=year).tax for year in (2026, 2027, 2028)] == [
         3_000_00, 2_000_00, 0]
 
@@ -179,57 +184,47 @@ def _local_rows(rate: str) -> str:
 
 
 def test_a_county_move_needs_no_local_tax_before_it(
-    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
+    write_aux: Callable[[str, str], Path], add_residence: Callable[..., Path],
     load_test_copy: Callable[[], LoadResult], add_state_tax: Callable[..., None],
     add_tax: Callable[..., Path],
 ) -> None:
     """A household moving from a county with no local tax into one with a
-    local tax swaps it in alone; the state had no table before."""
+    local tax names the county; the state has no table of its own. A
+    county with no table is refused."""
     add_state_tax()
     add_tax("local")
     write_aux("state_local_tax__CA-county.csv", _local_rows("3%"))
-    append_calendar_row(date="2028-01", kind="swap_aux_table", series="CA",
-                        params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
-                                                "source_series": "CA-county"}))
+    add_residence("2028-01", "CA", county="CA-county")
     load_test_copy()
-    append_calendar_row(date="2029-01", kind="swap_aux_table", series="CA",
-                        params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
-                                                "source_series": "CA-misspelt"}))
-    with pytest.raises(LoadError, match=r"source_series names state_local_tax__CA-misspelt.csv"):
+    add_residence("2029-01", "CA", county="CA-misspelt")
+    with pytest.raises(LoadError, match=r"county 'CA-misspelt' has no "
+                                        r"aux/state_local_tax__CA-misspelt\.csv"):
         load_test_copy()
 
 
-def test_a_local_series_of_its_own_is_rejected_with_a_move(
-    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
-    load_test_copy: Callable[[], LoadResult], add_state_tax: Callable[..., None],
-    add_tax: Callable[..., Path],
-) -> None:
-    """A local file naming its own bracket_series keeps reading that table
-    whatever a move swaps, so a move would leave the old county's tax."""
-    add_state_tax()
-    add_tax("local", params_json={"bracket_series": "CA-city"})
-    write_aux("state_local_tax__CA-city.csv", _local_rows("3%"))
-    load_test_copy()
-    write_aux("state_brackets__WA.csv", (
-        "effective_date,filing_status,floor,marginal_rate,floor_growth_series\n"
-        + "".join(f"2020-01-31,{s},0.00,0%,\n" for s in ("Single", "MFJ", "MFS"))))
-    append_calendar_row(date="2028-01", kind="swap_aux_table", series="CA",
-                        params_json=json.dumps({"aux_kind": "state_brackets", "source_series": "WA"}))
-    with pytest.raises(LoadError, match=r"this move doesn't reach the local tax.*bracket_series 'CA-city'"):
-        load_test_copy()
-
-
-def test_a_county_move_into_no_state_is_rejected(
-    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
+def test_the_state_and_local_files_take_no_bracket_series(
+    add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
     load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    """Swapped into a series no state's brackets name, the local tax would
-    never be read, so the move would change nothing."""
-    write_aux("state_local_tax__CA-county.csv", _local_rows("3%"))
-    append_calendar_row(date="2028-01", kind="swap_aux_table", series="CAA",
+    """Where the household lives is residence.csv now (#509), so the
+    params that named a state or a county's table are refused, naming the
+    migration."""
+    add_state_tax()
+    add_tax("local", params_json={"bracket_series": "CA-city"})
+    with pytest.raises(LoadError, match=r"local.csv.*takes no 'bracket_series'.*migrate_509"):
+        load_test_copy()
+
+
+def test_a_swap_of_a_state_table_is_refused(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """A move is a residence row now; a swap of a table keyed by the state
+    names the command and the migration."""
+    append_calendar_row(date="2028-01", kind="swap_aux_table", series="CA",
                         params_json=json.dumps({"aux_kind": registries.STATE_LOCAL_TAX,
                                                 "source_series": "CA-county"}))
-    with pytest.raises(LoadError, match=r"series CAA names no state with brackets.*check the series' spelling"):
+    with pytest.raises(LoadError, match=r"swap_aux_table of state_local_tax: where the household "
+                                        r"lives is residence.csv now.*`sim tax move`"):
         load_test_copy()
 
 
@@ -239,7 +234,7 @@ def test_tax_report_shows_local_tax_apart_from_the_states(
 ) -> None:
     """``sim report tax`` adds local_tax after state_tax only when some year
     has one, and total_tax counts it once."""
-    add_state_tax(bracket_series="CA")
+    add_state_tax("CA")
     first = run_test_copy()
     with RunConnection(first) as rc:
         without = tax_by_year(rc)

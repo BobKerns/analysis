@@ -40,6 +40,8 @@ TABLES: dict[tuple[str, str | None], list[dict[str, Any]]] = {
     ("state_brackets", "CA"): [
         {"filing_status": "MFJ", "floor": 0, "marginal_rate_micros": MICROS // 20},
     ],
+    # The household lives in California (#509).
+    ("residence", None): [{"state": "CA", "county": None}],
 }
 
 
@@ -112,8 +114,7 @@ def test_a_carried_in_operating_loss_comes_off_taxable_income() -> None:
 
 
 def test_the_state_calculator_reads_the_states_brackets() -> None:
-    year = _year([_item("ordinary", 100_000_00)], jurisdiction="state",
-                 params={"bracket_series": "CA"})
+    year = _year([_item("ordinary", 100_000_00)], jurisdiction="state")
     ret = calculator("state_tables").prepare(year).compute()
     # No state_standard_deduction__CA: the federal one stands in.
     assert ret.taxable_income == 70_000_00

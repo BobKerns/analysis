@@ -15,13 +15,13 @@ PARTIAL = "Partial"  # the tables work, but some of its rules aren't modeled
 FEDERAL_RULE = "Federal rule"  # a territory whose tax mirrors the federal one
 NOT_SUPPORTED = "Not supported"  # a tax code of its own the model can't express
 
-# The bracket_series a state tax reads after a move to a state with no
-# income tax: templates/aux/ ships it as a 0% table.
+# The series a state tax reads while the household lives in a state with
+# no income tax: templates/aux/ ships it as a 0% table.
 NO_TAX_SERIES = "none"
 
 
 class State(NamedTuple):
-    code: str  # the postal code: what bracket_series and the aux file names use
+    code: str  # the postal code: what residence.csv and the aux file names use
     name: str
     status: str
 
@@ -111,3 +111,14 @@ def label(code: str) -> str:
     """``California (CA)``, or the code alone for one not in the list."""
     state = BY_CODE.get(code)
     return f"{state.name} ({code})" if state else code
+
+
+def tax_series(code: str, *, has_tables: bool = False) -> str:
+    """The series of the tables a state tax reads for a household living in
+    ``code`` (#509): its own when it has them (``has_tables``) or taxes
+    income, else the 0% ``none`` tables, as for a state with no income tax
+    or a territory the federal tax stands in for."""
+    state = BY_CODE.get(code)
+    if has_tables or state is None or (state.taxes_income and state.status != FEDERAL_RULE):
+        return code
+    return NO_TAX_SERIES

@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import (
-    asset_classes, guard_rails, life_table, load_warnings, registries, strategy_api, strategy_code,
-    strategy_files, strategy_load, tax_files, units,
+    asset_classes, guard_rails, life_table, load_warnings, registries, states, strategy_api,
+    strategy_code, strategy_files, strategy_load, tax_files, units,
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
@@ -1307,6 +1307,10 @@ def load_scenario(
         data_dir, scenarios_dir, scenario_name, "targets.csv",
         ("target_set", "as_of", "asset_class"), issues,
     )
+    residence_rows = _read_lineage_overlay(
+        data_dir, scenarios_dir, scenario_name, registries.RESIDENCE_FILE,
+        ("effective_date",), issues,
+    )
     strategy_sources = strategy_code.read_sources(data_dir)
 
 
@@ -1336,7 +1340,8 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues)
-    _validate_local_tax(tax_rows, aux_rows, calendar_rows, issues)
+    _validate_local_tax(tax_rows, aux_rows, issues)
+    _validate_residence(residence_rows, tax_rows, aux_rows, issues)
     _validate_calendar(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -1359,8 +1364,7 @@ def load_scenario(
         scheduled_rows, calendar_rows, aux_rows, scenario_row, issues,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
-    _validate_state_rule_names_state(tax_rows, aux_rows, issues)
-    _warn_state_standard_deduction(tax_rows, calendar_rows, aux_rows, warnings)
+    _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_chains(
@@ -1387,6 +1391,7 @@ def load_scenario(
             in leaves.leaf_of
         ),
         bracket_rates=_bracket_rates(aux_rows),
+        residence_rows=residence_rows,
         irmaa_tiers=frozenset(
             payload["tier"] for kind, table, payload, _effective in aux_rows
             if kind == registries.IRMAA_TIERS and table is None
@@ -1474,6 +1479,7 @@ def load_scenario(
             calendar_rows=calendar_rows,
             lifespan_rows=lifespan_rows,
             ytd_rows=ytd_rows,
+            residence_rows=residence_rows,
             money_resolver=money_resolver,
         )
         counts.update(strategy_load.write_strategies(
@@ -1604,6 +1610,7 @@ _MONTH_COLUMNS: dict[str, tuple[str, ...]] = {
     "strategies": ("start", "end"),
     "taxes": ("start", "end"),
     "targets.csv": ("as_of",),
+    registries.RESIDENCE_FILE: ("effective_date",),
 }
 """Per-file columns that name a month (#34): ``YYYY-MM`` or ``YYYY-MM-DD``,
 stored as that month's last day. Day-precise columns (``birthdate``, a lot's
@@ -3336,21 +3343,22 @@ def _bracket_rates(
     return rates
 
 
-def _tax_rule_bracket_table(
-    params: Mapping[str, Any], scope: str, rates: Mapping[tuple[str, str | None], set[int]],
-) -> tuple[str, str | None] | None:
-    """The (aux kind, series) a tax rule reads its brackets from, as
-    the ``state_tables`` and ``federal`` calculators pick it, or None when that is decided only
-    at run time (a state rule with several bracket series and none named)."""
-    kind = str(params.get("bracket_aux") or (
-        "federal_brackets" if scope == "federal" else "state_brackets"))
-    series = params.get("bracket_series")
-    if series is None and kind == "state_brackets":
-        named = [s for k, s in rates if k == kind and s is not None]
-        if len(named) != 1:
-            return None
-        series = named[0]
-    return kind, series
+def _tax_rule_bracket_tables(
+    params: Mapping[str, Any], scope: str, states_lived: Sequence[str],
+    rates: Mapping[tuple[str, str | None], set[int]],
+) -> list[tuple[str, tuple[str, str | None]]]:
+    """The (aux kind, series) tables a tax jurisdiction reads its brackets
+    from, as the ``federal`` and ``state_tables`` calculators pick them,
+    each after where it applies: a state's, one for each state the household
+    files in (#509)."""
+    if scope == "federal":
+        series = params.get("bracket_series")
+        return [("", (str(params.get("bracket_aux") or "federal_brackets"),
+                      None if series is None else str(series)))]
+    kind = str(params.get("bracket_aux") or "state_brackets")
+    return [(f" in {states.label(state)}",
+             (kind, states.tax_series(state, has_tables=("state_brackets", state) in rates)))
+            for state in states_lived]
 
 
 def _validate_fill_bracket(
@@ -3358,6 +3366,7 @@ def _validate_fill_bracket(
     tax_rows: list[dict[str, str]], issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
+    residence_rows: Sequence[Mapping[str, str]] = (),
     irmaa_tiers: frozenset[int] = frozenset(),
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
@@ -3465,14 +3474,20 @@ def _validate_fill_bracket(
                 f"and there is none (taxes/{scope}.csv)"
             )
             continue
-        table = _tax_rule_bracket_table(tax_rules[scope], scope, bracket_rates)
-        rates = bracket_rates.get(table) if table else None
         rate = row.get("rate_micros")
-        if rate and rates and int(rate) not in rates:
-            issues.append(
-                f"{where}: no {scope} bracket is taxed at {units.micros_to_percent(int(rate))} "
-                f"(rates: {', '.join(units.micros_to_percent(r) for r in sorted(rates))})"
-            )
+        if not rate:
+            continue
+        # A state's rate must be one of each state's the rule converts in
+        # (#509): a move to another state would leave nothing to fill.
+        lived = _residence_states(residence_rows, row.get("start") or "0000", row.get("end") or "")
+        for in_state, table in _tax_rule_bracket_tables(tax_rules[scope], scope, lived, bracket_rates):
+            rates = bracket_rates.get(table)
+            if rates and int(rate) not in rates:
+                issues.append(
+                    f"{where}: no {scope} bracket{in_state} is taxed at "
+                    f"{units.micros_to_percent(int(rate))} "
+                    f"(rates: {', '.join(units.micros_to_percent(r) for r in sorted(rates))})"
+                )
 
 
 def _validate_business(
@@ -3786,6 +3801,9 @@ def _validate_swap_aux_table_row(
         return  # malformed JSON is reported by _validate_calendar
     aux_kind = params.get("aux_kind")
     source = params.get("source_series")
+    if aux_kind in registries.STATE_KEYED_AUX_KINDS:
+        issues.append(f"{where}: swap_aux_table of {aux_kind}: {RESIDENCE_RETIRED}")
+        return
     if aux_kind not in registries.SWAPPABLE_AUX_KINDS:
         issues.append(
             f"{where}: swap_aux_table needs params_json aux_kind, one of "
@@ -3807,71 +3825,108 @@ def _validate_swap_aux_table_row(
             issues.append(f"{where}: swap_aux_table takes no {col}; leave it blank")
 
 
-def _validate_state_rule_names_state(
+RESIDENCE_RETIRED = (
+    "where the household lives is residence.csv now (#509): set it with `sim tax state` "
+    "and `sim tax move`, or convert a data repo with scripts/migrate_509.py"
+)
+
+
+def _validate_residence(
+    residence_rows: list[dict[str, str]],
     tax_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     issues: list[str],
 ) -> None:
-    """A state tax reads the brackets its ``bracket_series`` names. The
-    code repository ships several states' tables (#483), so with more than
-    one to choose from a rule that names none would fail only when it first
-    runs; say so at load instead."""
-    states = sorted({series for kind, series, *_ in aux_rows
-                     if kind == "state_brackets" and series is not None})
-    if len(states) < 2:
-        return
+    """``residence.csv`` (#509, ADR-003 §4.16): each row a month and a known
+    state, and with a state tax, a row to say where the household files and
+    each state's tables (or a state with no income tax, which reads the 0%
+    ``none`` ones). A county names its ``state_local_tax`` table. The state
+    and local files' retired ``bracket_series`` is refused."""
+    supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    for where, row in _located(residence_rows, registries.RESIDENCE_FILE):
+        unknown = sorted(set(row) - set(registries.RESIDENCE_CSV_HEADER) - {ORIGIN})
+        if unknown:
+            issues.append(f"{where}: unknown column(s) {', '.join(unknown)} "
+                          f"(known: {', '.join(registries.RESIDENCE_CSV_HEADER)})")
+        if not row.get("effective_date"):
+            issues.append(f"{where}: effective_date is required: the month the household "
+                          "lives here from")
+        state = (row.get("state") or "").strip()
+        row["state"] = state
+        if state not in states.BY_CODE:
+            issues.append(f"{where}: state {state!r} is not a state's or territory's postal code "
+                          "(CA, WA, ...)")
+    has_state = any(row["name"] == "state" for row in tax_rows)
     for where, row in _located(tax_rows, registries.TAXES_DIR):
-        params = tax_files.params(row)
-        if (row["name"] != "state" or params.get("bracket_series")
-                or params.get("bracket_aux", "state_brackets") != "state_brackets"):
-            continue
+        if row["name"] in ("state", "local") and "bracket_series" in tax_files.params(row):
+            issues.append(f"{where}: params_json takes no 'bracket_series': {RESIDENCE_RETIRED}")
+    if not has_state:
+        return
+    if not residence_rows:
         issues.append(
-            f"{where}: a state tax must name its state: "
-            "run `sim tax state` to choose it (it sets \"bracket_series\" in the file's "
-            f"params_json, one of {', '.join(states)})"
-        )
+            f"{registries.TAXES_DIR}/state.csv: the scenario doesn't say where the household "
+            f"lives; set it with `sim tax state` ({registries.RESIDENCE_FILE})")
+        return
+    for where, row in _located(residence_rows, registries.RESIDENCE_FILE):
+        state = row["state"]
+        if state not in states.BY_CODE:
+            continue
+        series = states.tax_series(state, has_tables=("state_brackets", state) in supplied)
+        if ("state_brackets", series) not in supplied:
+            issues.append(
+                f"{where}: no aux/state_brackets__{series}.csv for {states.label(state)}'s "
+                "income tax; the simulator doesn't ship its tables yet, so add them")
+        county = (row.get("county") or "").strip()
+        if county and (registries.STATE_LOCAL_TAX, county) not in supplied:
+            issues.append(
+                f"{where}: county {county!r} has no aux/{registries.STATE_LOCAL_TAX}__{county}.csv; "
+                "add its local tax (one 0% band per filing status for a county without one), "
+                "or leave county blank")
+
+
+def _residence_states(
+    residence_rows: Sequence[Mapping[str, str]], start: str, end: str,
+) -> list[str]:
+    """The states a tax year from ``start`` to ``end`` (month ends; a blank
+    end, the run's) may be filed in: those of the rows in force on some
+    December 31 between them, the first row's covering the years before it."""
+    rows = sorted((r["effective_date"], r["state"]) for r in residence_rows
+                  if r.get("effective_date") and r.get("state"))
+    first, last = int(start[:4]), int(end[:4]) if end else None
+    found: list[str] = []
+    for i, (effective, state) in enumerate(rows):
+        # In force on December 31 of each year from its own (the first row's
+        # from any year before) to the year before the next row's.
+        since = int(effective[:4]) if i else first
+        until = int(rows[i + 1][0][:4]) - 1 if i + 1 < len(rows) else None
+        if (since <= (until if until is not None else since) and (until is None or until >= first)
+                and (last is None or since <= last) and state not in found):
+            found.append(state)
+    return found
 
 
 def _warn_state_standard_deduction(
     tax_rows: list[dict[str, str]],
-    calendar_rows: list[dict[str, str]],
+    residence_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     warnings: list[str],
 ) -> None:
-    """A state tax with no state_standard_deduction__<state> table for
-    its brackets' state uses the federal standard deduction (#248), which
-    overstates most states' (California's is about a third of it), so its
-    tax comes out low. A move to a state (a swap_aux_table of its
-    state_brackets) with no such table falls back the same way; without a
-    state tax, nothing reads either table, so a move says nothing."""
+    """A state tax with no state_standard_deduction__<state> table for a
+    state the household lives in (#509) uses the federal standard deduction
+    there (#248), which overstates most states' (California's is about a
+    third of it), so its tax comes out low."""
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
-    state_rule = False
-    states = sorted(series for kind, series in supplied
-                    if kind == "state_brackets" and series is not None)
     for where, row in _located(tax_rows, registries.TAXES_DIR):
-        params = tax_files.params(row)
-        if row["name"] != "state":
+        if row["name"] != "state" or "standard_deduction_aux" in tax_files.params(row):
             continue
-        state_rule = True
-        if "standard_deduction_aux" in params:
-            continue
-        state = params.get("bracket_series") or (states[0] if len(states) == 1 else None)
-        if state is None or (registries.STATE_STANDARD_DEDUCTION, state) in supplied:
-            continue  # no state to name: the run reports the missing bracket_series
-        warnings.append(
-            f"{where}: state tax uses the federal standard "
-            f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv "
-            "(effective_date, filing_status, amount) with the state's own"
-        )
-    for where, row in _located(calendar_rows, "calendar.csv") if state_rule else ():
-        params = _safe_json(row.get("params_json")) or {}
-        state = params.get("source_series")
-        if (row.get("kind") == "swap_aux_table" and params.get("aux_kind") == "state_brackets"
-                and isinstance(state, str)
-                and (registries.STATE_STANDARD_DEDUCTION, state) not in supplied):
+        for state in dict.fromkeys(r["state"] for r in residence_rows if r.get("state") in states.BY_CODE):
+            series = states.tax_series(state, has_tables=("state_brackets", state) in supplied)
+            if (registries.STATE_STANDARD_DEDUCTION, series) in supplied:
+                continue
             warnings.append(
-                f"{where}: after the move to {state}, state tax uses the federal standard "
-                f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv"
+                f"{where}: state tax uses the federal standard deduction in "
+                f"{states.label(state)}; add aux/{registries.STATE_STANDARD_DEDUCTION}__{series}.csv "
+                "(effective_date, filing_status, amount) with the state's own"
             )
 
 
@@ -3970,12 +4025,8 @@ def _validate_swap_aux_tables(
 ) -> None:
     """A swap_aux_table row names two tables that must both be loaded: the one
     it replaces and the one replacing it, so a misspelt series fails here
-    rather than when the run reaches the row. An optional state table
-    (#490, #487) needn't exist where it is swapped in: a household moving
-    from a county with no local tax has none. It must still be swapped into
-    a state the brackets name, or the move would change no tax."""
+    rather than when the run reaches the row."""
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
-    states = {series for kind, series in supplied if kind == "state_brackets" and series}
     for where, row in _located(calendar_rows, "calendar.csv"):
         if row.get("kind") != "swap_aux_table":
             continue
@@ -3984,14 +4035,6 @@ def _validate_swap_aux_tables(
         if aux_kind not in registries.SWAPPABLE_AUX_KINDS or not isinstance(source, str):
             continue  # reported by _validate_swap_aux_table_row
         for label, series in (("series", row.get("series") or None), ("source_series", source)):
-            if label == "series" and aux_kind in registries.OPTIONAL_STATE_AUX_KINDS:
-                if series not in states and (aux_kind, series) not in supplied:
-                    issues.append(
-                        f"{where}: swap_aux_table series {series or '(blank)'} names no "
-                        f"state with brackets ({', '.join(sorted(states)) or 'none'}), so "
-                        f"swapping {aux_kind} into it would change no tax (check the "
-                        f"series' spelling, or add aux/state_brackets__<series>.csv for a new state)")
-                continue
             if (aux_kind, series) not in supplied:
                 file = f"{aux_kind}__{series}.csv" if series else f"{aux_kind}.csv"
                 issues.append(
@@ -5165,28 +5208,12 @@ def _validate_taxes(
 def _validate_local_tax(
     tax_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
-    calendar_rows: list[dict[str, str]], issues: list[str],
+    issues: list[str],
 ) -> None:
     """A ``state_local_tax__<XX>`` table is read by the local jurisdiction
     alone (#508), so a scenario with one and no ``taxes/local.csv`` would
-    silently stop paying it. A local file whose params name a
-    ``bracket_series`` of its own keeps reading that table whatever a move
-    swaps, so it can't be used with one: it would charge the old county's
-    tax after the household moved."""
-    local = next((row for row in tax_rows if row["name"] == "local"), None)
-    if local is not None:
-        own = (_safe_json(local.get("params_json")) or {}).get("bracket_series")
-        if own:
-            for where, row in _located(calendar_rows, "calendar.csv"):
-                params = _safe_json(row.get("params_json")) or {}
-                if (row.get("kind") == "swap_aux_table"
-                        and params.get("aux_kind") in ("state_brackets", registries.STATE_LOCAL_TAX)
-                        and (row.get("series") or None) != own):
-                    issues.append(
-                        f"{where}: this move doesn't reach the local tax, whose "
-                        f"{registries.TAXES_DIR}/local.csv names its own bracket_series {own!r}; "
-                        "leave its bracket_series blank to follow the state's tables, which a "
-                        "move swaps")
+    silently stop paying it."""
+    if any(row["name"] == "local" for row in tax_rows):
         return
     tables = sorted({series for kind, series, _p, _e in aux_rows
                      if kind == registries.STATE_LOCAL_TAX and series})
@@ -5960,6 +5987,7 @@ def _write_intent(
     ytd_rows: list[dict[str, str]],
     money_resolver: _MoneyReferenceResolver,
     tax_rows: Sequence[dict[str, str]] = (),
+    residence_rows: Sequence[dict[str, str]] = (),
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     now = _now_iso()
@@ -6280,6 +6308,14 @@ def _write_intent(
             ),
         )
     counts["person_lifespan"] = len(lifespan_rows)
+
+    for row in residence_rows:
+        con.execute(
+            "INSERT INTO residence(effective_date, state, county, description) VALUES (?,?,?,?)",
+            (row["effective_date"], row["state"], (row.get("county") or "").strip() or None,
+             row.get("description") or ""),
+        )
+    counts["residence"] = len(residence_rows)
 
     for y in ytd_rows:
         con.execute(

@@ -70,6 +70,12 @@ the federal one, a local one on the state's (#508)."""
 TAX_PAID_WITH: dict[str, str] = {"local": "state"}
 """A jurisdiction paid with another's (#508): a blank ``source_chain`` or
 ``destination`` in its file takes that one's."""
+RESIDENCE_FILE = "residence.csv"
+RESIDENCE_CSV_HEADER: tuple[str, ...] = ("effective_date", "state", "county", "description")
+"""Where the household lives (#509, ADR-003 §4.16): from each row's month
+on, a state (a postal code) and optionally a county, the series of its
+``state_local_tax`` table. A tax year is filed where the household lives on
+December 31. Rows merge by date over the lineage."""
 TAX_SCHEDULES: tuple[str, ...] = ("april",)
 """``april``: each April, the tax still due for the year before."""
 MONTH_PHASES: tuple[str, ...] = ("rules", "tax_settlement", "fill_bracket")
@@ -494,21 +500,19 @@ STATE_SOCIAL_SECURITY = "state_social_security"
 """The aux kind of how a state taxes Social Security (#484). Without one a
 state taxes none of it."""
 
-STATE_COMPANION_KINDS: tuple[str, ...] = (
-    STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS, STATE_LTCG_EXCLUSION,
-    STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA, STATE_RETIREMENT_EXCLUSION,
-    STATE_LOCAL_TAX,
-)
-"""The aux kinds keyed by state like ``state_brackets``, whose series is the
-brackets' series, so a move to another state swaps them along (#248, #484,
-#485, #486, #487, #490)."""
+STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
+    "state_brackets", STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
+    STATE_LTCG_EXCLUSION, STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA,
+    STATE_RETIREMENT_EXCLUSION, STATE_LOCAL_TAX,
+})
+"""The aux kinds keyed by state (or, for ``state_local_tax``, by county):
+a tax year reads the series where the household lives that year
+(``residence.csv``, #509), so none of them is swapped by a move."""
 
 OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset(
     {STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX})
-"""The state tables a state may lack, or may start only after a move (#490,
-#487): then it has no surcharge or local tax, and its HSA follows the
-federal rules. A move keeps the old state's rows for the years before it,
-and the table it swaps into needn't exist yet."""
+"""The state tables a state may lack (#490, #487): then it has no surcharge
+or local tax, and its HSA follows the federal rules."""
 
 STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX})
 """The state tables of bands whose rates add to the brackets' (#490, #487):
@@ -665,9 +669,10 @@ RETIRED_AUX_KINDS: dict[str, str] = {
 
 # The aux kinds a swap_aux_table event may replace (ADR-003 §3.5). Security
 # prices are read only at load, to value lots at the scenario start, so a
-# swap of one during the run would change nothing.
+# swap of one during the run would change nothing. A state's tables follow
+# where the household lives (residence.csv, #509), not a swap.
 SWAPPABLE_AUX_KINDS: frozenset[str] = (
-    frozenset(AUX_KIND_COLUMNS) - {"security_price", "life_table"}
+    frozenset(AUX_KIND_COLUMNS) - {"security_price", "life_table"} - STATE_KEYED_AUX_KINDS
 )
 
 # Columns authored in a natural unit but stored as integer micros, by kind:

@@ -144,7 +144,7 @@ CA_SS: dict[tuple[str, str | None], list[dict[str, Any]]] = {
 
 
 def _state_tables(items: Sequence[Any], tables: Mapping[tuple[str, str | None], list[dict[str, Any]]]):
-    year = _year(items, jurisdiction="state", params={"bracket_series": "CA"}, tables=tables)
+    year = _year(items, jurisdiction="state", tables=tables)
     federal = calculator("federal").prepare(_year(items, tables=tables)).compute()
     return calculator("state_tables").prepare(year).compute(), federal
 

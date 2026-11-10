@@ -3027,7 +3027,6 @@ class _Remembered(tax_api.Prepared):
         self.filing_status = inner.filing_status
         self.brackets = inner.brackets
         self.ltcg_brackets = inner.ltcg_brackets
-        self.bracket_series = inner.bracket_series
 
     def __getattr__(self, name: str) -> Any:
         # Anything else a calculator's year carries, for code that reads it.
@@ -3186,14 +3185,15 @@ def _settle_tax(
     jurisdiction into the same account (a local tax with the state's, #508),
     so only its own settlements count as paid toward it.
 
-    Supported params (the built-in calculators'; a local tax reads only
-    bracket_series, which defaults to the state's):
+    Supported params (the built-in calculators'; a local tax reads none: its
+    bands are the county's, or the state's, where the household lives that
+    year, #509). A state's tables are those of the state it lives in:
     - scope: the jurisdiction, "federal", "state" or "local" (its file's name)
     - filing_status_aux: defaults to "filing_status"
     - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
-    - bracket_series: optional, required when state_brackets has multiple series
+    - bracket_series: federal only, the series of its brackets, if any
     - standard_deduction_aux: defaults to "standard_deduction" (federal) or
-      "state_standard_deduction" (state), whose series is bracket_series's
+      "state_standard_deduction" (state), keyed by the state
       (state_standard_deduction__CA.csv); with no such file the state falls
       back to "standard_deduction"
     - itemized_deduction_aux: defaults to "federal_deductions" (federal) or
@@ -3205,12 +3205,12 @@ def _settle_tax(
       "state_social_security" table (#484), which starts from the federally
       taxable amount. Without that table a state taxes no Social Security.
     - ltcg_bracket_aux: defaults to "ltcg_brackets" (federal) or
-      "state_ltcg_brackets" (state, with bracket_series's series); without
+      "state_ltcg_brackets" (state, keyed by the state); without
       such a table long-term gain is taxed as ordinary income
     - stcg_bracket_aux, ltcg_exclusion_aux (#485): a state's own short-term
       gain rates and long-term gain exclusion, defaulting to
-      "state_stcg_brackets" and "state_ltcg_exclusion" with bracket_series's
-      series (state only)
+      "state_stcg_brackets" and "state_ltcg_exclusion", keyed by the state
+      (state only)
     - nol_limit_percent: how much of a year's taxable income a carried net
       operating loss may offset (#231); defaults to 80 (federal, IRC §172) or
       100 (state; California, for one, has no 80% limit)
@@ -3972,6 +3972,14 @@ def _load_aux(con) -> dict[tuple[str, str | None], list[tuple[str, dict[str, Any
         out.setdefault((kind, series), []).append(
             (effective, json.loads(payload_json or "{}"))
         )
+    # Where the household lives (#509) rides with the tables, so a tax year
+    # reads it as of its year's end the way it reads them.
+    for effective, state, county in con.execute(
+        "SELECT effective_date, state, county FROM residence"
+    ):
+        out.setdefault((tax_api.RESIDENCE_KIND, None), []).append(
+            (effective, {"state": state, "county": county})
+        )
     for v in out.values():
         v.sort(key=lambda row: row[0])
     return out
@@ -4391,12 +4399,11 @@ _LOOKED_BACK_AUX_KINDS = frozenset({"inflation"})
 def _swap_aux_table(
     con, ev_id: int, ev_date: str, payload: dict[str, Any],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    *, require_in_force: bool = True,
 ) -> None:
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
-    ``source_series``) would. Swapping ``state_brackets`` swaps the state's
-    other tables (``registries.STATE_COMPANION_KINDS``) with it.
+    ``source_series``) would. A state's tables aren't swapped: a tax year
+    reads where the household lives (``residence.csv``, #509).
 
     Lookups only move forward, so the target simply becomes a copy of the
     source -- which keeps each lookup style exact: the latest row, the
@@ -4414,17 +4421,13 @@ def _swap_aux_table(
             f"swap_aux_table event id={ev_id}: requires params_json aux_kind "
             "and source_series"
         )
-    if aux_kind in registries.OPTIONAL_STATE_AUX_KINDS:
-        # Swapped alone too, the earlier years keep their rows (#490).
-        _move_optional_state_table(con, ev_id, ev_date, aux_kind, series, str(source_series), aux)
-        return
     source = aux.get((aux_kind, source_series))
     if not source:
         raise EngineError(
             f"swap_aux_table event id={ev_id}: no aux rows for "
             f"kind={aux_kind!r} series={source_series!r}"
         )
-    if require_in_force and source[0][0] > ev_date:
+    if source[0][0] > ev_date:
         raise EngineError(
             f"swap_aux_table event id={ev_id}: series {source_series!r} has no "
             f"{aux_kind} row effective on or before {ev_date}, so there is "
@@ -4455,69 +4458,6 @@ def _swap_aux_table(
         ],
     )
     aux[(aux_kind, series)] = kept + written
-    if aux_kind == "state_brackets":
-        # A move to another state takes its other tables too: its standard
-        # deduction (#248), gain rules (#485), Social Security table (#484),
-        # retirement income exclusions (#486), surcharge and HSA treatment
-        # (#490) and local income tax (#487). Where the new state has none,
-        # the old state's go: the deduction falls back to the federal one,
-        # gains are ordinary income, Social Security is untaxed, nothing is
-        # excluded, there's no surcharge or local tax, and the HSA follows
-        # the federal rules.
-        for companion in registries.STATE_COMPANION_KINDS:
-            if companion in registries.OPTIONAL_STATE_AUX_KINDS:
-                _move_optional_state_table(con, ev_id, ev_date, companion, series,
-                                           str(source_series), aux)
-            elif aux.get((companion, source_series)):
-                # A gain rule or exclusion that starts later applies from its
-                # own date; until then the state has none.
-                _swap_aux_table(
-                    con, ev_id, ev_date, {**payload, "aux_kind": companion}, aux,
-                    require_in_force=companion == registries.STATE_STANDARD_DEDUCTION)
-            elif aux.pop((companion, series), None):
-                con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
-                            (companion, series))
-
-
-def _move_optional_state_table(
-    con, ev_id: int, ev_date: str, kind: str, series: str | None, source_series: str,
-    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-) -> None:
-    """A move's ``kind`` table: the old state's rows before ``ev_date`` stay,
-    since the years before the move are still computed (an April return, a
-    loss carried in from an HSA year); from ``ev_date``, the new state's row
-    then in force, or a neutral one where it has none yet, then its later
-    rows."""
-    kept = [row for row in aux.get((kind, series), []) if row[0] < ev_date]
-    source = aux.get((kind, source_series), [])
-    latest = max((effective for effective, _ in source if effective <= ev_date), default=None)
-    # The row keeps the date it was indexed from (#467), not the move's.
-    in_force = [(ev_date, {**row, "index_from": row.get("index_from") or effective})
-                for effective, row in source if effective == latest]
-    if not in_force and kept:
-        if kind == registries.STATE_HSA:
-            in_force = [(ev_date, {"treatment": "federal"})]
-        else:
-            # No surcharge or local tax: a 0% band for each filing status
-            # the old one had.
-            statuses = sorted({str(row[1].get("filing_status")) for row in kept})
-            in_force = [(ev_date, {"filing_status": status, "bracket_index": 0, "floor": 0,
-                                   "marginal_rate_micros": 0, "floor_series": None})
-                        for status in statuses]
-    written = in_force + [row for row in source if row[0] > ev_date]
-    con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ? AND effective_date >= ?",
-                (kind, series, ev_date))
-    con.executemany(
-        "INSERT INTO aux_table(kind, series, effective_date, payload_json, description) "
-        "VALUES (?, ?, ?, ?, ?)",
-        [(kind, series, effective, json.dumps(row_payload),
-          f"swap_aux_table event id={ev_id} from series {source_series!r}")
-         for effective, row_payload in written],
-    )
-    if kept or written:
-        aux[(kind, series)] = kept + written
-    else:
-        aux.pop((kind, series), None)
 
 
 def _inflation_changed(refill_ctx: RefillContext) -> None:
