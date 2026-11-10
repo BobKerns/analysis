@@ -42,7 +42,7 @@ A draw is decided from the month's state at the moment it is asked (Bob, 2026-10
 
 ### 3. The API (`analysis.sim.strategy_api`)
 
-This module is the only part of the simulator a strategy imports. Engine internals change behind it; `API_VERSION` (now 8: 2 added the spending hooks and context, 3 the year-end hook, its moves and `ctx.tax`, 4 `on_breach`, `month_start`, `ctx.history` and `ctx.rail`, 5 the life and RMD tables and more of `ScenarioView`, 6 `trailing_return`, 7 `ScenarioView.taxes` in place of `tax_rules`, 8 the renamed `ctx.tax.last_year` lines) changes only when a strategy written for the previous version could break. A module may set `API_VERSION` to the version it was written for, and one newer than the code is refused at load.
+This module is the only part of the simulator a strategy imports. Engine internals change behind it; `API_VERSION` (now 9: 2 added the spending hooks and context, 3 the year-end hook, its moves and `ctx.tax`, 4 `on_breach`, `month_start`, `ctx.history` and `ctx.rail`, 5 the life and RMD tables and more of `ScenarioView`, 6 `trailing_return`, 7 `ScenarioView.taxes` in place of `tax_rules`, 8 the renamed `ctx.tax.last_year` lines, 9 the local tax as its own scope) changes only when a strategy written for the previous version could break. A module may set `API_VERSION` to the version it was written for, and one newer than the code is refused at load.
 
 **Parameters.** `Params` fields are typed with units that follow the CSV rules: `Percent` (written `"5%"`, received as millionths), `Dollars` (`"1200.00"`, received as cents), `Tag` (an account tag `role:name` some account carries), `TargetSet` (a set in `targets.csv`), `Account` (an account the scenario defines); any other field is a plain JSON value. A field may be optional (`Dollars | None = None`), taking `null` for none. The loader converts and checks them against `Params`, so a strategy never parses a string, and a bad value is a load error naming the row.
 
@@ -122,7 +122,7 @@ A strategy must be a pure function of its context, parameters and memory: no clo
 | `irmaa_floors()` | This year's IRMAA tier floors for the filing status, empty without `irmaa_tiers` |
 | `last_year` | Last year's `tax_year_summary`, or None before it is settled: each jurisdiction's return lines as `<scope>_<line>` (ADR-003 §2.6), such as `federal_agi`, `federal_tax` and `state_ordinary_taxable` |
 
-A scope reads its tax jurisdiction (`taxes/<scope>.csv`, ADR-003 §4.15); asking a scenario without it is a `StrategyError`, which fails the run. Extra long-term gain doesn't net against a capital-loss carryover, so in a year with one, `estimate` overstates what a harvest costs.
+A scope (`federal`, `state` or `local`) reads its tax jurisdiction (`taxes/<scope>.csv`, ADR-003 §4.15), that jurisdiction's tax alone: the state's leaves out the local tax built on it, which is `scope="local"` (unlike `fill_bracket`'s state `max_marginal_rate`, which counts both). Asking a scenario without the jurisdiction is a `StrategyError`, which fails the run. Extra long-term gain doesn't net against a capital-loss carryover, so in a year with one, `estimate` overstates what a harvest costs.
 
 #### 3.3 Triggers on guard rails
 
@@ -345,3 +345,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#507](https://github.com/BobKerns/analysis/issues/507): `ctx.tax` reads the tax jurisdiction files (`taxes/<scope>.csv`) in place of `tax_accumulator` rules, and `ScenarioView.taxes` (the set of jurisdictions) replaces `tax_rules` (API version 7) (§3.2, §4).
 - [#507](https://github.com/BobKerns/analysis/issues/507): `API_VERSION` 8: `ctx.tax.last_year` carries the tax calculators' line names (`federal_agi`, `federal_tax`, ...) and `<scope>_ordinary_taxable` (§3).
 - [#410](https://github.com/BobKerns/analysis/issues/410): disabled strategies are stored (`strategy_disabled`) so drift views of a strategy-off run default to its targets and portfolio (§4 Stored).
+- [#508](https://github.com/BobKerns/analysis/issues/508): `API_VERSION` 9: the local tax is its own jurisdiction, so `ctx.tax` takes `scope="local"`, the state's estimate leaves it out, and `last_year`'s `state_local_tax` is refused, naming `local_tax` (§3.2).

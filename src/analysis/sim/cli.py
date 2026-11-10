@@ -111,6 +111,7 @@ from analysis.sim.loader import (
     ScenarioRef,
     batch_mode,
     batch_recipe,
+    tax_calculator_upstream,
     batches_dir,
     intent_batch_dir,
     ensemble_batches,
@@ -187,6 +188,14 @@ def _resolve_state_dir(
     if directory is not None:
         return directory
     return find_state_dir(data_dir, DEFAULT_STATE_DIR) / default
+
+
+def _note_behind(runs_dir: Path) -> None:
+    """Say once if this workspace's builder branch is behind its upstream
+    (#306, ``builder.note_behind``): a run made now uses code that is."""
+    from analysis.sim import builder
+
+    builder.note_behind(Path(runs_dir).resolve().parent, lambda text: click.echo(text, err=True))
 
 
 def _builds(fn):
@@ -739,6 +748,7 @@ def run(
                       allow_dirty_data=allow_dirty_data, command=f"sim run {scenario_name}")
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+    _note_behind(resolved_runs_dir)
     is_a_pool = resolved_data_dir is not None and is_pool(resolved_data_dir / "scenarios", scenario_name)
     if rebuild and not is_a_pool:
         raise click.UsageError(f"--rebuild is for a pool, and {scenario_name} isn't one")
@@ -1718,11 +1728,11 @@ def _ask_pool_components(data: Path, current: str | None) -> tuple[str, ...]:
 @ensemble_pool_group.command("edit")
 @click.argument("name", required=False, type=completion.POOL)
 @click.argument("components", nargs=-1, type=completion.POOL_COMPONENT)
-@click.option("--size", default=None, help="Member count; '' takes the smallest component's.")
+@click.option("--size", default=None, help="Member count; '' or none takes the smallest component's.")
 @click.option("--base", default=None, type=completion.ENSEMBLE,
               help="The component whose member 0 is the base case; '' takes the first.")
 @click.option("--reserve", default=None,
-              help="The reports' reserve, in CPI-constant dollars; '' takes the base component's.")
+              help="The reports' reserve, in CPI-constant dollars; '' or none takes the base component's.")
 @click.option("--description", default=None,
               help="The pool's description; '' takes the generated 'Pooled from <components>'.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3918,6 +3928,7 @@ def all_scenarios(
     skipped: list[str] = []
     code = code_tree()
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved)
+    _note_behind(resolved_runs_dir)
     if disabled := sorted(set(names) & read_disabled_scenarios(resolved)):
         names = [name for name in names if name not in disabled]
         click.echo(f"disabled, not built: {', '.join(disabled)} (`sim run NAME` builds one)")
@@ -8527,7 +8538,17 @@ def scheduled_add(
     )
 
 
-@scheduled_group_command.command("import-baseline")
+@sim_group_command.group(name="import")
+def import_group_command() -> None:
+    """Bring data from outside sources into a scenario.
+
+    `holdings` sets account balances from a Quicken account-tree report;
+    `transactions` turns Quicken transactions (with the Amazon categorizer's
+    monthly summaries) into expense rules. More sources are planned (#527).
+    """
+
+
+@import_group_command.command("transactions")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -8563,7 +8584,7 @@ def scheduled_add(
               help="Inflation series applied to generated rows ('fixed' for none).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show generated rows without rewriting scheduled.csv.")
-def scheduled_import_baseline(
+def import_transactions(
     scenario: str | None,
     data_dir: Path | None,
     quicken_file: Path | None,
@@ -8578,7 +8599,7 @@ def scheduled_import_baseline(
     series: str,
     dry_run: bool,
 ) -> None:
-    """Replace generated baseline expense rows in scheduled.csv."""
+    """Expense rules from Quicken transactions: replace the generated baseline rows in scheduled.csv."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     data_repo_root = data_dir_p.parent
@@ -11665,7 +11686,7 @@ def sync_account_lots(
         click.echo(f"  + {name}")
 
 
-@account_group_command.command("import-quicken")
+@import_group_command.command("holdings")
 @click.argument("quicken_file",
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--map-file", "map_file",
@@ -11684,7 +11705,7 @@ def sync_account_lots(
               default=None)
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show what would change without writing.")
-def import_quicken(
+def import_holdings(
     quicken_file: Path,
     map_file: Path | None,
     year_end: bool,
@@ -11792,7 +11813,7 @@ def import_quicken(
         rows = df.index[df["account_name"] == name]
         if len(rows) > 1:
             click.echo(
-                f"warning: {name!r} has {len(rows)} lots; import-quicken only "
+                f"warning: {name!r} has {len(rows)} lots; `sim import holdings` only "
                 "updates single-lot accounts, so it was skipped", err=True,
             )
             continue
@@ -14888,8 +14909,9 @@ def ensemble_copy(old: str | None, new: str | None, data_dir: Path | None) -> No
 # ---------- editing and deleting a scenario (#190) ----------
 
 def _blank_or[T](value: str, parse: Callable[[str], T], option: str) -> T | None:
-    """``value`` parsed, or ``None`` for a blank one: that option's field inherits."""
-    if not value.strip():
+    """``value`` parsed, or ``None`` for a blank one or ``none``: that
+    option's field inherits."""
+    if not value.strip() or scenario_guide.is_none(value):
         return None
     try:
         return parse(value.strip())
@@ -14919,23 +14941,29 @@ def _reserve_json(text: str) -> int | str:
 
 _SCENARIO_CHECKERS: dict[str, Callable[[str], object]] = {
     "month": _validate_month_date,
-    "seed": lambda text: text == scenario_guide.NEW_SEED or _whole_number(text),
-    "count": _member_count,
-    "money": _reserve_json,
+    "seed": lambda text: text == scenario_guide.NEW_SEED or scenario_guide.is_none(text) or _whole_number(text),
+    "count": lambda text: scenario_guide.is_none(text) or _member_count(text),
+    "money": lambda text: scenario_guide.is_none(text) or _reserve_json(text),
 }
 
 
-def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, **fields: str | None) -> None:
-    """``sim scenario edit`` and ``sim ensemble edit``: with any option, the
-    change at once; with none, a guided edit of every field."""
+def _edit_scenario(name: str | None, data_dir: Path | None, *, what: str, new_seed: bool,
+                   **fields: str | None) -> None:
+    """``sim scenario edit`` and ``sim ensemble edit`` (``what``): with any
+    option, the change at once; with none, a guided edit of every field."""
     data = _resolve_data_dir(data_dir)
     names = list_scenario_names(data)
     if name is None:
+        # `sim ensemble edit` offers only ensembles, as its completion does
+        # (#296); one named on its line needn't be (`--size` can make it one).
+        choices = _ensemble_names(data) if what == "ensemble" else names
+        if not choices:
+            raise click.ClickException(f"there are no {what}s to choose from")
         current = read_current_scenario(data)
         while (name := _prompt_with_completion(
-                "scenario to edit", choices=names, default=current if current in names else None,
-        ).strip()) not in names:
-            click.echo(f"  not a scenario: {name!r}")
+                f"{what} to edit", choices=choices, default=current if current in choices else None,
+        ).strip()) not in choices:
+            click.echo(f"  not {'an' if what == 'ensemble' else 'a'} {what}: {name!r}")
     name = name.strip()
     if name not in names:
         raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
@@ -14970,7 +14998,9 @@ def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, *
     )
 
     def submit(_params: dict[str, object]) -> None:
-        changed = {field: value for field, value in answers.items() if value != before[field]}
+        cleared = {field: "" for field in ("seed", "size", "reserve")
+                   if scenario_guide.is_none(answers.get(field, ""))}
+        changed = {field: value for field, value in {**answers, **cleared}.items() if value != before[field]}
         if not changed:
             click.echo("no change; nothing was written")
             return
@@ -15078,9 +15108,16 @@ def _new_mixin_only(scenarios_dir: Path, runnable: Sequence[str]) -> list[str]:
     return [n for n in runnable if is_mixin_only(scenarios_dir, n)]
 
 
-def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
+def _edit_options(what: str) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    """The options `sim scenario edit` and `sim ensemble edit` (``what``)
+    share; NAME completes over scenarios or ensembles to match (#296)."""
+    return functools.partial(_add_edit_options, name_type=(
+        completion.ENSEMBLE if what == "ensemble" else completion.SCENARIO))
+
+
+def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamType) -> Callable[..., None]:
     options = [
-        click.argument("name", required=False, type=completion.SCENARIO),
+        click.argument("name", required=False, type=name_type),
         click.option("--description", default=None,
                      help="The scenario's description; '' restores the default, 'Derived from <parents>'."),
         click.option("--start", default=None, help=f"First month ({MONTH_FORMAT_HINT}); '' inherits."),
@@ -15088,14 +15125,14 @@ def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
         click.option("--parents", default=None, metavar="PARENT[:MIXIN...]", type=completion.PARENTS,
                      help="What it builds on: its parent, then any mix-ins, colon-separated. "
                           "'' makes it a root scenario."),
-        click.option("--seed", default=None, help="Ensemble master seed; '' inherits."),
+        click.option("--seed", default=None, help="Ensemble master seed; '' or none inherits."),
         click.option("--new-seed", is_flag=True, default=False, help="Draw a fresh random seed."),
         click.option("--size", default=None,
                      help="Ensemble member count (meta_json ensemble_size); 0 makes it not an "
-                          "ensemble, '' inherits."),
+                          "ensemble; '' or none drops it, so it inherits the parents' and mix-ins'."),
         click.option("--reserve", default=None,
                      help="The ensemble reports' reserve, in CPI-constant dollars "
-                          "(meta_json reserve); '' inherits."),
+                          "(meta_json reserve); '' or none inherits."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
     ]
@@ -15105,7 +15142,7 @@ def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
 
 
 @scenario_group_command.command("edit")
-@_edit_options
+@_edit_options("scenario")
 def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
     """Change scenario NAME's scenario.csv: its description, start and end
     months, parents and mix-ins, seed, ensemble size or reserve.
@@ -15118,14 +15155,15 @@ def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> Non
     The change is written only if NAME and every scenario built on it still
     load. A README.md that `scenario create` wrote follows the description
     and parents. Same as `sim ensemble edit`."""
-    _edit_scenario(name, data_dir, **fields)
+    _edit_scenario(name, data_dir, what="scenario", **fields)
 
 
 @ensemble_group_command.command("edit")
-@_edit_options
+@_edit_options("ensemble")
 def ensemble_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
-    """Change ensemble NAME's scenario.csv; the same as `sim scenario edit`."""
-    _edit_scenario(name, data_dir, **fields)
+    """Change ensemble NAME's scenario.csv; the same as `sim scenario edit`,
+    except that NAME completes, and is asked for, over the ensembles."""
+    _edit_scenario(name, data_dir, what="ensemble", **fields)
 
 
 def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what: str) -> None:
@@ -17846,6 +17884,9 @@ def builder_status(data_dir: Path | None) -> None:
     trees, reason = builder.main_check(builder.config_branch(config), Path(code) if code else None)
     if trees is None:
         click.echo(f"disabled: {reason}")
+    # Said whether or not it is on: pulling is what brings the newer code (#306).
+    if behind := builder.behind_upstream(builder.config_branch(config), Path(code) if code else None):
+        click.echo(f"behind: {behind.describe()} (git pull, on {behind.branch}, to build with it)")
     status = builder.read_status(paths)
     alive = builder.daemon_alive(paths)
     state = f"{status.get('state', 'running')}, pid {status.get('pid')}" if alive else "not running"
@@ -18520,10 +18561,16 @@ def target_delete_command(
 def _tax_summary(row: Mapping[str, str]) -> str:
     """One line for a tax jurisdiction file's row."""
     when = f" from {row.get('start') or 'the start'}" + (f" to {row['end']}" if row.get("end") else "")
-    upstream = f" after {row['upstream']}" if row.get("upstream") else ""
+    # A blank upstream is the calculator's own (#508).
+    built_on = row.get("upstream") or " ".join(tax_calculator_upstream(row.get("kind", "")))
+    upstream = f" on {built_on}" if built_on else ""
     params = f" {row['params_json']}" if row.get("params_json") else ""
-    return (f"{row.get('kind', '')}{upstream}: paid from {row.get('source_chain', '')} into "
-            f"{row.get('destination', '')} each {row.get('schedule') or 'april'}{when}{params}")
+    paid_with = registries.TAX_PAID_WITH.get(registries.TAX_KINDS.get(row.get("kind", ""), ""))
+    with_tax = f"the {paid_with} tax's" if paid_with else "no"
+    source = row.get("source_chain") or f"{with_tax} source"
+    destination = row.get("destination") or f"{with_tax} destination"
+    return (f"{row.get('kind', '')}{upstream}: paid from {source} into "
+            f"{destination} each {row.get('schedule') or 'april'}{when}{params}")
 
 
 def _tax_home(found: _Overlaid, scenario_name: str) -> str:
@@ -18588,7 +18635,8 @@ def _tax_spec(
                                 if a.row.get("subkind") == f"taxes_{jurisdiction}"), None)
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
                           expenses=expenses, jurisdictions=free, source=source,
-                          destination=destination)
+                          destination=destination,
+                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""))
 
 
 _TAX_OPTIONS = (
@@ -18617,7 +18665,8 @@ def _tax_options(f: Callable[..., None]) -> Callable[..., None]:
 @sim_group_command.group(name="tax")
 def tax_group_command() -> None:
     """The scenario's income taxes: a file per jurisdiction in taxes/
-    (federal.csv, state.csv), the state it lives in, and moves to another."""
+    (federal.csv, state.csv, local.csv), the state it lives in, and moves to
+    another."""
 
 
 @tax_group_command.command("list")
@@ -18651,7 +18700,8 @@ def tax_add_command(
     into the destination. Given JURISDICTION, --source-chain and
     --destination, it writes at once; otherwise it asks for each field and
     then shows them, to write or change. For a state, `sim tax state` also
-    picks its tables."""
+    picks its tables. A local tax is paid with the state's and reads the
+    state's local bands, so `sim tax add local` asks nothing."""
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     existing = _tax_rows(ref.path)
@@ -18666,7 +18716,20 @@ def tax_add_command(
         path = _write_tax(data, ref.name, name, row)
         click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(row)}")
 
-    if jurisdiction is not None and source_chain is not None and destination is not None:
+    def paid_with(name: str) -> bool:
+        """A jurisdiction paid with another's (local, #508) needs nothing
+        that one doesn't set: blank, it is paid the same way."""
+        other = registries.TAX_PAID_WITH.get(name)
+        if other is None:
+            return False
+        if other not in existing:
+            raise click.ClickException(
+                f"a {name} tax builds on the {other} tax, and {ref.name} has none "
+                f"(sim tax add {other} first)")
+        return True
+
+    if jurisdiction is not None and (
+            paid_with(jurisdiction) or source_chain is not None and destination is not None):
         write({"jurisdiction": jurisdiction, **{k: v or "" for k, v in given.items()}})
         return
     free = [n for n in registries.TAX_JURISDICTIONS if n not in existing]
@@ -18679,6 +18742,9 @@ def tax_add_command(
     spec = _tax_spec(data, ref.path, ref.name, "add", jurisdiction, free)
     if "jurisdiction" not in answers:  # the defaults follow from it
         answers["jurisdiction"] = guide.ask_field(spec, spec.fields[0], calendar_guide.GuideContext(), answers)
+        if paid_with(answers["jurisdiction"]):
+            write({**dict.fromkeys(given, ""), **answers})
+            return
         spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free)
     ctx = calendar_guide.GuideContext()
     guide.complete(spec, ctx, answers)

@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 60) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 61) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -164,8 +164,9 @@ CREATE TABLE strategy_source (
 -- The scenario's income tax jurisdictions (taxes/<name>.csv, merged over the
 -- lineage; #507). name prefixes the jurisdiction's tax_year_summary buckets;
 -- kind is the calculator; upstream the jurisdictions its return builds on,
--- space-separated. Each April (schedule) it pays what is still due for the
--- year before from source_chain into destination, between start and end.
+-- space-separated: its calculator's own, filled in by the loader (#508).
+-- Each April (schedule) it pays what is still due for the year before from
+-- source_chain into destination, between start and end.
 CREATE TABLE tax_jurisdiction (
     id                   INTEGER PRIMARY KEY,
     name                 TEXT NOT NULL UNIQUE,
@@ -1183,3 +1184,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 59).
 - [#507](https://github.com/BobKerns/analysis/issues/507): the tax calculator API renames `tax_year_summary`'s income tax buckets (`<scope>_agi`, `_tax`, `_deduction`, `_ss_benefits`, `_ss_taxable`, `_ltcg_taxed`, `_capital_loss_used`, `_business_net`, `_hobby_disallowed`) and adds `<scope>_ordinary_taxable` (schema 60).
 - [#410](https://github.com/BobKerns/analysis/issues/410): table `strategy_disabled` keeps a disabled strategy's kind and parameters with the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 61).
+- [#508](https://github.com/BobKerns/analysis/issues/508): the local income tax is its own jurisdiction, so `tax_year_summary` has `local_*` buckets in place of `state_local_tax`, and the state's adjustment lines (`state_dividends_as_ordinary`, `state_hsa_addback`, `state_capital_gain_difference`, `state_ss_difference`, `state_credits`); `tax_jurisdiction.upstream` holds the calculator's own when the file leaves it blank (schema 61).

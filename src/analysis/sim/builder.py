@@ -43,6 +43,7 @@ per data worktree): ``config.json`` (the opt-in and the pair),
 from __future__ import annotations
 
 import atexit
+import contextlib
 import fcntl
 import json
 import os
@@ -74,12 +75,15 @@ from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV, is_buildin
 __all__ = [
     "STEPS",
     "BuilderPaths",
+    "Behind",
     "await_fresh",
+    "behind_upstream",
     "build_pending",
     "daemon_alive",
     "job_key",
     "main_check",
     "needed_steps",
+    "note_behind",
     "notify",
     "parse_job",
     "pair_problems",
@@ -340,6 +344,94 @@ def main_check(
     if main != code.trees:
         return None, f"code ({paths}) differs from {branch}"
     return code.trees, None
+
+
+@dataclass(frozen=True)
+class Behind:
+    """Local ``branch`` lacks code commits its upstream had at the last fetch."""
+
+    branch: str
+    upstream: str
+    commits: int  # upstream commits not on the branch that touch the code paths
+    fetched: float | None  # when the repo last fetched (FETCH_HEAD's mtime), if known
+
+    def describe(self) -> str:
+        from analysis.sim.freshness import CODE_PATHS
+
+        when = "" if self.fetched is None else f", as of the last fetch {_ago(time.time() - self.fetched)}"
+        plural = "" if self.commits == 1 else "s"
+        return (f"local {self.branch} is {self.commits} commit{plural} behind {self.upstream} "
+                f"in {', '.join(CODE_PATHS)}{when}")
+
+
+def behind_upstream(branch: str = DEFAULT_BRANCH, repo_dir: Path | None = None) -> Behind | None:
+    """How far local ``branch`` is behind its upstream (its tracking branch,
+    else ``origin/<branch>``) as last fetched, counting only commits that
+    touch the code paths, since the builder works by code tree (#306).
+    None when it isn't behind or there is nothing to compare with. Never
+    fetches: a background fetch already moves the upstream, and the point
+    is to say what the user hasn't pulled."""
+    from git import GitCommandError
+
+    from analysis.sim.freshness import CODE_PATHS, code_tree
+    from analysis.sim.provenance import _open_repo
+
+    repo = code_tree().repo if repo_dir is None else _open_repo(repo_dir)
+    if repo is None or branch not in repo.heads:
+        return None
+    tracking = repo.heads[branch].tracking_branch()
+    upstream = tracking.name if tracking is not None else f"origin/{branch}"
+    try:
+        count = int(repo.git.rev_list("--count", f"refs/heads/{branch}..{upstream}", "--", *CODE_PATHS))
+    except (GitCommandError, ValueError):
+        return None  # no such upstream (never fetched, or no remote)
+    if count == 0:
+        return None
+    fetched = None
+    for git_dir in (repo.git_dir, repo.common_dir):
+        with contextlib.suppress(OSError):
+            fetched = (Path(git_dir) / "FETCH_HEAD").stat().st_mtime
+            break
+    return Behind(branch, upstream, count, fetched)
+
+
+def _ago(seconds: float) -> str:
+    """``just now``, ``5 minutes ago``, ``3 hours ago``, ``2 days ago``."""
+    for unit, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= size:
+            n = int(seconds // size)
+            return f"{n} {unit}{'' if n == 1 else 's'} ago"
+    return "just now"
+
+
+# Workspaces (state dirs) this process has already noted are behind.
+_noted_behind: set[Path] = set()
+
+
+def note_behind(state_dir: Path, echo: Callable[[str], None] | None = None) -> None:
+    """Once per process and workspace, say so on stderr when results here
+    are built from a local branch behind its upstream (#306): where the
+    builder is installed and on, and the code running is that branch's, so
+    what is built and read is that code. Quiet otherwise; never fetches."""
+    paths = BuilderPaths(Path(state_dir).resolve())
+    # The builder's own builds would repeat it into its log at every build.
+    if paths.state_dir in _noted_behind or switched_off() or os.environ.get(BUILDER_CHILD_ENV):
+        return
+    config = read_config(paths)
+    if config is None:
+        return
+    _noted_behind.add(paths.state_dir)
+    code = config.get("code_dir")
+    branch = config_branch(config)
+    repo_dir = Path(code) if code else None
+    if main_check(branch, repo_dir)[0] is None:
+        return  # the builder is off; `sim builder status` says why
+    behind = behind_upstream(branch, repo_dir)
+    if behind is None:
+        return
+    echo = echo or (lambda text: print(text, file=sys.stderr))
+    echo(f"NOTE: {behind.describe()}; runs here use the older code until you pull "
+         f"(git pull, on {branch})")
 
 
 # -- requests ----------------------------------------------------------------
@@ -945,6 +1037,7 @@ def await_fresh(
     builder isn't installed, is off or disabled, or the results are current.
     Ctrl-C gives up the wait (the latest existing results are opened)."""
     steps = READER_STEPS[mode]
+    note_behind(Path(runs_dir).resolve().parent, echo)
     found = _pending_build(runs_dir, scenario, steps)
     if found is None:
         return

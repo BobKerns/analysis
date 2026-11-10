@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from analysis.sim import registries
-from analysis.sim.engine import _indexed_tax_rows, _prepare_tax, _swap_aux_table
+from analysis.sim.engine import TaxRule, _indexed_tax_rows, _prepare_tax, _swap_aux_table
 from analysis.sim.tax_api import Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
 
@@ -71,7 +71,8 @@ def _estimate(con: sqlite3.Connection, aux: Aux, scope: str, year: int = 2026,
               more: int = 0) -> Return:
     params = {"scope": scope, **({"bracket_series": "CA"} if scope == "state" else {})}
     kind = "state_tables" if scope == "state" else scope
-    return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind).compute(Extra(more))
+    return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind,
+                        jurisdictions={"federal": TaxRule("federal", {"scope": "federal"}, 1)}).compute(Extra(more))
 
 
 def test_the_surcharge_adds_its_rate_above_its_floor(ledger: sqlite3.Connection) -> None:
@@ -107,7 +108,11 @@ def test_a_state_that_taxes_an_hsa_undoes_its_deduction_and_taxes_its_growth(
     # The after-tax drawdown prices its shares on top of the year's other
     # income: the HSA's withdrawal and growth aren't what the shares replace.
     assert (state.memo["hsa_withdrawn"], state.memo["hsa_growth"]) == (2_000_00, 1_000_00)
-    assert (federal.memo["hsa_withdrawn"], federal.memo["hsa_growth"]) == (0, 0)
+    # The federal memo records the HSA's money in and out (#508), which the
+    # state adds back; its drawdown baseline is every traditional dollar out.
+    assert (federal.memo["hsa_contributed"], federal.memo["hsa_withdrawn"]) == (8_000_00, 2_000_00)
+    assert federal.memo["drawn_ordinary"] == 2_000_00
+    assert "hsa_growth" not in federal.memo
 
 
 def test_an_hsa_that_falls_is_a_capital_loss_for_the_state(ledger: sqlite3.Connection) -> None:

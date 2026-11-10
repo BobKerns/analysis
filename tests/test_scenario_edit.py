@@ -77,6 +77,27 @@ def test_edit_sets_and_clears_fields(test_data_dir: Path, test_child_scenario: P
     assert (row["start"], row["seed"], json.loads(row["meta_json"])) == ("", "", {})
 
 
+def test_edit_none_drops_a_field_unlike_zero(test_data_dir: Path, test_child_scenario: Path) -> None:
+    # #296: `none` inherits, as '' does; a size of 0 is a value of its own.
+    result = _sim(test_data_dir, "ensemble", "edit", "child", "--seed", "7", "--size", "0",
+                  "--reserve", "1000")
+    assert result.exit_code == 0, result.output
+    assert json.loads(_row(test_child_scenario)["meta_json"]) == {"ensemble_size": 0, "reserve": 1000}
+    result = _sim(test_data_dir, "ensemble", "edit", "child", "--seed", "none", "--size", "None",
+                  "--reserve", "NONE")
+    assert result.exit_code == 0, result.output
+    row = _row(test_child_scenario)
+    assert (row["seed"], json.loads(row["meta_json"])) == ("", {})
+    assert "meta_json ensemble_size: 0 -> (inherited)" in result.output
+
+
+def test_guided_edit_takes_none_for_inherit(test_data_dir: Path, test_child_scenario: Path) -> None:
+    assert _sim(test_data_dir, "scenario", "edit", "child", "--size", "40").exit_code == 0
+    result = _guided(test_data_dir, "child", answers=["size", "none", "write"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(_row(test_child_scenario)["meta_json"]) == {}
+
+
 def test_edit_new_seed_and_size_zero(test_data_dir: Path, test_child_scenario: Path) -> None:
     result = _sim(test_data_dir, "ensemble", "edit", "child", "--new-seed", "--size", "0")
     assert result.exit_code == 0, result.output
@@ -190,10 +211,20 @@ def test_guided_edit_asks_again_for_a_bad_answer(test_data_dir: Path, test_child
 
 
 def test_guided_edit_asks_for_the_scenario(test_data_dir: Path, test_child_scenario: Path) -> None:
-    result = _sim(test_data_dir, "ensemble", "edit", input="nobody\nchild\nend\n2039-12\nwrite\n")
+    result = _sim(test_data_dir, "scenario", "edit", input="nobody\nchild\nend\n2039-12\nwrite\n")
     assert result.exit_code == 0, result.output
     assert "not a scenario: 'nobody'" in result.output
     assert _row(test_child_scenario)["end"] == "2039-12"
+
+
+def test_guided_ensemble_edit_asks_only_for_an_ensemble(test_data_dir: Path, test_child_scenario: Path,
+                                                         test_ensemble_scenario: str) -> None:
+    # #296: a plain scenario isn't one of the choices, as it isn't in completion.
+    result = _sim(test_data_dir, "ensemble", "edit",
+                  input=f"child\n{test_ensemble_scenario}\nend\n2039-12\nwrite\n")
+    assert result.exit_code == 0, result.output
+    assert "not an ensemble: 'child'" in result.output
+    assert _row(test_data_dir / "scenarios" / test_ensemble_scenario)["end"] == "2039-12"
 
 
 def test_guided_edit_without_changes_or_cancelled_writes_nothing(test_data_dir: Path,

@@ -489,3 +489,157 @@ def retirement_exclusion(
                 None if limit is None else int(limit),
                 None if phaseout is None else int(phaseout)))
     return RetirementExclusion(pools, tuple(grants), net_gain)
+
+
+# -- Tables every jurisdiction reads the same way (#508) ----------------------
+
+def where(ty: TaxYear) -> str:
+    """The jurisdiction's file, for an error."""
+    return f"{registries.TAXES_DIR}/{ty.jurisdiction}.csv"
+
+
+def loss_limit(ty: TaxYear) -> Callable[[int], int]:
+    """Each year's capital-loss limit (``capital_loss_limit``), for
+    :func:`capital_gains`."""
+    status_aux = str(ty.params.get("filing_status_aux", "filing_status"))
+
+    def limit(year: int) -> int:
+        # A carryover from a year before the filing_status table starts (a
+        # year-to-date loss) is limited as if filed with this year's status.
+        status = ty.filing_status if year == ty.year or not ty.table_as_of(
+            status_aux, None, year) else ty.filing_status_in(year)
+        row = ty.keyed("capital_loss_limit", "filing_status", status, year)
+        if row is None:
+            raise TaxError(
+                f"{where(ty)}: {year} has a net capital loss, but no "
+                f"capital_loss_limit row for filing_status={status!r} effective on "
+                f"or before {year}-12-31 (aux/capital_loss_limit.csv)"
+            )
+        return int(row["amount"])
+    return limit
+
+
+def bracket_series(ty: TaxYear, bracket_aux: str) -> str | None:
+    """The ``bracket_series`` param, or for ``state_brackets`` the one
+    series there is."""
+    series = ty.params.get("bracket_series")
+    if bracket_aux == "state_brackets" and series is None:
+        state_series = ty.series_of("state_brackets")
+        if len(state_series) == 1:
+            return state_series[0]
+        if len(state_series) > 1:
+            raise TaxError(f"{where(ty)}: bracket_series required for state_brackets")
+    return None if series is None else str(series)
+
+
+def rate_table(ty: TaxYear, kind: str | None, series: str | None = None) -> list[tuple[int, int]]:
+    """The year's (floor, rate micros) rows of ``kind`` for its filing
+    status, in floor order; none for no kind."""
+    if kind is None:
+        return []
+    return sorted(
+        (int(r["floor"]), int(r["marginal_rate_micros"]))
+        for r in ty.indexed(kind, series)
+        if r.get("filing_status") == ty.filing_status
+    )
+
+
+def brackets(ty: TaxYear, kind: str, series: str | None) -> list[tuple[int, int]]:
+    """The ordinary brackets, which a jurisdiction can't do without."""
+    rows = rate_table(ty, kind, series)
+    if not rows:
+        raise TaxError(
+            f"{where(ty)}: missing brackets kind={kind!r} "
+            f"series={series!r} filing_status={ty.filing_status!r}"
+        )
+    return rows
+
+
+def standard_deduction(ty: TaxYear, kind: str, series: str | None = None) -> int:
+    rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == ty.filing_status]
+    if not rows:
+        raise TaxError(f"{where(ty)}: missing standard deduction for filing_status={ty.filing_status!r}")
+    return int(rows[0]["amount"])
+
+
+def itemized_deduction(ty: TaxYear, kind: str) -> int:
+    """The itemized total (optional): a dated total, no filing_status split.
+    A row is one tax year's total, so it counts for the year it's dated in
+    only, never carried into the years after (#370)."""
+    rows = [row for effective, row in ty.dated(kind) if effective[:4] == str(ty.year)]
+    return int(rows[-1]["amount"]) if rows else 0
+
+
+def ltcg_exclusion(ty: TaxYear, kind: str | None, series: str | None) -> Callable[[int], int]:
+    """A function giving a long-term gain less what the ``kind`` table
+    (a state's gain exclusion, #485) leaves out of it."""
+    rows = ty.table(kind, series) if kind else []
+
+    def net(gain: int) -> int:
+        if not rows or gain <= 0:
+            return gain
+        row = rows[0]
+        excluded = gain * int(row["exclusion_micros"]) // 1_000_000
+        if row.get("max_exclusion") is not None:
+            excluded = min(excluded, int(row["max_exclusion"]))
+        excluded = max(excluded, int(row.get("min_exclusion") or 0))
+        return gain - min(excluded, gain)
+    return net
+
+
+def nol_limit_percent(ty: TaxYear, default: int) -> int:
+    """How much of taxable income a carried-in NOL may offset (#231)."""
+    percent = int(ty.params.get("nol_limit_percent", default))
+    if not 0 <= percent <= 100:
+        raise TaxError(f"{where(ty)}: nol_limit_percent must be 0 to 100, got {percent}")
+    return percent
+
+
+def nol_new(*, agi: int, business_net: int, capital_loss_used: int, deduction: int) -> int:
+    """The year's new NOL: the business loss less the income it absorbed.
+    The deduction never adds to it (a nonbusiness deduction offsets only
+    nonbusiness income, §172(d)(4)), nor does the capital-loss deduction."""
+    nonbusiness_income = agi - business_net + capital_loss_used
+    return max(0, -business_net - max(0, nonbusiness_income - deduction))
+
+
+def nol_used(nol_in: int, before_nol: int, limit_percent: int) -> int:
+    """The carried-in NOL taxable income ``before_nol`` uses. More income
+    can use more of it under its limit, so a what-if works it out again."""
+    return min(nol_in, max(0, before_nol) * limit_percent // 100)
+
+
+def stacked_tax(
+    taxable: int, ltcg: int, stcg: int, brackets: Sequence[tuple[int, int]],
+    ltcg_brackets: Sequence[tuple[int, int]] = (), stcg_brackets: Sequence[tuple[int, int]] = (),
+) -> int:
+    """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term
+    gain and up to ``stcg`` more of it short-term gain. Long-term gains sit
+    on top of ordinary taxable income and are taxed at the preferential
+    rates for the band each part lands in; a state's short-term gain rates
+    (#485) take the slice just below them. A gain without a table of its
+    own keeps its place, at the ordinary rates."""
+    if not (ltcg_brackets or stcg_brackets):
+        return progressive_tax(taxable, brackets)
+    gain_taxable = min(max(0, ltcg), taxable)
+    below_gain = taxable - gain_taxable
+    short_taxable = min(stcg, below_gain) if stcg_brackets else 0
+    ordinary_taxable = below_gain - short_taxable
+    tax = progressive_tax(ordinary_taxable, brackets)
+    if short_taxable > 0:
+        tax += band_tax(ordinary_taxable, below_gain, stcg_brackets)
+    if gain_taxable > 0:
+        tax += band_tax(below_gain, taxable, ltcg_brackets or brackets)
+    return tax
+
+
+def ordinary_taxable(taxable: int, ltcg: int, stcg: int, separate_stcg: bool) -> int:
+    """Taxable income less the long-term gain stacked on top and, when it is
+    taxed apart (``separate_stcg``), the short-term gain below it: what the
+    ordinary brackets tax."""
+    below_gain = taxable - min(ltcg, taxable)
+    return below_gain - (min(stcg, below_gain) if separate_stcg else 0)
+
+
+def band_tax(low: int, high: int, table: Sequence[tuple[int, int]]) -> int:
+    return progressive_tax(high, table) - progressive_tax(low, table)

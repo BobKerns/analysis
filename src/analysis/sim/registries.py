@@ -59,13 +59,17 @@ TAX_CSV_HEADER: tuple[str, ...] = (
     "kind", "upstream", "source_chain", "destination", "schedule", "start", "end",
     "params_json", "description",
 )
-TAX_KINDS: dict[str, str] = {"federal": "federal", "state_tables": "state"}
+TAX_KINDS: dict[str, str] = {
+    "federal": "federal", "state_tables": "state", "local_bands": "local"}
 """Each calculator kind and the jurisdiction it computes. Until calculators
 are pluggable (#507), a kind computes one jurisdiction, whose file has that
 name."""
-TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state")
+TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state", "local")
 """The jurisdictions, in the order they settle: a state's return builds on
-the federal one."""
+the federal one, a local one on the state's (#508)."""
+TAX_PAID_WITH: dict[str, str] = {"local": "state"}
+"""A jurisdiction paid with another's (#508): a blank ``source_chain`` or
+``destination`` in its file takes that one's."""
 TAX_SCHEDULES: tuple[str, ...] = ("april",)
 """``april``: each April, the tax still due for the year before."""
 MONTH_PHASES: tuple[str, ...] = ("rules", "tax_settlement", "fill_bracket")
@@ -445,8 +449,9 @@ STATE_LOCAL_TAX = "state_local_tax"
 """The aux kind of a local income tax (#487): a county's or city's bands on
 the state's taxable income, in the shape of its brackets (Maryland's county
 rate, New York City's brackets). Keyed by state like the brackets, since a
-household lives in one locality, and paid with the state's tax, as most
-are filed on the state return; reported apart from it."""
+household lives in one locality. The local jurisdiction reads it
+(``taxes/local.csv``, ``local_bands``, #508), paid with the state's tax,
+as most are filed on the state return, and reported apart from it."""
 
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""
