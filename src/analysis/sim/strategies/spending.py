@@ -86,12 +86,12 @@ class Threshold(_Spending):
         if last is not None and last < 0:
             reasons.append(f"last year's return {last:.1%}")
         factor = 0.0 if reasons else 1.0
-        changed = factor != memory.get("factor", 1.0)
+        again = factor > memory.get("factor", 1.0)
         memory["factor"] = factor
-        if not changed:
-            return None
+        # A note every January, a year spent in full too: on a good future a
+        # silent log reads as a strategy that never ran.
         note = ("skip this year: " + ", ".join(reasons)) if reasons else (
-            f"spend again: portfolio {_dollars(balance)}"
+            f"spend{' again' if again else ''}: portfolio {_dollars(balance)}"
             + (f" at or above {_dollars(minimum)}" if minimum else ""))
         return Decision([], note=note, detail={
             "portfolio": balance, "minimum": minimum, "last_return": last, "factor": factor,

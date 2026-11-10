@@ -18323,17 +18323,23 @@ def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, d
 @click.option("--strategy", "strategy_name", type=completion.STRATEGY, default=None,
               help="Only this strategy's decisions.")
 @click.option("--year", type=int, default=None, help="Only this year's decisions.")
+@click.option("--hook", "hooks", multiple=True, metavar="HOOK",
+              help="Only decisions of this hook (year_start, scale, draw, place, ...); repeatable.")
 @click.option("--breaches", is_flag=True, default=False,
               help="List the guard-rail breaches strategies were told of instead (#441).")
 @_run_target_options
 def strategy_log_command(
-    target: str | None, strategy_name: str | None, year: int | None, breaches: bool,
-    runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
+    target: str | None, strategy_name: str | None, year: int | None, hooks: tuple[str, ...],
+    breaches: bool, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """List a run's strategy decisions (the latest run by default): each
     month a strategy decided, what it was asked, what its own moves paid or
     placed, what the chain's steps covered after it, and its note. An
     on_breach decision's note starts with the breach it answered.
+
+    A spending strategy's monthly `scale` lines (one per rule it owns) are
+    left out when it also made other decisions, such as its January one;
+    the last line counts them, and --hook scale lists them.
 
     --breaches lists each breach of a rail a strategy's trigger names
     instead: the year, entered, continued or left, the measure, line and
@@ -18357,8 +18363,19 @@ def strategy_log_command(
         frame = strategy_guide.decision_log(con, strategy=strategy_name, year=year)
     finally:
         con.close()
+    hidden = 0
+    if hooks:
+        frame = frame[frame["hook"].isin(hooks)]
+    else:
+        # The scale lines repeat the January decision every month for every
+        # owned rule (hundreds of lines), burying the decisions themselves.
+        decided = set(frame.loc[frame["hook"] != "scale", "strategy"])
+        routine = (frame["hook"] == "scale") & frame["strategy"].isin(decided)
+        hidden = int(routine.sum())
+        frame = frame[~routine]
     if frame.empty:
-        click.echo(f"no strategy decisions in {path.name}")
+        click.echo(f"no strategy decisions in {path.name}"
+                   + (f" ({hidden} monthly scale lines not shown; --hook scale lists them)" if hidden else ""))
         return
     # The note last and left-aligned: it is a sentence, often the widest column.
     notes = frame.pop("note")
@@ -18368,6 +18385,8 @@ def strategy_log_command(
     click.echo(f"{lines[0]}  note")
     for line, note in zip(lines[1:], notes, strict=True):
         click.echo(f"{line}  {note}")
+    if hidden:
+        click.echo(f"({hidden} monthly scale lines not shown; --hook scale lists them)")
 
 
 @strategy_group_command.command("check")

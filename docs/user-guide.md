@@ -1557,7 +1557,9 @@ how much of the spending went somewhere other than the plan's mix
 (`redirected`) and how much of each group's budget was spent (`filled:`).
 `--by tag:category` groups it by your own tags. `sim strategy log` shows
 each year's decision, such as
-`cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`.
+`cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`; the monthly
+line for each rule a strategy scaled is counted at the end, and
+`--hook scale` lists them.
 
 Compare against the plan as written the same way as above: a child
 scenario with the strategy switched off, run both, and `sim compare` them;

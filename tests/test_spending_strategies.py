@@ -130,7 +130,11 @@ def test_threshold_skips_years_below_its_minimum(
     run = run_strategy_scenario(SCENARIO)
     notes = [(month[:4], note) for month, note, _detail in _year_starts(run)]
     assert notes[0] == ("2026", "skip this year: portfolio $800,000 below $900,000")
-    assert notes[1][0] == "2030" and notes[1][1].startswith("spend again: portfolio $1,0")
+    # A note every January, whether it skips or spends.
+    assert [year for year, _note in notes] == [str(y) for y in range(2026, 2026 + len(notes))]
+    spent = [(year, note) for year, note in notes if not note.startswith("skip")]
+    assert spent[0][0] == "2030" and spent[0][1].startswith("spend again: portfolio $1,0")
+    assert spent[1][1].startswith("spend: portfolio $")
     baseline = _baseline_by_year(run)
     assert baseline["2027"][0] > 0 and baseline["2027"][1] == 0
     assert baseline["2030"][0] == baseline["2030"][1] > 0
@@ -141,7 +145,13 @@ def test_threshold_skips_years_below_its_minimum(
     assert paid == 0
     log = _cli(strategy_scenarios, "strategy", "log", str(run), "--strategy", "flex", "--year", "2027")
     assert log.exit_code == 0, log.output
-    assert "scale" in log.output and "travel: 0% of plan" in log.output
+    # The January decision, and a count of the monthly scale lines it leaves out.
+    assert "skip this year" in log.output and "travel: 0% of plan" not in log.output
+    assert "(13 monthly scale lines not shown; --hook scale lists them)" in log.output
+    log = _cli(strategy_scenarios, "strategy", "log", str(run), "--strategy", "flex", "--year", "2027",
+               "--hook", "scale")
+    assert log.exit_code == 0, log.output
+    assert "travel: 0% of plan" in log.output and "skip this year" not in log.output
 
 
 def test_threshold_can_skip_the_year_after_a_loss(
