@@ -190,9 +190,21 @@ def _default_band(kind: str) -> int | None:
 
 
 def watches(con: sqlite3.Connection) -> list[Watch]:
-    """The run's strategies with a ``targets`` parameter, by name."""
+    """The run's strategies with a ``targets`` parameter, by name. Only when
+    none of its enabled strategies has one, its disabled ones (#410): a run
+    with its strategy switched off is still compared against the targets and
+    portfolio it would have steered by, but a switched-off strategy never
+    competes with one that ran."""
+    found = _watches(con, "strategy")
+    if not found and has_table(con, "strategy_disabled"):
+        found = _watches(con, "strategy_disabled")
+    return found
+
+
+def _watches(con: sqlite3.Connection, table: str) -> list[Watch]:
     out = []
-    for name, kind, raw in con.execute("SELECT name, kind, params_json FROM strategy ORDER BY name"):
+    query = f"SELECT name, kind, params_json FROM {table} ORDER BY name"  # noqa: S608 -- fixed names
+    for name, kind, raw in con.execute(query):
         params = json.loads(raw or "{}")
         if not isinstance(params, dict) or not isinstance(params.get("targets"), str):
             continue

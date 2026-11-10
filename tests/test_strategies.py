@@ -860,3 +860,20 @@ def test_rebalance_places_overflow_into_the_underweight_class(
     _month, _hook, asked, chosen, fallback, note, _detail, _memory = places[0]
     assert chosen == asked and fallback == 0
     assert note.startswith("stock_us ") and f"into {BROKERAGE}" in note
+
+
+def test_run_readers_take_the_scenario_either_way(
+    strategy_scenarios: Path, run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """`sim strategy log` takes --scenario as reports do, and `sim allocation`
+    and the reports take SCENARIO as `sim explain` does (#410)."""
+    run = str(run_strategy_scenario("alice_rebalance"))
+    by_option = _cli(strategy_scenarios, "strategy", "log", "--scenario", run, "--strategy", "draw_by_allocation")
+    assert by_option.exit_code == 0, by_option.output
+    assert by_option.output == _cli(strategy_scenarios, "strategy", "log", run, "--strategy",
+                                    "draw_by_allocation").output
+    drifted = _cli(strategy_scenarios, "allocation", run, "--drift")
+    assert drifted.exit_code == 0, drifted.output
+    assert "drift from target set main" in drifted.output
+    both = _cli(strategy_scenarios, "report", "income", "alice_rebalance", "--scenario", "alice_rebalance_off")
+    assert both.exit_code != 0 and "give the scenario once" in both.output

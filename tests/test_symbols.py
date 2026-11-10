@@ -158,3 +158,21 @@ def test_add_writes_a_ticker_in_upper_case(test_data_dir: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "ABCDX,,bond,100%" in (test_data_dir / "allocations.csv").read_text()
     assert result.output.startswith("ABCDX:")
+
+
+def test_add_keeps_the_case_of_an_account_lot_key(test_data_dir: Path, load_test_copy) -> None:
+    # An <account>:<lot> row classes a lot by its names as written, so it
+    # mustn't be upper-cased like a ticker, nor looked up for prices (#410).
+    result = _sim(test_data_dir, "add", "Asset_TraditionalIRA_Alice:default", "--weight", "stock_us=100%")
+    assert result.exit_code == 0, result.output
+    allocations = (test_data_dir / "allocations.csv").read_text().splitlines()
+    assert allocations[-1] == "Asset_TraditionalIRA_Alice:default,,stock_us,100%"
+    assert not list((test_data_dir / "prices").glob("security_price__Asset*"))
+    assert not any("did you mean" in note for note in load_test_copy().unused)
+
+
+def test_load_notes_an_account_lot_key_in_the_wrong_case(test_data_dir: Path, load_test_copy) -> None:
+    with (test_data_dir / "allocations.csv").open("a") as f:
+        f.write("ASSET_TRADITIONALIRA_ALICE:default,,stock_us,100%\n")
+    notes = load_test_copy().unused
+    assert any("did you mean Asset_TraditionalIRA_Alice?" in note for note in notes), notes

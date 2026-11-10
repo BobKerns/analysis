@@ -6,6 +6,7 @@ import contextlib
 import csv as _csv
 import contextvars
 import functools
+import inspect
 import io
 import json
 import math
@@ -39,8 +40,8 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide, guard_rails,
-    load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
+    allocation, asset_classes, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide,
+    guard_rails, load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
     scheduled_guide, sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files,
     strategy_guide, symbols, states, tax_files, tax_guide, units, working_set, ytd_guide,
 )
@@ -4049,9 +4050,37 @@ def list_runs(runs_dir: Path | None) -> None:
         )
 
 
+def _scenario_argument(fn):
+    """An optional SCENARIO argument, the same as ``--scenario`` (#410): most
+    run readers (``sim explain``, ``sim strategy log``, ``sim compare``) take
+    the scenario first on the line, so reports and ``sim allocation`` do too."""
+    @functools.wraps(fn)
+    def wrapper(*args: Any, scenario_arg: str | None = None, **kwargs: Any) -> Any:
+        if scenario_arg is not None:
+            if kwargs.get("scenario") not in (None, scenario_arg):
+                raise click.UsageError("give the scenario once, as SCENARIO or --scenario")
+            kwargs["scenario"] = scenario_arg
+        return fn(*args, **kwargs)
+    return click.argument("scenario_arg", metavar="[SCENARIO]", required=False, type=completion.SCENARIO)(wrapper)
+
+
 def _run_target_options(fn):
-    """The options ``sim explain`` and ``sim networth`` share for finding a run."""
+    """The options ``sim explain``, ``sim networth`` and ``sim strategy log``
+    share for finding a run. ``--scenario`` is the same as the TARGET argument
+    (#410), as reports take it."""
+    @functools.wraps(fn)
+    def wrapper(*args: Any, scenario_opt: str | None = None, **kwargs: Any) -> Any:
+        if scenario_opt is not None:
+            if kwargs.get(positional) not in (None, scenario_opt):
+                raise click.UsageError("give the scenario once, as SCENARIO or --scenario")
+            kwargs[positional] = scenario_opt
+        return fn(*args, **kwargs)
+
+    positional = "target" if "target" in inspect.signature(fn).parameters else "scenario"
+    decorated = wrapper
     for option in reversed([
+        click.option("--scenario", "scenario_opt", type=completion.SCENARIO, default=None,
+                     help="The same as SCENARIO: the scenario whose latest run to read."),
         click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
                      default=None, help="Run file (default: the scenario's latest run)."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4059,8 +4088,8 @@ def _run_target_options(fn):
         click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
                      default=None, help="Directory to search for the latest run."),
     ]):
-        fn = option(fn)
-    return fn
+        decorated = option(decorated)
+    return decorated
 
 
 def _checked_run_file(path: Path) -> Path:
@@ -9812,6 +9841,7 @@ def account_holders_command(
 
 
 @sim_group_command.command("allocation")
+@_scenario_argument
 @click.option("--exclude", "excluded", multiple=True,
               type=click.Choice([*registries.ASSET_CLASSES, allocation.UNCLASSIFIED]),
               help="Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified.")
@@ -10143,6 +10173,7 @@ _UNTAGGED_HELP = ("With --by tag:ROLE, also show flows with no tag in ROLE as (u
 
 
 @report_group_command.command("income")
+@_scenario_argument
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
 @click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
@@ -10199,6 +10230,7 @@ def report_income_command(
 
 
 @report_group_command.command("expenses")
+@_scenario_argument
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
 @click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
@@ -10226,6 +10258,7 @@ def report_expenses_command(
 
 
 @report_group_command.command("spending")
+@_scenario_argument
 @click.option("--by", "by", default="category", show_default=True,
               help="Group by category (default), account, or tag:ROLE, as `sim report expenses` does.")
 @_year_range_options
@@ -10299,6 +10332,7 @@ def report_spending_command(
 
 
 @report_group_command.command("gains")
+@_scenario_argument
 @_year_range_options
 @_report_graph_options
 @_report_options
@@ -10334,6 +10368,7 @@ def report_gains_command(
 
 
 @report_group_command.command("tax")
+@_scenario_argument
 @click.option("--reconciliation", is_flag=True, default=False,
               help="Each year's liability, what was paid during it, and the April balance due or refund.")
 @_year_range_options
@@ -10456,6 +10491,7 @@ def _render_rail_summary(summary: pd.DataFrame):
 
 
 @report_group_command.command("guard-rails")
+@_scenario_argument
 @click.option("--rail", "rail_names", type=completion.GUARD_RAIL, multiple=True,
               help="Only this rail; repeat for more. One rail alone also shows its "
                    "measure and threshold.")
@@ -13204,8 +13240,9 @@ def symbol_add_command(
         click.echo(f"{symbol}: no allocation yet, so `sim allocation` shows it as unclassified; "
                    "see the user guide, Part 4.11 \"Add a stock or fund\"")
     failed = 0
-    # CASH and CD have no ticker to look up (registries.SYMBOL_ASSET_CLASS).
-    if fetch and symbol not in registries.SYMBOL_ASSET_CLASS:
+    # CASH and CD have no ticker to look up (registries.SYMBOL_ASSET_CLASS),
+    # nor does an <account>:<lot> key.
+    if fetch and symbol not in registries.SYMBOL_ASSET_CLASS and not asset_classes.is_lot_key(symbol):
         failed = _fetch_prices(data, [symbol], since_text, provider_name)
     if guided:
         words = ["sim", "symbol", "add", symbol]
