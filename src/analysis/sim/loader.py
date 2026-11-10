@@ -1402,6 +1402,7 @@ def load_scenario(
     )
     rail_rows = _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
                                       calendar_rows, issues)
+    disabled_strategies: list[strategy_load.PreparedStrategy] = []
     strategy_kinds, strategies = _validate_strategies(
         strategy_rows, target_rows, strategy_sources,
         accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
@@ -1409,7 +1410,7 @@ def load_scenario(
         start=scenario_row.get("start", ""), issues=issues, unused=unused,
         persons=persons, lifespan_rows=lifespan_rows,
         aux_kinds=frozenset(f"{kind}__{table}" if table else kind for kind, table, _p, _e in aux_rows),
-        tax_rows=tax_rows,
+        tax_rows=tax_rows, disabled=disabled_strategies,
     )
     strategy_varies, strategy_links = strategy_load.prepare_vary(
         vary_files, strategy_rows=strategy_rows, prepared=strategies, kinds=strategy_kinds,
@@ -1477,7 +1478,7 @@ def load_scenario(
         )
         counts.update(strategy_load.write_strategies(
             con, strategies, kinds=strategy_kinds, sources=strategy_sources,
-            target_rows=target_rows, rail_rows=rail_rows,
+            target_rows=target_rows, rail_rows=rail_rows, disabled=disabled_strategies,
         ))
         counts.update(strategy_load.write_strategy_vary(con, strategy_varies))
         load_warnings.write(con, warnings, unused)
@@ -5167,6 +5168,7 @@ def _validate_strategies(
     lifespan_rows: list[dict[str, str]],
     aux_kinds: frozenset[str],
     tax_rows: Sequence[Mapping[str, str]] = (),
+    disabled: list[strategy_load.PreparedStrategy] | None = None,
 ) -> tuple[strategy_code.StrategyKinds, list[strategy_load.PreparedStrategy]]:
     """``strategies/<name>.csv`` and ``targets.csv`` (#326, ADR-003 §4.12-4.13).
 
@@ -5223,7 +5225,7 @@ def _validate_strategies(
         list(_located(strategy_rows, registries.STRATEGIES_DIR)),
         kinds=kinds, chains=chains, account_names={a["name"] for a in accounts},
         tags=frozenset().union(*tags.values()), target_sets=target_sets, rules=rules,
-        scenario=scenario, rails=frozenset(rails), issues=issues,
+        scenario=scenario, rails=frozenset(rails), issues=issues, disabled=disabled,
     )
     lots = [
         (m["account_name"], m.get("lot") or registries.DEFAULT_LOT, m.get("symbol") or None,
@@ -5243,6 +5245,11 @@ def _validate_strategies(
             account, _, lot = symbol.partition(":")
             if account in by_account and (account, lot) not in known_lots:
                 unused.append(f"allocations.csv ({symbol}): {account} has no lot '{lot}' here")
+            elif account not in by_account:
+                # Another scenario's account is fine; a case slip isn't.
+                spelled = next((a for a in by_account if a.casefold() == account.casefold()), None)
+                if spelled is not None:
+                    unused.append(f"allocations.csv ({symbol}): names match as written; did you mean {spelled}?")
     return kinds, prepared
 
 

@@ -103,6 +103,19 @@ def test_choose_defaults_to_the_strategy_targets_portfolio_and_band(
     assert list(drift.year_end_rows(by_month).index)[-1] == by_month.index[-1]
 
 
+def test_a_disabled_strategy_still_names_its_targets_and_portfolio(
+    run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """With the strategy switched off, the run's drift is still measured on
+    the portfolio and targets it would steer by (#410), so on and off agree."""
+    con = _con(run_strategy_scenario("alice_rebalance_off"))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM strategy").fetchone()[0] == 0  # not run
+        assert drift.choose(con) == ("main", PORTFOLIO, 5.0)
+    finally:
+        con.close()
+
+
 def test_pick_needs_a_target_set_when_nothing_settles_it() -> None:
     with pytest.raises(ValueError, match="say which target set: a, b"):
         drift.pick([], ["a", "b"])
