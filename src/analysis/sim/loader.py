@@ -1336,6 +1336,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues)
+    _validate_local_tax(tax_rows, aux_rows, calendar_rows, issues)
     _validate_calendar(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -5070,6 +5071,16 @@ TAX_RETIRED_PARAMS: dict[str, str] = {
 """``tax_accumulator`` params a jurisdiction file doesn't take (#507), and why."""
 
 
+def tax_calculator_upstream(kind: str) -> tuple[str, ...]:
+    """The jurisdictions calculator ``kind`` builds on (#508); none for an
+    unknown kind, which is reported on its own."""
+    from analysis.sim import tax_api  # noqa: PLC0415  (the calculators load on first use)
+    try:
+        return tax_api.calculator(kind).upstream
+    except tax_api.TaxError:
+        return ()
+
+
 def _validate_taxes(
     tax_rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
     accounts: list[dict[str, str]], scenario_row: Mapping[str, str], issues: list[str],
@@ -5083,6 +5094,14 @@ def _validate_taxes(
     ``schedule`` with ``april``."""
     defined = [row["name"] for row in tax_rows]
     kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
+    by_name = {row["name"]: row for row in tax_rows}
+    for row in tax_rows:
+        # A jurisdiction paid with another's (local with the state's, #508)
+        # takes its source and destination when its own are blank. Before
+        # either is resolved, so both resolve the same way.
+        if (with_row := by_name.get(registries.TAX_PAID_WITH.get(row["name"], ""))) is not None:
+            for column in ("source_chain", "destination"):
+                row[column] = row.get(column) or with_row.get(column, "")
     for row in tax_rows:
         where = row.get(ORIGIN) or f"{registries.TAXES_DIR}/{row['name']}.csv"
         name = row["name"]
@@ -5091,15 +5110,25 @@ def _validate_taxes(
             fits = [k for k, j in registries.TAX_KINDS.items() if j == name]
             issues.append(f"{where}: kind {kind!r} doesn't compute the {name} tax "
                           f"(it takes kind {', '.join(fits)})")
-        for up in (row.get("upstream") or "").split():
+        # A calculator declares the returns it builds on (#508); the column
+        # may only spell that out, and blank takes it.
+        declared = tax_calculator_upstream(kind)
+        given = (row.get("upstream") or "").split()
+        if given and sorted(given) != sorted(declared):
+            issues.append(
+                f"{where}: upstream must be blank or {' '.join(declared) or 'empty'}: "
+                f"the {kind} calculator builds on {', '.join(declared) or 'no other jurisdiction'}")
+        for up in given or declared:
             if up == name:
                 issues.append(f"{where}: upstream names the jurisdiction itself")
             elif up not in defined:
-                issues.append(f"{where}: upstream {up!r} is not a jurisdiction of this scenario "
-                              f"(it has {', '.join(defined)})")
+                issues.append(
+                    f"{where}: the {kind} calculator builds on the {up} tax, and the scenario has "
+                    f"no {registries.TAXES_DIR}/{up}.csv (add it with `sim tax add {up}`)")
             elif defined.index(up) > defined.index(name):
                 issues.append(f"{where}: upstream {up!r} settles after {name}, so {name} "
                               "can't build on it")
+        row["upstream"] = " ".join(given or declared)
         source = row.get("source_chain", "")
         if not source:
             issues.append(f"{where}: source_chain names the chain or account the tax is paid from")
@@ -5131,6 +5160,42 @@ def _validate_taxes(
         for key, why in TAX_RETIRED_PARAMS.items():
             if key in params:
                 issues.append(f"{where}: params_json takes no {key!r}: {why}")
+
+
+def _validate_local_tax(
+    tax_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    calendar_rows: list[dict[str, str]], issues: list[str],
+) -> None:
+    """A ``state_local_tax__<XX>`` table is read by the local jurisdiction
+    alone (#508), so a scenario with one and no ``taxes/local.csv`` would
+    silently stop paying it. A local file whose params name a
+    ``bracket_series`` of its own keeps reading that table whatever a move
+    swaps, so it can't be used with one: it would charge the old county's
+    tax after the household moved."""
+    local = next((row for row in tax_rows if row["name"] == "local"), None)
+    if local is not None:
+        own = (_safe_json(local.get("params_json")) or {}).get("bracket_series")
+        if own:
+            for where, row in _located(calendar_rows, "calendar.csv"):
+                params = _safe_json(row.get("params_json")) or {}
+                if (row.get("kind") == "swap_aux_table"
+                        and params.get("aux_kind") in ("state_brackets", registries.STATE_LOCAL_TAX)
+                        and (row.get("series") or None) != own):
+                    issues.append(
+                        f"{where}: this move doesn't reach the local tax, whose "
+                        f"{registries.TAXES_DIR}/local.csv names its own bracket_series {own!r}; "
+                        "leave its bracket_series blank to follow the state's tables, which a "
+                        "move swaps")
+        return
+    tables = sorted({series for kind, series, _p, _e in aux_rows
+                     if kind == registries.STATE_LOCAL_TAX and series})
+    if tables:
+        files = ", ".join(f"aux/{registries.STATE_LOCAL_TAX}__{t}.csv" for t in tables)
+        issues.append(
+            f"{files}: a local income tax is its own jurisdiction now, and the scenario has no "
+            f"{registries.TAXES_DIR}/local.csv; add it with `sim tax add local` (it is paid with "
+            "the state's tax)")
 
 
 def _read_strategy_vary_files(

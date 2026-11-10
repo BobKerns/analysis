@@ -299,8 +299,8 @@ def tax_figure(frame: pd.DataFrame, title: str, *, deaths: Sequence[Death] = ())
 def tax_reconciliation_figure(frame: pd.DataFrame, title: str, *,
                               deaths: Sequence[Death] = ()) -> Figure:
     """Each tax year's April settlement (``reports.tax_reconciliation``):
-    the balance due above zero and the refund below, federal and state
-    stacked, with the year's total liability as a line."""
+    the balance due above zero and the refund below, federal, state and
+    local stacked, with the year's total liability as a line."""
     fig = Figure(figsize=_FIGSIZE)
     if frame.empty:
         return _nothing(fig, "tax")
@@ -308,7 +308,8 @@ def tax_reconciliation_figure(frame: pd.DataFrame, title: str, *,
     years = frame.index.astype(str)
     above = pd.Series(0.0, index=frame.index)
     below = pd.Series(0.0, index=frame.index)
-    for scope, label, color in (("fed", "federal", "#9467bd"), ("state", "state", "#e377c2")):
+    for scope, label, color in (("fed", "federal", "#9467bd"), ("state", "state", "#e377c2"),
+                                ("local", "local", "#f7b6d2")):
         due, refund = f"{scope}_due", f"{scope}_refund"
         if due in frame.columns and frame[due].ne(0).any():
             ax.bar(years, frame[due], bottom=above, color=color, label=f"{label} due")
@@ -317,7 +318,7 @@ def tax_reconciliation_figure(frame: pd.DataFrame, title: str, *,
             ax.bar(years, -frame[refund], bottom=below, color=color, alpha=0.5,
                    hatch="//", label=f"{label} refund")
             below = below - frame[refund]
-    liability = frame[[c for c in ("fed_liability", "state_liability") if c in frame.columns]]
+    liability = frame[[c for c in ("fed_liability", "state_liability", "local_liability") if c in frame.columns]]
     if not liability.empty:
         ax.plot(years, liability.sum(axis=1), color="black", marker="o", linewidth=1.5,
                 label="liability")
