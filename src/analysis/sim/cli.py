@@ -189,6 +189,14 @@ def _resolve_state_dir(
     return find_state_dir(data_dir, DEFAULT_STATE_DIR) / default
 
 
+def _note_behind(runs_dir: Path) -> None:
+    """Say once if this workspace's builder branch is behind its upstream
+    (#306, ``builder.note_behind``): a run made now uses code that is."""
+    from analysis.sim import builder
+
+    builder.note_behind(Path(runs_dir).resolve().parent, lambda text: click.echo(text, err=True))
+
+
 def _builds(fn):
     """A command that builds runs: it never waits on the background builder
     (#300, ``locks.building``), even while resolving its scenario."""
@@ -739,6 +747,7 @@ def run(
                       allow_dirty_data=allow_dirty_data, command=f"sim run {scenario_name}")
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+    _note_behind(resolved_runs_dir)
     is_a_pool = resolved_data_dir is not None and is_pool(resolved_data_dir / "scenarios", scenario_name)
     if rebuild and not is_a_pool:
         raise click.UsageError(f"--rebuild is for a pool, and {scenario_name} isn't one")
@@ -3918,6 +3927,7 @@ def all_scenarios(
     skipped: list[str] = []
     code = code_tree()
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved)
+    _note_behind(resolved_runs_dir)
     if disabled := sorted(set(names) & read_disabled_scenarios(resolved)):
         names = [name for name in names if name not in disabled]
         click.echo(f"disabled, not built: {', '.join(disabled)} (`sim run NAME` builds one)")
@@ -17810,6 +17820,9 @@ def builder_status(data_dir: Path | None) -> None:
     trees, reason = builder.main_check(builder.config_branch(config), Path(code) if code else None)
     if trees is None:
         click.echo(f"disabled: {reason}")
+    # Said whether or not it is on: pulling is what brings the newer code (#306).
+    if behind := builder.behind_upstream(builder.config_branch(config), Path(code) if code else None):
+        click.echo(f"behind: {behind.describe()} (git pull, on {behind.branch}, to build with it)")
     status = builder.read_status(paths)
     alive = builder.daemon_alive(paths)
     state = f"{status.get('state', 'running')}, pid {status.get('pid')}" if alive else "not running"
