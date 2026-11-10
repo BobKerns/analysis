@@ -1,0 +1,50 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "sCqdL0pSIA0"
+uploaded = 2026-11-10T01:21:23Z
+scenes = [
+  ["title", 13.71],
+  ["contents", 15.07],
+  ["why-lifespan", 27.16],
+  ["table", 23.64],
+  ["set", 57.52],
+  ["death", 42.16],
+  ["rails", 30.41],
+  ["rail-add", 60.64],
+  ["margins", 21.09],
+  ["rail-report", 43.64],
+  ["rail-mc", 48.52],
+  ["strategy", 24.68],
+  ["respond", 60.56],
+  ["breaches", 25.04],
+  ["respond-compare", 42.84],
+  ["nb", 32.77],
+  ["ai", 21.81],
+  ["end", 7.50],
+]
+
+[ja]
+video = "dcyW3Mzd-yE"
+uploaded = 2026-11-10T01:21:42Z
+scenes = [
+  ["title", 17.33],
+  ["contents", 16.83],
+  ["why-lifespan", 35.02],
+  ["table", 33.47],
+  ["set", 53.84],
+  ["death", 49.71],
+  ["rails", 37.06],
+  ["rail-add", 60.40],
+  ["margins", 24.61],
+  ["rail-report", 43.36],
+  ["rail-mc", 47.84],
+  ["strategy", 29.46],
+  ["respond", 60.36],
+  ["breaches", 27.80],
+  ["respond-compare", 42.92],
+  ["nb", 33.33],
+  ["ai", 25.79],
+  ["end", 8.56],
+]
