@@ -18857,29 +18857,31 @@ def _ask_state(data_dir: Path, scenario: str, prompt: str) -> states.State:
 
 def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | None:
     """The series of the tables a state tax reads for living in ``state``,
-    or None (with why, echoed) for a territory the federal tax stands in for."""
-    if state.status == states.NOT_SUPPORTED:
-        raise click.ClickException(
-            f"{states.label(state.code)} has a tax code of its own the simulator can't "
-            "model; nothing was written")
-    if state.status == states.FEDERAL_RULE:
-        click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
-                   "federal tax stands in for it: no state tax is needed.")
-        return None
-    if state.code in states.GAINS_TAX_ONLY:
-        click.echo(f"{states.label(state.code)} has no income tax; its capital gains tax "
-                   "isn't modeled.")
-        return states.NO_TAX_SERIES
-    if not state.taxes_income:
-        return states.NO_TAX_SERIES
-    if state.code not in names.series_names(data_dir, scenario, "state_brackets"):
+    or None (with why, echoed) for a territory the federal tax stands in for.
+    Tables of its own in the data repo win, as they do in the engine
+    (``states.tax_series``): Washington's, say, for its gains tax."""
+    has_tables = state.code in names.series_names(data_dir, scenario, "state_brackets")
+    if not has_tables:
+        if state.status == states.NOT_SUPPORTED:
+            raise click.ClickException(
+                f"{states.label(state.code)} has a tax code of its own the simulator can't "
+                "model; nothing was written")
+        if state.status == states.FEDERAL_RULE:
+            click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
+                       "federal tax stands in for it: no state tax is needed.")
+            return None
+        if state.code in states.GAINS_TAX_ONLY:
+            click.echo(f"{states.label(state.code)} has no income tax; its capital gains tax "
+                       "isn't modeled.")
+    series = states.tax_series(state.code, has_tables=has_tables)
+    if series == state.code and not has_tables:
         raise click.ClickException(
             f"{states.label(state.code)} has no tax tables here yet. Add "
             f"aux/state_brackets__{state.code}.csv and "
             f"aux/state_standard_deduction__{state.code}.csv to your data repo (the "
             "code repository's templates/aux/README.md says how), then run this again. "
             "Nothing was written.")
-    return state.code
+    return series
 
 
 def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[str, str], dict[str, str] | None]:
@@ -19066,9 +19068,10 @@ def tax_state_command(
         # later of the two in the lineage, written after the residence.
         lineage = load_order(scenario_dir.parent, scenario_name)
         tax_home = max(tax_home, home, key=lineage.index)
-    when = first.row["effective_date"] if first is not None else _scenario_start(data_dir_p, scenario_name)
+    # Dated where it is written: the start of the scenario whose file it is.
+    when = first.row["effective_date"] if first is not None else _scenario_start(data_dir_p, home)
     if not when:
-        raise click.ClickException(f"scenario {scenario_name} has no start; nothing was written")
+        raise click.ClickException(f"scenario {home} has no start; nothing was written")
     row = {"effective_date": when, "state": picked.code, "county": county,
            "description": first.row.get("description", "") if first is not None else ""}
     shown = states.label(picked.code) + (f", county {county}" if county else "")

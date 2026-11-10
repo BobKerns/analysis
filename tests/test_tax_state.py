@@ -121,6 +121,43 @@ def test_the_state_is_set_where_the_residence_is_defined(
     assert _residence(test_child_scenario) == [("2026-05", "NE", "")]
 
 
+def test_the_first_row_is_dated_by_the_scenario_it_is_written_in(
+    test_data_dir: Path, add_tax: Callable[..., Path],
+    retire_alice_csv: Callable[[str], Path], test_child_scenario: Path,
+) -> None:
+    """Written where the federal tax is, the parent, it starts with the
+    parent, not with a child that starts later."""
+    add_tax()
+    path = test_child_scenario / "scenario.csv"
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.loc[0, "start"] = "2027-01-31"
+    frame.to_csv(path, index=False)
+
+    result = _tax(test_data_dir, "state", "CA", "--yes", scenario="child")
+
+    assert result.exit_code == 0, result.output
+    assert _residence(retire_alice_csv("")) == [("2026-05", "CA", "")]
+
+
+def test_a_state_with_tables_of_its_own_is_taxed_by_them(
+    test_data_dir: Path, add_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Washington has no income tax, but tables for it in the data repo (its
+    gains tax, say) are what its state tax reads, as in the engine."""
+    add_tax()
+    write_aux("state_brackets__WA.csv", "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+              + "".join(f"2026-01-31,{s},0,0.00,1%\n" for s in ("Single", "MFJ", "MFS")))
+
+    result = _tax(test_data_dir, "state", "WA", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "capital gains tax isn't modeled" not in result.output
+    assert retire_alice_csv("taxes/state.csv").exists()
+    assert _residence(retire_alice_csv("")) == [("2026-05", "WA", "")]
+    load_test_copy()
+
+
 def test_a_new_state_tax_goes_where_it_sees_the_residence(
     test_data_dir: Path, add_tax: Callable[..., Path], add_residence_to: Callable[..., Path],
     retire_alice_csv: Callable[[str], Path], test_child_scenario: Path,

@@ -189,6 +189,7 @@ def plan(data_dir: Path) -> Plan:
                                 "county": county, "description": ""}
 
     # The moves: each swap of a state table becomes a residence row.
+    replaced: list[tuple[str, str, str]] = []  # (scenario, series replaced, where)
     for name in order:
         folder = scenario_dir(scenarios, name)
         path = folder / "calendar.csv"
@@ -222,6 +223,8 @@ def plan(data_dir: Path) -> Plan:
             swaps.setdefault(month, {})[str(kind)] = str((params or {}).get("source_series", ""))
             if kind == "state_brackets":
                 described[month] = _cell(header, row, "description")
+                if series := _cell(header, row, "series"):
+                    replaced.append((name, series, where))
         if len(kept) == len(rows):
             continue
         own = folder_of(name)
@@ -267,6 +270,18 @@ def plan(data_dir: Path) -> Plan:
         result.writes[path] = _render(header, kept, newline)
         result.report.append(f"{path}: {len(rows) - len(kept)} state table swap(s) -> residence.csv")
 
+    # A swap replaced only the table its series named: the state tax's
+    # bracket_series, where the household started. A scenario that inherits
+    # it but started elsewhere didn't move; as a residence row it would.
+    for name, series, where in replaced:
+        for each in order:
+            if name not in load_order(scenarios, each):
+                continue
+            state = _state_on(folders, scenarios, each, "")
+            if state is not None and state != series:
+                result.problems.append(
+                    f"{where}: replaces {series}'s tables, but scenario {each} starts in "
+                    f"{state}, so it didn't move; fix it by hand")
     for name, own in folders.items():
         if not own.residence:
             continue
@@ -285,15 +300,18 @@ def plan(data_dir: Path) -> Plan:
 
 def _state_on(folders: dict[str, _Folder], scenarios: Path, name: str, month: str) -> str | None:
     """The state the lineage's residence rows have the household in by
-    ``month``: for a county move, which keeps the state."""
+    ``month`` (for a county move, which keeps the state), or with ``month``
+    blank, where it starts."""
     rows: dict[str, dict[str, str]] = {}
     for each in load_order(scenarios, name):
         if each in folders:
             rows.update(folders[each].residence)
     # A row of the same month counts: a parent's move then is where the
     # county is.
-    before = [rows[m]["state"] for m in sorted(rows) if m <= month]
-    return before[-1] if before else None
+    if not month:
+        return rows[min(rows)]["state"] if rows else None
+    lived = [rows[m]["state"] for m in sorted(rows) if m <= month]
+    return lived[-1] if lived else None
 
 
 def apply(result: Plan) -> None:

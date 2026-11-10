@@ -3905,7 +3905,10 @@ def _residence_states(residence_rows: Sequence[Mapping[str, str]], years: Iterab
 def _firing_years(row: Mapping[str, str], start: str, end: str) -> list[int]:
     """The years an annual rule posts in: its ``month_of_year`` (December
     when blank) within both its own dates and the scenario's."""
-    month = int(row.get("month_of_year") or 12)
+    try:  # parsed as the intent writer does
+        month = int(row.get("month_of_year") or 12)
+    except ValueError:
+        return []  # not a month; the intent writer refuses it
     lo = max(row.get("start") or "", start)[:7]
     hi = min(row.get("end") or "9999-12", end or "9999-12")[:7]
     if not lo or hi < lo:

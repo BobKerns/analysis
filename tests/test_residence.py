@@ -256,6 +256,7 @@ def test_a_rule_posts_in_the_years_its_month_falls_within_both_spans() -> None:
     assert _firing_years(rule, "2026-05-31", "2040-12-31") == [2029, 2030]
     assert _firing_years({**rule, "end": ""}, "2026-05-31", "2032-11-30") == [2029, 2030, 2031]
     assert _firing_years({"month_of_year": "3"}, "2026-05-31", "2028-12-31") == [2027, 2028]
+    assert _firing_years({"month_of_year": "Dec"}, "2026-05-31", "2028-12-31") == []
 
 
 def _migration():
@@ -387,3 +388,31 @@ def test_the_migration_reports_what_it_cannot_move(
     (base / "calendar.csv").write_text(CALENDAR + swap, encoding="utf-8")
     problems = _migration().plan(tmp_path).problems
     assert len(problems) == 1 and problem in problems[0]
+
+
+def test_the_migration_checks_which_state_a_swap_replaced(tmp_path: Path) -> None:
+    """A swap replaced the table its series named, the state the household
+    started in: every move after the first names it too. A child starting
+    elsewhere never moved, so the migration can't make it."""
+    def swap(date: str, source: str) -> str:
+        params = json.dumps({"aux_kind": "state_brackets", "source_series": source}).replace('"', '""')
+        return f'{date},swap_aux_table,CA,,"{params}",\n'
+
+    scenarios = tmp_path / "scenarios"
+    base = scenarios / "base"
+    base.mkdir(parents=True)
+    (base / "scenario.csv").write_text("name,start\nbase,2026-05-31\n", encoding="utf-8")
+    _tax_file(base / "taxes" / "state.csv", {"bracket_series": "CA"})
+    (base / "calendar.csv").write_text(
+        "date,kind,series,description,params_json,vary_distribution\n"
+        + swap("2030-07", "WA") + swap("2033-01", "NC"), encoding="utf-8")
+    migration = _migration()
+    assert migration.plan(tmp_path).problems == []
+
+    child = scenarios / "child"
+    child.mkdir()
+    (child / "scenario.csv").write_text("name,start,parent_scenario\nchild,,base\n", encoding="utf-8")
+    _tax_file(child / "taxes" / "state.csv", {"bracket_series": "NY"})
+    problems = migration.plan(tmp_path).problems
+    assert len(problems) == 2
+    assert all("replaces CA's tables, but scenario child starts in NY" in p for p in problems)
