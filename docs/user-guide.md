@@ -1753,7 +1753,13 @@ simulator deletes runs that `.retention.yaml`, in the data dir, no longer
 keeps: by default it keeps each scenario's five newest runs and anything from
 the last seven days, and always its newest and newest successful run. The
 first `sim load` or `sim run` writes the file if it's missing. To keep a
-particular run for good, add its path under `pins:` in that file. The file's
+particular run for good, add its path under `pins:` in that file. If disk
+space matters more than age, uncomment the limits under `space:`: at most
+`max_size` for all of `state/`, or the free space (`min_free`,
+`min_free_percent`) to leave on its disk. When one is breached, older runs,
+batches and builder logs go first, oldest first, sparing only each rule's
+`protected:` items (by default the two newest and anything from the last
+day), pins, and each scenario's newest runs. The file's
 comments explain the rules, and
 [ADR-004 §10](architecture/ADR-004-reproducibility-and-activation.md) has
 the details.

@@ -8,18 +8,29 @@
 #   since: 7 days      made within that long (minutes, hours, days or weeks)
 # Each scenario's newest run and batch, and its newest successful ones, are
 # always kept. Delete a section's rules to keep everything of that kind.
+#
+# A rule's `protected:` list (same terms) keeps an item whatever happens.
+# It matters when a `space` limit below is breached: then more is deleted,
+# oldest first, until the limits hold, sparing only what is protected,
+# always kept, or pinned.
 
 # Ensemble and sensitivity batches' member intents
 # (state/intent/<scenario>/monte-carlo/ and .../sensitivity/).
 intents:
   - keep: 5
     since: 7 days
+    protected:
+      - keep: 2
+      - since: 1 day
 
 # Single run files and ensemble/sensitivity batches (state/runs/; batches in
 # state/runs/<scenario>/monte-carlo/ and .../sensitivity/, counted apart).
 runs:
   - keep: 5
     since: 7 days
+    protected:
+      - keep: 2
+      - since: 1 day
 
 # Runs or batches never to prune, relative to the data repo root (beside
 # state/), e.g. state/runs/<stamp>_<scenario>_<version>.sqlite3. Pinning a
@@ -30,3 +41,15 @@ pins: []
 logs:
   - keep: 7
     since: 30 days
+    protected:
+      - keep: 2
+      - since: 1 day
+
+# Disk limits, checked after each `sim load` and `sim run`. Uncomment any:
+# state/ as a whole may use at most max_size, and at least min_free and
+# min_free_percent must stay free on its disk. Sizes in B, KB, MB, GB or TB
+# (or KiB, MiB, GiB, TiB).
+space:
+  # max_size: 20 GB
+  # min_free: 10 GB
+  # min_free_percent: 5%
