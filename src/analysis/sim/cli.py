@@ -189,6 +189,14 @@ def _resolve_state_dir(
     return find_state_dir(data_dir, DEFAULT_STATE_DIR) / default
 
 
+def _note_behind(runs_dir: Path) -> None:
+    """Say once if this workspace's builder branch is behind its upstream
+    (#306, ``builder.note_behind``): a run made now uses code that is."""
+    from analysis.sim import builder
+
+    builder.note_behind(Path(runs_dir).resolve().parent, lambda text: click.echo(text, err=True))
+
+
 def _builds(fn):
     """A command that builds runs: it never waits on the background builder
     (#300, ``locks.building``), even while resolving its scenario."""
@@ -739,6 +747,7 @@ def run(
                       allow_dirty_data=allow_dirty_data, command=f"sim run {scenario_name}")
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+    _note_behind(resolved_runs_dir)
     is_a_pool = resolved_data_dir is not None and is_pool(resolved_data_dir / "scenarios", scenario_name)
     if rebuild and not is_a_pool:
         raise click.UsageError(f"--rebuild is for a pool, and {scenario_name} isn't one")
@@ -3918,6 +3927,7 @@ def all_scenarios(
     skipped: list[str] = []
     code = code_tree()
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved)
+    _note_behind(resolved_runs_dir)
     if disabled := sorted(set(names) & read_disabled_scenarios(resolved)):
         names = [name for name in names if name not in disabled]
         click.echo(f"disabled, not built: {', '.join(disabled)} (`sim run NAME` builds one)")
@@ -8499,7 +8509,17 @@ def scheduled_add(
     )
 
 
-@scheduled_group_command.command("import-baseline")
+@sim_group_command.group(name="import")
+def import_group_command() -> None:
+    """Bring data from outside sources into a scenario.
+
+    `holdings` sets account balances from a Quicken account-tree report;
+    `transactions` turns Quicken transactions (with the Amazon categorizer's
+    monthly summaries) into expense rules. More sources are planned (#527).
+    """
+
+
+@import_group_command.command("transactions")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -8535,7 +8555,7 @@ def scheduled_add(
               help="Inflation series applied to generated rows ('fixed' for none).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show generated rows without rewriting scheduled.csv.")
-def scheduled_import_baseline(
+def import_transactions(
     scenario: str | None,
     data_dir: Path | None,
     quicken_file: Path | None,
@@ -8550,7 +8570,7 @@ def scheduled_import_baseline(
     series: str,
     dry_run: bool,
 ) -> None:
-    """Replace generated baseline expense rows in scheduled.csv."""
+    """Expense rules from Quicken transactions: replace the generated baseline rows in scheduled.csv."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     data_repo_root = data_dir_p.parent
@@ -11630,7 +11650,7 @@ def sync_account_lots(
         click.echo(f"  + {name}")
 
 
-@account_group_command.command("import-quicken")
+@import_group_command.command("holdings")
 @click.argument("quicken_file",
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--map-file", "map_file",
@@ -11649,7 +11669,7 @@ def sync_account_lots(
               default=None)
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show what would change without writing.")
-def import_quicken(
+def import_holdings(
     quicken_file: Path,
     map_file: Path | None,
     year_end: bool,
@@ -11757,7 +11777,7 @@ def import_quicken(
         rows = df.index[df["account_name"] == name]
         if len(rows) > 1:
             click.echo(
-                f"warning: {name!r} has {len(rows)} lots; import-quicken only "
+                f"warning: {name!r} has {len(rows)} lots; `sim import holdings` only "
                 "updates single-lot accounts, so it was skipped", err=True,
             )
             continue
@@ -17827,6 +17847,9 @@ def builder_status(data_dir: Path | None) -> None:
     trees, reason = builder.main_check(builder.config_branch(config), Path(code) if code else None)
     if trees is None:
         click.echo(f"disabled: {reason}")
+    # Said whether or not it is on: pulling is what brings the newer code (#306).
+    if behind := builder.behind_upstream(builder.config_branch(config), Path(code) if code else None):
+        click.echo(f"behind: {behind.describe()} (git pull, on {behind.branch}, to build with it)")
     status = builder.read_status(paths)
     alive = builder.daemon_alive(paths)
     state = f"{status.get('state', 'running')}, pid {status.get('pid')}" if alive else "not running"

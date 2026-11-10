@@ -316,8 +316,8 @@ The baseline importer combines canonicalized Quicken expenses with Amazon
 monthly summaries and replaces only rows it previously generated:
 
 ```sh
-sim scheduled import-baseline --scenario current --dry-run
-sim scheduled import-baseline --scenario current
+sim import transactions --scenario current --dry-run
+sim import transactions --scenario current
 ```
 
 Generated rows are tagged `generated:expense_baseline` and carry provenance in

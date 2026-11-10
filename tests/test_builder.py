@@ -773,3 +773,65 @@ def test_a_sensitivity_reader_waits_only_for_the_sensitivity_batch(
         "waiting for the background build of base (sensitivity batch) (Ctrl-C to stop waiting)...",
         "the background build of base (sensitivity batch) is done",
     ]
+
+
+# -- #306: saying when local main is behind the last-fetched origin/main --------
+
+
+def _fetched_upstream(repo: git.Repo, files: dict[str, str]) -> None:
+    """``origin/main`` as if a fetch had brought a commit with ``files``,
+    leaving local main where it is."""
+    fetched = "refs/remotes/origin/main" in [ref.path for ref in repo.refs]
+    repo.git.checkout("-B", "upstream", "origin/main" if fetched else "main")
+    _commit(repo, files, "upstream")
+    repo.git.update_ref("refs/remotes/origin/main", "upstream")
+    repo.git.checkout("main")
+    (Path(repo.git_dir) / "FETCH_HEAD").write_text("")
+
+
+def test_main_behind_counts_only_code_commits(code_repo: git.Repo) -> None:
+    assert builder.behind_upstream() is None  # nothing fetched to compare with
+    _fetched_upstream(code_repo, {"docs/guide.md": "two\n"})
+    assert builder.behind_upstream() is None  # docs don't change a build
+    _fetched_upstream(code_repo, {"src/engine.py": "v2\n"})
+    behind = builder.behind_upstream()
+    assert behind is not None and (behind.branch, behind.upstream, behind.commits) == ("main", "origin/main", 1)
+    assert behind.describe() == ("local main is 1 commit behind origin/main in src, templates, "
+                                 "pyproject.toml, uv.lock, as of the last fetch just now")
+    code_repo.git.merge("upstream")
+    assert builder.behind_upstream() is None
+
+
+def test_main_behind_follows_the_tracking_branch(code_repo: git.Repo) -> None:
+    _fetched_upstream(code_repo, {"src/engine.py": "v2\n"})
+    code_repo.git.update_ref("refs/remotes/mirror/main", "main")
+    code_repo.git.config("branch.main.remote", "mirror")
+    code_repo.git.config("branch.main.merge", "refs/heads/main")
+    assert builder.behind_upstream() is None  # mirror/main, not origin/main
+
+
+def test_a_behind_main_is_noted_once_where_the_builder_builds_from_it(
+    pair: tuple[Path, Path], code_repo: git.Repo, builder_on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _code, data_dir = pair
+    paths = BuilderPaths.for_data(data_dir)
+    monkeypatch.setattr(builder, "_noted_behind", set())
+    notes: list[str] = []
+    _fetched_upstream(code_repo, {"src/engine.py": "v2\n"})
+    builder.note_behind(paths.state_dir, notes.append)
+    assert notes == []  # not installed: the builder isn't building from main
+    builder.install(data_dir)
+    with monkeypatch.context() as m:
+        m.setattr(builder, "_noted_behind", set())
+        m.setattr(builder, "main_check", lambda *_a: (None, "code differs from main"))
+        builder.note_behind(paths.state_dir, notes.append)
+    assert notes == []  # off: `sim builder status` says why
+    with monkeypatch.context() as m:
+        m.setattr(builder, "_noted_behind", set())
+        m.setenv(locks.BUILDER_CHILD_ENV, "1")
+        builder.note_behind(paths.state_dir, notes.append)
+    assert notes == []  # not into the builder's log at every build
+    monkeypatch.setattr(builder, "_noted_behind", set())
+    builder.note_behind(paths.state_dir, notes.append)
+    builder.note_behind(paths.state_dir, notes.append)
+    assert len(notes) == 1 and notes[0].startswith("NOTE: local main is 1 commit behind origin/main")
