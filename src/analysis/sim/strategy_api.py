@@ -29,7 +29,7 @@ from typing import (
     TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Union, get_args, get_origin, get_type_hints,
 )
 
-from analysis.sim import tax_api
+from analysis.sim import registries, tax_api
 
 if TYPE_CHECKING:
     import numpy as np
@@ -44,7 +44,7 @@ __all__ = [
     "register", "sale_gain",
 ]
 
-API_VERSION = 8
+API_VERSION = 9
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
@@ -59,7 +59,10 @@ and ``ctx.rail``. 5 (#459) added ``ctx.survival_years``,
 ``people``, ``aux`` and ``portfolio_classes``. 6 (#463) added
 ``ctx.trailing_return`` and :class:`ScenarioView`'s ``portfolio_lots``. 7
 (#507) replaced :class:`ScenarioView`'s ``tax_rules`` (counts by scope) with
-``taxes``, the set of the scenario's tax jurisdictions."""
+``taxes``, the set of the scenario's tax jurisdictions. 8 (#507) renamed
+the tax summary's lines. 9 (#508) made the local tax its own jurisdiction:
+``ctx.tax`` takes ``scope="local"``, the state's estimate no longer includes
+it, and ``last_year``'s ``state_local_tax`` is ``local_tax``."""
 
 
 class StrategyError(Exception):
@@ -290,15 +293,23 @@ _RENAMED_LINES = {
 }
 """The ``tax_year_summary`` lines API 8 renamed (#507), old to new."""
 
+_RETIRED_BUCKETS = {"state_local_tax": ("local_tax", 9)}
+"""Whole buckets a later API retired: the local tax is its own jurisdiction
+since 9 (#508)."""
+
 
 class _LastYear(Mapping[str, int]):
-    """Last year's summary, refusing a bucket name API 8 retired."""
+    """Last year's summary, refusing a bucket name API 8 or 9 retired."""
 
     def __init__(self, summary: Mapping[str, int]) -> None:
         self._summary = summary
 
     def _check(self, key: object) -> None:
         if isinstance(key, str) and key not in self._summary:
+            if key in _RETIRED_BUCKETS:
+                new, version = _RETIRED_BUCKETS[key]
+                raise StrategyError(
+                    f"ctx.tax.last_year has no {key!r} since strategy API {version}: it is {new}")
             scope, _, line = key.partition("_")
             if line in _RENAMED_LINES:
                 raise StrategyError(
@@ -342,8 +353,10 @@ class TaxView:
         self._estimates: dict[str, Any] = {}
 
     def _est(self, scope: str) -> Any:
-        if scope not in ("federal", "state"):
-            raise StrategyError(f"scope must be 'federal' or 'state', not {scope!r}")
+        if scope not in registries.TAX_JURISDICTIONS:
+            raise StrategyError(
+                f"scope must be one of {', '.join(map(repr, registries.TAX_JURISDICTIONS))}, "
+                f"not {scope!r}")
         if scope not in self._estimates:
             self._estimates[scope] = self._estimator(scope)
         return self._estimates[scope]
@@ -365,8 +378,9 @@ class TaxView:
     @property
     def last_year(self) -> Mapping[str, int] | None:
         """Last year's ``tax_year_summary`` buckets, or None before it is
-        settled. A bucket's name from before API 8 is refused, naming the new
-        one, so a strategy written for 7 fails rather than reading 0."""
+        settled. A bucket's name from before API 8 (or ``state_local_tax``,
+        from before 9) is refused, naming the new one, so an older strategy
+        fails rather than reading 0."""
         summary = self._last_year()
         return None if summary is None else _LastYear(summary)
 
