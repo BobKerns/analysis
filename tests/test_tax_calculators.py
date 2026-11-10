@@ -237,6 +237,7 @@ def test_sim_tax_edit_chooses_the_calculator(
 ) -> None:
     add_state_tax()
     tax_module("renters")
+    _tag_rule(retire_alice_csv, "housing", "tax:rent")
 
     def kind() -> str:
         return pd.read_csv(retire_alice_csv("taxes/state.csv"), dtype=str, keep_default_na=False)["kind"][0]
