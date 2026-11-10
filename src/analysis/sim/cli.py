@@ -172,7 +172,7 @@ from analysis.sim.overlay import (
 )
 from analysis.frames import clip_years, index_years, named_rows, row_years
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, ItemType
-from analysis.sim.retention import RetentionError, prune_state
+from analysis.sim.retention import RETENTION_FILENAME, RetentionError, prune_state
 from analysis.sim.schema import connect_sim_file
 
 if TYPE_CHECKING:
@@ -872,6 +872,9 @@ def _prune_state(data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:
         click.echo(f"created {_shown(result.created)} with the default retention rules")
     if result:
         click.echo(result.summary())
+    for shortfall in result.shortfalls:
+        click.echo(f"  warning: {shortfall}; everything left is protected "
+                   f"({RETENTION_FILENAME})", err=True)
 
 
 def _run_loaded(
