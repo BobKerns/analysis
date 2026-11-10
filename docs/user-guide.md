@@ -1419,6 +1419,12 @@ usual rails, how to write them and how to read the results.
 
 ### 4.16 Draw from whatever is overweight (responsive strategies)
 
+**Video.** *Rebalancing* walks through this section with Alice and Bill:
+classing every lot, a target, a strategy that draws and one that invests,
+what it did, and what it buys across an ensemble:
+[English](https://www.youtube.com/watch?v=Id-wps0PVrw),
+[Japanese (日本語)](https://www.youtube.com/watch?v=sd8p2AofnSA).
+
 A chain draws its steps in the order you wrote them, whatever your
 portfolio looks like. A **strategy** decides instead, from the month's
 balances. The built-in `rebalance` keeps a portfolio near a target
