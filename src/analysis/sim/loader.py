@@ -7,6 +7,7 @@ Git-based provenance stamps (ADR-004) are computed via ``analysis.sim.provenance
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import math
 import os
@@ -53,6 +54,7 @@ from analysis.sim.lineage import (
     read_parents,
 )
 from analysis.sim.lineage import scenario_dir as _scenario_dir
+from analysis.sim.param_units import param_units
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -5151,6 +5153,23 @@ def tax_calculator_upstream(kind: str, kinds: tax_code.TaxKinds | None = None) -
     return cls.upstream if cls is not None else ()
 
 
+def _untagged_defaults(cls: type[Any], given: Mapping[str, Any], tags: frozenset[str]) -> list[str]:
+    """A calculator's ``Tag`` params left at their defaults that nothing in
+    the scenario carries (#510): a deduction the household meant to take
+    would otherwise come out zero. A given one was checked with the rest."""
+    units = param_units(cls.Params)
+    out = []
+    for f in dataclasses.fields(cls.Params):
+        unit = units.get(f.name)
+        if unit is None or unit.name != "tag" or f.name in given:
+            continue
+        if isinstance(f.default, str) and f.default not in tags:
+            out.append(f"the {cls.kind} calculator reads tag {f.default!r} (its {f.name!r}), "
+                       "and no account, scheduled rule or calendar row carries it; tag what it "
+                       f"counts, or name another tag in params_json ({f.name!r})")
+    return out
+
+
 def _scenario_tags(
     accounts: Sequence[Mapping[str, str]], scheduled_rows: Sequence[Mapping[str, str]],
     calendar_rows: Sequence[Mapping[str, str]],
@@ -5264,6 +5283,9 @@ def _validate_taxes(
             tags=tags, target_sets=(), accounts={a.get("name", "") for a in accounts},
             check_types=True, tag_carriers="account, scheduled rule or calendar row")
         issues.extend(f"{where}: {problem}" for problem in problems)
+        if not problems:
+            problems = _untagged_defaults(cls, converted, tags)
+            issues.extend(f"{where}: {problem}" for problem in problems)
         if not problems and not set(params) & retired:
             row["params_json"] = json.dumps(converted, sort_keys=True, separators=(",", ":")) \
                 if converted else ""

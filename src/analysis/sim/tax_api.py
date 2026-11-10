@@ -32,12 +32,12 @@ from functools import cached_property
 from typing import Any, ClassVar
 
 from analysis.sim import registries
-from analysis.sim.param_units import Dollars, Percent, Tag
+from analysis.sim.param_units import Dollars, Percent, Tag, percent
 
 __all__ = [
     "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "IncomeItem", "Percent", "Person",
     "Prepared", "Residence", "Return", "SpendingItem", "Tag", "TaxCalculator", "TaxError",
-    "TaxYear", "calculator", "is_registered", "register",
+    "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
 API_VERSION = 1
