@@ -64,7 +64,7 @@ def test_sim_run_writes_a_store_matching_the_member_files_exactly(mc_batch: Path
 def test_store_is_built_on_first_open_and_rebuilt_when_a_member_changes(
     seeded_ensemble_batch: Callable[[str, int], Path],
 ) -> None:
-    """A batch from before the store, or a member file changed since it was
+    """A batch without a store, or a member file changed since it was
     written, is read afresh rather than trusted."""
     batch = seeded_ensemble_batch("recipe", 1)
     assert not series_db_path(batch).exists()
@@ -165,7 +165,7 @@ def test_controls_read_the_last_finished_batch_while_one_builds(
 
     seeded_ensemble_batch("baseline", 1)
     finished = seeded_ensemble_batch("child", 1)
-    building = runs_dir / "child" / "2026-01-02T000000Z"
+    building = runs_dir / "child" / "monte-carlo" / "2026-01-02T000000Z"
     building.mkdir()
     (building / "batch_manifest.json").write_text('{"mode": "monte_carlo"}')
     (building / "member_0000.sqlite3").touch()

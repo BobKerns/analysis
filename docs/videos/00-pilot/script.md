@@ -4,6 +4,9 @@ episode = "Pilot"
 title = "Will the money last?"
 subtitle = "Running Alice's retirement scenario and reading its net worth"
 data = "prototype_data"
+
+[youtube]
+skip = true  # proves the pipeline; not for the channel
 +++
 
 The pilot for #373: the shared title card, one terminal scene, and an

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import csv
 import json
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from analysis.sim import readme, registries, units
+from analysis.sim import chain_edit, readme, registries, units
 from analysis.sim.dates import final_month_for_age
 from analysis.sim.lineage import load_order, read_parents
 from analysis.sim.lineage import scenario_dir as _scenario_dir
@@ -36,7 +37,9 @@ if TYPE_CHECKING:
     from analysis.sim.scenario import ScenarioDate, ScenarioValue
 
 __all__ = [
-    "THIS_SCENARIO", "SHARED",
+    "THIS_SCENARIO", "SHARED", "BUILT_IN",
+    "UNCONFIRMED", "defined_in", "row_origins", "checked_origins", "loader_accounts",
+    "chain_origins", "calendar_origins", "stamped", "reserve_text",
     "CalendarListing", "calendar_listing", "calendar_target", "vary_summary",
     "PersonListing", "person_listing",
     "YtdListing", "ytd_listing",
@@ -51,6 +54,16 @@ SHARED = "shared"
 """``defined_in`` of a file in the data repo's shared folder, outside any scenario."""
 
 
+BUILT_IN = "built in"
+"""``defined_in`` of a row no scenario writes but the loader adds itself: a
+growth account a lot's gains are booked against, or a lot's growth rule."""
+
+
+UNCONFIRMED = "-"
+"""``defined_in`` where the folders no longer match the loaded intent (the
+scenario was edited since its load), shown rather than a wrong guess."""
+
+
 def defined_in(index: int | None, inherited_from: str | None) -> str:
     """Where a row comes from, as the listings show it: :data:`THIS_SCENARIO`,
     the ancestor it is inherited from, or ``overrides <ancestor>`` for the
@@ -58,6 +71,71 @@ def defined_in(index: int | None, inherited_from: str | None) -> str:
     if index is None:
         return inherited_from or ""
     return f"overrides {inherited_from}" if inherited_from else THIS_SCENARIO
+
+
+def row_origins(scenario_dir: Path, filename: str, key: str = "name") -> dict[str, str]:
+    """``defined_in`` of every row of ``filename`` (accounts.csv,
+    scheduled.csv) by ``key``, merged down the load order as the loader and
+    the edit commands merge it (#433)."""
+    return {name: defined_in(found.index, found.inherited_from)
+            for name, found in overlay_rows(scenario_dir, filename, key).items()}
+
+
+def loader_accounts() -> frozenset[str]:
+    """The accounts the loader adds itself (growth and payout counterparties),
+    which are also the source of every rule it adds: a lot's growth rule or
+    payout. What :data:`BUILT_IN` marks."""
+    return frozenset(account.name for account in (
+        *registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.PAYOUT_ACCOUNTS.values()))
+
+
+def checked_origins(origins: Mapping[str, str], names: Sequence[str],
+                    built_in: Collection[str]) -> list[str]:
+    """``origins`` (:func:`row_origins`) lined up with an intent's ``names``,
+    a name the folders don't have marked :data:`BUILT_IN` when it is in
+    ``built_in``. :data:`UNCONFIRMED` throughout when they don't agree -- a
+    row the folders have that the intent lacks, or one the intent has that
+    neither the folders nor the loader explain -- since the scenario was
+    edited after its load and any label could be another row's (#433)."""
+    known = set(names)
+    if not origins.keys() <= known or any(n not in origins and n not in built_in for n in names):
+        return [UNCONFIRMED] * len(names)
+    return [origins.get(name, BUILT_IN) for name in names]
+
+
+def chain_origins(scenarios_dir: Path, scenario: str) -> dict[str, str | chain_edit.AmbiguousChain]:
+    """Where each chain some file defines is defined, as ``sim chain list``
+    shows it, in one pass over the load order: a chain file replaces the
+    whole chain, so the last scenario with a file for it; ``overrides
+    <ancestor>`` when that is ``scenario`` itself and an ancestor has one too.
+    A chain one folder has two files for maps to the
+    ``chain_edit.AmbiguousChain`` the loader would refuse it with."""
+    definers: dict[str, list[str]] = {}
+    ambiguous: dict[str, chain_edit.AmbiguousChain] = {}
+    for each in load_order(scenarios_dir, scenario):
+        folder = _scenario_dir(scenarios_dir, each)
+        for stem, count in Counter(path.stem for path in chain_edit.chain_files(folder)).items():
+            definers.setdefault(stem, []).append(each)
+            if count > 1 and stem not in ambiguous:
+                try:
+                    chain_edit.chain_file(folder, stem)
+                except chain_edit.AmbiguousChain as exc:
+                    ambiguous[stem] = exc
+    origins: dict[str, str | chain_edit.AmbiguousChain] = {
+        name: found[-1] if found[-1] != scenario
+        else defined_in(0, found[-2] if len(found) > 1 else None)
+        for name, found in definers.items()
+    }
+    return {**origins, **ambiguous}
+
+
+def calendar_origins(scenario_dir: Path) -> list[tuple[str, str, str]]:
+    """``(kind, name, defined_in)`` of every merged calendar row, in the order
+    the loader writes them to ``calendar_event`` (the overlay follows the
+    load's own merge), so a caller can line them up with the intent's rows
+    after checking that the kinds and names agree (#433)."""
+    return [(entry.row["kind"], entry.row["name"], defined_in(entry.index, entry.inherited_from))
+            for entry in scenario_calendar_rows(scenario_dir)]
 
 
 # ---------- calendar ----------
@@ -352,12 +430,92 @@ def _referencing_files(data_dir: Path, scenario_dir: Path) -> Iterable[Path]:
             yield from sorted((data_dir / shared).rglob("*.csv"))
 
 
-def itemization_references(data_dir: Path, scenario_dir: Path) -> dict[str, list[ItemizationReference]]:
+_ROW_KEYS: dict[str, tuple[str, ...]] = {
+    "accounts.csv": ("name",),
+    "account_lots.csv": ("account_name", "lot"),
+    "scheduled.csv": ("name",),
+    "year_to_date.csv": ("name",),
+}
+"""The files whose rows a nearer scenario overrides one by one, by these
+columns, as the loader merges them; any other file a nearer one of the
+same path replaces whole."""
+
+
+def _row_key(row: dict[str, str], keys: tuple[str, ...]) -> tuple[str, ...]:
+    """A row's key as the loader merges on it: a blank lot is the default
+    lot (``loader._default_lots``)."""
+    return tuple((row.get(column, "") or registries.DEFAULT_LOT) if column == "lot"
+                 else row.get(column, "") for column in keys)
+
+
+def _csv_rows(path: Path) -> tuple[list[str], dict[int, list[str]]]:
+    """``path``'s header and its rows by line (the header is line 1)."""
+    try:
+        with path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            header = [column.strip() for column in next(reader, [])]
+            return header, {line: cells for line, cells in enumerate(reader, start=2)}
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return [], {}
+
+
+def _overridden(ref: ItemizationReference, data_dir: Path, lineage: list[Path]) -> bool:
+    """Whether a nearer scenario replaces what ``ref`` sits in: its whole
+    file, or, for a file merged row by row, its row's value in that column."""
+    owner = next((i for i, folder in enumerate(lineage) if ref.path.is_relative_to(folder)), None)
+    rel = ref.path.relative_to(data_dir if owner is None else lineage[owner])
+    later = lineage[(-1 if owner is None else owner) + 1:]
+    if owner is not None and rel.parent.parent.name == "chains":
+        # A chain is replaced by name, whichever role folder holds it.
+        nearer = [folder / "chains" / role / rel.name
+                  for folder in later for role in registries.CHAIN_ROLES]
+    else:
+        nearer = [folder / rel for folder in later]
+    nearer = [path for path in nearer if path.is_file()]
+    if not nearer:
+        return False
+    # Only the scenario-level files merge row by row; an itemization or aux
+    # table of the same file name is replaced whole.
+    keys = _ROW_KEYS.get(ref.path.name) if len(rel.parts) == 1 else None
+    if keys is None or owner is None:
+        return True
+    header, rows = _csv_rows(ref.path)
+    row = dict(zip(header, (cell.strip() for cell in rows.get(ref.line, [])), strict=False))
+    key = _row_key(row, keys)
+    for path in nearer:
+        near_header, near_rows = _csv_rows(path)
+        if ref.column.strip() not in near_header:
+            continue
+        for cells in near_rows.values():
+            near = dict(zip(near_header, (cell.strip() for cell in cells), strict=False))
+            if _row_key(near, keys) == key:
+                return True
+    return False
+
+
+def _ignored(ref: ItemizationReference, data_dir: Path, lineage: list[Path]) -> bool:
+    """Whether the loader skips ``ref``'s file: a chain file outside a role
+    folder, or a template whose name starts with ``_``
+    (``loader._read_chain_files``)."""
+    owner = next((folder for folder in lineage if ref.path.is_relative_to(folder)), None)
+    if owner is None:
+        return False
+    rel = ref.path.relative_to(owner)
+    return rel.parts[0] == "chains" and (
+        len(rel.parts) != 3 or rel.parts[1] not in registries.CHAIN_ROLES
+        or ref.path.stem.startswith("_"))
+
+
+def itemization_references(
+    data_dir: Path, scenario_dir: Path, *, effective: bool = False,
+) -> dict[str, list[ItemizationReference]]:
     """Every ``@name`` in a money column (``_money_columns``) of the CSVs
     the scenario reads -- its lineage's folders and the shared aux/ and
     itemizations/ -- by the name it references. A row a later scenario
-    overrides is still reported, in its own file."""
+    overrides is still reported, in its own file, unless ``effective``:
+    then only what the scenario reads, past every override, is."""
     found: dict[str, list[ItemizationReference]] = {}
+    lineage = _lineage_dirs(scenario_dir) if effective else []
     for path in _referencing_files(data_dir, scenario_dir):
         money = _money_columns(path)
         if not money:
@@ -375,6 +533,10 @@ def itemization_references(data_dir: Path, scenario_dir: Path) -> dict[str, list
                             )
         except (OSError, UnicodeDecodeError, csv.Error):
             continue  # the loader reports an unreadable file; a listing skips it
+    if effective:
+        found = {name: kept for name, refs in found.items()
+                 if (kept := [ref for ref in refs if not _ignored(ref, data_dir, lineage)
+                           and not _overridden(ref, data_dir, lineage)])}
     return found
 
 
@@ -408,19 +570,27 @@ def _merged_reserve(lineage: list[Path], name: str) -> tuple[str, bool] | None:
         except json.JSONDecodeError:
             continue
         if isinstance(meta, dict) and "reserve" in meta:
-            raw = meta["reserve"]
-            try:
-                text = f"${units.json_dollars_to_cents(raw) / 100:,.2f}"
-            except ValueError:
-                text = f"{raw!r} (invalid)"
-            return text, folder.name != name
+            return reserve_text(meta["reserve"]), folder.name != name
     return None
 
 
-def _stamped(path: Path | None) -> tuple[Path, datetime] | None:
+def reserve_text(raw: object) -> str:
+    """``meta_json.reserve`` as ``sim scenario show`` prints it."""
+    try:
+        return f"${units.json_dollars_to_cents(raw) / 100:,.2f}"
+    except ValueError:
+        return f"{raw!r} (invalid)"
+
+
+def stamped(path: Path | None) -> tuple[Path, datetime] | None:
+    """``path`` with when it was written; None for no path, or a file gone
+    since it was found (a run pruned or rebuilt meanwhile)."""
     if path is None:
         return None
-    return path, datetime.fromtimestamp(path.stat().st_mtime)
+    try:
+        return path, datetime.fromtimestamp(path.stat().st_mtime)
+    except FileNotFoundError:
+        return None
 
 
 def scenario_show(data_dir: Path, scenario_dir: Path, runs_dir: Path | None) -> ScenarioShow:
@@ -429,10 +599,10 @@ def scenario_show(data_dir: Path, scenario_dir: Path, runs_dir: Path | None) -> 
     each as the load would merge it; and the scenario's latest run file and,
     for an ensemble, its latest batch under ``runs_dir``."""
     # Imported here: analysis.sim.scenario imports the CLI, which imports this.
-    from analysis.sim.scenario import scenario_summaries
+    from analysis.sim.scenario import scenario_summary
 
     name = scenario_dir.name
-    summary = next(s for s in scenario_summaries(data_dir, scenario_dir.parent) if s.name == name)
+    summary = scenario_summary(data_dir, scenario_dir.parent, name)
     parents = read_parents(scenario_dir)
     lineage = _lineage_dirs(scenario_dir)
     # As the loader has it: the scenario's own README.md, even a blank one,
@@ -448,9 +618,9 @@ def scenario_show(data_dir: Path, scenario_dir: Path, runs_dir: Path | None) -> 
     latest = latest_batch = None
     if runs_dir is not None:
         # Describing a scenario doesn't open its run, so it never waits (#300).
-        latest = _stamped(latest_run_path(runs_dir, name, wait=False))
+        latest = stamped(latest_run_path(runs_dir, name, wait=False))
         if summary.is_ensemble:
-            latest_batch = _stamped(latest_ensemble_batch(runs_dir / name, wait=False))
+            latest_batch = stamped(latest_ensemble_batch(runs_dir / name, wait=False))
     return ScenarioShow(
         name=name, path=scenario_dir, description=description,
         parent=parents[0] if parents else None, mixins=parents[1:],

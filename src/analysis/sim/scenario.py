@@ -55,8 +55,12 @@ Each file has two columns:
 - `annual_rate`: the annual rate as a percent, with its sign (`4.5%`).
 
 A file here replaces the parent scenario's file of the same name; a series
-with no file here is inherited from the parent. CPI is the exception: it
+with no file here is inherited from the parent. A file with only its
+header empties the series: this scenario has none, and a scenario built on
+it that reads the series must supply its own. CPI is the exception: it
 lives in `aux/inflation__cpi.csv`, not here.
+
+`sim series list|show|add|edit|delete|revert` read and change these files.
 
 Details: ADR-003 sections 4.1d and 4.4 in the analysis code repository.
 """
@@ -264,27 +268,30 @@ def scenario_summaries(
     field-by-field merge down the load order (ADR-003 §4.5).
     """
     scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
-    summaries = []
-    for name in scenario_list_names(data_dir, scenarios, templates=templates):
-        if is_pool(scenarios, name):
-            summaries.append(_pool_summary(data_dir, scenarios, name))
-            continue
-        mixin_only = is_mixin_only(scenarios, name)
-        # A mix-in only scenario's own lineage's values, not those of the
-        # template it is checked on: mixed in, only its lineage applies.
-        order = lineage_order(scenarios, name) if mixin_only else load_order(scenarios, name)
-        rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in order}
-        summaries.append(ScenarioSummary(
-            mixin_only=mixin_only,
-            name=name,
-            parents=read_parents(scenario_dir(scenarios, name)),
-            description=_one_line_description(scenario_dir(scenarios, name), rows[name]),
-            start=_merged_date(_templates_first(scenarios, rows), name, "start"),
-            end=_merged_date(_templates_first(scenarios, rows), name, "end"),
-            seed=_merged_seed(_templates_first(scenarios, rows), name),
-            ensemble_size=_merged_ensemble_size(rows, name),
-        ))
-    return summaries
+    return [scenario_summary(data_dir, scenarios, name)
+            for name in scenario_list_names(data_dir, scenarios, templates=templates)]
+
+
+def scenario_summary(data_dir: Path, scenarios: Path, name: str) -> ScenarioSummary:
+    """One scenario's :func:`scenario_summaries` entry, without reading the
+    others: for a caller that wants just this one (#433)."""
+    if is_pool(scenarios, name):
+        return _pool_summary(data_dir, scenarios, name)
+    mixin_only = is_mixin_only(scenarios, name)
+    # A mix-in only scenario's own lineage's values, not those of the
+    # template it is checked on: mixed in, only its lineage applies.
+    order = lineage_order(scenarios, name) if mixin_only else load_order(scenarios, name)
+    rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in order}
+    return ScenarioSummary(
+        mixin_only=mixin_only,
+        name=name,
+        parents=read_parents(scenario_dir(scenarios, name)),
+        description=_one_line_description(scenario_dir(scenarios, name), rows[name]),
+        start=_merged_date(_templates_first(scenarios, rows), name, "start"),
+        end=_merged_date(_templates_first(scenarios, rows), name, "end"),
+        seed=_merged_seed(_templates_first(scenarios, rows), name),
+        ensemble_size=_merged_ensemble_size(rows, name),
+    )
 
 
 def _pool_summary(data_dir: Path, scenarios: Path, name: str) -> ScenarioSummary:

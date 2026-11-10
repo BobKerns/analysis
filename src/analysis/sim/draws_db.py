@@ -50,6 +50,7 @@ from analysis.frames import named_rows
 from analysis.sim.correlation import (
     Link, expected_kendall_tau, implied_correlation, score_at, tree_members, tree_root,
 )
+from analysis.sim.drift import has_table
 from analysis.sim.distributions import (
     Discrete, Distribution, Triangular, TruncatedNormal, Uniform, moments,
 )
@@ -57,16 +58,17 @@ from analysis.sim.ensemble import (
     EnsembleError, build_distribution, correlation_links, lifespan_distribution,
     member_run_statuses, read_batch_manifest,
 )
+from analysis.sim.loader import batch_recipe
 from analysis.sim.life_table import LifeTableAge
 from analysis.sim.registries import (
     DATE_MARKER_KIND, LATENT_FACTOR_KIND, LIFE_TABLE_DISTRIBUTION, LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET,
-    RATE_MICROS_CALENDAR_KINDS,
+    RATE_MICROS_CALENDAR_KINDS, STRATEGY_NODE_PREFIX,
 )
 from analysis.sim.schema import SCHEMA_VERSION, connect_sim_file
 
 __all__ = [
     "DRAWS_DB_FILENAME", "DRAWS_DDL", "CHECK_QUANTILES", "build_draws_db", "draws_db_path",
-    "open_draws_db", "draws_frames", "ks_uniform",
+    "open_draws_db", "draws_frames", "ks_uniform", "row_affects",
 ]
 
 DRAWS_DB_FILENAME = "draws.sqlite3"
@@ -112,12 +114,13 @@ CREATE TABLE member (
 CREATE TABLE node (
     component       TEXT NOT NULL,
     name            TEXT NOT NULL,
-    node_kind       TEXT NOT NULL,      -- row | lifespan | factor
+    node_kind       TEXT NOT NULL,      -- row | lifespan | factor | strategy
     calendar_kind   TEXT,               -- a row's calendar kind
-    affects         TEXT,               -- the series, transfer or person it moves
-    target          TEXT NOT NULL,      -- amount | date | age_at_death | factor
+    affects         TEXT,               -- the series, transfer, person or strategy it moves
+    -- amount | date | age_at_death | factor, or a strategy parameter's name
+    target          TEXT NOT NULL,
     -- the stored unit of value and every bound below:
-    -- cents | micros | day_ordinal | years | score
+    -- cents | micros | day_ordinal | years | score | number
     unit            TEXT NOT NULL,
     distribution    TEXT,
     low             REAL,               -- truncated_normal: its clip bounds
@@ -337,22 +340,6 @@ def _member_files(
     return members
 
 
-def _columns(con: sqlite3.Connection, table: str) -> set[str]:
-    return {c[1] for c in con.execute(f"PRAGMA table_info({table})")}
-
-
-def _has_table(con: sqlite3.Connection, table: str) -> bool:
-    return con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,),
-    ).fetchone() is not None
-
-
-def _optional(columns: set[str], column: str, alias: str | None = None) -> str:
-    """``column`` if the table has it, else NULL: member files from before
-    a schema change lack the newer columns, which stay NULL here."""
-    return f"{column} AS {alias or column}" if column in columns else f"NULL AS {alias or column}"
-
-
 def _stored_value(target: str, raw: str) -> float:
     """An ``ensemble_draw.drawn_value`` as a number in its stored unit."""
     if target == "date":
@@ -370,7 +357,8 @@ def _unit(target: str, kind: str | None) -> str:
     return "micros" if kind in RATE_MICROS_CALENDAR_KINDS else "cents"
 
 
-def _affects(row: sqlite3.Row) -> str:
+def row_affects(row: sqlite3.Row) -> str:
+    """What a varying calendar row acts on, in the author's own names."""
     if row["kind"] in ("one_off_transfer", "transfer_balance"):
         return f"{row['account_1']} → {row['account_2']}"
     return row["series"] or row["scheduled_name"] or ""
@@ -378,8 +366,6 @@ def _affects(row: sqlite3.Row) -> str:
 
 def _marker_affects(cur: sqlite3.Cursor, marker: str) -> str:
     """The rows dated from a date marker (#281), by name where they have one."""
-    if "date_refs_json" not in _columns(cur.connection, "calendar_event"):
-        return ""
     dated = [
         r["name"] or f"{r['kind']} {r['series'] or r['scheduled_name'] or ''}".strip()
         for r in cur.execute(
@@ -387,10 +373,6 @@ def _marker_affects(cur: sqlite3.Cursor, marker: str) -> str:
         if any(anchor == marker for anchor, _ in json.loads(r["date_refs_json"]).values())
     ]
     return ", ".join(dated)
-
-
-def _get(row: sqlite3.Row, column: str) -> Any:
-    return row[column] if column in row.keys() else None
 
 
 def _dist_columns(dist: Distribution | LifeTableAge, target: str) -> dict[str, Any]:
@@ -431,12 +413,10 @@ def _node_records(
     and each node's distribution (for ``draw_check``)."""
     links = correlation_links(con)
     in_tree = tree_members(links)
-    tails: dict[str, float] = {}
-    if "vary_tail_dependence" in _columns(con, "calendar_event"):
-        tails = dict(con.execute(
-            "SELECT name, vary_tail_dependence FROM calendar_event "
-            "WHERE vary_tail_dependence IS NOT NULL AND name IS NOT NULL"
-        ).fetchall())
+    tails: dict[str, float] = dict(con.execute(
+        "SELECT name, vary_tail_dependence FROM calendar_event "
+        "WHERE vary_tail_dependence IS NOT NULL AND name IS NOT NULL"
+    ).fetchall())
     cur = con.cursor()
     cur.row_factory = sqlite3.Row
     records: list[dict[str, Any]] = []
@@ -456,9 +436,6 @@ def _node_records(
             row = cur.execute(
                 "SELECT l.*, p.birthdate, p.sex FROM person_lifespan l "
                 "JOIN person p ON p.id = l.person WHERE l.person = ?", (person,),
-            ).fetchone() if "sex" in _columns(con, "person") else cur.execute(
-                "SELECT l.*, p.birthdate, NULL AS sex FROM person_lifespan l "
-                "JOIN person p ON p.id = l.person WHERE l.person = ?", (person,),
             ).fetchone()
             record.update(node_kind="lifespan", affects=person, unit="years")
             if row is not None:
@@ -467,6 +444,20 @@ def _node_records(
                 if distribution:
                     try:
                         dist = lifespan_distribution({**dict(row), "vary_distribution": distribution}, con)
+                    except EnsembleError:
+                        dist = None
+        elif name.startswith(STRATEGY_NODE_PREFIX):
+            row = cur.execute(
+                "SELECT v.*, s.name AS strategy FROM strategy_vary v "
+                "JOIN strategy s ON s.id = v.strategy_id WHERE v.name = ?", (name,),
+            ).fetchone()
+            record.update(node_kind="strategy", affects=row["strategy"] if row else None,
+                          unit=row["unit"] if row else "number")
+            if row is not None:
+                record["outcomes"] = row["vary_outcomes"]
+                if distribution:
+                    try:
+                        dist = build_distribution({**dict(row), "vary_distribution": distribution}, "amount")
                     except EnsembleError:
                         dist = None
         elif target == FACTOR_TARGET:
@@ -481,12 +472,12 @@ def _node_records(
             record.update(node_kind="row", calendar_kind=kind, unit=_unit(target, kind))
             if row is not None:
                 record.update(
-                    affects=_marker_affects(cur, name) if kind == DATE_MARKER_KIND else _affects(row),
-                    outcomes=_get(row, "vary_outcomes"),
-                    ramp_months=_get(row, "vary_ramp_months"), process=_get(row, "vary_process"),
-                    persistence=_get(row, "vary_persistence"),
-                    shock_sd=_get(row, "vary_shock_sd"),
-                    process_start=_get(row, "vary_process_start"), description=row["description"],
+                    affects=_marker_affects(cur, name) if kind == DATE_MARKER_KIND else row_affects(row),
+                    outcomes=row["vary_outcomes"],
+                    ramp_months=row["vary_ramp_months"], process=row["vary_process"],
+                    persistence=row["vary_persistence"],
+                    shock_sd=row["vary_shock_sd"],
+                    process_start=row["vary_process_start"], description=row["description"],
                 )
                 if distribution:
                     try:
@@ -501,15 +492,11 @@ def _node_records(
 
 
 def _member_draws(con: sqlite3.Connection) -> list[sqlite3.Row]:
-    if not _has_table(con, "ensemble_draw"):
-        return []
-    columns = _columns(con, "ensemble_draw")
     cur = con.cursor()
     cur.row_factory = sqlite3.Row
     return cur.execute(
         "SELECT calendar_event_name AS name, vary_target AS target, drawn_value, "
-        f"{_optional(columns, 'quantile')}, {_optional(columns, 'distribution')}, "
-        f"{_optional(columns, 'z')}, {_optional(columns, 'noise')}, {_optional(columns, 'u')} "
+        "quantile, distribution, z, noise, u "
         "FROM ensemble_draw ORDER BY calendar_event_name"
     ).fetchall()
 
@@ -626,7 +613,7 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     # own nodes, so nodes, checks and pairs are kept per component.
     pool = pool_record(batch_dir)
     origin = member_components(batch_dir) or {}
-    own_name = batch_dir.parent.name
+    own_name = batch_recipe(batch_dir)
     component_of = {m.index: origin.get(m.index, own_name) for m in members}
 
     member_rows: list[dict[str, Any]] = []
@@ -636,7 +623,7 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     # A batch whose every member failed to resolve has only its manifest:
     # it still lists them, with no nodes or draws.
     batch: dict[str, Any] = {
-        "ensemble_name": batch_dir.parent.name, "batch": batch_dir.name,
+        "ensemble_name": own_name, "batch": batch_dir.name,
         "mode": manifest.get("mode", "monte_carlo"), "member_count": manifest.get("member_count", len(members)),
     }
     # Each component's nodes are described from member 0 where it is the
@@ -661,9 +648,6 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
             found = con.execute(
                 "SELECT ensemble_name, member_count, seed, recipe_tree_id, mode "
                 "FROM ensemble_manifest"
-            ).fetchone() if "mode" in _columns(con, "ensemble_manifest") else con.execute(
-                "SELECT ensemble_name, member_count, seed, recipe_tree_id, 'monte_carlo' "
-                "FROM ensemble_manifest"
             ).fetchone()
             if found is not None:
                 record["derived_seed"] = found[2]
@@ -674,18 +658,16 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
                     "value": _stored_value(d["target"], d["drawn_value"]),
                     "quantile": d["quantile"], "z": d["z"], "noise": d["noise"], "u": d["u"],
                 })
-            if _has_table(con, "ensemble_tail_scale"):
-                scale_rows += [
-                    {"member_index": m.index, "tree_root": r, "year": y, "scale": s}
-                    for r, y, s in con.execute("SELECT tree_root, year, scale FROM ensemble_tail_scale")
-                ]
-            if _has_table(con, "ensemble_path_shock"):
-                shock_rows += [
-                    {"member_index": m.index, "node": n, "year": y, "noise": e, "score": z,
-                     "scale": s, "shock": k, "rate": r}
-                    for n, y, e, z, s, k, r in con.execute(
-                        "SELECT node, year, noise, score, scale, shock, rate FROM ensemble_path_shock")
-                ]
+            scale_rows += [
+                {"member_index": m.index, "tree_root": r, "year": y, "scale": s}
+                for r, y, s in con.execute("SELECT tree_root, year, scale FROM ensemble_tail_scale")
+            ]
+            shock_rows += [
+                {"member_index": m.index, "node": n, "year": y, "noise": e, "score": z,
+                 "scale": s, "shock": k, "rate": r}
+                for n, y, e, z, s, k, r in con.execute(
+                    "SELECT node, year, noise, score, scale, shock, rate FROM ensemble_path_shock")
+            ]
             if describe_from.get(component) is m:
                 component_nodes[component], component_dists[component] = _node_records(con, draws)
                 component_links[component] = correlation_links(con)
@@ -771,15 +753,12 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
 def _versions(con: sqlite3.Connection) -> dict[str, Any]:
     """code/data versions from a run file's ``simulation_run``, else an
     intent's ``intent_manifest`` (which has no code version of the run)."""
-    if _has_table(con, "simulation_run"):
+    if has_table(con, "simulation_run"):
         row = con.execute("SELECT code_version, data_version FROM simulation_run").fetchone()
         if row is not None:
             return {"code_version": row[0], "data_version": row[1]}
-    if _has_table(con, "intent_manifest"):
-        row = con.execute("SELECT code_version, data_version FROM intent_manifest").fetchone()
-        if row is not None:
-            return {"code_version": row[0], "data_version": row[1]}
-    return {}
+    row = con.execute("SELECT code_version, data_version FROM intent_manifest").fetchone()
+    return {} if row is None else {"code_version": row[0], "data_version": row[1]}
 
 
 # --- reading -----------------------------------------------------------------
@@ -815,17 +794,18 @@ def draws_frames(batch_dir: Path, *, display: bool = True) -> dict[str, pd.DataF
 
 
 def draws_db_current(batch_dir: Path) -> bool:
-    """Whether a batch's draws database exists in the current layout; one
-    built before pools (ADR-009) has no ``member.component`` and is gathered
+    """Whether a batch's draws database exists and was built under this
+    ``SCHEMA_VERSION``; one built under another is a stale cache, gathered
     again."""
     path = draws_db_path(batch_dir)
     if not path.is_file():
         return False
     try:
         with open_draws_db(batch_dir) as con:
-            return "component" in _columns(con, "member")
+            row = con.execute("SELECT schema_version FROM batch").fetchone()
     except sqlite3.Error:
         return False
+    return row is not None and row[0] == SCHEMA_VERSION
 
 
 def components(frames: dict[str, pd.DataFrame]) -> list[str]:

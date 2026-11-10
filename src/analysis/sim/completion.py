@@ -23,14 +23,15 @@ from typing import Any
 import click
 from click.shell_completion import CompletionItem
 
-from analysis.sim import names, registries
+from analysis.sim import names, registries, series_files
 from analysis.sim.loader import read_current_scenario
 
 __all__ = [
     "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
-    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "STRATEGY",
-    "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET",
+    "RULE_TAG", "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES",
+    "SENSITIVITY_ROW", "STRATEGY",
+    "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET", "TAX_JURISDICTION",
     "TARGET_SET_OR_NEW", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
 ]
 
@@ -196,10 +197,32 @@ class PoolComponent(NameType):
 
 
 def _correlate_with(data_dir: Path, scenario: str) -> list[str]:
-    """What a ``vary_correlate_with`` can name: a calendar row, or a
-    person's lifespan node."""
+    """What a ``vary_correlate_with`` can name: a calendar row, a person's
+    lifespan node, or a varied strategy parameter's (#408)."""
     lifespans = [f"{registries.LIFESPAN_NODE_PREFIX}{p}" for p in names.person_ids(data_dir)]
-    return [*names.calendar_row_names(data_dir, scenario), *lifespans]
+    return [*names.calendar_row_names(data_dir, scenario), *lifespans,
+            *names.strategy_vary_nodes(data_dir, scenario)]
+
+
+def _sensitivity_rows(ctx: click.Context, data_dir: Path) -> list[str]:
+    """The rows a sensitivity batch varied (#329): the line's --batch of its
+    ensemble, else its latest sensitivity batch, under --runs-dir or the
+    data repo's state/runs."""
+    from analysis.sim.ensemble import read_batch_manifest
+    from analysis.sim.loader import (
+        DEFAULT_RUNS_DIR, DEFAULT_STATE_DIR, find_batch, find_state_dir, latest_ensemble_batch,
+    )
+
+    scenario = _scenario(ctx, data_dir)
+    if scenario is None or _given(ctx, "mode") == "monte_carlo":
+        return []
+    given = _given(ctx, "runs_dir")
+    runs = Path(given) if given else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
+    batch = _given(ctx, "batch")
+    batch_dir = (find_batch(runs / scenario, batch) if batch
+                 else latest_ensemble_batch(runs / scenario, mode="sensitivity", wait=False))
+    manifest = read_batch_manifest(batch_dir) if batch_dir is not None else None
+    return list((manifest or {}).get("rows", []))
 
 
 def _scenarios(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
@@ -244,10 +267,21 @@ ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=T
 RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
 YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
 STRATEGY = NameType(_in_scenario(names.strategy_names), "strategy")
+TAX_JURISDICTION = NameType(_in_scenario(names.tax_jurisdiction_names), "tax jurisdiction")
 TARGET_SET = NameType(_in_scenario(names.target_set_names), "target set")
 TARGET_SET_OR_NEW = NameType(_in_scenario(names.target_set_names), "target set", check=False)
 STRATEGY_KIND = NameType(lambda ctx, data_dir: names.strategy_kind_names(data_dir), "strategy kind")  # noqa: ARG005
 GUARD_RAIL = NameType(_in_scenario(names.guard_rail_names), "guard rail")
+
+
+def _rail_triggers(ctx: click.Context, data_dir: Path) -> list[str]:
+    """Each guard rail's two margins, as a strategy's ``trigger`` names them (#441)."""
+    rails = _in_scenario(names.guard_rail_names)(ctx, data_dir)
+    return [f"{rail}:{kind}" for rail in rails for kind in ("annual", "cumulative")]
+
+
+# Several, space-separated, so a whole value is never one of the choices.
+TRIGGER = NameType(_rail_triggers, "trigger", check=False)
 # A row may also be picked by its number or by text in it, so any value goes.
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
 # A calendar date: a literal one, or relative to a date marker (#281), whose
@@ -255,9 +289,31 @@ CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", 
 CALENDAR_DATE = NameType(_in_scenario(names.date_marker_names), "date", check=False)
 CORRELATE_WITH = NameType(_in_scenario(_correlate_with), "calendar row or lifespan",
                           plural="calendar rows and lifespans")
+# `sim ensemble sensitivity --row|--attribute`: what the batch varied, which
+# the command checks against the batch itself.
+SENSITIVITY_ROW = NameType(_sensitivity_rows, "varying row", check=False)
 # `sim ensemble draws --node`: a batch draws whatever it drew when it ran,
 # which the command checks against its draws database, not the scenario now.
 DRAW_NODE = NameType(_in_scenario(_correlate_with), "draw node", check=False)
+
+
+class NodePair(NameType):
+    """``--pair A,B``: TAB completes the node after the comma, never the
+    one before it (#330). Not re-asked as one name, which it isn't."""
+
+    def shell_complete(
+        self, ctx: click.Context, param: click.Parameter, incomplete: str,
+    ) -> list[CompletionItem]:
+        first, comma, last = incomplete.partition(",")
+        if not comma:
+            return [CompletionItem(f"{c},") for c in self.choices(ctx)
+                    if c.lower().startswith(first.lower())]
+        return [CompletionItem(f"{first},{c}") for c in self.choices(ctx)
+                if c.lower().startswith(last.lower()) and c != first]
+
+
+# `sim ensemble draws --pair`: two draw nodes, comma-separated.
+DRAW_PAIR = NodePair(_in_scenario(_correlate_with), "draw node", check=False)
 
 
 def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:
@@ -269,6 +325,8 @@ def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:
 TAG = NameType(_in_scenario(names.tag_tokens), "tag")
 # A tag being added: completes from the tags in use, but may be new.
 ANY_TAG = NameType(_in_scenario(names.tag_tokens), "tag", check=False)
+# The rules a spending strategy owns (#387): a tag some scheduled rule carries.
+RULE_TAG = NameType(_in_scenario(names.rule_tags), "rule tag")
 # A filter: a tag or a role:* pattern, which may match nothing.
 TAG_FILTER = NameType(_in_scenario(lambda d, s: [*names.tag_tokens(d, s), *_tag_patterns(d, s)]),
                       "tag", check=False)
@@ -277,11 +335,40 @@ ITEMIZATION = NameType(_in_scenario(names.itemization_names), "itemization",
 LIFE_TABLE = NameType(
     _in_scenario(lambda d, s: names.series_names(d, s, "life_table")), "life table",
 )  # #315: the <name> of an aux life_table__<name>.csv
+def _with_joint(ids: list[str]) -> list[str]:
+    """The persons and the household, ``joint``, which the loader supplies
+    when persons.csv has no row for it."""
+    return [*ids, "joint"] if "joint" not in ids else ids
+
+
 PERSON = NameType(lambda ctx, data_dir: names.person_ids(data_dir), "person")  # noqa: ARG005
 # An account's owner: a person, or both of them.
-OWNER = NameType(lambda ctx, data_dir: [*names.person_ids(data_dir), "joint"], "owner")  # noqa: ARG005
+OWNER = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), "owner")  # noqa: ARG005
+# A rule's person: one person's lifespan, or the household's (`joint`, #368).
+RULE_PERSON = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), "person")  # noqa: ARG005
 # A lot may hold a symbol nothing names yet, and prices can fetch one.
 SYMBOL = NameType(lambda ctx, data_dir: names.symbols(data_dir), "symbol", check=False)  # noqa: ARG005
+
+
+def _expense_categories(ctx: click.Context | None, data_dir: Path | None) -> list[str]:  # noqa: ARG001
+    from analysis.sim.connection import EXPENSE_CATEGORIES
+
+    return list(EXPENSE_CATEGORIES)
+
+
+# Unchecked: a batch may hold a category outside the fixed list, which the
+# command checks against the batch itself.
+EXPENSE_CATEGORY = NameType(_expense_categories, "expense category", check=False)
+
+
+def _states(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
+    from analysis.sim import states
+
+    return [*(s.code for s in states.STATES), *(s.name for s in states.STATES)]
+
+
+# A state's code or name in any case: the command checks it (#483).
+STATE = NameType(_states, "state", check=False)
 AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS), "aux kind")  # noqa: ARG005
 
 
@@ -315,6 +402,21 @@ class SeriesName(NameType):
         super().__init__(lister, "series", plural="series",
                          known=(lambda ctx, data_dir: ["fixed"]) if fixed else None)  # noqa: ARG005
 
+
+
+def _own_series(ctx: click.Context, data_dir: Path) -> Sequence[str]:
+    """The series the scenario has its own file of over an inherited one,
+    emptied or not: what ``sim series revert`` can drop (#471)."""
+    scenario = _scenario(ctx, data_dir)
+    if not scenario:
+        return []
+    wanted = _line_params(ctx).get("kind")
+    return sorted({name for (kind, name), series in series_files.scenario_series(data_dir, scenario).items()
+                   if series.revertible
+                   and (not isinstance(wanted, str) or kind == wanted)})
+
+
+OWN_SERIES = NameType(_own_series, "series", plural="series")
 
 # The types of the params that the guides' field lists turn into options
 # (``scheduled edit``, ``lot add|edit``), by param name.

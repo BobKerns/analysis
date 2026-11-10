@@ -2,7 +2,7 @@
 expenses, gains, economic income, tax and an account's balance history.
 ``net_worth.ipynb`` and ``accounts.ipynb`` show them inline, and ``sim
 networth``, ``sim report ...`` and ``sim account history`` draw them with
-``--graph``. Each takes the frame its report prints, so a chart and its table
+``--chart``. Each takes the frame its report prints, so a chart and its table
 can't disagree. No pyplot, as in ``compare_charts``: a CLI chart must not pick
 a GUI backend."""
 
@@ -33,6 +33,7 @@ CATEGORY_COLORS: Mapping[str, str] = {
     "salary": "#1f77b4", "soc security": "#2ca02c", "investment": "#ff7f0e",
     # expenses
     "housing": "#9467bd", "healthcare": "#d62728", "taxes": "#e377c2", "living": "#17becf",
+    "gifts": "#bcbd22",
     # both sides
     "business": "#8c564b", "other": "#7f7f7f",
 }
@@ -64,7 +65,7 @@ def _nothing(fig: Figure, what: str) -> Figure:
 
 
 def nothing_figure(what: str) -> Figure:
-    """A chart saying there's no ``what`` to chart: what --graph-file writes
+    """A chart saying there's no ``what`` to chart: what --chart-file writes
     when a report has nothing to show, so the file it asked for exists."""
     return _nothing(Figure(figsize=_FIGSIZE), what)
 
@@ -207,7 +208,7 @@ def economic_income_figure(frame: pd.DataFrame, title: str, *,
 
 def income_figure(frame: pd.DataFrame, title: str, *, legend_title: str = "category",
                   deaths: Sequence[Death] = ()) -> Figure:
-    """``sim report income --graph``: the income groups stacked by year, over
+    """``sim report income --chart``: the income groups stacked by year, over
     the economic-income story when the report tells it (not when it shows
     only tagged flows)."""
     story = _story(frame)
@@ -261,17 +262,18 @@ def gains_figure(frame: pd.DataFrame, title: str, *, deaths: Sequence[Death] = (
 
 
 def tax_figure(frame: pd.DataFrame, title: str, *, deaths: Sequence[Death] = ()) -> Figure:
-    """Federal and state tax stacked by year (``reports.tax_by_year``), with
-    the effective rate (total tax over federal AGI) on the right-hand axis."""
+    """Federal, state and local tax (#487) stacked by year
+    (``reports.tax_by_year``), with the effective rate (total tax over
+    federal AGI) on the right-hand axis."""
     fig = Figure(figsize=_FIGSIZE)
-    columns = [c for c in ("fed_tax", "state_tax") if c in frame.columns]
+    columns = [c for c in ("fed_tax", "state_tax", "local_tax") if c in frame.columns]
     if frame.empty or not columns:
         return _nothing(fig, "tax")
     ax = fig.subplots()
-    labels = {"fed_tax": "federal", "state_tax": "state"}
+    labels = {"fed_tax": "federal", "state_tax": "state", "local_tax": "local"}
+    colors = {"fed_tax": "#9467bd", "state_tax": "#e377c2", "local_tax": "#f7b6d2"}
     frame[columns].fillna(0).rename(columns=labels).plot(
-        kind="bar", stacked=True, ax=ax,
-        color=[{"fed_tax": "#9467bd", "state_tax": "#e377c2"}[c] for c in columns])
+        kind="bar", stacked=True, ax=ax, color=[colors[c] for c in columns])
     ax.axhline(0, color="grey", linewidth=0.8)
     _money_axis(ax, title)
     include_zero(ax)
@@ -297,8 +299,8 @@ def tax_figure(frame: pd.DataFrame, title: str, *, deaths: Sequence[Death] = ())
 def tax_reconciliation_figure(frame: pd.DataFrame, title: str, *,
                               deaths: Sequence[Death] = ()) -> Figure:
     """Each tax year's April settlement (``reports.tax_reconciliation``):
-    the balance due above zero and the refund below, federal and state
-    stacked, with the year's total liability as a line."""
+    the balance due above zero and the refund below, federal, state and
+    local stacked, with the year's total liability as a line."""
     fig = Figure(figsize=_FIGSIZE)
     if frame.empty:
         return _nothing(fig, "tax")
@@ -306,7 +308,8 @@ def tax_reconciliation_figure(frame: pd.DataFrame, title: str, *,
     years = frame.index.astype(str)
     above = pd.Series(0.0, index=frame.index)
     below = pd.Series(0.0, index=frame.index)
-    for scope, label, color in (("fed", "federal", "#9467bd"), ("state", "state", "#e377c2")):
+    for scope, label, color in (("fed", "federal", "#9467bd"), ("state", "state", "#e377c2"),
+                                ("local", "local", "#f7b6d2")):
         due, refund = f"{scope}_due", f"{scope}_refund"
         if due in frame.columns and frame[due].ne(0).any():
             ax.bar(years, frame[due], bottom=above, color=color, label=f"{label} due")
@@ -315,7 +318,7 @@ def tax_reconciliation_figure(frame: pd.DataFrame, title: str, *,
             ax.bar(years, -frame[refund], bottom=below, color=color, alpha=0.5,
                    hatch="//", label=f"{label} refund")
             below = below - frame[refund]
-    liability = frame[[c for c in ("fed_liability", "state_liability") if c in frame.columns]]
+    liability = frame[[c for c in ("fed_liability", "state_liability", "local_liability") if c in frame.columns]]
     if not liability.empty:
         ax.plot(years, liability.sum(axis=1), color="black", marker="o", linewidth=1.5,
                 label="liability")
@@ -406,7 +409,7 @@ def balance_history_figure(
 
 def account_history_figure(frame: pd.DataFrame, title: str, *,
                            deaths: Sequence[Death] = ()) -> Figure:
-    """``sim account history --graph``: the balance (``reports.account_history``,
+    """``sim account history --chart``: the balance (``reports.account_history``,
     by month or by year), and a lot's cost basis beside it when the run
     tracks one. A year is drawn at its Dec 31."""
     fig = Figure(figsize=_FIGSIZE)

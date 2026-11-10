@@ -5,6 +5,8 @@ breakpoints."""
 
 from __future__ import annotations
 
+import shlex
+import sqlite3
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -13,18 +15,18 @@ import ipywidgets as widgets
 import pandas as pd
 from IPython.display import clear_output, display
 
-from analysis.frames import by_year_and_label
-from analysis.sim import registries, units
+from analysis.sim import load_warnings, registries, reports, shortfalls, units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
-    comparison_deltas,
     latest_ensemble_batch,
     member_run_statuses,
     risk_summary,
     summary_with_percentiles,
 )
-from analysis.sim.loader import is_ensemble_batch, read_disabled_scenarios
+from analysis.sim.loader import ensemble_batches, read_disabled_scenarios
+from analysis.sim.pool import member_components
+from analysis.sim.ensemble_tables import RecipeTables
 from analysis.sim.ensemble_plots import (
     band_edges,
     ensemble_compare_figure,
@@ -39,6 +41,7 @@ from analysis.sim.notebook_ui.pickers import (
     LotPicker,
     LogLinearModePicker,
     TimeRangePicker,
+    display_warning,
     find_data_dir,
     find_runs_dir,
     note_picks,
@@ -48,7 +51,6 @@ from analysis.sim.readme import description_view
 from analysis.sim.series_db import (
     EnsembleSeries,
     build_series_db,
-    pair_members,
     series_db_current,
     series_db_path,
 )
@@ -59,8 +61,8 @@ __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
     "ensemble_table_widget", "ensemble_guard_rails_widget", "ensemble_guard_rails_table_widget",
-    "ensemble_drift_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
-    "RecipeSeeds", "LoadingIndicator",
+    "ensemble_drift_widget", "ensemble_spending_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
+    "RecipeSeeds", "LoadingIndicator", "batch_load_warnings", "batch_shortfalls",
 ]
 
 
@@ -115,14 +117,7 @@ def settled_batch(runs_dir: Path, recipe: str) -> tuple[Path, list[int]] | None:
     build (#300). Building the controls reads this; only drawing a recipe
     waits. A batch still being built may have no finished member yet, so
     an older batch stands in for it."""
-    from analysis.sim.locks import run_name_key
-
-    recipe_dir = Path(runs_dir) / recipe
-    if not recipe_dir.is_dir():
-        return None
-    batches = sorted((p for p in recipe_dir.iterdir() if is_ensemble_batch(p, "monte_carlo")),
-                     key=lambda p: run_name_key(p.name), reverse=True)
-    for batch_dir in batches:
+    for batch_dir in reversed(ensemble_batches(Path(runs_dir) / recipe, "monte_carlo")):
         indexes = sorted(int(stem.removeprefix("member_"))
                          for stem, status in member_run_statuses(batch_dir).items()
                          if status == "succeeded")
@@ -244,8 +239,11 @@ class EnsembleControls:
                  time_range: TimeRangePicker | None = None,
                  after_tax_picker: AfterTaxPicker | None = None):
         resolved = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+        # Every recipe with a batch, disabled ones too (#300): a widget keeps
+        # a disabled recipe that is its default, and must offer its accounts
+        # and lots (#401).
         accounts, self._recipe_lots, years = recipe_accounts(
-            resolved, list_ensemble_recipes(resolved, find_data_dir(data_dir)),
+            resolved, list_ensemble_recipes(resolved),
         )
         # Spanned here, not as each widget draws: the span would otherwise
         # move the slider mid-draw, and that redraws every widget.
@@ -408,6 +406,85 @@ def _open_recipe(
     return batch_dir, store, len(statuses) - succeeded
 
 
+# Each batch's members' negative-balance warnings, by batch and members
+# read: a member's run file doesn't change once it has succeeded, and a new
+# run of a recipe is a new batch.
+_SHORTFALLS: dict[tuple[Path, tuple[str, ...]], shortfalls.MemberShortfalls] = {}
+
+
+def batch_shortfalls(batch_dir: Path, stems: Sequence[str]) -> shortfalls.MemberShortfalls:
+    """``shortfalls.member_shortfalls`` over ``batch_dir``'s members
+    ``stems`` (#431), read once per batch."""
+    key = (Path(batch_dir).resolve(), tuple(stems))
+    if key not in _SHORTFALLS:
+        _SHORTFALLS[key] = shortfalls.member_shortfalls(
+            batch_dir / f"{stem}.sqlite3" for stem in stems)
+    return _SHORTFALLS[key]
+
+
+def shortfall_message(found: shortfalls.MemberShortfalls) -> str | None:
+    """The ensemble widget's line on its members' negative balances, or
+    None when no member had any."""
+    if not found.with_warnings or found.worst is None:
+        return None
+    worst = found.worst
+    return (f"**{found.with_warnings} of {found.members} members went negative at least "
+            f"once.** Lowest: {found.worst_member}'s {worst.label}, "
+            f"{shortfalls.compact_cents(worst.lowest_cents)} at {worst.lowest_month}. "
+            "A shortfall doesn't stop a run; `sim explain --runfile <member>` lists a member's.")
+
+
+BatchLoadWarnings = tuple[tuple[str | None, Path, load_warnings.LoadWarnings], ...]
+"""What ``batch_load_warnings`` read: (component, member run file, its
+load's warnings), the component None for an ordinary batch."""
+
+_LOAD_WARNINGS: dict[tuple[Path, tuple[str, ...]], BatchLoadWarnings] = {}
+
+
+def batch_load_warnings(batch_dir: Path, stems: Sequence[str]) -> BatchLoadWarnings:
+    """The warnings recorded when ``batch_dir``'s recipe was loaded (#432),
+    read once per batch from one member's run: every member's intent is a
+    copy of its recipe's. A pool's members come from several recipes
+    (ADR-009), so it reads the first member of each component. A member
+    whose file can't be opened (pruned, locked) is left out rather than
+    stopping the widget's chart."""
+    key = (Path(batch_dir).resolve(), tuple(stems))
+    if key not in _LOAD_WARNINGS:
+        components = member_components(batch_dir)
+        first: dict[str | None, str] = {}
+        for stem in stems:
+            component = (components.get(int(stem.removeprefix("member_")), "?")
+                         if components is not None else None)
+            first.setdefault(component, stem)
+        read = []
+        for component, stem in first.items():
+            path = Path(batch_dir) / f"{stem}.sqlite3"
+            try:
+                read.append((component, path, load_warnings.read_file(path)))
+            except sqlite3.Error:
+                continue
+        _LOAD_WARNINGS[key] = tuple(read)
+    return _LOAD_WARNINGS[key]
+
+
+def load_warnings_message(read: BatchLoadWarnings) -> str | None:
+    """The ensemble widget's line counting the warnings ``batch_load_warnings``
+    read, pointing to where they're listed; None when there were none."""
+    warned = [(component, path, found) for component, path, found in read if found.warnings]
+    if not warned:
+        return None
+    explain = "`sim explain --runfile {}`".format
+    if len(warned) == 1 and warned[0][0] is None:
+        _, path, found = warned[0]
+        return (f"**{load_warnings.count_phrase(found)}** when the recipe was loaded: "
+                "`scenario_overview.ipynb` lists them, and so does "
+                f"{explain(shlex.quote(str(path)))}.")
+    lines = "; ".join(f"{component}: {load_warnings.count_phrase(found)} "
+                      f"({explain(shlex.quote(str(path)))})"
+                      for component, path, found in warned)
+    return f"**Load warnings** when the pool's components were loaded: {lines}."
+
+
 AFTER_TAX_NET_WORTH = "After-tax net worth"
 
 
@@ -556,8 +633,15 @@ def ensemble_widget(*_,
         if show_description:
             with RunConnection(batch_dir / f"{store.stems[0]}.sqlite3") as con:
                 description = description_view(con, data_dir=resolved_data_dir)
+        loading.note(f"Reading {recipe}'s negative balances and load warnings")
+        shortfall = shortfall_message(batch_shortfalls(batch_dir, store.stems))
+        warned = load_warnings_message(batch_load_warnings(batch_dir, store.stems))
         clear_output(wait=True)
         display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
+        if shortfall is not None:
+            display_warning(shortfall)
+        if warned is not None:
+            display_warning(warned)
         if description is not None:
             display(description)
         # A pyplot-free Figure, rendered to a PNG here: pyplot's
@@ -809,7 +893,7 @@ def ensemble_drift_widget(*_,
                                      band=band, years=(low, high), deaths=store.base_case_deaths()))
         table = drift.ensemble_drift_table(members, band=band if column == drift.MAX_ABS else None)
         if not table.empty:
-            table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
+            table = time_range.clip(table)
             shares = [c for c in ("past_band", "ever_past") if c in table.columns]
             display(table.style.format({**{c: "{:+.1f}" for c in table.columns if c not in shares},
                                         **dict.fromkeys(shares, "{:.0%}")}))
@@ -827,40 +911,129 @@ def ensemble_drift_widget(*_,
     ])
 
 
-class _Sides:
-    """The recipes a comparison shows, opened: each one's store, and its
-    frames in the dollars shown and, for a reserve, CPI-constant. A recipe
-    without the account shown has no frame."""
+_ALL_SPENDING = "(all spending)"
+
+
+def ensemble_spending_widget(*_,
+                             data_dir: Path | str | None = None,
+                             state_dir: Path | None = None,
+                             runs_dir: Path | str | None = None,
+                             controls: EnsembleControls | None = None,
+                             default: str | None = None,
+                             **__,
+                             ) -> widgets.VBox:
+    """Spending against the plan across an ensemble's members (#408), as
+    ``sim ensemble spending`` shows it: the spread of delivered spending by
+    year with the median plan dashed, then by year the percentiles, CVaR,
+    median share of plan and share of members cut, and the whole-run
+    summary. **Spending** picks one expense category. ``controls`` shares
+    the dollars and the years shown."""
+    from analysis.sim.spending_charts import ensemble_spending_figure
+
+    resolved_data_dir = find_data_dir(data_dir)
+    runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default])
+    dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
+    if _default(recipes, default) is not None:
+        dropdown.value = default
+    controls = controls or EnsembleControls(runs_dir=runs_dir)
+    time_range, dollar_picker = controls.time_range, controls.dollar_picker
+    category = widgets.Dropdown(options=[_ALL_SPENDING], description="Spending:")
+    loading = LoadingIndicator()
+    out = widgets.Output()
+    updating = [False]  # while the category list is refilled for a new recipe
+
+    def _redraw(*_: object) -> None:
+        if updating[0]:
+            return
+        with out:
+            if not dropdown.value:
+                clear_output()
+                return
+            try:
+                _draw(dropdown.value)
+            finally:
+                loading.finish()
+
+    def _draw(recipe: str) -> None:
+        opened = _open_recipe(runs_dir, recipe, loading)
+        if opened is None:
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**No Monte Carlo batch for {recipe}.**"))
+            return
+        batch_dir, store, failed_count = opened
+        offered = [_ALL_SPENDING, *store.spending_categories()]
+        if list(category.options) != offered:
+            updating[0] = True
+            try:
+                kept = category.value if category.value in offered else _ALL_SPENDING
+                category.options = offered
+                category.value = kept
+            finally:
+                updating[0] = False
+        picked = None if category.value == _ALL_SPENDING else category.value
+        mode = DollarMode(dollar_picker.value)
+        loading.note(f"Reading {recipe}'s spending")
+        delivered, budgeted = store.spending(mode, picked)
+        # A household's partial final year counts toward cuts, not dollar figures (#377).
+        partial = store.partial_last_years()
+        low, high = time_range.value
+        what = f"{picked} spending" if picked else "spending"
+        unit = f"{mode.label} dollars"
+        clear_output(wait=True)
+        display(StyledMarkdown(
+            f"{recipe}: {len(store)} member(s)" + (f", {failed_count} failed" if failed_count else "")
+            + f"; {what} against the plan, {unit} (batch {batch_dir.name})"))
+        if delivered.empty:
+            display(StyledMarkdown("_No spending in the members._"))
+            return
+        show_figure(ensemble_spending_figure(
+            reports.without_years(delivered, partial), reports.without_years(budgeted, partial),
+            f"{what.capitalize()} against the plan ({recipe})", ylabel=unit,
+            years=(low, high), deaths=store.base_case_deaths()))
+        table = reports.ensemble_spending_table(delivered, budgeted, partial)
+        table = time_range.clip(table)
+        shares = ("of_plan", "cut")
+        display(table.style.format({**{c: "${:,.0f}" for c in table.columns if c not in (*shares, "members")},
+                                    **dict.fromkeys(shares, "{:.0%}")}))
+        summary = reports.ensemble_spending_summary(delivered, budgeted, store.whole_years(), partial)
+        display(StyledMarkdown(
+            f"Worst whole year per member: median ${summary['worst_year_median']:,.0f}, CVaR 5% "
+            f"${summary['worst_year_cvar05']:,.0f}, 20% ${summary['worst_year_cvar20']:,.0f}. "
+            f"Of plan over the run: median {summary['of_plan_median']:.1%}, worst member "
+            f"{summary['of_plan_worst']:.1%}; years cut {summary['years_cut_mean']:.0%} on average; "
+            f"members ever cut {summary['members_ever_cut']:.0%}."))
+
+    dropdown.observe(_redraw, names="value")
+    note_picks(resolved_data_dir, dropdown)
+    for picker in (category, dollar_picker, time_range):
+        picker.observe(_redraw, names="value")
+    when_cell_is_done(_redraw)
+    return widgets.VBox([
+        dropdown,
+        widgets.HBox([category, dollar_picker, time_range],
+                     layout=widgets.Layout(flex_flow="row wrap", align_items="center")),
+        loading, out,
+    ])
+
+
+class _Sides(RecipeTables):
+    """The recipes a comparison shows, opened from their latest batches, as
+    the widget's controls ask (see ``RecipeTables``)."""
 
     def __init__(self, runs_dir: Path, names: Sequence[str], controls: EnsembleControls,
                  lot: str | None, reserve_field: widgets.Text, loading: LoadingIndicator):
-        self.stores: dict[str, EnsembleSeries] = {}
+        stores: dict[str, EnsembleSeries] = {}
         for name in names:
             opened = _open_recipe(runs_dir, name, loading)
             assert opened is not None  # listed recipes all have a batch
-            self.stores[name] = opened[1]
-        baseline = names[0]
-        self.account, self.lot = controls.account, lot
-        self.after_tax = controls.after_tax
-        self.subject = _subject(self.account, lot, self.after_tax)
-        self.mode = controls.dollar_picker.value
-        self.mode_label = DollarMode(self.mode).label
-        self.reserve = _reserve(reserve_field, self.stores[baseline], self.account)
-        self.frames: dict[str, pd.DataFrame] = {}
-        for name, store in self.stores.items():
-            try:
-                self.frames[name] = store.frame(
-                    self.account, self.mode, lot, after_tax=self.after_tax)
-            except EnsembleError:
-                pass
-        self.cpi_frames: dict[str, pd.DataFrame] = {
-            name: (
-                frame if self.mode == DollarMode.CPI_CONSTANT
-                else self.stores[name].frame(
-                    self.account, DollarMode.CPI_CONSTANT, lot, after_tax=self.after_tax)
-            )
-            for name, frame in self.frames.items()
-        } if self.reserve is not None else {}
+            stores[name] = opened[1]
+        account = controls.account
+        super().__init__(
+            stores, account, lot, controls.dollar_picker.value,
+            _reserve(reserve_field, stores[names[0]], account), after_tax=controls.after_tax)
+        self.subject = _subject(account, lot, self.after_tax)
+        self.mode_label = self.mode.label
 
     def heading(self, baseline: str) -> str:
         heading = (
@@ -870,32 +1043,6 @@ class _Sides:
         if self.reserve is not None:
             heading += f"; reserve ${self.reserve:,.0f} (CPI-constant)"
         return heading
-
-    def pairs(self, baseline: str, variant: str) -> tuple[list[tuple[str, str]], str | None]:
-        return pair_members(self.stores[baseline].member_ids(),
-                            self.stores[variant].member_ids())
-
-    def cpi_pair(self, baseline: str, variant: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-        return (self.cpi_frames[baseline], self.cpi_frames[variant]) if self.cpi_frames else None
-
-    def deltas(self, baseline: str, variant: str, clip: Callable[[pd.DataFrame], pd.DataFrame],
-               ) -> pd.DataFrame:
-        """``variant`` against ``baseline`` by year end, in the years shown."""
-        pairs, _unpaired = self.pairs(baseline, variant)
-        table = year_end_values(clip(comparison_deltas(
-            self.frames[baseline], self.frames[variant], pairs, self.reserve,
-            self.cpi_pair(baseline, variant),
-        )))
-        table.index.name = "year"
-        return table
-
-    def tails(self, clip: Callable[[pd.DataFrame], pd.DataFrame]) -> pd.DataFrame:
-        """Each recipe's tail means and reserve shares, by year end."""
-        return by_year_and_label({
-            name: year_end_values(clip(risk_summary(frame, self.reserve,
-                                                    self.cpi_frames.get(name))))
-            for name, frame in self.frames.items()
-        })
 
     def missing_note(self, names: Sequence[str]) -> StyledMarkdown | None:
         """Which of ``names`` lack the account shown, or None."""
@@ -1109,8 +1256,7 @@ def ensemble_table_widget(*_,
             outputs.append(note)
         compared = [name for name in others if name in sides.frames]
         if baseline in sides.frames and compared:
-            deltas = by_year_and_label({
-                name: sides.deltas(baseline, name, time_range.clip) for name in compared})
+            deltas = sides.deltas_table(baseline, compared, time_range.clip)
             outputs.append(StyledMarkdown(f"### Against {baseline}, by year end"))
             outputs.append(deltas.style.format(_share_format(deltas.columns)))
         if sides.frames:

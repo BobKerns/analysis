@@ -89,6 +89,22 @@ def test_calendar_list_filters_by_kind_or_command_name_and_tag(
     ).output
 
 
+def test_calendar_list_counts_latent_factors_unless_asked_for(
+    sim: Callable[..., Result], derive_scenario: Callable[..., Path],
+) -> None:
+    """#368: the inherited latent factors are counted, not listed, so the
+    dated events stand out; --kind latent_factor lists them."""
+    derive_scenario("child", "retire_alice")
+
+    listed = sim("calendar", "list", "--scenario", "child").output
+    assert "salary_alice" in listed and "core_inflation" not in listed
+    assert "latent factor(s), for ensemble variation, not shown" in listed
+
+    factors = sim("calendar", "list", "--scenario", "child", "--kind", "latent_factor").output
+    assert "core_inflation" in factors and "salary_alice" not in factors
+    assert "not shown" not in factors
+
+
 def test_calendar_list_sums_up_variation(derive_scenario: Callable[..., Path]) -> None:
     child = derive_scenario("child", "retire_alice", files={"calendar.csv": _calendar_csv(
         varying={"date": "2027-01-31", "kind": "set_rate", "series": "Asset_Checking",

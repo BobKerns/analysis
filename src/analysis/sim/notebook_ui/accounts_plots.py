@@ -13,6 +13,8 @@ from IPython.display import clear_output, display
 from ipywidgets import widgets
 import pandas as pd
 
+from analysis.sim import setup_listings
+from analysis.sim.notebook_ui import scenario_view
 from analysis.sim.accounts import CASHFLOW_KINDS, KIND_LABELS, account_summary_by_kind, accounts_dataframe
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.connection import RunConnection, ScenarioConnection
@@ -180,7 +182,8 @@ def to_month(date: str) -> str:
 
 def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, **_):
     """
-    Show the account setup for the given scenario as of the specified date.
+    Show the account setup for the given scenario as of the specified date,
+    with where each account is defined (``defined_in``).
 
     Parameters
     ----------
@@ -195,6 +198,10 @@ def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, *
         The output widget containing the account setup display.
     """
     df = accounts_dataframe(scenario, as_of=as_of).copy()
+    # Where each account comes from, as the edit commands find it (#433); an
+    # account in no accounts.csv is one the loader adds itself.
+    df["defined_in"] = scenario_view.checked_origins(
+        scenario, "accounts.csv", list(df.index), setup_listings.loader_accounts())
     output = widgets.Output()
     with output:
         display(account_summary_by_kind(df).style.format({
@@ -216,3 +223,30 @@ def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, *
                 ))
     return output
 
+
+
+def basis_step_up_table(rc: RunConnection, **_):
+    """The run's basis step-ups at a death (#434), one row per lot: the
+    month, whose death, the lot, its balance, its basis before and after, and
+    the rule that decided how much stepped up. An empty widget when the run
+    has none: Connections.show clears with wait=True, which takes effect only
+    once something is displayed, so returning None would leave the last
+    scenario's table up. For an ensemble, the run shown is member 0's, as
+    the death lines on its charts are."""
+    found = rc.basis_step_ups()
+    if not found:
+        return widgets.HTML()
+    frame = pd.DataFrame({
+        "month": [s.month[:7] for s in found],
+        "person": [s.display for s in found],
+        "account": [s.account for s in found],
+        "balance": [s.balance_cents / 100 for s in found],
+        "basis before": [s.basis_before_cents / 100 for s in found],
+        "basis after": [s.basis_after_cents / 100 for s in found],
+        "rule": [s.rule_label for s in found],
+    })
+    money = "${:,.2f}"
+    return (frame.style
+            .hide(axis="index")
+            .set_caption(f"Basis step-ups at a death - {rc.label}")
+            .format({"balance": money, "basis before": money, "basis after": money}))

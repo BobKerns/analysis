@@ -97,12 +97,14 @@ loaded.
 | Stop a rule on a date | `sim calendar add retire-scheduled 2030-12 RULE`, or `sim scheduled edit RULE --end 2030-12` |
 | Drop an inherited rule | `sim scheduled delete RULE --yes` (in a child, ends it before the start) |
 | A rate from a date | `sim calendar add set-rate 2027-01 SERIES 4.5`; a negative one as `sim calendar add set-rate --scenario NEW -- 2033-01 SERIES -1` (options before the `--`) |
+| A rate series' own rows | `sim series edit SERIES --set 2030-01=3.5%` (in a child, writes an override), or a new one: `sim series add NAME --kind rate --rate 5%` |
+| Make a child supply its own series | `sim series delete SERIES --yes` (empties the inherited one; `sim series revert SERIES` undoes it) |
 | A new account | `sim account add NAME asset cash --owner joint --opening-balance 10000` (always give `--owner`) |
 | A holding at the start | `sim account lot add ACCOUNT LOT --opening-balance 5000` (or `--symbol --quantity`) |
 | A one-time transfer: windfall, gift, sale | `sim transfer add 2032-06 FROM TO 25000 --tax-character none` |
 | Move a whole balance (rollover) | `sim calendar add transfer-balance ...` |
 | An investment later | `sim invest SOURCE ACCOUNT LOT --symbol SYM --amount 10000 --date 2027-03` |
-| A Roth conversion, once or each year | `sim invest TRAD ROTH LOT --subkind roth_ira ...`, or `sim scheduled add 2029-01 TRAD ROTH --from-lot default --to-lot default --kind fill_bracket --rate 22% --end 2037-12` (needs a federal `tax_accumulator` rule in the lineage) |
+| A Roth conversion, once or each year | `sim invest TRAD ROTH LOT --subkind roth_ira ...`, or `sim scheduled add 2029-01 TRAD ROTH --from-lot default --to-lot default --kind fill_bracket --rate 22% --end 2037-12` (needs `taxes/federal.csv` in the lineage: `sim tax add federal`) |
 | Moving state | `sim calendar add swap-aux-table ...` (user guide §4.8) |
 | Lifespan | `sim person lifespan set PERSON 92` |
 | Guard rails | `sim guard-rail add NAME --measure ... --side ... --basis ... --threshold ... --sense ...`, `sim guard-rail edit NAME --threshold ...` |

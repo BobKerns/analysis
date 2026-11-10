@@ -4,6 +4,24 @@ episode = "Video 1"
 title = "What it does, and how it works"
 subtitle = "A tour with Alice and Bill"
 data = "prototype_data"
+
+[youtube]
+title = "Introduction"
+summary = """
+A tour of the retirement simulator with Alice and Bill: the questions it \
+helps answer, how it models a household month by month, and how one plan \
+becomes many possible futures."""
+contents = [
+  "The questions it helps answer: when to retire, how much to spend, which investments, when to sell the house",
+  "A month-by-month model of the household, with each year's taxes",
+  "Start simple: a plain model over one future already answers real questions; add detail as you need it",
+  "Your data stays yours: plain text files on your own computer, with their history",
+  "Scenarios that build on each other",
+  "Running a plan, and a first look at the result (sim run, sim explain)",
+  "Net worth, after tax (sim networth)",
+  "Reports, comparisons and notebooks",
+  "Ensembles: the same plan through many futures (sim ensemble summary)",
+]
 +++
 
 The first video of #366 (issue #367): the questions the simulator answers,
@@ -66,6 +84,29 @@ month: paychecks and Social Security coming in, spending going out, and money
 moving between accounts by rules you write. It works out the taxes each
 year, including required minimum distributions and Medicare's income
 surcharge, so the answer is what you could actually spend.
+
+## Scene `simple`: Start simple
+
+```slide
+template = "card"
+heading = "Start simple, add detail as you go"
+body = [
+  "A few accounts, income and spending",
+  "One future, with average markets",
+  "Each year's taxes worked out for you",
+  "More detail only when a question needs it",
+]
+speaker = "bill"
+```
+
+That may sound like a lot to set up, but you don't need all of it at once.
+A simple question gets a simple model: a few accounts, your income and your
+spending, played forward over one future with average markets. Even that
+tells you a lot. Much of it comes for free: add one tax rule, and each
+year's tax is worked out for you, from the brackets to how each kind of
+income is taxed. When a question needs more, add more: how each account is
+invested, selling the house, a market crash, or many futures at once. Each
+step builds on what you already have.
 
 ## Scene `data`: Your data stays yours
 
@@ -187,6 +228,7 @@ Sleep 23s
 One run is one possible future, with average markets and average inflation.
 The real future won't be average. An ensemble runs the same plan many
 times, each with its own market returns and inflation, drawn at random.
+You don't need one to begin; it's for when the question is about risk.
 Alice crisis is retire alice run through eighty futures, each with a crash
 like 2008's, landing some time between 2028 and 2034, right around their
 retirements. The summary shows the spread, year by year: the median, the
@@ -205,4 +247,7 @@ speaker = "alice"
 ```
 
 Next time: getting the simulator running on your own computer, and making
-your data folder.
+your data folder. Videos two and three take you to a first plan of your
+own, and that already answers real questions. Each video after that adds
+one kind of detail, all the way to strategies that respond to the markets
+as they go. Watch them when your questions call for them.

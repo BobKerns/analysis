@@ -16,7 +16,7 @@ import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from analysis.sim import registries
+from analysis.sim import registries, series_files
 from analysis.sim.asset_classes import is_lot_key
 from analysis.sim.lineage import (
     TEMPLATE_AUX_DIR, is_pool, load_order, pool_components, reading_order, scenario_dir, template_names,
@@ -164,27 +164,41 @@ def series_names(data_dir: Path, scenario: str, kind: str | None = None) -> list
     """The series of ``kind`` (``rate``, ``inflation``, ...), or of any kind,
     that the scenario's ``series/`` and ``aux/`` folders and the shared
     ``aux/`` (and the code repository's ``templates/aux/``, #317) have a
-    file for: ``<kind>__<name>.csv``."""
+    file for: ``<kind>__<name>.csv``. A rate or inflation series the
+    scenario has emptied (``sim series delete``, #471) is left out, since it
+    has no rates here."""
     folders = [TEMPLATE_AUX_DIR, data_dir / "aux"]
     for d in _lineage_dirs(data_dir, scenario):
         folders += [d / "series", d / "aux"]
-    names = set()
+    found: set[tuple[str, str]] = set()
     for stem in _stems(folders, f"{kind}__*.csv" if kind else "*__*.csv"):
-        names.add(stem.split("__", 1)[1])
-    return sorted(names)
+        kind_of, _, name = stem.partition("__")
+        found.add((kind_of, name))
+    emptied = {key for key, series in series_files.scenario_series(data_dir, scenario).items()
+               if series.empty}
+    return sorted({name for _, name in found - emptied})
 
 
-def tag_tokens(data_dir: Path, scenario: str) -> list[str]:
+def tag_tokens(
+    data_dir: Path, scenario: str,
+    filenames: tuple[str, ...] = ("accounts.csv", "scheduled.csv", "calendar.csv"),
+) -> list[str]:
     """Every ``role:name`` tag on the scenario's accounts, rules and
-    calendar rows. A malformed token is skipped."""
+    calendar rows (or just ``filenames``'). A malformed token is skipped."""
     tokens: set[str] = set()
     for d in _lineage_dirs(data_dir, scenario):
-        for filename in ("accounts.csv", "scheduled.csv", "calendar.csv"):
+        for filename in filenames:
             for row in _rows(d / filename):
                 tokens.update(
                     t for t in row.get("tags", "").split() if registries.TAG_TOKEN_RE.match(t)
                 )
     return sorted(tokens)
+
+
+def rule_tags(data_dir: Path, scenario: str) -> list[str]:
+    """Every ``role:name`` tag on the scenario's scheduled rules: what a
+    spending strategy's ``rules`` column names (#387)."""
+    return tag_tokens(data_dir, scenario, ("scheduled.csv",))
 
 
 def symbols(data_dir: Path) -> list[str]:
@@ -205,8 +219,31 @@ def symbols(data_dir: Path) -> list[str]:
 
 
 def strategy_names(data_dir: Path, scenario: str) -> list[str]:
-    """The scenario's strategies.csv rows, its own and inherited (#326)."""
-    return _column((d / "strategies.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
+    """The scenario's strategies, its own and inherited (#326): a file each
+    in ``strategies/`` (#408)."""
+    dirs = _lineage_dirs(data_dir, scenario)
+    return sorted(_stems(d / registries.STRATEGIES_DIR for d in dirs))
+
+
+def tax_jurisdiction_names(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's tax jurisdictions, its own and inherited: a file each
+    in ``taxes/`` (#507), in the order they settle."""
+    found = _stems(d / registries.TAXES_DIR for d in _lineage_dirs(data_dir, scenario))
+    return [name for name in registries.TAX_JURISDICTIONS if name in found]
+
+
+def strategy_vary_nodes(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's varied strategy parameters' correlation nodes,
+    ``strategy:<name>.<param>`` (#408), its own and inherited."""
+    found: dict[str, list[str]] = {}
+    for d in _lineage_dirs(data_dir, scenario):
+        folder = d / registries.STRATEGY_VARY_DIR
+        if folder.is_dir():
+            for path in folder.glob("*.csv"):
+                if not path.stem.startswith("_"):
+                    found[path.stem] = [row["param"] for row in _rows(path) if row.get("param")]
+    return sorted(f"{registries.STRATEGY_NODE_PREFIX}{name}.{param}"
+                  for name, params in found.items() for param in params)
 
 
 def target_set_names(data_dir: Path, scenario: str) -> list[str]:

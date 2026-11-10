@@ -15,6 +15,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 
 from analysis.sim.drift import MAX_ABS
+from analysis.frames import clip_years
 from analysis.sim.plotting import mark_deaths
 from analysis.sim.types import Death
 
@@ -26,13 +27,6 @@ _ZERO = {"color": "black", "linewidth": 0.8, "linestyle": "--"}
 
 def _dates(index: pd.Index) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(pd.to_datetime([str(m) for m in index]))
-
-
-def _clip(frame: pd.DataFrame, years: tuple[int, int] | None) -> pd.DataFrame:
-    if years is None or frame.empty:
-        return frame
-    year = np.array([int(str(m)[:4]) for m in frame.index])
-    return frame[(year >= years[0]) & (year <= years[1])]
 
 
 def _band(ax, band: float | None) -> None:
@@ -55,7 +49,7 @@ def drift_figure(
     strategy decided (``decisions``, ISO months)."""
     fig = Figure(figsize=(11, 5), layout="constrained")
     ax = fig.add_subplot()
-    shown = _clip(frame, years)
+    shown = clip_years(frame, years)
     if shown.empty:
         ax.text(0.5, 0.5, "No months to show.", ha="center", transform=ax.transAxes)
         return fig
@@ -81,7 +75,7 @@ def drift_compare_figure(
 ) -> Figure:
     """Runs side by side against one target set: a panel per asset class and
     one of ``max_abs``, a line per run (the first is the baseline)."""
-    clipped = {name: _clip(frame, years) for name, frame in frames.items()}
+    clipped = {name: clip_years(frame, years) for name, frame in frames.items()}
     classes: list[str] = []
     for frame in clipped.values():
         classes += [c for c in frame.columns if c != MAX_ABS and c not in classes]
@@ -118,7 +112,7 @@ def drift_fan_figure(
     median line and shaded quantile bands between the outer and inner pairs."""
     fig = Figure(figsize=(11, 5), layout="constrained")
     ax = fig.add_subplot()
-    shown = _clip(members, years)
+    shown = clip_years(members, years)
     if shown.empty:
         ax.text(0.5, 0.5, "No months to show.", ha="center", transform=ax.transAxes)
         return fig

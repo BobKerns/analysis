@@ -13,17 +13,26 @@ nothing from later months: future rates and calendar rows aren't in its view.
 
 from __future__ import annotations
 
+import dataclasses
+
 import json
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
-from datetime import date
+from collections.abc import Callable, Collection, Iterator, Mapping
+from datetime import date, timedelta
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
-from analysis.sim.asset_classes import class_weights, weight_sets, weights_at
+import numpy as np
+
+from analysis.sim import guard_rails, life_table, registries
+from analysis.sim.dates import add_month_ends
+from analysis.sim.asset_classes import GROWTH_SERIES_SQL, class_weights, weight_sets, weights_at
+from analysis.sim.measures import RailYears
 from analysis.sim.strategy_api import (
-    ChainView, Context, Decision, LotRef, LotView, Put, StepView, Strategy, StrategyError, Take,
+    BreachView, ChainView, Context, Decision, History, LotRef, LotView, Mortality, PersonView, Put, Realize,
+    RuleView, Spend, StepView, Strategy, StrategyError, Take, TaxView, Transfer,
 )
+from analysis.sim.types import DollarMode
 from analysis.sim.strategy_code import StrategyKinds
 
 __all__ = ["Owned", "StrategyRuntime"]
@@ -36,10 +45,15 @@ class Owned(NamedTuple):
     name: str
     kind: str
     strategy: Strategy
-    chain_id: int
+    chain_id: int | None
     role: str
     start: str | None
     end: str | None
+    rules: tuple[int, ...] = ()
+    """The scheduled rules it owns by tag (#387)."""
+
+    def active(self, month_s: str) -> bool:
+        return not (self.start and month_s < self.start) and not (self.end and month_s > self.end)
 
 
 class _LotInfo(NamedTuple):
@@ -78,6 +92,80 @@ class _Lots(Mapping[LotRef, LotView]):
         return ref in self._refs
 
 
+class _TableMortality(Mortality):
+    """``ctx.survival_years``, ``life_expectancy`` and ``rmd_divisor`` from
+    the intent's aux tables (#459). Each person is read from the life table
+    their lifespan row names, with its set-forward (the household's stated
+    mortality, solved at load and never redrawn), else ``life_table.csv``.
+    The lifespan's ``final_month``, which an ensemble member draws, is never
+    read: planning to it would be foreknowledge."""
+
+    def __init__(self, con: sqlite3.Connection) -> None:
+        self._con = con
+        self._birth: dict[str, date] = {}
+        self._sex: dict[str, str | None] = {}
+        for pid, birth, sex in con.execute("SELECT id, birthdate, sex FROM person"):
+            if birth:
+                self._birth[pid] = date.fromisoformat(birth)
+            self._sex[pid] = sex or None
+        self._lifespan: dict[str, tuple[str | None, float]] = {
+            pid: (name or None, forward or 0.0) for pid, name, forward in con.execute(
+                "SELECT person, life_table, life_table_set_forward FROM person_lifespan")}
+        self._curves: dict[tuple[str, date], list[float]] = {}
+
+    def _curve(self, person: str, month: date) -> list[float]:
+        key = (person, month)
+        curve = self._curves.get(key)
+        if curve is None:
+            birth = self._birth.get(person)
+            sex = self._sex.get(person)
+            if birth is None or sex is None:
+                raise StrategyError(f"{person} needs a birthdate and a sex in persons.csv for a life table")
+            name, forward = self._lifespan.get(person, (None, 0.0))
+            try:
+                table = life_table.life_table_in(self._con, sex, month.isoformat(), name)
+            except life_table.LifeTableError as e:
+                raise StrategyError(str(e)) from None
+            curve = self._curves[key] = life_table.survival_curve(
+                table, life_table.months_since_birth(birth, month), forward)
+        return curve
+
+    def survival_years(self, probability: float, people: tuple[str, ...], month: date) -> int:
+        curves = [self._curve(p, month) for p in people]
+        longest = max(len(c) for c in curves)
+        for years in range(1, longest // 12 + 2):
+            k = 12 * years - 1
+            none_alive = 1.0
+            for c in curves:
+                none_alive *= 1.0 - (c[k] if k < len(c) else 0.0)
+            if 1.0 - none_alive < probability:
+                return years
+        return longest // 12 + 1
+
+    def life_expectancy(self, person: str, month: date) -> float:
+        curve = self._curve(person, month)
+        alive = [1.0, *curve]
+        return sum((a + b) / 2 for a, b in zip(alive, alive[1:], strict=False)) / 12
+
+    def rmd_divisor(self, person: str, month: date) -> float | None:
+        # Read each time, not cached: a swap_aux_table event can replace the
+        # table mid-run. The lookup matches the rmd rule's: the latest row in
+        # force for this age (engine._lookup_rmd_factor).
+        birth = self._birth.get(person)
+        if birth is None:
+            raise StrategyError(f"rmd_divisor: {person} has no birthdate")
+        age = month.year - birth.year
+        found = None
+        for _effective, payload_json in self._con.execute(
+                "SELECT effective_date, payload_json FROM aux_table "
+                "WHERE kind = 'rmd_factors' AND series IS NULL AND effective_date <= ? "
+                "ORDER BY effective_date, id", (month.isoformat(),)):
+            payload = json.loads(payload_json)
+            if int(payload.get("age", -1)) == age:
+                found = payload["factor_micros"] / 1_000_000
+        return found
+
+
 class StrategyRuntime:
     """Everything the engine needs to ask a run's strategies."""
 
@@ -89,20 +177,70 @@ class StrategyRuntime:
         leaf_lot: Mapping[int, int],
         members: Mapping[int, list[tuple[Any, ...]]],
         roth_qualified: Callable[[int, date], bool | None],
+        end: date | None = None,
+        rule_budget: Callable[[int, date], int] | None = None,
+        growth_sources: frozenset[int] = frozenset(),
+        opening_balances: Mapping[int, int] | None = None,
+        first_month: date | None = None,
+        acquired: Mapping[int, date | None] | None = None,
+        roth_lots: Collection[int] = (),
     ) -> None:
         rows = con.execute(
-            'SELECT id, name, kind, chain_id, start, "end", params_json FROM strategy ORDER BY id'
+            'SELECT id, name, kind, chain_id, rule_tag, start, "end", params_json '
+            "FROM strategy ORDER BY id"
         ).fetchall()
         self.owned: dict[int, Owned] = {}
+        """Strategies by the chain they own."""
+        self.by_rule: dict[int, Owned] = {}
+        """Strategies by the scheduled rule they own."""
+        self.strategies: list[Owned] = []
         self.memory: dict[int, dict[str, Any]] = {}
+        self.tax: Any = None
+        """The engine's ``_StrategyTax``, which ``ctx.tax`` reads (#421)."""
         if not rows:
             return  # nothing to ask: skip building the views
+        self._con = con
+        self._end = end
+        self._rule_budget = rule_budget
+        self._growth_sources = growth_sources
+        self._opening = dict(opening_balances or balances)
+        self._first_month = first_month
+        # The CPI index at each month end so far; 1.0 before the first month.
+        self._cpi_index: dict[date, int] = {}
+        self._started: set[int] = set()
+        # ctx.people, made once a month: it changes only with the month.
+        self._people_month: tuple[date, Mapping[str, PersonView]] | None = None
+        self._mortality = _TableMortality(con)
+        self._people = [
+            (pid, role or None, date.fromisoformat(birth) if birth else None)
+            for pid, role, birth in con.execute("SELECT id, role, birthdate FROM person ORDER BY id")
+        ]
+        self._final_month = {
+            person: date.fromisoformat(final)
+            for person, final in con.execute("SELECT person, final_month FROM person_lifespan")
+        }
+        self._rules: dict[int, tuple[str, str, int | None, int | None, int, str | None]] = {
+            tid: (name, kind, frm, to, amount or 0, series)
+            for tid, name, kind, frm, to, amount, series in con.execute(
+                "SELECT id, name, amount_rule_kind, from_account, to_account, amount_cents, series "
+                "FROM scheduled_transaction"
+            )
+        }
+        self._rule_tags: dict[int, frozenset[str]] = {}
+        for tid, role, name in con.execute(
+            "SELECT st.scheduled_transaction_id, t.role, t.name FROM scheduled_transaction_tag st "
+            "JOIN tag t ON t.id = st.tag_id"
+        ):
+            self._rule_tags[tid] = self._rule_tags.get(tid, frozenset()) | {f"{role}:{name}"}
+        self._rule_views: dict[int, RuleView] = {}
         self._balances = balances
         self._cost_bases = cost_bases
         self._minimum_of = minimum_of
         self._leaf_lot = leaf_lot
         self._members = members
         self._roth_qualified = roth_qualified
+        self._acquired = acquired if acquired is not None else {}
+        self._roth_lots = frozenset(roth_lots)
         self.chain_name: dict[int, str] = dict(con.execute("SELECT id, name FROM chain").fetchall())
         self.chain_role: dict[int, str | None] = dict(con.execute("SELECT id, role FROM chain").fetchall())
         self.leaf_chain_of: dict[int, int] = {}
@@ -134,6 +272,7 @@ class StrategyRuntime:
             (name, as_of, asset_class, weight / 1_000_000) for name, as_of, asset_class, weight
             in con.execute("SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")
         )
+        self._growth_series: dict[int, str] = dict(con.execute(GROWTH_SERIES_SQL).fetchall())
         self._weights_cache: dict[tuple[int, str], dict[str, float]] = {}
         self._roth_cache: dict[tuple[int, date], bool | None] = {}
         self._chain_views: dict[int, ChainView] = {}
@@ -144,17 +283,44 @@ class StrategyRuntime:
         # Each strategy's memory as last written to a decision row.
         self._recorded_memory: dict[int, str] = {}
 
+        # Triggers (#441): each strategy's (rail, margin kind) pairs, the
+        # rails they name, each rail's years as last evaluated, and how many
+        # years in a row each pair has been past.
+        self.triggers: dict[int, list[tuple[str, str]]] = {}
+        self._rails: dict[str, guard_rails.GuardRail] = {}
+        has_triggers = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'strategy_trigger'").fetchone()
+        for sid, rail, margin_kind, rail_json in (con.execute(
+                "SELECT strategy_id, rail, margin_kind, rail_json FROM strategy_trigger "
+                "ORDER BY strategy_id, rowid") if has_triggers else ()):
+            self.triggers.setdefault(sid, []).append((rail, margin_kind))
+            if rail not in self._rails:
+                parsed, problems = guard_rails.parse_cells(json.loads(rail_json))
+                if parsed is None:
+                    raise StrategyError(f"trigger rail {rail!r}: {'; '.join(problems)}")
+                self._rails[rail] = parsed
+        self._rail_years: dict[str, RailYears] = {}
+        self._years_past: dict[tuple[int, str, str], int] = {}
+
         sources = dict(con.execute("SELECT module, source FROM strategy_source").fetchall())
         # A copy of the modules for this run alone: no state from another run.
         self._kinds = kinds = StrategyKinds(sources, fresh=True)
         if kinds.problems:
             kinds.unload()
             raise StrategyError("; ".join(kinds.problems))
-        for sid, name, kind, chain_id, start, end, params_json in rows:
+        for sid, name, kind, chain_id, rule_tag, start, stop, params_json in rows:
             cls = kinds.get(kind)
             params = cls.Params(**json.loads(params_json))
-            role = self.chain_role.get(chain_id) or ""
-            self.owned[chain_id] = Owned(sid, name, kind, cls(name, params), chain_id, role, start, end)
+            role = (self.chain_role.get(chain_id) or "") if chain_id is not None else ""
+            rules = tuple(sorted(
+                tid for tid, tags in self._rule_tags.items() if rule_tag and rule_tag in tags
+            ))
+            owned = Owned(sid, name, kind, cls(name, params), chain_id, role, start, stop, rules)
+            self.strategies.append(owned)
+            if chain_id is not None:
+                self.owned[chain_id] = owned
+            for tid in rules:
+                self.by_rule[tid] = owned
             self.memory[sid] = {}
             self._recorded_memory[sid] = "{}"
 
@@ -165,18 +331,22 @@ class StrategyRuntime:
             kinds.unload()
 
     def __bool__(self) -> bool:
-        return bool(self.owned)
+        return bool(self.strategies)
 
     def owner(self, chain_id: int, month_s: str) -> Owned | None:
         """The strategy owning ``chain_id`` this month, if any."""
         owned = self.owned.get(chain_id)
-        if owned is None:
-            return None
-        if owned.start and month_s < owned.start:
-            return None
-        if owned.end and month_s > owned.end:
-            return None
-        return owned
+        return owned if owned is not None and owned.active(month_s) else None
+
+    def rule_owner(self, tid: int, month_s: str) -> Owned | None:
+        """The strategy owning scheduled rule ``tid`` this month, if any."""
+        owned = self.by_rule.get(tid)
+        return owned if owned is not None and owned.active(month_s) else None
+
+    def note_cpi(self, month: date, index: int | None) -> None:
+        """Keep the month's CPI index (``ctx.cpi`` divides two of them)."""
+        if index is not None:
+            self._cpi_index[month] = index
 
     # ---------- the strategy's view ----------
 
@@ -188,6 +358,7 @@ class StrategyRuntime:
             cached = class_weights(
                 symbol=info.symbol, account=info.ref.account, lot=info.ref.lot,
                 subkind=info.subkind, sets=self._sets, date=month_s,
+                series=self._growth_series.get(lot_id),
             )
             self._weights_cache[key] = cached
         return cached
@@ -216,6 +387,8 @@ class StrategyRuntime:
                 symbol=info.symbol, balance=self._balances.get(lot_id, 0),
                 cost_basis=self._cost_bases.get(lot_id), minimum=self._minimum_of.get(lot_id, 0),
                 roth_qualified=self._roth(lot_id, month),
+                acquired=self._acquired.get(lot_id),
+                taxable_sale=self._sells_with_gain(lot_id),
             )
 
         return Context(
@@ -223,7 +396,183 @@ class StrategyRuntime:
             weights=lambda ref: MappingProxyType(self._weights(self.lot_id[ref], month_s)),
             targets=lambda name: self._target(name, month_s),
             memory=self.memory[owned.id],
+            end=self._end,
+            cpi=(lambda since: self._cpi(since, month)) if self._cpi_index else None,
+            people=self._people_at(month),
+            budget=lambda: self._budget(owned, month),
+            annual_return=self._annual_return,
+            trailing_return=lambda refs, months: self._trailing_return(refs, months, month),
+            tax=self._tax_view(month),
+            history=History(lambda: self._history_months(month),
+                            lambda refs: self._history_balances(refs, month)),
+            rail=self._rail if self._rails else None,
+            mortality=self._mortality,
         )
+
+    def _history_months(self, month: date) -> tuple[date, ...]:
+        return tuple(date.fromisoformat(m) for (m,) in self._con.execute(
+            "SELECT month FROM simulation_step WHERE month < ? ORDER BY month", (month.isoformat(),)))
+
+    def _history_balances(self, refs: tuple[LotRef, ...], month: date) -> np.ndarray:
+        """``refs``' month-end total before ``month``: one value per step."""
+        ids = [self.lot_id[ref] for ref in refs if ref in self.lot_id]
+        unknown = [str(ref) for ref in refs if ref not in self.lot_id]
+        if unknown:
+            raise StrategyError(f"history.balances: no lot {', '.join(unknown)}")
+        marks = ",".join("?" * len(ids)) or "NULL"
+        rows = self._con.execute(
+            f"SELECT s.month, COALESCE(SUM(ls.balance), 0) FROM simulation_step s "
+            f"LEFT JOIN lot_state ls ON ls.step_id = s.id AND ls.lot_id IN ({marks}) "
+            f"WHERE s.month < ? GROUP BY s.id ORDER BY s.month",
+            (*ids, month.isoformat()),
+        ).fetchall()
+        return np.array([total for _month, total in rows], dtype=np.int64)
+
+    def _rail(self, name: str) -> RailYears:
+        if name not in self._rails:
+            known = ", ".join(sorted(self._rails))
+            raise StrategyError(f"no rail {name!r} is triggered in this run (triggered: {known})")
+        years = self._rail_years.get(name)
+        if years is None:
+            empty = np.empty((1, 0))
+            years = RailYears(np.empty(0, dtype=np.int64), empty, empty, empty, empty, empty)
+        # Read-only copies: these arrays decide the next January's breaches,
+        # and the context is read-only.
+        return RailYears(*(_frozen(a) for a in dataclasses.astuple(years)))
+
+    def _tax_view(self, month: date) -> TaxView | None:
+        tax = self.tax
+        if tax is None:
+            return None
+        year = month.year
+        return TaxView(
+            year=year,
+            estimator=lambda scope: tax.estimate(scope, year),
+            ytd=lambda: MappingProxyType(tax.ytd(year)),
+            last_year=lambda: (lambda found: None if found is None else MappingProxyType(found))(
+                tax.summary(year - 1)),
+            irmaa_floors=lambda status: tax.irmaa_floors(year, status),
+        )
+
+    def _cpi(self, since: date, month: date) -> int:
+        now = self._cpi_index.get(month)
+        if now is None:
+            raise StrategyError(f"no CPI index for {month.isoformat()}")
+        then = self._cpi_index.get(since)
+        if then is None:
+            if self._first_month is not None and since < self._first_month:
+                then = 1_000_000  # the index before the run's first month
+            else:
+                raise StrategyError(f"no CPI index for {since.isoformat()} (use a month end)")
+        return now * 1_000_000 // then
+
+    def _people_at(self, month: date) -> Mapping[str, PersonView]:
+        if self._people_month is not None and self._people_month[0] == month:
+            return self._people_month[1]
+        out: dict[str, PersonView] = {}
+        for pid, role, birth in self._people:
+            age = None
+            if birth is not None:
+                age = month.year - birth.year - ((month.month, month.day) < (birth.month, birth.day))
+            final = self._final_month.get(pid)
+            out[pid] = PersonView(
+                id=pid, role=role, birthdate=birth, age=age,
+                alive=final is None or month <= final, final_month=final,
+            )
+        view = MappingProxyType(out)
+        self._people_month = (month, view)
+        return view
+
+    def _budget(self, owned: Owned, month: date) -> int:
+        if self._rule_budget is None:
+            return 0
+        return sum(self._rule_budget(tid, month) for tid in owned.rules)
+
+    def _annual_return(self, refs: tuple[LotRef, ...], year: int) -> float | None:
+        """Growth posted to ``refs`` in ``year`` over their balance at its start."""
+        if self._first_month is None or year < self._first_month.year:
+            return None
+        ids = [self.lot_id[ref] for ref in refs if ref in self.lot_id]
+        if not ids:
+            return None
+        if year == self._first_month.year:
+            base = sum(self._opening.get(i, 0) for i in ids)
+        else:
+            marks = ",".join("?" * len(ids))
+            row = self._con.execute(
+                f"SELECT COALESCE(SUM(ls.balance), 0) FROM lot_state ls "
+                f"JOIN simulation_step s ON s.id = ls.step_id "
+                f"WHERE s.month = ? AND ls.lot_id IN ({marks})",
+                (date(year - 1, 12, 31).isoformat(), *ids),
+            ).fetchone()
+            base = row[0]
+        if base <= 0:
+            return None
+        growth = self._growth(ids, year)
+        return growth / base
+
+    def _trailing_return(self, refs: tuple[LotRef, ...], months: int, month: date) -> float | None:
+        """Growth posted to ``refs`` in the ``months`` months before ``month``
+        over their balance at the end of the month before that window (#463)."""
+        first = self._first_month
+        if first is None or month <= first:
+            return None
+        ids = [self.lot_id[ref] for ref in refs if ref in self.lot_id]
+        if not ids:
+            return None
+        last = add_month_ends(month, -1)
+        since = add_month_ends(month, -months - 1)
+        if since < first:
+            base = sum(self._opening.get(i, 0) for i in ids)
+            lo = date(first.year, first.month, 1)
+        else:
+            marks = ",".join("?" * len(ids))
+            row = self._con.execute(
+                f"SELECT COALESCE(SUM(ls.balance), 0) FROM lot_state ls "
+                f"JOIN simulation_step s ON s.id = ls.step_id "
+                f"WHERE s.month = ? AND ls.lot_id IN ({marks})",
+                (since.isoformat(), *ids),
+            ).fetchone()
+            base = row[0]
+            lo = since + timedelta(days=1)
+        if base <= 0:
+            return None
+        return self._growth_between(ids, lo, last) / base
+
+    def _growth(self, ids: list[int], year: int) -> int:
+        return self._growth_between(ids, date(year, 1, 1), date(year, 12, 31))
+
+    def _growth_between(self, ids: list[int], start: date, end: date) -> int:
+        """Growth posted to ``ids`` dated ``start`` through ``end``: what the
+        growth sources paid them, less what they paid back (a loss)."""
+        if not self._growth_sources:
+            return 0
+        marks = ",".join("?" * len(ids))
+        sources = ",".join("?" * len(self._growth_sources))
+        lo, hi = start.isoformat(), end.isoformat()
+        src = sorted(self._growth_sources)
+        row = self._con.execute(
+            f"SELECT "
+            f"  COALESCE(SUM(CASE WHEN to_lot_id IN ({marks}) THEN amount ELSE 0 END), 0) - "
+            f"  COALESCE(SUM(CASE WHEN from_lot_id IN ({marks}) THEN amount ELSE 0 END), 0) "
+            f"FROM transfer_event WHERE date BETWEEN ? AND ? AND "
+            f"((from_lot_id IN ({sources}) AND to_lot_id IN ({marks})) OR "
+            f" (to_lot_id IN ({sources}) AND from_lot_id IN ({marks})))",
+            (*ids, *ids, lo, hi, *src, *ids, *src, *ids),
+        ).fetchone()
+        return int(row[0])
+
+    def rule_view(self, tid: int) -> RuleView:
+        view = self._rule_views.get(tid)
+        if view is None:
+            name, kind, frm, to, amount, series = self._rules[tid]
+            view = self._rule_views[tid] = RuleView(
+                name=name, kind=kind, tags=self._rule_tags.get(tid, frozenset()),
+                source=self.chain_name.get(frm, "") if frm is not None else "",
+                destination=self.chain_name.get(to, "") if to is not None else "",
+                base_amount=amount, series=series if series and series != "fixed" else None,
+            )
+        return view
 
     def chain_view(self, chain_id: int) -> ChainView:
         """``chain_id`` as a strategy sees it; fixed for the run, so made once."""
@@ -269,19 +618,9 @@ class StrategyRuntime:
         isn't allowed, is raised as :class:`StrategyError` naming it."""
         what = f"strategy {owned.name!r} ({owned.kind}) {hook} in {month.isoformat()}"
         chain = self.chain_view(chain_id)
-        ctx = self.context(owned, month)
-        try:
-            decision = getattr(owned.strategy, hook)(ctx, chain, amount)
-        except Exception as e:
-            raise StrategyError(f"{what}: {type(e).__name__}: {e}") from e
-        try:
-            json.dumps(self.memory[owned.id], sort_keys=True)
-        except (TypeError, ValueError) as e:
-            raise StrategyError(f"{what}: memory must hold JSON values: {e}") from e
+        decision = self._ask(owned, hook, month, chain, amount)
         if decision is None:
             return None
-        if not isinstance(decision, Decision):
-            raise StrategyError(f"{what}: returned {type(decision).__name__}, not a Decision or None")
         move_type = Take if hook == "draw" else Put
         leaves = set(chain.leaves)
         moves: list[tuple[int, int]] = []
@@ -301,15 +640,263 @@ class StrategyRuntime:
             moves.append((self.lot_id[move.lot], move.amount))
         if total > amount:
             raise StrategyError(f"{what}: moves total {total} cents, more than the {amount} asked")
+        return decision, moves
+
+    def _ask(self, owned: Owned, hook: str, month: date, *args: Any) -> Decision | None:
+        """Call ``hook``; its exception, a non-JSON memory or a wrong answer
+        type is a :class:`StrategyError` naming the strategy."""
+        what = f"strategy {owned.name!r} ({owned.kind}) {hook} in {month.isoformat()}"
+        ctx = self.context(owned, month)
+        try:
+            decision = getattr(owned.strategy, hook)(ctx, *args)
+        except StrategyError as e:
+            raise StrategyError(f"{what}: {e}") from e
+        except Exception as e:
+            raise StrategyError(f"{what}: {type(e).__name__}: {e}") from e
+        try:
+            json.dumps(self.memory[owned.id], sort_keys=True)
+        except (TypeError, ValueError) as e:
+            raise StrategyError(f"{what}: memory must hold JSON values: {e}") from e
+        if decision is None:
+            return None
+        if not isinstance(decision, Decision):
+            raise StrategyError(f"{what}: returned {type(decision).__name__}, not a Decision or None")
         try:
             decision.detail_json()
         except (TypeError, ValueError) as e:
             raise StrategyError(f"{what}: detail must hold JSON values: {e}") from e
-        return decision, moves
+        return decision
+
+    def year_start(self, con: sqlite3.Connection, step_id: int, month: date) -> None:
+        """Ask each active strategy's ``year_start`` in its first month and
+        each January after (#387), and record what it said."""
+        month_s = month.isoformat()
+        for owned in self.strategies:
+            if "year_start" not in owned.strategy.hooks or not owned.active(month_s):
+                continue
+            if owned.id in self._started and month.month != 1:
+                continue
+            self._started.add(owned.id)
+            decision = self._ask(owned, "year_start", month)
+            if decision is None:
+                continue
+            if list(decision.moves):
+                raise StrategyError(
+                    f"strategy {owned.name!r} ({owned.kind}) year_start in {month_s}: "
+                    "year_start moves nothing; keep the year's course in ctx.memory"
+                )
+            self.record(con, owned, "year_start", step_id=step_id, asked=0, decision=decision)
+
+    def year_end(
+        self, con: sqlite3.Connection, step_id: int, month: date,
+        post: Callable[[str, int, int, int, bool, int], int],
+    ) -> None:
+        """Ask each active strategy's ``year_end`` in December (#421), record
+        what it said, and post its moves in order through ``post(move,
+        from lot, to lot, cents, in_kind, decision id)``, which returns the
+        cents it moved."""
+        self._act(con, step_id, month, "year_end", post)
+
+    def month_start(
+        self, con: sqlite3.Connection, step_id: int, month: date,
+        post: Callable[[str, int, int, int, bool, int], int],
+    ) -> None:
+        """Ask each active strategy's ``month_start`` (#441), as ``year_end``."""
+        self._act(con, step_id, month, "month_start", post)
+
+    def _act(
+        self, con: sqlite3.Connection, step_id: int, month: date, hook: str,
+        post: Callable[[str, int, int, int, bool, int], int],
+    ) -> None:
+        month_s = month.isoformat()
+        for owned in self.strategies:
+            if hook not in owned.strategy.hooks or not owned.active(month_s):
+                continue
+            decision = self._ask(owned, hook, month)
+            if decision is not None:
+                self._post_decision(con, owned, hook, decision, step_id, month, post)
+
+    def _post_decision(
+        self, con: sqlite3.Connection, owned: Owned, hook: str, decision: Decision,
+        step_id: int, month: date, post: Callable[[str, int, int, int, bool, int], int],
+        breach_id: int | None = None,
+    ) -> None:
+        """Record ``decision`` and post its moves in order, linking their legs."""
+        moves = self._moves(owned, hook, decision, month)
+        decision_id = self.record(con, owned, hook, step_id=step_id, asked=0, decision=decision,
+                                  breach_id=breach_id)
+        moved = 0
+        for move, frm, to, amount, in_kind in moves:
+            mark = con.execute("SELECT COALESCE(MAX(id), 0) FROM transfer_event").fetchone()[0]
+            moved += post(move, frm, to, amount, in_kind, decision_id)
+            self.link_legs(con, decision_id, mark=mark, from_lot=frm, to_lot=to)
+        self.finish(con, decision_id, chosen=moved, fallback=0)
+
+    def breaches(
+        self, con: sqlite3.Connection, step_id: int, month: date,
+        post: Callable[[str, int, int, int, bool, int], int],
+    ) -> None:
+        """In January, evaluate the triggered rails over the run so far, as
+        ``sim report guard-rails`` does, and tell each strategy whose trigger
+        names one about the year just ended when it is past the line, and
+        once more the year it comes back (#441). Each telling is a
+        ``breach_event`` row and its answer a decision linked to it."""
+        if not self._rails or month.month != 1:
+            return
+        from analysis.sim.connection import RunConnection
+
+        names = list(self._rails)
+        if not con.execute("SELECT 1 FROM simulation_step WHERE month < ? LIMIT 1",
+                           (month.isoformat(),)).fetchone():
+            return  # nothing finished yet
+        results = guard_rails.evaluate_run(
+            RunConnection.live(con), [self._rails[n] for n in names], DollarMode.CPI_CONSTANT)
+        for name, result in zip(names, results, strict=True):
+            self._rail_years[name] = result.years
+        year = month.year - 1
+        month_s = month.isoformat()
+        for owned in self.strategies:
+            pairs = self.triggers.get(owned.id, [])
+            if not pairs or not owned.active(month_s):
+                continue
+            for rail, margin_kind in pairs:
+                years = self._rail_years[rail]
+                at = np.flatnonzero(years.years == year)
+                values = years.cumulative if margin_kind == "cumulative" else years.margin
+                margin = float(values[0, at[0]]) if len(at) else float("nan")
+                key = (owned.id, rail, margin_kind)
+                before = self._years_past.get(key, 0)
+                if np.isnan(margin):
+                    self._years_past.pop(key, None)  # the rail doesn't cover the year
+                    continue
+                if margin < 0:
+                    state, past = ("continued" if before else "entered"), before + 1
+                elif before:
+                    state, past = "left", 0
+                else:
+                    continue
+                self._years_past[key] = past
+                rule = self._rails[rail]
+                breach = BreachView(
+                    rail=rail, description=rule.description or rule.describe(),
+                    margin_kind=margin_kind, year=year,
+                    measure=round(float(years.measure[0, at[0]]) * 100),
+                    threshold=round(float(years.threshold[0, at[0]]) * 100),
+                    margin=round(margin * 100), sense=rule.sense, state=state, years_past=past,
+                )
+                cur = con.execute(
+                    "INSERT INTO breach_event(step_id, strategy_id, rail, margin_kind, year, state, "
+                    "years_past, measure_cents, threshold_cents, margin_cents) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (step_id, owned.id, rail, margin_kind, year, state, past,
+                     breach.measure, breach.threshold, breach.margin),
+                )
+                decision = self._ask(owned, "on_breach", month, breach)
+                if decision is not None:
+                    self._post_decision(con, owned, "on_breach", decision, step_id, month, post,
+                                        breach_id=cur.lastrowid)
+
+    def _moves(
+        self, owned: Owned, hook: str, decision: Decision, month: date,
+    ) -> list[tuple[str, int, int, int, bool]]:
+        """``decision``'s moves as ``(move, from lot, to lot, cents, in_kind)``,
+        checked: :class:`Transfer` out of an asset lot into another asset lot
+        or an expense account, ``in_kind`` only from a lot that tracks basis
+        into an expense; :class:`Realize` on a taxable lot that tracks basis."""
+        what = f"strategy {owned.name!r} ({owned.kind}) {hook} in {month.isoformat()}"
+        try:
+            given = list(decision.moves)
+        except TypeError as e:
+            raise StrategyError(f"{what}: Decision.moves must be a list of Transfer and Realize: {e}") from e
+        out: list[tuple[str, int, int, int, bool]] = []
+        for move in given:
+            if not isinstance(move, (Transfer, Realize)):
+                raise StrategyError(f"{what}: a {hook} answers with Transfer and Realize, not {move!r}")
+            if not isinstance(move.amount, int) or isinstance(move.amount, bool) or move.amount <= 0:
+                raise StrategyError(f"{what}: amount {move.amount!r} in {move!r} must be whole cents > 0")
+            if isinstance(move, Realize):
+                lot = self._asset_lot(move.lot, what)
+                if not self._sells_with_gain(lot):
+                    raise StrategyError(
+                        f"{what}: {move.lot} doesn't track a taxable gain; Realize needs a taxable "
+                        "lot with a cost basis")
+                out.append(("realize", lot, lot, move.amount, False))
+                continue
+            source = self._asset_lot(move.source, what)
+            to = self._destination(move.to, what)
+            if to == source:
+                raise StrategyError(f"{what}: {move.source} can't transfer to itself (use Realize)")
+            to_kind = self.lots[to].kind
+            if move.in_kind:
+                if to_kind != "expense":
+                    raise StrategyError(f"{what}: in_kind gives into an expense account, not {move.to}")
+                if not self._sells_with_gain(source):
+                    raise StrategyError(f"{what}: in_kind gives a lot's shares; {move.source} has no cost basis")
+            out.append(("transfer", source, to, move.amount, bool(move.in_kind)))
+        return out
+
+    def _asset_lot(self, ref: object, what: str) -> int:
+        lot = self.lot_id.get(ref) if isinstance(ref, LotRef) else None
+        if lot is None or self.lots[lot].kind != "asset":
+            raise StrategyError(f"{what}: {ref!r} is not an asset lot")
+        return lot
+
+    def _destination(self, to: object, what: str) -> int:
+        """A move's ``to``: a lot, or an account by name that has one lot."""
+        if isinstance(to, LotRef):
+            lot = self.lot_id.get(to)
+        elif isinstance(to, str):
+            found = [i for ref, i in self.lot_id.items() if ref.account == to]
+            lot = found[0] if len(found) == 1 else None
+            if len(found) > 1:
+                raise StrategyError(f"{what}: account {to!r} has several lots; name one as a LotRef")
+        else:
+            lot = None
+        if lot is None or self.lots[lot].kind not in ("asset", "expense"):
+            raise StrategyError(f"{what}: {to!r} is not an asset lot or an expense account")
+        return lot
+
+    def _sells_with_gain(self, lot: int) -> bool:
+        """A sale out of ``lot`` realizes a gain: a taxable, non-cash lot with a basis."""
+        info = self.lots[lot]
+        return (
+            lot not in self._roth_lots and self._cost_bases.get(lot) is not None
+            and info.tax_treatment == "taxable"
+            and registries.withdrawal_tax_character(info.tax_treatment, info.subkind) is None
+        )
+
+    def scale(
+        self, con: sqlite3.Connection, owned: Owned, tid: int, amount: int, *,
+        step_id: int, month: date,
+    ) -> int:
+        """Ask ``owned`` to scale rule ``tid``'s ``amount`` cents; record the
+        baseline (and the decision, if it gave one). Returns what to post."""
+        what = f"strategy {owned.name!r} ({owned.kind}) scale in {month.isoformat()}"
+        decision = self._ask(owned, "scale", month, self.rule_view(tid), amount)
+        delivered = amount
+        decision_id = None
+        if decision is not None:
+            moves = list(decision.moves)
+            if len(moves) != 1 or not isinstance(moves[0], Spend):
+                raise StrategyError(f"{what}: a scale answers with one Spend, not {moves!r}")
+            delivered = moves[0].amount
+            if not isinstance(delivered, int) or isinstance(delivered, bool) or delivered < 0:
+                raise StrategyError(f"{what}: Spend amount {delivered!r} must be whole cents >= 0")
+            decision_id = self.record(
+                con, owned, "scale", step_id=step_id, rule_id=tid, asked=amount, decision=decision,
+            )
+            self.finish(con, decision_id, chosen=delivered, fallback=0)
+        con.execute(
+            "INSERT INTO spending_baseline(step_id, scheduled_transaction_id, strategy_id, "
+            "strategy_decision_id, budgeted_cents, delivered_cents) VALUES (?,?,?,?,?,?)",
+            (step_id, tid, owned.id, decision_id, amount, delivered),
+        )
+        return delivered
 
     def record(
-        self, con: sqlite3.Connection, owned: Owned, hook: str, *, step_id: int, chain_id: int,
-        asked: int, decision: Decision,
+        self, con: sqlite3.Connection, owned: Owned, hook: str, *, step_id: int,
+        chain_id: int | None = None, rule_id: int | None = None,
+        asked: int, decision: Decision, breach_id: int | None = None,
     ) -> int:
         """Insert the decision row (amounts filled in by :meth:`finish`). Its
         memory is written when it differs from the last row's, so changes made
@@ -317,13 +904,22 @@ class StrategyRuntime:
         memory = json.dumps(self.memory[owned.id], sort_keys=True)
         changed = memory != self._recorded_memory[owned.id]
         self._recorded_memory[owned.id] = memory
-        cur = con.execute(
-            "INSERT INTO strategy_decision(step_id, strategy_id, hook, chain_id, asked_cents, "
-            "chosen_cents, fallback_cents, note, detail_json, memory_json) "
-            "VALUES (?,?,?,?,?,0,0,?,?,?)",
-            (step_id, owned.id, hook, chain_id, asked, decision.note, decision.detail_json(),
-             memory if changed else None),
-        )
+        if breach_id is None:
+            cur = con.execute(
+                "INSERT INTO strategy_decision(step_id, strategy_id, hook, chain_id, "
+                "scheduled_transaction_id, asked_cents, chosen_cents, fallback_cents, note, "
+                "detail_json, memory_json) VALUES (?,?,?,?,?,?,0,0,?,?,?)",
+                (step_id, owned.id, hook, chain_id, rule_id, asked, decision.note,
+                 decision.detail_json(), memory if changed else None),
+            )
+        else:
+            cur = con.execute(
+                "INSERT INTO strategy_decision(step_id, strategy_id, hook, asked_cents, chosen_cents, "
+                "fallback_cents, note, detail_json, memory_json, breach_event_id) "
+                "VALUES (?,?,?,?,0,0,?,?,?,?)",
+                (step_id, owned.id, hook, asked, decision.note, decision.detail_json(),
+                 memory if changed else None, breach_id),
+            )
         assert cur.lastrowid is not None
         return cur.lastrowid
 
@@ -346,3 +942,10 @@ class StrategyRuntime:
             "WHERE id > ? AND from_lot_id = ? AND to_lot_id = ?",
             (decision_id, mark, from_lot, to_lot),
         )
+
+
+def _frozen(array: np.ndarray) -> np.ndarray:
+    """A copy of ``array`` that can't be written to."""
+    out = np.array(array, copy=True)
+    out.flags.writeable = False
+    return out

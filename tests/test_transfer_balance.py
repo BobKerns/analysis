@@ -242,7 +242,7 @@ def test_calendar_edit_rewrites_the_row_in_place(
 
 
 def test_a_varying_rollover_reports_the_accounts_it_moves_between() -> None:
-    from analysis.sim.sensitivity import _affects
+    from analysis.sim.draws_db import row_affects
 
     con = sqlite3.connect(":memory:")
     con.row_factory = sqlite3.Row
@@ -250,4 +250,4 @@ def test_a_varying_rollover_reports_the_accounts_it_moves_between() -> None:
         "SELECT 'transfer_balance' AS kind, 'Asset_401k_Alice' AS account_1, "
         "'Asset_TraditionalIRA_Alice' AS account_2, NULL AS series, NULL AS scheduled_name"
     ).fetchone()
-    assert _affects(row) == "Asset_401k_Alice → Asset_TraditionalIRA_Alice"
+    assert row_affects(row) == "Asset_401k_Alice → Asset_TraditionalIRA_Alice"

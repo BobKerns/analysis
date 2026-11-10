@@ -8,7 +8,9 @@
 !historical_data/
 !prototype_data/
 !templates/
+!notebooks/
 !scripts/videos/tts_kokoro.py
 !docker/videos/entrypoint.sh
 **/__pycache__
 **/.DS_Store
+**/.ipynb_checkpoints

@@ -44,7 +44,8 @@ data_repo/
             calendar.csv    # CalendarEvents
             lifespan.csv    # per-person age at death
             year_to_date.csv # partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10)
-            strategies.csv  # which strategies run, on which chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12)
+            strategies/<name>.csv    # one strategy each: which run, on which chains or rules ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.12)
+            strategy_vary/<name>.csv # a strategy's parameters an ensemble varies ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.14)
             targets.csv     # allocation targets ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13)
             chains/
                 source/asset_checking_liquidity.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
@@ -100,7 +101,7 @@ state/
 | --- | --- | --- |
 | `person`, `account`, `security`, `security_allocation` | ✓ | ✓ (snapshot) |
 | `account_lot` | ✓ | ✓ (snapshot) |
-| `scheduled_transaction` | ✓ | ✓ (snapshot) |
+| `scheduled_transaction`, `tax_jurisdiction` | ✓ | ✓ (snapshot) |
 | `chain`, `chain_steps` | ✓ | ✓ (snapshot) |
 | `calendar`, `calendar_event` | ✓ | ✓ (snapshot) |
 | `aux_table` | ✓ | ✓ (snapshot) |
@@ -109,10 +110,11 @@ state/
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | ✓ | ✓ (snapshot) |
 | `year_to_date` | ✓ | ✓ (snapshot) |
 | `ensemble_manifest`, `ensemble_draw`, `ensemble_tail_scale`, `ensemble_path_shock` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
-| `strategy`, `strategy_source`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
+| `strategy`, `strategy_source`, `strategy_trigger`, `strategy_vary`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
+| `load_warning` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -120,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 50) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 61) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -159,18 +161,80 @@ CREATE TABLE strategy_source (
     source  TEXT NOT NULL
 );
 
--- The scenario's enabled strategies (strategies.csv, merged over the
--- lineage). Each owns one interior chain; params_json is already in stored
--- units (cents, millionths).
+-- The scenario's income tax jurisdictions (taxes/<name>.csv, merged over the
+-- lineage; #507). name prefixes the jurisdiction's tax_year_summary buckets;
+-- kind is the calculator; upstream the jurisdictions its return builds on,
+-- space-separated: its calculator's own, filled in by the loader (#508).
+-- Each April (schedule) it pays what is still due for the year before from
+-- source_chain into destination, between start and end.
+CREATE TABLE tax_jurisdiction (
+    id                   INTEGER PRIMARY KEY,
+    name                 TEXT NOT NULL UNIQUE,
+    kind                 TEXT NOT NULL,
+    upstream             TEXT NOT NULL DEFAULT '',
+    source_chain_id      INTEGER NOT NULL REFERENCES chain(id),
+    destination_chain_id INTEGER NOT NULL REFERENCES chain(id),
+    schedule             TEXT NOT NULL CHECK (schedule IN ('april')),
+    start                TEXT NOT NULL,
+    "end"                TEXT,
+    params_json          TEXT NOT NULL DEFAULT '{}',
+    description          TEXT NOT NULL DEFAULT ''
+);
+
+-- The scenario's enabled strategies (strategies/<name>.csv, merged over the
+-- lineage). Each owns an interior chain, the scheduled rules carrying
+-- rule_tag (#387), or both; params_json is already in stored units (cents,
+-- millionths).
 CREATE TABLE strategy (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     kind        TEXT NOT NULL,
-    chain_id    INTEGER NOT NULL UNIQUE REFERENCES chain(id),
+    chain_id    INTEGER UNIQUE REFERENCES chain(id),
+    rule_tag    TEXT,
     start       TEXT,
     "end"       TEXT,
     params_json TEXT NOT NULL DEFAULT '{}',
     description TEXT NOT NULL DEFAULT ''
+);
+
+-- The guard rails a strategy's trigger names (#441), one row per rail and
+-- margin kind ('annual' or 'cumulative'). rail_json is the rail's
+-- guard_rails.csv row as merged down the lineage, so the engine evaluates
+-- the rail as `sim report guard-rails` does without the data repo.
+CREATE TABLE strategy_trigger (
+    strategy_id INTEGER NOT NULL REFERENCES strategy(id),
+    rail        TEXT NOT NULL,
+    margin_kind TEXT NOT NULL CHECK (margin_kind IN ('annual','cumulative')),
+    rail_json   TEXT NOT NULL,
+    PRIMARY KEY (strategy_id, rail, margin_kind)
+);
+
+-- A strategy parameter an ensemble varies (#408, strategy_vary/<name>.csv).
+-- name is its node, strategy:<strategy>.<param>; bounds are in the
+-- parameter's stored unit (cents, millionths, or a plain number), and base
+-- is the authored value (params_json's, or the kind's default), which is
+-- member 0's. A member writes its draw into strategy.params_json and clears
+-- vary_distribution. unit: cents, micros or number; whole: the parameter
+-- takes whole numbers.
+CREATE TABLE strategy_vary (
+    strategy_id         INTEGER NOT NULL REFERENCES strategy(id),
+    param               TEXT NOT NULL,
+    name                TEXT NOT NULL UNIQUE,
+    base                REAL NOT NULL,
+    unit                TEXT NOT NULL,
+    whole               INTEGER NOT NULL,
+    vary_distribution   TEXT,
+    vary_low            TEXT,
+    vary_high           TEXT,
+    vary_mode           TEXT,
+    vary_median         TEXT,
+    vary_sd             TEXT,
+    vary_skew           REAL,
+    vary_tailweight     REAL,
+    vary_outcomes       TEXT,
+    vary_correlate_with TEXT,
+    vary_correlation    REAL,
+    PRIMARY KEY (strategy_id, param)
 );
 
 -- Allocation targets (targets.csv). One set of weights per (target_set,
@@ -203,7 +267,7 @@ CREATE TABLE account (
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
             'interest_expense','taxes_federal','taxes_state','taxes_property',
-            'business','other_expense'))
+            'business','gift','other_expense'))
     )
 );
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
@@ -412,6 +476,7 @@ CREATE TABLE scheduled_transaction (
                                  'return_of_capital','property_tax','none',
                                  'excluded_gain','home_sale',
                                  'capital_improvement','roth_nonqualified',
+                                 'qualified_dividend',
                                  'business_income','business_expense')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
@@ -511,7 +576,8 @@ CREATE TABLE year_to_date (
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
                          'excluded_gain','home_sale','capital_improvement',
-                         'roth_nonqualified','business_income','business_expense')),
+                         'roth_nonqualified','qualified_dividend',
+                         'business_income','business_expense')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
@@ -595,7 +661,22 @@ CREATE TABLE ensemble_path_shock (
 );
 ```
 
-A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
+A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<mode>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
+
+### Load warnings
+
+The loader's non-fatal warnings, kept with the intent so they can be read after the fact (#432): a run file's snapshot carries them, `sim explain` prints them, and the notebooks show them beside the scenario picker. `kind` `warning` is what every `sim load`/`run`/`check` prints (a fallback taken, a partial allocation); `unused` is a thing defined but not read yet, which only `sim check` prints at load ([ADR-004](ADR-004-reproducibility-and-activation.md) §6). An ensemble member's intent is a copy of its recipe's, so it carries the recipe's warnings.
+
+```sql
+-- #432: the load's non-fatal warnings, in the order raised, so they can be
+-- read after the fact (sim explain, the notebooks). 'unused' is a thing
+-- defined but not read yet (#204), which only `sim check` prints at load.
+CREATE TABLE load_warning (
+    id      INTEGER PRIMARY KEY,
+    kind    TEXT NOT NULL CHECK (kind IN ('warning','unused')),
+    message TEXT NOT NULL
+);
+```
 
 ### Intent manifest (intent files only)
 
@@ -703,7 +784,8 @@ CREATE TABLE transfer_event (
     tax_year        INTEGER,
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
-                        ('rule','initial','ytd','ytd_rule','refill','overflow')),
+                        ('rule','initial','ytd','ytd_rule','refill','overflow','strategy',
+                         'tax')),
     reason_id       INTEGER,
     -- The event this leg derives from: a multi-leg rule's primary leg, a
     -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
@@ -714,8 +796,9 @@ CREATE TABLE transfer_event (
     from_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
     to_lot_id       INTEGER NOT NULL REFERENCES account_lot(id),
     meta_json       TEXT NOT NULL DEFAULT '{}',
-    -- The strategy decision whose move posted this leg (ADR-010 §4); the
-    -- leg keeps its own reason_kind.
+    -- The strategy decision whose move posted this leg (ADR-010 §4). A draw's
+    -- or place's leg keeps its own reason_kind; a year_end move's legs have
+    -- reason_kind 'strategy' and reason_id this decision (#421).
     strategy_decision_id INTEGER REFERENCES strategy_decision(id)
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
@@ -733,17 +816,57 @@ CREATE TABLE strategy_decision (
     id             INTEGER PRIMARY KEY,
     step_id        INTEGER NOT NULL REFERENCES simulation_step(id),
     strategy_id    INTEGER NOT NULL REFERENCES strategy(id),
-    hook           TEXT NOT NULL CHECK (hook IN ('draw','place')),
+    hook           TEXT NOT NULL CHECK (hook IN ('draw','place','year_start','scale','year_end',
+                                                 'month_start','on_breach')),
     chain_id       INTEGER REFERENCES chain(id),
+    -- The owned rule a scale decision was about (#387).
+    scheduled_transaction_id INTEGER REFERENCES scheduled_transaction(id),
     asked_cents    INTEGER NOT NULL,
     chosen_cents   INTEGER NOT NULL,
     fallback_cents INTEGER NOT NULL,
     note           TEXT NOT NULL DEFAULT '',
     detail_json    TEXT NOT NULL DEFAULT '{}',
-    -- The strategy's memory after the call, only when it differs from its last row's.
-    memory_json    TEXT
+    -- The strategy's memory after the call, only when the call changed it.
+    memory_json    TEXT,
+    -- The breach an on_breach decision answered (#441).
+    breach_event_id INTEGER REFERENCES breach_event(id)
 );
 CREATE INDEX idx_decision_step ON strategy_decision(step_id);
+
+-- A triggered rail past its line, or back from it, in the year before the
+-- January step it was found in (#441): one row per strategy, rail and
+-- margin kind told. Money in CPI-constant cents, as `sim report
+-- guard-rails` shows it; margin is the margin kind's (negative is past).
+-- state: 'entered', 'continued' or 'left'.
+CREATE TABLE breach_event (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    strategy_id     INTEGER NOT NULL REFERENCES strategy(id),
+    rail            TEXT NOT NULL,
+    margin_kind     TEXT NOT NULL,
+    year            INTEGER NOT NULL,
+    state           TEXT NOT NULL CHECK (state IN ('entered','continued','left')),
+    years_past      INTEGER NOT NULL,
+    measure_cents   INTEGER NOT NULL,
+    threshold_cents INTEGER NOT NULL,
+    margin_cents    INTEGER NOT NULL
+);
+CREATE INDEX idx_breach_step ON breach_event(step_id);
+
+-- Each posting of a rule a strategy owns (#387, ADR-010 §4): what the rule
+-- would have posted (budgeted) and what it did post (delivered), so reports
+-- compare spending against the plan. A skipped posting has a row with 0
+-- delivered; strategy_decision_id is NULL when scale answered "no opinion".
+CREATE TABLE spending_baseline (
+    id                       INTEGER PRIMARY KEY,
+    step_id                  INTEGER NOT NULL REFERENCES simulation_step(id),
+    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    strategy_id              INTEGER NOT NULL REFERENCES strategy(id),
+    strategy_decision_id     INTEGER REFERENCES strategy_decision(id),
+    budgeted_cents           INTEGER NOT NULL,
+    delivered_cents          INTEGER NOT NULL
+);
+CREATE INDEX idx_baseline_step ON spending_baseline(step_id);
 
 -- #199: basis a sale could not recover, from a chain step whose
 -- tax_character is return_of_capital. No money moved, so it is not a
@@ -772,7 +895,10 @@ CREATE TABLE basis_step_up (
     person          TEXT NOT NULL,
     balance         INTEGER NOT NULL,
     basis_before    INTEGER NOT NULL,
-    basis_after     INTEGER NOT NULL
+    basis_after     INTEGER NOT NULL,
+    -- #434: why, one of step_ups.RULES (owner, inherited, joint_half,
+    -- community_property, last_survivor).
+    rule            TEXT NOT NULL
 );
 
 CREATE TABLE applied_calendar_event (
@@ -831,14 +957,18 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `scenario` | The scenario this file represents (one row). |
 | `person_lifespan` | Optional per-person age at death for a scenario, its final month, and how it varies ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
 | `year_to_date` | Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
-| `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
+| `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, the rules carrying a tag, or both, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
+| `strategy_trigger` | The guard rails a strategy's `trigger` names, each with its margin kind and its merged row, so the run evaluates them without the data repo ([ADR-010](ADR-010-responsive-strategies.md) §3.3). |
+| `strategy_vary` | A strategy parameter an ensemble varies: its node `strategy:<name>.<param>`, authored value and distribution; a member writes its draw into `strategy.params_json` ([ADR-006](ADR-006-ensemble-scenarios.md) §3b). |
 | `allocation_target` | Named, dated sets of asset-class target weights (from `targets.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13). |
-| `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. |
+| `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. A `scale` row names its rule; a `year_start` row moves nothing; a `year_end`, `month_start` or `on_breach` row's `chosen_cents` is what its moves moved; an `on_breach` row names its breach. |
+| `breach_event` | A triggered rail's state found in January for the year before: `entered`, `continued` or `left`, with the years past and the measure, line and margin in CPI-constant cents. |
+| `spending_baseline` | Each posting of a rule a spending strategy owns: budgeted (what the rule would have posted) and delivered. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
-| `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, and the basis before and after. No money moves. |
+| `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, the basis before and after, and the `rule` that decided it (`owner`, `inherited`, `joint_half`, `community_property`, `last_survivor`). No money moves. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
 | `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
@@ -847,6 +977,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `ensemble_draw` | One row per resolved `vary_distribution` row: which `calendar_event` (`name`) or lifespan (`lifespan:<person>`), which target (`amount`/`date`/`age_at_death`), and the drawn value ([ADR-006](ADR-006-ensemble-scenarios.md)); `quantile` is the OAT override quantile for a sensitivity member's perturbed row ([ADR-007](ADR-007-sensitivity-analysis.md)); `z`, `noise` and `u` are its score, its own noise and its probability ([ADR-008](ADR-008-correlated-parameters.md) §6). Present only in a resolved member's intent/run files. |
 | `ensemble_tail_scale` | A random member's t-copula scale `S` per tree root, its own and each process year's ([ADR-008](ADR-008-correlated-parameters.md) §6). |
 | `ensemble_path_shock` | Each process path year's noise, score, scale, shock and rate ([ADR-006](ADR-006-ensemble-scenarios.md) §4a). |
+| `load_warning` | The load's non-fatal warnings, and its notes on things defined but not read yet (`kind` `unused`), in the order raised. |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views
@@ -967,7 +1098,9 @@ Indexes are deliberately conservative — chosen for the queries the views gener
 
 ### Schema changes
 
-There are no migrations: the database files are always generated, never upgraded. The schema is applied whole (`apply_intent_schema` / `apply_run_schema`), and `SCHEMA_VERSION` in `schema.py` is bumped on each change. An intent file is rebuilt from the CSVs on every `sim load`, so it always matches the current code. A run file isn't upgraded: to compare runs across a schema change, re-run the older scenario. Generating from the CSVs every time is simpler and more reliable than maintaining migrations, and the CSVs are the source of truth anyway.
+There are no migrations: the database files are always generated, never upgraded. The schema is applied whole (`apply_intent_schema` / `apply_run_schema`), and `SCHEMA_VERSION` in `schema.py` is bumped on each change, including a change to a batch's `draws.sqlite3` (`draws_db.DRAWS_DDL`). An intent file is rebuilt from the CSVs on every `sim load`, so it always matches the current code. A run file isn't upgraded: to compare runs across a schema change, re-run the older scenario. Generating from the CSVs every time is simpler and more reliable than maintaining migrations, and the CSVs are the source of truth anyway.
+
+Readers assume the current schema. Code that reads an intent file, a run file, an ensemble member or a batch's draws database has no fallback for a file written under an earlier `SCHEMA_VERSION`, such as a missing table or column, and no test fakes one: an older file is re-run, not read. The two batch caches are rebuilt instead of read when out of date: `draws.sqlite3` when its `batch.schema_version` isn't the current one, the series store when another code version wrote it ([ADR-006](ADR-006-ensemble-scenarios.md) §8). A reader still tells an intent file from a run file by the tables only a run file has. This is the practice before the simulator's public release; after it, other people's files will outlive a schema change, and readers will need a policy for them.
 
 ## Consequences
 
@@ -1030,3 +1163,14 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#315](https://github.com/BobKerns/analysis/issues/315): `person_lifespan.life_table`, the life table a scenario reads a person's lifespan against (Intent layer DDL; schema 49).
 - [#324](https://github.com/BobKerns/analysis/issues/324): `scenario.mixin_only`, so a run without the data repo still refuses a mix-in only scenario now that one may have parents (Intent layer DDL; schema 50).
 - [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies' `strategy`, `strategy_source` and `allocation_target` (Intent layer DDL), `strategy_decision` and `transfer_event.strategy_decision_id` (Ledger layer DDL; schema 51).
+- [#387](https://github.com/BobKerns/analysis/issues/387): spending strategies: `strategy.rule_tag` with `chain_id` optional (Intent layer DDL), `strategy_decision`'s `year_start` and `scale` hooks and `scheduled_transaction_id`, and the run table `spending_baseline` (Ledger layer DDL, glossary; schema 52).
+- [#408](https://github.com/BobKerns/analysis/issues/408): `strategy_vary`, a strategy's varied parameters (Intent layer DDL, glossary; schema 53); a strategy is one file, `strategies/<name>.csv` (data repo layout).
+- [#421](https://github.com/BobKerns/analysis/issues/421): year-end strategy moves: `transfer_event.reason_kind` `strategy` and `strategy_decision.hook` `year_end` (Ledger layer DDL, glossary), and the expense subkind `gift` (Intent layer DDL; schema 54).
+- [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
+- [#468](https://github.com/BobKerns/analysis/issues/468): the tax character `qualified_dividend` on `scheduled_transaction` and `year_to_date` (Intent layer DDL; schema 56).
+- [#434](https://github.com/BobKerns/analysis/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 57).
+- Readers assume the current schema until public release: no fallbacks for files from an earlier `SCHEMA_VERSION`, and a draws database from another version is gathered again (Schema changes).
+- [#507](https://github.com/BobKerns/analysis/issues/507): table `tax_jurisdiction` (a scenario's `taxes/<name>.csv` files) and `transfer_event.reason_kind` `tax` for its payments, in place of the `tax_accumulator` rule (table of tables, Intent layer DDL, Ledger layer DDL; schema 58).
+- [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 59).
+- [#507](https://github.com/BobKerns/analysis/issues/507): the tax calculator API renames `tax_year_summary`'s income tax buckets (`<scope>_agi`, `_tax`, `_deduction`, `_ss_benefits`, `_ss_taxable`, `_ltcg_taxed`, `_capital_loss_used`, `_business_net`, `_hobby_disallowed`) and adds `<scope>_ordinary_taxable` (schema 60).
+- [#508](https://github.com/BobKerns/analysis/issues/508): the local income tax is its own jurisdiction, so `tax_year_summary` has `local_*` buckets in place of `state_local_tax`, and the state's adjustment lines (`state_dividends_as_ordinary`, `state_hsa_addback`, `state_capital_gain_difference`, `state_ss_difference`, `state_credits`); `tax_jurisdiction.upstream` holds the calculator's own when the file leaves it blank (schema 61).

@@ -68,15 +68,19 @@ def test_the_ensemble_figure_has_shares_over_rms_annual_and_cumulative(
     store = open_series(mc_batch)
     results = gr.ensemble_results(store, gr.ensemble_rails(scenarios_dir, "retire_alice"))
     fig = ensemble_guard_rail_figure(results, "retire_alice", years=(2031, 2035))
-    share_annual, share_cum, rms_annual, rms_cum = fig.axes
+    # Mixed rails put the positive rails' RMS on a right-hand axis (#377).
+    share_annual, share_cum, rms_annual, rms_cum, room_annual, _room_cum = fig.axes
     assert share_annual.get_title().startswith("Annual") and share_cum.get_title().startswith("Cumulative")
     legend = share_annual.get_legend()
     assert legend is not None
     labels = [t.get_text() for t in legend.get_texts()]
     assert labels == ["four_percent", "gk_upper", "gk_lower (positive)", "budget", "ever past, so far"]
     lines = {line.get_label(): line for line in rms_annual.get_lines()}
-    assert lines["gk_lower (positive)"].get_linestyle() == "--"
+    assert lines["gk_lower (positive), right axis"].get_linestyle() == "--"
     assert len(np.asarray(lines["four_percent"].get_xdata())) == 5
+    (room,) = room_annual.get_lines()
+    assert room.get_linestyle() == "--" and len(np.asarray(room.get_xdata())) == 5
+    assert room_annual.get_ylabel() == "positive rails"
     assert rms_cum.get_ylim()[0] <= 0
 
 

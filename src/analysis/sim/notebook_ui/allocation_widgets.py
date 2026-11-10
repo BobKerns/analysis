@@ -92,7 +92,7 @@ def drift_choices(con) -> tuple[list[str], list[str]]:
     asset lot, then each tag an asset account carries."""
     from analysis.sim import drift
 
-    sets = sorted(drift.target_sets(con)) if drift.has_table(con, "allocation_target") else []
+    sets = sorted(drift.target_sets(con))
     tags = [t for (t,) in con.execute(
         "SELECT DISTINCT t.role || ':' || t.name FROM account_tag at JOIN tag t ON t.id = at.tag_id "
         "JOIN account a ON a.id = at.account_id WHERE a.kind = 'asset' ORDER BY 1")]
@@ -129,12 +129,11 @@ def allocation_drift_widget(
         target_set, portfolio = sets[0], None
     watches = drift.watches(con)
     decided: dict[str, list[str]] = {}
-    if drift.has_table(con, "strategy_decision"):
-        for name, month in con.execute(
-            "SELECT DISTINCT st.name, s.month FROM strategy_decision d JOIN simulation_step s "
-            "ON s.id = d.step_id JOIN strategy st ON st.id = d.strategy_id ORDER BY 1, 2"
-        ):
-            decided.setdefault(name, []).append(month)
+    for name, month in con.execute(
+        "SELECT DISTINCT st.name, s.month FROM strategy_decision d JOIN simulation_step s "
+        "ON s.id = d.step_id JOIN strategy st ON st.id = d.strategy_id ORDER BY 1, 2"
+    ):
+        decided.setdefault(name, []).append(month)
     frames: dict[tuple[str, str | None], pd.DataFrame] = {}
     sets_picker = widgets.Dropdown(options=sets, value=target_set, description="Targets")
     portfolio_picker = widgets.Dropdown(options=portfolios, value=portfolio or EVERY_ASSET_LOT,
@@ -161,7 +160,7 @@ def allocation_drift_widget(
         with table:
             clear_output(wait=True)
             rows = drift.year_end_rows(frame)
-            rows = rows[[low <= int(str(m)[:4]) <= high for m in rows.index]]
+            rows = time_range.clip(rows)
             display(rows.style.format("{:+.1f}"))
             if mine:
                 display(StyledMarkdown(

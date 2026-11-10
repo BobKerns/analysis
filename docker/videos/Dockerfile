@@ -25,10 +25,11 @@
 FROM ubuntu:24.04
 
 # Keep VHS_VERSION, TTYD_VERSION and KOKORO_RELEASE in step with
-# src/analysis/videos (tests/test_videos.py checks).
+# src/analysis/videos (tests/test_videos.py checks). VHS comes from Bob's
+# fork, which records terminal images (render.VHS_VERSION says why).
 ARG NODE_VERSION=22.22.2
 ARG UV_VERSION=0.11.32
-ARG VHS_VERSION=0.10.0
+ARG VHS_VERSION=0.12.1-analysis.2
 ARG TTYD_VERSION=1.7.7
 ARG KOKORO_RELEASE=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0
 ARG TARGETARCH
@@ -50,11 +51,16 @@ ENV LANG=C.UTF-8 \
     ANALYSIS_BUILDER=off \
     PATH=/opt/venv/bin:/opt/node/bin:$PATH
 
-# git: the tape sandbox commits its copy of the data. The fonts are the
-# theme's (Inter, JetBrains Mono) plus CJK for translated slides.
+# git: the tape sandbox commits its copy of the data. build-essential and
+# cmake: the narration worker's Japanese packages (misaki[ja]) build from
+# source: pyopenjtalk has no wheels at all, and mojimoji none for arm64 or
+# Python 3.13. The fonts are the theme's (Inter, JetBrains Mono) plus CJK
+# for translated slides.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
         ca-certificates \
+        cmake \
         curl \
         ffmpeg \
         fonts-dejavu-core \
@@ -77,7 +83,7 @@ RUN set -eu; \
         | tar -xJ -C /opt/node --strip-components=1; \
     curl -fsSL "$gh/astral-sh/uv/releases/download/$UV_VERSION/uv-$uv-unknown-linux-gnu.tar.gz" \
         | tar -xz -C /usr/local/bin --strip-components=1; \
-    curl -fsSL "$gh/charmbracelet/vhs/releases/download/v$VHS_VERSION/vhs_${VHS_VERSION}_Linux_$vhs.tar.gz" \
+    curl -fsSL "$gh/BobKerns/vhs/releases/download/v$VHS_VERSION/vhs_${VHS_VERSION}_Linux_$vhs.tar.gz" \
         | tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/vhs'; \
     curl -fsSL -o /usr/local/bin/ttyd "$gh/tsl0922/ttyd/releases/download/$TTYD_VERSION/ttyd.$ttyd"; \
     chmod 755 /usr/local/bin/ttyd /usr/local/bin/vhs; \
@@ -89,9 +95,13 @@ RUN set -eu; \
 WORKDIR /repo
 
 # The narration worker's own environment (Python < 3.14, kokoro-onnx), made
-# now so a build doesn't download it.
+# now so a build doesn't download it. OpenJTalk fetches its dictionary
+# (about 23 MB) into the environment the first time it's used; use it once
+# here, so it's in the image rather than fetched by every container.
 COPY scripts/videos/tts_kokoro.py scripts/videos/
-RUN uv sync --quiet --script scripts/videos/tts_kokoro.py
+RUN uv sync --quiet --script scripts/videos/tts_kokoro.py \
+ && "$(uv python find --script scripts/videos/tts_kokoro.py)" -c \
+        "import pyopenjtalk; pyopenjtalk.g2p('テスト')"
 
 # The project's dependencies, then Chromium (with the libraries it needs).
 # /opt/pw-browsers/chromium is where the builder looks for it, and VHS finds
@@ -108,8 +118,12 @@ RUN uv sync --quiet --frozen --no-dev --no-install-project \
 COPY historical_data/ historical_data/
 COPY prototype_data/ prototype_data/
 COPY templates/ templates/
+# notebooks/: the notebooks that `notebook` scenes open and record.
+COPY notebooks/ notebooks/
 COPY src/ src/
-RUN uv sync --quiet --frozen --no-dev
+RUN uv sync --quiet --frozen --no-dev \
+ && ln -s /opt/venv .venv
+# (.venv: activate-analysis, which video 2 sources, looks for the code's venv there.)
 
 # An identity for commits made in the container (`sim init`, the CLI's
 # data commits), which has no user of its own.

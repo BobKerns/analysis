@@ -34,8 +34,11 @@ ground = "#2c5a4a"
 
 [fonts]
 # Stacks, so a machine without the first font still renders.
-heading = "'Inter Display', Inter, 'Helvetica Neue', Arial, sans-serif"
-body = "Inter, 'Helvetica Neue', Arial, sans-serif"
+# The CJK fonts after the Latin ones cover Japanese slides: Chromium takes
+# each character from the first font that has it. The video image installs
+# Noto Sans CJK; macOS has Hiragino.
+heading = "'Inter Display', Inter, 'Helvetica Neue', Arial, 'Noto Sans CJK JP', 'Hiragino Sans', sans-serif"
+body = "Inter, 'Helvetica Neue', Arial, 'Noto Sans CJK JP', 'Hiragino Sans', sans-serif"
 mono = "'JetBrains Mono', 'DejaVu Sans Mono', Menlo, monospace"
 
 [terminal]
@@ -84,7 +87,17 @@ speed = 1.0
 # keep the word.
 [narration.en.pronounce]
 IRA = "/ˌaɪˌɑːɹˈeɪ/"
+WSL = "W S L"
 Jupyter = "Jupiter"
+JupyterLab = "Jupiter Lab"
+jupyter = "jupiter"
+# Said as one word without a break, and "if" ran into the next word with a
+# pause alone (comma, dashes, periods); stressing "if" as much as "what"
+# keeps the two words apart (Bob chose it from samples, #376).
+"what-if" = "/wˈʌt ˈɪf/"
+"What-if" = "/wˈʌt ˈɪf/"
+"what-ifs" = "/wˈʌt ˈɪfs/"
+"What-ifs" = "/wˈʌt ˈɪfs/"
 
 [narration.ja]
 engine = "kokoro"

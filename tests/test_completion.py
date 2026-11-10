@@ -140,6 +140,15 @@ def test_series_follows_the_aux_kind(data_dir: Path) -> None:
     assert "cpi" in inflation and "stock" not in inflation
 
 
+
+def test_an_emptied_series_completes_only_for_revert(test_data_dir: Path) -> None:
+    # #471: an empty file hides the inherited series; only revert can drop it.
+    (test_data_dir / "scenarios" / "retire_alice" / "series" / "inflation__food.csv").write_text(
+        "effective_date,annual_rate\n")
+    assert "food" not in _complete(test_data_dir, "series edit --scenario retire_alice ")
+    assert _complete(test_data_dir, "series revert --scenario retire_alice ") == ["food"]
+    assert _complete(test_data_dir, "series revert --scenario retire_alice --kind rate ") == []
+
 def test_ensemble_commands_complete_only_ensembles(test_data_dir: Path,
                                                    test_ensemble_scenario: str) -> None:
     # The template ensembles (#282) are offered too: they run like any other.
@@ -178,10 +187,12 @@ _NAMING_PARAMS = {
     "refill_chain", "overflow_chain", "scheduled_name", "row", "person", "owner",
     "series", "source_series", "symbol", "symbols", "tag_token", "tag_tokens",
     "vary_correlate_with", "correlate_with", "strategy", "strategy_name", "target_set",
+    "jurisdiction",
 }
 # ... except where the command makes a new one (by the command's function,
 # as `sim accounts` repeats `sim account`).
-_NEW_NAMES = {("lot_add", "lot"), ("invest_command", "lot"), ("symbol_add_command", "symbol")}
+_NEW_NAMES = {("lot_add", "lot"), ("invest_command", "lot"), ("symbol_add_command", "symbol"),
+              ("series_add", "series"), ("tax_add_command", "jurisdiction")}
 
 
 def _params(command: click.Command, path: str) -> list[tuple[str, click.Command, click.Parameter]]:
@@ -208,3 +219,11 @@ def test_parents_completes_the_name_after_the_last_colon(data_dir: Path) -> None
     assert _complete(data_dir, "scenario edit retire_alice --parents base:t_great") == [
         "base:t_great_inflation"]
     assert "base:base" not in _complete(data_dir, "scenario edit retire_alice --parents base:")
+
+
+def test_draws_pair_completes_each_node(data_dir: Path) -> None:
+    # #330: --pair A,B is one word; each node in it completes, not twice.
+    line = "ensemble draws retire_alice --pair "
+    assert _complete(data_dir, f"{line}apparel_f") == ["apparel_factor,"]
+    assert _complete(data_dir, f"{line}apparel_factor,core_inf") == ["apparel_factor,core_inflation"]
+    assert "apparel_factor,apparel_factor" not in _complete(data_dir, f"{line}apparel_factor,")

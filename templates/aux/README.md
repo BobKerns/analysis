@@ -36,6 +36,22 @@ When tax law changes (typically once a year), you add a new row with a new
 effective date; you do **not** edit the old row. Past months keep using the old
 values; future months pick up the new ones.
 
+## Indexed for inflation
+
+The law raises the brackets, the standard deduction and the long-term gain
+bands every year with inflation. So a row of `federal_brackets.csv`,
+`state_brackets__<state>.csv` or `ltcg_brackets.csv` can name an inflation
+series in `floor_series`, and a row of `standard_deduction.csv` or
+`state_standard_deduction__<state>.csv` one in `amount_series`. For each
+later tax year the figure grows by that series from the row's
+`effective_date` to the year's January, rounded down to a multiple of $50,
+as the IRS rounds it. These files name `cpi`, so in an ensemble each
+member's tax tables follow its own inflation. A blank series holds the
+figure flat, and a new dated row (next year's published figures, or a law
+change) starts again from its own figures. The Social Security thresholds
+and the capital loss limit aren't indexed by law, so they have no such
+column.
+
 ## Units (same as everywhere else in the data repo)
 
 - **Money** is decimal **dollars**: `$31,500.00` → `31500.00`.
@@ -63,6 +79,48 @@ The loader (`src/analysis/sim/loader.py`) parses the filename to figure out the
 kind and series; the required columns per kind are listed in
 `src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and [ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4.
 
+## State retirement income exclusions
+
+Most states leave some retirement income out of their income tax: a
+pension, an IRA or 401(k) draw, sometimes interest, dividends and gains,
+often only from an age and up to an amount per person, and sometimes only
+below a household income. A `state_retirement_exclusion__<state>.csv`
+beside the state's brackets says what its law leaves out. None ships: write
+the one for your state from its revenue department's instructions for the
+year. Each row is one exclusion, or one age tier of one:
+
+| Column | Meaning |
+| --- | --- |
+| `effective_date` | When the rows take effect; the rows of one date are the whole set. |
+| `name` | The exclusion. Rows with the same name are its age tiers: each person gets the one with the highest `min_age` they have reached. |
+| `income` | What it covers, separated by `;`: `pension`, `retirement_account` (IRA and 401(k) draws), `interest`, `dividend`, `capital_gain`, `other`, or `all`. It uses them up in that order. |
+| `min_age` | The age it starts at by December 31, such as `59.5`; blank for any age. |
+| `amount` | The most it leaves out per person, in dollars; blank for all of it. |
+| `amount_series` | Optional: an inflation series that grows `amount` each year, as above. |
+| `filing_status` | Blank for every status, or the one status the row is for. |
+| `income_limit` | Optional: household income above which the exclusion goes. |
+| `phaseout` | Optional: with `income_limit`, it shrinks to nothing over this many dollars instead of going all at once. |
+| `less_ss` | `yes` if the amount is reduced by the person's Social Security. |
+
+Income is each person's by the owner of the account it comes out of (an
+IRA's owner, a pension income account's), or else the account it goes
+into; a joint account's is split between the spouses, so give a pension
+income account its owner. Household income for the limit is the state's
+income before the exclusions, which leaves out Social Security. Two
+exclusions never leave out the same dollar.
+
+An illustration, not any state's law: from 59½ each spouse leaves out up to
+$20,000 of pension and IRA income; from 65 a further $10,000 of any income,
+which goes away for a married couple above $100,000 by the time income
+reaches $120,000:
+
+```csv
+effective_date,name,income,min_age,amount,filing_status,income_limit,phaseout,less_ss
+2026-01,pension,pension;retirement_account,59.5,20000,,,,
+2026-01,age,all,65,10000,MFJ,100000,20000,
+2026-01,age,all,65,10000,Single,50000,10000,
+```
+
 ## Per-scenario overrides
 
 A scenario can replace one of these files for itself (and its descendants) by
@@ -78,16 +136,21 @@ every other scenario.
 | File | What it is |
 | --- | --- |
 | `federal_brackets.csv` | US federal ordinary-income tax brackets. One row per (effective_date, filing_status, bracket_index). |
-| `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. |
+| `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. Six states ship; see "The states that ship" below. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
-| `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state `tax_accumulator` rule, keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
-| `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, the `tax_accumulator` rule uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
+| `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state tax (`taxes/state.csv`), keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
+| `state_social_security__<state>.csv` | Optional: how the state taxes Social Security, keyed by state like `state_brackets__<state>.csv`. Without it (California, and most states) a state rule taxes none. With it, the state starts from the federally taxable amount and leaves out `exclusion_percent` of it, for each filing status. Optional `phaseout_start` (federal AGI) starts taking the exclusion away: evenly down to nothing at `phaseout_end` (the same figure for a cliff, as in New Mexico), or by `phaseout_rate` of each dollar over (a credit in a flat-rate state such as Utah: the credit's phase-out rate divided by the tax rate). A state that follows the federal amount (Montana) writes `0%`. `phaseout_start_series`/`phaseout_end_series` index the limits like `floor_series`. Columns: `effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,phaseout_rate`. Age tests (Colorado, Rhode Island) aren't modeled. Check the figures with the state's revenue department. |
+| `state_surcharge__<state>.csv` | A state's surcharge on high taxable income, in the columns of its brackets, whose rates add to the brackets' rates. Optional, keyed by state like `state_brackets__<state>.csv`. `__CA` is California's Behavioral Health Services Tax: 1% of taxable income over $1 million, the same for every filing status and not indexed, so its `floor_series` is blank. |
+| `state_local_tax__<state>.csv` | Optional: a local income tax (county, city, school district) on the state's taxable income, in the columns of its brackets: Maryland's county rate as one band, New York City's brackets, or a Portland-area tax as a 0% band below its threshold. Keyed by state like `state_brackets__<state>.csv`, since a household lives in one locality; paid with the state's tax, and shown as `local_tax` in `sim report tax`. Two local taxes on the same base, such as Portland's Metro and Multnomah County taxes, go in one table, their rates added. Needs a row for every filing status the state's brackets have. None ships. |
+| `state_hsa__<state>.csv` | How a state taxes a health savings account: `treatment` `taxable` or `federal`. Optional, keyed by state; without one the HSA follows the federal rules. `__CA` says `taxable`: California doesn't recognize HSAs, so a contribution isn't deducted, the account's growth is taxed each year, and what comes out was taxed already. |
+| `state_retirement_exclusion__<state>.csv` | Optional: the state's retirement income exclusions, keyed by state like `state_brackets__<state>.csv` and read by a state tax. None ships (California has none); see "State retirement income exclusions" below. |
+| `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, a tax jurisdiction uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
 | `filing_status.csv` | The household's filing status from each effective date, one row per change. Empty here: put the household's in the data repo's `aux/`. A joint filer becomes Single the year after a death without a row. |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |
 | `inflation__cpi.csv` | Annual inflation rate (CPI = Consumer Price Index, the standard cost-of-living measure published by the US Bureau of Labor Statistics) used to grow non-indexed amounts, and by the CPI-constant-dollar views/reports regardless of what any scenario's own CSVs reference. Kept here, rather than in `series/`, so that lookup always has a default; a scenario can still override it. |
 | `rmd_factors.csv` | IRS Uniform Lifetime Table divisors used to compute Required Minimum Distributions (Pub. 590-B Table III, 2022 on), ages 72 to 130 (120 and over all 2.0). One row per (effective_date, age). |
 | `rmd_start_age.csv` | First age at which an RMD is required: 73 here. SECURE 2.0 sets it by birth year (73 if born 1951–1959, 75 if born 1960 or later), but this table is keyed by date, so a household born in 1960 or later puts its own `rmd_start_age.csv` with 75 in its `aux/`. |
-| `capital_loss_limit.csv` | How much of a year's net capital loss offsets ordinary income, by filing status (IRC §1211(b)): $3,000, or $1,500 married filing separately, unchanged since 1978 and not inflation-indexed. The rest carries forward to later years. Read by the `tax_accumulator` rule only in a year with a net capital loss. The home-sale exclusion is no longer an aux table: it is the `maximum` of a home-sale chain's `excluded_gain` step. |
+| `capital_loss_limit.csv` | How much of a year's net capital loss offsets ordinary income, by filing status (IRC §1211(b)): $3,000, or $1,500 married filing separately, unchanged since 1978 and not inflation-indexed. The rest carries forward to later years. Read by a tax jurisdiction only in a year with a net capital loss. The home-sale exclusion is no longer an aux table: it is the `maximum` of a home-sale chain's `excluded_gain` step. |
 | `irmaa_tiers.csv` | Medicare's income-related surcharges (IRMAA): for each filing status, the MAGI floor of each tier (the tier applies above it) and its monthly Part B and Part D add-ons, from CMS's fact sheet for the year. Read by an `irmaa` rule, which charges the tier set by MAGI from two years earlier. Each row names optional growth series for its floor and each add-on (`series/inflation__<name>.csv`); blank holds the figure flat. Add the next year's rows each November, when CMS publishes them. |
 | `energy_credits.csv` | Federal energy-efficiency credit/rebate rate and cap, by category (`heat_pump`, `induction_range`, `ev_charger`, ...) and effective date. **Expiring credits need an explicit zero-rate row on their expiration date** -- the lookup takes the latest `effective_date <= month`, so an omitted row means "still in effect," not "expired." OBBBA (2025) ended 25C/25D for property placed in service after 2025-12-31 and 30C after 2026-06-30; the shipped rows reflect that. Not yet wired to a call site -- see `engine._lookup_energy_credit`. |
 | `ltcg_brackets.csv` | Federal long-term capital gain brackets — see "Long-term capital gain rates" below. |
@@ -201,8 +264,8 @@ The cleanest way is to ask the AI assistant. A prompt that works:
 > and `prototype_data/aux/state_brackets__CA.csv` with the latest IRS and
 > CA FTB figures. Use the most recent IRS Revenue Procedure for federal and FTB's
 > annual indexing announcement (in "Tax News") for California. Filing statuses:
-> MFJ, Single, MFS. Exclude CA's Mental Health / Behavioral Health Services Tax
-> (the extra 1% over $1M). Then mirror the three files into `templates/aux/`
+> MFJ, Single, MFS. Leave out CA's Behavioral Health Services Tax (the extra
+> 1% over $1M): it's in `state_surcharge__CA.csv`, which isn't indexed. Then mirror the three files into `templates/aux/`
 > and run `uv run pytest`.
 
 Authoritative sources the AI should pull from:
@@ -245,4 +308,71 @@ taxable income at which its rate starts, with the gain stacked on top of ordinar
 income: the 0% band ends where the 15% band's floor begins, and so on (the shipped figures
 are the 2026 thresholds; check them against the current IRS tables). It is optional and only
 affects federal tax: without it long-term gains are taxed as ordinary income. Short-term
-gains (`stcg`, for a lot held a year or less) are always taxed as ordinary income.
+gains (`stcg`, for a lot held a year or less) are taxed federally as ordinary income.
+
+## The states that ship
+
+Six states' brackets and standard deductions ship here, each pair named for
+its state: California (`__CA`), the District of Columbia (`__DC`), Idaho
+(`__ID`), Kansas (`__KS`), Nebraska (`__NE`) and North Carolina (`__NC`).
+With more than one to choose from, a state tax (`taxes/state.csv`) must name
+its state, as `"bracket_series": "CA"` in its `params_json`; it won't load
+without it. `sim tax state` sets it, asking for the state by name.
+`state_brackets__none.csv` and `state_standard_deduction__none.csv` are a 0%
+table for a state with no income tax, which `sim tax state` and
+`sim tax move` choose for such a state, so a move there needs no tables. The tables carry each state's 2026 law, checked
+against its revenue department's 2026 publications in November 2026. A
+state's personal exemption, where it has one, is folded into the standard
+deduction. None of these five taxes Social Security, so none needs a
+`state_social_security` table.
+
+- **District of Columbia:** brackets the same for every filing status, not
+  indexed. The standard deduction follows the federal one ($16,100, or
+  $32,200 joint, for 2026), so it grows with `cpi`. The extra deduction at
+  65 or blind isn't modeled.
+- **Idaho:** 5.3% above a zero band, which is indexed. Idaho hasn't
+  published its 2026 band, so the 2026 rows carry the 2025 one ($4,811, or
+  $9,622 joint), about $7 of tax high, and grow it with `cpi` from there. The standard
+  deduction follows the federal one. The deduction for some public pensions
+  from 65 and the grocery credit aren't modeled.
+- **Kansas:** 5.2%, then 5.58% over $23,000 ($46,000 joint), not indexed.
+  The deduction is the standard deduction plus the personal exemption:
+  $3,605 + $9,160 single, $8,240 + $18,320 joint, $4,120 + $9,160 separate.
+  A household that itemizes gets the greater of that and its itemized
+  deductions, so it loses the exemption Kansas allows on top: until
+  exemptions are modeled (#488), add the exemption to a Kansas
+  `state_deductions.csv` row.
+  Kansas's own public pensions (KPERS, federal civil service, military) are
+  exempt, and from 65 the standard deduction is larger; neither is modeled.
+  A 2025 law cuts the rates when revenue allows; it didn't for 2026.
+- **Nebraska:** 2.46%, 3.51%, then 4.55% for 2026 and 3.99% from 2027, the
+  bands indexed. Standard deduction $8,850, or $17,700 joint, for 2026; the
+  2027 rows use the $9,100 and $18,200 of Nebraska's draft 2027 estimated
+  tax form, and estimate the 2027 floors by growing 2026's by the same
+  ratio, to the nearest $10, until Nebraska publishes them. The personal
+  exemption credit isn't modeled.
+- **North Carolina:** a flat 3.99% for 2026, 3.49% for 2027-2029, 3.24% for
+  2030-2032 and 2.99% from 2033 (Session Law 2026-41). Standard deduction
+  $12,750, or $25,500 joint, not indexed. The exclusion for government
+  pensions vested before August 1989 (Bailey) isn't modeled.
+
+## A state's capital gains
+
+A state tax rule taxes gains as ordinary income unless the state's own tables, named for
+the state like its brackets, say otherwise. None ship; check the state's revenue department
+for its current rule before writing one.
+
+- `state_ltcg_exclusion__<state>.csv`: `effective_date`, `exclusion`, `min_exclusion`,
+  `max_exclusion`. The state leaves `exclusion` (a percent) of the year's net long-term
+  gain out of its income, at least `min_exclusion` and at most `max_exclusion` dollars
+  (blank for no minimum or no cap), never more than the gain: `50%` for Arkansas, `100%`
+  for Missouri, `0%` with a `min_exclusion` for a flat amount.
+- `state_ltcg_brackets__<state>.csv`: the state's own long-term gain rates, in the shape of
+  `ltcg_brackets.csv`, stacked on top of the state's taxable income: Montana's lower rates,
+  or Hawaii's cap (its brackets, with each rate over 7.25% written as 7.25%).
+- `state_stcg_brackets__<state>.csv`: the same for net short-term gain, which is stacked
+  just below the long-term gain (Massachusetts' 8.5%). A surtax on high income, such as
+  Massachusetts' 4% over about $1 million, is a top row in each of the state's tables.
+
+A move to another state (`swap_aux_table` of `state_brackets`) takes these with it: the new
+state's tables, or none if it has none.

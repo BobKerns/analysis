@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import math
+import re
 import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 # Two lines of about this many characters is what players show comfortably.
 LINE_WIDTH = 42
+# CJK has no spaces to break at: a part is about two lines of 16 characters,
+# broken after a comma (、).
+CJK_MAX = 32
 
 
 @dataclass(frozen=True)
@@ -39,7 +43,7 @@ def scene_cues(sentences: Sequence[str], durations: Sequence[float], *, start: f
 def _pieces(sentence: str) -> list[str]:
     """A sentence in parts of at most two caption lines, timed by their length."""
     if " " not in sentence:
-        return [sentence]
+        return _cjk_pieces(sentence)
     count = math.ceil(len(textwrap.wrap(sentence, LINE_WIDTH)) / 2)
     if count <= 1:
         return [sentence]
@@ -54,6 +58,25 @@ def _pieces(sentence: str) -> list[str]:
             current = []
     if current:
         pieces.append(" ".join(current))
+    return pieces
+
+
+def _cjk_pieces(sentence: str) -> list[str]:
+    """A CJK sentence (no spaces) in parts of about CJK_MAX characters, broken after commas."""
+    if len(sentence) <= CJK_MAX:
+        return [sentence]
+    clauses = [c for c in re.split(r"(?<=[、，,])", sentence) if c]
+    count = math.ceil(len(sentence) / CJK_MAX)
+    target = len(sentence) / count
+    pieces: list[str] = []
+    current = ""
+    for clause in clauses:
+        if current and len(current) + len(clause) > CJK_MAX and len(current) >= target / 2:
+            pieces.append(current)
+            current = ""
+        current += clause
+    if current:
+        pieces.append(current)
     return pieces
 
 

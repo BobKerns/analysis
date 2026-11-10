@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from analysis.sim.engine import EngineError, run_scenario
-from analysis.sim.loader import growth_rule_name, load_scenario
+from analysis.sim.taxes.common import state_ss_exclusion
+from analysis.sim.loader import LoadError, growth_rule_name, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -1312,31 +1313,17 @@ def test_negative_rate_depreciates_asset_into_expense(
         con.close()
 
 
-def test_tax_accumulator_computes_federal_and_writes_summary(
+def test_the_federal_tax_computes_and_writes_its_summary(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
-    """tax_accumulator computes prior-year federal tax and writes summary rows.
+    """The federal jurisdiction computes prior-year federal tax and writes summary rows.
 
     It emits a payment transfer only when computed due is positive.
     """
     repo = test_data_dir
     fund_asset_savings()
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    _append_scheduled(
-        sched_csv,
-        name="tax_federal_prev_year",
-        from_account="Asset_Checking",
-        to_account="Expense_Taxes_Federal",
-        cadence="annual",
-        month_of_year="4",
-        amount_rule_kind="tax_accumulator",
-        tax_character="none",
-        start="2027-04-30",
-        priority="400",
-        description="federal income tax forecast",
-        meta_json="{}",
-        params_json='{"year":"previous","scope":"federal"}',
-    )
+    write_tax(repo / "scenarios" / "retire_alice")
 
     intent_path = load_scenario(
         repo, "retire_alice",
@@ -1353,12 +1340,12 @@ def test_tax_accumulator_computes_federal_and_writes_summary(
     con.row_factory = sqlite3.Row
     try:
         tax_rule_id = con.execute(
-            "SELECT id FROM scheduled_transaction WHERE name='tax_federal_prev_year'"
+            "SELECT id FROM tax_jurisdiction WHERE name='federal'"
         ).fetchone()[0]
 
         liability = con.execute(
             "SELECT amount FROM tax_year_summary "
-            "WHERE year = 2026 AND bucket = 'federal_tax_liability'"
+            "WHERE year = 2026 AND bucket = 'federal_tax'"
         ).fetchone()
         due = con.execute(
             "SELECT amount FROM tax_year_summary "
@@ -1378,7 +1365,7 @@ def test_tax_accumulator_computes_federal_and_writes_summary(
 
         emitted = con.execute(
             "SELECT amount FROM transfer_event "
-            "WHERE reason_id = ? AND date = '2027-04-30'",
+            "WHERE reason_kind = 'tax' AND reason_id = ? AND date = '2027-04-30'",
             (tax_rule_id,),
         ).fetchall()
         if due[0] > 0:
@@ -1398,25 +1385,12 @@ def _summary(con: sqlite3.Connection, year: int, bucket: str) -> int:
     return row[0]
 
 
-def _run_federal_tax_accumulator(
+def _run_federal_tax(
     tmp_path: Path, repo: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> sqlite3.Connection:
     fund_asset_savings()
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    _append_scheduled(
-        sched_csv,
-        name="tax_federal_prev_year",
-        from_account="Asset_Checking",
-        to_account="Expense_Taxes_Federal",
-        cadence="annual",
-        month_of_year="4",
-        amount_rule_kind="tax_accumulator",
-        tax_character="none",
-        start="2027-04-30",
-        priority="400",
-        meta_json="{}",
-        params_json='{"year":"previous","scope":"federal"}',
-    )
+    write_tax(repo / "scenarios" / "retire_alice")
     intent_path = load_scenario(
         repo, "retire_alice",
         intent_dir=tmp_path / "intent", loaded_by="test",
@@ -1431,50 +1405,100 @@ def _run_federal_tax_accumulator(
 
 def test_itemized_deduction_is_used_when_greater_than_standard(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
     repo = test_data_dir
     # 2026 MFJ standard deduction is $31,500 (prototype_data/aux/standard_deduction.csv).
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
     )
-    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 40_000_00
         assert _summary(con, 2026, "federal_standard_deduction") == 31_500_00
-        assert _summary(con, 2026, "federal_deduction_used") == 40_000_00
+        assert _summary(con, 2026, "federal_deduction") == 40_000_00
+    finally:
+        con.close()
+
+
+def test_an_itemized_deduction_counts_only_in_its_own_year(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
+) -> None:
+    """A big medical year is that year's deduction, not every later year's (#370)."""
+    repo = test_data_dir
+    (repo / "aux" / "federal_deductions.csv").write_text(
+        "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
+    )
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+    try:
+        assert _summary(con, 2026, "federal_deduction") == 40_000_00
+        assert _summary(con, 2027, "federal_itemized_deduction") == 0
+        assert _summary(con, 2027, "federal_deduction") == 32_200_00
+    finally:
+        con.close()
+
+
+def test_a_year_takes_one_itemized_row(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
+) -> None:
+    repo = test_data_dir
+    (repo / "aux" / "federal_deductions.csv").write_text(
+        "effective_date,amount\n2026-01-31,40000.00\n2026-06-30,5000.00\n", encoding="utf-8",
+    )
+    with pytest.raises(LoadError, match="2026 has 2 rows .* a tax year takes one itemized total"):
+        _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+
+
+def test_each_deduction_table_takes_its_own_row_for_a_year(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
+) -> None:
+    # A series is another table (for a swap_aux_table), with its own years.
+    repo = test_data_dir
+    for name, amount in (("federal_deductions", "40000.00"), ("federal_deductions__sunset", "5000.00")):
+        (repo / "aux" / f"{name}.csv").write_text(
+            f"effective_date,amount\n2026-01-31,{amount}\n", encoding="utf-8")
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+    try:
+        assert _summary(con, 2026, "federal_itemized_deduction") == 40_000_00
     finally:
         con.close()
 
 
 def test_standard_deduction_is_used_when_greater_than_itemized(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
     repo = test_data_dir
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,10000.00\n", encoding="utf-8",
     )
-    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 10_000_00
-        assert _summary(con, 2026, "federal_deduction_used") == 31_500_00
+        assert _summary(con, 2026, "federal_deduction") == 31_500_00
     finally:
         con.close()
 
 
 def test_no_itemized_deductions_file_behaves_as_before(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
     repo = test_data_dir
-    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 0
-        assert _summary(con, 2026, "federal_deduction_used") == 31_500_00
+        assert _summary(con, 2026, "federal_deduction") == 31_500_00
     finally:
         con.close()
 
 
 def test_itemized_deduction_amount_can_reference_an_itemization(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
     repo = test_data_dir
     (repo / "itemizations").mkdir(exist_ok=True)
@@ -1484,10 +1508,10 @@ def test_itemized_deduction_amount_can_reference_an_itemization(
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,@medical_2026\n", encoding="utf-8",
     )
-    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 35_000_00
-        assert _summary(con, 2026, "federal_deduction_used") == 35_000_00
+        assert _summary(con, 2026, "federal_deduction") == 35_000_00
     finally:
         con.close()
 
@@ -2000,6 +2024,7 @@ def test_year_to_date_csv_posts_balance_neutral_catchup(test_data_dir: Path, tmp
 
 def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
     """The scenario's declared final year (2040) gets a real tax_year_summary
     reconciliation (which normally fires the following April, past the
@@ -2007,22 +2032,7 @@ def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
     are written past scenario.end -- the tail is invisible to simulation data."""
     repo = test_data_dir
     fund_asset_savings()
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    _append_scheduled(
-        sched_csv,
-        name="tax_federal_prev_year",
-        from_account="Asset_Checking",
-        to_account="Expense_Taxes_Federal",
-        cadence="annual",
-        month_of_year="4",
-        amount_rule_kind="tax_accumulator",
-        tax_character="none",
-        start="2027-04-30",
-        priority="400",
-        description="federal income tax forecast",
-        meta_json="{}",
-        params_json='{"year":"previous","scope":"federal"}',
-    )
+    write_tax(repo / "scenarios" / "retire_alice")
 
     intent_path = load_scenario(
         repo, "retire_alice",
@@ -2041,7 +2051,7 @@ def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
         # would normally fire 2041-04-30, past the scenario end.
         liability_2040 = con.execute(
             "SELECT amount FROM tax_year_summary "
-            "WHERE year = 2040 AND bucket = 'federal_tax_liability'"
+            "WHERE year = 2040 AND bucket = 'federal_tax'"
         ).fetchone()
         assert liability_2040 is not None
 
@@ -2099,3 +2109,67 @@ def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
     run_path = tmp_path / "r.sqlite3"
     with pytest.raises(EngineError, match="vary_distribution"):
         run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+
+
+@pytest.mark.parametrize(("row", "agi", "excluded"), [
+    # No phase-out: the whole share, at any income.
+    ({"exclusion_micros": 1_000_000}, 500_000_00, 10_000_00),
+    ({"exclusion_micros": 0}, 0, 0),
+    # Linear phase-out: half way through the range keeps half.
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 80_000_00,
+      "phaseout_end": 90_000_00}, 85_000_00, 5_000_00),
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 80_000_00,
+      "phaseout_end": 90_000_00}, 80_000_00, 10_000_00),
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 80_000_00,
+      "phaseout_end": 90_000_00}, 95_000_00, 0),
+    # A cliff: phaseout_end equal to phaseout_start.
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 100_000_00,
+      "phaseout_end": 100_000_00}, 100_000_01, 0),
+    # A rate: $2 of exclusion lost per dollar over.
+    ({"exclusion_micros": 1_000_000, "phaseout_start": 50_000_00,
+      "phaseout_rate_micros": 2_000_000}, 52_000_00, 6_000_00),
+])
+def test_state_ss_exclusion(row: dict[str, int], agi: int, excluded: int) -> None:
+    """How much of $10,000 of federally taxable Social Security a state's
+    state_social_security row leaves out (#484)."""
+    assert state_ss_exclusion(row, 10_000_00, agi) == excluded
+
+
+def test_state_social_security_table_taxes_it(
+    add_state_tax: Callable[[], None], write_aux: Callable[[str, str], Path],
+    run_test_copy: Callable[[], Path],
+) -> None:
+    """With no state_social_security table a state taxes no Social Security;
+    with one it taxes the federally taxable amount less its exclusion, here
+    none, or a whole one lost at once above $0 of income (#484)."""
+    add_state_tax()
+
+    def summaries(table: str | None) -> dict[int, tuple[int, int]]:
+        """Each year with Social Security: (state taxable SS, state tax)."""
+        if table is not None:
+            write_aux("state_social_security__CA.csv", table)
+        run = run_test_copy()
+        con = sqlite3.connect(run)
+        try:
+            years = [r[0] for r in con.execute(
+                "SELECT year FROM tax_year_summary "
+                "WHERE bucket = 'state_ss_benefits' AND amount > 0 ORDER BY year")]
+            return {y: (_summary(con, y, "state_ss_taxable"),
+                        _summary(con, y, "state_tax")) for y in years}
+        finally:
+            con.close()
+            run.unlink()  # run_test_copy writes the same file each time
+
+    exempt = summaries(None)
+    assert exempt
+    assert all(taxable == 0 for taxable, _ in exempt.values())
+    header = ("effective_date,filing_status,exclusion_percent,"
+              "phaseout_start,phaseout_end,phaseout_rate\n")
+    none_excluded = summaries(header + "2020-01-31,MFJ,0%,,,\n2020-01-31,Single,0%,,,\n")
+    assert none_excluded.keys() == exempt.keys()
+    assert any(taxable > 0 for taxable, _ in none_excluded.values())
+    assert all(none_excluded[y][1] >= exempt[y][1] for y in exempt)
+    assert any(none_excluded[y][1] > exempt[y][1] for y in exempt)
+    assert summaries(
+        header + "2020-01-31,MFJ,100%,0,0,\n2020-01-31,Single,100%,0,0,\n",
+    ) == none_excluded

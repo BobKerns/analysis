@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{#
+  A window on another system's screen, drawn from text: a terminal on
+  Windows, a file browser, an editor. For screens the tapes can't record,
+  since VHS records a Linux terminal only; drawn, they re-render
+  and translate like any other slide.
+
+  Fields: heading (above the window), title (its title bar), look
+  (terminal, light, files or editor; default terminal), lines,
+  address (files: the address bar), status (editor: the status bar's
+  left end), note (a line below the window, optional).
+
+  Each of lines is text (output, or a file's name in a files window), or a
+  table: prompt and typed show a command line, with typed in the accent
+  color; secret = true shows a prompt the typing doesn't echo to, with a
+  cursor after it.
+#}
+{% block style %}
+.frame { position: absolute; left: 160px; right: 160px; top: 90px; bottom: {{ 250 if note else 190 }}px;
+         display: flex; flex-direction: column; }
+h2 { margin: 18px 0 0; font-family: var(--font-heading); font-weight: 800; font-size: 64px; line-height: 1.05; }
+.window { flex: 1; min-height: 0; margin-top: 30px; border-radius: 14px; overflow: hidden;
+          display: flex; flex-direction: column; box-shadow: 0 16px 48px rgb(0 0 0 / 0.45);
+          border: 2px solid color-mix(in srgb, var(--muted) 35%, transparent); }
+.bar { display: flex; align-items: center; height: 64px; padding: 0 22px;
+       background: color-mix(in srgb, var(--surface) 80%, black);
+       font-size: 30px; color: var(--ink); }
+.bar .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar .controls { display: flex; gap: 34px; color: var(--muted); font-size: 30px; }
+.content { flex: 1; min-height: 0; padding: 26px 34px; overflow: hidden;
+           font-family: var(--font-mono); font-size: 34px; line-height: 1.45;
+           background: #0c0c0c; color: #cccccc; white-space: pre-wrap; }
+.command { font-family: var(--font-mono); }
+.typed { color: var(--accent); }
+.cursor { display: inline-block; width: 0.6em; height: 1.1em; vertical-align: -0.2em;
+          background: var(--accent); margin-left: 0.15em; }
+.light .content { background: #f7f7f5; color: #1e1e1e; }
+.light .typed { color: #a05a00; }
+.files .content, .editor .content { font-family: var(--font-body); white-space: normal; }
+.files .content { background: #f7f7f5; color: #1e1e1e; padding: 18px 34px; }
+.address { margin: 16px 22px 0; padding: 10px 20px; border-radius: 8px; font-size: 32px;
+           background: #ffffff; color: #1e1e1e; border: 2px solid #c9c9c9; font-family: var(--font-mono); }
+.files .address-row { background: #ebebe8; padding-bottom: 16px; }
+.files .row { display: flex; align-items: center; gap: 22px; padding: 10px 0; font-size: 36px;
+              border-bottom: 1px solid #e0e0dc; }
+.folder { width: 46px; height: 34px; border-radius: 4px; background: #e9b949; position: relative; flex: none; }
+.folder::before { content: ""; position: absolute; left: 0; top: -8px; width: 20px; height: 10px;
+                  border-radius: 3px 3px 0 0; background: #e9b949; }
+.editor .content { background: #1f1f1f; color: #d4d4d4; font-size: 38px; }
+.status { display: flex; align-items: center; height: 54px; font-size: 28px; background: #2b2b2b; color: #e6e6e6; }
+.status .remote { height: 100%; display: flex; align-items: center; padding: 0 22px;
+                  background: var(--accent2); color: var(--bg); font-weight: 700; }
+.note { position: absolute; left: 160px; right: 160px; bottom: 170px; font-size: 40px; color: var(--muted); }
+{% endblock %}
+{% block body %}
+{% set look = look or "terminal" %}
+<div class="ground"></div>
+<div class="frame">
+  <div class="series">{{ series }}</div>
+  {% if heading %}<h2>{{ heading }}</h2>{% endif %}
+  <div class="window {{ look }}">
+    <div class="bar"><span class="name">{{ title }}</span><span class="controls">&#x2013; &#x25a1; &#x2715;</span></div>
+    {% if look == "files" %}<div class="address-row"><div class="address">{{ address }}</div></div>{% endif %}
+    <div class="content">
+      {%- for line in lines or [] -%}
+        {%- if look == "files" -%}
+          <div class="row"><span class="folder"></span>{{ line }}</div>
+        {%- elif line is mapping -%}
+          <div class="command">{{ line.prompt }}{% if line.typed %} <span class="typed">{{ line.typed }}</span>{% endif %}{% if line.secret %}<span class="cursor"></span>{% endif %}</div>
+        {%- else -%}
+          <div>{{ line if line else " " }}</div>
+        {%- endif -%}
+      {%- endfor -%}
+    </div>
+    {% if look == "editor" %}<div class="status"><span class="remote">{{ status }}</span></div>{% endif %}
+  </div>
+</div>
+{% if note %}<div class="note">{{ note }}</div>{% endif %}
+{% endblock %}

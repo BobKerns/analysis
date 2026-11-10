@@ -145,7 +145,7 @@ def test_tax_by_year_shows_the_federal_income_it_taxed_without_a_state_rule(repo
     liability = report_run.tax_liability_by_year()
     assert tax.loc[2026, "total_tax"] == pytest.approx(liability[2026]) and liability[2026] > 0
     summary = report_run.items("tax_year_summary").set_index(["year", "bucket"])["amount"] / 100
-    assert tax.loc[2026, "fed_agi"] == pytest.approx(summary[2026, "federal_adjusted_gross_income"])
+    assert tax.loc[2026, "fed_agi"] == pytest.approx(summary[2026, "federal_agi"])
     assert tax.loc[2026, "fed_income"] == pytest.approx(
         max(0, tax.loc[2026, "fed_agi"] - tax.loc[2026, "fed_deduction"]))
     assert tax.loc[2026, "effective_rate"] == pytest.approx(
@@ -157,6 +157,7 @@ def test_tax_by_year_shows_the_federal_income_it_taxed_without_a_state_rule(repo
     assert constant.loc[2030, "fed_agi"] < tax.loc[2030, "fed_agi"]
     reconciliation = reports.tax_reconciliation(report_run)
     assert reconciliation.loc[2026, "fed_liability"] == pytest.approx(liability[2026])
+    assert not any(c.startswith("state_") for c in reconciliation.columns)
 
 
 def test_tax_by_year_adds_the_states_own_figures(
@@ -168,9 +169,13 @@ def test_tax_by_year_adds_the_states_own_figures(
     with open_scenario(test_data_dir, "retire_alice") as scenario_conn, \
             open_run(run_file, scenario_conn, scenarios_dir=test_data_dir / "scenarios") as rc:
         tax = reports.tax_by_year(rc)
+        reconciliation = reports.tax_reconciliation(rc)
     assert {"state_agi", "state_deduction", "state_income", "state_tax"} <= set(tax)
+    assert "state_liability" in reconciliation.columns
     assert tax.loc[2026, "state_deduction"] == pytest.approx(11_080)
-    assert tax.loc[2026, "total_tax"] == pytest.approx(tax.loc[2026, "state_tax"])
+    # The state starts from the federal return (#508), so both are taxed.
+    assert tax.loc[2026, "total_tax"] == pytest.approx(
+        tax.loc[2026, "fed_tax"] + tax.loc[2026, "state_tax"])
 
 
 def test_a_market_drop_takes_back_that_years_gains(

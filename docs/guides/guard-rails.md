@@ -8,7 +8,7 @@ A **guard rail** is a line a scenario's spending, or its withdrawals from
 its savings, should stay on one side of. The best-known ones are rules of
 thumb for retirement: "take no more than 4% a year", "cut back when the
 withdrawal rate climbs 20% past where it started". A rail doesn't change
-what the simulation does. It is a way to read a run: for each year, how far
+what the simulation does, unless a strategy is set to respond to it. It is a way to read a run: for each year, how far
 inside the line the plan stayed, or how far past it went, and how that adds
 up over the years.
 
@@ -18,6 +18,13 @@ the prototype scenario, `retire_alice`, where Alice retires at the end of
 2030 and the household bridges seven years to Bill's Social Security at
 70. The column-by-column reference is
 [ADR-003 §4.11](../architecture/ADR-003-registries-and-csv-schemas.md).
+
+**Video.** *Advanced* gives Alice and Bill lifespans, adds the 4% rule and
+Guyton-Klinger's guardrails, reads them on one run and across an
+ensemble, and adds a `cut_on_breach` strategy that responds to the upper
+guardrail:
+[English](https://www.youtube.com/watch?v=sCqdL0pSIA0),
+[Japanese (日本語)](https://www.youtube.com/watch?v=dcyW3Mzd-yE).
 
 ## Two questions
 
@@ -68,9 +75,13 @@ gk_upper,withdrawals,above,6%,portfolio,negative,2031-01
 gk_lower,withdrawals,below,4%,portfolio,positive,2031-01
 ```
 
-The cuts and raises themselves are not modeled yet: a rail only reports.
-Strategies that respond to a rail are planned
-([#326](https://github.com/BobKerns/analysis/issues/326)).
+A rail only reports. To act on these rails, a `cut_on_breach` strategy
+whose trigger names them cuts the spending it owns while `gk_upper` is past
+and, with an `increase`, raises it while `gk_lower` is
+([user guide §4.19](../user-guide.md)). The `guardrail` spending strategy
+applies Guyton and Klinger's own rule instead, from its initial rate,
+compounding each cut and raise, without reading these rails
+([user guide §4.17](../user-guide.md)).
 
 **A budget**: spending in today's dollars, a ceiling, or a floor (a spending
 level the household doesn't want to fall under):
@@ -134,7 +145,10 @@ sim guard-rail delete budget
 ```
 
 Rails aren't part of a run, so changing one reruns nothing: the next
-report reads the rail as it is now.
+report reads the rail as it is now. The exception is a rail a strategy
+answers: a strategy's `trigger` makes the run check that rail each January
+and respond when it is crossed, so then a rail edit reruns the scenario
+([user guide §4.19](../user-guide.md)).
 
 ## Reading the results
 
@@ -192,7 +206,7 @@ each rail, year and form, annual and cumulative:
 
 ```sh
 sim ensemble guard-rails RECIPE           # every rail
-sim ensemble guard-rails RECIPE --graph   # shares over RMS, annual beside cumulative
+sim ensemble guard-rails RECIPE --chart   # shares over RMS, annual beside cumulative
 sim ensemble compare RECIPE VARIANT       # adds each rail's change
 ```
 

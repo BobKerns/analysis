@@ -25,6 +25,14 @@ Rules (Bob, #300):
   ``scripts/setup.sh`` runs except under CI or an agent), and
   ``ANALYSIS_BUILDER=off`` turns it off entirely.
 
+Its work is jobs, a scenario and a step (#454): ``run`` (``sim load``: the
+scenario's run, or its Monte Carlo batch), then for an ensemble ``series``
+(the batch's series store, when ``sim run`` didn't leave a current one) and
+``sensitivity`` (a one-at-a-time batch, ``sim run --sensitivity``). It does
+every run first, then every series store, then every sensitivity batch; but
+once a reader has asked for one of a scenario's jobs, the rest of that
+scenario's follow it at once.
+
 Everything lives in the data repo's ``state/builder/`` (untracked, and one
 per data worktree): ``config.json`` (the opt-in and the pair),
 ``daemon.lock`` (held for the daemon's life), ``status.json``, ``requests/``
@@ -34,6 +42,8 @@ per data worktree): ``config.json`` (the opt-in and the pair),
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import fcntl
 import json
 import os
@@ -43,7 +53,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -60,15 +70,22 @@ from analysis.sim.loader import (
     read_current_scenario,
     read_disabled_scenarios,
 )
-from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV, is_building, run_name_key
+from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV, is_building
 
 __all__ = [
+    "STEPS",
     "BuilderPaths",
+    "Behind",
     "await_fresh",
+    "behind_upstream",
     "build_pending",
     "daemon_alive",
+    "job_key",
     "main_check",
+    "needed_steps",
+    "note_behind",
     "notify",
+    "parse_job",
     "pair_problems",
     "read_status",
     "run_daemon",
@@ -84,6 +101,86 @@ TICK_SECONDS = 0.5
 # Hook stubs this module writes into the data repo carry this line.
 HOOK_MARKER = "# analysis sim builder hook (#300)"
 HOOK_NAMES = ("post-commit", "post-checkout", "post-merge", "post-rewrite")
+# A job's steps, in the order the builder does them (#454).
+STEPS = ("run", "series", "sensitivity")
+# The steps a reader of each kind of result waits for (loader.latest_*):
+# a Monte Carlo batch's readers read its series store too.
+READER_STEPS: dict[str | None, tuple[str, ...]] = {
+    "monte_carlo": ("run", "series"), "sensitivity": ("sensitivity",), None: STEPS,
+}
+
+
+def job_key(scenario: str, step: str) -> str:
+    """How a job is named in the queue and the status: the scenario alone
+    for its run, ``<scenario>:<step>`` for the others (#454)."""
+    return scenario if step == "run" else f"{scenario}:{step}"
+
+
+def parse_job(job: str) -> tuple[str, str]:
+    """(scenario, step) from :func:`job_key`."""
+    scenario, _, step = job.partition(":")
+    return scenario, step or "run"
+
+
+def needed_steps(
+    data_dir: Path, runs_dir: Path, scenario: str, code: Any,
+) -> list[str]:
+    """Which of ``scenario``'s jobs would change something (#454):
+
+    - ``run`` when its latest run or Monte Carlo batch could differ if it ran
+      again (``freshness.unchanged_run``);
+    - otherwise ``series`` when that is a batch whose series store isn't
+      current (``sim run`` writes one; a batch whose members' rows couldn't
+      all be gathered has none);
+    - ``sensitivity`` for an ensemble that isn't a pool (ADR-009 refuses
+      one) when its latest sensitivity batch could differ if it ran again.
+      Whatever its Monte Carlo batch's state: a reader of sensitivity
+      results waits only on this job, so a stale sensitivity batch must
+      always have one.
+    """
+    from analysis.sim import freshness
+    from analysis.sim.scenario import ensemble_settings
+    from analysis.sim.series_db import series_db_current
+
+    steps: list[str] = []
+    fresh = freshness.unchanged_run(data_dir, runs_dir, scenario, code)
+    if fresh is None:
+        steps.append("run")
+    elif fresh.path.is_dir() and not series_db_current(fresh.path):
+        steps.append("series")
+    if not is_pool(data_dir / "scenarios", scenario) \
+            and ensemble_settings(data_dir, scenario)[1] is not None \
+            and freshness.unchanged_run(data_dir, runs_dir, scenario, code,
+                                        mode="sensitivity") is None:
+        steps.append("sensitivity")
+    return steps
+
+
+def step_command(data_dir: Path, scenario: str, step: str) -> list[str]:
+    """The ``sim`` arguments that do one job."""
+    where = ["--data-dir", str(data_dir)]
+    if step == "series":
+        return ["builder", "series", scenario, *where]
+    if step == "sensitivity":
+        return ["run", scenario, "--sensitivity", *_sensitivity_options(data_dir, scenario), *where]
+    return ["load", scenario, *where]
+
+
+def _sensitivity_options(data_dir: Path, scenario: str) -> list[str]:
+    """A sensitivity batch made again keeps the quantiles of the latest one
+    (a response-curve ladder, say); the first gets the defaults."""
+    from analysis.sim.ensemble import read_batch_manifest
+    from analysis.sim.loader import latest_ensemble_batch
+
+    runs = BuilderPaths.for_data(data_dir).runs_dir
+    batch = latest_ensemble_batch(runs / scenario, mode="sensitivity", wait=False)
+    try:
+        quantiles = (read_batch_manifest(batch) or {}).get("quantiles") if batch else None
+    except (OSError, ValueError):
+        quantiles = None
+    if not quantiles:
+        return []
+    return ["--quantiles", ",".join(repr(float(q)) for q in quantiles)]
 
 
 def switched_off() -> bool:
@@ -120,6 +217,11 @@ class BuilderPaths:
     @property
     def requests(self) -> Path:
         return self.dir / "requests"
+
+    @property
+    def holds(self) -> Path:
+        """Scenarios a command is building itself (#308), a file per process."""
+        return self.dir / "holds"
 
     @property
     def log_dir(self) -> Path:
@@ -244,14 +346,104 @@ def main_check(
     return code.trees, None
 
 
+@dataclass(frozen=True)
+class Behind:
+    """Local ``branch`` lacks code commits its upstream had at the last fetch."""
+
+    branch: str
+    upstream: str
+    commits: int  # upstream commits not on the branch that touch the code paths
+    fetched: float | None  # when the repo last fetched (FETCH_HEAD's mtime), if known
+
+    def describe(self) -> str:
+        from analysis.sim.freshness import CODE_PATHS
+
+        when = "" if self.fetched is None else f", as of the last fetch {_ago(time.time() - self.fetched)}"
+        plural = "" if self.commits == 1 else "s"
+        return (f"local {self.branch} is {self.commits} commit{plural} behind {self.upstream} "
+                f"in {', '.join(CODE_PATHS)}{when}")
+
+
+def behind_upstream(branch: str = DEFAULT_BRANCH, repo_dir: Path | None = None) -> Behind | None:
+    """How far local ``branch`` is behind its upstream (its tracking branch,
+    else ``origin/<branch>``) as last fetched, counting only commits that
+    touch the code paths, since the builder works by code tree (#306).
+    None when it isn't behind or there is nothing to compare with. Never
+    fetches: a background fetch already moves the upstream, and the point
+    is to say what the user hasn't pulled."""
+    from git import GitCommandError
+
+    from analysis.sim.freshness import CODE_PATHS, code_tree
+    from analysis.sim.provenance import _open_repo
+
+    repo = code_tree().repo if repo_dir is None else _open_repo(repo_dir)
+    if repo is None or branch not in repo.heads:
+        return None
+    tracking = repo.heads[branch].tracking_branch()
+    upstream = tracking.name if tracking is not None else f"origin/{branch}"
+    try:
+        count = int(repo.git.rev_list("--count", f"refs/heads/{branch}..{upstream}", "--", *CODE_PATHS))
+    except (GitCommandError, ValueError):
+        return None  # no such upstream (never fetched, or no remote)
+    if count == 0:
+        return None
+    fetched = None
+    for git_dir in (repo.git_dir, repo.common_dir):
+        with contextlib.suppress(OSError):
+            fetched = (Path(git_dir) / "FETCH_HEAD").stat().st_mtime
+            break
+    return Behind(branch, upstream, count, fetched)
+
+
+def _ago(seconds: float) -> str:
+    """``just now``, ``5 minutes ago``, ``3 hours ago``, ``2 days ago``."""
+    for unit, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= size:
+            n = int(seconds // size)
+            return f"{n} {unit}{'' if n == 1 else 's'} ago"
+    return "just now"
+
+
+# Workspaces (state dirs) this process has already noted are behind.
+_noted_behind: set[Path] = set()
+
+
+def note_behind(state_dir: Path, echo: Callable[[str], None] | None = None) -> None:
+    """Once per process and workspace, say so on stderr when results here
+    are built from a local branch behind its upstream (#306): where the
+    builder is installed and on, and the code running is that branch's, so
+    what is built and read is that code. Quiet otherwise; never fetches."""
+    paths = BuilderPaths(Path(state_dir).resolve())
+    # The builder's own builds would repeat it into its log at every build.
+    if paths.state_dir in _noted_behind or switched_off() or os.environ.get(BUILDER_CHILD_ENV):
+        return
+    config = read_config(paths)
+    if config is None:
+        return
+    _noted_behind.add(paths.state_dir)
+    code = config.get("code_dir")
+    branch = config_branch(config)
+    repo_dir = Path(code) if code else None
+    if main_check(branch, repo_dir)[0] is None:
+        return  # the builder is off; `sim builder status` says why
+    behind = behind_upstream(branch, repo_dir)
+    if behind is None:
+        return
+    echo = echo or (lambda text: print(text, file=sys.stderr))
+    echo(f"NOTE: {behind.describe()}; runs here use the older code until you pull "
+         f"(git pull, on {branch})")
+
+
 # -- requests ----------------------------------------------------------------
 
 
-def _request(paths: BuilderPaths, kind: str, scenario: str | None = None) -> float:
-    """Leave a request for the daemon; returns when it was made."""
+def _request(paths: BuilderPaths, kind: str, scenario: str | None = None,
+             steps: Sequence[str] | None = None) -> float:
+    """Leave a request for the daemon; returns when it was made. A
+    ``first`` request names the scenario's ``steps`` a reader waits on."""
     paths.requests.mkdir(parents=True, exist_ok=True)
     made = time.time()
-    body = {"kind": kind, "scenario": scenario, "made": made}
+    body = {"kind": kind, "scenario": scenario, "steps": list(steps or ()), "made": made}
     name = f"{time.time_ns()}-{os.getpid()}.json"
     _write_json(paths.requests / name, body)
     return made
@@ -314,17 +506,81 @@ def notify(data_dir: Path, *, start: bool = True) -> str:
     return "started the background builder"
 
 
+# -- holds -------------------------------------------------------------------------
+
+# This process's hold file, once it has one, and what it holds.
+_holding: dict[Path, set[str]] = {}
+
+
+def hold(data_dir: Path, scenarios: Sequence[str]) -> None:
+    """Keep the background builder off ``scenarios`` while this process
+    lives (#308). A command that commits their data and then builds them
+    would otherwise race the build that the commit's hook starts, and one
+    of the two would build them again; a build of one already running is
+    stopped. Does nothing where the builder isn't installed."""
+    if not scenarios:
+        return
+    paths = BuilderPaths.for_data(data_dir)
+    if read_config(paths) is None:
+        return
+    path = paths.holds / f"{os.getpid()}.json"
+    if path not in _holding:
+        _holding[path] = set()
+        atexit.register(path.unlink, missing_ok=True)
+    _holding[path].update(scenarios)
+    _write_json(path, {"pid": os.getpid(), "scenarios": sorted(_holding[path])})
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # someone else's, but there
+    return True
+
+
+def held(paths: BuilderPaths) -> dict[str, int]:
+    """Each held scenario and the pid of the command holding it. A hold
+    whose process has gone (killed, so its exit handler never ran) is
+    removed."""
+    out: dict[str, int] = {}
+    if not paths.holds.is_dir():
+        return out
+    for path in paths.holds.glob("*.json"):
+        try:
+            body = json.loads(path.read_text())
+            pid = int(body["pid"])
+            names = [str(name) for name in body["scenarios"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # being written; the next look sees it whole
+        if not _alive(pid):
+            path.unlink(missing_ok=True)
+            continue
+        out.update(dict.fromkeys(names, pid))
+    return out
+
+
 # -- the daemon ----------------------------------------------------------------
 
 
 @dataclass
 class _Build:
-    scenario: str
+    job: str
     key: list[Any]
     process: subprocess.Popen[bytes]
     started: float
     wanted: bool = False  # someone is waiting for it: never preempted
     reader: threading.Thread | None = None  # copies its output into the log
+
+    @property
+    def scenario(self) -> str:
+        return parse_job(self.job)[0]
+
+    @property
+    def step(self) -> str:
+        return parse_job(self.job)[1]
 
     def drain(self) -> None:
         """Let the reader copy the last of the output, so the outcome's
@@ -339,11 +595,17 @@ class _Daemon:
         self.paths = BuilderPaths.for_data(self.data_dir)
         self.echo = echo
         self.writer = builder_log.LogWriter(self.paths.log_dir, on_new_day=self.new_day)
+        # Jobs to do (job_key), in order.
         self.queue: list[str] = []
+        # Jobs a reader is waiting on, most recently asked first.
         self.first: list[str] = []
+        # Scenarios a reader asked for whose other jobs come next (#454).
+        self.follow: list[str] = []
         # Builds preempted for a scenario someone is waiting on: next in line.
         self.resume: list[str] = []
         self.waiting: dict[str, str] = {}
+        # Scenarios a command is building itself (hold()), and its pid.
+        self.held: dict[str, int] = {}
         self.status = read_status(self.paths)
         self.failed: dict[str, dict[str, Any]] = dict(self.status.get("failed") or {})
         # Builds stopped because their inputs changed (an edit, #309), so a
@@ -397,17 +659,19 @@ class _Daemon:
     def write_status(self) -> None:
         current = None
         if self.build is not None:
-            current = {"scenario": self.build.scenario, "pid": self.build.process.pid,
+            current = {"scenario": self.build.scenario, "step": self.build.step,
+                       "job": self.build.job, "pid": self.build.process.pid,
                        "started": self.build.started}
         _write_json(self.paths.status, {
             "pid": os.getpid(), "state": self.state, "reason": self.reason,
             "current": current, "queue": self.queue, "waiting": self.waiting,
-            "failed": self.failed, "cancelled": self.cancelled, "updated": time.time(),
+            "failed": self.failed, "cancelled": self.cancelled, "held": self.held,
+            "updated": time.time(),
         })
 
     def scan(self) -> None:
         """Recompute the queue from the trees as they are now."""
-        from analysis.sim.freshness import code_tree, unchanged_run
+        from analysis.sim.freshness import code_tree
         from analysis.sim.provenance import data_stamps
 
         # Read each time: `sim builder install BRANCH` may have changed it.
@@ -425,80 +689,125 @@ class _Daemon:
             self.cancel(f"builder disabled: {reason}")
             return
         code = code_tree()
-        queue, waiting = [], {}
+        queue: list[str] = []
+        waiting: dict[str, str] = {}
         disabled = read_disabled_scenarios(self.data_dir)
+        self.held = held(self.paths)
         for name in list_scenario_names(self.data_dir):
             if name in disabled:  # only built when named
+                continue
+            if name in self.held:
+                waiting[name] = f"being built by pid {self.held[name]}"
                 continue
             data = data_stamps(self.data_dir, name)
             if data.dirty:
                 waiting[name] = "data dirty"
                 continue
-            failed = self.failed.get(name)
-            if failed is not None and failed.get("key") == [list(trees), data.tree_id]:
-                continue
-            if unchanged_run(self.data_dir, self.paths.runs_dir, name, code) is None:
-                queue.append(name)
+            for step in needed_steps(self.data_dir, self.paths.runs_dir, name, code):
+                job = job_key(name, step)
+                failed = self.failed.get(job)
+                if failed is not None and failed.get("key") == [list(trees), data.tree_id]:
+                    continue
+                queue.append(job)
         self.waiting = waiting
 
         def why_dropped(name: str) -> str:
             if name in disabled:
                 return "it was disabled"
+            if name in self.held:
+                return f"a command (pid {self.held[name]}) is building it"
             if name in waiting:
                 return "its data has uncommitted changes"
             return "its inputs changed"
 
         # Queued builds no longer to be done: a reader waiting on one must
         # hear that it was cancelled, not that it is done.
-        for name in set(self.queue) - set(queue):
+        for job in set(self.queue) - set(queue):
+            name = parse_job(job)[0]
             if name in disabled or name in waiting:
-                self.cancelled[name] = {"at": time.time(), "why": why_dropped(name)}
+                self.cancelled[job] = {"at": time.time(), "why": why_dropped(name)}
         if self.build is not None:
             name = self.build.scenario
-            if name in disabled or self.build.key != self.key(name, trees):
+            if name in disabled or name in self.held or self.build.key != self.key(name, trees):
                 why = why_dropped(name)
-                self.cancel(f"{name}: {why}")
-                self.cancelled[name] = {"at": time.time(), "why": why}
-            if self.build is not None and self.build.scenario in queue:
-                queue.remove(self.build.scenario)
+                job = self.build.job
+                self.cancel(f"{job}: {why}")
+                self.cancelled[job] = {"at": time.time(), "why": why}
+            if self.build is not None and self.build.job in queue:
+                queue.remove(self.build.job)
+        building = {self.build.scenario} if self.build is not None else set()
+        self.follow = [n for n in self.follow
+                       if n in building or any(parse_job(j)[0] == n for j in queue)]
+        # A reader asks for every step it reads, needed yet or not (a run
+        # can leave a series store to build): such a job stays wanted while
+        # its scenario has anything queued or building.
+        self.first = [j for j in self.first if parse_job(j)[0] in building
+                      or any(parse_job(q)[0] == parse_job(j)[0] for q in queue)]
         self.queue = self.order(queue)
         self.state = "building" if self.build is not None or self.queue else "idle"
 
     def order(self, queue: list[str]) -> list[str]:
-        """Scenarios someone is waiting on, then builds they preempted, then
-        the working set's, most recently used first (#322), then plain runs
-        before ensembles (quick results first), then pools, which reuse
-        their components' runs (ADR-009), then by name."""
-        first = [n for n in self.first if n in queue]
-        resume = [n for n in self.resume if n in queue]
+        """Jobs someone is waiting on, then the rest of those scenarios'
+        jobs (#454), then builds they preempted; then every run before every
+        series store before every sensitivity batch (#454); within a step,
+        the working set's scenarios, most recently used first (#322), then
+        plain runs before ensembles (quick results first), then pools, which
+        reuse their components' runs (ADR-009), then by name."""
+        first = [j for j in self.first if j in queue]
+        resume = [j for j in self.resume if j in queue]
+
+        def _series_pos(name: str, step: str) -> int:
+            # A series store found once a waited-on run ends goes with the
+            # scenario's waited-on jobs, ahead of its sensitivity batch (Bob).
+            if step == "series":
+                mine = [i for i, j in enumerate(first) if parse_job(j)[0] == name]
+                if mine:
+                    return mine[0]
+            return len(first)
+
         used = working_set_order(self.data_dir)
         runs = self.paths.runs_dir
         scenarios = self.data_dir / "scenarios"
 
-        def rank(name: str) -> tuple[int, int, int, int, str]:
-            pos = first.index(name) if name in first else len(first)
-            again = resume.index(name) if name in resume else len(resume)
+        def rank(job: str) -> tuple[int, int, int, int, int, int, str]:
+            name, step = parse_job(job)
+            pos = first.index(job) if job in first else _series_pos(name, step)
+            follow = self.follow.index(name) if name in self.follow else len(self.follow)
+            again = resume.index(job) if job in resume else len(resume)
             recent = used.get(name, len(used))
             ensemble = 2 if is_pool(scenarios, name) else int((runs / name).is_dir())
-            return (pos, again, recent, ensemble, name)
+            return (pos, follow, again, STEPS.index(step), recent, ensemble, job)
 
         return sorted(queue, key=rank)
 
     def preempt(self) -> None:
         """Stop a build nobody is waiting on when someone is waiting on
-        another scenario (Bob, #300): the wanted one starts at once and the
+        another job (Bob, #300): the wanted one starts at once and the
         stopped one is requeued right after it."""
         build = self.build
-        wanted = next((n for n in self.first if n in self.queue), None)
-        if build is None or wanted is None:
+        if build is None:
             return
-        if build.wanted or build.scenario in self.first:  # asked for while building
+        if build.wanted or build.job in self.first or self._goes_first(build):  # asked for
             build.wanted = True
-            self.first = [n for n in self.first if n != build.scenario]
+            self.first = [j for j in self.first if j != build.job]
+            self._follow(build.scenario)
+            return
+        wanted = next((j for j in self.first if j in self.queue), None)
+        if wanted is None:
             return
         self.cancel(f"{wanted} is wanted now")
-        self.resume = [build.scenario, *[n for n in self.resume if n != build.scenario]]
-        self.queue = self.order([*self.queue, build.scenario])
+        self.resume = [build.job, *[j for j in self.resume if j != build.job]]
+        self.queue = self.order([*self.queue, build.job])
+
+    def _goes_first(self, build: _Build) -> bool:
+        """A series store of a scenario someone waits on: it comes before
+        that scenario's sensitivity batch, so that never preempts it."""
+        return build.step == "series" and any(
+            parse_job(j)[0] == build.scenario for j in self.first)
+
+    def _follow(self, scenario: str) -> None:
+        """A reader asked for one of ``scenario``'s jobs: its others follow."""
+        self.follow = [scenario, *[n for n in self.follow if n != scenario]]
 
     def cancel(self, why: str) -> None:
         build = self.build
@@ -506,20 +815,23 @@ class _Daemon:
             return
         _kill(build.process)
         build.drain()  # the rest of its output stays under its `building` record
-        self.log(f"cancelled {build.scenario}: {why}")
+        self.log(f"cancelled {build.job}: {why}")
         self.build = None
 
     def start_next(self, trees: tuple[str, ...]) -> None:
-        name = self.queue.pop(0)
-        wanted = name in self.first
-        self.first = [n for n in self.first if n != name]
-        self.resume = [n for n in self.resume if n != name]
+        job = self.queue.pop(0)
+        name, step = parse_job(job)
+        wanted = job in self.first
+        self.first = [j for j in self.first if j != job]
+        self.resume = [j for j in self.resume if j != job]
+        if wanted:
+            self._follow(name)
         key = self.key(name, trees)
         env = {**os.environ, BUILDER_SWITCH_ENV: "off", BUILDER_CHILD_ENV: "1"}
-        self.log(f"building {name}")
+        self.log(f"building {job}")
         self.paths.dir.mkdir(parents=True, exist_ok=True)
         process = subprocess.Popen(
-            [*_sim_executable(), "load", name, "--data-dir", str(self.data_dir)],
+            [*_sim_executable(), *step_command(self.data_dir, name, step)],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             start_new_session=True, env=env, close_fds=True,
         )
@@ -527,10 +839,10 @@ class _Daemon:
         # A thread, so a chatty build never blocks on a full pipe while the
         # loop sleeps.
         reader = threading.Thread(target=self.writer.copy, args=(process.stdout,),
-                                  name=f"log {name}", daemon=True)
+                                  name=f"log {job}", daemon=True)
         reader.start()
-        self.build = _Build(name, key, process, time.time(), wanted, reader)
-        self.cancelled.pop(name, None)
+        self.build = _Build(job, key, process, time.time(), wanted, reader)
+        self.cancelled.pop(job, None)
         self.state = "building"
 
     def finished(self) -> bool:
@@ -540,29 +852,29 @@ class _Daemon:
             return False
         self.build = None
         build.drain()
-        from analysis.sim.freshness import code_tree, unchanged_run
+        from analysis.sim.freshness import code_tree
 
         code = build.process.returncode
         took = _took(time.time() - build.started)
-        still_stale = code == 0 and unchanged_run(
-            self.data_dir, self.paths.runs_dir, build.scenario, code_tree()) is None
+        still_stale = code == 0 and build.step in needed_steps(
+            self.data_dir, self.paths.runs_dir, build.scenario, code_tree())
         if code == 0 and not still_stale:
-            self.failed.pop(build.scenario, None)
-            self.log(f"built {build.scenario} ({took})")
+            self.failed.pop(build.job, None)
+            self.log(f"built {build.job} ({took})")
         elif still_stale:
             # An ensemble with failed members: `sim load` exits 0, but the
             # batch is incomplete, so it would be queued again at once.
-            self.failed[build.scenario] = {
+            self.failed[build.job] = {
                 "key": build.key, "exit": 0, "at": time.time(),
                 "message": "built, but not every member succeeded; see sim builder log",
             }
-            self.log(f"{build.scenario} built incomplete (failed members, {took})")
+            self.log(f"{build.job} built incomplete (failed members, {took})")
         else:
-            self.failed[build.scenario] = {
+            self.failed[build.job] = {
                 "key": build.key, "exit": code, "at": time.time(),
                 "message": f"exit {code}; see sim builder log",
             }
-            self.log(f"{build.scenario} failed (exit {code}, {took})")
+            self.log(f"{build.job} failed (exit {code}, {took})")
         return True
 
     def run(self) -> int:
@@ -596,8 +908,12 @@ class _Daemon:
                     rescan = True
                     if request.get("kind") == "first" and request.get("scenario"):
                         name = request["scenario"]
-                        self.first = [name, *[n for n in self.first if n != name]]
+                        jobs = [job_key(name, step) for step in request.get("steps") or ("run",)
+                                if step in STEPS]
+                        self.first = [*jobs, *[j for j in self.first if j not in jobs]]
                 if self.finished():
+                    rescan = True
+                if held(self.paths) != self.held:  # one taken, or its command ended
                     rescan = True
                 if rescan:
                     rescan = False
@@ -663,10 +979,10 @@ def run_daemon(data_dir: Path, echo: Callable[[str], None] = print) -> int:
 
 # -- readers wait ----------------------------------------------------------------
 
-# What a reader last found, by (state dir, scenario): the signature it was
+# What a reader last found, by (state dir, scenario, steps): the signature it was
 # found under (see _signature), so it is asked again only once something
 # that could change the answer has.
-_checked: dict[tuple[Path, str], tuple[int, ...]] = {}
+_checked: dict[tuple[Path, str, tuple[str, ...]], tuple[int, ...]] = {}
 _git_dirs: dict[tuple[Path, tuple[Any, Any]], list[Path]] = {}
 
 
@@ -712,84 +1028,115 @@ def _signature(paths: BuilderPaths, config: dict[str, Any]) -> tuple[int, ...]:
 
 def await_fresh(
     runs_dir: Path, scenario: str, echo: Callable[[str], None] | None = None,
+    *, mode: str | None = "monte_carlo",
 ) -> None:
-    """Before a scenario's run is opened: if a background build of it is
-    pending, move it to the front and wait for it. Does nothing where the
-    builder isn't installed, is off or disabled, or the run is current.
-    Ctrl-C gives up the wait (the latest existing run is opened)."""
-    found = _pending_build(runs_dir, scenario)
+    """Before a scenario's results of ``mode`` are opened: if a background
+    build of them is pending, move it to the front and wait for it (#454:
+    a Monte Carlo batch's run and series store, a sensitivity batch, or with
+    ``mode`` None, all of the scenario's jobs). Does nothing where the
+    builder isn't installed, is off or disabled, or the results are current.
+    Ctrl-C gives up the wait (the latest existing results are opened)."""
+    steps = READER_STEPS[mode]
+    note_behind(Path(runs_dir).resolve().parent, echo)
+    found = _pending_build(runs_dir, scenario, steps)
     if found is None:
         return
-    paths, data_dir = found
+    paths, data_dir, jobs = found
     echo = echo or (lambda text: print(text, file=sys.stderr))
-    made = _request(paths, "first", scenario)
+    # Every step it reads, not only those pending now: one a pending job
+    # turns up (a series store a run needs) is then waited on, so no other
+    # reader's request preempts it.
+    made = _request(paths, "first", scenario, list(steps))
     if not daemon_alive(paths):
         spawn_daemon(paths, data_dir)
     try:
-        _wait(paths, scenario, made, echo)
+        _wait(paths, scenario, jobs, made, echo, steps)
     except KeyboardInterrupt:
-        echo(f"gave up waiting for {scenario}; opening its latest run, which may be out of date")
+        echo(f"gave up waiting for {scenario}; opening its latest results, which may be out of date")
 
 
-def build_pending(runs_dir: Path, scenario: str) -> bool:
-    """Whether opening ``scenario``'s run would wait for a background build
-    (:func:`await_fresh`), asked without waiting or moving it up the queue."""
-    return _pending_build(runs_dir, scenario) is not None
+def build_pending(runs_dir: Path, scenario: str, mode: str | None = "monte_carlo") -> bool:
+    """Whether opening ``scenario``'s results of ``mode`` would wait for a
+    background build (:func:`await_fresh`), asked without waiting or moving
+    it up the queue."""
+    return _pending_build(runs_dir, scenario, READER_STEPS[mode]) is not None
 
 
-def _pending_build(runs_dir: Path, scenario: str) -> tuple[BuilderPaths, Path] | None:
-    """The workspace's paths and data dir when a background build of
-    ``scenario`` is pending, else None (remembered until something that
-    could change the answer does)."""
+def _pending_build(
+    runs_dir: Path, scenario: str, steps: Sequence[str] = STEPS,
+) -> tuple[BuilderPaths, Path, list[str]] | None:
+    """The workspace's paths, its data dir and the jobs of ``scenario``'s
+    ``steps`` a background build has pending, else None (remembered until
+    something that could change the answer does)."""
     if switched_off() or is_building():
         return None
     paths = BuilderPaths(Path(runs_dir).resolve().parent)
     config = read_config(paths)
     if config is None or paths.runs_dir != Path(runs_dir).resolve():
         return None
-    key = (paths.state_dir, scenario)
+    key = (paths.state_dir, scenario, tuple(steps))
     signature = _signature(paths, config)
     if _checked.get(key) == signature:
         return None
     data_dir = Path(config["data_dir"])
-    if not _pending(paths, data_dir, scenario):
+    jobs = _pending(paths, data_dir, scenario, steps)
+    if not jobs:
         _checked[key] = signature
         return None
-    return paths, data_dir
+    return paths, data_dir, jobs
 
 
-def _pending(paths: BuilderPaths, data_dir: Path, scenario: str) -> bool:
-    """Whether the builder has (or would have) a build of ``scenario`` to do."""
+def _pending(
+    paths: BuilderPaths, data_dir: Path, scenario: str, steps: Sequence[str] = STEPS,
+) -> list[str]:
+    """The jobs of ``scenario``'s ``steps`` the builder has (or would have)
+    to do."""
+    if scenario in held(paths):
+        return []  # a command is building it; its build lock is what to wait on
+    wanted = [job_key(scenario, step) for step in steps]
     if daemon_alive(paths):
         status = read_status(paths)
-        current = (status.get("current") or {}).get("scenario")
-        if scenario == current or scenario in (status.get("queue") or []):
-            return True
+        current = (status.get("current") or {}).get("job") \
+            or (status.get("current") or {}).get("scenario")
+        queued = [j for j in wanted if j == current or j in (status.get("queue") or [])]
+        if queued:
+            return queued
         # Otherwise check here too: a commit made a moment ago may not have
         # reached the daemon yet (its hook runs in the background).
-    from analysis.sim.freshness import code_tree, unchanged_run
+    from analysis.sim.freshness import code_tree
     from analysis.sim.provenance import data_stamps
 
     config = read_config(paths) or {}
     code = config.get("code_dir")
     trees, _reason = main_check(config_branch(config), Path(code) if code else None)
     if trees is None or scenario not in list_scenario_names(data_dir):
-        return False
+        return []
     if scenario in read_disabled_scenarios(data_dir):
-        return False  # the builder never builds it, so nothing to wait for
+        return []  # the builder never builds it, so nothing to wait for
     data = data_stamps(data_dir, scenario)
     if data.dirty:
-        return False
-    failed = (read_status(paths).get("failed") or {}).get(scenario)
-    if failed is not None and failed.get("key") == [list(trees), data.tree_id]:
-        return False
-    return unchanged_run(data_dir, paths.runs_dir, scenario, code_tree()) is None
+        return []
+    failed = read_status(paths).get("failed") or {}
+    out = []
+    for step in needed_steps(data_dir, paths.runs_dir, scenario, code_tree()):
+        job = job_key(scenario, step)
+        if step not in steps:
+            continue
+        if (failed.get(job) or {}).get("key") == [list(trees), data.tree_id]:
+            continue
+        out.append(job)
+    return out
 
 
-def _wait(paths: BuilderPaths, scenario: str, made: float, echo: Callable[[str], None]) -> None:
-    echo(f"waiting for the background build of {scenario} (Ctrl-C to stop waiting)...")
+def _wait(paths: BuilderPaths, scenario: str, jobs: Sequence[str], made: float,
+          echo: Callable[[str], None], steps: Sequence[str] = STEPS) -> None:
+    """Wait until ``jobs`` and any of ``scenario``'s ``steps`` the builder
+    queues meanwhile are done: a run's batch can need a series store or a
+    first sensitivity batch the reader couldn't see pending when it came."""
+    echo(f"waiting for the background build of {_describe(jobs)} (Ctrl-C to stop waiting)...")
     started = time.monotonic()
     last_progress = started
+    left = list(jobs)
     while True:
         time.sleep(TICK_SECONDS)
         status = read_status(paths)
@@ -798,36 +1145,60 @@ def _wait(paths: BuilderPaths, scenario: str, made: float, echo: Callable[[str],
             if status.get("state") == "disabled":
                 echo(f"background builds are off: {status.get('reason')}")
                 return
-            current = (status.get("current") or {}).get("scenario")
-            if scenario != current and scenario not in (status.get("queue") or []):
-                failed = (status.get("failed") or {}).get(scenario)
-                cancelled = (status.get("cancelled") or {}).get(scenario)
+            current = (status.get("current") or {}).get("job") \
+                or (status.get("current") or {}).get("scenario")
+            for job in [current, *(status.get("queue") or [])]:
+                if job and job not in left and job not in jobs:
+                    name, step = parse_job(job)
+                    if name == scenario and step in steps:
+                        left.append(job)
+            jobs = [*jobs, *[j for j in left if j not in jobs]]
+            for job in [j for j in left if j != current and j not in (status.get("queue") or [])]:
+                left.remove(job)
+                failed = (status.get("failed") or {}).get(job)
+                cancelled = (status.get("cancelled") or {}).get(job)
                 if failed is not None and failed.get("at", 0) >= made:
-                    echo(f"the background build of {scenario} failed: {failed.get('message')}")
+                    echo(f"the background build of {_describe([job])} failed: {failed.get('message')}")
                 elif cancelled is not None and cancelled.get("at", 0) >= made:
-                    echo(f"the background build of {scenario} was cancelled: {cancelled.get('why')}; "
-                         "opening its latest run, which is out of date")
+                    echo(f"the background build of {_describe([job])} was cancelled: "
+                         f"{cancelled.get('why')}; opening its latest results, which are out of date")
                 else:
-                    echo(f"the background build of {scenario} is done")
+                    echo(f"the background build of {_describe([job])} is done")
+            if not left:
                 return
         if not alive and time.monotonic() - started > 10:
             echo("the background builder stopped; see sim builder log")
             return
         if time.monotonic() - last_progress >= 30:
             last_progress = time.monotonic()
-            echo(f"  still waiting for {scenario}: {_progress(paths, scenario, status)}")
+            echo(f"  still waiting for {_describe(left)}: {_progress(paths, left[0], status)}")
 
 
-def _progress(paths: BuilderPaths, scenario: str, status: dict[str, Any]) -> str:
+def _describe(jobs: Sequence[str]) -> str:
+    """``base``; ``ens (series store)``; ``ens (run, sensitivity batch)``."""
+    words = {"run": "run", "series": "series store", "sensitivity": "sensitivity batch"}
+    scenario = parse_job(jobs[0])[0]
+    steps = [parse_job(j)[1] for j in jobs]
+    if steps == ["run"]:
+        return scenario
+    return f"{scenario} ({', '.join(words[s] for s in steps)})"
+
+
+def _progress(paths: BuilderPaths, job: str, status: dict[str, Any]) -> str:
+    from analysis.sim.loader import ensemble_batches
+
     current = status.get("current") or {}
-    if current.get("scenario") != scenario:
+    if (current.get("job") or current.get("scenario")) != job:
         queue = status.get("queue") or []
-        ahead = queue.index(scenario) if scenario in queue else 0
-        building = current.get("scenario")
+        ahead = queue.index(job) if job in queue else 0
+        building = current.get("job") or current.get("scenario")
         return f"queued behind {building}" + (f" and {ahead} more" if ahead else "") \
             if building else "queued"
-    batches = sorted((p for p in (paths.runs_dir / scenario).glob("*") if p.is_dir()),
-                     key=lambda p: run_name_key(p.name))
+    scenario, step = parse_job(job)
+    if step == "series":
+        return "building the series store"
+    mode = "sensitivity" if step == "sensitivity" else "monte_carlo"
+    batches = ensemble_batches(paths.runs_dir / scenario, mode)
     if batches and batches[-1].stat().st_mtime >= current.get("started", 0) - 1:
         done = sum(1 for _ in batches[-1].glob("member_*.sqlite3"))
         return f"building, {done} member run(s) so far"

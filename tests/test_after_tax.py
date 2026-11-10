@@ -14,6 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.frames import index_years
 from analysis.sim import compare
 from analysis.sim.connection import RunConnection
 from analysis.sim.engine import _drawdown_tax, run_scenario
@@ -77,9 +78,39 @@ def test_the_drawdown_taxes_every_cent_of_its_base(report_run_file: Path) -> Non
     """The yearly shares carry the remainder, so a tax of 100% on every
     share is the whole base, to the cent."""
     with sqlite3.connect(report_run_file) as con:
-        base, extra = _drawdown_tax(con, 2030, lambda ordinary, gains: ordinary + gains)
+        base, extra = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains: ordinary + gains)
     assert base and base % 10  # a remainder to carry
     assert extra == base
+
+
+def test_each_share_is_priced_in_the_year_it_would_be_drawn(report_run_file: Path) -> None:
+    """#404: 2030's year-end money is drawn over 2031-2040, each share on
+    that year's income, not on top of 2030's own (a last paycheck)."""
+    with sqlite3.connect(report_run_file) as con:
+        base, every_year = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains: ordinary + gains)
+        _, only_2031 = _drawdown_tax(
+            con, 2030, lambda year: (lambda ordinary, gains: ordinary + gains) if year == 2031
+            else (lambda ordinary, gains: 0))
+        _, only_2030 = _drawdown_tax(
+            con, 2030, lambda year: (lambda ordinary, gains: ordinary + gains) if year == 2030
+            else (lambda ordinary, gains: 0))
+    assert base and every_year == base
+    assert only_2031 in (base // 10, base // 10 + 1)
+    assert only_2030 == 0
+
+
+def test_the_drawdown_waits_for_the_paychecks_to_end(report_run_file: Path) -> None:
+    """#404: savings aren't drawn while still earning, so a share never
+    lands in a year with salary."""
+    def only(priced: int) -> Callable[[int], Callable[[int, int], int]]:
+        return lambda year: (lambda ordinary, gains: ordinary + gains) if year == priced \
+            else (lambda ordinary, gains: 0)
+    with sqlite3.connect(report_run_file) as con:
+        base, in_2031 = _drawdown_tax(con, 2030, only(2031), paycheck_years={2031, 2032})
+        _, in_2033 = _drawdown_tax(con, 2030, only(2033), paycheck_years={2031, 2032})
+    assert base
+    assert in_2031 == 0
+    assert in_2033 in (base // 10, base // 10 + 1)
 
 
 def test_a_year_without_a_rate_takes_no_drawdown_tax_off(
@@ -140,7 +171,7 @@ def test_drawdown_years_and_step_up_change_the_deferred_tax(
     # Only before Social Security starts, though: over ten years the draws
     # make more of ten years' benefits taxable, against one year's at most.
     pd.testing.assert_series_equal(one["federal_drawdown_base"], ten["federal_drawdown_base"])
-    before_ss = ten["federal_ss_income"] == 0
+    before_ss = ten["federal_ss_benefits"] == 0
     assert before_ss.sum() >= 3
     assert (one["federal_drawdown_tax"] > ten["federal_drawdown_tax"])[before_ss].all()
 
@@ -151,8 +182,12 @@ def test_drawdown_years_and_step_up_change_the_deferred_tax(
         rates = rc._drawdown_rate_by_year()
     assert (stepped["federal_drawdown_base"] <= ten["federal_drawdown_base"]).all()
     assert (stepped["federal_drawdown_base"] < ten["federal_drawdown_base"]).any()
-    assert (deferred > 0).all()  # the traditional balances are still taxed
-    assert (rates > 0).all()
+    # The traditional balances are still taxed, while there's enough of them
+    # to rise above the deduction beside the later years' Social Security.
+    # From 2037 what's left, drawn over ten years, stays under the deduction
+    # as it rises with inflation (#467).
+    assert (deferred["2026":"2036"] > 0).all()
+    assert (rates.loc[:2036] > 0).all()
 
 
 @pytest.mark.parametrize(("settings", "message"), [
@@ -199,3 +234,54 @@ def test_sim_networth_is_after_tax_unless_pre_tax(report_run_file: Path) -> None
     ])
     assert pre.output.splitlines()[0].startswith("net worth, nominal dollars")
 
+
+
+@pytest.mark.parametrize("command", ["networth", "explain"])
+def test_a_file_that_is_not_a_run_is_refused_cleanly(command: str, tmp_path: Path) -> None:
+    # An ensemble batch's draws.sqlite3 sits beside its member runs (#377).
+    draws = tmp_path / "draws.sqlite3"
+    con = sqlite3.connect(draws)
+    con.execute("CREATE TABLE draw (member INTEGER)")
+    con.close()
+    result = CliRunner().invoke(main, ["sim", command, "--runfile", str(draws)])
+    assert result.exit_code != 0
+    assert "isn't a run file" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def _explain_year_end(run_file: Path, *extra: str) -> dict[str, tuple[str, str]]:
+    """explain's year-end rows: each year's nominal and CPI-constant figure."""
+    result = CliRunner().invoke(main, ["sim", "explain", str(run_file), *extra])
+    assert result.exit_code == 0, result.output
+    lines = result.output.split("year-end net worth, ", 1)[1].splitlines()
+    rows = {}
+    for line in lines[2:]:
+        if not line.startswith("  20"):
+            break
+        year, nominal, real = line.split()[0], *line.split("$")[1:]
+        rows[year] = (nominal.strip(), real.strip())
+    return rows
+
+
+def test_sim_explain_year_end_net_worth_is_after_tax_unless_pre_tax(
+    report_run_file: Path,
+) -> None:
+    """#332: like `sim networth`, explain's year-end net worth is after tax
+    unless --pre-tax, and says which; its after-tax figure is networth's."""
+    result = CliRunner().invoke(main, ["sim", "explain", str(report_run_file)])
+    assert "year-end net worth, after tax (--pre-tax for before):" in result.output
+    pre = CliRunner().invoke(main, ["sim", "explain", str(report_run_file), "--pre-tax"])
+    assert "year-end net worth, before tax:" in pre.output
+
+    after, before = _explain_year_end(report_run_file), _explain_year_end(report_run_file, "--pre-tax")
+    assert after.keys() == before.keys()
+    assert all(after[year] != before[year] for year in after)
+    with RunConnection(report_run_file) as rc:
+        frame = rc.after_tax_net_worth_frame()
+    year_end = frame.groupby(index_years(frame)).tail(1)
+    for year, nominal, real in zip(index_years(year_end), year_end["nominal"],
+                                   year_end["cpi_constant"], strict=True):
+        shown = after[str(year)]
+        # explain rounds the pre-tax figure and the tax apart: a cent either way.
+        assert abs(float(shown[0].replace(",", "")) - nominal) < 0.02
+        assert abs(float(shown[1].replace(",", "")) - real) < 0.02

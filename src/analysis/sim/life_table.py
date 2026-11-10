@@ -35,7 +35,7 @@ from analysis.sim.distributions import DistributionError
 __all__ = [
     "LifeTable", "LifeTableAge", "LifeTableError", "life_table_from_rows",
     "life_table_for", "life_table_in", "months_since_birth", "person_table", "table_file",
-    "solve_set_forward", "equivalent_multiplier",
+    "solve_set_forward", "equivalent_multiplier", "survival_curve",
 ]
 
 LIFE_TABLE_KIND = "life_table"
@@ -119,10 +119,7 @@ def life_table_in(
 
 def person_table(con: sqlite3.Connection, person: str) -> str | None:
     """The life table ``person``'s lifespan.csv row names (#315), or None for
-    the default: no row, a blank cell, or a file from before the column."""
-    columns = {row[1] for row in con.execute("PRAGMA table_info(person_lifespan)")}
-    if "life_table" not in columns:
-        return None
+    the default: no row, or a blank cell."""
     found = con.execute(
         "SELECT life_table FROM person_lifespan WHERE person = ?", (person,)).fetchone()
     return (found[0] or None) if found else None
@@ -162,6 +159,13 @@ def _build_curve(table: LifeTable, start: int, set_forward: float) -> _Curve:
         cdf.append(1.0 - alive)
     cdf.append(1.0)
     return _Curve(start, cdf)
+
+
+def survival_curve(table: LifeTable, start: int, set_forward: float = 0.0) -> list[float]:
+    """The chance of being alive after each month from ``start`` (months
+    since birth): element ``k`` is alive after ``k + 1`` months, given alive
+    now. Ends at ``registries.MAX_AGE_AT_DEATH`` (#459)."""
+    return [1.0 - f for f in _build_curve(table, start, set_forward).cdf]
 
 
 def _median_months(curve: _Curve) -> float:

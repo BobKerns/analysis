@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sqlite3
-import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -79,7 +77,7 @@ def test_a_retirement_account_leaves_its_tax_treatment_to_its_lots(
     assert "(Asset_Roth_Bill): a retirement account's tax_treatment" in _issues(load_test_copy)
 
 
-def test_an_old_subkind_or_lots_file_names_the_migration(
+def test_an_old_subkind_or_lots_file_is_refused(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
     _set_account(retire_alice_csv("accounts.csv"), "Asset_Roth_Bill", subkind="roth_ira")
@@ -88,7 +86,6 @@ def test_an_old_subkind_or_lots_file_names_the_migration(
     issues = _issues(load_test_copy)
     assert "subkind 'roth_ira' is now account subkind 'retirement'" in issues
     assert "account_values.csv: renamed to account_lots.csv (#217)" in issues
-    assert issues.count("migrate_217.py") == 2
 
 
 @pytest.mark.parametrize(("source", "destination", "character"), [
@@ -248,61 +245,6 @@ def test_account_add_takes_a_retirement_series_without_a_tax_character(
     assert source == ("tax_free_gains",)
 
 
-def _migration():
-    path = Path(__file__).parents[1] / "scripts" / "migrate_217.py"
-    spec = importlib.util.spec_from_file_location("migrate_217", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # its dataclass looks its module up there
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_the_migration_moves_old_subkinds_onto_the_lots(tmp_path: Path) -> None:
-    base, child = tmp_path / "scenarios" / "base", tmp_path / "scenarios" / "child"
-    base.mkdir(parents=True)
-    child.mkdir()
-    (base / "accounts.csv").write_text(
-        "name,kind,subkind,owner,tax_treatment\n"
-        "IRA,asset,traditional_ira,alice,tax_deferred\n"
-        "Roth,asset,roth_ira,alice,tax_free\n"
-        "Cash,asset,cash,joint,taxable\n"
-    )
-    (base / "account_values.csv").write_text(
-        "account_name,lot,symbol,opening_balance\nIRA,default,,100.00\nCash,,,5.00\n")
-    (child / "account_values.csv").write_text(
-        "account_name,lot,symbol,opening_balance\nIRA,b,VTI,7.00\n")
-    migration = _migration()
-
-    planned = migration.plan(tmp_path)
-    assert planned.problems == []
-    assert (base / "account_values.csv").exists()  # a dry run writes nothing
-    migration.apply(planned)
-
-    assert not (base / "account_values.csv").exists()
-    assert (base / "accounts.csv").read_text().splitlines()[1:] == [
-        "IRA,asset,retirement,alice,", "Roth,asset,retirement,alice,", "Cash,asset,cash,joint,taxable",
-    ]
-    assert (base / "account_lots.csv").read_text().splitlines() == [
-        "account_name,lot,subkind,symbol,opening_balance",
-        "IRA,default,traditional_ira,,100.00",
-        "Cash,,,,5.00",
-        "Roth,default,roth_ira,,0.00",  # it had no lot to carry its subkind
-    ]
-    assert (child / "account_lots.csv").read_text().splitlines()[1:] == ["IRA,b,traditional_ira,VTI,7.00"]
-    assert migration.plan(tmp_path).problems == [f"{tmp_path}: no account_values.csv left; already migrated?"]
-
-
-def test_the_migration_refuses_when_account_lots_already_exists(tmp_path: Path) -> None:
-    folder = tmp_path / "scenarios" / "base"
-    folder.mkdir(parents=True)
-    (folder / "account_values.csv").write_text("account_name,lot,opening_balance\nCash,,5.00\n")
-    (folder / "account_lots.csv").write_text("account_name,lot,subkind,opening_balance\nCash,,,9.00\n")
-    assert _migration().plan(tmp_path).problems == [
-        f"{folder / 'account_values.csv'}: account_lots.csv already exists beside it; merge them by hand",
-    ]
-
-
 def test_account_sync_leaves_a_retirement_account_to_lot_add(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
@@ -322,52 +264,6 @@ def test_account_sync_leaves_a_retirement_account_to_lot_add(
     assert retire_alice_csv("account_lots.csv").read_text() == before
 
 
-def test_the_migration_seeds_a_lot_where_the_account_is_defined(tmp_path: Path) -> None:
-    """A lot only in a derived scenario doesn't stand in for one where the
-    account is defined, and a folder with no lots file gets one."""
-    base, child, other = (tmp_path / "scenarios" / name for name in ("base", "child", "other"))
-    for folder in (base, child, other):
-        folder.mkdir(parents=True)
-    (base / "account_values.csv").write_text("account_name,lot,opening_balance\nCash,,5.00\n")
-    (child / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nIRA,asset,traditional_ira,alice,\n")
-    (other / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nRoth,asset,roth_ira,bill,\n")
-    (base / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nIRA2,asset,roth_ira,bill,\n")
-    (child / "account_values.csv").write_text(
-        "account_name,lot,opening_balance\nIRA,default,7.00\nIRA2,b,1.00\n")
-    migration = _migration()
-
-    planned = migration.plan(tmp_path)
-    assert planned.problems == []
-    migration.apply(planned)
-    assert (base / "account_lots.csv").read_text().splitlines()[1:] == [
-        "Cash,,,5.00", "IRA2,default,roth_ira,0.00",
-    ]
-    assert (child / "account_lots.csv").read_text().splitlines()[1:] == [
-        "IRA,default,traditional_ira,7.00", "IRA2,b,roth_ira,1.00",
-    ]
-    assert (other / "account_lots.csv").read_text().splitlines() == [
-        "account_name,lot,subkind,opening_balance", "Roth,default,roth_ira,0.00",
-    ]
-
-
-def test_the_migration_seeds_the_parent_not_an_override(tmp_path: Path) -> None:
-    """The defining folder comes from scenario.csv, not from which path sorts
-    first: here the child ``a_child`` sorts before its parent ``z_base``."""
-    base, child = tmp_path / "scenarios" / "z_base", tmp_path / "scenarios" / "a_child"
-    for folder, parent in ((base, ""), (child, "z_base")):
-        folder.mkdir(parents=True)
-        (folder / "scenario.csv").write_text(f"name,parent_scenario\n{folder.name},{parent}\n")
-        (folder / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nRoth,asset,roth_ira,bill,\n")
-        (folder / "account_values.csv").write_text("account_name,lot,opening_balance\n")
-    migration = _migration()
-
-    planned = migration.plan(tmp_path)
-    assert planned.problems == []
-    migration.apply(planned)
-    assert (base / "account_lots.csv").read_text().splitlines()[1:] == ["Roth,default,roth_ira,0.00"]
-    assert (child / "account_lots.csv").read_text().splitlines()[1:] == []
-
-
 @pytest.mark.parametrize(("account", "subkind"), [
     ("Asset_Brokerage_Joint", "retirement"),
     ("Asset_Roth_Bill", "brokerage_taxable"),
@@ -383,16 +279,3 @@ def test_account_edit_refuses_a_change_to_or_from_retirement(
     assert result.exit_code != 0
     assert "can't change to or from subkind 'retirement'" in result.output
     assert retire_alice_csv("accounts.csv").read_text() == before
-
-
-def test_the_migration_refuses_to_seed_over_an_existing_lots_file(tmp_path: Path) -> None:
-    base, child = tmp_path / "scenarios" / "base", tmp_path / "scenarios" / "child"
-    base.mkdir(parents=True)
-    child.mkdir()
-    (base / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nRoth,asset,roth_ira,bill,\n")
-    (base / "account_lots.csv").write_text("account_name,lot,subkind,opening_balance\nCash,,,5.00\n")
-    (child / "account_values.csv").write_text("account_name,lot,opening_balance\n")
-    assert _migration().plan(tmp_path).problems == [
-        f"{base / 'account_lots.csv'}: already exists, with no account_values.csv beside it; "
-        "add a lot for 'Roth' to it by hand",
-    ]

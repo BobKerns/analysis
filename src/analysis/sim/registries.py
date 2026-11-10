@@ -19,14 +19,19 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     },
     "expense": {
         "living", "healthcare", "housing", "interest_expense", "taxes_federal",
-        "taxes_state", "taxes_property", "business", "other_expense",
+        "taxes_state", "taxes_property", "business", "gift", "other_expense",
     },
 }
 
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
-    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death", "fill_bracket", "irmaa",
+    "ss_benefit", "mortgage_payment", "on_death", "fill_bracket", "irmaa",
 }
+
+# The rule kind income tax had before jurisdiction files (#507): a scheduled
+# row of it is refused at load, naming the migration script.
+RETIRED_TAX_RULE_KIND = "tax_accumulator"
+
 
 # Rule kinds whose catch-up for the months before scenario.start can be
 # replayed from the rule itself (`ytd_preroll`, ADR-003 §4.10); any kind
@@ -42,6 +47,38 @@ SCHEDULED_CSV_HEADER: tuple[str, ...] = (
     "tax_character", "tax_year", "start", "end", "priority", "ytd_amount", "ytd_preroll",
     "description", "meta_json", "params_json", "tags",
 )
+
+# A scenario's income tax jurisdictions (#506, #507, ADR-003 §4.15): one file
+# each, taxes/<jurisdiction>.csv, of one row. The file name is the
+# jurisdiction's, which prefixes its tax_year_summary buckets. Each says which
+# calculator computes its tax, the jurisdictions it builds on, and how it is
+# paid: from `source_chain` into the `destination` expense account, on its
+# `schedule`.
+TAXES_DIR = "taxes"
+TAX_CSV_HEADER: tuple[str, ...] = (
+    "kind", "upstream", "source_chain", "destination", "schedule", "start", "end",
+    "params_json", "description",
+)
+TAX_KINDS: dict[str, str] = {
+    "federal": "federal", "state_tables": "state", "local_bands": "local"}
+"""Each calculator kind and the jurisdiction it computes. Until calculators
+are pluggable (#507), a kind computes one jurisdiction, whose file has that
+name."""
+TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state", "local")
+"""The jurisdictions, in the order they settle: a state's return builds on
+the federal one, a local one on the state's (#508)."""
+TAX_PAID_WITH: dict[str, str] = {"local": "state"}
+"""A jurisdiction paid with another's (#508): a blank ``source_chain`` or
+``destination`` in its file takes that one's."""
+TAX_SCHEDULES: tuple[str, ...] = ("april",)
+"""``april``: each April, the tax still due for the year before."""
+MONTH_PHASES: tuple[str, ...] = ("rules", "tax_settlement", "fill_bracket")
+"""The order a month posts in, after its strategy hooks, each phase whole
+before the next (#507). The scheduled rules come first, in priority order
+among themselves. The tax settlement (each April, the year before's tax)
+follows every rule, so no rule's order is tied to it. ``fill_bracket``'s
+conversions come last: an RMD can't be converted, so it must come out first,
+and the conversion's target needs the year's whole income."""
 
 # Canonical year_to_date.csv column order (ADR-003 §4.10).
 YEAR_TO_DATE_CSV_HEADER: tuple[str, ...] = (
@@ -194,6 +231,9 @@ TAX_CHARACTERS: set[str] = {
     # Earnings out of a Roth lot before the owner's 5-year clock has run (or
     # before 59½): ordinary income (#217). Its basis comes out tax_free.
     "roth_nonqualified",
+    # A stock fund's dividends, paid and reinvested in a taxable lot (#468):
+    # taxed each year, at the long-term gains rates (IRC §1(h)(11)).
+    "qualified_dividend",
     *BUSINESS_TAX_CHARACTERS,
 }
 
@@ -232,8 +272,11 @@ RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_40
 
 # transfer_event.reason_kind (schema.py CHECK), in a sensible display order:
 # a rule firing, the run's opening balances, partial-first-year catch-up
-# facts, a refill draw, or a month-end overflow sweep.
-REASON_KINDS: tuple[str, ...] = ("rule", "initial", "ytd", "ytd_rule", "refill", "overflow")
+# facts, a refill draw, a month-end overflow sweep, or a strategy's year-end
+# move (#421; reason_id is its strategy_decision row).
+REASON_KINDS: tuple[str, ...] = (
+    "rule", "initial", "ytd", "ytd_rule", "refill", "overflow", "strategy", "tax",
+)
 
 type AssetClass = Literal[
     "stock_us",
@@ -256,11 +299,27 @@ from bonds).
 
 ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "weight")
 
-# Per-scenario strategies.csv and targets.csv (#326, ADR-003 §4.12, §4.13).
-STRATEGIES_CSV_HEADER: tuple[str, ...] = (
-    "name", "kind", "chain", "start", "end", "enabled", "params_json", "description",
+# Per-scenario strategies and targets.csv (#326, ADR-003 §4.12, §4.13). A
+# strategy is one file, strategies/<name>.csv, of one row (#408): the file
+# name is the strategy's name.
+STRATEGIES_DIR = "strategies"
+STRATEGY_CSV_HEADER: tuple[str, ...] = (
+    "kind", "chain", "rules", "trigger", "start", "end", "enabled", "params_json", "description",
 )
+# #441: a strategy's `trigger` names guard rails, each `<rail>:<margin kind>`.
+TRIGGER_MARGIN_KINDS: tuple[str, ...] = ("annual", "cumulative")
 TARGETS_CSV_HEADER: tuple[str, ...] = ("target_set", "as_of", "asset_class", "weight")
+# #408: strategy_vary/<strategy>.csv, one file per strategy, one row per
+# parameter an ensemble varies (ADR-003 §4.14). Bounds are in the parameter's
+# own unit, as params_json writes it. Its node in correlation trees,
+# sensitivity sweeps and ensemble_draw is `strategy:<strategy>.<param>`, a
+# name no calendar row may take; the draw's target is the parameter's name.
+STRATEGY_VARY_DIR = "strategy_vary"
+STRATEGY_VARY_CSV_HEADER: tuple[str, ...] = (
+    "param", "vary_distribution", "vary_low", "vary_high", "vary_mode", "vary_median", "vary_sd",
+    "vary_skew", "vary_tailweight", "vary_outcomes", "vary_correlate_with", "vary_correlation",
+)
+STRATEGY_NODE_PREFIX = "strategy:"
 CASH_SYMBOL = "CASH"
 # Symbols that mean an asset class without any allocations.csv row: `CASH` on cash lots,
 # `CD` on certificates of deposit (no ticker; a CD is reinvested at maturity, so it
@@ -327,12 +386,44 @@ GROWTH_COUNTERPARTY_ACCOUNTS: dict[str, GrowthCounterparty] = {
     ),
 }
 
+# A taxable lot's payout (#468, ADR-005 §5): the part of its total return a
+# fund pays out each year (dividends, interest), taxed that year and
+# reinvested, so it adds to the lot's basis. Each asset class pays from the
+# rate series `<class>_yield`; cash and CDs, which have no price to move, pay
+# all of their rate. Stocks' payouts are qualified dividends, the rest
+# ordinary income. The built-in income accounts the payouts come from are
+# not growth counterparties: money from them is a purchase.
+YIELD_SUFFIX = "_yield"
+QUALIFIED_DIVIDEND = "qualified_dividend"
+QUALIFIED_DIVIDEND_CLASSES: frozenset[str] = frozenset({"stock", "stock_us", "stock_intl"})
+ALL_PAYOUT_CLASSES: frozenset[str] = frozenset({"cash", "cd"})
+PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
+    QUALIFIED_DIVIDEND: GrowthCounterparty(
+        "dividends", "income", "dividend", "taxable", QUALIFIED_DIVIDEND,
+        "Built-in: qualified dividends paid and reinvested in taxable lots",
+    ),
+    "ordinary": GrowthCounterparty(
+        "investment_interest", "income", "interest", "taxable", "ordinary",
+        "Built-in: interest and other dividends paid and reinvested in taxable lots",
+    ),
+}
+
+
+def yield_series(series: str) -> str:
+    """The rate series a lot growing at ``series`` pays out from (#468)."""
+    return series + YIELD_SUFFIX
+
+
+def payout_character(asset_class: str) -> str:
+    """How an asset class's payout is taxed (#468)."""
+    return QUALIFIED_DIVIDEND if asset_class in QUALIFIED_DIVIDEND_CLASSES else "ordinary"
+
+
 DEFAULT_PRIORITIES: dict[str, int] = {
     "percent_of_balance": 100,
     "ss_benefit": 200,
     "fixed_amount": 200,
     "mortgage_payment": 300,
-    "tax_accumulator": 400,
     "rmd": 500,
     "on_death": 900,
     # Reads a finished year's MAGI (two years back), so its order in a
@@ -349,6 +440,80 @@ after every other rule of its month (#252)."""
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
 
+STATE_SURCHARGE = "state_surcharge"
+"""The aux kind of a state's surcharge on high taxable income (#490), in the
+shape of its brackets, whose rates add to the brackets' (California's 1%
+over $1 million)."""
+
+STATE_LOCAL_TAX = "state_local_tax"
+"""The aux kind of a local income tax (#487): a county's or city's bands on
+the state's taxable income, in the shape of its brackets (Maryland's county
+rate, New York City's brackets). Keyed by state like the brackets, since a
+household lives in one locality. The local jurisdiction reads it
+(``taxes/local.csv``, ``local_bands``, #508), paid with the state's tax,
+as most are filed on the state return, and reported apart from it."""
+
+STATE_HSA = "state_hsa"
+"""The aux kind of how a state treats a health savings account (#490)."""
+
+STATE_HSA_TREATMENTS: tuple[str, ...] = ("federal", "taxable")
+"""A ``state_hsa`` row's ``treatment``: ``federal`` follows the federal
+rules (the default, without a table); ``taxable`` is California's, which
+doesn't recognize an HSA: contributions aren't deducted, its growth is
+taxed each year, so what comes out was taxed already."""
+
+STATE_RETIREMENT_EXCLUSION = "state_retirement_exclusion"
+"""The aux kind of a state's retirement income exclusions (#486), keyed by
+state like its brackets."""
+
+STATE_EXCLUSION_INCOME: tuple[str, ...] = (
+    "pension", "retirement_account", "interest", "dividend", "capital_gain", "other",
+)
+"""The kinds of income a ``state_retirement_exclusion`` row may cover (#486),
+in the order a row that covers several uses them up: ordinary income from a
+``pension``, ``interest`` or ``dividend`` income account (and, for
+``dividend``, ``qualified_dividend`` legs); a
+``retirement_account`` distribution (``tax_deferred_out``, ``roth_nonqualified``);
+a ``capital_gain`` (``stcg``/``ltcg``); and ``other``, the rest of the state's
+taxable income. ``all`` in a row stands for every one of them."""
+
+STATE_LTCG_BRACKETS = "state_ltcg_brackets"
+"""A state's own rates on long-term gain (#485), stacked on top of its
+taxable income as ``ltcg_brackets`` is federally: a lower rate (Montana), a
+rate cap (Hawaii) or a rate of its own (Massachusetts)."""
+
+STATE_STCG_BRACKETS = "state_stcg_brackets"
+"""A state's own rates on net short-term gain (#485), stacked between its
+other ordinary income and its long-term gain (Massachusetts' 8.5%)."""
+
+STATE_LTCG_EXCLUSION = "state_ltcg_exclusion"
+"""The part of a net long-term gain a state leaves out of its income (#485):
+a percent, at least ``min_exclusion`` and at most ``max_exclusion``."""
+
+STATE_SOCIAL_SECURITY = "state_social_security"
+"""The aux kind of how a state taxes Social Security (#484). Without one a
+state taxes none of it."""
+
+STATE_COMPANION_KINDS: tuple[str, ...] = (
+    STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS, STATE_LTCG_EXCLUSION,
+    STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA, STATE_RETIREMENT_EXCLUSION,
+    STATE_LOCAL_TAX,
+)
+"""The aux kinds keyed by state like ``state_brackets``, whose series is the
+brackets' series, so a move to another state swaps them along (#248, #484,
+#485, #486, #487, #490)."""
+
+OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset(
+    {STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX})
+"""The state tables a state may lack, or may start only after a move (#490,
+#487): then it has no surcharge or local tax, and its HSA follows the
+federal rules. A move keeps the old state's rows for the years before it,
+and the table it swaps into needn't exist yet."""
+
+STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX})
+"""The state tables of bands whose rates add to the brackets' (#490, #487):
+a filing status the brackets have and the table lacks would tax nothing."""
+
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
 
@@ -356,25 +521,98 @@ IRMAA_SERIES_COLUMNS: tuple[str, ...] = ("floor_series", "part_b_series", "part_
 """The ``irmaa_tiers`` columns naming an optional inflation series that grows
 a row's floor, Part B add-on and Part D add-on (#253)."""
 
+TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
+    "federal_brackets": {"floor_series": "floor"},
+    "state_brackets": {"floor_series": "floor"},
+    STATE_SURCHARGE: {"floor_series": "floor"},
+    STATE_LOCAL_TAX: {"floor_series": "floor"},
+    "ltcg_brackets": {"floor_series": "floor"},
+    STATE_LTCG_BRACKETS: {"floor_series": "floor"},
+    STATE_STCG_BRACKETS: {"floor_series": "floor"},
+    "standard_deduction": {"amount_series": "amount"},
+    STATE_STANDARD_DEDUCTION: {"amount_series": "amount"},
+    STATE_SOCIAL_SECURITY: {
+        "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
+    },
+    STATE_RETIREMENT_EXCLUSION: {"amount_series": "amount"},
+}
+"""Optional columns of the tax tables the law indexes for inflation (#467),
+by kind: {series column: the money column it grows}. Each names an
+inflation series that grows the row's figure from the table's effective
+date to January of the tax year, rounded down to $50; blank or missing
+holds it flat. Social Security's thresholds and the capital loss limit are
+fixed in law, so they have none."""
+
+AUX_SERIES_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
+    IRMAA_TIERS: IRMAA_SERIES_COLUMNS,
+    **{kind: tuple(columns) for kind, columns in TAX_GROWTH_SERIES_COLUMNS.items()},
+}
+"""The aux table columns, by kind, that name an inflation series, which a
+series rename rewrites (#467)."""
+
 AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "federal_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
     "state_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # A state's surcharge on high incomes (#490): bands in the shape of its
+    # brackets whose rates add to theirs, read with the brackets' series.
+    # California's is one band, 1% over $1 million, not indexed.
+    STATE_SURCHARGE:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # A local income tax (#487): bands in the shape of the brackets on the
+    # state's taxable income, read with the brackets' series.
+    STATE_LOCAL_TAX:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # How a state treats an HSA (#490), read with the brackets' series:
+    # `treatment` is one of STATE_HSA_TREATMENTS. Without a table, `federal`.
+    STATE_HSA: ("effective_date", "treatment"),
     # Federal long-term capital gain rates: the same shape as federal_brackets,
     # but a band's floor is the taxable income (ordinary income plus the gain,
     # stacked on top) at which its rate starts. Optional: without it long-term
     # gains are taxed as ordinary income.
     "ltcg_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # A state's own gain rates (#485), the same shape as ltcg_brackets and
+    # keyed by state like state_brackets. Optional: without them a state
+    # taxes its gains as ordinary income.
+    STATE_LTCG_BRACKETS:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    STATE_STCG_BRACKETS:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    # The share of a net long-term gain a state excludes (#485): `exclusion`
+    # percent of it, raised to `min_exclusion` and capped at `max_exclusion`
+    # (dollars, blank for none), never more than the gain. Fixed in law, so
+    # not indexed.
+    STATE_LTCG_EXCLUSION: ("effective_date", "exclusion", "min_exclusion", "max_exclusion"),
     "standard_deduction": ("effective_date", "filing_status", "amount"),
     # The state's own standard deduction (#248), which is often far smaller
-    # than the federal one. A state tax rule falls back to standard_deduction
+    # than the federal one. A state tax falls back to standard_deduction
     # when there is no state_standard_deduction__<state> for its brackets'
     # state, and the loader warns that it did.
     STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount"),
+    # How a state taxes Social Security (#484): it starts from the federally
+    # taxable amount and excludes exclusion_percent of it, an exclusion that
+    # phases out above phaseout_start of federal AGI: to nothing at
+    # phaseout_end (linearly; at once when they're equal), or by
+    # phaseout_rate of each dollar over (a credit, as a flat-rate state gives
+    # one). The phase-out columns are optional (AUX_OPTIONAL_COLUMNS). Without
+    # the file a state taxes none of it.
+    STATE_SOCIAL_SECURITY: ("effective_date", "filing_status", "exclusion_percent",
+                            "phaseout_start", "phaseout_end", "phaseout_rate"),
+    # A state's retirement income exclusions (#486), keyed by state like its
+    # brackets: each row excludes up to `amount` per person (blank: all of
+    # it) of the `income` kinds it lists (STATE_EXCLUSION_INCOME), from
+    # `min_age`. Rows sharing a `name` are age tiers of one exclusion; a
+    # blank filing_status applies to every status. `income_limit` (household
+    # income) and `phaseout` take it away; `less_ss` reduces it by the
+    # person's Social Security.
+    STATE_RETIREMENT_EXCLUSION: (
+        "effective_date", "name", "income", "min_age", "amount", "filing_status",
+        "income_limit", "phaseout", "less_ss",
+    ),
     # Itemized deductions: a dated total, no filing_status split (unlike
-    # standard_deduction). Optional; when present, the tax_accumulator rule uses
+    # standard_deduction). Optional; when present, a tax jurisdiction uses
     # whichever is greater, itemized or standard. `amount` may be a literal
     # figure or an itemizations/<name>.csv rollup (`@name`), same as any other
     # aux money column. `state_deductions` defaults to `federal_deductions`'s
@@ -440,11 +678,20 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "security_price": {"price": ("price_micros", "price")},
     "federal_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     "state_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_SURCHARGE: {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_LOCAL_TAX: {"marginal_rate": ("marginal_rate_micros", "percent")},
     "ltcg_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_LTCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_STCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_LTCG_EXCLUSION: {"exclusion": ("exclusion_micros", "percent")},
     "rmd_factors": {"factor": ("factor_micros", "number")},
     "rate": {"annual_rate": ("annual_rate_micros", "percent")},
     "inflation": {"annual_rate": ("annual_rate_micros", "percent")},
     "energy_credits": {"rate": ("rate_micros", "percent")},
+    STATE_SOCIAL_SECURITY: {
+        "exclusion_percent": ("exclusion_micros", "percent"),
+        "phaseout_rate": ("phaseout_rate_micros", "percent"),
+    },
     "life_table": {"q_female": ("q_female_micros", "number"),
                    "q_male": ("q_male_micros", "number")},
 }
@@ -455,10 +702,7 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
 LEGACY_MICROS_COLUMNS: frozenset[str] = frozenset({
     "annual_rate_micros", "marginal_rate_micros", "rate_micros", "factor_micros",
 })
-UNITS_CONVERSION_HINT = (
-    "rates and factors are now percents and plain numbers (#130); "
-    "convert the data repo with scripts/convert_units_130.py"
-)
+UNITS_CONVERSION_HINT = "rates and factors are now percents and plain numbers (#130)"
 
 # Per-aux-kind set of column names that hold dollar amounts in the CSV and must
 # be converted to integer cents during load.
@@ -466,15 +710,28 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "federal_brackets": frozenset({"floor"}),
     "ltcg_brackets": frozenset({"floor"}),
     "state_brackets": frozenset({"floor"}),
+    STATE_LTCG_BRACKETS: frozenset({"floor"}),
+    STATE_STCG_BRACKETS: frozenset({"floor"}),
+    STATE_LTCG_EXCLUSION: frozenset({"min_exclusion", "max_exclusion"}),
+    STATE_SURCHARGE: frozenset({"floor"}),
+    STATE_LOCAL_TAX: frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
     STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
+    STATE_RETIREMENT_EXCLUSION: frozenset({"amount", "income_limit", "phaseout"}),
     "federal_deductions": frozenset({"amount"}),
     "state_deductions": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
     "energy_credits": frozenset({"cap"}),
     "capital_loss_limit": frozenset({"amount"}),
     IRMAA_TIERS: frozenset({"magi_floor", "part_b", "part_d"}),
+    STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end"}),
 }
+
+AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
+    STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
+}
+"""Columns of ``AUX_KIND_COLUMNS`` a file may leave out, by kind: a missing
+column or a blank cell is stored as None."""
 
 
 SCENARIO_HEADER: tuple[str, ...] = (

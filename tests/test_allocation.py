@@ -328,7 +328,7 @@ def test_allocation_graph(
     chart = tmp_path / "allocation.svg"
     result = CliRunner().invoke(main, [
         "sim", "allocation", *by, "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
-        "--runfile", str(two_lot_run_file), "--graph-file", str(chart),
+        "--runfile", str(two_lot_run_file), "--chart-file", str(chart), "--table",
     ], env={"COLUMNS": "200"})
     assert result.exit_code == 0, result.output
     assert "asset allocation" in result.output
@@ -346,3 +346,21 @@ def test_allocation_figures(allocations_csv: Path, two_lot_run: RunConnection) -
     assert allocation_pie_figure(portfolio_allocation(two_lot_run, exclude=(
         "stock_us", "stock_intl", "bond", "cash", "real_estate", "other", "unclassified",
     ))).texts  # nothing left: says so
+
+
+def test_a_lot_growing_at_an_asset_class_series_is_that_class(
+    test_data_dir: Path, retire_alice_csv, run_test_copy,
+) -> None:
+    """A lot with no symbol or key that grows at ``stock`` is stock (#371),
+    in a scenario and in its run; one growing at a series no class is named
+    for stays unclassified."""
+    lots = retire_alice_csv("account_lots.csv")
+    lots.write_text(lots.read_text().replace(
+        "Asset_TraditionalIRA_Alice,default,traditional_ira,,,,,",
+        "Asset_TraditionalIRA_Alice,default,traditional_ira,,,,stock,"))
+    run = run_test_copy()
+    with ScenarioConnection(test_data_dir, "retire_alice") as scenario, RunConnection(run) as ran:
+        for source in (scenario, ran):
+            frame = lot_classes(source).set_index("account")
+            assert frame.loc["Asset_TraditionalIRA_Alice", "asset_class"] == "stock"
+            assert frame.loc["Asset_Brokerage_Joint", "asset_class"] == UNCLASSIFIED

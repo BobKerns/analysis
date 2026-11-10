@@ -264,7 +264,7 @@ def test_a_move_to_a_state_without_a_standard_deduction_falls_back_to_federal(
         deduction = dict(con.execute(
             "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_standard_deduction'"
         ).fetchall())
-    assert deduction[2028] == 32_200_00  # the federal figure, not California's
+    assert deduction[2028] == 33_000_00  # the federal figure (indexed, #467), not California's
 
 
 def test_a_move_without_a_state_tax_rule_says_nothing_of_the_deduction(
@@ -278,3 +278,32 @@ def test_a_move_without_a_state_tax_rule_says_nothing_of_the_deduction(
               "2026-01-31,MFJ,0,0.00,0%\n")
     _swap(append_calendar_row, "2028-03", "state_brackets", "CA", "WA")
     assert not any("standard deduction" in w for w in load_test_copy().warnings)
+
+
+@pytest.mark.parametrize("taxed_in", ["CA", "WA"])
+def test_a_move_takes_the_states_social_security_table(
+    taxed_in: str,
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    """Swapping state_brackets swaps state_social_security with it (#484): a
+    move to a state without one taxes no Social Security from then on, and a
+    move to one with one starts taxing it."""
+    add_state_tax(bracket_series="CA")
+    write_aux("state_brackets__WA.csv",
+              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+              "2026-01-31,MFJ,0,0.00,1%\n2026-01-31,Single,0,0.00,1%\n")
+    write_aux("state_standard_deduction__WA.csv",
+              "effective_date,filing_status,amount\n"
+              "2026-01-31,MFJ,1000.00\n2026-01-31,Single,1000.00\n")
+    write_aux(f"state_social_security__{taxed_in}.csv",
+              "effective_date,filing_status,exclusion_percent\n"
+              "2026-01-31,MFJ,0%\n2026-01-31,Single,0%\n")
+    _swap(append_calendar_row, "2026-07", "state_brackets", "CA", "WA")
+    run = _run(load_test_copy, runs_dir, "move")
+    with sqlite3.connect(run) as con:
+        taxable = dict(con.execute(
+            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_ss_taxable'"
+        ).fetchall())
+    assert any(v > 0 for v in taxable.values()) == (taxed_in == "WA")

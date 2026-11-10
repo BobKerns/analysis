@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from analysis.sim import registries
+from analysis.sim.data_commit import CommitError, ensure_identity
 from analysis.sim.lineage import TEMPLATE_PREFIX, TEMPLATE_SCENARIOS_DIR
 from analysis.sim.loader import write_current_scenario
 from analysis.sim.retention import DEFAULT_RETENTION, RETENTION_FILENAME
@@ -47,8 +48,15 @@ def is_data_repo(root: Path) -> bool:
     return (root / "sim" / "persons.csv").exists()
 
 
+# Files an OS leaves in a folder it shows (Finder, Explorer): never part of
+# the templates, though a checkout's templates/ may hold them.
+_OS_JUNK = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
+
 def _copied(relative: Path) -> bool:
     if relative.as_posix() in _NOT_COPIED:
+        return False
+    if relative.name in _OS_JUNK or relative.name.startswith("._"):
         return False
     parts = relative.parts
     if parts[0] == "scenarios" and len(parts) > 1 and parts[1].startswith(TEMPLATE_PREFIX):
@@ -130,7 +138,7 @@ def create_data_repo(
     (root / ".cspell").mkdir(exist_ok=True)
     (root / ".cspell" / "data-words.txt").touch()
     if commit:
-        return _commit(root)
+        return _commit(root, person)
     return None
 
 
@@ -149,12 +157,17 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
 
 
-def _commit(root: Path) -> str | None:
+def _commit(root: Path, person: Mapping[str, str]) -> str | None:
     if not (root / ".git").exists():
         done = _git(root, "init", "-q")
         if done.returncode:
             return done.stderr.strip() or "git init failed"
     paths = ("sim", ".gitignore", ".cspell")
+    # A new user often has no git identity, and the commit would fail (#308).
+    try:
+        ensure_identity(root, person["id"], person.get("display") or "")
+    except CommitError as exc:
+        return str(exc)
     for step in (("add", "--", *paths),
                  ("commit", "-q", "-m", "Start a data repo with sim init", "--", *paths)):
         done = _git(root, *step)

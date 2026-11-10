@@ -56,7 +56,7 @@ own data, that setup belongs in a fixture instead.
 """
 
 from __future__ import annotations
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping, Sequence
 import json
 import os
 from pathlib import Path
@@ -64,6 +64,7 @@ import shutil
 import sqlite3
 import sys
 import warnings
+from typing import Any
 
 import git
 import pandas as pd
@@ -71,15 +72,16 @@ import pytest
 
 from analysis.sim import scenario
 from analysis.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
-from analysis.sim.engine import run_scenario
+from analysis.sim.engine import _load_aux, _tax_year, run_scenario
 from analysis.sim.ensemble import resolve_member
 from analysis.sim.schema import apply_run_schema
+from analysis.sim.tax_api import TaxYear
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
     ACCOUNT_LOTS_CSV_HEADER, CALENDAR_HEADER, GUARD_RAILS_CSV_HEADER, SCENARIO_HEADER,
-    SCHEDULED_CSV_HEADER,
+    SCHEDULED_CSV_HEADER, TAX_CSV_HEADER,
 )
 
 _ANALYSIS_ENV_VARS = (
@@ -89,9 +91,17 @@ _ANALYSIS_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _no_ambient_analysis_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_ambient_analysis_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory,
+) -> None:
     for name in _ANALYSIS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    # Without $ANALYSIS_DATA_DIR the notebook widgets fall back to the
+    # checkout's data/shared/sim: on a dev machine, the real data repo,
+    # whose disabled scenarios once hid a test's recipe (#401).
+    monkeypatch.setattr(
+        "analysis.sim.notebook_ui.pickers._checkout_data_dir",
+        lambda: tmp_path_factory.getbasetemp() / "no-checkout-data" / "sim")
     # No test starts or waits on a background builder (#300) unless it
     # turns the builder back on itself.
     monkeypatch.setenv("ANALYSIS_BUILDER", "off")
@@ -495,13 +505,14 @@ def prototype_data(repo_root: Path) -> Path:
 
 @pytest.fixture(scope="function")
 def videos_root(tmp_path: Path, repo_root: Path) -> Path:
-    """A private docs/videos: the repo's theme and assets, no videos yet.
+    """A private docs/videos: the repo's theme, assets and YouTube settings, no videos yet.
 
     Tests write a video folder (``videos_root / "01-x" / "script.md"``) into it.
     """
     root = tmp_path / "videos"
     for part in ("theme", "assets"):
         shutil.copytree(repo_root / "docs" / "videos" / part, root / part)
+    shutil.copy(repo_root / "docs" / "videos" / "youtube.toml", root / "youtube.toml")
     return root
 
 
@@ -633,6 +644,16 @@ def ledger_con() -> Generator[sqlite3.Connection]:
         con.close()
 
 
+@pytest.fixture(scope="session")
+def tax_year_of() -> Callable[..., TaxYear]:
+    """``tax_year_of(con, year, scope="federal", **params)``: tax year
+    ``year`` of a run file or ``ledger_con`` as a tax calculator sees it
+    (#507), for testing the calculators' pieces on a ledger built by hand."""
+    def build(con: sqlite3.Connection, year: int, scope: str = "federal", **params: Any) -> TaxYear:
+        return _tax_year(con, {"scope": scope, **params}, aux=_load_aux(con), tax_year=year, tid=0)
+    return build
+
+
 @pytest.fixture(scope="function")
 def retire_alice_csv(test_scenarios_dir: Path) -> Callable[[str], Path]:
     """Path of one of the private retire_alice copy's scenario files, for tests
@@ -667,7 +688,7 @@ def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
 
     retire_alice is funded to run its own base scenario through 2040
     without Asset_Checking going negative, but several tests add an extra
-    expense it wasn't sized for (a federal tax payment via tax_accumulator,
+    expense it wasn't sized for (a federal tax payment via taxes/federal.csv,
     an early death that cuts household income in half while shared
     expenses continue) -- this keeps Asset_Checking's refill chain from
     running dry before it reaches the (amply funded) IRA behind it, rather
@@ -778,6 +799,18 @@ def derive_template_scenario(template_data_dir: Path) -> Callable[..., Path]:
 
 
 @pytest.fixture(scope="session")
+def retire_alice_rows(prototype_data: Path) -> Callable[..., str]:
+    """``filename``'s text holding just the prototype retire_alice rows
+    ``names`` (by ``name``), whole: an override that changes nothing, which
+    still makes the scenario writing it the row's definer."""
+    def _rows(filename: str, *names: str) -> str:
+        rows = pd.read_csv(prototype_data / "scenarios" / "retire_alice" / filename,
+                           dtype=str, keep_default_na=False)
+        return rows[rows["name"].isin(names)].to_csv(index=False)
+    return _rows
+
+
+@pytest.fixture(scope="session")
 def scheduled_override(prototype_data: Path) -> Callable[..., str]:
     """scheduled.csv text repeating the prototype retire_alice rows named as
     keywords with only their ``amount`` changed -- an override replaces a row
@@ -832,7 +865,15 @@ def strategy_scenarios(test_data_dir: Path, test_scenarios_dir: Path, test_data:
     checking's refill chain; ``alice_last_leaf`` swaps in the data-repo kind
     ``last_leaf`` from ``strategies/``; ``alice_rebalance_off`` switches the
     strategy off (an ``enabled`` false override), for comparing the two
-    (#359). Brings its own allocations.csv (USSTK, BONDX). Returns the data
+    (#359); ``alice_spending`` adds travel and gifts rules tagged
+    ``flex:optional``, owned by a ``guardrail`` spending strategy (#387);
+    ``alice_year_end`` adds a federal tax rule, a gift expense account and a
+    ``harvest`` year-end strategy (#421); ``alice_triggers`` adds a
+    ``tight`` spending rail and a ``cut_on_breach`` strategy whose trigger
+    watches it (#441); ``alice_buckets`` builds on retire_alice with cash,
+    bond and stock lots in the brokerage, Alice's IRA and her Roth, 7%/4%/2%
+    rate series, and a ``buckets`` strategy owning ``portfolio_draw`` (#463).
+    Brings its own allocations.csv (USSTK, BONDX). Returns the data
     directory."""
     source = test_data / "sim" / "strategies"
     for folder in (source / "scenarios").iterdir():
@@ -873,21 +914,30 @@ def run_strategy_scenario(
 
 
 @pytest.fixture(scope="function")
-def strategy_ensemble_batch(strategy_scenarios: Path, intent_dir: Path, runs_dir: Path) -> Path:
-    """A 3-member Monte Carlo batch of ``alice_rebalance`` (retire_alice's
-    varied rows, seed 5) under ``runs_dir/alice_rebalance/``, its rebalancing
-    strategy steering every member (#359). Returns the batch dir."""
-    recipe = load_scenario(strategy_scenarios, "alice_rebalance", intent_dir=intent_dir / "recipe",
-                           allow_dirty_data=True, compute_stamps=False).intent_path
-    batch_dir = runs_dir / "alice_rebalance" / "2026-01-01T000000Z"
-    for i in range(3):
-        member_intent = resolve_member(
-            recipe, intent_dir / f"alice_rebalance_member_{i}.sqlite3",
-            seed=5, member_index=i, member_count=3, recipe_tree_id="deadbeef",
-        )
-        run_scenario(member_intent, batch_dir / f"member_{i:04d}.sqlite3", run_by="test",
-                     allow_dirty_data=True, allow_dirty_code=True)
-    return batch_dir
+def strategy_ensemble(strategy_scenarios: Path, intent_dir: Path, runs_dir: Path) -> Callable[[str], Path]:
+    """Run a 3-member Monte Carlo batch of a strategy scenario (after a
+    test's edits): retire_alice's varied rows, seed 5, under
+    ``runs_dir/<name>/``. Returns the batch dir."""
+    def _run(name: str) -> Path:
+        recipe = load_scenario(strategy_scenarios, name, intent_dir=intent_dir / "recipe",
+                               allow_dirty_data=True, compute_stamps=False).intent_path
+        batch_dir = runs_dir / name / "monte-carlo" / "2026-01-01T000000Z"
+        for i in range(3):
+            member_intent = resolve_member(
+                recipe, intent_dir / f"{name}_member_{i}.sqlite3",
+                seed=5, member_index=i, member_count=3, recipe_tree_id="deadbeef",
+            )
+            run_scenario(member_intent, batch_dir / f"member_{i:04d}.sqlite3", run_by="test",
+                         allow_dirty_data=True, allow_dirty_code=True)
+        return batch_dir
+    return _run
+
+
+@pytest.fixture(scope="function")
+def strategy_ensemble_batch(strategy_ensemble: Callable[[str], Path]) -> Path:
+    """``strategy_ensemble`` of ``alice_rebalance``, its rebalancing strategy
+    steering every member (#359). Returns the batch dir."""
+    return strategy_ensemble("alice_rebalance")
 
 
 @pytest.fixture(scope="function")
@@ -961,6 +1011,40 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
 
 
 @pytest.fixture(scope="function")
+def priced_lots(add_account_value: Callable[..., None], write_aux: Callable[[str, str], Path]) -> None:
+    """Roth_Alice gains three lots holding 10 shares of AAA: one whose balance matches
+    the price at the 2026-05-31 start ($11.50 on 05-29), one that is stale, one
+    whose symbol has no prices. A later price ($20) is in the file too."""
+    write_aux("security_price__AAA.csv",
+              "effective_date,price\n2026-05-29,11.50\n2026-09-24,20.00\n")
+    add_account_value("Asset_Roth_Alice", lot="ok", symbol="AAA", quantity="10", opening_balance="115.00")
+    add_account_value("Asset_Roth_Alice", lot="old", symbol="AAA", quantity="10", opening_balance="140.00")
+    add_account_value("Asset_Roth_Alice", lot="bare", symbol="ZZZ", quantity="10", opening_balance="50.00")
+
+
+@pytest.fixture(scope="function")
+def qqq_prices(test_data_dir: Path) -> Path:
+    """The private copy's shared prices/ gets three QQQ prices ($400 at 2025's
+    end, $580 on 2026-09-30, $609 on 2026-10-13), and securities.csv names QQQ
+    and ABCDX (which has no prices). Returns the data dir."""
+    (test_data_dir / "prices").mkdir(exist_ok=True)
+    (test_data_dir / "prices" / "security_price__QQQ.csv").write_text(
+        "effective_date,price\n2025-12-31,400.00\n2026-09-30,580.00\n2026-10-13,609.00\n")
+    (test_data_dir / "securities.csv").write_text("symbol,name\nQQQ,Nasdaq 100\nABCDX,A fund\n")
+    return test_data_dir
+
+
+@pytest.fixture(scope="function")
+def scenario_own_prices(retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None]) -> None:
+    """retire_alice gets its own prices/ file for QQQX, which the shared prices/
+    lacks, and a Roth_Alice lot holding 10 shares of it."""
+    own = retire_alice_csv("prices")
+    own.mkdir(exist_ok=True)
+    (own / "security_price__QQQX.csv").write_text("effective_date,price\n2026-05-29,10.00\n")
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="QQQX", quantity="10", opening_balance="1.00")
+
+
+@pytest.fixture(scope="function")
 def without_prototype_defaults(test_data_dir: Path) -> None:
     """Cut the private copy's ``base`` scenario, which retire_alice inherits
     from (#91), loose from the template scenarios it builds on (#282): their
@@ -1002,6 +1086,13 @@ def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[st
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,fund,"))
     write_series("stock_us", "2026-01-31,8%")
     write_series("bond", "2026-01-31,4%")
+
+
+@pytest.fixture(scope="session")
+def append_calendar_row_to() -> Callable[..., None]:
+    """Append a row to any scenario's calendar.csv, by column name:
+    ``append_calendar_row_to(child / "calendar.csv", kind=..., ...)``."""
+    return _append_calendar_row_to
 
 
 @pytest.fixture(scope="function")
@@ -1098,6 +1189,25 @@ def update_scheduled(retire_alice_csv: Callable[[str], Path]) -> Callable[..., N
 
 
 @pytest.fixture(scope="function")
+def append_scheduled_row(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Append a rule to the private copy's scheduled.csv, by column name:
+    ``append_scheduled_row(name="bonus", amount_rule_kind="fixed_amount", ...)``.
+    ``cadence`` defaults to monthly and ``meta_json`` to ``{}``."""
+    def _add(**fields: str) -> None:
+        unknown = set(fields) - set(SCHEDULED_CSV_HEADER)
+        assert not unknown, f"unknown scheduled.csv columns: {sorted(unknown)}"
+        path = retire_alice_csv("scheduled.csv")
+        rules = pd.read_csv(path, dtype=str, keep_default_na=False)
+        rules = rules.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+        rules.loc[len(rules)] = {
+            **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
+            "cadence": "monthly", "meta_json": "{}", **fields,
+        }
+        rules.to_csv(path, index=False)
+    return _add
+
+
+@pytest.fixture(scope="function")
 def set_scenario_meta(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Set keys of the private retire_alice copy's scenario.csv ``meta_json``,
     keeping the others: ``set_scenario_meta(community_property=True)``."""
@@ -1186,16 +1296,59 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
                         allow_dirty_data=True, allow_dirty_code=True)
 
 
+def _write_tax_file(scenario_dir: Path, name: str = "federal", **cells: Any) -> Path:
+    """Write ``scenario_dir/taxes/<name>.csv``, a tax jurisdiction (#507):
+    paid from Asset_Checking into Expense_Taxes_Federal (or _State) each
+    April from 2027, unless ``cells`` say otherwise; a local one (#508) is
+    paid with the state's. ``params_json`` may be a dict."""
+    params = cells.pop("params_json", {})
+    local = name == "local"
+    row = {
+        **dict.fromkeys(TAX_CSV_HEADER, ""),
+        "kind": {"federal": "federal", "local": "local_bands"}.get(name, "state_tables"),
+        "source_chain": "" if local else "Asset_Checking",
+        "destination": ("" if local else "Expense_Taxes_Federal" if name == "federal"
+                        else "Expense_Taxes_State"),
+        "start": "2027-04",
+        "params_json": params if isinstance(params, str) else json.dumps(params),
+        **cells,
+    }
+    path = scenario_dir / "taxes" / f"{name}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([row], columns=list(TAX_CSV_HEADER)).to_csv(path, index=False)
+    return path
+
+
+@pytest.fixture(scope="session")
+def write_tax() -> Callable[..., Path]:
+    """``write_tax(scenario_dir, name="federal", **cells)``: write a tax
+    jurisdiction file (#507) into a scenario folder; see ``add_tax``."""
+    return _write_tax_file
+
+
 @pytest.fixture(scope="function")
-def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+def add_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """Give the private retire_alice copy a tax jurisdiction (#507):
+    ``add_tax()`` is the federal tax, paid from Asset_Checking into
+    Expense_Taxes_Federal each April from 2027; ``add_tax("state",
+    params_json={"bracket_series": "CA"})`` a state one (the account must
+    exist: ``add_state_tax`` adds both). Cells override the defaults."""
+    return lambda name="federal", **cells: _write_tax_file(
+        retire_alice_csv(""), name, **cells)
+
+
+@pytest.fixture(scope="function")
+def add_state_tax(retire_alice_csv: Callable[[str], Path],
+                  fund_asset_savings: Callable[..., None]) -> Callable[..., None]:
     """Give the private retire_alice copy a state income tax: an
-    Expense_Taxes_State account and a ``tax_accumulator`` rule (scope state)
-    paying the previous year's state tax each April. ``bracket_series`` names
-    the state when more than one ``state_brackets`` table exists."""
-    def _add(bracket_series: str | None = None) -> None:
-        params = {"year": "previous", "scope": "state"}
-        if bracket_series:
-            params["bracket_series"] = bracket_series
+    Expense_Taxes_State account and a state jurisdiction (taxes/state.csv)
+    paying the previous year's state tax each April, and the federal one it
+    starts from (#508) when the copy has none yet, with savings to pay it
+    (``fund_asset_savings``). ``bracket_series`` names
+    the state: California, the prototype's, unless the test says otherwise
+    (None leaves it out)."""
+    def _add(bracket_series: str | None = "CA") -> None:
+        params = {"bracket_series": bracket_series} if bracket_series else {}
         accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str,
                                keep_default_na=False)
         accounts.loc[len(accounts)] = {
@@ -1205,18 +1358,10 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
             "meta_json": "{}",
         }
         accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
-        scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str,
-                                keep_default_na=False)
-        scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
-        scheduled.loc[len(scheduled)] = {
-            **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
-            "name": "tax_state_prev_year", "from_account": "Asset_Checking",
-            "to_account": "Expense_Taxes_State", "cadence": "annual", "month_of_year": "4",
-            "amount_rule_kind": "tax_accumulator", "tax_character": "none",
-            "start": "2027-04-30", "priority": "400", "meta_json": "{}",
-            "params_json": json.dumps(params),
-        }
-        scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+        _write_tax_file(retire_alice_csv(""), "state", params_json=params)
+        if not (retire_alice_csv("") / "taxes" / "federal.csv").exists():
+            _write_tax_file(retire_alice_csv(""), "federal")
+            fund_asset_savings("1000000.00")
     return _add
 
 
@@ -1224,8 +1369,8 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
 def report_run_file(retire_alice_csv: Callable[[str], Path],
                     fund_asset_savings: Callable[..., None],
                     load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
-    """Run of a retire_alice copy that computes federal tax (a ``tax_accumulator``
-    rule paying the previous year's tax each April) and tags its spending in
+    """Run of a retire_alice copy that computes federal tax (taxes/federal.csv,
+    paying the previous year's tax each April) and tags its spending in
     role ``budget``: Expense_Living and Expense_Healthcare are ``budget:core``,
     Expense_Housing is ``budget:home``, and the ``living`` rule's own
     ``budget:fun`` overrides its account's tag. Income_Salary_Alice is
@@ -1241,15 +1386,8 @@ def report_run_file(retire_alice_csv: Callable[[str], Path],
     scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
     scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
     scheduled.loc[scheduled["name"] == "living", "tags"] = "budget:fun"
-    scheduled.loc[len(scheduled)] = {
-        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
-        "name": "tax_federal_prev_year", "from_account": "Asset_Checking",
-        "to_account": "Expense_Taxes_Federal", "cadence": "annual", "month_of_year": "4",
-        "amount_rule_kind": "tax_accumulator", "tax_character": "none",
-        "start": "2027-04-30", "priority": "400", "meta_json": "{}",
-        "params_json": '{"year":"previous","scope":"federal"}',
-    }
     scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+    _write_tax_file(retire_alice_csv(""))
 
     intent = load_test_copy().intent_path
     return run_scenario(intent, runs_dir / "report.sqlite3", run_by="TEST",
@@ -1304,14 +1442,26 @@ def _sim(*args: str) -> None:
 
 
 @pytest.fixture(scope="function")
-def retire_alice_test_run(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Path:
+def sim_load_test_copy(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
+    """Callable running ``sim load`` on a scenario of the private data copy
+    (default retire_alice), after a test has edited it, into the function's
+    state dir beside ``test_data_dir``: where a picker opened on
+    ``test_data_dir`` looks. Extra arguments (``--no-run``) go on the
+    command line. Returns the scenario's runs folder."""
+    def _load(*extra: str, scenario: str = "retire_alice") -> Path:
+        _sim("load", scenario, "--data-dir", str(test_data_dir),
+             "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+             "--allow-dirty-data", *extra)
+        return runs_dir / scenario
+    return _load
+
+
+@pytest.fixture(scope="function")
+def retire_alice_test_run(sim_load_test_copy: Callable[..., Path]) -> Path:
     """retire_alice from the private data copy, loaded and run into the
     function's state dir, beside ``test_data_dir``: where a picker opened on
     ``test_data_dir`` looks. Returns its runs folder."""
-    _sim("load", "retire_alice", "--data-dir", str(test_data_dir),
-         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-         "--allow-dirty-data")
-    return runs_dir / "retire_alice"
+    return sim_load_test_copy()
 
 
 @pytest.fixture(scope="function")
@@ -1513,7 +1663,7 @@ def two_lot_ensemble_runs_dir(
         vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
-    batch_dir = runs_dir / "two_lot" / "2026-01-01T000000Z"
+    batch_dir = runs_dir / "two_lot" / "monte-carlo" / "2026-01-01T000000Z"
     for i in range(2):
         member_intent = resolve_member(
             recipe, intent_dir / f"two_lot_member_{i}.sqlite3",
@@ -1543,7 +1693,7 @@ def seeded_ensemble_batch(
     recipe = load_test_copy().intent_path
 
     def _batch(name: str, seed: int) -> Path:
-        batch_dir = runs_dir / name / "2026-01-01T000000Z"
+        batch_dir = runs_dir / name / "monte-carlo" / "2026-01-01T000000Z"
         for i in range(3):
             member_intent = resolve_member(
                 recipe, intent_dir / f"{name}_member_{i}.sqlite3",
@@ -1725,39 +1875,57 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     ``fake_state("run", "alice", "2026-10-01T120000Z", status=...)`` writes a
     single run file; ``fake_state("batch", ...)`` a run batch of ``members``
     member files with a batch manifest (``complete=False`` leaves the last
-    member out); ``fake_state("intent", ...)`` a member-intent batch. Each
-    run file holds just a ``simulation_run`` row with the status. Every file
+    member out); ``fake_state("intent", ...)`` a member-intent batch; a
+    batch of either kind goes in its ``mode``'s folder (#454). Each
+    run file holds just a ``simulation_run`` row with the status and an
+    empty ``load_warning`` table (#432), unless
+    ``load_warned={member: [warning, ...]}`` gives a member some; a run
+    batch given ``pool=[component, ...]`` (one per member) is a pool batch's
+    (ADR-009), its manifest saying where each member came from. Every file
     and folder written gets the stamp as its mtime, so nothing reads as still
     being written (retention.ACTIVE_WINDOW)."""
     import os
     from datetime import UTC, datetime
 
     from analysis.sim.ensemble import write_batch_manifest
+    from analysis.sim.loader import batches_dir
 
-    def _run_file(path: Path, status: str) -> None:
+    def _run_file(path: Path, status: str, warned: Sequence[str] | None = None) -> None:
         con = sqlite3.connect(path)
         try:
             con.execute("CREATE TABLE simulation_run (id INTEGER PRIMARY KEY, status TEXT)")
             con.execute("INSERT INTO simulation_run VALUES (1, ?)", (status,))
+            con.execute("CREATE TABLE load_warning (id INTEGER PRIMARY KEY, kind TEXT, message TEXT)")
+            if warned:
+                con.executemany("INSERT INTO load_warning (kind, message) VALUES ('warning', ?)",
+                                [(w,) for w in warned])
             con.commit()
         finally:
             con.close()
 
     def _fake(kind: str, scenario_name: str, stamp: str, *, status: str = "succeeded",
-              members: int = 2, complete: bool = True) -> Path:
+              members: int = 2, complete: bool = True, mode: str = "monte_carlo",
+              load_warned: Mapping[int, Sequence[str]] | None = None,
+              pool: Sequence[str] | None = None) -> Path:
         made = datetime.strptime(stamp, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
         if kind == "run":
             path = runs_dir / f"{stamp}_{scenario_name}_abc1234.sqlite3"
             _run_file(path, status)
             os.utime(path, (made, made))
             return path
-        path = (runs_dir if kind == "batch" else intent_dir) / scenario_name / stamp
+        recipe = (runs_dir if kind == "batch" else intent_dir) / scenario_name
+        path = batches_dir(recipe, mode) / stamp
         path.mkdir(parents=True)
         written = members if complete else members - 1
         for i in range(written):
-            _run_file(path / f"member_{i:04d}.sqlite3", status)
+            _run_file(path / f"member_{i:04d}.sqlite3", status, (load_warned or {}).get(i))
         if kind == "batch":
-            write_batch_manifest(path, member_count=members, failures=[])
+            if mode == "sensitivity":
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode,
+                                     quantiles=(0.1, 0.9), rows=[])
+            else:
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode,
+                                     pool={"member_components": list(pool)} if pool else None)
         for child in [*path.iterdir(), path]:
             os.utime(child, (made, made))
         return path
@@ -1771,6 +1939,19 @@ def without_template_aux(tmp_path_factory: pytest.TempPathFactory, monkeypatch: 
     test that deletes one of the private copy's aux tables sees it missing
     instead of the template's copy filling in."""
     monkeypatch.setattr("analysis.sim.loader.TEMPLATE_AUX_DIR", tmp_path_factory.mktemp("no_template_aux"))
+
+
+@pytest.fixture(scope="function")
+def state_tax_without_its_deduction(
+    test_data_dir: Path, add_state_tax: Callable[..., None], without_template_aux: None,
+) -> None:
+    """The private retire_alice copy, loading with one warning (#432): a
+    California state tax rule with no state_standard_deduction__CA table, so
+    it falls back to the federal deduction (#248) and the load warns that
+    "state tax uses the federal standard deduction". The prototype's idle
+    latent factors add their one note on things defined but not read yet."""
+    add_state_tax()
+    (test_data_dir / "aux" / "state_standard_deduction__CA.csv").unlink()
 
 
 @pytest.fixture(scope="session")

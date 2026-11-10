@@ -4,6 +4,11 @@
 # background scenario builds (sim builder install; not under CI or an agent),
 # and an offer to install the finance-research Claude plugin.
 # Safe to re-run; every step is idempotent.
+#
+#   scripts/setup.sh [LINK-DATA ARGUMENTS]
+#
+# Arguments go to scripts/link-data.sh: a data repo's PATH, `--new PATH
+# [sim init options]` or `--template`. Without them it asks for the path.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -244,10 +249,11 @@ else
     npm ci --no-audit --no-fund
 fi
 
-# Last, so the venv is there for the user prompt. Asks for the data repo's
-# path; a blank answer (or no terminal) builds template data instead.
+# Last, so the venv is there for the user prompt and `sim init`. Without
+# arguments, asks for the data repo's path, offering to create one there
+# (#308); a blank answer (or no terminal) builds template data instead.
 echo "Linking the data repo at data/shared..."
-scripts/link-data.sh
+scripts/link-data.sh "$@"
 
 # Template data (CI's) is a plain directory inside this repo, so there this
 # just sets this repo's identical values again.

@@ -1,0 +1,3 @@
+name,kind,subkind,owner,tax_treatment,series,tax_character,opened,closed,meta_json,tags
+Expense_Travel,expense,other_expense,joint,none,,,2020-01-31,,{},
+Expense_Gifts,expense,other_expense,joint,none,,,2020-01-31,,{},

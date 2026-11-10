@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim.correlation import probability, tail_scale
 from analysis.sim.distributions import Uniform, tail_rng
+from analysis.sim.draws_charts import pair_options
 from analysis.sim.draws_db import build_draws_db, draws_db_path, draws_frames, ks_uniform
 from analysis.sim.ensemble import build_distribution, resolve_member, write_batch_manifest
 from analysis.sim.loader import LoadResult
@@ -280,8 +281,65 @@ def test_sim_ensemble_draws_on_a_sensitivity_batch(
     assert "KS p(u)" not in output
 
 
+def test_sim_ensemble_draws_will_not_chart_a_sensitivity_batch(
+    oat_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), "--mode", "sensitivity", "--node", "early", "--chart",
+    ])
+    assert result.exit_code == 2
+    assert "--chart draws a Monte Carlo batch" in result.output
+
+
+def test_sim_ensemble_draws_reads_the_monte_carlo_batch_over_a_newer_sensitivity_one(
+    mc_batch: Path, oat_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    # The sensitivity batch is the newer one, whatever the fixtures named them.
+    newest = oat_batch.with_name("9999-12-31T235959Z")
+    oat_batch.rename(newest)
+
+    output = _draws_cli(runs_dir, intent_dir)
+
+    assert f"retire_alice ({mc_batch.name}): monte_carlo" in output
+
+
+def test_sim_ensemble_draws_points_a_mode_given_to_batch_at_mode(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), "--batch", "monte_carlo",
+    ])
+    assert result.exit_code == 2
+    assert "use --mode monte_carlo" in result.output
+
+
+def test_sim_ensemble_draws_runs_an_ensemble_with_no_monte_carlo_batch(
+    test_data_dir: Path, derive_scenario: Callable[..., Path], append_calendar_row: Callable[..., None],
+    commit_test_data: Callable[[], Path], runs_dir: Path, intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2029-06-30", kind="one_off_transfer", name="gift",
+        account_1="Income_Inheritance", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="20000.00", tax_character="none",
+        vary_target="amount", vary_distribution="uniform", vary_low="10000.00", vary_high="30000.00",
+    )
+    derive_scenario("paths", "retire_alice", meta_json='{"ensemble_size": 2, "seed": 3}')
+    commit_test_data()
+
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "paths", "--data-dir", str(test_data_dir),
+        "--runs-dir", str(runs_dir), "--intent-dir", str(intent_dir),
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "paths has no Monte Carlo batch yet; running one now" in result.output
+    assert "): monte_carlo, 2 member(s), 2 succeeded" in result.output
+
+
 def test_a_batch_whose_every_member_failed_still_lists_them(tmp_path: Path) -> None:
-    batch = tmp_path / "runs" / "retire_alice" / "b"
+    batch = tmp_path / "runs" / "retire_alice" / "monte-carlo" / "b"
     batch.mkdir(parents=True)
     write_batch_manifest(batch, member_count=2,
                          failures=[(0, batch / "x", "boom"), (1, batch / "y", "boom")])
@@ -308,21 +366,78 @@ def test_a_date_marker_is_a_node_that_affects_the_rows_dated_from_it(
     assert node == [("row", "date_marker", "day_ordinal", "ep_off")]
 
 
-def test_a_draws_database_from_before_pools_is_gathered_again(mc_batch: Path) -> None:
-    """One built before ADR-009 has no member.component: `ensemble draws`
-    rebuilds it rather than failing on the per-component queries."""
+def test_a_draws_database_from_another_schema_version_is_gathered_again(mc_batch: Path) -> None:
+    """It is a cache (ADR-002 §Schema changes): `ensemble draws` rebuilds
+    one built under another SCHEMA_VERSION rather than reading it."""
     from click.testing import CliRunner
 
     from analysis.cli import main
-    from analysis.sim.draws_db import draws_db_current
+    from analysis.sim.draws_db import build_draws_db, draws_db_current
 
-    path = draws_db_path(mc_batch)
-    path.unlink(missing_ok=True)
+    path = build_draws_db(mc_batch)
+    assert draws_db_current(mc_batch)
     with sqlite3.connect(path) as con:
-        con.execute("CREATE TABLE member (member_index INTEGER PRIMARY KEY)")
+        con.execute("UPDATE batch SET schema_version = schema_version - 1")
     assert not draws_db_current(mc_batch)
     result = CliRunner().invoke(main, [
-        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(mc_batch.parent.parent)])
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(mc_batch.parent.parent.parent)])
     assert result.exit_code == 0, result.output
     assert draws_db_current(mc_batch)
     assert "component" not in result.output  # one component: no per-component headings
+
+
+def test_sim_ensemble_draws_lists_a_pair(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    """#330: --pair, in either order, prints the pair's rho and its members."""
+    a, b = pair_options(draws_frames(mc_batch))[0][1]
+    output = _draws_cli(runs_dir, intent_dir, "--pair", f"{b},{a}")
+    first = output.splitlines()[0]
+    assert first.startswith(f"{b} ~ {a}: link, implied rho") and "achieved" in first
+    assert "0 (base)" in output and f"{a} score" in output
+    assert "draws database" not in output  # the summary is for neither --node nor --pair
+
+
+@pytest.mark.parametrize(("pair", "message"), [
+    ("gift", "--pair takes two nodes, A,B"),
+    ("gift,gift", "names 'gift' twice"),
+    ("gift,nope", "'nope' isn't drawn in this batch"),
+    ("gift,core_inflation", "aren't a correlated pair in this batch; gift pairs with nothing"),
+    ("apparel_factor,gift", "aren't a correlated pair in this batch; apparel_factor pairs with core_inflation"),
+])
+def test_sim_ensemble_draws_rejects_a_bad_pair(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path, pair: str, message: str,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), "--pair", pair,
+    ])
+    assert result.exit_code == 2 and message in result.output
+
+
+def test_sim_ensemble_draws_charts_a_node_and_a_pair(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path, tmp_path: Path,
+) -> None:
+    """#330: --chart-file writes the notebook's chart; the tables only with --table."""
+    a, b = pair_options(draws_frames(mc_batch))[0][1]
+    png = tmp_path / "gift.png"
+    output = _draws_cli(runs_dir, intent_dir, "--node", "gift", "--chart-file", str(png))
+    assert png.read_bytes()[:4] == b"\x89PNG" and output.strip() == f"wrote {png}"
+    svg = tmp_path / "pair.svg"
+    output = _draws_cli(runs_dir, intent_dir, "--pair", f"{a},{b}", "--chart-file", str(svg), "--table")
+    assert svg.read_text().lstrip().startswith("<?xml")
+    assert output.startswith(f"wrote {svg}") and f"{a} ~ {b}" in output
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (["--chart"], "name one"),
+    (["--node", "gift", "--pair", "gift,x", "--chart-file", "x.png"], "--node or --pair, not both"),
+])
+def test_sim_ensemble_draws_chart_needs_one_subject(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path, args: list[str], message: str,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), *args,
+    ])
+    assert result.exit_code == 2 and message in result.output

@@ -370,6 +370,47 @@ def test_draws_frame_excludes_member_zero(mc_batch: Path) -> None:
     assert list(draws.columns) == ["gift", "retire_bill_vary"]
 
 
+def test_mc_report_holds_few_member_files_open(
+    mc_batch: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch's members share a handle budget: a thousand-member batch
+    used to open a file per member and run out (#448). With a budget of two
+    the 8-member report still reads every member, reopening as it goes, and
+    matches the report read with them all open."""
+    from analysis.sim.connection import HandleBudget
+    from analysis.sim.ensemble import load_ensemble
+
+    expected = sensitivity.mc_report(mc_batch).table
+    monkeypatch.setattr(HandleBudget, "DEFAULT_LIMIT", 2)
+    connections = load_ensemble(mc_batch)
+    try:
+        budget = next(iter(connections.values()))._handles
+        assert budget is not None and budget.open_count == 0
+        outcomes = sensitivity.outcomes_frame(connections, list(connections))
+        assert budget.open_count == 2
+        assert len(outcomes) == 8
+        # The first member's handle was closed to make room; it reopens.
+        assert not next(iter(connections.values())).net_worth_frame().empty
+        assert budget.open_count == 2
+    finally:
+        for rc in connections.values():
+            rc.close()
+    assert budget.open_count == 0
+    pd.testing.assert_frame_equal(sensitivity.mc_report(mc_batch).table, expected)
+
+
+def test_cli_names_the_missing_batch_mode(mc_batch: Path, runs_dir: Path) -> None:
+    """A recipe run only as Monte Carlo has runs, just no sensitivity batch:
+    say so and how to make one, not 'no ensemble runs found' (#448)."""
+    for command in (["sensitivity", "--row", "gift"], ["draws", "--mode", "sensitivity"]):
+        result = CliRunner().invoke(main, [
+            "sim", "ensemble", *command, "retire_alice", "--runs-dir", str(runs_dir),
+        ])
+        assert result.exit_code != 0
+        assert ("retire_alice has no sensitivity (OAT) batch, only Monte Carlo runs; "
+                "'sim run retire_alice --sensitivity' makes one") in result.output, command
+
+
 # --- #38: correlated inputs -------------------------------------------------------
 
 
@@ -429,6 +470,23 @@ def test_prcc_is_the_partial_rank_correlation() -> None:
     assert table.loc["x1", "prcc"] == pytest.approx(expected, abs=1e-9)
 
 
+def test_prcc_interval_is_fisher_z_less_a_degree_per_controlled_row() -> None:
+    """#438: PRCC's 95% interval is rho's Fisher-z interval with one degree
+    of freedom less for each other varying row held fixed (here x2), and a
+    row with no PRCC has no interval."""
+    import numpy as np
+
+    draws, outcomes = _correlated(200, rho=0.5)
+    table = sensitivity.correlation_table(draws.assign(x3=1.0), outcomes).set_index("row")
+    prcc = table.loc["x1", "prcc"]
+    half = 1.959963984540054 * np.sqrt(1.06 / (200 - 3 - 1))
+    assert table.loc["x1", "prcc_low"] == pytest.approx(np.tanh(np.arctanh(prcc) - half))
+    assert table.loc["x1", "prcc_high"] == pytest.approx(np.tanh(np.arctanh(prcc) + half))
+    assert sensitivity.prcc_interval(prcc, 200, 1) == pytest.approx(
+        (table.loc["x1", "prcc_low"], table.loc["x1", "prcc_high"]))
+    assert pd.isna(table.loc["x3", "prcc_low"]) and pd.isna(table.loc["x3", "prcc_high"])
+
+
 def test_srrc_interval_is_undefined_for_a_row_that_never_varies() -> None:
     draws, outcomes = _correlated(100)
     table = sensitivity.correlation_table(draws.assign(x3=1.0), outcomes).set_index("row")
@@ -446,7 +504,7 @@ def test_a_row_that_never_varies_costs_no_degree_of_freedom() -> None:
     padded = sensitivity.correlation_table(
         draws.assign(c1=1.0, c2=2.0, c3=3.0), outcomes,
     ).set_index("row")
-    for column in ("srrc_low", "srrc_high", "prcc", "r2"):
+    for column in ("srrc_low", "srrc_high", "prcc", "prcc_low", "prcc_high", "r2"):
         assert padded.loc["x1", column] == pytest.approx(plain.loc["x1", column])
 
 
@@ -695,19 +753,6 @@ def test_parameters_describes_a_monte_carlo_batch(mc_batch: Path) -> None:
     assert "drawn" in table.columns
     assert table.loc["gift", "drawn"].endswith("(7 draws)")
     assert not any(c.startswith("value@") for c in table.columns)
-
-
-def test_parameters_tolerates_batches_before_schema_28(oat_batch: Path) -> None:
-    import sqlite3
-
-    for member in oat_batch.glob("member_*.sqlite3"):
-        con = sqlite3.connect(member)
-        con.execute("ALTER TABLE ensemble_draw DROP COLUMN distribution")
-        con.commit()
-        con.close()
-    table = sensitivity.parameters(oat_batch)
-    assert (table["distribution"] == "").all() and (table["range"] == "").all()
-    assert table.loc["gift", "value@0.1"] == "$12,000"
 
 
 

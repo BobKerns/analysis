@@ -15,7 +15,9 @@ folders, already covered the same way.
 
 from __future__ import annotations
 
+import csv
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -31,8 +33,8 @@ class DataDirtyRefused(RuntimeError):
         super().__init__(
             "data repo dirty in scoped paths:\n  "
             + "\n  ".join(dirty_paths)
-            + "\nCommit/stash the changes, or pass allow_dirty_data=True"
-            " (CLI: --allow-dirty-data)."
+            + "\nCommit them (CLI: `sim commit`, or --commit), or pass"
+            " allow_dirty_data=True (CLI: --allow-dirty-data)."
         )
         self.dirty_paths = dirty_paths
 
@@ -80,7 +82,7 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
         return DataStamps(version="unversioned", dirty=True, tree_id="", dirty_paths=())
     scoped_abs = [str(data_dir / p) for p in _scoped_paths(data_dir, scenario_name)]
     if scoped_abs:  # an exclude alone would mean everything else
-        scoped_abs.extend(_NOT_DATA)
+        scoped_abs.extend(_not_data(data_dir, [scenario_name]))
     status = repo.git.status("--porcelain", "--", *scoped_abs)
     dirty_paths = tuple(line[3:] for line in status.splitlines()) if status.strip() else ()
     tree_id = _compute_tree_id(repo, scoped_abs)
@@ -92,14 +94,95 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
     )
 
 
+def scoped_changes(data_dir: Path, scenario_names: Sequence[str]) -> list[tuple[str, str]]:
+    """The uncommitted changes that make any of ``scenario_names`` dirty,
+    as ``(status, path)`` pairs, ``path`` relative to the repository's top
+    and ``status`` git's two porcelain letters. Untracked files are listed
+    one by one, so a new scenario folder names each file. Empty when the
+    data dir isn't in a git repository (nothing could be committed)."""
+    data_dir = data_dir.resolve()
+    repo = _open_repo(data_dir)
+    if repo is None:
+        return []
+    scoped = sorted({str(data_dir / p) for name in scenario_names
+                     for p in _scoped_paths(data_dir, name)})
+    if not scoped:
+        return []
+    out = repo.git.status("--porcelain", "-z", "--untracked-files=all", "--",
+                          *scoped, *_not_data(data_dir, scenario_names))
+    changes: list[tuple[str, str]] = []
+    fields = iter(out.split("\0"))
+    for field in fields:
+        if not field:
+            continue
+        status, path = field[:2], field[3:]
+        changes.append((status, path))
+        if "R" in status or "C" in status:
+            # -z puts a rename's source in the next field; it's gone from
+            # the tree, so committing it records the removal.
+            changes.append(("D ", next(fields, "")))
+    return changes
+
+
+def changed_scenarios(
+    data_dir: Path, scenario_names: Sequence[str], changes: Sequence[tuple[str, str]],
+) -> list[str]:
+    """Those of ``scenario_names`` whose scope holds one of ``changes``
+    (:func:`scoped_changes`'s pairs): the ones committing them changes."""
+    data_dir = data_dir.resolve()
+    repo = _open_repo(data_dir)
+    if repo is None or repo.working_tree_dir is None:
+        return []
+    top = Path(repo.working_tree_dir).resolve()
+    changed = [top / path for _status, path in changes]
+    out = []
+    for name in scenario_names:
+        scope = [data_dir / p for p in _scoped_paths(data_dir, name)]
+        if any(path == s or s in path.parents for path in changed for s in scope):
+            out.append(name)
+    return out
+
+
 # Files in a scenario folder that no run reads, so editing one must not
 # change its tree (or its children's), nor make them dirty: `.disable`
 # (loader.DISABLE_FILE, #300) says whether to build a scenario, not what it
-# computes, and `guard_rails.csv` (#305) is read only by reports.
+# computes, and `guard_rails.csv` (#305) is read only by reports -- unless a
+# strategy's trigger names a rail (#441), when the run reads them too.
 _NOT_DATA = (
     ":(exclude,glob)**/scenarios/*/.disable",
-    ":(exclude,glob)**/scenarios/*/guard_rails.csv",
 )
+
+
+def _not_data(data_dir: Path, scenario_names: Sequence[str]) -> list[str]:
+    """The excludes for ``scenario_names``' scope: ``_NOT_DATA``, and each
+    lineage folder's ``guard_rails.csv`` unless some lineage holding that
+    folder has a strategy with a ``trigger``, whose rails the run evaluates.
+    A folder two lineages share keeps its rails in scope if either reads
+    them, which can rebuild the other one needlessly but never misses an
+    edit."""
+    folders: set[str] = set()
+    read: set[str] = set()
+    for name in scenario_names:
+        lineage = _scenario_lineage(data_dir, name)
+        folders.update(lineage)
+        if _has_trigger(data_dir, lineage):
+            read.update(lineage)
+    return [*_NOT_DATA, *(f":(exclude,glob)**/scenarios/{folder}/guard_rails.csv"
+                         for folder in sorted(folders - read))]
+
+
+def _has_trigger(data_dir: Path, lineage: Sequence[str]) -> bool:
+    """Whether a strategy file in ``lineage``'s folders has a ``trigger``.
+    Tolerant, as the lineage is: the loader reports a malformed file."""
+    for folder in lineage:
+        for path in sorted((data_dir / "scenarios" / folder / "strategies").glob("*.csv")):
+            try:
+                with path.open(newline="") as f:
+                    if any((row.get("trigger") or "").strip() for row in csv.DictReader(f)):
+                        return True
+            except (OSError, UnicodeDecodeError, csv.Error):
+                continue
+    return False
 
 
 def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:

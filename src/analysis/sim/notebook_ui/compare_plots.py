@@ -18,7 +18,6 @@ import pandas as pd
 from IPython.display import clear_output, display
 
 from analysis.sim import compare
-from analysis.sim.compare import breakeven_month
 from analysis.sim.compare_charts import comparison_figure
 from analysis.sim.connection import RunConnection
 from analysis.sim.notebook_ui.pickers import (
@@ -36,8 +35,7 @@ from analysis.sim.notebook_ui.pickers import (
     run_years,
     to_markdown,
 )
-from analysis.sim.plotting import FRAME_ALPHA, include_zero, mark_deaths
-from analysis.sim.types import AccountKind, Death, DollarMode, ValuePlotMode
+from analysis.sim.types import AccountKind, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
 if TYPE_CHECKING:
@@ -68,34 +66,6 @@ def breakeven_summary(
     return compare.breakeven_summary(nw, delta, container.baseline, container.variants)
 
 
-def filter_comparisons(comparisons: dict, available: list[str]) -> dict:
-    """Drop comparison pairs that reference a scenario that wasn't loaded."""
-    return {
-        group: {
-            label: pair for label, pair in pairs.items() if set(pair) <= set(available)
-        }
-        for group, pairs in comparisons.items()
-    }
-
-
-def has_any_comparisons(comparisons: dict) -> bool:
-    """True if at least one comparison pair survived `filter_comparisons`."""
-    return any(pairs for pairs in comparisons.values())
-
-
-def comparison_frame(nw: pd.DataFrame, comparisons: dict) -> pd.DataFrame:
-    """One column per comparison label: nw[a] - nw[b].
-
-    Keeps `nw`'s index even when there are no comparisons, so callers like
-    `year_end_values` don't choke on a columnless frame's default RangeIndex.
-    """
-    result = pd.DataFrame(index=nw.index)
-    for pairs in comparisons.values():
-        for label, (a, b) in pairs.items():
-            result[label] = nw[a] - nw[b]
-    return result
-
-
 def _time_range(
     time_range: TimeRangePicker | None, container: MultiScenarioConnections,
 ) -> TimeRangePicker:
@@ -113,7 +83,7 @@ def plot_net_worth_and_delta(
     mode: str = "nominal",
 ) -> None:
     """Two-panel chart: net worth per scenario, and each variant's delta vs
-    baseline, as ``sim compare --graph`` draws it. ``delta`` is
+    baseline, as ``sim compare --chart`` draws it. ``delta`` is
     ``variant_delta(nw, container)``, which the chart recomputes."""
     del delta
     mode_label = DollarMode(mode).label
@@ -123,60 +93,6 @@ def plot_net_worth_and_delta(
         deaths=compare.scenario_deaths(container.connections, container.scenarios),
     )
     show_figure(figure)
-
-
-def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
-    """One panel per comparison group, with a break-even marker on each line."""
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(1, len(comparisons), figsize=(13, 5))
-    if len(comparisons) == 1:
-        axes = [axes]
-    for ax, (group, pairs) in zip(axes, comparisons.items(), strict=True):
-        for offset, label in enumerate(pairs):
-            line, = ax.plot(compare.index, compare[label], label=label)
-            month = breakeven_month(compare[label])
-            if month is not None and compare[label].min() < 0:
-                ax.axvline(month, color=line.get_color(), linestyle=":", alpha=0.7)
-                ax.annotate(
-                    f"break-even {month:%Y-%m}", xy=(month, 0),
-                    xytext=(6, 10 + 16 * offset),  # stagger so labels don't collide
-                    textcoords="offset points", color=line.get_color(), fontsize=9,
-                )
-        ax.axhline(0, color="grey", linewidth=0.8)
-        ax.set_title(group)
-        ax.set_xlabel("if the money stops mattering here…")
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-        ax.grid(True, alpha=0.3)
-        ax.legend(framealpha=FRAME_ALPHA)
-        include_zero(ax)
-    axes[0].set_ylabel("difference in net worth")
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_ss_gross(
-    ss: pd.DataFrame, ss_cumulative: pd.DataFrame, colors: dict[str, str],
-    deaths: Sequence[Death] = (),
-) -> None:
-    """Monthly and cumulative gross Social Security, one line per scenario,
-    with ``deaths`` as red lines (#255)."""
-    import matplotlib.pyplot as plt
-
-    fig, (ax_month, ax_cum) = plt.subplots(1, 2, figsize=(13, 4))
-    for name in ss.columns:
-        ax_month.plot(ss.index, ss[name], label=name, color=colors[name], alpha=0.85)
-        ax_cum.plot(ss_cumulative.index, ss_cumulative[name], label=name, color=colors[name])
-    ax_month.set_title("Monthly gross Social Security")
-    ax_cum.set_title("Cumulative gross Social Security")
-    for ax in (ax_month, ax_cum):
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-        ax.grid(True, axis="y", alpha=0.3)
-        mark_deaths(ax, deaths)
-        ax.legend(framealpha=FRAME_ALPHA)
-        include_zero(ax)
-    plt.tight_layout()
-    plt.show()
 
 
 # ---------- widget-builders ----------
@@ -298,7 +214,7 @@ def strategy_compare_widget(
                 years=(low, high), deaths=compare.scenario_deaths(connections, scenarios))
             show_figure(fig)
             table = pd.DataFrame({name: year_end_rows(frame)[MAX_ABS] for name, frame in frames.items()})
-            table = table[[low <= int(str(m)[:4]) <= high for m in table.index]]
+            table = time_range.clip(table)
             display(StyledMarkdown("**Largest drift either way at year end**, percentage points"
                                    + (f" (band ±{band:g})" if band is not None else "")))
             display(table.style.format("{:.1f}", na_rep="—"))
@@ -312,6 +228,61 @@ def strategy_compare_widget(
     if container.ok:
         _redraw()
     return widgets.VBox([controls_row(time_range), output])
+
+
+def spending_compare_widget(
+    container: MultiScenarioConnections,
+    dollar_mode: DollarModePicker | None = None,
+    time_range: TimeRangePicker | None = None,
+    **_,
+) -> widgets.VBox:
+    """Spending against the plan per scenario (#408), as ``sim compare
+    --section spending`` shows it: each run's delivered spending by year as
+    a line, its plan dashed where a strategy moved it off; then delivered by
+    year with each variant's difference, and each run's whole span against
+    its plan."""
+    from analysis.sim.spending_charts import spending_compare_figure
+
+    dollar_mode = dollar_mode or DollarModePicker()
+    time_range = _time_range(time_range, container)
+    output = widgets.Output()
+    connections, scenarios = container.connections, container.scenarios
+    # Only the dollars change the numbers; a new time range only clips them.
+    by_mode: dict[DollarMode, dict[str, compare.SpendingReport]] = {}
+
+    def _redraw(*_):
+        with output:
+            clear_output(wait=True)
+            mode = DollarMode(dollar_mode.value)
+            if mode not in by_mode:
+                by_mode[mode] = compare.spending_by_scenario(connections, scenarios, mode)
+            found = by_mode[mode]
+            if not found:
+                display(StyledMarkdown("_No spending in these runs._"))
+                return
+            low, high = time_range.value
+            unit = f"{mode.label} dollars"
+            show_figure(spending_compare_figure(
+                {name: report for name, (report, _summary, _years) in found.items()},
+                f"Spending against the plan, {unit}", ylabel=unit, years=(low, high),
+                deaths=compare.scenario_deaths(connections, scenarios)))
+            baseline, variants = scenarios[0], list(scenarios[1:])
+            table = compare.spending_comparison(found, baseline, variants)
+            table = time_range.clip(table)
+            display(StyledMarkdown(f"**Spending delivered by year** ({unit})"))
+            display(table.style.format("${:,.0f}", na_rep="—"))
+            summary = compare.spending_summaries(found)
+            display(StyledMarkdown("**Against each scenario's plan over the run**: the lowest year is "
+                                   "the lowest whole year"))
+            display(summary.style.format({
+                "delivered": "${:,.0f}", "budgeted": "${:,.0f}", "rms": "${:,.0f}", "lowest": "${:,.0f}",
+                "of_plan": "{:.1%}", "redirected": "{:.1%}"}))
+
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
+    if container.ok:
+        _redraw()
+    return widgets.VBox([controls_row(dollar_mode, time_range), output])
 
 
 def net_worth_compare_widget(
@@ -385,26 +356,6 @@ def breakeven_widget(
     if container.ok:
         _redraw()
     return widgets.VBox([controls_row(dollar_mode, after_tax), output])
-
-
-def horizon_widget(container: MultiScenarioConnections, comparisons: dict) -> None:
-    """Net-worth gap at every possible horizon, for a set of (scenario, counterfactual) pairs."""
-
-    def _redraw():
-        filtered = filter_comparisons(comparisons, container.scenarios)
-        if not has_any_comparisons(filtered):
-            display(StyledMarkdown(
-                "_None of the configured `COMPARISONS` pairs apply to this selection "
-                "— pick scenarios from `COMPARISONS`, or edit it above to add a pair "
-                "for this selection._"
-            ))
-            return
-        nw = net_worth_by_month(container)
-        compare = comparison_frame(nw, filtered)
-        plot_horizon_comparisons(compare, filtered)
-
-    if container.ok:
-        _redraw()
 
 
 def year_end_widget(
@@ -557,76 +508,119 @@ def _past_color(value: float, column: str, sense: str) -> str:
     return "color: #d03b3b" if sense == "negative" else "color: #2a78d6"
 
 
-def ss_gross_widget(container: MultiScenarioConnections) -> None:
-    """Monthly and cumulative gross Social Security, plus lifetime totals vs. baseline."""
+def ss_gross_widget(
+    container: MultiScenarioConnections,
+    dollar_mode: DollarModePicker | None = None,
+    time_range: TimeRangePicker | None = None,
+    **_,
+) -> widgets.VBox:
+    """Gross Social Security by scenario (#335), as ``sim compare --section
+    social-security`` shows it: each run's monthly benefit, its running
+    total, and each variant's running total less the baseline's (where a
+    later claim age catches up, if it does); then the benefit by year with
+    each variant's difference, and each run's lifetime total. The running
+    totals count from the run's start whatever years are shown; the lifetime
+    totals cover the whole run."""
+    from analysis.sim.compare_charts import ss_figure
 
-    def _redraw():
-        ss = pd.DataFrame({
-            name: container.connections[name].ss_gross_by_month()
-            for name in container.scenarios
-        }).fillna(0).sort_index()
-        ss_cumulative = ss.cumsum()
-        plot_ss_gross(ss, ss_cumulative, container.colors,
-                      compare.scenario_deaths(container.connections, container.scenarios))
+    dollar_mode = dollar_mode or DollarModePicker()
+    time_range = _time_range(time_range, container)
+    output = widgets.Output()
+    connections, scenarios = container.connections, container.scenarios
+    # Only the dollars change the numbers; a new time range only clips them.
+    by_mode: dict[DollarMode, pd.DataFrame] = {}
 
-        lifetime_ss = ss_cumulative.iloc[-1]
-        display(
-            pd.DataFrame({
-                "lifetime gross SS": lifetime_ss,
-                f"vs {container.baseline}": lifetime_ss - lifetime_ss[container.baseline],
-            }).style.format("${:,.0f}")
-        )
+    def _redraw(*_):
+        with output:
+            clear_output(wait=True)
+            mode = DollarMode(dollar_mode.value)
+            if mode not in by_mode:
+                by_mode[mode] = compare.ss_gross_by_month(connections, scenarios, mode)
+            ss = by_mode[mode]
+            if not ss.fillna(0).ne(0).any().any():
+                display(StyledMarkdown("_No Social Security in these runs._"))
+                return
+            baseline, variants = scenarios[0], list(scenarios[1:])
+            unit = f"{mode.label} dollars"
+            show_figure(ss_figure(
+                time_range.clip(ss), time_range.clip(ss.cumsum()), baseline, variants,
+                f"Gross Social Security, {unit}", colors=container.colors,
+                deaths=compare.scenario_deaths(connections, scenarios)))
+            display(StyledMarkdown(f"**Gross Social Security by year** ({unit})"))
+            display(time_range.clip(compare.ss_by_year(ss, baseline, variants))
+                    .style.format("${:,.0f}", na_rep="—"))
+            display(StyledMarkdown("**Over the whole run**"))
+            display(compare.ss_summary(ss, baseline).style.format("${:,.0f}", na_rep="—"))
 
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     if container.ok:
         _redraw()
+    return widgets.VBox([controls_row(dollar_mode, time_range), output])
 
 
-def tax_impact_widget(container: MultiScenarioConnections) -> None:
-    """Per-year tax delta vs. baseline, plus lifetime tax/SS/net-worth summary."""
+def tax_impact_widget(
+    container: MultiScenarioConnections,
+    dollar_mode: DollarModePicker | None = None,
+    time_range: TimeRangePicker | None = None,
+    after_tax: AfterTaxPicker | None = None,
+    **_,
+) -> widgets.VBox:
+    """Total tax by scenario (#336), as ``sim compare --section tax`` shows
+    it: each run's federal and state tax by tax year, the figures ``sim
+    report tax`` prints, with each variant's difference; the years where
+    some variant's tax differs as a table; then each run's lifetime tax,
+    gross Social Security and final net worth (pre-tax or after tax, #251)
+    against the baseline. What a plan such as a Roth conversion costs in
+    tax, and what it buys. The lifetime figures cover the whole run."""
+    from analysis.sim.compare_charts import tax_figure
 
-    def _redraw():
-        nw = net_worth_by_month(container)
-        ss_cumulative = pd.DataFrame({
-            name: container.connections[name].ss_gross_by_month()
-            for name in container.scenarios
-        }).fillna(0).sort_index().cumsum()
-        lifetime_ss = ss_cumulative.iloc[-1]
+    dollar_mode = dollar_mode or DollarModePicker()
+    after_tax = after_tax or AfterTaxPicker()
+    time_range = _time_range(time_range, container)
+    output = widgets.Output()
+    connections, scenarios = container.connections, container.scenarios
+    by_mode: dict[DollarMode, tuple[dict[str, pd.DataFrame], pd.DataFrame]] = {}
 
-        tax = {
-            name: container.connections[name].tax_summary_by_year()
-            for name in container.scenarios
-        }
-        tax_delta = pd.DataFrame({
-            name: tax[name]["total tax"] - tax[container.baseline]["total tax"]
-            for name in container.variants
-        }).fillna(0)
+    def _redraw(*_):
+        with output:
+            clear_output(wait=True)
+            mode = DollarMode(dollar_mode.value)
+            if mode not in by_mode:
+                by_mode[mode] = (compare.tax_by_scenario(connections, scenarios, mode),
+                                 compare.ss_gross_by_month(connections, scenarios, mode))
+            tax, ss = by_mode[mode]
+            if all(table.empty for table in tax.values()):
+                display(StyledMarkdown("_No tax in these runs: none has a tax rule._"))
+                return
+            baseline, variants = scenarios[0], list(scenarios[1:])
+            unit = f"{mode.label} dollars"
+            comparison = compare.tax_comparison(tax, baseline, variants)
+            show_figure(tax_figure(
+                time_range.clip(comparison), baseline, variants, f"Total tax, {unit}",
+                colors=container.colors, deaths=compare.scenario_deaths(connections, scenarios)))
+            shown = time_range.clip(comparison)
+            moved = shown[compare.tax_differs(shown)]
+            display(StyledMarkdown(
+                f"**Total tax by year** ({unit}), the {len(moved)} of {len(shown)} years where "
+                f"a variant's differs from `{baseline}`'s (a negative Δ owes less):"))
+            deltas = [c for c in moved.columns if str(c).startswith("Δ ")]
+            styled = moved.style.format("${:,.0f}", na_rep="—")
+            if deltas and not moved.empty:
+                styled = styled.background_gradient(cmap="RdYlGn_r", subset=deltas, axis=None)
+            display(styled)
+            nw = net_worth_by_month(container, mode, after_tax=after_tax.value)
+            display(StyledMarkdown(
+                "**Over the whole run**; final net worth "
+                + ("after tax" if after_tax.value else "pre-tax")))
+            display(compare.tax_summary(tax, ss, nw, baseline).style.format("${:,.0f}", na_rep="—"))
 
-        # Only the years where somebody's tax bill actually moves are worth reading.
-        moved = tax_delta[tax_delta.abs().max(axis=1) >= 1]
-        display(StyledMarkdown(
-            f"Tax owed vs `{container.baseline}`, for the {len(moved)} of {len(tax_delta)} years "
-            "where it differs (negative = owes less):"
-        ))
-        display(moved.style.format("${:,.0f}").background_gradient(cmap="RdYlGn_r", axis=None))
-
-        lifetime_tax = pd.Series({
-            name: tax[name]["total tax"].sum() for name in container.scenarios
-        })
-        display(
-            pd.DataFrame({
-                "lifetime tax": lifetime_tax,
-                f"vs {container.baseline}": lifetime_tax - lifetime_tax[container.baseline],
-                "lifetime gross SS": lifetime_ss,
-                "SS net of tax, vs " + container.baseline: (
-                    (lifetime_ss - lifetime_ss[container.baseline])
-                    - (lifetime_tax - lifetime_tax[container.baseline])
-                ),
-                "net worth at end": nw.iloc[-1],
-            }).style.format("${:,.0f}")
-        )
-
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(after_tax, _redraw)
+    observe_while_shown(time_range, _redraw)
     if container.ok:
         _redraw()
+    return widgets.VBox([controls_row(dollar_mode, after_tax, time_range), output])
 
 
 def group_account_balances(base: RunConnection) -> pd.DataFrame:

@@ -11,10 +11,13 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +32,13 @@ KOKORO_FILES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
 _SILENT_WORDS_PER_SECOND = 2.6
 _SILENT_CJK_CHARS_PER_SECOND = 7.0
 _CONTAINER_CHROMIUM = "/opt/pw-browsers/chromium"
+# VHS from Bob's fork: upstream plus image-layer capture (charmbracelet/vhs#783,
+# `Set Sixel true`), so a picture a command draws in the terminal is recorded,
+# and `Set RealTime` with its timing report (VHS_TIMING_FILE), so a tape keeps
+# real time on a busy machine (#413). Upstream's releases have neither.
+VHS_VERSION = "0.12.1-analysis.2"
+VHS_RELEASE = f"https://github.com/BobKerns/vhs/releases/download/v{VHS_VERSION}"
+_VHS_HINT = "run `python -m analysis.videos setup`"
 
 
 class ToolMissing(RuntimeError):
@@ -53,6 +63,15 @@ def need(tool: str, hint: str) -> str:
     return found
 
 
+def need_vhs() -> str:
+    """The VHS that records terminal images: the fork's build, not a stock one (brew's)."""
+    vhs = need("vhs", _VHS_HINT)
+    version = run([vhs, "--version"]).stdout
+    if VHS_VERSION not in version:
+        raise ToolMissing(f"{vhs} is {version.strip()!r}, not VHS {VHS_VERSION}: {_VHS_HINT}")
+    return vhs
+
+
 def digest(*parts: Any) -> str:
     """A short, stable hash of JSON-able inputs: the cache key."""
     blob = json.dumps(parts, sort_keys=True, ensure_ascii=False, default=str).encode()
@@ -69,12 +88,117 @@ def tree_digest(root: Path) -> str:
     return h.hexdigest()[:20]
 
 
-def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(list(argv), text=True, capture_output=True, **kwargs)
+# The programs run() has going, so a failing parallel build can stop them all.
+_RUNNING: set[subprocess.Popen[str]] = set()
+_RUNNING_LOCK = threading.Lock()
+_stopped = False  # set by stop_running(), until allow_running()
+
+
+def run(argv: Sequence[str], *, input: str | None = None, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run a program to the end, raising with its last lines if it fails.
+
+    Each runs in its own process group, so stop_running() takes its children
+    with it (VHS's browser and ttyd), and so does an interrupt here.
+    """
+    proc = finish(spawn(argv, stdin=subprocess.PIPE if input is not None else None, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, **kwargs), input)
     if proc.returncode != 0:
         tail = "\n".join((proc.stderr or proc.stdout).splitlines()[-15:])
-        raise RuntimeError(f"{Path(argv[0]).name} failed ({proc.returncode}):\n{tail}")
+        raise RuntimeError(f"{Path(argv[0]).name} failed ({_exit_status(proc.returncode)}):\n{tail}")
     return proc
+
+
+def spawn(argv: Sequence[str], **kwargs: Any) -> subprocess.Popen[str]:
+    """Start a program in its own process group, one stop_running() will stop.
+
+    Hand it to finish() (or release() once it's stopped) when done with it.
+    """
+    with _RUNNING_LOCK:
+        if _stopped:
+            raise RuntimeError(f"{Path(argv[0]).name}: not started, the build is stopping")
+        proc = subprocess.Popen(list(argv), text=True, start_new_session=True, **kwargs)
+        _RUNNING.add(proc)
+    return proc
+
+
+def finish(proc: subprocess.Popen[str], input: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Wait for a spawn()ed program's output and exit, killing it if interrupted."""
+    try:
+        stdout, stderr = proc.communicate(input)
+    except BaseException:
+        _kill(proc)
+        raise
+    finally:
+        release(proc)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def release(proc: subprocess.Popen[str]) -> None:
+    """Forget a spawn()ed program: it has ended."""
+    with _RUNNING_LOCK:
+        _RUNNING.discard(proc)
+
+
+def stop(proc: subprocess.Popen[str]) -> None:
+    """Stop a spawn()ed program and its process group, and forget it."""
+    if proc.poll() is None:
+        _kill(proc)
+    else:
+        _signal_group(proc, signal.SIGKILL)  # stragglers it left behind
+    release(proc)
+
+
+def stopping() -> bool:
+    """Whether stop_running() has been called (a build failed or was interrupted)."""
+    return _stopped
+
+
+def allow_running() -> None:
+    """Let run() start programs again, after stop_running()."""
+    global _stopped
+    with _RUNNING_LOCK:
+        _stopped = False
+
+
+def _exit_status(code: int) -> str:
+    # A negative code is the signal that ended it; SIGKILL from nobody here
+    # is most likely the kernel's out-of-memory killer.
+    if code == -signal.SIGKILL:
+        return f"{code}: killed, most likely out of memory"
+    return str(code)
+
+
+def _kill(proc: subprocess.Popen[str]) -> None:
+    """Stop proc and its process group: politely, then not."""
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    # Always: the leader can exit on TERM and leave children that ignore it
+    # (or never saw it) running in the group.
+    _signal_group(proc, signal.SIGKILL)
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _signal_group(proc: subprocess.Popen[str], sig: int) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def stop_running() -> None:
+    """Stop every program run() has going, and start no more until allow_running() (a build failed)."""
+    global _stopped
+    with _RUNNING_LOCK:
+        _stopped = True
+        running = list(_RUNNING)
+    for proc in running:
+        _kill(proc)
 
 
 def duration(path: Path) -> float:
@@ -98,8 +222,13 @@ def silent_durations(sentences: Sequence[str]) -> list[float]:
     return out
 
 
-def synthesize(sentences: Sequence[str], voice: dict[str, Any], gap: float, out: Path, repo: Path) -> list[float]:
-    """Write the scene's narration to out (WAV); return each sentence's length."""
+def synthesize(sentences: Sequence[str], voice: dict[str, Any], gap: float, out: Path, repo: Path,
+               threads: int | None = None) -> list[float]:
+    """Write the scene's narration to out (WAV); return each sentence's length.
+
+    ``threads`` caps the voice model's CPU threads (default: all of them),
+    so narrations running beside a recording leave it room.
+    """
     engine = voice.get("engine", "kokoro")
     if engine == "silent":
         durations = silent_durations(sentences)
@@ -124,11 +253,29 @@ def synthesize(sentences: Sequence[str], voice: dict[str, Any], gap: float, out:
         "gap": gap,
         "sentences": list(sentences),
         "out": str(out),
+        **({"threads": threads} if threads else {}),
     }
     worker = repo / "scripts" / "videos" / "tts_kokoro.py"
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
-    proc = run([uv, "run", "--quiet", "--script", str(worker)], input=json.dumps(request), env=env)
+    argv = [uv, "run", "--quiet", "--script", str(worker)]
+    lang = str(request["lang"])
+    proc = None
+    if lang not in _VOICED:
+        # A language's first narration runs alone: it makes the worker's
+        # environment and, for Japanese, downloads OpenJTalk's dictionary,
+        # which several workers at once corrupt (its tokenizer then fails to start).
+        with _FIRST_VOICE:
+            if lang not in _VOICED:
+                proc = run(argv, input=json.dumps(request), env=env)
+                _VOICED.add(lang)
+    if proc is None:
+        proc = run(argv, input=json.dumps(request), env=env)
     return [float(d) for d in json.loads(proc.stdout.strip().splitlines()[-1])["durations"]]
+
+
+# Narration languages the worker has spoken this run (see synthesize).
+_VOICED: set[str] = set()
+_FIRST_VOICE = threading.Lock()
 
 
 # --- slides ------------------------------------------------------------------
@@ -151,23 +298,44 @@ def slide_html(theme: Theme, meta: dict[str, Any], fields: dict[str, Any], lang:
     return env.get_template(f"{name}.html").render(context)
 
 
+def chromium_path() -> str | None:
+    """A Chromium to use when Playwright's own download doesn't match:
+    ``$ANALYSIS_VIDEO_CHROMIUM``, or the one the cloud container ships."""
+    return os.environ.get("ANALYSIS_VIDEO_CHROMIUM") or (
+        _CONTAINER_CHROMIUM if Path(_CONTAINER_CHROMIUM).exists() else None
+    )
+
+
+def launch_chromium(pw: Any, args: Sequence[str] = ()) -> Any:
+    """A headless Chromium for slides and notebook scenes: ``chromium_path()``
+    when there is one, else Playwright's own download, else an installed
+    Google Chrome. A Playwright upgrade wants a new download, and a build
+    shouldn't fail for want of it while Chrome is there."""
+    from playwright.sync_api import Error
+
+    # A stale ANALYSIS_VIDEO_CHROMIUM falls through to the others, like a
+    # missing download.
+    chromium = chromium_path()
+    tries = [*([{"executable_path": chromium}] if chromium else []), {}, {"channel": "chrome"}]
+    for how in tries:
+        try:
+            return pw.chromium.launch(**how, args=list(args))
+        except Error:
+            continue
+    raise ToolMissing(
+        "no Chromium for slides and notebook scenes: run `uv run playwright install chromium`, "
+        "install Google Chrome, or set ANALYSIS_VIDEO_CHROMIUM")
+
+
 def render_slide(html: str, theme: Theme, out: Path) -> None:
     """Screenshot the slide's page at the video's size (Playwright's Chromium)."""
-    from playwright.sync_api import Error, sync_playwright
+    from playwright.sync_api import sync_playwright
 
     with tempfile.TemporaryDirectory() as tmp:
         page_file = Path(tmp) / "slide.html"
         page_file.write_text(html, encoding="utf-8")
         with sync_playwright() as pw:
-            # ANALYSIS_VIDEO_CHROMIUM names a Chromium to use when Playwright's
-            # own download doesn't match (the cloud container ships one).
-            chromium = os.environ.get("ANALYSIS_VIDEO_CHROMIUM") or (
-                _CONTAINER_CHROMIUM if Path(_CONTAINER_CHROMIUM).exists() else None
-            )
-            try:
-                browser = pw.chromium.launch(executable_path=chromium)
-            except Error:
-                browser = pw.chromium.launch(channel="chrome")  # an installed Google Chrome
+            browser = launch_chromium(pw)
             try:
                 page = browser.new_page(
                     viewport={"width": theme.width, "height": theme.height}, device_scale_factor=theme.scale
@@ -231,6 +399,8 @@ def full_tape(tape: str, theme: Theme, rc: str, out: Path) -> str:
 # Every recording runs at this path, not a random temp name: the CLI prints
 # paths (run files), and they should read the same in every recording.
 DEMO_ROOT = Path(tempfile.gettempdir()) / "analysis-video-demo"
+# So only one thing uses DEMO_ROOT at a time: preparing a demo, or a recording.
+DEMO_LOCK = threading.RLock()
 # Fixed identity and dates for the demo data's commits, so its commit hashes
 # (which runs record) are the same on every build.
 _GIT_ENV = {
@@ -262,7 +432,20 @@ def _sandbox(data: Path, theme: Theme, root: Path) -> Path:
                 f"export ANALYSIS_DATA_DIR={root / 'data'}",
                 f"export PATH={Path(sys.executable).parent}:$PATH",
                 *(f"export {k}={v}" for k, v in _GIT_ENV.items()),
+                # A recorded `sim init` mustn't link this checkout's data/shared
+                # or start background builds.
+                "export ANALYSIS_NO_BUILDER=1",
+                # `sim chain show --graph` draws with the slides' Chromium, and
+                # shows the chart in ttyd's terminal by iTerm2's image protocol.
+                *([f"export ANALYSIS_CHROMIUM={chromium}"] if (chromium := chromium_path()) else []),
+                "export ANALYSIS_IMAGE_PROTOCOL=iterm",
                 "unset PROMPT_COMMAND HISTFILE",
+                # A build run from an activated shell (activate-analysis) passes
+                # its user, repo and venv down; in a tape they'd name a person the
+                # demo's persons.csv lacks (so activate-analysis asks who you
+                # are) and show the household's repo name in the prompt.
+                "unset ANALYSIS_USER ANALYSIS_DATA_REPO_NAME ANALYSIS_REPO_DIR "
+                "VIRTUAL_ENV VIRTUAL_ENV_PROMPT",
                 f"PS1='\\[\\e[38;2;{accent}m\\]{term['prompt']}\\[\\e[0m\\] $ '",
                 "",
             ]
@@ -281,6 +464,11 @@ def prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> P
     Setup builds what the video shows without showing it being built:
     scenarios, edits, runs. Each tape then starts from a fresh copy.
     """
+    with DEMO_LOCK:
+        return _prepare_demo(data, setup, theme, store)
+
+
+def _prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> Path:
     root = DEMO_ROOT
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)
@@ -289,8 +477,8 @@ def prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> P
         if setup is not None:
             bash = need("bash", "install bash")
             script = f'set -euo pipefail\nsource {rc}\ncd "$ANALYSIS_DATA_DIR"\nset -x\nsource {setup.resolve()}\n'
-            proc = subprocess.run([bash, "-c", script], cwd=root, text=True, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, env={**os.environ, "PATH": tool_path()})
+            proc = finish(spawn([bash, "-c", script], cwd=root, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, env={**os.environ, "PATH": tool_path()}))
             if proc.returncode != 0:
                 tail = "\n".join(proc.stdout.splitlines()[-25:])
                 raise ScriptError(f"{setup} failed ({proc.returncode}):\n{tail}")
@@ -307,22 +495,69 @@ def prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> P
     return store
 
 
-def record_tape(tape: str, theme: Theme, prepared: Path, out: Path) -> None:
-    """Record a terminal scene with VHS, from a fresh copy of ``prepare_demo``'s state."""
-    vhs = need("vhs", "run `python -m analysis.videos setup` (Linux) or `brew install vhs` (macOS)")
+# A tape whose picture froze longer than this is recorded again. VHS keeps
+# real time (`Set RealTime`): when a frame comes late, the one before it
+# stays up meanwhile, so a busy machine makes a tape choppy, not fast. A
+# frozen picture shows once it's held this long (a few frames is normal: on
+# a 4-CPU machine VHS captures 4K at about 10 frames a second).
+FREEZE_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class Timing:
+    """How well a recording kept up with real time, from VHS's timing report."""
+
+    frames: int
+    held: int  # frames repeated while the next one was late
+    worst_gap: float  # the longest the picture froze, in seconds
+
+    @property
+    def lagged(self) -> bool:
+        return self.worst_gap > FREEZE_SECONDS
+
+    def describe(self) -> str:
+        return f"froze for {self.worst_gap:.2f}s ({self.held} of {self.frames} frames held)"
+
+    @classmethod
+    def read(cls, path: Path) -> Timing | None:
+        if not path.is_file():
+            return None
+        report = json.loads(path.read_text(encoding="utf-8"))
+        return cls(int(report["frames"]), int(report.get("held", 0)), float(report["worst_gap"]))
+
+    def write(self, path: Path) -> None:
+        path.write_text(json.dumps({"frames": self.frames, "held": self.held, "worst_gap": self.worst_gap}),
+                        encoding="utf-8")
+
+
+def record_tape(tape: str, theme: Theme, prepared: Path, out: Path) -> Timing | None:
+    """Record a terminal scene with VHS, from a fresh copy of ``prepare_demo``'s state.
+
+    Returns how the recording kept up with real time (None from a VHS
+    that doesn't report it).
+    """
+    vhs = need_vhs()
     need("ttyd", "run `python -m analysis.videos setup` (Linux) or `brew install ttyd` (macOS)")
-    root = DEMO_ROOT
-    shutil.rmtree(root, ignore_errors=True)
-    shutil.copytree(prepared, root, symlinks=True)
-    try:
-        tape_file = root / "scene.tape"
-        tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), out), encoding="utf-8")
-        env = {**os.environ, "PATH": tool_path()}
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
-            env["VHS_NO_SANDBOX"] = "true"  # Chromium refuses to sandbox as root (containers)
-        run([vhs, str(tape_file)], cwd=root, env=env)
-    finally:
+    with DEMO_LOCK:
+        root = DEMO_ROOT
         shutil.rmtree(root, ignore_errors=True)
+        shutil.copytree(prepared, root, symlinks=True)
+        report = Path(tempfile.mkdtemp(prefix="analysis-video-timing-")) / "timing.json"
+        try:
+            tape_file = root / "scene.tape"
+            # Recorded beside ``out`` and renamed once whole: an interrupted
+            # recording mustn't leave a truncated file the cache would reuse.
+            partial = out.with_name(f"{out.stem}.partial{out.suffix}")
+            tape_file.write_text(full_tape(tape, theme, str(root / ".videorc"), partial), encoding="utf-8")
+            env = {**os.environ, "PATH": tool_path(), "VHS_TIMING_FILE": str(report)}
+            if hasattr(os, "geteuid") and os.geteuid() == 0:
+                env["VHS_NO_SANDBOX"] = "true"  # Chromium refuses to sandbox as root (containers)
+            run([vhs, str(tape_file)], cwd=root, env=env)
+            partial.replace(out)
+            return Timing.read(report)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(report.parent, ignore_errors=True)
 
 
 # --- assembly ----------------------------------------------------------------
@@ -340,12 +575,14 @@ def compose_args(
     out: Path,
     fade_in: bool = True,
     fade_out: bool = True,
+    threads: int | None = None,
 ) -> list[str]:
     """ffmpeg arguments for one scene: the picture held to ``length``, narration ``lead`` in.
 
     A still fades in and out through the background color, except that the
     video's first scene doesn't fade in (players use frame 0 as the preview)
     and its last doesn't fade out (the closing card is what stays on screen).
+    ``threads`` caps the encoder's threads (default: ffmpeg's, every core).
     """
     w, h, fps = theme.out_width, theme.out_height, theme.fps
     bg = theme.bg_hex()
@@ -374,6 +611,8 @@ def compose_args(
     )
     args += ["-filter_complex", f"{video};{sound}", "-map", "[v]", "-map", "[a]"]
     args += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-r", str(fps), "-pix_fmt", "yuv420p"]
+    if threads:
+        args += ["-threads", str(threads)]
     args += ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-t", f"{length:.3f}", str(out)]
     return args
 

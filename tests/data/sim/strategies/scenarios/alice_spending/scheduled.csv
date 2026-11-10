@@ -1,0 +1,3 @@
+name,from_account,from_lot,to_account,to_lot,cadence,month_of_year,amount_rule_kind,interest_account,person,series,rate,claim_age,amount,base_date,inflation_cadence,tax_character,tax_year,start,end,priority,ytd_amount,ytd_preroll,description,meta_json,params_json,tags
+travel,Asset_Checking,,Expense_Travel,,monthly,,fixed_amount,,,cpi,,,1500.00,2026-05-31,,none,,2026-05-31,,200,,,trips,{},,flex:optional category:travel
+gifts,Asset_Checking,,Expense_Gifts,,annual,12,fixed_amount,,,cpi,,,12000.00,2026-05-31,,none,,2026-05-31,,200,,,gifts to family,{},,flex:optional category:gifts

@@ -4,7 +4,77 @@
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
-Run the setup script (idempotent — safe to re-run):
+## Install with one line
+
+If you don't have the code yet, or don't use git, paste this into a terminal
+(macOS, Linux or WSL; on Windows, [set up WSL](#windows-set-up-wsl-first)
+first):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+```
+
+It installs git if it's missing (on macOS, Apple's command-line tools: finish
+installing them in the window that opens, then paste the line again),
+downloads the code into `~/retirement/analysis`, runs the setup script below,
+and creates your data repo in `~/retirement/data` with `sim init`, asking who
+you are. It asks before using either place, and an existing data repo at the
+data place is linked rather than created. Paste the same line again to
+update: it brings the code up to date (unless you've changed it, or switched
+it to another branch, which it says) and re-runs setup. Without a terminal,
+pass the answers as options, `... | sh -s -- --yes --id alice --display
+"Alice Example" --birthdate 1960-05-01 --filing-status MFJ`; the comment at
+the top of [`scripts/install.sh`](../scripts/install.sh) lists them all.
+
+Video: [Setup and install](https://youtu.be/qnug-0zzlqA) walks through the
+install, a new data repo, activating it, and saving your work
+([日本語](https://youtu.be/Eu0r0Hk1ghM)).
+
+## Windows: set up WSL first
+
+The simulator runs on Linux and macOS. On Windows it runs in WSL, the Windows
+Subsystem for Linux, which runs Ubuntu inside Windows 11, or Windows 10
+version 2004 or later. The video [WSL for Windows](https://youtu.be/16j-Qz7Tfq8)
+walks through this ([日本語](https://youtu.be/MOE2uIAkIRA)).
+
+1. Right-click Start and choose **Terminal (Admin)** (on Windows 10,
+   **Windows PowerShell (Admin)**), then run `wsl --install`. Restart when
+   it asks.
+2. Ubuntu opens after the restart and asks for a Linux user name (one word,
+   lowercase; it needn't match your Windows name) and a password. Nothing
+   shows as you type the password. Linux asks for it with `sudo`, and the
+   installer needs it once, to install a compiler.
+3. Open Ubuntu again from the Start menu, or from Windows Terminal's
+   new-tab arrow. In Windows Terminal's Settings, **Startup**, **Default
+   profile** makes Ubuntu the tab it opens.
+4. Paste the install line above into the Ubuntu terminal (Ctrl+V in Windows
+   Terminal).
+
+Keep the code and data in your Linux home folder, where the installer puts
+them, not under `/mnt/c` (your C: drive): it's much faster, and git behaves.
+To reach them from Windows, click **Linux** at the bottom of File Explorer's
+left side, or type `\\wsl$\Ubuntu\home\<your Linux name>` in its address
+bar. From Ubuntu, `explorer.exe .` opens the current folder in File Explorer.
+
+For the notebooks, and a terminal that shows `--graph` and `--chart` charts, install
+[VS Code](https://code.visualstudio.com) in Windows, add its **WSL**
+extension, and open the code from Ubuntu with `code ~/retirement/analysis`.
+Turn on **Terminal › Integrated: Enable Images** in its settings. Windows
+Terminal doesn't take the image protocols `--graph` and `--chart` use, so there it saves
+the chart as a PNG and prints its path (see
+[Drawing chain flowcharts](#drawing-chain-flowcharts-in-the-terminal)).
+`analysis jupyter` works too: if no browser opens, Ctrl+click the link it
+prints.
+
+If `wsl --install` fails with a message about virtualization, it is turned
+off in the computer's firmware (BIOS or UEFI) settings, often called Intel
+VT-x, AMD-V or SVM; turn it on there. Microsoft's
+[WSL install guide](https://learn.microsoft.com/windows/wsl/install) has the
+details.
+
+## The setup script
+
+In a clone of the code, run the setup script (idempotent — safe to re-run):
 
 ```sh
 ./scripts/setup.sh
@@ -45,11 +115,13 @@ verification gates do.
 
 Last, it links the data and code repositories together. It asks for the path to
 your data repo, makes `data/shared` point to it, and asks which of the data
-repo's primary persons you are. Leave the path blank and it fills `data/shared`
-with the template data instead, used as a `test` person, which is what CI does.
-To start a data repo of your own, finish setup with the template data, remove
-`data/shared`, and run `.venv/bin/sim init DIR`: it links `data/shared` to the
-new repo and turns on background builds. Either way, this then gives you a working environment:
+repo's primary persons you are. Give a path with no data repo yet and it offers
+to create one there with `sim init`, which asks who you are. Leave the path
+blank and it fills `data/shared` with the template data instead, used as a
+`test` person, which is what CI does. Arguments to `setup.sh` go to
+`scripts/link-data.sh` instead of the question: a data repo's path,
+`--new PATH` (with `sim init`'s options, if you like) or `--template`.
+Either way, this then gives you a working environment:
 
 ```sh
 source data/shared/sim/activate-analysis
@@ -66,6 +138,9 @@ agent (`CI`, `CLAUDECODE`, `CLAUDE_CODE_REMOTE` or `AI_AGENT` set) or with
 `ANALYSIS_NO_BUILDER=1`; `sim builder install` turns it on later, and
 `sim builder uninstall` off. `sim builder status` says what it's doing,
 and `sim builder log` what it did in the last hour (`-v` adds build output).
+Since it builds from your local `main`, not `origin/main`, `sim run` and
+the first run a notebook opens say so when your `main` is behind what you
+last fetched (a `NOTE:` line); `git pull` on `main` brings the newer code.
 
 Finally, if Claude Code (`claude`) is on your `PATH`, it offers to install the
 finance-research Claude plugin, which writes tear sheets on funds and
@@ -131,7 +206,8 @@ hand with `.venv/bin/analysis research-plugin install` or `uninstall`; see
     ```sh
     scripts/link-data.sh /path/to/data-repo   # or --template for template data
     ```
-    With no argument it asks for the path. Once `data/shared` exists, re-running
+    `--new PATH` creates a data repo there with `sim init` first. With no
+    argument it asks for the path. Once `data/shared` exists, re-running
     it leaves it alone; remove `data/shared` to link a different data repo.
 10. Turn on background scenario builds, for a linked data repo:
     ```sh
@@ -175,7 +251,7 @@ other SSH apps, but everything this project needs works. Termius has just
 added the same library, but in testing (October 2026) it did not work yet: one
 try gave a blank screen, another hung.
 
-iTerm2 gets its own image protocol. Elsewhere `--graph` asks the terminal
+iTerm2 gets its own image protocol. Elsewhere `--graph` (or `--chart`) asks the terminal
 whether it takes the kitty graphics protocol, and falls back to iTerm2's
 protocol for older VS Code and WezTerm. In any other terminal, including macOS
 Terminal and inside tmux, it writes the chart to a PNG file and prints its
