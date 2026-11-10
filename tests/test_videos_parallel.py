@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import os
 import threading
 from collections.abc import Iterator
@@ -15,7 +16,9 @@ from analysis.videos import build as builds
 from analysis.videos import render
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
-from analysis.videos.build import SceneBuild, Workers, _Builder, _Visual, build, build_languages, default_jobs
+from analysis.videos.build import (
+    SceneBuild, SceneError, Workers, _Builder, _Visual, build, build_languages, default_jobs,
+)
 
 SCRIPT = """\
 +++
@@ -233,7 +236,8 @@ def test_a_failing_task_stops_the_build_with_its_error(
     videos_root: Path, repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     steps = _Steps(monkeypatch, fail="one")
-    with pytest.raises(scripts.ScriptError, match="scene one broke"):
+    # The error names the scene it came from (#410).
+    with pytest.raises(SceneError, match=r"^01-parallel \[en\] scene one: .*scene one broke"):
         build(_video(videos_root), out_dir=tmp_path / "out", repo=repo_root, log=lambda _: None, jobs=2)
     assert ("", "concat", "", "start") not in steps.events
     # Nothing still running once the build has returned.
@@ -259,7 +263,7 @@ def test_one_languages_failure_stops_the_others(
     videos_root: Path, repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     steps = _Steps(monkeypatch, fail="one")
-    with pytest.raises(scripts.ScriptError, match="scene one broke"):
+    with pytest.raises(SceneError, match="scene one broke"):
         build_languages(_video(videos_root, ja=True), ["en", "ja"], jobs=4, out_dir=tmp_path / "out",
                         repo=repo_root, log=lambda _: None)
     assert ("", "concat", "", "start") not in steps.events
@@ -458,10 +462,10 @@ def test_a_failure_stops_a_recording_that_would_never_finish(
     monkeypatch.setattr(_Builder, "narration", narration)
     lines: list[str] = []
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match=r"ffmpeg failed \(-9\)"):
+    with pytest.raises(SceneError, match=r"ffmpeg failed \(-9\)"):
         build(_video(videos_root), out_dir=tmp_path / "out", repo=repo_root, log=lines.append, jobs=2)
     assert time.monotonic() - started < 15
-    assert lines[0] == "  stopping: ffmpeg failed (-9)"
+    assert re.fullmatch(r"  stopping: 01-parallel \[en\] scene \S+: ffmpeg failed \(-9\)", lines[0]), lines[0]
     assert not steps.events
 
 

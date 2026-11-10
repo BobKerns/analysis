@@ -6,6 +6,7 @@ import contextlib
 import csv as _csv
 import contextvars
 import functools
+import inspect
 import io
 import json
 import math
@@ -39,8 +40,8 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide, guard_rails,
-    load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
+    allocation, asset_classes, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide,
+    guard_rails, load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
     scheduled_guide, sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files,
     strategy_guide, symbols, states, tax_files, tax_guide, units, working_set, ytd_guide,
 )
@@ -1727,11 +1728,11 @@ def _ask_pool_components(data: Path, current: str | None) -> tuple[str, ...]:
 @ensemble_pool_group.command("edit")
 @click.argument("name", required=False, type=completion.POOL)
 @click.argument("components", nargs=-1, type=completion.POOL_COMPONENT)
-@click.option("--size", default=None, help="Member count; '' takes the smallest component's.")
+@click.option("--size", default=None, help="Member count; '' or none takes the smallest component's.")
 @click.option("--base", default=None, type=completion.ENSEMBLE,
               help="The component whose member 0 is the base case; '' takes the first.")
 @click.option("--reserve", default=None,
-              help="The reports' reserve, in CPI-constant dollars; '' takes the base component's.")
+              help="The reports' reserve, in CPI-constant dollars; '' or none takes the base component's.")
 @click.option("--description", default=None,
               help="The pool's description; '' takes the generated 'Pooled from <components>'.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4049,9 +4050,37 @@ def list_runs(runs_dir: Path | None) -> None:
         )
 
 
+def _scenario_argument(fn):
+    """An optional SCENARIO argument, the same as ``--scenario`` (#410): most
+    run readers (``sim explain``, ``sim strategy log``, ``sim compare``) take
+    the scenario first on the line, so reports and ``sim allocation`` do too."""
+    @functools.wraps(fn)
+    def wrapper(*args: Any, scenario_arg: str | None = None, **kwargs: Any) -> Any:
+        if scenario_arg is not None:
+            if kwargs.get("scenario") not in (None, scenario_arg):
+                raise click.UsageError("give the scenario once, as SCENARIO or --scenario")
+            kwargs["scenario"] = scenario_arg
+        return fn(*args, **kwargs)
+    return click.argument("scenario_arg", metavar="[SCENARIO]", required=False, type=completion.SCENARIO)(wrapper)
+
+
 def _run_target_options(fn):
-    """The options ``sim explain`` and ``sim networth`` share for finding a run."""
+    """The options ``sim explain``, ``sim networth`` and ``sim strategy log``
+    share for finding a run. ``--scenario`` is the same as the TARGET argument
+    (#410), as reports take it."""
+    @functools.wraps(fn)
+    def wrapper(*args: Any, scenario_opt: str | None = None, **kwargs: Any) -> Any:
+        if scenario_opt is not None:
+            if kwargs.get(positional) not in (None, scenario_opt):
+                raise click.UsageError("give the scenario once, as SCENARIO or --scenario")
+            kwargs[positional] = scenario_opt
+        return fn(*args, **kwargs)
+
+    positional = "target" if "target" in inspect.signature(fn).parameters else "scenario"
+    decorated = wrapper
     for option in reversed([
+        click.option("--scenario", "scenario_opt", type=completion.SCENARIO, default=None,
+                     help="The same as SCENARIO: the scenario whose latest run to read."),
         click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
                      default=None, help="Run file (default: the scenario's latest run)."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4059,8 +4088,8 @@ def _run_target_options(fn):
         click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
                      default=None, help="Directory to search for the latest run."),
     ]):
-        fn = option(fn)
-    return fn
+        decorated = option(decorated)
+    return decorated
 
 
 def _checked_run_file(path: Path) -> Path:
@@ -9812,6 +9841,7 @@ def account_holders_command(
 
 
 @sim_group_command.command("allocation")
+@_scenario_argument
 @click.option("--exclude", "excluded", multiple=True,
               type=click.Choice([*registries.ASSET_CLASSES, allocation.UNCLASSIFIED]),
               help="Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified.")
@@ -10143,6 +10173,7 @@ _UNTAGGED_HELP = ("With --by tag:ROLE, also show flows with no tag in ROLE as (u
 
 
 @report_group_command.command("income")
+@_scenario_argument
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
 @click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
@@ -10199,6 +10230,7 @@ def report_income_command(
 
 
 @report_group_command.command("expenses")
+@_scenario_argument
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
 @click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
@@ -10226,6 +10258,7 @@ def report_expenses_command(
 
 
 @report_group_command.command("spending")
+@_scenario_argument
 @click.option("--by", "by", default="category", show_default=True,
               help="Group by category (default), account, or tag:ROLE, as `sim report expenses` does.")
 @_year_range_options
@@ -10299,6 +10332,7 @@ def report_spending_command(
 
 
 @report_group_command.command("gains")
+@_scenario_argument
 @_year_range_options
 @_report_graph_options
 @_report_options
@@ -10334,6 +10368,7 @@ def report_gains_command(
 
 
 @report_group_command.command("tax")
+@_scenario_argument
 @click.option("--reconciliation", is_flag=True, default=False,
               help="Each year's liability, what was paid during it, and the April balance due or refund.")
 @_year_range_options
@@ -10456,6 +10491,7 @@ def _render_rail_summary(summary: pd.DataFrame):
 
 
 @report_group_command.command("guard-rails")
+@_scenario_argument
 @click.option("--rail", "rail_names", type=completion.GUARD_RAIL, multiple=True,
               help="Only this rail; repeat for more. One rail alone also shows its "
                    "measure and threshold.")
@@ -13204,8 +13240,9 @@ def symbol_add_command(
         click.echo(f"{symbol}: no allocation yet, so `sim allocation` shows it as unclassified; "
                    "see the user guide, Part 4.11 \"Add a stock or fund\"")
     failed = 0
-    # CASH and CD have no ticker to look up (registries.SYMBOL_ASSET_CLASS).
-    if fetch and symbol not in registries.SYMBOL_ASSET_CLASS:
+    # CASH and CD have no ticker to look up (registries.SYMBOL_ASSET_CLASS),
+    # nor does an <account>:<lot> key.
+    if fetch and symbol not in registries.SYMBOL_ASSET_CLASS and not asset_classes.is_lot_key(symbol):
         failed = _fetch_prices(data, [symbol], since_text, provider_name)
     if guided:
         words = ["sim", "symbol", "add", symbol]
@@ -14872,8 +14909,9 @@ def ensemble_copy(old: str | None, new: str | None, data_dir: Path | None) -> No
 # ---------- editing and deleting a scenario (#190) ----------
 
 def _blank_or[T](value: str, parse: Callable[[str], T], option: str) -> T | None:
-    """``value`` parsed, or ``None`` for a blank one: that option's field inherits."""
-    if not value.strip():
+    """``value`` parsed, or ``None`` for a blank one or ``none``: that
+    option's field inherits."""
+    if not value.strip() or scenario_guide.is_none(value):
         return None
     try:
         return parse(value.strip())
@@ -14903,23 +14941,29 @@ def _reserve_json(text: str) -> int | str:
 
 _SCENARIO_CHECKERS: dict[str, Callable[[str], object]] = {
     "month": _validate_month_date,
-    "seed": lambda text: text == scenario_guide.NEW_SEED or _whole_number(text),
-    "count": _member_count,
-    "money": _reserve_json,
+    "seed": lambda text: text == scenario_guide.NEW_SEED or scenario_guide.is_none(text) or _whole_number(text),
+    "count": lambda text: scenario_guide.is_none(text) or _member_count(text),
+    "money": lambda text: scenario_guide.is_none(text) or _reserve_json(text),
 }
 
 
-def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, **fields: str | None) -> None:
-    """``sim scenario edit`` and ``sim ensemble edit``: with any option, the
-    change at once; with none, a guided edit of every field."""
+def _edit_scenario(name: str | None, data_dir: Path | None, *, what: str, new_seed: bool,
+                   **fields: str | None) -> None:
+    """``sim scenario edit`` and ``sim ensemble edit`` (``what``): with any
+    option, the change at once; with none, a guided edit of every field."""
     data = _resolve_data_dir(data_dir)
     names = list_scenario_names(data)
     if name is None:
+        # `sim ensemble edit` offers only ensembles, as its completion does
+        # (#296); one named on its line needn't be (`--size` can make it one).
+        choices = _ensemble_names(data) if what == "ensemble" else names
+        if not choices:
+            raise click.ClickException(f"there are no {what}s to choose from")
         current = read_current_scenario(data)
         while (name := _prompt_with_completion(
-                "scenario to edit", choices=names, default=current if current in names else None,
-        ).strip()) not in names:
-            click.echo(f"  not a scenario: {name!r}")
+                f"{what} to edit", choices=choices, default=current if current in choices else None,
+        ).strip()) not in choices:
+            click.echo(f"  not {'an' if what == 'ensemble' else 'a'} {what}: {name!r}")
     name = name.strip()
     if name not in names:
         raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
@@ -14954,7 +14998,9 @@ def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, *
     )
 
     def submit(_params: dict[str, object]) -> None:
-        changed = {field: value for field, value in answers.items() if value != before[field]}
+        cleared = {field: "" for field in ("seed", "size", "reserve")
+                   if scenario_guide.is_none(answers.get(field, ""))}
+        changed = {field: value for field, value in {**answers, **cleared}.items() if value != before[field]}
         if not changed:
             click.echo("no change; nothing was written")
             return
@@ -15062,9 +15108,16 @@ def _new_mixin_only(scenarios_dir: Path, runnable: Sequence[str]) -> list[str]:
     return [n for n in runnable if is_mixin_only(scenarios_dir, n)]
 
 
-def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
+def _edit_options(what: str) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    """The options `sim scenario edit` and `sim ensemble edit` (``what``)
+    share; NAME completes over scenarios or ensembles to match (#296)."""
+    return functools.partial(_add_edit_options, name_type=(
+        completion.ENSEMBLE if what == "ensemble" else completion.SCENARIO))
+
+
+def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamType) -> Callable[..., None]:
     options = [
-        click.argument("name", required=False, type=completion.SCENARIO),
+        click.argument("name", required=False, type=name_type),
         click.option("--description", default=None,
                      help="The scenario's description; '' restores the default, 'Derived from <parents>'."),
         click.option("--start", default=None, help=f"First month ({MONTH_FORMAT_HINT}); '' inherits."),
@@ -15072,14 +15125,14 @@ def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
         click.option("--parents", default=None, metavar="PARENT[:MIXIN...]", type=completion.PARENTS,
                      help="What it builds on: its parent, then any mix-ins, colon-separated. "
                           "'' makes it a root scenario."),
-        click.option("--seed", default=None, help="Ensemble master seed; '' inherits."),
+        click.option("--seed", default=None, help="Ensemble master seed; '' or none inherits."),
         click.option("--new-seed", is_flag=True, default=False, help="Draw a fresh random seed."),
         click.option("--size", default=None,
                      help="Ensemble member count (meta_json ensemble_size); 0 makes it not an "
-                          "ensemble, '' inherits."),
+                          "ensemble; '' or none drops it, so it inherits the parents' and mix-ins'."),
         click.option("--reserve", default=None,
                      help="The ensemble reports' reserve, in CPI-constant dollars "
-                          "(meta_json reserve); '' inherits."),
+                          "(meta_json reserve); '' or none inherits."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
     ]
@@ -15089,7 +15142,7 @@ def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
 
 
 @scenario_group_command.command("edit")
-@_edit_options
+@_edit_options("scenario")
 def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
     """Change scenario NAME's scenario.csv: its description, start and end
     months, parents and mix-ins, seed, ensemble size or reserve.
@@ -15102,14 +15155,15 @@ def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> Non
     The change is written only if NAME and every scenario built on it still
     load. A README.md that `scenario create` wrote follows the description
     and parents. Same as `sim ensemble edit`."""
-    _edit_scenario(name, data_dir, **fields)
+    _edit_scenario(name, data_dir, what="scenario", **fields)
 
 
 @ensemble_group_command.command("edit")
-@_edit_options
+@_edit_options("ensemble")
 def ensemble_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
-    """Change ensemble NAME's scenario.csv; the same as `sim scenario edit`."""
-    _edit_scenario(name, data_dir, **fields)
+    """Change ensemble NAME's scenario.csv; the same as `sim scenario edit`,
+    except that NAME completes, and is asked for, over the ensembles."""
+    _edit_scenario(name, data_dir, what="ensemble", **fields)
 
 
 def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what: str) -> None:

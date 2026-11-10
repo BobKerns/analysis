@@ -13,6 +13,12 @@ The one-line installer ([SETUP.md](SETUP.md)) does that for you.
 **Videos.** The *Retirement Simulator Guide* walks through the same ground
 with Alice and Bill, starting from what the simulator does and how to install
 it, on YouTube in [English](https://www.youtube.com/playlist?list=PLMCxY-aRDiI4) and in [Japanese (日本語)](https://www.youtube.com/playlist?list=PLQhWLzBzvwNM).
+Video 1, *What it does, and how it works*, is the place to start:
+[English](https://www.youtube.com/watch?v=VvoRgRvgIiY),
+[Japanese (日本語)](https://www.youtube.com/watch?v=kH_Uzpp4ghU).
+You don't need every later video before you begin. A simple model over one
+future already answers useful questions, and each video adds one kind of
+detail for when a question needs it.
 
 For the reasons behind these designs, see the documents in
 `docs/architecture/`. [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) lists every CSV column in detail. This guide

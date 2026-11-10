@@ -157,6 +157,10 @@ def test_ensemble_commands_complete_only_ensembles(test_data_dir: Path,
         "t_market_current", "t_market_ensemble",
     ])
     assert test_ensemble_scenario in _complete(test_data_dir, "run ")
+    # #296: edit completes like rename, over ensembles only.
+    assert _complete(test_data_dir, "ensemble edit ") == _complete(test_data_dir, "ensemble rename ")
+    assert "retire_alice" not in _complete(test_data_dir, "ensemble edit ")
+    assert "retire_alice" in _complete(test_data_dir, "scenario edit ")
 
 
 def test_tags_complete(test_data_dir: Path) -> None:

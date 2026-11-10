@@ -103,6 +103,39 @@ def test_choose_defaults_to_the_strategy_targets_portfolio_and_band(
     assert list(drift.year_end_rows(by_month).index)[-1] == by_month.index[-1]
 
 
+def test_a_disabled_strategy_still_names_its_targets_and_portfolio(
+    run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """With the strategy switched off, the run's drift is still measured on
+    the portfolio and targets it would steer by (#410), so on and off agree."""
+    con = _con(run_strategy_scenario("alice_rebalance_off"))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM strategy").fetchone()[0] == 0  # not run
+        assert drift.choose(con) == ("main", PORTFOLIO, 5.0)
+    finally:
+        con.close()
+
+
+def test_a_disabled_strategy_never_competes_with_an_enabled_one() -> None:
+    """A switched-off strategy's targets count only when nothing that ran has
+    any, so it neither picks the portfolio nor makes the choice ambiguous."""
+    con = sqlite3.connect(":memory:")
+    try:
+        con.executescript(
+            "CREATE TABLE strategy (name TEXT, kind TEXT, params_json TEXT);"
+            "CREATE TABLE strategy_disabled (name TEXT, kind TEXT, params_json TEXT);"
+            "CREATE TABLE allocation_target (target_set TEXT, as_of TEXT, asset_class TEXT, weight_micros INTEGER);"
+            "INSERT INTO allocation_target VALUES ('main', '', 'bond', 1000000), ('old', '', 'bond', 1000000);"
+            """INSERT INTO strategy_disabled VALUES ('a_old', 'rebalance', '{"targets":"old","portfolio":"p:old"}');"""
+            """INSERT INTO strategy VALUES ('b_main', 'rebalance', '{"targets":"main","portfolio":"p:main"}');"""
+        )
+        assert drift.choose(con) == ("main", "p:main", 5.0)
+        con.execute("DELETE FROM strategy")
+        assert drift.choose(con) == ("old", "p:old", 5.0)
+    finally:
+        con.close()
+
+
 def test_pick_needs_a_target_set_when_nothing_settles_it() -> None:
     with pytest.raises(ValueError, match="say which target set: a, b"):
         drift.pick([], ["a", "b"])

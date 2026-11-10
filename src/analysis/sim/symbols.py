@@ -188,9 +188,13 @@ def parse_weights(specs: list[str]) -> dict[str, str]:
 
 def normalize_symbol(symbol: str) -> str:
     """``symbol`` as written to the files: upper case, like the tickers it
-    names. Raises ``ValueError`` for one that can't be part of a filename,
+    names (an ``<account>:<lot>`` key keeps its case). Raises ``ValueError`` for one that can't be part of a filename,
     as ``prices/security_price__<SYMBOL>.csv`` and ``research/<SYMBOL>/`` are."""
-    symbol = symbol.strip().upper()
+    symbol = symbol.strip()
+    # An <account>:<lot> key classes a lot with no symbol and must match the
+    # names as written, so only a ticker is upper-cased.
+    if not is_lot_key(symbol):
+        symbol = symbol.upper()
     if not symbol or any(ch.isspace() for ch in symbol) or "/" in symbol or "\\" in symbol or symbol in (".", ".."):
         raise ValueError(f"symbol {symbol!r} must be one word, with no spaces or '/'")
     return symbol

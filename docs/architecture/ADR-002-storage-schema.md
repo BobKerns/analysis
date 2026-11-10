@@ -110,7 +110,7 @@ state/
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | ✓ | ✓ (snapshot) |
 | `year_to_date` | ✓ | ✓ (snapshot) |
 | `ensemble_manifest`, `ensemble_draw`, `ensemble_tail_scale`, `ensemble_path_shock` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
-| `strategy`, `strategy_source`, `strategy_trigger`, `strategy_vary`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
+| `strategy`, `strategy_source`, `strategy_trigger`, `strategy_vary`, `strategy_disabled`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
 | `load_warning` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
@@ -235,6 +235,15 @@ CREATE TABLE strategy_vary (
     vary_correlate_with TEXT,
     vary_correlation    REAL,
     PRIMARY KEY (strategy_id, param)
+);
+
+-- The scenario's disabled strategies (enabled false): checked like the rest
+-- but not run. Kept so a run with a strategy switched off still knows the
+-- targets and portfolio it would have steered by; params_json in stored units.
+CREATE TABLE strategy_disabled (
+    name        TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}'
 );
 
 -- Allocation targets (targets.csv). One set of weights per (target_set,
@@ -960,6 +969,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `strategy`, `strategy_source` | The scenario's enabled responsive strategies, each owning a chain, the rules carrying a tag, or both, and the data-repo code they run ([ADR-010](ADR-010-responsive-strategies.md)). |
 | `strategy_trigger` | The guard rails a strategy's `trigger` names, each with its margin kind and its merged row, so the run evaluates them without the data repo ([ADR-010](ADR-010-responsive-strategies.md) §3.3). |
 | `strategy_vary` | A strategy parameter an ensemble varies: its node `strategy:<name>.<param>`, authored value and distribution; a member writes its draw into `strategy.params_json` ([ADR-006](ADR-006-ensemble-scenarios.md) §3b). |
+| `strategy_disabled` | The scenario's disabled strategies (`enabled` false): name, kind and checked `params_json`, so a drift view of a run with its strategy switched off defaults to the targets and portfolio it would have steered by ([ADR-010](ADR-010-responsive-strategies.md)). |
 | `allocation_target` | Named, dated sets of asset-class target weights (from `targets.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.13). |
 | `strategy_decision` | One strategy hook's answer in one month: asked, chosen by its moves, covered by the chain's steps, its note; the legs it posted point at it. A `scale` row names its rule; a `year_start` row moves nothing; a `year_end`, `month_start` or `on_breach` row's `chosen_cents` is what its moves moved; an `on_breach` row names its breach. |
 | `breach_event` | A triggered rail's state found in January for the year before: `entered`, `continued` or `left`, with the years past and the measure, line and margin in CPI-constant cents. |
@@ -1174,3 +1184,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 59).
 - [#507](https://github.com/BobKerns/analysis/issues/507): the tax calculator API renames `tax_year_summary`'s income tax buckets (`<scope>_agi`, `_tax`, `_deduction`, `_ss_benefits`, `_ss_taxable`, `_ltcg_taxed`, `_capital_loss_used`, `_business_net`, `_hobby_disallowed`) and adds `<scope>_ordinary_taxable` (schema 60).
 - [#508](https://github.com/BobKerns/analysis/issues/508): the local income tax is its own jurisdiction, so `tax_year_summary` has `local_*` buckets in place of `state_local_tax`, and the state's adjustment lines (`state_dividends_as_ordinary`, `state_hsa_addback`, `state_capital_gain_difference`, `state_ss_difference`, `state_credits`); `tax_jurisdiction.upstream` holds the calculator's own when the file leaves it blank (schema 61).
+- [#410](https://github.com/BobKerns/analysis/issues/410): table `strategy_disabled` keeps a disabled strategy's kind and parameters with the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 62).
