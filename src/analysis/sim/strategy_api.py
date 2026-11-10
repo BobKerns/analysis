@@ -24,11 +24,12 @@ import json
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
-from types import UnionType
 from typing import (
-    TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Union, get_args, get_origin, get_type_hints,
+    TYPE_CHECKING, Any, ClassVar, NamedTuple,
 )
 
+from analysis.sim import param_units as param_units_module
+from analysis.sim.param_units import Account, Dollars, Percent, Tag, TargetSet, Unit, percent
 from analysis.sim import registries, tax_api
 
 if TYPE_CHECKING:
@@ -70,56 +71,15 @@ class StrategyError(Exception):
     and loader with the strategy's name, month and hook)."""
 
 
-# ---------- parameter units ----------
-
-@dataclass(frozen=True)
-class Unit:
-    """How a ``Params`` field is written in a strategy file's ``params_json``
-    and what the strategy receives: ``percent`` ("5%" -> 50000 millionths),
-    ``dollars`` ("1200.00" -> 120000 cents), ``tag`` (an account tag
-    ``role:name``), ``target_set`` (a set in ``targets.csv``), ``account``
-    (an account's name)."""
-
-    name: str
-
-
-Percent = Annotated[int, Unit("percent")]
-"""A share, written ``"5%"`` and received as millionths (50000)."""
-Dollars = Annotated[int, Unit("dollars")]
-"""Money, written ``"1200.00"`` and received as cents (120000)."""
-Tag = Annotated[str, Unit("tag")]
-"""An account tag ``role:name``; the loader checks some account carries it."""
-TargetSet = Annotated[str, Unit("target_set")]
-"""A target set's name in ``targets.csv``; the loader checks it exists."""
-Account = Annotated[str, Unit("account")]
-"""An account's name; the loader checks the scenario defines it."""
-
-
-def percent(text: str) -> int:
-    """``percent("5%")`` -> 50000: a ``Percent`` field's default in the units it
-    is received in."""
-    from analysis.sim import units
-
-    return units.percent_to_micros(text)
-
+# ---------- parameter units (shared with tax calculators, #510) ----------
 
 def param_units(params: type) -> dict[str, Unit | None]:
-    """Each ``Params`` field's :class:`Unit`, or None for a plain JSON value.
-    An optional field (``Dollars | None = None``) has its value's unit, and
-    takes ``null`` for "none"."""
-    if not dataclasses.is_dataclass(params):
-        raise StrategyError(f"Params must be a dataclass, not {params!r}")
-    hints = get_type_hints(params, include_extras=True)
-    out: dict[str, Unit | None] = {}
-    for f in dataclasses.fields(params):
-        hint = hints.get(f.name)
-        unit = None
-        if get_origin(hint) in (Union, UnionType):
-            hint = next((a for a in get_args(hint) if get_origin(a) is Annotated), hint)
-        if get_origin(hint) is Annotated:
-            unit = next((a for a in get_args(hint)[1:] if isinstance(a, Unit)), None)
-        out[f.name] = unit
-    return out
+    """Each ``Params`` field's :class:`Unit`, or None for a plain JSON value
+    (:func:`analysis.sim.param_units.param_units`)."""
+    try:
+        return param_units_module.param_units(params)
+    except TypeError as e:
+        raise StrategyError(str(e)) from None
 
 
 # ---------- what a strategy sees ----------
