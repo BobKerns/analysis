@@ -927,8 +927,11 @@ def _merge_scenario_rows(
     key_columns: tuple[str, ...],
     *,
     require_key: bool = True,
+    replace_whole: bool = False,
 ) -> list[dict[str, str]]:
-    """Overlay child CSV rows on parent rows using the table's natural key."""
+    """Overlay child CSV rows on parent rows using the table's natural key:
+    a child row's cells over its parent's, or with ``replace_whole`` the
+    child row in its place."""
     merged = {tuple(row.get(column, "") for column in key_columns): dict(row)
               for row in parent_rows}
     order = list(merged)
@@ -942,6 +945,8 @@ def _merge_scenario_rows(
             ])
         if key not in merged:
             order.append(key)
+            merged[key] = dict(row)
+        elif replace_whole:
             merged[key] = dict(row)
         else:
             merged[key].update(row)
@@ -1309,7 +1314,7 @@ def load_scenario(
     )
     residence_rows = _read_lineage_overlay(
         data_dir, scenarios_dir, scenario_name, registries.RESIDENCE_FILE,
-        ("effective_date",), issues,
+        ("effective_date",), issues, replace_whole=True,  # a county left out is blank
     )
     strategy_sources = strategy_code.read_sources(data_dir)
 
@@ -5040,11 +5045,13 @@ def _chain_label(role: str, name: str) -> str:
 
 def _read_lineage_overlay(
     data_dir: Path, scenarios_dir: Path, scenario_name: str, filename: str,
-    key_columns: tuple[str, ...], issues: list[str],
+    key_columns: tuple[str, ...], issues: list[str], *, replace_whole: bool = False,
 ) -> list[dict[str, str]]:
     """An optional per-scenario CSV merged over the lineage by ``key_columns``
-    (a later scenario's row replaces an earlier one's whole), months
-    normalized before the merge so ``2035-01`` and ``2035-01-31`` are one key."""
+    (a later scenario's row overlays an earlier one's cells, or with
+    ``replace_whole`` replaces it, so a column its file leaves out is
+    blank), months normalized before the merge so ``2035-01`` and
+    ``2035-01-31`` are one key."""
     rows: list[dict[str, str]] = []
     for name in _strict_load_order(scenarios_dir, scenario_name):
         path = _scenario_dir(scenarios_dir, name) / filename
@@ -5061,13 +5068,9 @@ def _read_lineage_overlay(
                 )
             else:
                 seen[key] = where
-        # Keys are checked by the file's own validation (a blank as_of is a real
-        # key). A row replaces the earlier one whole, so a column its file
-        # leaves out is blank, not the parent's (a residence's county).
-        merged = {tuple(row.get(c, "") for c in key_columns): row for row in rows}
-        for row in own:
-            merged[tuple(row.get(c, "") for c in key_columns)] = dict(row)
-        rows = list(merged.values())
+        # Keys are checked by the file's own validation (a blank as_of is a real key).
+        rows = _merge_scenario_rows(rows, own, key_columns, require_key=False,
+                                    replace_whole=replace_whole)
     return rows
 
 

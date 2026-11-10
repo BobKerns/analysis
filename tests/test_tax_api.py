@@ -14,6 +14,7 @@ from analysis.sim.tax_api import (
     Account,
     Extra,
     IncomeItem,
+    Residence,
     Return,
     TaxCalculator,
     TaxError,
@@ -40,8 +41,6 @@ TABLES: dict[tuple[str, str | None], list[dict[str, Any]]] = {
     ("state_brackets", "CA"): [
         {"filing_status": "MFJ", "floor": 0, "marginal_rate_micros": MICROS // 20},
     ],
-    # The household lives in California (#509).
-    ("residence", None): [{"state": "CA", "county": None}],
 }
 
 
@@ -74,6 +73,8 @@ def _year(
         _filing_status_in=lambda _year: "MFJ",
         _prior=lambda line: (prior or {}).get(line, 0),
         _series_of=lambda kind: sorted(s for k, s in tables if k == kind and s is not None),
+        # The household lives in California (#509).
+        _residences=[("2020-01-31", Residence("CA"))],
         _upstream=lambda name: calculator(name).prepare(
             _year(items, jurisdiction=name, tables=tables, prior=prior)),
     )

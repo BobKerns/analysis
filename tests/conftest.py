@@ -298,6 +298,20 @@ def empty_scenarios_dir(test_scenarios_dir: Path) -> Path:
     return test_scenarios_dir
 
 @pytest.fixture(scope="function")
+def new_scenario_file(empty_scenarios_dir: Path) -> Callable[[str, str, str], Path]:
+    """``new_scenario_file(scenario, filename, text)``: write one file of a
+    scenario (``taxes/state.csv``, say) into ``empty_scenarios_dir``, the
+    folders made as needed, for a data repo built file by file, such as one
+    a migration script reads; the data repo is ``test_data_dir``."""
+    def write(scenario: str, filename: str, text: str) -> Path:
+        path = empty_scenarios_dir / scenario / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+    return write
+
+
+@pytest.fixture(scope="function")
 def state_dir(tmp_path: Path) -> Generator[Path]:
     """Create a temporary state directory within the temporary data directory for tests."""
     state_dir = tmp_path / "state"
@@ -642,6 +656,18 @@ def ledger_con() -> Generator[sqlite3.Connection]:
         yield con
     finally:
         con.close()
+
+
+@pytest.fixture(scope="session")
+def set_residence() -> Callable[..., None]:
+    """``set_residence(con, ("2026-01-31", "CA", None), ...)``: where the
+    household lives in a run file or ``ledger_con`` (#509), replacing what it
+    had: rows of (month end from, state, county)."""
+    def write(con: sqlite3.Connection, *rows: tuple[str, str, str | None]) -> None:
+        con.execute("DELETE FROM residence")
+        con.executemany("INSERT INTO residence(effective_date, state, county) VALUES (?, ?, ?)",
+                        rows)
+    return write
 
 
 @pytest.fixture(scope="session")

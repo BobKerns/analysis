@@ -18933,8 +18933,21 @@ class _Residence(NamedTuple):
         return month_end_iso(self.row["effective_date"])[:7]
 
     def label(self) -> str:
-        county = self.row.get("county") or ""
-        return states.label(self.row["state"]) + (f", county {county}" if county else "")
+        return _residence_label(self.row["state"], self.row.get("county") or "")
+
+
+def _residence_label(state: str, county: str) -> str:
+    """``North Carolina (NC), county NC-county``: where a residence row says."""
+    return states.label(state) + (f", county {county}" if county else "")
+
+
+def _echo_new_state_tax(scenario: str, row: Mapping[str, str],
+                        new_account: Mapping[str, str] | None) -> None:
+    """Say what adding a state tax (``_new_state_tax``) to ``scenario`` writes."""
+    click.echo(f"It adds a state tax to scenario {scenario} (taxes/state.csv), paying from "
+               f"{row['source_chain']} when the federal one pays"
+               + (f", and expense account {new_account['name']}" if new_account else "")
+               + ".")
 
 
 def _residence(data_dir: Path, scenario: str) -> list[_Residence]:
@@ -19074,14 +19087,11 @@ def tax_state_command(
         raise click.ClickException(f"scenario {home} has no start; nothing was written")
     row = {"effective_date": when, "state": picked.code, "county": county,
            "description": first.row.get("description", "") if first is not None else ""}
-    shown = states.label(picked.code) + (f", county {county}" if county else "")
+    shown = _residence_label(picked.code, county)
     click.echo(f"This sets where the household lives from {when[:7]} to {shown}, writing "
                f"{registries.RESIDENCE_FILE} in scenario {home}.")
     if tax_row is not None:
-        click.echo(f"It adds a state tax to scenario {tax_home} (taxes/state.csv), paying from "
-                   f"{tax_row['source_chain']} when the federal one pays"
-                   + (f", and expense account {new_account['name']}" if new_account else "")
-                   + ".")
+        _echo_new_state_tax(str(tax_home), tax_row, new_account)
     elif found is not None and series in (None, states.NO_TAX_SERIES):
         click.echo("  The state tax stays, paying nothing, so a later move can tax you again; "
                    "`sim tax delete state` removes it instead.")
@@ -19153,7 +19163,7 @@ def tax_move_command(
             "e.g. Washington or WA")
     series = _state_series(data_dir_p, scenario_name, picked)
     county = _checked_county(data_dir_p, scenario_name, county)
-    shown = states.label(picked.code) + (f", county {county}" if county else "")
+    shown = _residence_label(picked.code, county)
     # A move from a state without income tax into one with it needs a state
     # tax to pay it, written with the move.
     tax_row = new_account = None
@@ -19162,10 +19172,7 @@ def tax_move_command(
         _, tax_row, new_account = _new_state_tax(scenario_dir, scenario_name)
     click.echo(f"This moves scenario {scenario_name} to {shown} on {date[:7]}.")
     if tax_row is not None:
-        click.echo(f"It adds a state tax to scenario {scenario_name} (taxes/state.csv), paying from "
-                   f"{tax_row['source_chain']} when the federal one pays"
-                   + (f", and expense account {new_account['name']}" if new_account else "")
-                   + ".")
+        _echo_new_state_tax(scenario_name, tax_row, new_account)
     if not yes and not click.confirm("write it?", default=True):
         click.echo("aborted")
         return

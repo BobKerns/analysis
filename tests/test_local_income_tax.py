@@ -18,7 +18,7 @@ import pytest
 from analysis.sim import registries
 from analysis.sim.connection import RunConnection
 from analysis.sim.engine import EngineError, TaxRule, _prepare_tax
-from analysis.sim.tax_api import RESIDENCE_KIND, Extra, Return
+from analysis.sim.tax_api import Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.reports import tax_by_year, tax_reconciliation
 from analysis.sim.run_charts import tax_figure
@@ -35,10 +35,6 @@ def _band(floor: int, rate_micros: int, effective: str = "2026-01-31"):
                         "marginal_rate_micros": rate_micros, "floor_series": None})
 
 
-def _lives(*rows: tuple[str, str, str | None]) -> list[tuple[str, dict[str, Any]]]:
-    """Residence rows (#509): (from, state, county)."""
-    return [(effective, {"state": state, "county": county}) for effective, state, county in rows]
-
 
 def _aux(*local: tuple[str, dict[str, Any]], surcharge: bool = False) -> Aux:
     """A household in California with a 5% flat bracket and a $10,000
@@ -51,7 +47,6 @@ def _aux(*local: tuple[str, dict[str, Any]], surcharge: bool = False) -> Aux:
         ("standard_deduction", None): deduction,
         ("state_brackets", "CA"): flat,
         (registries.STATE_STANDARD_DEDUCTION, "CA"): deduction,
-        (RESIDENCE_KIND, None): _lives(("2026-01-31", "CA", None)),
     }
     if local:
         aux[(registries.STATE_LOCAL_TAX, "CA")] = list(local)
@@ -61,7 +56,9 @@ def _aux(*local: tuple[str, dict[str, Any]], surcharge: bool = False) -> Aux:
 
 
 @pytest.fixture
-def ledger(ledger_con: sqlite3.Connection) -> sqlite3.Connection:
+def ledger(ledger_con: sqlite3.Connection,
+           set_residence: Callable[..., None]) -> sqlite3.Connection:
+    set_residence(ledger_con, ("2026-01-31", "CA", None))
     ledger_con.executemany(
         "INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)",
         [(CHECKING, "Asset_Checking", "asset", "cash"),
@@ -122,17 +119,17 @@ def test_a_local_tax_with_brackets_and_a_threshold(ledger: sqlite3.Connection) -
     assert _estimate(ledger, aux, "state").tax == taxable * 5 // 100 + surcharge
 
 
-def test_a_county_names_its_own_bands(ledger: sqlite3.Connection) -> None:
+def test_a_county_names_its_own_bands(ledger: sqlite3.Connection, set_residence: Callable[..., None]) -> None:
     """A county where the household lives reads its own table; with none
     named, the state's."""
     _earn(ledger, 2026, 110_000_00)
     aux = _aux(_band(0, 30_000))
     aux[(registries.STATE_LOCAL_TAX, "CA-city")] = [_band(0, 10_000)]
-    aux[(RESIDENCE_KIND, None)] = _lives(("2026-01-31", "CA", "CA-city"))
+    set_residence(ledger, ("2026-01-31", "CA", "CA-city"))
     assert _estimate(ledger, aux).tax == 100_000_00 // 100
 
 
-def test_a_move_takes_the_local_tax_along(ledger: sqlite3.Connection) -> None:
+def test_a_move_takes_the_local_tax_along(ledger: sqlite3.Connection, set_residence: Callable[..., None]) -> None:
     """A move to another county reads its table; a move to another state
     its, or none. Each year is taxed where the household lives on its
     December 31, whenever it is computed."""
@@ -141,7 +138,7 @@ def test_a_move_takes_the_local_tax_along(ledger: sqlite3.Connection) -> None:
     aux = _aux(_band(0, 30_000))
     aux[(registries.STATE_LOCAL_TAX, "other_county")] = [_band(0, 20_000)]
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
-    aux[(RESIDENCE_KIND, None)] = _lives(
+    set_residence(ledger, 
         ("2026-01-31", "CA", None), ("2027-12-31", "CA", "other_county"), ("2028-01-31", "WA", None))
     assert [_estimate(ledger, aux, year=year).tax for year in (2026, 2027, 2028)] == [
         3_000_00, 2_000_00, 0]

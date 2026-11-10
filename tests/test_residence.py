@@ -70,19 +70,16 @@ def test_the_residence_is_in_the_intent_and_the_run(
 
 def test_rows_merge_by_date_over_the_lineage(
     add_state_tax: Callable[..., None], add_residence_to: Callable[..., Path],
-    write_aux: Callable[[str, str], Path], test_child_scenario: Path, test_data_dir: Path,
-    tmp_path: Path,
+    write_aux: Callable[[str, str], Path], test_child_scenario: Path,
+    load_test_scenario: Callable[[str], Path],
 ) -> None:
     """A child adds a move without restating where the household starts,
     and a row of the same month replaces its parent's."""
-    from analysis.sim.loader import load_scenario
-
     add_state_tax("CA")
     _washington(write_aux)
     add_residence_to(test_child_scenario, "2030-07", "WA")
     add_residence_to(test_child_scenario, "2026-05", "NC")
-    result = load_scenario(test_data_dir, "child", intent_dir=tmp_path, allow_dirty_data=True)
-    with sqlite3.connect(result.intent_path) as con:
+    with sqlite3.connect(load_test_scenario("child")) as con:
         assert con.execute(
             "SELECT effective_date, state FROM residence ORDER BY effective_date"
         ).fetchall() == [("2026-05-31", "NC"), ("2030-07-31", "WA")]
@@ -272,42 +269,44 @@ def _migration():
     return module
 
 
-def _swap(date: str, kind: str, series: str, description: str = "") -> str:
-    params = json.dumps({"aux_kind": kind, "source_series": series}).replace('"', '""')
-    return f'{date},swap_aux_table,{description},"{params}",\n'
+CALENDAR = "date,kind,series,description,params_json,vary_distribution\n"
 
 
-CALENDAR = "date,kind,description,params_json,vary_distribution\n"
-TAX = "name,kind,params_json\n"
+def _swap(date: str, kind: str, source: str, description: str = "", series: str = "") -> str:
+    """A calendar.csv row swapping in ``kind``'s ``source`` table."""
+    params = json.dumps({"aux_kind": kind, "source_series": source}).replace('"', '""')
+    return f'{date},swap_aux_table,{series},{description},"{params}",\n'
 
 
-def _tax_file(path: Path, params: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _tax(params: dict[str, str]) -> str:
+    """A taxes/<jurisdiction>.csv with these params, as before #509."""
     text = json.dumps({"filing_status": "MFJ", **params}).replace('"', '""')
-    path.write_text(TAX + f'x,state_tables,"{text}"\n', encoding="utf-8")
+    return f'name,kind,params_json\nx,state_tables,"{text}"\n'
 
 
-def test_the_migration_moves_series_and_swaps_to_residence(tmp_path: Path) -> None:
-    scenarios = tmp_path / "scenarios"
-    base, child = scenarios / "base", scenarios / "child"
-    for folder, parent in ((base, ""), (child, "base")):
-        folder.mkdir(parents=True)
-        (folder / "scenario.csv").write_text(
-            "name,start,parent_scenario\n"
-            f"{folder.name},{'2026-05-31' if not parent else ''},{parent}\n", encoding="utf-8")
-    _tax_file(base / "taxes" / "state.csv", {"bracket_series": "CA"})
-    _tax_file(base / "taxes" / "local.csv", {"bracket_series": "CA-county"})
-    _tax_file(child / "taxes" / "state.csv", {"bracket_series": "NC"})
-    (base / "calendar.csv").write_text(
+def _scenario(name: str, parent: str = "") -> str:
+    """A scenario.csv: a root starts 2026-05; a child inherits its start."""
+    return f"name,start,parent_scenario\n{name},{'' if parent else '2026-05-31'},{parent}\n"
+
+
+def test_the_migration_moves_series_and_swaps_to_residence(
+    new_scenario_file: Callable[[str, str, str], Path], test_data_dir: Path,
+) -> None:
+    new_scenario_file("base", "scenario.csv", _scenario("base"))
+    new_scenario_file("child", "scenario.csv", _scenario("child", "base"))
+    new_scenario_file("base", "taxes/state.csv", _tax({"bracket_series": "CA"}))
+    new_scenario_file("base", "taxes/local.csv", _tax({"bracket_series": "CA-county"}))
+    new_scenario_file("child", "taxes/state.csv", _tax({"bracket_series": "NC"}))
+    calendar = new_scenario_file("base", "calendar.csv", (
         CALENDAR
         + _swap("2027-01", "federal_brackets", "law2027")
         + _swap("2030-07", "state_brackets", "WA", "Move to Washington (WA)")
         + _swap("2030-07", "state_standard_deduction", "WA")
-        + _swap("2033-01", "state_brackets", "none", "Move to Florida (FL)"),
-        encoding="utf-8")
+        + _swap("2033-01", "state_brackets", "none", "Move to Florida (FL)")))
+    base, child = calendar.parent, calendar.parent.parent / "child"
     migration = _migration()
 
-    planned = migration.plan(tmp_path)
+    planned = migration.plan(test_data_dir)
     assert planned.problems == []
     assert not (base / "residence.csv").exists()  # a dry run writes nothing
     migration.apply(planned)
@@ -320,51 +319,45 @@ def test_the_migration_moves_series_and_swaps_to_residence(tmp_path: Path) -> No
     ]
     # The child's own state replaces its parent's first row, on its date.
     assert (child / "residence.csv").read_text().splitlines()[1:] == ["2026-05,NC,,"]
-    calendar = (base / "calendar.csv").read_text()
-    assert "law2027" in calendar and "state_brackets" not in calendar
-    assert "state_standard_deduction" not in calendar
+    text = calendar.read_text()
+    assert "law2027" in text and "state_brackets" not in text
+    assert "state_standard_deduction" not in text
     assert "bracket_series" not in (base / "taxes" / "state.csv").read_text()
     assert "bracket_series" not in (base / "taxes" / "local.csv").read_text()
-    assert migration.plan(tmp_path).problems == [
-        f"{tmp_path}: no bracket_series or state table swaps; already migrated?"]
+    assert migration.plan(test_data_dir).problems == [
+        f"{test_data_dir}: no bracket_series or state table swaps; already migrated?"]
 
 
 def test_a_rows_left_out_county_is_blank_not_its_parents(
     add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
-    write_aux: Callable[[str, str], Path], test_child_scenario: Path, test_data_dir: Path,
-    tmp_path: Path,
+    write_aux: Callable[[str, str], Path], test_child_scenario: Path,
+    load_test_scenario: Callable[[str], Path],
 ) -> None:
     """A child's row of the same month replaces its parent's whole, even
     from a file without a county column."""
-    from analysis.sim.loader import load_scenario
-
     add_tax("local")
     write_aux("state_local_tax__CA-county.csv", BRACKETS + "".join(
         f"2020-01-31,{status},0,0.00,1%\n" for status in ("Single", "MFJ", "MFS")))
     add_state_tax("CA", county="CA-county")
     (test_child_scenario / "residence.csv").write_text("effective_date,state\n2026-05,NC\n")
-    result = load_scenario(test_data_dir, "child", intent_dir=tmp_path, allow_dirty_data=True)
-    with sqlite3.connect(result.intent_path) as con:
+    with sqlite3.connect(load_test_scenario("child")) as con:
         assert con.execute("SELECT state, county FROM residence").fetchall() == [("NC", None)]
 
 
-def test_the_migration_reads_the_parents_move_of_the_same_month(tmp_path: Path) -> None:
+def test_the_migration_reads_the_parents_move_of_the_same_month(
+    new_scenario_file: Callable[[str, str, str], Path], test_data_dir: Path,
+) -> None:
     """A child's county move in the month its parent moves to another state
     is in the state moved to."""
-    scenarios = tmp_path / "scenarios"
-    base, child = scenarios / "base", scenarios / "child"
-    for folder, parent in ((base, ""), (child, "base")):
-        folder.mkdir(parents=True)
-        (folder / "scenario.csv").write_text(
-            "name,start,parent_scenario\n"
-            f"{folder.name},{'2026-05-31' if not parent else ''},{parent}\n", encoding="utf-8")
-    _tax_file(base / "taxes" / "state.csv", {"bracket_series": "CA"})
-    (base / "calendar.csv").write_text(
-        CALENDAR + _swap("2030-07", "state_brackets", "NC"), encoding="utf-8")
-    (child / "calendar.csv").write_text(
-        CALENDAR + _swap("2030-07", "state_local_tax", "NC-county"), encoding="utf-8")
+    new_scenario_file("base", "scenario.csv", _scenario("base"))
+    new_scenario_file("child", "scenario.csv", _scenario("child", "base"))
+    new_scenario_file("base", "taxes/state.csv", _tax({"bracket_series": "CA"}))
+    new_scenario_file("base", "calendar.csv",
+                      CALENDAR + _swap("2030-07", "state_brackets", "NC", series="CA"))
+    child = new_scenario_file("child", "calendar.csv",
+                              CALENDAR + _swap("2030-07", "state_local_tax", "NC-county")).parent
     migration = _migration()
-    planned = migration.plan(tmp_path)
+    planned = migration.plan(test_data_dir)
     assert planned.problems == []
     migration.apply(planned)
     assert (child / "residence.csv").read_text().splitlines()[1:] == ["2030-07,NC,NC-county,"]
@@ -379,40 +372,32 @@ def test_the_migration_reads_the_parents_move_of_the_same_month(tmp_path: Path) 
      "swaps state_standard_deduction into a table other than WA's"),
 ])
 def test_the_migration_reports_what_it_cannot_move(
-    swap: str, problem: str, tmp_path: Path,
+    swap: str, problem: str, new_scenario_file: Callable[[str, str, str], Path],
+    test_data_dir: Path,
 ) -> None:
-    base = tmp_path / "scenarios" / "base"
-    base.mkdir(parents=True)
-    (base / "scenario.csv").write_text("name,start\nbase,2026-05-31\n", encoding="utf-8")
-    _tax_file(base / "taxes" / "state.csv", {"bracket_series": "CA"})
-    (base / "calendar.csv").write_text(CALENDAR + swap, encoding="utf-8")
-    problems = _migration().plan(tmp_path).problems
+    new_scenario_file("base", "scenario.csv", _scenario("base"))
+    new_scenario_file("base", "taxes/state.csv", _tax({"bracket_series": "CA"}))
+    new_scenario_file("base", "calendar.csv", CALENDAR + swap)
+    problems = _migration().plan(test_data_dir).problems
     assert len(problems) == 1 and problem in problems[0]
 
 
-def test_the_migration_checks_which_state_a_swap_replaced(tmp_path: Path) -> None:
+def test_the_migration_checks_which_state_a_swap_replaced(
+    new_scenario_file: Callable[[str, str, str], Path], test_data_dir: Path,
+) -> None:
     """A swap replaced the table its series named, the state the household
     started in: every move after the first names it too. A child starting
     elsewhere never moved, so the migration can't make it."""
-    def swap(date: str, source: str) -> str:
-        params = json.dumps({"aux_kind": "state_brackets", "source_series": source}).replace('"', '""')
-        return f'{date},swap_aux_table,CA,,"{params}",\n'
-
-    scenarios = tmp_path / "scenarios"
-    base = scenarios / "base"
-    base.mkdir(parents=True)
-    (base / "scenario.csv").write_text("name,start\nbase,2026-05-31\n", encoding="utf-8")
-    _tax_file(base / "taxes" / "state.csv", {"bracket_series": "CA"})
-    (base / "calendar.csv").write_text(
-        "date,kind,series,description,params_json,vary_distribution\n"
-        + swap("2030-07", "WA") + swap("2033-01", "NC"), encoding="utf-8")
+    new_scenario_file("base", "scenario.csv", _scenario("base"))
+    new_scenario_file("base", "taxes/state.csv", _tax({"bracket_series": "CA"}))
+    new_scenario_file("base", "calendar.csv", CALENDAR
+                      + _swap("2030-07", "state_brackets", "WA", series="CA")
+                      + _swap("2033-01", "state_brackets", "NC", series="CA"))
     migration = _migration()
-    assert migration.plan(tmp_path).problems == []
+    assert migration.plan(test_data_dir).problems == []
 
-    child = scenarios / "child"
-    child.mkdir()
-    (child / "scenario.csv").write_text("name,start,parent_scenario\nchild,,base\n", encoding="utf-8")
-    _tax_file(child / "taxes" / "state.csv", {"bracket_series": "NY"})
-    problems = migration.plan(tmp_path).problems
+    new_scenario_file("child", "scenario.csv", _scenario("child", "base"))
+    new_scenario_file("child", "taxes/state.csv", _tax({"bracket_series": "NY"}))
+    problems = migration.plan(test_data_dir).problems
     assert len(problems) == 2
     assert all("replaces CA's tables, but scenario child starts in NY" in p for p in problems)

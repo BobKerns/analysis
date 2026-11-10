@@ -42,16 +42,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from analysis.sim import states
+from analysis.sim import registries, states
 from analysis.sim.dates import month_end_iso
 from analysis.sim.lineage import load_order, scenario_dir
 
 RESIDENCE_HEADER = ("effective_date", "state", "county", "description")
-STATE_KEYED = frozenset({
-    "state_brackets", "state_standard_deduction", "state_ltcg_brackets", "state_stcg_brackets",
-    "state_ltcg_exclusion", "state_social_security", "state_surcharge", "state_hsa",
-    "state_retirement_exclusion", "state_local_tax",
-})
+STATE_KEYED = registries.STATE_KEYED_AUX_KINDS
 
 
 def _read(path: Path) -> tuple[list[str], list[list[str]], str]:

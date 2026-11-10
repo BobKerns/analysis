@@ -13,17 +13,13 @@ import pytest
 
 from analysis.sim import registries
 from analysis.sim.engine import TaxRule, _prepare_tax
-from analysis.sim.tax_api import RESIDENCE_KIND, Extra, Return
+from analysis.sim.tax_api import Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
 
 CHECKING, HSA, DEFERRED_GAINS, SALARY, MEDICAL = 1, 2, 3, 4, 5
 
-
-def _lives(*rows: tuple[str, str]) -> list[tuple[str, dict[str, Any]]]:
-    """Residence rows (#509): (from, state)."""
-    return [(effective, {"state": state, "county": None}) for effective, state in rows]
 
 
 def _aux(*, surcharge: bool = False, hsa: str | None = None) -> Aux:
@@ -39,7 +35,6 @@ def _aux(*, surcharge: bool = False, hsa: str | None = None) -> Aux:
         (registries.STATE_STANDARD_DEDUCTION, "CA"): deduction,
         ("capital_loss_limit", None): [
             ("2026-01-31", {"filing_status": "MFJ", "amount": 3_000_00})],
-        (RESIDENCE_KIND, None): _lives(("2026-01-31", "CA")),
     }
     if surcharge:
         aux[(registries.STATE_SURCHARGE, "CA")] = [("2005-01-31", {
@@ -51,7 +46,9 @@ def _aux(*, surcharge: bool = False, hsa: str | None = None) -> Aux:
 
 
 @pytest.fixture
-def ledger(ledger_con: sqlite3.Connection) -> sqlite3.Connection:
+def ledger(ledger_con: sqlite3.Connection,
+           set_residence: Callable[..., None]) -> sqlite3.Connection:
+    set_residence(ledger_con, ("2026-01-31", "CA", None))
     ledger_con.executemany(
         "INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)",
         [(CHECKING, "Asset_Checking", "asset", "cash"),
@@ -138,7 +135,7 @@ def test_an_hsa_that_falls_is_a_capital_loss_for_the_state(ledger: sqlite3.Conne
 
 
 def test_each_year_reads_the_tables_of_the_state_it_is_filed_in(
-    ledger: sqlite3.Connection,
+    ledger: sqlite3.Connection, set_residence: Callable[..., None],
 ) -> None:
     """A tax year reads every table keyed by the state where the household
     lives on its December 31 (#509), whenever it is computed: the old
@@ -151,7 +148,7 @@ def test_each_year_reads_the_tables_of_the_state_it_is_filed_in(
     _post(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     aux = _aux(surcharge=True, hsa="taxable")
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
-    aux[(RESIDENCE_KIND, None)] = _lives(("2026-01-31", "CA"), ("2027-03-31", "WA"))
+    set_residence(ledger, ("2026-01-31", "CA", None), ("2027-03-31", "WA", None))
     taxable = 2_000_000_00
     before = _estimate(ledger, aux, "state", 2026)
     assert before.tax == taxable // 10 + 1_000_000_00 // 100
@@ -162,20 +159,20 @@ def test_each_year_reads_the_tables_of_the_state_it_is_filed_in(
 
 
 def test_a_move_to_a_state_whose_tables_start_later_waits_for_them(
-    ledger: sqlite3.Connection,
+    ledger: sqlite3.Connection, set_residence: Callable[..., None],
 ) -> None:
     _post(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     aux = _aux()
     aux[("state_brackets", "OR")] = aux[("state_brackets", "CA")]
     aux[(registries.STATE_HSA, "OR")] = [("2030-01-31", {"treatment": "taxable"})]
-    aux[(RESIDENCE_KIND, None)] = _lives(("2026-01-31", "CA"), ("2028-03-31", "OR"))
+    set_residence(ledger, ("2026-01-31", "CA", None), ("2028-03-31", "OR", None))
     assert _estimate(ledger, aux, "state", 2029)["ordinary_income"] == -8_000_00
     _post(ledger, 2030, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     assert _estimate(ledger, aux, "state", 2030)["ordinary_income"] == 0
 
 
 def test_a_move_in_the_first_months_of_a_year_files_the_year_before_in_the_old_state(
-    ledger: sqlite3.Connection,
+    ledger: sqlite3.Connection, set_residence: Callable[..., None],
 ) -> None:
     """#498: a move in February is before the April settlement of the year
     before, which is still filed where the household lived on its December
@@ -183,7 +180,7 @@ def test_a_move_in_the_first_months_of_a_year_files_the_year_before_in_the_old_s
     _post(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
     aux = _aux(surcharge=True)
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
-    aux[(RESIDENCE_KIND, None)] = _lives(("2026-01-31", "CA"), ("2027-02-28", "WA"))
+    set_residence(ledger, ("2026-01-31", "CA", None), ("2027-02-28", "WA", None))
     assert _estimate(ledger, aux, "state", 2026).tax == 2_000_000_00 // 10 + 1_000_000_00 // 100
 
 
@@ -220,12 +217,12 @@ def _aux_rows(result: LoadResult) -> list[tuple[str, str | None, dict[str, Any],
 
 
 def test_the_old_states_later_surcharge_never_applies_after_a_move(
-    ledger: sqlite3.Connection,
+    ledger: sqlite3.Connection, set_residence: Callable[..., None],
 ) -> None:
     _post(ledger, 2031, SALARY, CHECKING, 110_000_00, "ordinary")
     aux = _aux()
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
     aux[(registries.STATE_SURCHARGE, "CA")] = [("2031-01-31", {
         "filing_status": "MFJ", "floor": 0, "marginal_rate_micros": 10_000, "floor_series": None})]
-    aux[(RESIDENCE_KIND, None)] = _lives(("2026-01-31", "CA"), ("2029-03-31", "WA"))
+    set_residence(ledger, ("2026-01-31", "CA", None), ("2029-03-31", "WA", None))
     assert _estimate(ledger, aux, "state", 2031).tax == 100_000_00 // 10

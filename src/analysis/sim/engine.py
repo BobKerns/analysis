@@ -3007,6 +3007,7 @@ def _tax_year(
         _prior=lambda line: _summary_amount(con, tax_year - 1, f"{scope}_{line}"),
         _series_of=lambda kind: sorted(
             series for (k, series) in aux if k == kind and series is not None),
+        _residences=_residences(con),
         **({"_upstream": upstream} if upstream is not None else {}),
     )
 
@@ -3964,6 +3965,13 @@ def _active_filing_status(
     return "Single" if died and status in ("MFJ", "MFS") else str(status)
 
 
+def _residences(con) -> list[tuple[str, tax_api.Residence]]:
+    """Where the household lives (residence.csv, #509), from each row's
+    month end, in date order: a tax year reads it apart from the aux tables."""
+    return [(effective, tax_api.Residence(state, county or None)) for effective, state, county
+            in con.execute("SELECT effective_date, state, county FROM residence ORDER BY effective_date")]
+
+
 def _load_aux(con) -> dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]:
     out: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]] = {}
     for kind, series, effective, payload_json in con.execute(
@@ -3971,14 +3979,6 @@ def _load_aux(con) -> dict[tuple[str, str | None], list[tuple[str, dict[str, Any
     ):
         out.setdefault((kind, series), []).append(
             (effective, json.loads(payload_json or "{}"))
-        )
-    # Where the household lives (#509) rides with the tables, so a tax year
-    # reads it as of its year's end the way it reads them.
-    for effective, state, county in con.execute(
-        "SELECT effective_date, state, county FROM residence"
-    ):
-        out.setdefault((tax_api.RESIDENCE_KIND, None), []).append(
-            (effective, {"state": state, "county": county})
         )
     for v in out.values():
         v.sort(key=lambda row: row[0])

@@ -92,10 +92,6 @@ class Residence:
     county: str | None = None
 
 
-RESIDENCE_KIND = "residence"
-"""The table the residence is read from, as of a year's end."""
-
-
 @dataclass(frozen=True)
 class TaxYear:
     """One tax year, as a calculator sees it.
@@ -117,6 +113,9 @@ class TaxYear:
     _prior: Callable[[str], int] = field(repr=False)
     _series_of: Callable[[str], list[str]] = field(repr=False)
     _upstream: Callable[[str], Prepared] = field(repr=False, default=lambda name: _no_upstream(name))
+    _residences: Sequence[tuple[str, Residence]] = field(repr=False, default=())
+    """Where the household lives, from each row's effective date (a month
+    end), in date order."""
 
     @property
     def filing_status(self) -> str:
@@ -139,13 +138,10 @@ class TaxYear:
         """:attr:`residence` for another year (an earlier year's HSA). A
         year before the first row is the first row's: it says where the
         household lived when the scenario starts."""
-        rows = self._table(RESIDENCE_KIND, None, year)
-        if not rows:
-            dated = self._dated(RESIDENCE_KIND, None)
-            if not dated:
-                return None
-            rows = [dated[0][1]]
-        return Residence(str(rows[0]["state"]), rows[0].get("county") or None)
+        if not self._residences:
+            return None
+        in_force = [where for effective, where in self._residences if effective <= f"{year}-12-31"]
+        return in_force[-1] if in_force else self._residences[0][1]
 
     def table_as_of(self, kind: str, series: str | None, year: int) -> list[Row]:
         """:meth:`table` as of another year's end."""
