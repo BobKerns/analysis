@@ -18906,7 +18906,9 @@ def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[st
             "meta_json": "{}",
         }
     params = tax_files.params(federal.row)
-    for key in ("bracket_aux", "standard_deduction_aux", "itemized_deduction_aux",
+    # bracket_series names the federal tables' series; a state's are where
+    # the household lives (residence.csv), and state.csv refuses it.
+    for key in ("bracket_aux", "bracket_series", "standard_deduction_aux", "itemized_deduction_aux",
                 "ltcg_bracket_aux", "filing_status_aux"):
         params.pop(key, None)
     row = {
@@ -19059,6 +19061,11 @@ def tax_state_command(
         home = tax_home
     else:
         home = _tax_home(found, scenario_name) if found is not None else scenario_name
+    if tax_home is not None:
+        # The state tax reads the residence, so it goes where it sees it: the
+        # later of the two in the lineage, written after the residence.
+        lineage = load_order(scenario_dir.parent, scenario_name)
+        tax_home = max(tax_home, home, key=lineage.index)
     when = first.row["effective_date"] if first is not None else _scenario_start(data_dir_p, scenario_name)
     if not when:
         raise click.ClickException(f"scenario {scenario_name} has no start; nothing was written")
@@ -19116,10 +19123,13 @@ def tax_move_command(
 
     Where the household starts has to be set first (`sim tax state`). The
     move is a row of this scenario's residence.csv; a row of the same month
-    is replaced. Arguments left out are asked for.
+    is replaced. A move into a state with income tax, in a scenario with no
+    state tax, adds one modeled on the federal one. Arguments left out are
+    asked for.
     """
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_name = _resolve_scenario(data_dir_p, scenario).name
+    ref = _resolve_scenario(data_dir_p, scenario)
+    scenario_dir, scenario_name = ref.path, ref.name
     timeline = _residence(data_dir_p, scenario_name)
     if not timeline:
         raise click.ClickException(
@@ -19138,10 +19148,21 @@ def tax_move_command(
         raise click.ClickException(
             f"not a state or territory: {state!r}; give its name or two-letter code, "
             "e.g. Washington or WA")
-    _state_series(data_dir_p, scenario_name, picked)
+    series = _state_series(data_dir_p, scenario_name, picked)
     county = _checked_county(data_dir_p, scenario_name, county)
     shown = states.label(picked.code) + (f", county {county}" if county else "")
+    # A move from a state without income tax into one with it needs a state
+    # tax to pay it, written with the move.
+    tax_row = new_account = None
+    if (_tax_rows(scenario_dir).get("state") is None
+            and series not in (None, states.NO_TAX_SERIES)):
+        _, tax_row, new_account = _new_state_tax(scenario_dir, scenario_name)
     click.echo(f"This moves scenario {scenario_name} to {shown} on {date[:7]}.")
+    if tax_row is not None:
+        click.echo(f"It adds a state tax to scenario {scenario_name} (taxes/state.csv), paying from "
+                   f"{tax_row['source_chain']} when the federal one pays"
+                   + (f", and expense account {new_account['name']}" if new_account else "")
+                   + ".")
     if not yes and not click.confirm("write it?", default=True):
         click.echo("aborted")
         return
@@ -19149,4 +19170,6 @@ def tax_move_command(
            "description": f"Move to {shown}"}
     with _scenario_edit(data_dir_p, scenario_name, remember=False) as edit:
         path = _stage_residence(edit, data_dir_p, scenario_name, row)
+        if tax_row is not None:
+            _stage_tax(edit, data_dir_p, scenario_name, "state", tax_row, new_account=new_account)
     click.echo(f"wrote the move to {_shown(path)}")

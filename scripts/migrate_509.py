@@ -248,6 +248,17 @@ def plan(data_dir: Path) -> Plan:
             if state not in states.BY_CODE:
                 result.problems.append(f"{where}: {state!r} isn't a state's postal code")
                 continue
+            # A residence row reads the new state's own tables: a companion
+            # swap into anything else (another state's, a special table)
+            # can't be kept, so it is for the user to decide.
+            series = states.NO_TAX_SERIES if kinds.get("state_brackets") == states.NO_TAX_SERIES else state
+            odd = sorted(k for k, source in kinds.items()
+                         if k not in ("state_brackets", "state_local_tax") and source != series)
+            if odd:
+                result.problems.append(
+                    f"{where}: swaps {', '.join(odd)} into a table other than {series}'s, which a "
+                    "residence row can't say; fix it by hand")
+                continue
             own.residence[month] = {
                 "effective_date": month[:7], "state": state,
                 "county": kinds.get("state_local_tax", ""),
@@ -273,13 +284,15 @@ def plan(data_dir: Path) -> Plan:
 
 
 def _state_on(folders: dict[str, _Folder], scenarios: Path, name: str, month: str) -> str | None:
-    """The state the lineage's residence rows have the household in before
+    """The state the lineage's residence rows have the household in by
     ``month``: for a county move, which keeps the state."""
     rows: dict[str, dict[str, str]] = {}
     for each in load_order(scenarios, name):
         if each in folders:
             rows.update(folders[each].residence)
-    before = [rows[m]["state"] for m in sorted(rows) if m < month]
+    # A row of the same month counts: a parent's move then is where the
+    # county is.
+    before = [rows[m]["state"] for m in sorted(rows) if m <= month]
     return before[-1] if before else None
 
 

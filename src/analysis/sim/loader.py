@@ -1392,6 +1392,7 @@ def load_scenario(
         ),
         bracket_rates=_bracket_rates(aux_rows),
         residence_rows=residence_rows,
+        span=(scenario_row.get("start") or "", scenario_row.get("end") or ""),
         irmaa_tiers=frozenset(
             payload["tier"] for kind, table, payload, _effective in aux_rows
             if kind == registries.IRMAA_TIERS and table is None
@@ -3368,6 +3369,7 @@ def _validate_fill_bracket(
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
     residence_rows: Sequence[Mapping[str, str]] = (),
+    span: tuple[str, str] = ("", ""),
     irmaa_tiers: frozenset[int] = frozenset(),
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
@@ -3479,8 +3481,9 @@ def _validate_fill_bracket(
         if not rate:
             continue
         # A state's rate must be one of each state's the rule converts in
-        # (#509): a move to another state would leave nothing to fill.
-        lived = _residence_states(residence_rows, row.get("start") or "0000", row.get("end") or "")
+        # (#509): a move to another state would leave nothing to fill. Only
+        # the years it posts in count.
+        lived = _residence_states(residence_rows, _firing_years(row, *span))
         for in_state, table in _tax_rule_bracket_tables(tax_rules[scope], scope, lived, bracket_rates):
             rates = bracket_rates.get(table)
             if rates and int(rate) not in rates:
@@ -3885,25 +3888,30 @@ def _validate_residence(
                 "or leave county blank")
 
 
-def _residence_states(
-    residence_rows: Sequence[Mapping[str, str]], start: str, end: str,
-) -> list[str]:
-    """The states a tax year from ``start`` to ``end`` (month ends; a blank
-    end, the run's) may be filed in: those of the rows in force on some
-    December 31 between them, the first row's covering the years before it."""
+def _residence_states(residence_rows: Sequence[Mapping[str, str]], years: Iterable[int]) -> list[str]:
+    """The states the tax ``years`` are filed in: each year's is the row in
+    force on its December 31, the first row's covering the years before it."""
     rows = sorted((r["effective_date"], r["state"]) for r in residence_rows
                   if r.get("effective_date") and r.get("state"))
-    first, last = int(start[:4]), int(end[:4]) if end else None
     found: list[str] = []
-    for i, (effective, state) in enumerate(rows):
-        # In force on December 31 of each year from its own (the first row's
-        # from any year before) to the year before the next row's.
-        since = int(effective[:4]) if i else first
-        until = int(rows[i + 1][0][:4]) - 1 if i + 1 < len(rows) else None
-        if (since <= (until if until is not None else since) and (until is None or until >= first)
-                and (last is None or since <= last) and state not in found):
+    for year in years:
+        on = [state for effective, state in rows if effective[:4] <= str(year)]
+        state = on[-1] if on else (rows[0][1] if rows else None)
+        if state is not None and state not in found:
             found.append(state)
     return found
+
+
+def _firing_years(row: Mapping[str, str], start: str, end: str) -> list[int]:
+    """The years an annual rule posts in: its ``month_of_year`` (December
+    when blank) within both its own dates and the scenario's."""
+    month = int(row.get("month_of_year") or 12)
+    lo = max(row.get("start") or "", start)[:7]
+    hi = min(row.get("end") or "9999-12", end or "9999-12")[:7]
+    if not lo or hi < lo:
+        return []
+    return [year for year in range(int(lo[:4]), int(hi[:4]) + 1)
+            if lo <= f"{year:04d}-{month:02d}" <= hi]
 
 
 def _warn_state_standard_deduction(
@@ -5050,8 +5058,13 @@ def _read_lineage_overlay(
                 )
             else:
                 seen[key] = where
-        # Keys are checked by the file's own validation (a blank as_of is a real key).
-        rows = _merge_scenario_rows(rows, own, key_columns, require_key=False)
+        # Keys are checked by the file's own validation (a blank as_of is a real
+        # key). A row replaces the earlier one whole, so a column its file
+        # leaves out is blank, not the parent's (a residence's county).
+        merged = {tuple(row.get(c, "") for c in key_columns): row for row in rows}
+        for row in own:
+            merged[tuple(row.get(c, "") for c in key_columns)] = dict(row)
+        rows = list(merged.values())
     return rows
 
 

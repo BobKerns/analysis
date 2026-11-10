@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult, _residence_states
+from analysis.sim.loader import LoadError, LoadResult, _firing_years, _residence_states
 
 BRACKETS = "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
 
@@ -232,19 +232,30 @@ def test_a_state_fill_bracket_rate_must_be_one_of_each_states_it_converts_in(
     scheduled.loc[len(scheduled) - 1, "end"] = "2030-12"
     scheduled.to_csv(path, index=False)
     load_test_copy()
+    # Ending in the year of the move, before its December, is fine too.
+    scheduled.loc[len(scheduled) - 1, "end"] = "2031-06"
+    scheduled.to_csv(path, index=False)
+    load_test_copy()
 
 
 def test_the_states_a_rule_may_file_in() -> None:
     rows = [{"effective_date": "2026-05-31", "state": "CA"},
             {"effective_date": "2028-02-29", "state": "WA"},
             {"effective_date": "2031-12-31", "state": "NY"}]
-    assert _residence_states(rows, "2029-01-31", "") == ["WA", "NY"]
-    assert _residence_states(rows, "2026-05-31", "2027-12-31") == ["CA"]
+    assert _residence_states(rows, range(2029, 2040)) == ["WA", "NY"]
+    assert _residence_states(rows, [2026, 2027]) == ["CA"]
     # A December move files that year in the new state.
-    assert _residence_states(rows, "2029-01-31", "2031-12-31") == ["WA", "NY"]
-    assert _residence_states(rows, "2029-01-31", "2030-12-31") == ["WA"]
+    assert _residence_states(rows, [2030, 2031]) == ["WA", "NY"]
+    assert _residence_states(rows, [2030]) == ["WA"]
     # The first row covers the years before it.
-    assert _residence_states(rows, "2020-01-31", "2025-12-31") == ["CA"]
+    assert _residence_states(rows, [2020, 2025]) == ["CA"]
+
+
+def test_a_rule_posts_in_the_years_its_month_falls_within_both_spans() -> None:
+    rule = {"month_of_year": "12", "start": "2029-01-31", "end": "2031-06-30"}
+    assert _firing_years(rule, "2026-05-31", "2040-12-31") == [2029, 2030]
+    assert _firing_years({**rule, "end": ""}, "2026-05-31", "2032-11-30") == [2029, 2030, 2031]
+    assert _firing_years({"month_of_year": "3"}, "2026-05-31", "2028-12-31") == [2027, 2028]
 
 
 def _migration():
@@ -317,11 +328,54 @@ def test_the_migration_moves_series_and_swaps_to_residence(tmp_path: Path) -> No
         f"{tmp_path}: no bracket_series or state table swaps; already migrated?"]
 
 
+def test_a_rows_left_out_county_is_blank_not_its_parents(
+    add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
+    write_aux: Callable[[str, str], Path], test_child_scenario: Path, test_data_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """A child's row of the same month replaces its parent's whole, even
+    from a file without a county column."""
+    from analysis.sim.loader import load_scenario
+
+    add_tax("local")
+    write_aux("state_local_tax__CA-county.csv", BRACKETS + "".join(
+        f"2020-01-31,{status},0,0.00,1%\n" for status in ("Single", "MFJ", "MFS")))
+    add_state_tax("CA", county="CA-county")
+    (test_child_scenario / "residence.csv").write_text("effective_date,state\n2026-05,NC\n")
+    result = load_scenario(test_data_dir, "child", intent_dir=tmp_path, allow_dirty_data=True)
+    with sqlite3.connect(result.intent_path) as con:
+        assert con.execute("SELECT state, county FROM residence").fetchall() == [("NC", None)]
+
+
+def test_the_migration_reads_the_parents_move_of_the_same_month(tmp_path: Path) -> None:
+    """A child's county move in the month its parent moves to another state
+    is in the state moved to."""
+    scenarios = tmp_path / "scenarios"
+    base, child = scenarios / "base", scenarios / "child"
+    for folder, parent in ((base, ""), (child, "base")):
+        folder.mkdir(parents=True)
+        (folder / "scenario.csv").write_text(
+            "name,start,parent_scenario\n"
+            f"{folder.name},{'2026-05-31' if not parent else ''},{parent}\n", encoding="utf-8")
+    _tax_file(base / "taxes" / "state.csv", {"bracket_series": "CA"})
+    (base / "calendar.csv").write_text(
+        CALENDAR + _swap("2030-07", "state_brackets", "NC"), encoding="utf-8")
+    (child / "calendar.csv").write_text(
+        CALENDAR + _swap("2030-07", "state_local_tax", "NC-county"), encoding="utf-8")
+    migration = _migration()
+    planned = migration.plan(tmp_path)
+    assert planned.problems == []
+    migration.apply(planned)
+    assert (child / "residence.csv").read_text().splitlines()[1:] == ["2030-07,NC,NC-county,"]
+
+
 @pytest.mark.parametrize(("swap", "problem"), [
     (_swap("2030-07", "state_brackets", "none", "Retire to the beach"),
      "the description doesn't name the state"),
     (_swap("2030-07", "state_surcharge", "CA"), "swaps state_surcharge without a move"),
     (_swap("+5y", "state_brackets", "WA"), "isn't a month (a relative date?)"),
+    (_swap("2030-07", "state_brackets", "WA") + _swap("2030-07", "state_standard_deduction", "special"),
+     "swaps state_standard_deduction into a table other than WA's"),
 ])
 def test_the_migration_reports_what_it_cannot_move(
     swap: str, problem: str, tmp_path: Path,

@@ -121,6 +121,23 @@ def test_the_state_is_set_where_the_residence_is_defined(
     assert _residence(test_child_scenario) == [("2026-05", "NE", "")]
 
 
+def test_a_new_state_tax_goes_where_it_sees_the_residence(
+    test_data_dir: Path, add_tax: Callable[..., Path], add_residence_to: Callable[..., Path],
+    retire_alice_csv: Callable[[str], Path], test_child_scenario: Path,
+) -> None:
+    """The federal tax is the parent's and the residence the child's: the
+    state tax goes in the child, beside the residence it reads."""
+    add_tax()
+    add_residence_to(test_child_scenario, "2026-05", "FL")
+
+    result = _tax(test_data_dir, "state", "CA", "--yes", scenario="child")
+
+    assert result.exit_code == 0, result.output
+    assert _residence(test_child_scenario) == [("2026-05", "CA", "")]
+    assert (test_child_scenario / "taxes" / "state.csv").exists()
+    assert not retire_alice_csv("taxes/state.csv").exists()
+
+
 def test_a_state_without_income_tax_keeps_the_state_tax_paying_nothing(
     test_data_dir: Path, add_state_tax: Callable[..., None],
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
@@ -166,8 +183,11 @@ def test_a_state_without_tables_says_which_to_write(
 def test_a_scenario_without_a_state_tax_gets_one_like_its_federal_tax(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     load_test_copy: Callable[[], LoadResult], add_tax: Callable[..., Path],
+    write_aux: Callable[[str, str], Path],
 ) -> None:
-    add_tax(params_json={"nol_limit_percent": 80})
+    """Less what is the federal tax's own: its tables' bracket_series."""
+    write_aux("federal_brackets__law.csv", (TEMPLATE_AUX_DIR / "federal_brackets.csv").read_text())
+    add_tax(params_json={"nol_limit_percent": 80, "bracket_series": "law"})
 
     result = _tax(test_data_dir, "state", "DC", "--yes")
 
@@ -230,6 +250,23 @@ def test_a_move_adds_a_residence_row(
 
     result = _tax(test_data_dir, "state")
     assert "then moves on 2031-07 to North Carolina (NC)" in result.output
+
+
+def test_a_move_into_a_state_with_income_tax_adds_a_state_tax(
+    test_data_dir: Path, add_tax: Callable[..., Path],
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_tax()
+    assert _tax(test_data_dir, "state", "TX", "--yes").exit_code == 0
+    assert not retire_alice_csv("taxes/state.csv").exists()
+
+    result = _tax(test_data_dir, "move", "2031-07", "NC", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "It adds a state tax to scenario retire_alice" in result.output
+    assert retire_alice_csv("taxes/state.csv").exists()
+    assert _residence(retire_alice_csv(""))[-1] == ("2031-07", "NC", "")
+    load_test_copy()
 
 
 def test_a_move_in_a_child_adds_to_what_it_inherits(
