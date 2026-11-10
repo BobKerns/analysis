@@ -8509,7 +8509,17 @@ def scheduled_add(
     )
 
 
-@scheduled_group_command.command("import-baseline")
+@sim_group_command.group(name="import")
+def import_group_command() -> None:
+    """Bring data from outside sources into a scenario.
+
+    `holdings` sets account balances from a Quicken account-tree report;
+    `transactions` turns Quicken transactions (with the Amazon categorizer's
+    monthly summaries) into expense rules. More sources are planned (#527).
+    """
+
+
+@import_group_command.command("transactions")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -8545,7 +8555,7 @@ def scheduled_add(
               help="Inflation series applied to generated rows ('fixed' for none).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show generated rows without rewriting scheduled.csv.")
-def scheduled_import_baseline(
+def import_transactions(
     scenario: str | None,
     data_dir: Path | None,
     quicken_file: Path | None,
@@ -8560,7 +8570,7 @@ def scheduled_import_baseline(
     series: str,
     dry_run: bool,
 ) -> None:
-    """Replace generated baseline expense rows in scheduled.csv."""
+    """Expense rules from Quicken transactions: replace the generated baseline rows in scheduled.csv."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     data_repo_root = data_dir_p.parent
@@ -11640,7 +11650,7 @@ def sync_account_lots(
         click.echo(f"  + {name}")
 
 
-@account_group_command.command("import-quicken")
+@import_group_command.command("holdings")
 @click.argument("quicken_file",
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--map-file", "map_file",
@@ -11659,7 +11669,7 @@ def sync_account_lots(
               default=None)
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show what would change without writing.")
-def import_quicken(
+def import_holdings(
     quicken_file: Path,
     map_file: Path | None,
     year_end: bool,
@@ -11767,7 +11777,7 @@ def import_quicken(
         rows = df.index[df["account_name"] == name]
         if len(rows) > 1:
             click.echo(
-                f"warning: {name!r} has {len(rows)} lots; import-quicken only "
+                f"warning: {name!r} has {len(rows)} lots; `sim import holdings` only "
                 "updates single-lot accounts, so it was skipped", err=True,
             )
             continue

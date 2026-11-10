@@ -1093,8 +1093,8 @@ inherited along the parent chain.
 The CSVs are the source of truth and the loader is their only validator, so
 every `analysis sim` command that edits scenario CSVs or the shared
 `persons.csv` (`calendar add|edit|delete`, `person add|edit`, `person lifespan set|clear`,
-`transfer add`, `scheduled add|edit|delete`/`import-baseline`, `account
-add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`, `invest`,
+`transfer add`, `scheduled add|edit|delete`, `import holdings|transactions`, `account
+add|edit|rename|delete|sync`, `account lot add|edit|rename|delete`, `invest`,
 the `tag` commands, `chain` and `series` edits, the other `rename` commands,
 `scenario create|rename`, `ensemble create|rename`) goes through one staged edit
 (`analysis.sim.staging.staged_edit`):
@@ -1407,3 +1407,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#508](https://github.com/BobKerns/analysis/issues/508): a jurisdiction builds on another's return (`upstream`): the state starts from federal AGI with named adjustments (`StateFromFederal`, `StateFromIncome`), the federal return keeps memo lines of what its AGI leaves out, and the local tax is its own jurisdiction (`taxes/local.csv`, kind `local_bands`, paid with the state's; `state_local_tax` summary line gone); a state-scope `fill_bracket` rate counts it (§2.6, §2.10, §4.15).
 - [#508](https://github.com/BobKerns/analysis/issues/508): `fill_bracket`'s `max_marginal_rate` gallops over spans of one rate instead of stepping $100 at a time, to the same amount (§2.10).
 - [#508](https://github.com/BobKerns/analysis/issues/508): §4.4 `state_local_tax` is read by the local jurisdiction and recorded as `local_tax`; a local `bracket_series` of its own is refused with a move.
+- [#527](https://github.com/BobKerns/analysis/issues/527): the importers move to `sim import`: `account import-quicken` becomes `import holdings`, `scheduled import-baseline` becomes `import transactions` (§7).
