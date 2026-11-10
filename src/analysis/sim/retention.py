@@ -306,10 +306,14 @@ def _rules(section: str, raw: Any) -> tuple[tuple[Rule, ...] | None, tuple[Rule,
     # An empty section keeping nothing would delete everything but the
     # newest items, which is never what a blank section means. Other falsy
     # values (0, "") are malformed, not empty, so they fall through.
-    if raw is None or raw == []:
+    if raw is None or raw == [] or raw == {}:
         return None, ()
+    # One rule may be written bare, as a map, in any section: `logs: {keep: 7}`
+    # reads the same as `logs: [{keep: 7}]`.
+    if isinstance(raw, dict):
+        raw = [raw]
     if not isinstance(raw, list):
-        raise RetentionError(f"{section}: expected a list of rules")
+        raise RetentionError(f"{section}: expected a rule or a list of rules")
     rules: list[Rule] = []
     protected: list[Rule] = []
     for i, entry in enumerate(raw, start=1):
@@ -318,8 +322,10 @@ def _rules(section: str, raw: Any) -> tuple[tuple[Rule, ...] | None, tuple[Rule,
         guard = entry.get("protected")
         if guard is None:
             continue
+        if isinstance(guard, dict):
+            guard = [guard]
         if not isinstance(guard, list) or not guard:
-            raise RetentionError(f"{where}: protected: expected a list of rules")
+            raise RetentionError(f"{where}: protected: expected a rule or a list of rules")
         protected.extend(_rule(f"{where} protected rule {j}", sub, ("keep", "since"))
                          for j, sub in enumerate(guard, start=1))
     return tuple(rules), tuple(protected)
