@@ -171,7 +171,7 @@ def test_drawdown_years_and_step_up_change_the_deferred_tax(
     # Only before Social Security starts, though: over ten years the draws
     # make more of ten years' benefits taxable, against one year's at most.
     pd.testing.assert_series_equal(one["federal_drawdown_base"], ten["federal_drawdown_base"])
-    before_ss = ten["federal_ss_income"] == 0
+    before_ss = ten["federal_ss_benefits"] == 0
     assert before_ss.sum() >= 3
     assert (one["federal_drawdown_tax"] > ten["federal_drawdown_tax"])[before_ss].all()
 

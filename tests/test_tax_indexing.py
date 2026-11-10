@@ -3,7 +3,6 @@ inflation by a growth series per row (#467)."""
 
 from __future__ import annotations
 
-import csv
 import sqlite3
 from collections.abc import Callable
 from datetime import date
@@ -63,19 +62,12 @@ def test_a_later_dated_row_restarts_from_its_own_figures() -> None:
     assert row["amount"] == 20_000_00
 
 
-def _run(tmp_path: Path, repo: Path, fund_asset_savings: Callable[..., None]) -> sqlite3.Connection:
+def _run(
+    tmp_path: Path, repo: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
+) -> sqlite3.Connection:
     fund_asset_savings()
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    header = sched_csv.read_text(encoding="utf-8").splitlines()[0].split(",")
-    row = dict.fromkeys(header, "")
-    row.update(
-        name="tax_federal_prev_year", from_account="Asset_Checking",
-        to_account="Expense_Taxes_Federal", cadence="annual", month_of_year="4",
-        amount_rule_kind="tax_accumulator", tax_character="none", start="2027-04-30",
-        priority="400", meta_json="{}", params_json='{"year":"previous","scope":"federal"}',
-    )
-    with sched_csv.open("a", encoding="utf-8", newline="") as f:
-        csv.writer(f, lineterminator="\n").writerow(row[c] for c in header)
+    write_tax(repo / "scenarios" / "retire_alice")
     intent_path = load_scenario(
         repo, "retire_alice", intent_dir=tmp_path / "intent", loaded_by="test",
         allow_dirty_data=True,
@@ -94,8 +86,9 @@ def _standard_deduction(con: sqlite3.Connection, year: int) -> int:
 
 def test_a_run_indexes_the_supplied_standard_deduction(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
-    con = _run(tmp_path, test_data_dir, fund_asset_savings)
+    con = _run(tmp_path, test_data_dir, fund_asset_savings, write_tax)
     try:
         assert _standard_deduction(con, 2027) == MFJ_2027
         assert MFJ_2027 < _standard_deduction(con, 2030) < MFJ_2027 * 11 // 10
@@ -105,6 +98,7 @@ def test_a_run_indexes_the_supplied_standard_deduction(
 
 def test_a_table_without_the_column_holds_flat(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
     (test_data_dir / "aux" / "standard_deduction.csv").write_text(
         "effective_date,filing_status,amount\n"
@@ -112,7 +106,7 @@ def test_a_table_without_the_column_holds_flat(
         "2027-01-31,MFJ,32200.00\n2027-01-31,Single,16100.00\n2027-01-31,MFS,16100.00\n",
         encoding="utf-8",
     )
-    con = _run(tmp_path, test_data_dir, fund_asset_savings)
+    con = _run(tmp_path, test_data_dir, fund_asset_savings, write_tax)
     try:
         assert _standard_deduction(con, 2030) == MFJ_2027
     finally:
@@ -121,6 +115,7 @@ def test_a_table_without_the_column_holds_flat(
 
 def test_a_growth_series_must_exist(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
     (test_data_dir / "aux" / "standard_deduction.csv").write_text(
         "effective_date,filing_status,amount,amount_series\n"
@@ -128,11 +123,12 @@ def test_a_growth_series_must_exist(
         encoding="utf-8",
     )
     with pytest.raises(LoadError, match="amount_series 'no_such_series' doesn't exist"):
-        _run(tmp_path, test_data_dir, fund_asset_savings)
+        _run(tmp_path, test_data_dir, fund_asset_savings, write_tax)
 
 
 def test_a_growth_series_must_have_a_rate_from_the_tables_date(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+    write_tax: Callable[..., Path],
 ) -> None:
     """Growing 2027's table into 2028 reads the series from February 2027."""
     (test_data_dir / "aux" / "inflation__late.csv").write_text(
@@ -144,5 +140,5 @@ def test_a_growth_series_must_have_a_rate_from_the_tables_date(
     )
     with pytest.raises(LoadError, match="amount_series 'late' has no rate until 2028-01, "
                                         "but grows the table from 2027-02"):
-        _run(tmp_path, test_data_dir, fund_asset_savings)
+        _run(tmp_path, test_data_dir, fund_asset_savings, write_tax)
 

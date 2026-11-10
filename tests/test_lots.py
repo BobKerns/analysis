@@ -15,6 +15,7 @@ import pytest
 from analysis.sim import units
 from analysis.sim.engine import _post_transfer
 from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
+from analysis.sim.tax_api import TaxYear
 
 BROKERAGE = "Asset_Brokerage_Joint"
 
@@ -555,8 +556,10 @@ def test_gain_on_a_lot_held_longer_is_long_term(ledger_con: sqlite3.Connection) 
     assert _sell_from_lot(ledger_con, None, "2026-12-31")[1] == (4_000_00, "ltcg")
 
 
-def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import _tax_year_income_buckets
+def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
+) -> None:
+    from analysis.sim.taxes.common import capital_gains, income_buckets
 
     for character, amount in (("ordinary", 100), ("stcg", 50), ("ltcg", 30), ("ss_benefit", 7)):
         ledger_con.execute(
@@ -565,10 +568,9 @@ def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: s
             "VALUES (1, '2026-06-30', 1, 2, 1, 2, ?, ?, 0, ?, 'rule')",
             (amount, amount, character),
         )
-    from analysis.sim.engine import _capital_gains
-
-    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (100, 7, 0)
-    gains = _capital_gains(ledger_con, tax_year=2026, loss_limit=lambda _year: 0)
+    year = tax_year_of(ledger_con, 2026)
+    assert income_buckets(year) == (100, 7, 0)
+    gains = capital_gains(year, loss_limit=lambda _year: 0)
     assert (gains.stcg, gains.ltcg) == (50, 30)
 
 
@@ -612,18 +614,12 @@ def _bracket_rows(path: Path, status: str) -> list[tuple[int, int]]:
 def test_long_term_gains_are_taxed_at_the_preferential_rates(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
-    fund_asset_savings: Callable[..., None],
+    fund_asset_savings: Callable[..., None], add_tax: Callable[..., Path],
 ) -> None:
     from analysis.sim.engine import run_scenario
 
     fund_asset_savings()
-    _append_scheduled_row(
-        retire_alice_csv("scheduled.csv"), name="tax_federal_prev_year",
-        from_account="Asset_Checking", to_account="Expense_Taxes_Federal",
-        cadence="annual", month_of_year="4", amount_rule_kind="tax_accumulator",
-        tax_character="none", start="2027-04-30", priority="400", meta_json="{}",
-        params_json='{"year":"previous","scope":"federal"}',
-    )
+    add_tax()
     retire_alice_csv("year_to_date.csv").write_text(
         "name,from_account,to_account,amount,tax_character\n"
         "gain,Income_CapitalGain,Asset_Checking,100000.00,ltcg\n"
@@ -648,11 +644,11 @@ def test_long_term_gains_are_taxed_at_the_preferential_rates(
     ltcg_file.write_text(kept)
     preferential = federal("preferential.sqlite3")
 
-    assert as_ordinary["federal_ltcg_income"] == 10_000_000 == preferential["federal_ltcg_income"]
+    assert as_ordinary["federal_ltcg_taxed"] == 10_000_000 == preferential["federal_ltcg_taxed"]
     taxable = preferential["federal_taxable_income"]
     ordinary_brackets = _bracket_rows(aux / "federal_brackets.csv", "MFJ")
     ltcg_brackets = _bracket_rows(aux / "ltcg_brackets.csv", "MFJ")
-    assert as_ordinary["federal_tax_liability"] == _tax_by_bracket(taxable, ordinary_brackets)
+    assert as_ordinary["federal_tax"] == _tax_by_bracket(taxable, ordinary_brackets)
 
     gain = min(10_000_000, taxable)
     base = taxable - gain
@@ -660,13 +656,13 @@ def test_long_term_gains_are_taxed_at_the_preferential_rates(
         _tax_by_bracket(base, ordinary_brackets)
         + _tax_by_bracket(taxable, ltcg_brackets) - _tax_by_bracket(base, ltcg_brackets)
     )
-    assert preferential["federal_tax_liability"] == expected
-    assert preferential["federal_tax_liability"] < as_ordinary["federal_tax_liability"]
+    assert preferential["federal_tax"] == expected
+    assert preferential["federal_tax"] < as_ordinary["federal_tax"]
 
 
 def test_state_tax_still_treats_gains_as_ordinary(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
-    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_tax: Callable[..., Path],
 ) -> None:
     """The preferential table is federal-only: state liability ignores it."""
     import pandas as pd
@@ -680,13 +676,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
         "meta_json": "{}",
     }
     accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
-    _append_scheduled_row(
-        retire_alice_csv("scheduled.csv"), name="tax_state_prev_year",
-        from_account="Asset_Checking", to_account="Expense_Taxes_State", cadence="annual",
-        month_of_year="4", amount_rule_kind="tax_accumulator", tax_character="none",
-        start="2027-04-30", priority="400", meta_json="{}",
-        params_json='{"year":"previous","scope":"state","bracket_series":"CA"}',
-    )
+    add_tax("state", params_json={"bracket_series": "CA"})
     retire_alice_csv("year_to_date.csv").write_text(
         "name,from_account,to_account,amount,tax_character\n"
         "gain,Income_CapitalGain,Asset_Checking,100000.00,ltcg\n"
@@ -699,7 +689,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
         try:
             return con.execute(
                 "SELECT amount FROM tax_year_summary "
-                "WHERE year = 2026 AND bucket = 'state_tax_liability'"
+                "WHERE year = 2026 AND bucket = 'state_tax'"
             ).fetchone()[0]
         finally:
             con.close()

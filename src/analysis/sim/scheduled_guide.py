@@ -29,7 +29,6 @@ KIND_COLUMNS: dict[str, dict[str, bool]] = {
     "percent_of_balance": {"series": True},  # its rate series; the engine has no default
     "rmd": {"person": True},
     "ss_benefit": {"person": True, "claim_age": True, "amount": True, "series": True},
-    "tax_accumulator": {"params_json": True},
     "mortgage_payment": {
         "amount": True, "rate": True, "interest_account": True, "ytd_preroll": False,
     },
@@ -59,7 +58,6 @@ KIND_TAX_CHARACTER: dict[str, str] = {
     "percent_of_balance": "ordinary",
     "rmd": "tax_deferred_out",
     "ss_benefit": "ss_benefit",
-    "tax_accumulator": "none",
     "mortgage_payment": "none",
     "on_death": "tax_free",
     "fill_bracket": "tax_deferred_out",
@@ -95,7 +93,7 @@ def tax_character_for(ctx: GuideContext, answers: Mapping[str, object]) -> str:
 
 # Kinds the engine runs only once a year (ADR-003 §2.3, §2.6), and the month
 # each usually fires.
-ANNUAL_KINDS: dict[str, str] = {"rmd": "12", "tax_accumulator": "12", "fill_bracket": "12"}
+ANNUAL_KINDS: dict[str, str] = {"rmd": "12", "fill_bracket": "12"}
 
 # Kinds whose source must be an account, not an interior chain; every kind
 # but fixed_amount needs an account as its destination (the engine's rules).
@@ -269,9 +267,7 @@ RULE = KindSpec(
         Field(
             "params_json", "parameters (JSON object)", type="json", option="--params-json",
             required=needs("params_json"),
-            help='tax_accumulator: e.g. {"year":"previous","scope":"federal"}; '
-                 'a state one names its state: {"scope":"state","bracket_series":"CA"}. '
-                 'rmd drawing from a chain: {"subject_account":"<account>"}.',
+            help='rmd drawing from a chain: {"subject_account":"<account>"}.',
         ),
         Field("tags", "tags", type="tags", option="--tags", required=False,
               help="Space-separated '<role>:<name>' tokens."),

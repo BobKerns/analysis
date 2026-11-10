@@ -597,22 +597,11 @@ def _keyed_differences(
     return pd.DataFrame(rows).set_index(names)
 
 
-def _table(rc: RunConnection, sql: str) -> pd.DataFrame:
-    from analysis.sim.drift import has_table
-
-    table = sql.split(" FROM ", 1)[1].split()[0]
-    if not has_table(rc._con, table):
-        return pd.DataFrame()
-    return rc._read_sql(sql)
-
-
 def uses_strategies(connections: Mapping[str, RunConnection]) -> bool:
     """Whether any run has a strategy or a target set: the strategy
     comparisons leave no trace otherwise."""
-    from analysis.sim.drift import has_table
-
     return any(
-        has_table(rc._con, table) and rc._con.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608
+        rc._con.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608
         for rc in connections.values() for table in ("strategy", "allocation_target"))
 
 
@@ -622,16 +611,12 @@ def strategy_differences(
     """Strategies as each run had them (only enabled ones run), rows
     (strategy, field), where a variant differs from the baseline; a strategy
     a scenario doesn't run is missing there, as one switched off is."""
-    from analysis.sim.strategy_guide import has_rule_tags
-
     frames = {}
     for name in scenarios:
-        rc = connections[name]
-        # A spending strategy owns rules and no chain (#387); a run from
-        # before rule ownership has no rule_tag column.
-        rules = "s.rule_tag" if has_rule_tags(rc._con) else "NULL"
-        frame = _table(rc, f'SELECT s.name, s.kind, c.name AS chain, {rules} AS rules, s.start, '
-                       's."end", s.params_json FROM strategy s LEFT JOIN chain c ON c.id = s.chain_id')
+        # A spending strategy owns rules and no chain (#387).
+        frame = connections[name]._read_sql(
+            'SELECT s.name, s.kind, c.name AS chain, s.rule_tag AS rules, s.start, '
+            's."end", s.params_json FROM strategy s LEFT JOIN chain c ON c.id = s.chain_id')
         frames[name] = (frame.set_index("name") if not frame.empty
                         else pd.DataFrame(columns=STRATEGY_COMPARE_COLUMNS))
     return _keyed_differences(frames, scenarios, baseline, STRATEGY_COMPARE_COLUMNS, ["strategy"])
@@ -643,8 +628,8 @@ def target_differences(
     """Target set weights (percent) that differ, rows (set, as_of, class)."""
     frames = {}
     for name in scenarios:
-        frame = _table(connections[name], "SELECT target_set, as_of, asset_class, weight_micros "
-                       "FROM allocation_target")
+        frame = connections[name]._read_sql("SELECT target_set, as_of, asset_class, weight_micros "
+                                            "FROM allocation_target")
         if frame.empty:
             frames[name] = pd.DataFrame(columns=["weight"])
             continue
@@ -665,12 +650,12 @@ def strategy_activity(
 
     for name in scenarios:
         rc = connections[name]
-        frame = _table(rc, (
-            f"SELECT s.name, s.kind, {owns_sql(rc._con)} AS chain, COUNT(d.id) AS decisions, "
+        frame = rc._read_sql(
+            f"SELECT s.name, s.kind, {owns_sql()} AS chain, COUNT(d.id) AS decisions, "
             "COALESCE(SUM(d.asked_cents), 0) AS asked, COALESCE(SUM(d.chosen_cents), 0) AS moved, "
             "COALESCE(SUM(d.fallback_cents), 0) AS steps FROM strategy s "
             "LEFT JOIN chain c ON c.id = s.chain_id "
-            "LEFT JOIN strategy_decision d ON d.strategy_id = s.id GROUP BY s.id ORDER BY s.name"))
+            "LEFT JOIN strategy_decision d ON d.strategy_id = s.id GROUP BY s.id ORDER BY s.name")
         for row in named_rows(frame):
             rows.append({"scenario": name, "strategy": row.name, "kind": row.kind, "chain": row.chain,
                          "decisions": int(row.decisions), "asked": row.asked / 100,
@@ -692,8 +677,7 @@ def drift_targets(
     for name in scenarios:
         con = connections[name]._con
         watched += drift.watches(con)
-        if drift.has_table(con, "allocation_target"):
-            known |= set(drift.target_sets(con))
+        known |= set(drift.target_sets(con))
     return drift.pick(watched, sorted(known), target_set, portfolio)
 
 
@@ -708,7 +692,7 @@ def drift_by_scenario(
     out = {}
     for name in scenarios:
         con = connections[name]._con
-        if drift.has_table(con, "allocation_target") and target_set in drift.target_sets(con):
+        if target_set in drift.target_sets(con):
             out[name] = drift.drift_by_month(con, target_set, portfolio=portfolio)
     return out
 

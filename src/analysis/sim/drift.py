@@ -191,8 +191,6 @@ def _default_band(kind: str) -> int | None:
 
 def watches(con: sqlite3.Connection) -> list[Watch]:
     """The run's strategies with a ``targets`` parameter, by name."""
-    if not has_table(con, "strategy"):
-        return []
     out = []
     for name, kind, raw in con.execute("SELECT name, kind, params_json FROM strategy ORDER BY name"):
         params = json.loads(raw or "{}")
@@ -211,8 +209,6 @@ def choose(
 ) -> tuple[str, str | None, float | None]:
     """The target set, portfolio and band a drift view of this run shows
     (``pick``). ``ValueError`` says what to pick from."""
-    if not has_table(con, "allocation_target"):
-        raise ValueError("the run is from before allocation targets; run it again")
     return pick(watches(con), sorted(target_sets(con)), target_set, portfolio)
 
 

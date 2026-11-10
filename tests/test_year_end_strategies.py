@@ -4,7 +4,7 @@ built-in ``harvest`` and ``gift``.
 
 ``alice_year_end`` (from the ``strategy_scenarios`` fixture) builds on
 ``alice_rebalance`` (a joint brokerage of $300,000 with $200,000 basis) with
-a federal ``tax_accumulator`` settled each April, an ``Expense_Family`` gift
+a federal tax (``taxes/federal.csv``) settled each April, an ``Expense_Family`` gift
 account, and a ``harvest`` strategy filling the 0% long-term gains band."""
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def test_harvest_fills_the_zero_percent_band_to_the_cent(run_strategy_scenario) 
         else:
             assert taxable <= detail["band_top"]
             assert sum(detail["realized"].values()) == detail["held"]
-        assert _summary(run, year, "federal_ltcg_income") >= sum(detail["realized"].values())
+        assert _summary(run, year, "federal_ltcg_taxed") >= sum(detail["realized"].values())
 
 
 def test_harvest_raises_basis_and_keeps_the_balance(run_strategy_scenario, strategy_csv) -> None:
@@ -191,8 +191,8 @@ def test_cash_gift_is_held_to_its_tax_limit(run_strategy_scenario, strategy_csv)
     run = run_strategy_scenario(SCENARIO)
     month, moved, note, _detail = _year_ends(run)[0]
     assert month == "2026-12-31" and note.endswith(", held to $500 of tax") and 0 < moved < 1_900_000
-    extra = (_summary(run, 2026, "federal_tax_liability")
-             - _summary(base, 2026, "federal_tax_liability"))
+    extra = (_summary(run, 2026, "federal_tax")
+             - _summary(base, 2026, "federal_tax"))
     assert 49_000 < extra <= 50_000
     # Sold, not given in kind: the gain legs land in the gift account.
     characters = {c for (c,) in _query(run, (
@@ -249,7 +249,7 @@ def test_december_estimate_matches_the_april_settlement(
     assert [d[0][:4] for d in decisions] == [str(y) for y in range(2026, 2041)]
     for month, _moved, _note, detail in decisions[:-1]:
         year = int(month[:4])
-        assert detail["tax"] == _summary(run, year, "federal_tax_liability"), year
+        assert detail["tax"] == _summary(run, year, "federal_tax"), year
         assert detail["taxable"] == _summary(run, year, "federal_taxable_income"), year
         assert detail["status"] == "MFJ"
         assert detail["ytd"].get("ordinary", 0) > 0 or year > 2030
@@ -363,23 +363,21 @@ def test_a_gift_goes_to_a_gift_expense_account(run_strategy_scenario, strategy_c
     ("gift", {"to": "Expense_Family", "amount": "100.00", "portfolio": "portfolio:invest",
               "in_kind": False, "max_tax": "500.00"}, "max_tax"),
 ])
-def test_tax_aware_moves_need_the_federal_tax_rule_at_load(
+def test_tax_aware_moves_need_the_federal_tax_at_load(
     run_strategy_scenario, strategy_csv, kind: str, params: dict[str, object], what: str,
 ) -> None:
     _no_harvest(strategy_csv)
     _strategy(strategy_csv, "check", kind, **params)
-    strategy_csv(SCENARIO, "scheduled.csv").write_text(
-        strategy_csv(SCENARIO, "scheduled.csv").read_text().splitlines()[0] + "\n")
-    with pytest.raises(LoadError, match=f"{what} measures with the federal tax_accumulator rule, and there is none"):
+    strategy_csv(SCENARIO, "taxes/federal.csv").unlink()
+    with pytest.raises(LoadError, match=f"{what} measures with the federal tax .taxes/federal.csv., and there is none"):
         run_strategy_scenario(SCENARIO)
 
 
-def test_losses_and_in_kind_gifts_need_no_tax_rule(run_strategy_scenario, strategy_csv) -> None:
+def test_losses_and_in_kind_gifts_need_no_tax(run_strategy_scenario, strategy_csv) -> None:
     _strategy(strategy_csv, "harvest", "harvest", portfolio="portfolio:invest", gains=False, losses=True)
     _strategy(strategy_csv, "family", "gift", to="Expense_Family", amount="100.00",
               portfolio="portfolio:invest")
-    strategy_csv(SCENARIO, "scheduled.csv").write_text(
-        strategy_csv(SCENARIO, "scheduled.csv").read_text().splitlines()[0] + "\n")
+    strategy_csv(SCENARIO, "taxes/federal.csv").unlink()
     run_strategy_scenario(SCENARIO)
 
 # ---------- reports ----------

@@ -334,10 +334,9 @@ def _add_balances(out: MemberSeries, con: sqlite3.Connection, months: pd.Datetim
 def _add_classes(out: MemberSeries, con: sqlite3.Connection, months: pd.DatetimeIndex) -> None:
     """Each portfolio's cents per asset class by month (``drift.class_dollars``),
     and the run's target sets and the strategies steering to them."""
-    if allocation_drift.has_table(con, "allocation_target"):
-        out.targets = [tuple(row) for row in con.execute(
-            "SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")]
-        out.watches = allocation_drift.watches(con)
+    out.targets = [tuple(row) for row in con.execute(
+        "SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target")]
+    out.watches = allocation_drift.watches(con)
     iso = months.strftime("%Y-%m-%d")
     for portfolio, frame in allocation_drift.class_dollars(con).items():
         cents = np.rint(frame.reindex(iso).fillna(0.0).to_numpy(dtype=float) * 100).astype(np.int64)
@@ -601,6 +600,20 @@ class EnsembleSeries:
         raw = self._meta.get("reserve")
         return None if raw is None else units.json_dollars_to_cents(raw) / 100
 
+    def household_ends(self) -> dict[str, date]:
+        """Stem -> each member's household's final month (the last month
+        anyone was alive), for the members whose household ends within the
+        run."""
+        return {m.stem: m.household_end for m in self._members.values()
+                if m.household_end is not None}
+
+    def partial_last_years(self) -> dict[str, int]:
+        """Stem -> the year its household's final month falls in, for the
+        households that end before December (``reports.partial_last_years``)."""
+        from analysis.sim.reports import partial_last_years
+
+        return partial_last_years(self.household_ends())
+
     def base_case_deaths(self) -> list[Death]:
         """Member 0's deaths, or none when member 0 didn't succeed."""
         for m in self._members.values():
@@ -702,6 +715,7 @@ class EnsembleSeries:
 
     def spending(
         self, mode: DollarMode = DollarMode.CPI_CONSTANT, category: str | None = None,
+        *, alive_only: bool = True,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Each member's yearly spending, delivered and budgeted: a column
         per member, by year, in ``mode`` dollars, for one expense category
@@ -710,7 +724,19 @@ class EnsembleSeries:
         zeros. A batch without a strategy has budgeted equal to delivered. Spending
         dated before the run (a year-to-date catch-up) is its own year,
         converted at the run's first month's CPI, as ``spending_by_year``
-        has it."""
+        has it. With ``alive_only`` (the default), each member's years after
+        its household's final month are NaN, since spending nothing then is
+        not a cut (``reports.while_alive``, #377); its final year, which may
+        be partial, stays (``partial_last_years``)."""
+        if alive_only:
+            def alive() -> tuple[pd.DataFrame, pd.DataFrame]:
+                from analysis.sim.reports import while_alive
+
+                delivered, budgeted = self.spending(mode, category, alive_only=False)
+                ends = self.household_ends()
+                return while_alive(delivered, ends), while_alive(budgeted, ends)
+            return self.memo(("spending alive", mode, category), alive)
+
         def build() -> tuple[pd.DataFrame, pd.DataFrame]:
             categories = [category] if category is not None else self.spending_categories()
             if not any((SPENDING, c, DELIVERED) in self._subjects for c in categories):

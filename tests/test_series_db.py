@@ -64,7 +64,7 @@ def test_sim_run_writes_a_store_matching_the_member_files_exactly(mc_batch: Path
 def test_store_is_built_on_first_open_and_rebuilt_when_a_member_changes(
     seeded_ensemble_batch: Callable[[str, int], Path],
 ) -> None:
-    """A batch from before the store, or a member file changed since it was
+    """A batch without a store, or a member file changed since it was
     written, is read afresh rather than trusted."""
     batch = seeded_ensemble_batch("recipe", 1)
     assert not series_db_path(batch).exists()

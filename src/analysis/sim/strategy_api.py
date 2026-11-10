@@ -21,13 +21,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from types import UnionType
 from typing import (
     TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Union, get_args, get_origin, get_type_hints,
 )
+
+from analysis.sim import tax_api
 
 if TYPE_CHECKING:
     import numpy as np
@@ -42,7 +44,7 @@ __all__ = [
     "register", "sale_gain",
 ]
 
-API_VERSION = 6
+API_VERSION = 8
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
@@ -55,7 +57,9 @@ and ``annual_return``. 3 (#421) added ``year_end``, :class:`Transfer`,
 and ``ctx.rail``. 5 (#459) added ``ctx.survival_years``,
 ``ctx.life_expectancy`` and ``ctx.rmd_divisor``, and :class:`ScenarioView`'s
 ``people``, ``aux`` and ``portfolio_classes``. 6 (#463) added
-``ctx.trailing_return`` and :class:`ScenarioView`'s ``portfolio_lots``."""
+``ctx.trailing_return`` and :class:`ScenarioView`'s ``portfolio_lots``. 7
+(#507) replaced :class:`ScenarioView`'s ``tax_rules`` (counts by scope) with
+``taxes``, the set of the scenario's tax jurisdictions."""
 
 
 class StrategyError(Exception):
@@ -278,6 +282,44 @@ class TaxEstimate:
     """Adjusted gross income, which is also IRMAA's MAGI (#253)."""
 
 
+_RENAMED_LINES = {
+    "adjusted_gross_income": "agi", "tax_liability": "tax", "deduction_used": "deduction",
+    "ss_income": "ss_benefits", "taxable_ss": "ss_taxable", "ltcg_income": "ltcg_taxed",
+    "capital_loss_deduction": "capital_loss_used", "schedule_c_net": "business_net",
+    "hobby_expense_disallowed": "hobby_disallowed",
+}
+"""The ``tax_year_summary`` lines API 8 renamed (#507), old to new."""
+
+
+class _LastYear(Mapping[str, int]):
+    """Last year's summary, refusing a bucket name API 8 retired."""
+
+    def __init__(self, summary: Mapping[str, int]) -> None:
+        self._summary = summary
+
+    def _check(self, key: object) -> None:
+        if isinstance(key, str) and key not in self._summary:
+            scope, _, line = key.partition("_")
+            if line in _RENAMED_LINES:
+                raise StrategyError(
+                    f"ctx.tax.last_year has no {key!r} since strategy API 8: "
+                    f"it is {scope}_{_RENAMED_LINES[line]!s}")
+
+    def __getitem__(self, key: str) -> int:
+        self._check(key)
+        return self._summary[key]
+
+    def __contains__(self, key: object) -> bool:
+        self._check(key)
+        return key in self._summary
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._summary)
+
+    def __len__(self) -> int:
+        return len(self._summary)
+
+
 class TaxView:
     """``ctx.tax``: this year's income tax, from the transfers posted so far
     and the same estimator the April settlement uses, so a strategy and the
@@ -322,17 +364,19 @@ class TaxView:
 
     @property
     def last_year(self) -> Mapping[str, int] | None:
-        """Last year's ``tax_year_summary`` buckets, or None before it is settled."""
-        return self._last_year()
+        """Last year's ``tax_year_summary`` buckets, or None before it is
+        settled. A bucket's name from before API 8 is refused, naming the new
+        one, so a strategy written for 7 fails rather than reading 0."""
+        summary = self._last_year()
+        return None if summary is None else _LastYear(summary)
 
     def estimate(self, ordinary: int = 0, ltcg: int = 0, scope: str = "federal") -> TaxEstimate:
         """The year's tax with ``ordinary`` more ordinary income and ``ltcg``
         more long-term gain."""
-        est = self._est(scope)
-        taxable, ordinary_taxable = est.taxable_with(ordinary, ltcg)
+        ret = self._est(scope).compute(tax_api.Extra(ordinary, ltcg))
         return TaxEstimate(
-            tax=est.tax_with(ordinary, ltcg), taxable_income=taxable,
-            ordinary_taxable=ordinary_taxable, agi=est.agi_with(ordinary, ltcg),
+            tax=ret.tax, taxable_income=ret.taxable_income,
+            ordinary_taxable=ret.ordinary_taxable, agi=ret.agi,
         )
 
     def marginal(
@@ -348,7 +392,8 @@ class TaxView:
             raise StrategyError(f"next must be 'ordinary' or 'ltcg', not {next!r}")
         est = self._est(scope)
         more = (ordinary + step, ltcg) if next == "ordinary" else (ordinary, ltcg + step)
-        return (est.tax_with(*more) - est.tax_with(ordinary, ltcg)) * 1_000_000 // step
+        return (est.compute(tax_api.Extra(*more)).tax
+                - est.compute(tax_api.Extra(ordinary, ltcg)).tax) * 1_000_000 // step
 
     def bracket_top(self, rate: int, scope: str = "federal") -> int | None:
         """The taxable ordinary income where this year's bracket taxed at
@@ -789,8 +834,9 @@ class ScenarioView:
 
     accounts: Mapping[str, tuple[str, str]]
     """Each account's ``(kind, subkind)``."""
-    tax_rules: Mapping[str, int]
-    """How many ``tax_accumulator`` rules each scope (``federal``, ``state``) has."""
+    taxes: frozenset[str]
+    """The scenario's tax jurisdictions (``federal``, ``state``): a
+    ``taxes/<jurisdiction>.csv`` file each (#507)."""
     people: Mapping[str, tuple[str | None, str | None, str | None]] = field(default_factory=dict)
     """Each person's ``(role, sex, life table)`` from persons.csv and
     lifespan.csv, blank as None: the table is the name a lifespan row gives

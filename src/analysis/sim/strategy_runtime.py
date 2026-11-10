@@ -108,12 +108,9 @@ class _TableMortality(Mortality):
             if birth:
                 self._birth[pid] = date.fromisoformat(birth)
             self._sex[pid] = sex or None
-        columns = {row[1] for row in con.execute("PRAGMA table_info(person_lifespan)")}
-        self._lifespan: dict[str, tuple[str | None, float]] = {}
-        if {"life_table", "life_table_set_forward"} <= columns:
-            for pid, name, forward in con.execute(
-                    "SELECT person, life_table, life_table_set_forward FROM person_lifespan"):
-                self._lifespan[pid] = (name or None, forward or 0.0)
+        self._lifespan: dict[str, tuple[str | None, float]] = {
+            pid: (name or None, forward or 0.0) for pid, name, forward in con.execute(
+                "SELECT person, life_table, life_table_set_forward FROM person_lifespan")}
         self._curves: dict[tuple[str, date], list[float]] = {}
 
     def _curve(self, person: str, month: date) -> list[float]:

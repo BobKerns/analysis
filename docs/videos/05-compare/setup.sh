@@ -75,8 +75,7 @@ sim scheduled add 2026-01 Income_SS_Bill Asset_Checking 3200 --kind ss_benefit -
     --person bill --claim-age 70 --series cpi
 sim scheduled add 2026-01 Asset_TraditionalIRA_Alice Asset_Checking --kind rmd --name rmd_alice --from-lot default \
     --person alice
-sim scheduled add 2027-04 Asset_Checking Expense_Taxes_Federal --kind tax_accumulator \
-    --name federal_tax --cadence annual --month-of-year 4 --params-json '{"year": "previous"}'
+sim tax add federal --source-chain Asset_Checking --destination Expense_Taxes_Federal --start 2027-04
 
 
 sim chain add spending Asset_Savings --role source

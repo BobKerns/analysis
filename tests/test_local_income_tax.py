@@ -14,7 +14,8 @@ import pytest
 
 from analysis.sim import registries
 from analysis.sim.connection import RunConnection
-from analysis.sim.engine import _swap_aux_table, _year_tax_estimate
+from analysis.sim.engine import _prepare_tax, _swap_aux_table
+from analysis.sim.tax_api import Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.reports import tax_by_year
 from analysis.sim.run_charts import tax_figure
@@ -69,9 +70,11 @@ def _earn(con: sqlite3.Connection, year: int, amount: int) -> None:
     )
 
 
-def _estimate(con: sqlite3.Connection, aux: Aux, scope: str = "state", year: int = 2026):
+def _estimate(con: sqlite3.Connection, aux: Aux, scope: str = "state", year: int = 2026,
+              more: int = 0) -> Return:
     params = {"scope": scope, **({"bracket_series": "CA"} if scope == "state" else {})}
-    return _year_tax_estimate(con, params, aux=aux, tax_year=year, tid=1)
+    kind = "state_tables" if scope == "state" else scope
+    return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind).compute(Extra(more))
 
 
 def test_a_local_tax_taxes_the_states_taxable_income(ledger: sqlite3.Connection) -> None:
@@ -80,13 +83,13 @@ def test_a_local_tax_taxes_the_states_taxable_income(ledger: sqlite3.Connection)
     _earn(ledger, 2026, 110_000_00)
     taxable = 100_000_00
     state = _estimate(ledger, _aux(_band(0, 30_000)))
-    assert state.local_tax == taxable * 3 // 100
-    assert state.tax_liability == taxable * 5 // 100 + state.local_tax
-    assert _estimate(ledger, _aux()).local_tax == 0
+    assert state["local_tax"] == taxable * 3 // 100
+    assert state.tax == taxable * 5 // 100 + state["local_tax"]
+    assert _estimate(ledger, _aux())["local_tax"] == 0
     federal = _estimate(ledger, _aux(_band(0, 30_000)), "federal")
-    assert (federal.local_tax, federal.tax_liability) == (0, taxable * 5 // 100)
+    assert (federal.lines.get("local_tax", 0), federal.tax) == (0, taxable * 5 // 100)
     # More income pays the local rate too (the drawdown, fill_bracket).
-    assert state.tax_with(100_00, 0) - state.tax_liability == 8_00
+    assert _estimate(ledger, _aux(_band(0, 30_000)), more=100_00).tax - state.tax == 8_00
 
 
 def test_a_local_tax_with_brackets_and_a_threshold(ledger: sqlite3.Connection) -> None:
@@ -99,9 +102,9 @@ def test_a_local_tax_with_brackets_and_a_threshold(ledger: sqlite3.Connection) -
                surcharge=True)
     state = _estimate(ledger, aux)
     local = (400_000_00 - 200_000_00) // 100 + (taxable - 400_000_00) * 25 // 1000
-    assert state.local_tax == local
+    assert state["local_tax"] == local
     surcharge = (taxable - 1_000_000_00) // 100
-    assert state.tax_liability == taxable * 5 // 100 + surcharge + local
+    assert state.tax == taxable * 5 // 100 + surcharge + local
 
 
 def test_a_move_takes_the_local_tax_along(ledger: sqlite3.Connection) -> None:
@@ -118,7 +121,7 @@ def test_a_move_takes_the_local_tax_along(ledger: sqlite3.Connection) -> None:
         "source_series": "other_county"}, aux)
     _swap_aux_table(ledger, 2, "2028-01-31", {
         "aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux)
-    assert [_estimate(ledger, aux, year=year).local_tax for year in (2026, 2027, 2028)] == [
+    assert [_estimate(ledger, aux, year=year)["local_tax"] for year in (2026, 2027, 2028)] == [
         3_000_00, 2_000_00, 0]
 
 

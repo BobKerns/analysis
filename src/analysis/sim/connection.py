@@ -31,6 +31,7 @@ import traitlets
 
 from analysis.frames import index_years
 from analysis.sim import accounts
+from analysis.sim.lineage import lineage_fingerprint
 from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, Death, DollarMode, ItemType
 
 from . import registries
@@ -39,6 +40,7 @@ from .schema import connect_sim_file
 
 if TYPE_CHECKING:
     from analysis.sim.lifespan_curves import PersonLifespan
+    from analysis.sim.load_warnings import LoadWarnings
     from analysis.sim.shortfalls import NegativeBalance
     from analysis.sim.step_ups import BasisStepUp
 
@@ -82,20 +84,20 @@ GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
 DEFAULT_SETTLE_TAX_BUCKETS = ["federal_tax_due", "state_tax_due"]
 DEFAULT_TAX_SUMMARY_BUCKETS: dict[str, str] = {
-    "federal_tax_liability": "federal tax",
-    "state_tax_liability": "state tax",
-    "federal_ss_income": "SS gross",
-    "federal_taxable_ss": "SS taxed",
+    "federal_tax": "federal tax",
+    "state_tax": "state tax",
+    "federal_ss_benefits": "SS gross",
+    "federal_ss_taxable": "SS taxed",
 }
 _TAX_RECONCILIATION_BUCKETS = [
-    "federal_tax_liability", "state_tax_liability",
+    "federal_tax", "state_tax",
     "federal_tax_paid", "state_tax_paid",
     "federal_tax_due", "state_tax_due",
     "federal_tax_overpaid", "state_tax_overpaid",
 ]
 _TAX_RECONCILIATION_RENAME = {
-    "federal_tax_liability": "federal_liability",
-    "state_tax_liability": "state_liability",
+    "federal_tax": "federal_liability",
+    "state_tax": "state_liability",
     "federal_tax_paid": "federal_withheld_or_paid",
     "state_tax_paid": "state_withheld_or_paid",
     "federal_tax_due": "federal_reconciliation_due",
@@ -269,7 +271,7 @@ _ITEM_SQL: dict[str, str] = {
         "       fa.subkind AS from_subkind, fm.lot AS from_lot, "
         "       ta.name AS to_name, ta.kind AS to_kind, "
         "       ta.subkind AS to_subkind, tm.lot AS to_lot, "
-        "       rule.name AS rule_name "
+        "       COALESCE(rule.name, tax.name) AS rule_name "
         "FROM transfer_event te "
         "JOIN simulation_step s ON s.id = te.step_id "
         "JOIN account fa ON fa.id = te.from_account "
@@ -278,6 +280,8 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account_lot tm ON tm.id = te.to_lot_id "
         "LEFT JOIN scheduled_transaction rule "
         "  ON te.reason_kind = 'rule' AND rule.id = te.reason_id "
+        "LEFT JOIN tax_jurisdiction tax "
+        "  ON te.reason_kind = 'tax' AND tax.id = te.reason_id "
         "ORDER BY te.id"
     ),
     "simulation_run": "SELECT * FROM simulation_run",
@@ -402,6 +406,16 @@ class _TagReader:
 
     def _ensure_fresh(self) -> None:
         """Hook for subclasses; default no-op (run files don't mutate)."""
+
+    def load_warnings(self) -> LoadWarnings:
+        """The warnings the load recorded in this intent or run file (#432),
+        as ``sim explain`` lists them: see ``load_warnings.read``."""
+        from analysis.sim import load_warnings
+
+        self._ensure_fresh()
+        # Its own read-only connection, opened on the calling thread: a
+        # widget redraw can come from a kernel subshell (see _read_sql).
+        return self._cached("load_warnings", lambda: load_warnings.read_file(self._db_path))
 
     def lot_growth_series(self) -> dict[tuple[str, str], str]:
         """Each lot's growth series, by (account, lot): the series its
@@ -863,13 +877,12 @@ class RunConnection(Connection):
         unpaid = pd.Series(0.0, index=months)
         if due.empty:
             return unpaid
-        # Only a tax rule's payment settles the year: other rows can carry an
+        # Only a tax settlement settles the year: other rows can carry an
         # earlier tax_year too (a next-spring IRA contribution, say).
         paid = self._read_sql(
             "SELECT tax_year, MIN(date) AS date FROM transfer_event "
             "WHERE tax_year IS NOT NULL AND CAST(substr(date, 1, 4) AS INTEGER) > tax_year "
-            "  AND reason_kind = 'rule' AND reason_id IN ("
-            "    SELECT id FROM scheduled_transaction WHERE amount_rule_kind = 'tax_accumulator') "
+            "  AND reason_kind = 'tax' "
             "GROUP BY tax_year"
         )
         settled = dict(zip(paid["tax_year"].astype(int),
@@ -1042,12 +1055,12 @@ class RunConnection(Connection):
     def basis_step_ups(self) -> list[BasisStepUp]:
         """The run's basis step-ups at a death (#434), as ``sim explain``
         lists them: see ``step_ups.basis_step_ups``. Empty for a run with
-        none, or from before they were recorded."""
+        none."""
         from analysis.sim import step_ups
 
         # Its own read-only connection on the calling thread, as negative_balances.
         return self._cached("basis_step_ups",
-                            lambda: step_ups.run_basis_step_ups(self.run_path) or [])
+                            lambda: step_ups.run_basis_step_ups(self.run_path))
 
     def deaths(self) -> list[Death]:
         """Each person's death in this run (#255), from ``lifespan.csv``: the
@@ -1196,7 +1209,7 @@ class RunConnection(Connection):
         realized taxable gains: they are taxed the year they're paid, but
         never reach cash, so ``distribution_coverage`` leaves them out.
         Social Security is split into taxable/non-taxable by this run's own
-        ``federal_taxable_ss`` (the provisional-income test), not a flat
+        ``federal_ss_taxable`` (the provisional-income test), not a flat
         assumption. Also includes ``expenses``/``distribution_coverage``
         (realized cash vs. that year's spending). A run whose strategies
         harvested gains (#421: sold and rebought, so no cash moved) adds a
@@ -1250,15 +1263,15 @@ class RunConnection(Connection):
             gains_yearly.index.name = "year"
 
             tax_summary = self.items("tax_year_summary")
-            federal_taxable_ss = (
+            federal_ss_taxable = (
                 tax_summary.loc[
-                    tax_summary["bucket"] == "federal_taxable_ss", ["year", "amount"]
+                    tax_summary["bucket"] == "federal_ss_taxable", ["year", "amount"]
                 ].set_index("year")["amount"]
                 / 100
             )
             ss_total = gains_yearly["social_security"]
             ss_taxable = (
-                federal_taxable_ss.reindex(gains_yearly.index).fillna(0).clip(upper=ss_total)
+                federal_ss_taxable.reindex(gains_yearly.index).fillna(0).clip(upper=ss_total)
             )
             ss_nontaxable = ss_total - ss_taxable
 
@@ -1295,7 +1308,7 @@ class RunConnection(Connection):
             return (
                 tax_summary.loc[
                     tax_summary["bucket"].isin(
-                        ["federal_tax_liability", "state_tax_liability"]
+                        ["federal_tax", "state_tax"]
                     ),
                     ["year", "amount"],
                 ]
@@ -1481,6 +1494,9 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         return self
 
     scenarios_dir: Path
+    loaded_fingerprint: tuple[tuple[str, int, int], ...]
+    """The lineage folders' files as the intent was loaded from them
+    (``lineage.lineage_fingerprint``), so a view can tell when they've changed."""
 
     def __init__(self, data_dir: Path | str,
                  scenario: str | None = None,
@@ -1512,6 +1528,8 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         old = getattr(self, "_con", None)
         if old is not None:
             old.close()
+        # Taken before the load, so an edit during it reads as a change too.
+        self.loaded_fingerprint = lineage_fingerprint(self.scenarios_dir, self._scenario_name)
         load_scenario(
             self.data_dir, self._scenario_name,
             intent_dir=self._intent_dir,

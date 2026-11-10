@@ -4,7 +4,6 @@ asked one at a time, and mix-in only scenarios with no parent."""
 from __future__ import annotations
 
 import csv
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -306,21 +305,3 @@ def test_a_missing_parent_is_not_a_mix_in(test_data_dir: Path, test_scenarios_di
     csv_path = test_scenarios_dir / "kid" / "scenario.csv"
     csv_path.write_text(csv_path.read_text().replace("extra", "missing"), encoding="utf-8")
     assert not is_mixin_only(test_scenarios_dir, "kid")
-
-
-def test_a_pre_schema_50_root_mix_in_intent_still_does_not_run(test_data_dir: Path, intent_dir: Path,
-                                                               runs_dir: Path) -> None:
-    assert _sim(test_data_dir, "scenario", "create", "extra", "--no-parent").exit_code == 0
-    assert _sim(test_data_dir, "load", "extra", "--intent-dir", str(intent_dir),
-                "--allow-dirty-data", "--no-run").exit_code == 0
-    con = sqlite3.connect(intent_dir / "extra.sqlite3")
-    con.execute("ALTER TABLE scenario DROP COLUMN mixin_only")
-    con.commit()
-    con.close()
-    result = CliRunner().invoke(
-        main, ["sim", "run", "extra", "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-               "--allow-dirty-data"],
-        env={"ANALYSIS_DATA_DIR": None},
-    )
-    assert result.exit_code != 0
-    assert "mix-in only" in result.output, result.output

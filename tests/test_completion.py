@@ -187,11 +187,12 @@ _NAMING_PARAMS = {
     "refill_chain", "overflow_chain", "scheduled_name", "row", "person", "owner",
     "series", "source_series", "symbol", "symbols", "tag_token", "tag_tokens",
     "vary_correlate_with", "correlate_with", "strategy", "strategy_name", "target_set",
+    "jurisdiction",
 }
 # ... except where the command makes a new one (by the command's function,
 # as `sim accounts` repeats `sim account`).
 _NEW_NAMES = {("lot_add", "lot"), ("invest_command", "lot"), ("symbol_add_command", "symbol"),
-              ("series_add", "series")}
+              ("series_add", "series"), ("tax_add_command", "jurisdiction")}
 
 
 def _params(command: click.Command, path: str) -> list[tuple[str, click.Command, click.Parameter]]:

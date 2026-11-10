@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 
 from analysis.sim import registries
-from analysis.sim.engine import _indexed_tax_rows, _swap_aux_table, _year_tax_estimate
+from analysis.sim.engine import _indexed_tax_rows, _prepare_tax, _swap_aux_table
+from analysis.sim.tax_api import Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
@@ -66,21 +67,23 @@ def _post(con: sqlite3.Connection, year: int, frm: int, to: int, amount: int, ch
     )
 
 
-def _estimate(con: sqlite3.Connection, aux: Aux, scope: str, year: int = 2026):
+def _estimate(con: sqlite3.Connection, aux: Aux, scope: str, year: int = 2026,
+              more: int = 0) -> Return:
     params = {"scope": scope, **({"bracket_series": "CA"} if scope == "state" else {})}
-    return _year_tax_estimate(con, params, aux=aux, tax_year=year, tid=1)
+    kind = "state_tables" if scope == "state" else scope
+    return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind).compute(Extra(more))
 
 
 def test_the_surcharge_adds_its_rate_above_its_floor(ledger: sqlite3.Connection) -> None:
     _post(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
     taxable = 2_000_000_00
     state = _estimate(ledger, _aux(surcharge=True), "state")
-    assert state.tax_liability == taxable // 10 + (taxable - 1_000_000_00) // 100
+    assert state.tax == taxable // 10 + (taxable - 1_000_000_00) // 100
     # Below the floor it adds nothing, and federal tax never reads it.
-    assert _estimate(ledger, _aux(), "state").tax_liability == taxable // 10
-    assert _estimate(ledger, _aux(surcharge=True), "federal").tax_liability == taxable // 10
+    assert _estimate(ledger, _aux(), "state").tax == taxable // 10
+    assert _estimate(ledger, _aux(surcharge=True), "federal").tax == taxable // 10
     # More income on top pays the surcharge too.
-    assert state.tax_with(100_00, 0) - state.tax_liability == 11_00
+    assert _estimate(ledger, _aux(surcharge=True), "state", more=100_00).tax - state.tax == 11_00
 
 
 def test_a_state_that_taxes_an_hsa_undoes_its_deduction_and_taxes_its_growth(
@@ -92,19 +95,19 @@ def test_a_state_that_taxes_an_hsa_undoes_its_deduction_and_taxes_its_growth(
     _post(ledger, 2026, HSA, MEDICAL, 2_000_00, "tax_deferred_out")
 
     federal = _estimate(ledger, _aux(hsa="taxable"), "federal")
-    assert (federal.ordinary_income, federal.ltcg_income) == (94_000_00, 0)
+    assert (federal["ordinary_income"], federal["ltcg_taxed"]) == (94_000_00, 0)
     # No table, or one following the federal rules, leaves the state alone.
     for aux in (_aux(), _aux(hsa="federal")):
         state = _estimate(ledger, aux, "state")
-        assert (state.ordinary_income, state.ltcg_income) == (94_000_00, 0)
+        assert (state["ordinary_income"], state["ltcg_taxed"]) == (94_000_00, 0)
     # The contribution isn't deducted, the withdrawal was taxed already, and
     # the growth is income.
     state = _estimate(ledger, _aux(hsa="taxable"), "state")
-    assert (state.ordinary_income, state.ltcg_income) == (100_000_00, 1_000_00)
+    assert (state["ordinary_income"], state["ltcg_taxed"]) == (100_000_00, 1_000_00)
     # The after-tax drawdown prices its shares on top of the year's other
     # income: the HSA's withdrawal and growth aren't what the shares replace.
-    assert (state.hsa_withdrawn, state.hsa_growth) == (2_000_00, 1_000_00)
-    assert (federal.hsa_withdrawn, federal.hsa_growth) == (0, 0)
+    assert (state.memo["hsa_withdrawn"], state.memo["hsa_growth"]) == (2_000_00, 1_000_00)
+    assert (federal.memo["hsa_withdrawn"], federal.memo["hsa_growth"]) == (0, 0)
 
 
 def test_an_hsa_that_falls_is_a_capital_loss_for_the_state(ledger: sqlite3.Connection) -> None:
@@ -114,13 +117,13 @@ def test_an_hsa_that_falls_is_a_capital_loss_for_the_state(ledger: sqlite3.Conne
     _post(ledger, 2027, DEFERRED_GAINS, HSA, 4_000_00, "deferred")
 
     fell = _estimate(ledger, _aux(hsa="taxable"), "state")
-    assert (fell.capital.loss_deduction, fell.capital.carryover_lt) == (3_000_00, 2_000_00)
+    assert (fell["capital_loss_used"], fell["capital_loss_carryover"]) == (3_000_00, 2_000_00)
     # The drawdown's baseline adds a fall back: it was no sale.
-    assert fell.hsa_growth == -5_000_00
+    assert fell.memo["hsa_growth"] == -5_000_00
     # The next year's growth first absorbs the loss carried in.
     rose = _estimate(ledger, _aux(hsa="taxable"), "state", year=2027)
-    assert rose.ltcg_income == 2_000_00
-    assert _estimate(ledger, _aux(hsa="taxable"), "federal").capital.loss_deduction == 0
+    assert rose["ltcg_taxed"] == 2_000_00
+    assert _estimate(ledger, _aux(hsa="taxable"), "federal")["capital_loss_used"] == 0
 
 
 def test_a_move_keeps_the_old_states_tables_for_the_years_before_it(
@@ -140,11 +143,11 @@ def test_a_move_keeps_the_old_states_tables_for_the_years_before_it(
                     {"aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux)
     taxable = 2_000_000_00
     before = _estimate(ledger, aux, "state", 2026)
-    assert before.tax_liability == taxable // 10 + 1_000_000_00 // 100
-    assert before.ordinary_income == 2_010_000_00
+    assert before.tax == taxable // 10 + 1_000_000_00 // 100
+    assert before["ordinary_income"] == 2_010_000_00
     after = _estimate(ledger, aux, "state", 2027)
-    assert after.tax_liability == taxable // 10
-    assert _estimate(ledger, aux, "state", 2029).ordinary_income == -8_000_00
+    assert after.tax == taxable // 10
+    assert _estimate(ledger, aux, "state", 2029)["ordinary_income"] == -8_000_00
     assert ledger.execute(
         "SELECT DISTINCT kind FROM aux_table WHERE series = 'CA' ORDER BY kind").fetchall() == [
         ("state_brackets",), (registries.STATE_HSA,), (registries.STATE_SURCHARGE,)]
@@ -159,9 +162,9 @@ def test_a_move_to_a_state_whose_tables_start_later_waits_for_them(
     aux[(registries.STATE_HSA, "OR")] = [("2030-01-31", {"treatment": "taxable"})]
     _swap_aux_table(ledger, 1, "2028-03-31",
                     {"aux_kind": "state_brackets", "series": "CA", "source_series": "OR"}, aux)
-    assert _estimate(ledger, aux, "state", 2029).ordinary_income == -8_000_00
+    assert _estimate(ledger, aux, "state", 2029)["ordinary_income"] == -8_000_00
     _post(ledger, 2030, CHECKING, HSA, 8_000_00, "tax_deferred_in")
-    assert _estimate(ledger, aux, "state", 2030).ordinary_income == 0
+    assert _estimate(ledger, aux, "state", 2030)["ordinary_income"] == 0
 
 
 def test_the_templates_ship_the_california_tables(
@@ -229,6 +232,6 @@ def test_swapping_the_hsa_table_alone_keeps_the_years_before(ledger: sqlite3.Con
     aux[(registries.STATE_HSA, "federal")] = [("2026-01-31", {"treatment": "federal"})]
     _swap_aux_table(ledger, 1, "2027-03-31",
                     {"aux_kind": registries.STATE_HSA, "series": "CA", "source_series": "federal"}, aux)
-    assert _estimate(ledger, aux, "state", 2026).ordinary_income == 0
+    assert _estimate(ledger, aux, "state", 2026)["ordinary_income"] == 0
     _post(ledger, 2027, CHECKING, HSA, 8_000_00, "tax_deferred_in")
-    assert _estimate(ledger, aux, "state", 2027).ordinary_income == -8_000_00
+    assert _estimate(ledger, aux, "state", 2027)["ordinary_income"] == -8_000_00

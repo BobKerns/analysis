@@ -37,8 +37,9 @@ Rules = Callable[..., Path]
 def fill_run(
     retire_alice_csv: Callable[[str], Path], fund_asset_savings: Callable[..., None],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    add_tax: Callable[..., Path],
 ) -> Rules:
-    """Run retire_alice with a federal tax rule and the given fill_bracket
+    """Run retire_alice with the federal tax and the given fill_bracket
     rows (each a dict of scheduled.csv columns over a 22%-bracket
     conversion from Alice's traditional IRA to her Roth, from 2029)."""
     fund_asset_savings("1000000.00")  # the conversions' tax comes from savings
@@ -52,13 +53,9 @@ def fill_run(
         scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
         blank = dict.fromkeys(SCHEDULED_CSV_HEADER, "")
         if tax:
-            scheduled.loc[len(scheduled)] = {
-                **blank, "name": "tax_federal", "from_account": "Asset_Checking",
-                "to_account": "Expense_Taxes_Federal", "cadence": "annual",
-                "month_of_year": "4", "amount_rule_kind": "tax_accumulator",
-                "tax_character": "none", "start": "2027-04-30", "meta_json": "{}",
-                "params_json": '{"year":"previous","scope":"federal"}',
-            }
+            add_tax()
+        else:
+            (path.parent / "taxes" / "federal.csv").unlink(missing_ok=True)
         for i, row in enumerate(rows):
             scheduled.loc[len(scheduled)] = {
                 **blank, "name": f"convert_{i}",
@@ -99,7 +96,7 @@ def _summary(run: Path) -> pd.DataFrame:
 
 def _ordinary_taxable(summary: pd.DataFrame, year: int) -> int:
     taxable = summary.loc[year, "federal_taxable_income"]
-    return int(taxable - min(summary.loc[year, "federal_ltcg_income"], taxable))
+    return int(taxable - min(summary.loc[year, "federal_ltcg_taxed"], taxable))
 
 
 def _ira_balance_after(run: Path, event_id: int) -> int:
@@ -137,7 +134,7 @@ def test_taxable_social_security_is_solved_for_not_subtracted(fill_run: Rules) -
     run = fill_run({"start": "2033-01-31"})
     summary = _summary(run)
     without = _summary(fill_run({"start": "2034-01-31"}))
-    assert summary.loc[2033, "federal_taxable_ss"] > without.loc[2033, "federal_taxable_ss"]
+    assert summary.loc[2033, "federal_ss_taxable"] > without.loc[2033, "federal_ss_taxable"]
     assert _ordinary_taxable(summary, 2033) == _top_22(run, 2033)
 
 
@@ -212,14 +209,12 @@ def test_the_conversion_comes_after_the_years_rmd(fill_run: Rules) -> None:
     ({"tax_year": "2030"}, "takes no tax_year"),
     ({"month_of_year": "6"}, r"before the RMD from the same lot \(month 12\)"),
     ({"rate": "", "amount": "150000.00", "series": "cpi"}, "series cpi needs a base_date"),
-    ({"params_json": '{"tax_rule": "tax_federal", "scope": "state"}'},
-     "tax_rule 'tax_federal' is a federal rule, not a state one"),
+    ({"params_json": '{"tax_rule": "tax_federal"}'}, "fill_bracket takes no tax_rule"),
     ({"params_json": '{"cap": 1}'}, "unknown params_json key"),
     ({"params_json": '{"max_amount": "-5.00"}'}, "max_amount"),
     ({"params_json": '{"max_marginal_rate": "30"}'}, "max_marginal_rate"),
     ({"params_json": '{"max_marginal_rate": "-1%"}'}, "max_marginal_rate must be from 0%"),
-    ({"params_json": '{"tax_rule": "nope"}'}, "tax_rule 'nope' is not"),
-    ({"params_json": '{"scope": "state"}'}, "state tax_accumulator rule, and there is none"),
+    ({"params_json": '{"scope": "state"}'}, r"measures with the state tax, and there is none \(taxes/state.csv\)"),
 ])
 def test_the_loader_checks_a_fill_bracket_row(
     fill_run: Rules, row: dict[str, str], message: str,
@@ -228,17 +223,16 @@ def test_the_loader_checks_a_fill_bracket_row(
         fill_run(row)
 
 
-def test_the_loader_wants_a_tax_rule_to_measure_with(fill_run: Rules) -> None:
-    with pytest.raises(LoadError, match="federal tax_accumulator rule, and there is none"):
+def test_the_loader_wants_the_federal_tax_to_measure_with(fill_run: Rules) -> None:
+    with pytest.raises(LoadError, match="measures with the federal tax, and there is none"):
         fill_run({}, tax=False)
 
 
-def test_scheduled_add_writes_a_fill_bracket_without_a_priority(test_data_dir: Path) -> None:
+def test_scheduled_add_writes_a_fill_bracket_without_a_priority(
+    test_data_dir: Path, write_tax: Callable[..., Path],
+) -> None:
     path = test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv"
-    with path.open("a") as f:  # the tax rule the conversion measures with
-        f.write("tax_federal,Asset_Checking,,Expense_Taxes_Federal,,annual,4,tax_accumulator,"
-                ",,,,,,,,none,,2027-04-30,,,,,,{},"
-                '"{""year"":""previous"",""scope"":""federal""}",\n')
+    write_tax(path.parent)  # the tax the conversion measures with
 
     def add(*args: str):
         return CliRunner().invoke(main, [

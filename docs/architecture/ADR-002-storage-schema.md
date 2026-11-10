@@ -101,7 +101,7 @@ state/
 | --- | --- | --- |
 | `person`, `account`, `security`, `security_allocation` | ✓ | ✓ (snapshot) |
 | `account_lot` | ✓ | ✓ (snapshot) |
-| `scheduled_transaction` | ✓ | ✓ (snapshot) |
+| `scheduled_transaction`, `tax_jurisdiction` | ✓ | ✓ (snapshot) |
 | `chain`, `chain_steps` | ✓ | ✓ (snapshot) |
 | `calendar`, `calendar_event` | ✓ | ✓ (snapshot) |
 | `aux_table` | ✓ | ✓ (snapshot) |
@@ -111,6 +111,7 @@ state/
 | `year_to_date` | ✓ | ✓ (snapshot) |
 | `ensemble_manifest`, `ensemble_draw`, `ensemble_tail_scale`, `ensemble_path_shock` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
 | `strategy`, `strategy_source`, `strategy_trigger`, `strategy_vary`, `allocation_target` ([ADR-010](ADR-010-responsive-strategies.md)) | ✓ | ✓ (snapshot) |
+| `load_warning` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
 | `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
@@ -121,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 57) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 60) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -158,6 +159,25 @@ CREATE TABLE strategy_source (
     module  TEXT PRIMARY KEY,
     sha256  TEXT NOT NULL,
     source  TEXT NOT NULL
+);
+
+-- The scenario's income tax jurisdictions (taxes/<name>.csv, merged over the
+-- lineage; #507). name prefixes the jurisdiction's tax_year_summary buckets;
+-- kind is the calculator; upstream the jurisdictions its return builds on,
+-- space-separated. Each April (schedule) it pays what is still due for the
+-- year before from source_chain into destination, between start and end.
+CREATE TABLE tax_jurisdiction (
+    id                   INTEGER PRIMARY KEY,
+    name                 TEXT NOT NULL UNIQUE,
+    kind                 TEXT NOT NULL,
+    upstream             TEXT NOT NULL DEFAULT '',
+    source_chain_id      INTEGER NOT NULL REFERENCES chain(id),
+    destination_chain_id INTEGER NOT NULL REFERENCES chain(id),
+    schedule             TEXT NOT NULL CHECK (schedule IN ('april')),
+    start                TEXT NOT NULL,
+    "end"                TEXT,
+    params_json          TEXT NOT NULL DEFAULT '{}',
+    description          TEXT NOT NULL DEFAULT ''
 );
 
 -- The scenario's enabled strategies (strategies/<name>.csv, merged over the
@@ -642,6 +662,21 @@ CREATE TABLE ensemble_path_shock (
 
 A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<mode>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
 
+### Load warnings
+
+The loader's non-fatal warnings, kept with the intent so they can be read after the fact (#432): a run file's snapshot carries them, `sim explain` prints them, and the notebooks show them beside the scenario picker. `kind` `warning` is what every `sim load`/`run`/`check` prints (a fallback taken, a partial allocation); `unused` is a thing defined but not read yet, which only `sim check` prints at load ([ADR-004](ADR-004-reproducibility-and-activation.md) §6). An ensemble member's intent is a copy of its recipe's, so it carries the recipe's warnings.
+
+```sql
+-- #432: the load's non-fatal warnings, in the order raised, so they can be
+-- read after the fact (sim explain, the notebooks). 'unused' is a thing
+-- defined but not read yet (#204), which only `sim check` prints at load.
+CREATE TABLE load_warning (
+    id      INTEGER PRIMARY KEY,
+    kind    TEXT NOT NULL CHECK (kind IN ('warning','unused')),
+    message TEXT NOT NULL
+);
+```
+
 ### Intent manifest (intent files only)
 
 Single-row table; the intent file's identity card.
@@ -748,7 +783,8 @@ CREATE TABLE transfer_event (
     tax_year        INTEGER,
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
-                        ('rule','initial','ytd','ytd_rule','refill','overflow','strategy')),
+                        ('rule','initial','ytd','ytd_rule','refill','overflow','strategy',
+                         'tax')),
     reason_id       INTEGER,
     -- The event this leg derives from: a multi-leg rule's primary leg, a
     -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
@@ -940,6 +976,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `ensemble_draw` | One row per resolved `vary_distribution` row: which `calendar_event` (`name`) or lifespan (`lifespan:<person>`), which target (`amount`/`date`/`age_at_death`), and the drawn value ([ADR-006](ADR-006-ensemble-scenarios.md)); `quantile` is the OAT override quantile for a sensitivity member's perturbed row ([ADR-007](ADR-007-sensitivity-analysis.md)); `z`, `noise` and `u` are its score, its own noise and its probability ([ADR-008](ADR-008-correlated-parameters.md) §6). Present only in a resolved member's intent/run files. |
 | `ensemble_tail_scale` | A random member's t-copula scale `S` per tree root, its own and each process year's ([ADR-008](ADR-008-correlated-parameters.md) §6). |
 | `ensemble_path_shock` | Each process path year's noise, score, scale, shock and rate ([ADR-006](ADR-006-ensemble-scenarios.md) §4a). |
+| `load_warning` | The load's non-fatal warnings, and its notes on things defined but not read yet (`kind` `unused`), in the order raised. |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views
@@ -1060,7 +1097,9 @@ Indexes are deliberately conservative — chosen for the queries the views gener
 
 ### Schema changes
 
-There are no migrations: the database files are always generated, never upgraded. The schema is applied whole (`apply_intent_schema` / `apply_run_schema`), and `SCHEMA_VERSION` in `schema.py` is bumped on each change. An intent file is rebuilt from the CSVs on every `sim load`, so it always matches the current code. A run file isn't upgraded: to compare runs across a schema change, re-run the older scenario. Generating from the CSVs every time is simpler and more reliable than maintaining migrations, and the CSVs are the source of truth anyway.
+There are no migrations: the database files are always generated, never upgraded. The schema is applied whole (`apply_intent_schema` / `apply_run_schema`), and `SCHEMA_VERSION` in `schema.py` is bumped on each change, including a change to a batch's `draws.sqlite3` (`draws_db.DRAWS_DDL`). An intent file is rebuilt from the CSVs on every `sim load`, so it always matches the current code. A run file isn't upgraded: to compare runs across a schema change, re-run the older scenario. Generating from the CSVs every time is simpler and more reliable than maintaining migrations, and the CSVs are the source of truth anyway.
+
+Readers assume the current schema. Code that reads an intent file, a run file, an ensemble member or a batch's draws database has no fallback for a file written under an earlier `SCHEMA_VERSION`, such as a missing table or column, and no test fakes one: an older file is re-run, not read. The two batch caches are rebuilt instead of read when out of date: `draws.sqlite3` when its `batch.schema_version` isn't the current one, the series store when another code version wrote it ([ADR-006](ADR-006-ensemble-scenarios.md) §8). A reader still tells an intent file from a run file by the tables only a run file has. This is the practice before the simulator's public release; after it, other people's files will outlive a schema change, and readers will need a policy for them.
 
 ## Consequences
 
@@ -1129,3 +1168,7 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
 - [#468](https://github.com/BobKerns/analysis/issues/468): the tax character `qualified_dividend` on `scheduled_transaction` and `year_to_date` (Intent layer DDL; schema 56).
 - [#434](https://github.com/BobKerns/analysis/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 57).
+- Readers assume the current schema until public release: no fallbacks for files from an earlier `SCHEMA_VERSION`, and a draws database from another version is gathered again (Schema changes).
+- [#507](https://github.com/BobKerns/analysis/issues/507): table `tax_jurisdiction` (a scenario's `taxes/<name>.csv` files) and `transfer_event.reason_kind` `tax` for its payments, in place of the `tax_accumulator` rule (table of tables, Intent layer DDL, Ledger layer DDL; schema 58).
+- [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 59).
+- [#507](https://github.com/BobKerns/analysis/issues/507): the tax calculator API renames `tax_year_summary`'s income tax buckets (`<scope>_agi`, `_tax`, `_deduction`, `_ss_benefits`, `_ss_taxable`, `_ltcg_taxed`, `_capital_loss_used`, `_business_net`, `_hobby_disallowed`) and adds `<scope>_ordinary_taxable` (schema 60).

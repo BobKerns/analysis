@@ -178,18 +178,10 @@ def target_sets(rows: Sequence[Mapping[str, str]]) -> dict[str, list[tuple[str, 
 
 # ---------- reading a run ----------
 
-def has_rule_tags(con: sqlite3.Connection) -> bool:
-    """Whether the file's strategies can own rules (#387): a run from before
-    has only chains."""
-    return any(r[1] == "rule_tag" for r in con.execute("PRAGMA table_info(strategy)"))
-
-
-def owns_sql(con: sqlite3.Connection) -> str:
+def owns_sql() -> str:
     """A SQL expression naming what strategy ``s`` owns, for a query that
-    LEFT JOINs ``chain c ON c.id = s.chain_id``: the chain, ``rules <tag>``,
-    or both; NULL for a year-end kind, which owns neither (#421)."""
-    if not has_rule_tags(con):
-        return "c.name"
+    LEFT JOINs ``chain c ON c.id = s.chain_id``: the chain, ``rules <tag>``
+    (#387), or both; NULL for a year-end kind, which owns neither (#421)."""
     return (
         "CASE WHEN s.rule_tag IS NULL AND c.name IS NULL THEN NULL "
         "     WHEN s.rule_tag IS NULL THEN c.name "
@@ -205,26 +197,16 @@ def decision_log(
     chosen and fallback (dollars), and the note. A ``scale`` decision's note
     starts with the rule it scaled, an ``on_breach`` one's with the breach it
     answered (#441): ``tight:annual 2027 entered ($54,658 past)``."""
-    columns = {r[1] for r in con.execute("PRAGMA table_info(strategy_decision)")}
-    has_rule = "scheduled_transaction_id" in columns
-    has_breach = "breach_event_id" in columns
-    rule = (
-        "CASE WHEN d.scheduled_transaction_id IS NULL THEN d.note "
-        "     WHEN d.note = '' THEN r.name ELSE r.name || ': ' || d.note END AS note"
-        if has_rule else "d.note"
-    )
-    join = ("LEFT JOIN scheduled_transaction r ON r.id = d.scheduled_transaction_id "
-            if has_rule else "")
-    breach = ("b.rail AS b_rail, b.margin_kind AS b_kind, b.year AS b_year, b.state AS b_state, "
-              "b.margin_cents AS b_margin" if has_breach else
-              "NULL AS b_rail, NULL AS b_kind, NULL AS b_year, NULL AS b_state, NULL AS b_margin")
-    if has_breach:
-        join += "LEFT JOIN breach_event b ON b.id = d.breach_event_id "
     query = (
-        "SELECT s.month, st.name AS strategy, d.hook, d.asked_cents, d.chosen_cents, "
-        f"       d.fallback_cents, {rule}, {breach} "
+        "SELECT s.month, st.name AS strategy, d.hook, d.asked_cents, d.chosen_cents, d.fallback_cents, "
+        "       CASE WHEN d.scheduled_transaction_id IS NULL THEN d.note "
+        "            WHEN d.note = '' THEN r.name ELSE r.name || ': ' || d.note END AS note, "
+        "       b.rail AS b_rail, b.margin_kind AS b_kind, b.year AS b_year, b.state AS b_state, "
+        "       b.margin_cents AS b_margin "
         "FROM strategy_decision d JOIN simulation_step s ON s.id = d.step_id "
-        f"JOIN strategy st ON st.id = d.strategy_id {join}WHERE 1=1"
+        "JOIN strategy st ON st.id = d.strategy_id "
+        "LEFT JOIN scheduled_transaction r ON r.id = d.scheduled_transaction_id "
+        "LEFT JOIN breach_event b ON b.id = d.breach_event_id WHERE 1=1"
     )
     args: list[Any] = []
     if strategy:
@@ -258,12 +240,9 @@ def breach_text(rail: str, margin_kind: str, year: int, state: str, margin_cents
 def breaches(con: sqlite3.Connection, *, strategy: str | None = None) -> pd.DataFrame:
     """A run's breach events (#441), oldest first: month told, strategy,
     rail, margin kind, year, state, years past, measure, threshold and
-    margin (dollars, CPI-constant), and whether a decision answered it.
-    Empty for a run from before triggers."""
+    margin (dollars, CPI-constant), and whether a decision answered it."""
     columns = ["month", "strategy", "rail", "margin_kind", "year", "state", "years_past",
                "measure", "threshold", "margin", "answered"]
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE name = 'breach_event'").fetchone():
-        return pd.DataFrame(columns=columns)
     query = (
         "SELECT s.month, st.name AS strategy, b.rail, b.margin_kind, b.year, b.state, b.years_past, "
         "       b.measure_cents, b.threshold_cents, b.margin_cents, "
