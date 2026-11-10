@@ -63,7 +63,7 @@ def _summary(run: Path, bucket: str) -> dict[int, int]:
 @pytest.mark.slow
 def test_a_household_calculator_takes_its_deduction_from_tagged_spending(
     renters: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
-    run_test_copy: Callable[[], Path], load_test_copy: Callable[[], LoadResult],
+    run_test_copy: Callable[[], Path], load_test_copy: Callable[[], LoadResult], test_data_dir: Path,
 ) -> None:
     renters()
     _tag_rule(retire_alice_csv, "housing", "tax:rent")
@@ -74,6 +74,12 @@ def test_a_household_calculator_takes_its_deduction_from_tagged_spending(
     deduction = _summary(run, "state_renter_deduction")
     assert deduction[2027] == 4000_00
     assert all(0 < amount <= 4000_00 for amount in deduction.values())
+    # The calculator's own line shows in the state's return.
+    shown = _cli(test_data_dir, "report", "tax", "--return", "state", "--runfile", str(run),
+                 "--dollars", "nominal", "--start", "2027", "--end", "2028")
+    assert shown.exit_code == 0, shown.output
+    [line] = [row for row in shown.output.splitlines() if "renter_deduction" in row]
+    assert line.count("$4,000") == 2
     con = sqlite3.connect(load_test_copy().intent_path)
     try:
         assert [m for (m,) in con.execute("SELECT module FROM tax_source")] == ["renters"]

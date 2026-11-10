@@ -10374,11 +10374,14 @@ def report_gains_command(
 @_scenario_argument
 @click.option("--reconciliation", is_flag=True, default=False,
               help="Each year's liability, what was paid during it, and the April balance due or refund.")
+@click.option("--return", "jurisdiction", type=click.Choice(registries.TAX_JURISDICTIONS), default=None,
+              help="Every line of one jurisdiction's return, a line per row and a year per column, "
+                   "its calculator's own lines included.")
 @_year_range_options
 @_report_graph_options
 @_report_options
 def report_tax_command(
-    reconciliation: bool, first_year: int | None, last_year: int | None,
+    reconciliation: bool, jurisdiction: str | None, first_year: int | None, last_year: int | None,
     as_graph: bool, graph_file: Path | None, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
@@ -10394,9 +10397,23 @@ def report_tax_command(
 
     --chart draws federal, state and local tax stacked by year with the
     effective rate; with --reconciliation, each April's balance due and refund.
+
+    --return JURISDICTION shows every line its calculator wrote, a household
+    calculator's own lines (taxes/*.py) included, a year per column.
     """
     years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
+    if jurisdiction is not None:
+        if reconciliation or as_graph or graph_file is not None:
+            raise click.UsageError("--return shows a table: no --reconciliation or chart with it")
+        with _report_run(scenario, data_dir, runfile) as (rc, described):
+            _hold_tables()
+            frame = _shown_years(reports.tax_return(rc, jurisdiction, mode), years)
+        if frame.empty:
+            click.echo(f"no {jurisdiction} tax was computed in this run ({described})")
+            return
+        _print_report(frame.T.rename_axis("line"), f"the {jurisdiction} return", described, mode)
+        return
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         _hold_tables()
         frame = _shown_years(reports.tax_reconciliation(rc, mode) if reconciliation
