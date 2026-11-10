@@ -202,19 +202,19 @@ def test_strategy_log_hides_scale_lines_the_same_way_in_any_year(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
     run_strategy_scenario: Callable[[str], Path],
 ) -> None:
-    """Whether a strategy's scale lines are routine is decided on the whole
-    run: a year with no guardrail decision of its own still hides them."""
+    """Guardrail notes every January, a hold too, and its scale lines stay
+    hidden (and counted) in a single year as in the whole run."""
     _strategy(strategy_csv, "guardrail", final_years=0)
     run = run_strategy_scenario(SCENARIO)
-    decided = {month[:4] for month, _note, _detail in _year_starts(run)}
-    # A year after the first change, so the rules are scaled, but with no
-    # change of its own.
-    first = min(month[:4] for month, note, _d in _year_starts(run) if note.startswith(("cut", "raise")))
-    quiet = next(y for y in range(int(first) + 1, 2041) if str(y) not in decided)
-    log = _cli(strategy_scenarios, "strategy", "log", str(run), "--strategy", "flex", "--year", str(quiet))
+    starts = _year_starts(run)
+    assert [m[:4] for m, _n, _d in starts] == [str(y) for y in range(2026, 2026 + len(starts))]
+    # A year after the first change, so the rules are scaled, that holds.
+    first = min(m[:4] for m, note, _d in starts if note.startswith(("cut", "raise")))
+    quiet = next(m[:4] for m, note, _d in starts if m[:4] > first and note.startswith("hold"))
+    log = _cli(strategy_scenarios, "strategy", "log", str(run), "--strategy", "flex", "--year", quiet)
     assert log.exit_code == 0, log.output
-    assert "travel:" not in log.output
-    assert "monthly scale lines not shown (--hook scale lists them)" in log.output
+    assert "hold: rate" in log.output and "travel:" not in log.output
+    assert "monthly scale lines not shown; --hook scale lists them)" in log.output
 
 
 def test_strategy_log_hook_is_a_known_hook_and_not_for_breaches(strategy_scenarios: Path) -> None:

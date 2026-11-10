@@ -126,6 +126,8 @@ git add -A && git commit -q -m "Video 10a's rebalance"
 stage travel
 sim scenario create travel rebalance > /dev/null
 sim scheduled edit living --amount 6500 > /dev/null
+# Base's 2036 "less travel" row now changes nothing: say so.
+sim calendar edit 2036-01 --description "Living without travel, now its own rule" > /dev/null
 sim scheduled add 2026-01 Asset_Checking Expense_Living 1000 --name travel --person joint \
     --series cpi > /dev/null
 sim scheduled tag add living category:living > /dev/null
@@ -156,18 +158,18 @@ sim ensemble create vpw-mc vpw t_inflation_current t_market_current > /dev/null
 stage compare
 stage done
 
-demo_run base 2026-11-11T090000Z
-demo_run rebalance 2026-11-11T090100Z
-demo_run travel 2026-11-11T090200Z
-demo_run threshold 2026-11-11T090300Z
-demo_run guardrail 2026-11-11T090400Z
-demo_run ceiling-floor 2026-11-11T090500Z
-demo_run vpw 2026-11-11T090600Z
-demo_batch travel-mc 2026-11-11T091000Z
-demo_batch threshold-mc 2026-11-11T091100Z
-demo_batch guardrail-mc 2026-11-11T091200Z
-demo_batch ceiling-floor-mc 2026-11-11T091300Z
-demo_batch vpw-mc 2026-11-11T091400Z
+demo_run base 2026-11-10T080000Z
+demo_run rebalance 2026-11-10T080100Z
+demo_run travel 2026-11-10T080200Z
+demo_run threshold 2026-11-10T080300Z
+demo_run guardrail 2026-11-10T080400Z
+demo_run ceiling-floor 2026-11-10T080500Z
+demo_run vpw 2026-11-10T080600Z
+demo_batch travel-mc 2026-11-10T081000Z
+demo_batch threshold-mc 2026-11-10T081100Z
+demo_batch guardrail-mc 2026-11-10T081200Z
+demo_batch ceiling-floor-mc 2026-11-10T081300Z
+demo_batch vpw-mc 2026-11-10T081400Z
 # Build each batch's series store now, so no scene waits for it.
 for batch in travel-mc threshold-mc guardrail-mc ceiling-floor-mc vpw-mc; do
     sim ensemble spending "$batch" > /dev/null

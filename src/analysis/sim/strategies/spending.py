@@ -171,8 +171,16 @@ class Guardrail(_Spending):
             factor *= 1 + p.adjust / 1_000_000
         memory["factor"] = factor
         if factor == start:
-            return None
-        return Decision([], note=f"{'; '.join(notes)} (now {factor:.0%} of plan)", detail={
+            # A note in a quiet year too: a silent log reads as a strategy
+            # that never ran.
+            if checked > initial * (1 + p.upper / 1_000_000):
+                notes = [f"hold: rate {checked:.2%} above {initial:.2%} + {p.upper / 10_000:g}%, "
+                         f"but no cuts in the last {p.final_years} years"]
+            else:
+                notes = [f"hold: rate {checked:.2%} within {initial:.2%} - {p.lower / 10_000:g}% "
+                         f"and + {p.upper / 10_000:g}%"]
+        return Decision([], note=f"{'; '.join(notes)} ({'still' if factor == start else 'now'} "
+                        f"{factor:.0%} of plan)", detail={
             "portfolio": balance, "budget": budget, "rate": checked, "initial_rate": initial,
             "last_return": last, "factor": factor,
         })

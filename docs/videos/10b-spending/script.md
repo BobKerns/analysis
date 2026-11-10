@@ -112,6 +112,11 @@ Sleep 400ms
 Enter
 Wait
 Sleep 4s
+Type "clear && sim calendar edit 2036-01 --description 'Living without travel, now its own rule'"
+Sleep 400ms
+Enter
+Wait
+Sleep 4s
 Type "clear && sim scheduled add 2026-01 Asset_Checking Expense_Living 1000 --name travel --person joint --series cpi"
 Sleep 400ms
 Enter
@@ -141,8 +146,9 @@ Sleep 9s
 
 Their base trims living expenses by a thousand dollars a month in 2036:
 less travel. They'd rather keep traveling while the markets allow. In a
-new scenario, travel, living drops to sixty five hundred dollars, and
-travel becomes a rule of its own: a thousand dollars a month, raised with
+new scenario, travel, living drops to sixty five hundred dollars now, so
+the 2036 cut changes nothing, and its description says so. Travel becomes
+a rule of its own: a thousand dollars a month, raised with
 inflation, into the same living account. Tags say what it is. Category
 colon living, health and travel group the spending in reports, and flex
 colon optional marks what a strategy may change. Sim report expenses by
@@ -285,11 +291,16 @@ Sleep 400ms
 Enter
 Wait
 Sleep 4s
-Type "clear && sim run guardrail --commit > /dev/null && sim strategy log --strategy spend"
+Type "clear && sim run guardrail --commit > /dev/null && sim strategy log --strategy spend | head -n 5"
 Sleep 400ms
 Enter
 Wait
-Sleep 10s
+Sleep 9s
+Type "clear && sim strategy log --strategy spend --year 2029"
+Sleep 400ms
+Enter
+Wait
+Sleep 6s
 Type "clear && sim ensemble create guardrail-mc guardrail t_inflation_current t_market_current > /dev/null"
 Sleep 400ms
 Enter
@@ -309,11 +320,12 @@ Sleep 12s
 
 Next, Guyton and Klinger's guardrails, with their usual settings. The first
 January sets the withdrawal rate to beat: twelve thousand dollars of travel
-from a portfolio of about a million, one point one eight percent. The log
-shows each change. In 2029 the portfolio has grown, the rate is more than
-twenty percent below where it started, so travel is raised ten percent; and
-again in 2046. The monthly lines, one for each payment it scaled, are
-counted at the end; dash dash hook scale lists them. Across eighty
+from a portfolio of about a million, one point one eight percent. Each
+January after, the log says what it did: hold, while the rate stays within
+twenty percent of that. In 2029 the portfolio has grown and the rate is
+more than twenty percent below where it started, so travel is raised ten
+percent. The monthly lines, one for each payment it scaled, are counted at
+the end; dash dash hook scale lists them. Across eighty
 futures, half see a cut, and the worst years spend ninety two thousand.
 But look at the top of 2060: one future in twenty spends two hundred and
 fifty thousand dollars that year. Each raise is ten percent of the last,

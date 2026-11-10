@@ -18362,28 +18362,30 @@ def strategy_log_command(
             click.echo(told.rename(columns={"margin_kind": "margin of", "years_past": "years past"})
                        .to_string(index=False))
             return
-        frame = strategy_guide.decision_log(con, strategy=strategy_name)
+        # With --hook, only those rows; without it, the whole run, since which
+        # strategies decide other ways than scale is a fact about the run.
+        frame = strategy_guide.decision_log(con, strategy=strategy_name, hooks=hooks,
+                                            year=year if hooks else None)
     finally:
         con.close()
     hidden = 0
-    if hooks:
-        frame = frame[frame["hook"].isin(hooks)]
-    else:
+    if not hooks:
         # The scale lines repeat the January decision every month for every
         # owned rule (hundreds of lines), burying the decisions themselves.
-        # Which strategies decide other ways is a fact about the whole run,
-        # so a --year without a January decision hides them too.
+        # A --year in which such a strategy made no other decision (a
+        # cut_on_breach while a breach continues) hides them too.
         decided = set(frame.loc[frame["hook"] != "scale", "strategy"])
         routine = (frame["hook"] == "scale") & frame["strategy"].isin(decided)
         if year is not None:
             routine &= frame["month"].str.startswith(f"{year:04d}")
         hidden = int(routine.sum())
         frame = frame[~routine]
-    if year is not None:
-        frame = frame[frame["month"].str.startswith(f"{year:04d}")]
+        if year is not None:
+            frame = frame[frame["month"].str.startswith(f"{year:04d}")]
+    hidden_note = f"{hidden} monthly scale lines not shown; --hook scale lists them"
     if frame.empty:
-        click.echo(f"no other strategy decisions in {path.name}; {hidden} monthly scale lines not shown "
-                   "(--hook scale lists them)" if hidden else f"no strategy decisions in {path.name}")
+        click.echo(f"no other strategy decisions in {path.name} ({hidden_note})" if hidden
+                   else f"no strategy decisions in {path.name}")
         return
     # The note last and left-aligned: it is a sentence, often the widest column.
     notes = frame.pop("note")
@@ -18394,7 +18396,7 @@ def strategy_log_command(
     for line, note in zip(lines[1:], notes, strict=True):
         click.echo(f"{line}  {note}")
     if hidden:
-        click.echo(f"({hidden} monthly scale lines not shown; --hook scale lists them)")
+        click.echo(f"({hidden_note})")
 
 
 @strategy_group_command.command("check")
