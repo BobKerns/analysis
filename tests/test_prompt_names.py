@@ -141,8 +141,8 @@ def test_a_name_given_on_the_line_is_not_asked(sim: Callable[..., Result], test_
 
 # Required params that aren't names a scenario defines: a date, and the
 # inputs of the two importers, which are run from scripts.
-_STILL_REQUIRED = {"sim items start", "sim scheduled import-baseline from_account",
-                   "sim account import-quicken quicken_file"}
+_STILL_REQUIRED = {"sim items start", "sim import transactions from_account",
+                   "sim import holdings quicken_file"}
 
 
 def test_only_non_names_are_required() -> None:
