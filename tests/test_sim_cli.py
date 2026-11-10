@@ -1245,7 +1245,7 @@ def _write_quicken_map(path: Path) -> None:
     )
 
 
-def test_sim_account_import_quicken_updates_balances(test_data_dir: Path, tmp_path: Path) -> None:
+def test_sim_import_holdings_updates_balances(test_data_dir: Path, tmp_path: Path) -> None:
     data = test_data_dir
     export = tmp_path / "export.csv"
     _write_quicken_export(export)
@@ -1256,7 +1256,7 @@ def test_sim_account_import_quicken_updates_balances(test_data_dir: Path, tmp_pa
     result = runner.invoke(
         main,
         [
-            "sim", "account", "import-quicken", str(export),
+            "sim", "import", "holdings", str(export),
             "--map-file", str(map_file),
             "--scenario", "retire_alice",
             "--data-dir", str(data),
@@ -1288,7 +1288,7 @@ def test_sim_account_import_quicken_updates_balances(test_data_dir: Path, tmp_pa
     assert check.exit_code == 0, check.output
 
 
-def test_sim_account_import_quicken_year_end_sets_prior_year_only(test_data_dir: Path, tmp_path: Path) -> None:
+def test_sim_import_holdings_year_end_sets_prior_year_only(test_data_dir: Path, tmp_path: Path) -> None:
     data = test_data_dir
     export = tmp_path / "year_end.csv"
     _write_quicken_export(export)
@@ -1299,7 +1299,7 @@ def test_sim_account_import_quicken_year_end_sets_prior_year_only(test_data_dir:
     result = runner.invoke(
         main,
         [
-            "sim", "account", "import-quicken", str(export),
+            "sim", "import", "holdings", str(export),
             "--map-file", str(map_file),
             "--year-end",
             "--scenario", "retire_alice",
@@ -1324,7 +1324,7 @@ def test_sim_account_import_quicken_year_end_sets_prior_year_only(test_data_dir:
     assert rows["Liability_Mortgage"]["prior_year_end_balance"] == ""
 
 
-def test_sim_account_import_quicken_rejects_unmapped_account(test_data_dir: Path, tmp_path: Path) -> None:
+def test_sim_import_holdings_rejects_unmapped_account(test_data_dir: Path, tmp_path: Path) -> None:
     data = test_data_dir
     export = tmp_path / "export.csv"
     _write_quicken_export(export)
@@ -1339,7 +1339,7 @@ def test_sim_account_import_quicken_rejects_unmapped_account(test_data_dir: Path
     result = runner.invoke(
         main,
         [
-            "sim", "account", "import-quicken", str(export),
+            "sim", "import", "holdings", str(export),
             "--map-file", str(map_file),
             "--scenario", "retire_alice",
             "--data-dir", str(data),
@@ -1350,7 +1350,7 @@ def test_sim_account_import_quicken_rejects_unmapped_account(test_data_dir: Path
     assert "Liability_Mortgage" in result.output
 
 
-def test_sim_account_import_quicken_dry_run_does_not_write(test_data_dir: Path, tmp_path: Path) -> None:
+def test_sim_import_holdings_dry_run_does_not_write(test_data_dir: Path, tmp_path: Path) -> None:
     data = test_data_dir
     export = tmp_path / "export.csv"
     _write_quicken_export(export)
@@ -1364,7 +1364,7 @@ def test_sim_account_import_quicken_dry_run_does_not_write(test_data_dir: Path, 
     result = runner.invoke(
         main,
         [
-            "sim", "account", "import-quicken", str(export),
+            "sim", "import", "holdings", str(export),
             "--map-file", str(map_file),
             "--scenario", "retire_alice",
             "--data-dir", str(data),

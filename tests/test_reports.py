@@ -173,7 +173,9 @@ def test_tax_by_year_adds_the_states_own_figures(
     assert {"state_agi", "state_deduction", "state_income", "state_tax"} <= set(tax)
     assert "state_liability" in reconciliation.columns
     assert tax.loc[2026, "state_deduction"] == pytest.approx(11_080)
-    assert tax.loc[2026, "total_tax"] == pytest.approx(tax.loc[2026, "state_tax"])
+    # The state starts from the federal return (#508), so both are taxed.
+    assert tax.loc[2026, "total_tax"] == pytest.approx(
+        tax.loc[2026, "fed_tax"] + tax.loc[2026, "state_tax"])
 
 
 def test_a_market_drop_takes_back_that_years_gains(

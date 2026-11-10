@@ -430,10 +430,14 @@ files pays no income tax.
   `cpi` from then on (`floor_series`/`amount_series`, see the `aux/`
   README). The Social Security thresholds and the $3,000 capital loss limit
   stay fixed, as they are in law.
-- **State tax** works the same way as federal tax, using the brackets of
-  the state `taxes/state.csv` names: choose it with `sim tax state`, which
-  asks for the state by name and adds a state tax like the federal one if
-  there is none. For California it reads `state_brackets__CA.csv`
+- **State tax** starts from the federal return, as most states' forms do:
+  federal AGI, with the state's own additions and subtractions (dividends
+  taxed as ordinary income, its gain exclusion, retirement exclusions, an
+  HSA it taxes), each shown as its own `state_` line of the tax summary. So
+  a state tax needs the federal one (`taxes/federal.csv`). It uses the
+  brackets of the state `taxes/state.csv` names: choose it with `sim tax
+  state`, which asks for the state by name and adds a state tax like the
+  federal one if there is none. For California it reads `state_brackets__CA.csv`
   and the state's standard deduction from
   `state_standard_deduction__CA.csv` (named for the same state). Tables for California, the District of Columbia, Idaho, Kansas,
   Nebraska and North Carolina come with the simulator; for another state,
@@ -459,9 +463,11 @@ files pays no income tax.
   your own county's or city's rates in `aux/state_local_tax__<state>.csv`, in
   the columns of the state's brackets: one band for a flat county rate, the
   city's brackets, or a 0% band below a threshold, with rows for each
-  filing status your state brackets have. It is paid with the
-  state's tax, and `sim report tax` shows it as `local_tax`, apart from
-  `state_tax`. A local tax only on wages, or with a base of its own
+  filing status your state brackets have. Then `sim tax add local` adds
+  `taxes/local.csv`, the local tax's own file: it is paid with the state's
+  tax unless you name another source or destination, and `sim report tax`
+  shows it as `local_tax`, apart from `state_tax`. A scenario with the table
+  and no `taxes/local.csv` doesn't load. A local tax only on wages, or with a base of its own
   (Philadelphia's on investment income, Yonkers's share of the state tax),
   isn't modeled.
 - **State retirement income exclusions**: most states leave some pension,
@@ -761,6 +767,13 @@ maximums, chains inside chains, and the refill and overflow limits work
 together, with worked examples and recipes.
 
 ### 4.7 Lifespan assumptions
+
+**Video.** *Advanced* walks through this section and §4.15 and §4.19
+with Alice and Bill: lifespans drawn from the life table, what a death
+changes, guard rails on their withdrawals, and a strategy that cuts
+spending when a rail is crossed:
+[English](https://www.youtube.com/watch?v=sCqdL0pSIA0),
+[Japanese (日本語)](https://www.youtube.com/watch?v=dcyW3Mzd-yE).
 
 `lifespan.csv` has one optional row for each person: `person` and
 `age_at_death`, a decimal age in years such as `84.5`. The person's final
@@ -1361,6 +1374,11 @@ floor. Both use this year's tiers, which is all you know in December; the
 floors usually rise, so this errs safe.
 
 ### 4.15 Guard rails: watch spending against a line
+
+**Video.** *Advanced* adds guard rails to Alice and Bill's plan and
+reads them on one run and across an ensemble:
+[English](https://www.youtube.com/watch?v=sCqdL0pSIA0),
+[Japanese (日本語)](https://www.youtube.com/watch?v=dcyW3Mzd-yE).
 
 A guard rail is a line spending, or the withdrawals from your savings,
 should stay on one side of: "take no more than 4% a year", "cut back if the

@@ -190,7 +190,7 @@ To split an account, give it several rows with different `lot` values, each with
 
 ### Importing balances from Quicken
 
-`sim account import-quicken` updates `account_lots.csv` from a Quicken account-tree
+`sim import holdings` updates `account_lots.csv` from a Quicken account-tree
 report export, without ever renaming Quicken's own account names. It has two modes:
 
 - **Opening balances** (default): use **My Reports → Net Worth Export** (re-run "as of"
@@ -213,10 +213,10 @@ Steps:
 3. Run:
 
    ```sh
-   sim account import-quicken <export.csv> --scenario <name> --dry-run              # preview
-   sim account import-quicken <export.csv> --scenario <name>                        # apply
-   sim account import-quicken <year_end.csv> --scenario <name> --year-end --dry-run # preview
-   sim account import-quicken <year_end.csv> --scenario <name> --year-end           # apply
+   sim import holdings export.csv> --scenario <name> --dry-run              # preview
+   sim import holdings export.csv> --scenario <name>                        # apply
+   sim import holdings year_end.csv> --scenario <name> --year-end --dry-run # preview
+   sim import holdings year_end.csv> --scenario <name> --year-end           # apply
    ```
 
 Liability balances are stored as a non-negative debt magnitude (per the engine's sign

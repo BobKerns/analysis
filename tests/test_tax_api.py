@@ -55,7 +55,9 @@ def _year(
     prior: Mapping[str, int] | None = None,
 ) -> TaxYear:
     """A tax year from plain data: every table in force from 2020, and
-    ``prior`` last year's return lines."""
+    ``prior`` last year's return lines. A jurisdiction it builds on (the
+    federal return a state starts from, #508) is the same year, computed by
+    the calculator of that name."""
     def keyed(kind: str, column: str, value: str, _year: int) -> dict[str, Any] | None:
         rows = [r for r in tables.get((kind, None), []) if r.get(column) == value]
         return rows[-1] if rows else None
@@ -70,6 +72,8 @@ def _year(
         _filing_status_in=lambda _year: "MFJ",
         _prior=lambda line: (prior or {}).get(line, 0),
         _series_of=lambda kind: sorted(s for k, s in tables if k == kind and s is not None),
+        _upstream=lambda name: calculator(name).prepare(
+            _year(items, jurisdiction=name, tables=tables, prior=prior)),
     )
 
 
@@ -114,7 +118,8 @@ def test_the_state_calculator_reads_the_states_brackets() -> None:
     # No state_standard_deduction__CA: the federal one stands in.
     assert ret.taxable_income == 70_000_00
     assert ret.tax == 70_000_00 * 5 // 100
-    assert "magi" not in ret.lines and "local_tax" in ret.lines
+    # A local tax is its own jurisdiction (#508), not a line of the state's.
+    assert "magi" not in ret.lines and "local_tax" not in ret.lines
 
 
 def test_a_missing_table_is_a_tax_error() -> None:
@@ -162,3 +167,28 @@ def test_last_year_refuses_a_line_name_from_before_api_8() -> None:
     with pytest.raises(strategy_api.StrategyError, match="it is federal_agi"):
         last.get("federal_adjusted_gross_income", 0)
     assert last.get("federal_magi", 0) == 0  # not a renamed line: just absent
+
+
+def test_last_year_refuses_the_states_local_tax_from_before_api_9() -> None:
+    view = strategy_api.TaxView(
+        year=YEAR, estimator=lambda _scope: None, ytd=dict,
+        last_year=lambda: {"local_tax": 3_00}, irmaa_floors=lambda _status: ())
+    last = view.last_year
+    assert last is not None
+    with pytest.raises(strategy_api.StrategyError, match="since strategy API 9: it is local_tax"):
+        last.get("state_local_tax", 0)
+
+
+def test_ctx_tax_takes_the_local_scope() -> None:
+    asked: list[str] = []
+
+    def estimator(scope: str) -> tax_api.Prepared:
+        asked.append(scope)
+        return calculator("federal").prepare(_year([_item("ordinary", 100_000_00)]))
+
+    view = strategy_api.TaxView(year=YEAR, estimator=estimator, ytd=dict,
+                                last_year=lambda: None, irmaa_floors=lambda _status: ())
+    assert view.estimate(scope="local").taxable_income == 70_000_00
+    assert asked == ["local"]
+    with pytest.raises(strategy_api.StrategyError, match="'federal', 'state', 'local', not 'city'"):
+        view.estimate(scope="city")
