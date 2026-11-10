@@ -212,6 +212,7 @@ def prepare_strategies(
     scenario: ScenarioView | None = None,
     rails: Collection[str] = (),
     issues: list[str],
+    disabled: list[PreparedStrategy] | None = None,
 ) -> list[PreparedStrategy]:
     """The enabled strategies, each checked: a known kind; an interior chain
     whose role fits a hook the kind implements, or a rule tag (``rules``) on
@@ -223,7 +224,7 @@ def prepare_strategies(
     :meth:`Strategy.check` runs on params that passed (#421). A ``trigger``
     names rails among ``rails`` (the lineage's guard rails, #441), each
     ``<rail>:annual`` or ``<rail>:cumulative``, for a kind with an
-    ``on_breach`` hook."""
+    ``on_breach`` hook. Disabled rows that pass go in ``disabled``, if given."""
     prepared: list[PreparedStrategy] = []
     owner_of: dict[str, str] = {}
     rule_owner: dict[str, str] = {}
@@ -311,8 +312,10 @@ def prepare_strategies(
                 else:
                     rule_owner[rule] = name
         issues.extend(f"{where}: {p}" for p in problems)
-        if enabled and not problems:
-            prepared.append(PreparedStrategy(
+        if not problems and (enabled or disabled is not None):
+            into = prepared if enabled else disabled
+            assert into is not None
+            into.append(PreparedStrategy(
                 name=name, kind=kind, chain=chain, rules=rule_tag, start=start, end=end,
                 params=params, description=row.get("description", ""), triggers=triggers,
             ))
@@ -410,8 +413,9 @@ def write_strategies(
     sources: Mapping[str, str],
     target_rows: Sequence[Mapping[str, str]],
     rail_rows: Mapping[str, Mapping[str, str]] | None = None,
+    disabled: Sequence[PreparedStrategy] = (),
 ) -> dict[str, int]:
-    """Insert ``strategy``, ``allocation_target`` and, when an enabled
+    """Insert ``strategy``, ``strategy_disabled``, ``allocation_target`` and, when an enabled
     strategy is a data-repo kind, every data-repo module's source
     (``strategy_source``): helpers are imported by path, so the snapshot is
     the whole folder. Each trigger's rail goes in as its merged
@@ -436,6 +440,11 @@ def write_strategies(
             )
             triggers += 1
     counts["strategy"] = len(prepared)
+    con.executemany(
+        "INSERT INTO strategy_disabled(name, kind, params_json) VALUES (?,?,?)",
+        [(s.name, s.kind, json.dumps(s.params, sort_keys=True, separators=(",", ":"))) for s in disabled],
+    )
+    counts["strategy_disabled"] = len(disabled)
     counts["strategy_trigger"] = triggers
     from_data_repo = any(kinds.origin.get(s.kind) != "built-in" for s in prepared)
     snapshot = sources if from_data_repo else {}

@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 62
+SCHEMA_VERSION = 63
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -511,6 +511,16 @@ CREATE TABLE strategy_vary (
     PRIMARY KEY (strategy_id, param)
 );
 
+-- The scenario's disabled strategies (enabled false in strategies/<name>.csv,
+-- #410): checked like the rest but not run. Kept so a run with a strategy
+-- switched off still knows the targets and portfolio it would have steered
+-- by (a drift view's default); params_json is in stored units.
+CREATE TABLE strategy_disabled (
+    name        TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}'
+);
+
 -- Allocation targets (targets.csv). One set of weights per (target_set,
 -- as_of); as_of '' holds at every date; weights of one set sum to 1000000.
 CREATE TABLE allocation_target (
@@ -968,6 +978,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "strategy",
     "strategy_trigger",
     "strategy_vary",
+    "strategy_disabled",
     "allocation_target",
     "ensemble_manifest",
     "ensemble_draw",
