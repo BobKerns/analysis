@@ -92,10 +92,7 @@ class FederalYear(Prepared):
             "itemized_deduction": itemized,
             "deduction": deduction,
         }
-        hsa_contributed = sum(i.amount for i in ty.year_items("tax_deferred_in")
-                              if i.payee.subkind == "hsa")
-        hsa_withdrawn = sum(i.amount for i in ty.year_items("tax_deferred_out")
-                            if i.payer.subkind == "hsa")
+        hsa_contributed, hsa_withdrawn = common.hsa_deferred_flows(ty)
         self._memo = {
             # What the year drew from traditional money (an RMD), and the
             # gain it realized.

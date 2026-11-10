@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import registries, strategy_api, tax_api, units
+from analysis.sim.dates import add_month_ends
 from analysis.sim.runs import finalize_run, open_run_file
 from analysis.sim.schema import inserted_id
 from analysis.sim.strategy_runtime import StrategyRuntime
@@ -3001,6 +3002,37 @@ def _tax_year(
     )
 
 
+class _Remembered(tax_api.Prepared):
+    """A prepared year that keeps its returns by extra income. A what-if
+    asks the same year many times over (a state's estimate computes the
+    federal year, and a local tax the state's, which a state's
+    ``max_marginal_rate`` also computes), and ``compute`` depends only on
+    the extra income."""
+
+    _KEPT = 1_024
+    """Returns kept at most; past it, they start again."""
+
+    def __init__(self, inner: tax_api.Prepared) -> None:
+        self._inner = inner
+        self._returns: dict[tax_api.Extra, tax_api.Return] = {}
+        self.filing_status = inner.filing_status
+        self.brackets = inner.brackets
+        self.ltcg_brackets = inner.ltcg_brackets
+        self.bracket_series = inner.bracket_series
+
+    def __getattr__(self, name: str) -> Any:
+        # Anything else a calculator's year carries, for code that reads it.
+        return getattr(self._inner, name)
+
+    def compute(self, extra: tax_api.Extra = tax_api.NO_EXTRA) -> tax_api.Return:
+        ret = self._returns.get(extra)
+        if ret is None:
+            if len(self._returns) >= self._KEPT:
+                self._returns.clear()
+            ret = self._returns[extra] = self._inner.compute(extra)
+        return ret
+
+
 _SharedPrepares = dict[tuple[str, int], tuple["_TaxLedger", str, tax_api.Prepared]]
 """Prepared tax years by (jurisdiction, year), with the ledger and kind
 each was prepared from (:func:`_prepare_tax`)."""
@@ -3050,11 +3082,11 @@ def _prepare_tax(
                 kind=up_kind, jurisdictions=jurisdictions, person_lifespan=person_lifespan,
                 taxpayers=taxpayers, ledger=ledger, growth_cache=growth_cache, shared=shared)
 
-        prepared = calc.prepare(_tax_year(
+        prepared = _Remembered(calc.prepare(_tax_year(
             con, params, aux=aux, tax_year=tax_year, tid=tid,
             person_lifespan=person_lifespan, taxpayers=taxpayers,
             ledger=ledger, upstream=upstream, growth_cache=growth_cache,
-        ))
+        )))
         shared[(scope, tax_year)] = (ledger, kind, prepared)
         return prepared
     except tax_api.TaxError as exc:
@@ -3342,16 +3374,11 @@ def _fill_bracket_tax_rule(
     )
 
 
-def _built_on(tax_rules: Jurisdictions, scope: str) -> list[tuple[str, Mapping[str, Any]]]:
-    """The kind and params of each jurisdiction that builds on ``scope``'s
-    return, directly or through another, in settlement order."""
-    built: list[str] = []
-    for name in registries.TAX_JURISDICTIONS:
-        if name in tax_rules and name != scope:
-            upstream = tax_api.calculator(tax_rules[name][0]).upstream
-            if scope in upstream or any(b in upstream for b in built):
-                built.append(name)
-    return [tax_rules[name] for name in built]
+def _paid_with(tax_rules: Jurisdictions, scope: str) -> list[tuple[str, Mapping[str, Any]]]:
+    """The kind and params of each of the scenario's jurisdictions paid with
+    ``scope``'s tax (``registries.TAX_PAID_WITH``), in settlement order."""
+    return [tax_rules[name] for name in registries.TAX_JURISDICTIONS
+            if name in tax_rules and registries.TAX_PAID_WITH.get(name) == scope]
 
 
 def _largest_within(measure: Callable[[int], int], target: int, cap: int) -> int:
@@ -3370,11 +3397,6 @@ def _largest_within(measure: Callable[[int], int], target: int, cap: int) -> int
         else:
             high = middle
     return low
-
-
-FILL_BRACKET_RATE_TOLERANCE = 200
-"""How close two marginal rates (micros) must be for :func:`_gallop` to
-call them the same: a cent of rounding on a ``FILL_BRACKET_STEP``."""
 
 
 def _within_marginal_rate(
@@ -3411,7 +3433,7 @@ def _within_marginal_rate(
 
     taken = 0
     while taken < amount:
-        taken = _gallop(taken, amount, tax, tax_step_ok, crosses)
+        taken = _gallop(taken, amount, tax, tax_step_ok, crosses, limit)
         step = min(FILL_BRACKET_STEP, amount - taken)
         if taken >= amount or not tax_step_ok(taken, step):
             break
@@ -3422,7 +3444,7 @@ def _within_marginal_rate(
         end = below
         first = min(FILL_BRACKET_STEP, amount - below)
         if below < amount and tax_step_ok(below, first):
-            end = _gallop(below + first, amount, tax, tax_step_ok, crosses)
+            end = _gallop(below + first, amount, tax, tax_step_ok, crosses, limit)
         if (cost(end) - cost(below)) * 1_000_000 <= limit * (end - below):
             taken = end
         else:
@@ -3433,41 +3455,55 @@ def _within_marginal_rate(
 def _gallop(
     x: int, amount: int, tax: Callable[[int], int],
     step_ok: Callable[[int, int], bool], crosses: Callable[[int, int], bool],
+    limit: int,
 ) -> int:
     """Where stepping from ``x`` by ``FILL_BRACKET_STEP`` (the last step
     short, to ``amount``) stops: before the first step that isn't
     ``step_ok`` or that ``crosses``.
 
-    Tax is piecewise linear in the amount, so it doesn't step through a run
-    where the rate holds: it doubles a span while the rate at the span's
-    first and last steps and on average over it is the same, and halves it
-    back when not. A span that crosses an edge of a bracket or tier changes
-    one of the three, unless two edges cancel exactly within it; a change
-    of rate under ``FILL_BRACKET_RATE_TOLERANCE`` can be passed over."""
+    It doesn't step through a run where every step costs what the first
+    does: a span is taken whole when its last step is ok and each of its
+    four quarters costs what as many first steps would, give or take the
+    first step's headroom under ``limit`` (exactly, at the limit). A step
+    that costs more than that, a jump (a state exclusion lost at an income
+    limit) or a higher rate, shows in its quarter, however long the span.
+    The span doubles while that holds and halves back when not, down to
+    one step. Only a rise and a fall that cancel within one quarter could
+    hide."""
     step = FILL_BRACKET_STEP
 
-    def rate(a: int, b: int) -> int:
-        return (tax(b) - tax(a)) * 1_000_000 // (b - a)
-
-    def flat(a: int, b: int) -> bool:
-        last = a + (b - a - 1) // step * step
-        if crosses(a, b) or not step_ok(last, b - last):
+    def flat(a: int, steps: int) -> bool:
+        quarter = steps // 4 * step
+        b = a + 4 * quarter
+        if crosses(a, b) or not step_ok(b - step, step):
             return False
-        r = rate(a, a + step)
-        return all(abs(rate(*span) - r) <= FILL_BRACKET_RATE_TOLERANCE
-                   for span in ((b - step, b), (a, b)))
+        first = tax(a + step) - tax(a)
+        # How far a quarter may cost more than its share at the first
+        # step's rate: what one step may cost more and still be ok.
+        slack = (limit * step - first * 1_000_000) // 1_000_000
+        share = first * (quarter // step)
+        return all(abs(tax(a + (k + 1) * quarter) - tax(a + k * quarter) - share) <= slack
+                   for k in range(4))
 
-    span = step
+    # The span in steps; after a span of four fails, single steps for a
+    # while (longer each time), so a rate that rounds unevenly from step to
+    # step costs little more than stepping did.
+    span, wait, backoff = 4, 0, 4
     while x < amount:
         first = min(step, amount - x)
         if not step_ok(x, first) or crosses(x, x + first):
             return x
-        while True:
-            y = min(x + span, amount)
-            if y - x <= first or flat(x, y):
-                x, span = y, span * 2
-                break
-            span //= 2
+        steps = min(span, (amount - x) // step) // 4 * 4
+        if not wait and steps >= 4:
+            if flat(x, steps):
+                x, span, backoff = x + steps * step, span * 2, 4
+                continue
+            if steps > 4:
+                span = steps // 2
+                continue
+            wait, backoff = backoff, backoff * 2
+        x += first
+        wait = max(0, wait - 1)
     return x
 
 
@@ -3562,15 +3598,15 @@ def _apply_fill_bracket(
         if magi_est is not None and irmaa is not None:
             def cliff(x: int, e: tax_api.Prepared = magi_est) -> int:
                 return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).agi, month_s, tid)
-        # A state's rate counts the taxes charged on its income, a local tax
+        # A rate counts the taxes paid with its own, a state's local tax
         # (#508), since the same dollar pays them. A federal rate stays the
-        # federal tax's: a state builds on it, but its rate is its own.
+        # federal tax's: a state builds on it, but is paid on its own.
         measured_with = [est, *(
-            _prepare_tax(con, built_rule, aux=aux, tax_year=tax_year, tid=tid, kind=built_kind,
+            _prepare_tax(con, paid_rule, aux=aux, tax_year=tax_year, tid=tid, kind=paid_kind,
                          jurisdictions=tax_rules, person_lifespan=person_lifespan,
                          taxpayers=taxpayers, growth_cache=inflation_factor_cache,
                          ledger=ledger, shared=shared)
-            for built_kind, built_rule in _built_on(tax_rules, scope))] if scope != "federal" else [est]
+            for paid_kind, paid_rule in _paid_with(tax_rules, scope))]
         amount = _within_marginal_rate(
             lambda ordinary, ltcg: sum(
                 p.compute(tax_api.Extra(ordinary, ltcg)).tax for p in measured_with),
@@ -3998,8 +4034,8 @@ def _cumulative_inflation_factor(
                 # from last month's factor rather than compounding from the
                 # base again, which made a long run quadratic. The same
                 # months compound in the same order, so the result is the same.
-                last = hi if hi == _month_end(hi) else date(hi.year, hi.month, 1) - timedelta(days=1)
-                before = date(last.year, last.month, 1) - timedelta(days=1)
+                last = hi if hi == add_month_ends(hi, 0) else add_month_ends(hi, -1)
+                before = add_month_ends(last, -1)
                 if before > lo:
                     known = cache.get((series, from_date, before, cadence))
                     if known is not None:
@@ -4127,11 +4163,6 @@ def _parse_scheduled_date(
             f"scheduled_transaction id={transaction_id} ({name!r}): invalid "
             f"{field} date {value!r}; expected YYYY-MM-DD in scheduled.csv"
         ) from exc
-
-
-def _month_end(d: date) -> date:
-    """The last day of ``d``'s month."""
-    return d.replace(day=calendar.monthrange(d.year, d.month)[1])
 
 
 def _month_ends(start: date, end: date):
@@ -4478,6 +4509,13 @@ def _move_optional_state_table(
         aux.pop((kind, series), None)
 
 
+def _inflation_changed(refill_ctx: RefillContext) -> None:
+    """An inflation series' rates changed from some date on: a cached
+    factor reaching past it is wrong, and the factors are built month on
+    month (:func:`_cumulative_inflation_factor`), so they all go."""
+    refill_ctx.inflation_factor_cache.clear()
+
+
 def _apply_calendar_event(
     con,
     ev_id: int, ev_date: str, ev_kind: str, payload: dict[str, Any],
@@ -4514,8 +4552,8 @@ def _apply_calendar_event(
             bucket = aux.setdefault((aux_kind, series), [])
             bucket.append((ev_date, row_payload))
             bucket.sort(key=lambda r: r[0])
-            # A factor reaching past the new rate is no longer right.
-            refill_ctx.inflation_factor_cache.clear()
+            if aux_kind == "inflation":
+                _inflation_changed(refill_ctx)
         case "set_amount":
             name = payload.get("scheduled_name")
             new_amount = payload.get("amount")
@@ -4557,6 +4595,8 @@ def _apply_calendar_event(
             )
         case "swap_aux_table":
             _swap_aux_table(con, ev_id, ev_date, payload, aux)
+            if payload.get("aux_kind") == "inflation":
+                _inflation_changed(refill_ctx)
         case "one_off_transfer":
             frm_name = payload.get("account_1")
             to_name = payload.get("account_2")

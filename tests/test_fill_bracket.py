@@ -257,7 +257,7 @@ def test_series_fixed_means_no_inflation_on_either_target(fill_run: Rules) -> No
     assert {fill["target"] for fill in fixed["fill"]} == {250_000_00}
 
 
-def test_a_states_max_marginal_rate_counts_the_local_tax_built_on_it(
+def test_a_states_max_marginal_rate_counts_the_local_tax_paid_with_it(
     fill_run: Rules, add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
     write_aux: Callable[[str, str], Path],
 ) -> None:
@@ -341,6 +341,30 @@ def test_the_gallop_finds_what_stepping_does(
     for amount in (12_345_67, 180_000_00, 400_000_01):
         assert engine._within_marginal_rate(tax, cliff, amount, limit) \
             == _step_scan(tax, cliff, amount, limit)
+
+
+@pytest.mark.parametrize("jump", [1, 50_00, 2_000_00])
+@pytest.mark.parametrize("at", [9_999_99, 263_456_78])
+@pytest.mark.parametrize("limit", [220_000, 240_000, 300_000])
+def test_the_gallop_stops_at_a_jump_in_the_tax(jump: int, at: int, limit: int) -> None:
+    # A state exclusion lost all at once at an income limit: the tax jumps
+    # in one step, far into a long span.
+    torpedo = _torpedo_tax(10_000_00, 40_000_00)
+
+    def tax(extra: int, ltcg: int) -> int:
+        return torpedo(extra, ltcg) + (jump if extra > at else 0)
+    for amount in (180_000_00, 400_000_01):
+        assert engine._within_marginal_rate(tax, None, amount, limit) \
+            == _step_scan(tax, None, amount, limit)
+
+
+@pytest.mark.parametrize("limit", [93_700, 93_800, 120_000])
+def test_the_gallop_matches_stepping_where_a_rate_rounds_unevenly(limit: int) -> None:
+    # 9.37% of $100 isn't a whole number of cents: steps cost 9.37 or 9.38.
+    def tax(extra: int, _ltcg: int) -> int:
+        return extra * 93_740 // 1_000_000 + max(0, extra - 150_000_00) * 30_000 // 1_000_000
+    assert engine._within_marginal_rate(tax, None, 300_000_00, limit) \
+        == _step_scan(tax, None, 300_000_00, limit)
 
 
 def test_the_gallop_takes_far_fewer_tax_computations() -> None:
