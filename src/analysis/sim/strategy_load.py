@@ -149,7 +149,7 @@ def _convert_param(
             return value
 
 
-_PLAIN_NAMES = {str: "a string", int: "a whole number", float: "a number", bool: "true or false"}
+_PLAIN_NAMES: dict[type, str] = {str: "a string", int: "a whole number", float: "a number", bool: "true or false"}
 
 
 def _is_plain(value: object, plain: type) -> bool:

@@ -5203,7 +5203,7 @@ def _validate_taxes(
     carries."""
     calculators = kinds if kinds is not None else tax_code.TaxKinds({})
     defined = [row["name"] for row in tax_rows]
-    kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
+    account_kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
     by_name = {row["name"]: row for row in tax_rows}
     for row in tax_rows:
         # A jurisdiction paid with another's (local with the state's, #508)
@@ -5255,8 +5255,8 @@ def _validate_taxes(
                           "into an account")
         elif problem := _resolve_ref(row, "destination", "", leaves, chain_names):
             issues.append(f"{where}: destination {problem}")
-        elif kinds.get(destination) not in (None, "expense"):
-            issues.append(f"{where}: destination '{destination}' is a {kinds[destination]} account; "
+        elif account_kinds.get(destination) not in (None, "expense"):
+            issues.append(f"{where}: destination '{destination}' is a {account_kinds[destination]} account; "
                           "the tax is paid into an expense account")
         schedule = row.get("schedule") or registries.TAX_SCHEDULES[0]
         if schedule not in registries.TAX_SCHEDULES:

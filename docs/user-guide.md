@@ -494,6 +494,16 @@ files pays no income tax.
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.
+- **Your own rules**: a deduction or credit the built-in calculators don't
+  have (a renter's deduction, a public pension exclusion), or a state they
+  don't model, can be a small Python class in your data repo's `taxes/`
+  folder, named by a tax file's `kind` (`sim tax edit state --kind ...`).
+  It reads your spending and income by tag, so a rent deduction follows the
+  rent you pay. `sim tax kinds` lists the calculators and their parameters,
+  `sim tax check` runs a scenario twice to make sure its results don't
+  change, and `sim report tax --return state` shows every line of a return.
+  [The tax calculators guide](guides/tax-calculators.md) works an example
+  through.
 
 **One important thing to know before you model a sale (Part 4.5):** the
 simulator can automatically split a withdrawal into "return of capital" and

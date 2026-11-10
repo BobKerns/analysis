@@ -10374,7 +10374,7 @@ def report_gains_command(
 @_scenario_argument
 @click.option("--reconciliation", is_flag=True, default=False,
               help="Each year's liability, what was paid during it, and the April balance due or refund.")
-@click.option("--return", "jurisdiction", type=click.Choice(registries.TAX_JURISDICTIONS), default=None,
+@click.option("--return", "jurisdiction", type=completion.TAX_JURISDICTION, default=None,
               help="Every line of one jurisdiction's return, a line per row and a year per column, "
                    "its calculator's own lines included.")
 @_year_range_options

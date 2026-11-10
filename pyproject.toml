@@ -87,3 +87,7 @@ python-version = "3.14"
 
 [tool.ty.src]
 include = ["src", "tests", "plugins"]
+# The example household tax calculator extends a built-in's nested Params
+# class (`class Params(StateTables.Params)`), the documented pattern, which ty
+# refuses as an override of a class-literal attribute.
+exclude = ["tests/data/sim/tax_calculators/taxes"]

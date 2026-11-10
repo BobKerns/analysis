@@ -8,7 +8,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 from types import UnionType
-from typing import Annotated, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Union, get_args, get_origin, get_type_hints
 
 __all__ = ["Account", "Dollars", "Percent", "Tag", "TargetSet", "Unit", "param_types",
            "param_units", "percent"]
@@ -59,7 +59,7 @@ def _value_hint(hint: object) -> object:
     return hint
 
 
-def param_units(params: type) -> dict[str, Unit | None]:
+def param_units(params: type[Any]) -> dict[str, Unit | None]:
     """Each ``Params`` field's :class:`Unit`, or None for a plain JSON value.
     An optional field (``Dollars | None = None``) has its value's unit, and
     takes ``null`` for "none"."""
@@ -74,12 +74,12 @@ def param_units(params: type) -> dict[str, Unit | None]:
     return out
 
 
-def param_types(params: type) -> dict[str, type | None]:
+def param_types(params: type[Any]) -> dict[str, type | None]:
     """Each plain ``Params`` field's JSON type (``str``, ``int``, ``float``,
     ``bool``), or None where it isn't one of those (a unit, a list)."""
     hints = _hints(params)
     out: dict[str, type | None] = {}
     for f in dataclasses.fields(params):
         hint = _value_hint(hints.get(f.name))
-        out[f.name] = hint if hint in (str, int, float, bool) else None  # type: ignore[assignment]
+        out[f.name] = next((t for t in (str, int, float, bool) if hint is t), None)
     return out

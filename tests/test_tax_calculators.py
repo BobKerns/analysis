@@ -254,3 +254,13 @@ def test_sim_tax_edit_chooses_the_calculator(
     result = _cli(test_data_dir, "tax", "edit", "state", "--kind", "", "--scenario", "retire_alice")
     assert result.exit_code == 0, result.output
     assert kind() == "state_tables"
+
+
+def test_the_guides_example_is_the_tested_calculator() -> None:
+    """docs/guides/tax-calculators.md shows renters.py whole, so the guide's
+    code is the code these tests run."""
+    root = Path(__file__).parent.parent
+    guide = (root / "docs" / "guides" / "tax-calculators.md").read_text(encoding="utf-8")
+    module = (root / "tests" / "data" / "sim" / "tax_calculators" / "taxes" / "renters.py").read_text(
+        encoding="utf-8")
+    assert f"```python\n{module}```" in guide
