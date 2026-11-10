@@ -14888,17 +14888,23 @@ _SCENARIO_CHECKERS: dict[str, Callable[[str], object]] = {
 }
 
 
-def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, **fields: str | None) -> None:
-    """``sim scenario edit`` and ``sim ensemble edit``: with any option, the
-    change at once; with none, a guided edit of every field."""
+def _edit_scenario(name: str | None, data_dir: Path | None, *, what: str, new_seed: bool,
+                   **fields: str | None) -> None:
+    """``sim scenario edit`` and ``sim ensemble edit`` (``what``): with any
+    option, the change at once; with none, a guided edit of every field."""
     data = _resolve_data_dir(data_dir)
     names = list_scenario_names(data)
     if name is None:
+        # `sim ensemble edit` offers only ensembles, as its completion does
+        # (#296); one named on its line needn't be (`--size` can make it one).
+        choices = _ensemble_names(data) if what == "ensemble" else names
+        if not choices:
+            raise click.ClickException(f"there are no {what}s to choose from")
         current = read_current_scenario(data)
         while (name := _prompt_with_completion(
-                "scenario to edit", choices=names, default=current if current in names else None,
-        ).strip()) not in names:
-            click.echo(f"  not a scenario: {name!r}")
+                f"{what} to edit", choices=choices, default=current if current in choices else None,
+        ).strip()) not in choices:
+            click.echo(f"  not {'an' if what == 'ensemble' else 'a'} {what}: {name!r}")
     name = name.strip()
     if name not in names:
         raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
@@ -15041,9 +15047,16 @@ def _new_mixin_only(scenarios_dir: Path, runnable: Sequence[str]) -> list[str]:
     return [n for n in runnable if is_mixin_only(scenarios_dir, n)]
 
 
-def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
+def _edit_options(what: str) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    """The options `sim scenario edit` and `sim ensemble edit` (``what``)
+    share; NAME completes over scenarios or ensembles to match (#296)."""
+    return functools.partial(_add_edit_options, name_type=(
+        completion.ENSEMBLE if what == "ensemble" else completion.SCENARIO))
+
+
+def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamType) -> Callable[..., None]:
     options = [
-        click.argument("name", required=False, type=completion.SCENARIO),
+        click.argument("name", required=False, type=name_type),
         click.option("--description", default=None,
                      help="The scenario's description; '' restores the default, 'Derived from <parents>'."),
         click.option("--start", default=None, help=f"First month ({MONTH_FORMAT_HINT}); '' inherits."),
@@ -15068,7 +15081,7 @@ def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
 
 
 @scenario_group_command.command("edit")
-@_edit_options
+@_edit_options("scenario")
 def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
     """Change scenario NAME's scenario.csv: its description, start and end
     months, parents and mix-ins, seed, ensemble size or reserve.
@@ -15081,14 +15094,15 @@ def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> Non
     The change is written only if NAME and every scenario built on it still
     load. A README.md that `scenario create` wrote follows the description
     and parents. Same as `sim ensemble edit`."""
-    _edit_scenario(name, data_dir, **fields)
+    _edit_scenario(name, data_dir, what="scenario", **fields)
 
 
 @ensemble_group_command.command("edit")
-@_edit_options
+@_edit_options("ensemble")
 def ensemble_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
-    """Change ensemble NAME's scenario.csv; the same as `sim scenario edit`."""
-    _edit_scenario(name, data_dir, **fields)
+    """Change ensemble NAME's scenario.csv; the same as `sim scenario edit`,
+    except that NAME completes, and is asked for, over the ensembles."""
+    _edit_scenario(name, data_dir, what="ensemble", **fields)
 
 
 def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what: str) -> None:
