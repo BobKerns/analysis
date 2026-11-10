@@ -69,7 +69,7 @@ from analysis.sim.distributions import (
 )
 from analysis.sim.engine import run_scenario
 from analysis.sim.shortfalls import account_with_lot as _account_with_lot
-from analysis.sim.strategy_api import Strategy
+from analysis.sim.strategy_api import HOOKS as STRATEGY_HOOKS, Strategy
 from analysis.sim.series_db import (
     EnsembleSeries,
     MemberSeries,
@@ -18323,8 +18323,8 @@ def strategy_delete_command(name: str | None, yes: bool, scenario: str | None, d
 @click.option("--strategy", "strategy_name", type=completion.STRATEGY, default=None,
               help="Only this strategy's decisions.")
 @click.option("--year", type=int, default=None, help="Only this year's decisions.")
-@click.option("--hook", "hooks", multiple=True, metavar="HOOK",
-              help="Only decisions of this hook (year_start, scale, draw, place, ...); repeatable.")
+@click.option("--hook", "hooks", multiple=True, type=click.Choice(STRATEGY_HOOKS),
+              help="Only decisions of this hook; repeatable.")
 @click.option("--breaches", is_flag=True, default=False,
               help="List the guard-rail breaches strategies were told of instead (#441).")
 @_run_target_options
@@ -18344,6 +18344,8 @@ def strategy_log_command(
     --breaches lists each breach of a rail a strategy's trigger names
     instead: the year, entered, continued or left, the measure, line and
     margin in CPI-constant dollars, and whether the strategy answered."""
+    if breaches and hooks:
+        raise click.UsageError("--hook filters decisions; --breaches lists breaches instead")
     path = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{path}?mode=ro", uri=True)
     try:
@@ -18360,7 +18362,7 @@ def strategy_log_command(
             click.echo(told.rename(columns={"margin_kind": "margin of", "years_past": "years past"})
                        .to_string(index=False))
             return
-        frame = strategy_guide.decision_log(con, strategy=strategy_name, year=year)
+        frame = strategy_guide.decision_log(con, strategy=strategy_name)
     finally:
         con.close()
     hidden = 0
@@ -18369,13 +18371,19 @@ def strategy_log_command(
     else:
         # The scale lines repeat the January decision every month for every
         # owned rule (hundreds of lines), burying the decisions themselves.
+        # Which strategies decide other ways is a fact about the whole run,
+        # so a --year without a January decision hides them too.
         decided = set(frame.loc[frame["hook"] != "scale", "strategy"])
         routine = (frame["hook"] == "scale") & frame["strategy"].isin(decided)
+        if year is not None:
+            routine &= frame["month"].str.startswith(f"{year:04d}")
         hidden = int(routine.sum())
         frame = frame[~routine]
+    if year is not None:
+        frame = frame[frame["month"].str.startswith(f"{year:04d}")]
     if frame.empty:
-        click.echo(f"no strategy decisions in {path.name}"
-                   + (f" ({hidden} monthly scale lines not shown; --hook scale lists them)" if hidden else ""))
+        click.echo(f"no other strategy decisions in {path.name}; {hidden} monthly scale lines not shown "
+                   "(--hook scale lists them)" if hidden else f"no strategy decisions in {path.name}")
         return
     # The note last and left-aligned: it is a sentence, often the widest column.
     notes = frame.pop("note")

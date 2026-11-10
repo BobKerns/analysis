@@ -198,6 +198,32 @@ def test_guardrail_cuts_when_the_rate_climbs(
     assert not [n for _m, n, _d in _year_starts(run) if n.startswith("cut")]
 
 
+def test_strategy_log_hides_scale_lines_the_same_way_in_any_year(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+    run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """Whether a strategy's scale lines are routine is decided on the whole
+    run: a year with no guardrail decision of its own still hides them."""
+    _strategy(strategy_csv, "guardrail", final_years=0)
+    run = run_strategy_scenario(SCENARIO)
+    decided = {month[:4] for month, _note, _detail in _year_starts(run)}
+    # A year after the first change, so the rules are scaled, but with no
+    # change of its own.
+    first = min(month[:4] for month, note, _d in _year_starts(run) if note.startswith(("cut", "raise")))
+    quiet = next(y for y in range(int(first) + 1, 2041) if str(y) not in decided)
+    log = _cli(strategy_scenarios, "strategy", "log", str(run), "--strategy", "flex", "--year", str(quiet))
+    assert log.exit_code == 0, log.output
+    assert "travel:" not in log.output
+    assert "monthly scale lines not shown (--hook scale lists them)" in log.output
+
+
+def test_strategy_log_hook_is_a_known_hook_and_not_for_breaches(strategy_scenarios: Path) -> None:
+    typo = _cli(strategy_scenarios, "strategy", "log", "--hook", "scales")
+    assert typo.exit_code != 0 and "'scales' is not one of" in typo.output
+    both = _cli(strategy_scenarios, "strategy", "log", "--hook", "scale", "--breaches")
+    assert both.exit_code != 0 and "--breaches lists breaches instead" in both.output
+
+
 def test_ceiling_floor_holds_real_change_within_its_limits(
     strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
 ) -> None:
