@@ -60,7 +60,7 @@ def test_parses_the_documented_example(tmp_path: Path) -> None:
     ("pins: state/runs/x.sqlite3\n", "pins: expected a list"),
     ("runs: [\n", "not valid YAML"),
     ("runs:\n  - keep: 1\npins: 0\n", "pins: expected a list"),
-    ("runs: 0\n", "runs: expected a list of rules"),
+    ("runs: 0\n", "runs: expected a rule or a list of rules"),
     ("runs:\n  - keep: null\n", "runs rule 1: give keep, since, or both"),
     ("runs:\n  - since: 99999999999 weeks\n", "since is longer than 1000 years"),
 ])
@@ -318,7 +318,7 @@ def test_parses_protected_rules_and_space_limits(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(("text", "message"), [
-    ("runs:\n  - keep: 5\n    protected: 2\n", "runs rule 1: protected: expected a list"),
+    ("runs:\n  - keep: 5\n    protected: 2\n", "runs rule 1: protected: expected a rule or a list"),
     ("runs:\n  - keep: 5\n    protected:\n      - kept: 2\n",
      "runs rule 1 protected rule 1: unknown key(s): kept"),
     ("runs:\n  - keep: 5\n    protected:\n      - keep: 1\n        protected: []\n",
@@ -458,3 +458,18 @@ def test_sim_run_warns_when_space_cannot_be_freed(
     assert result.exit_code == 0, result.output
     assert "warning: state/ still uses" in result.output
     assert "everything left is protected" in result.output
+
+
+@pytest.mark.parametrize("section", ["intents", "runs", "logs"])
+def test_a_single_rule_may_be_written_as_a_map_in_every_section(
+    tmp_path: Path, section: str,
+) -> None:
+    """A bare map is one rule, the same in each section, and so is a bare
+    map under protected:."""
+    as_map = _rules(f"{section}:\n  keep: 7\n  since: 30 days\n"
+                    "  protected:\n    keep: 2\n", tmp_path)
+    as_list = _rules(f"{section}:\n  - keep: 7\n    since: 30 days\n"
+                     "    protected:\n      - keep: 2\n", tmp_path)
+    assert as_map == as_list
+    assert getattr(as_map, section) is not None
+    assert getattr(_rules(f"{section}: {{}}\n", tmp_path), section) is None
