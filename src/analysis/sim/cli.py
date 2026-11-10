@@ -43,7 +43,7 @@ from analysis.sim import (
     allocation, asset_classes, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide,
     guard_rails, load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
     scheduled_guide, sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files,
-    strategy_guide, symbols, states, tax_files, tax_guide, units, working_set, ytd_guide,
+    strategy_guide, symbols, states, tax_code, tax_files, tax_guide, units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -17991,14 +17991,21 @@ def strategy_kinds_command(kind: str | None, data_dir: Path | None) -> None:
     strategies/ modules, each with what it does and its parameters. With
     KIND, just that one."""
     kinds = _strategy_kinds(_resolve_data_dir(data_dir))
+    _echo_kinds(kinds, kind, "strategy",
+                lambda cls: f"hooks: {', '.join(sorted(cls.hooks))}")
+
+
+def _echo_kinds(kinds: Any, kind: str | None, what: str, about: Callable[[Any], str]) -> None:
+    """``sim strategy kinds`` and ``sim tax kinds``: each kind, where it
+    comes from, ``about`` it, its docstring and its parameters."""
     chosen = [kind] if kind else sorted(kinds.kinds)
     for i, name in enumerate(chosen):
         if name not in kinds.kinds:
-            raise click.ClickException(f"no strategy kind {name!r}; kinds: {', '.join(sorted(kinds.kinds))}")
+            raise click.ClickException(f"no {what} kind {name!r}; kinds: {', '.join(sorted(kinds.kinds))}")
         cls = kinds.kinds[name]
         if i:
             click.echo("")
-        click.echo(f"{name}  ({kinds.origin[name]}; hooks: {', '.join(sorted(cls.hooks))})")
+        click.echo(f"{name}  ({kinds.origin[name]}; {about(cls)})")
         for line in strategy_guide.describe_kind(cls).splitlines():
             click.echo(f"  {line}".rstrip())
         params = strategy_guide.kind_params(cls)
@@ -18699,6 +18706,71 @@ def tax_list_command(scenario: str | None, data_dir: Path | None) -> None:
         found = rows[name]
         where = f"  [from {found.inherited_from}]" if found.inherited_from and found.index is None else ""
         click.echo(f"{name:<7}  {_tax_summary(name, found.row)}{where}")
+
+
+@tax_group_command.command("kinds")
+@click.argument("kind", required=False, type=completion.TAX_KIND)
+@_LISTING_DATA_DIR_OPTION
+def tax_kinds_command(kind: str | None, data_dir: Path | None) -> None:
+    """List the tax calculator kinds: the built-ins and the data repo's
+    taxes/ modules, each with the tax it computes, the returns it builds
+    on, what it does and its parameters. With KIND, just that one."""
+    kinds = tax_code.TaxKinds(tax_code.read_sources(_resolve_data_dir(data_dir)))
+    for problem in kinds.problems:
+        click.echo(f"WARN: {problem}", err=True)
+
+    def about(cls: Any) -> str:
+        built_on = f", on {', '.join(cls.upstream)}" if cls.upstream else ""
+        return f"the {cls.jurisdiction} tax{built_on}"
+
+    _echo_kinds(kinds, kind, "tax calculator", about)
+
+
+@tax_group_command.command("check")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@_LISTING_DATA_DIR_OPTION
+def tax_check_command(scenario: str | None, data_dir: Path | None) -> None:
+    """Load the scenario and run it twice, comparing every line of every
+    tax return: a calculator must compute the same way every time (no
+    clock, files, network or unseeded randomness), or runs can't be
+    reproduced (ADR-004, ADR-011). Reports the first difference.
+
+    Each run is its own Python process with its own string-hash seed, as an
+    ensemble worker or the next `sim run` would be, so a calculator that
+    depends on set order or hash() is caught too."""
+    data = _resolve_data_dir(data_dir)
+    name = _resolve_scenario(data, scenario).name
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            result = load_scenario(data, name, intent_dir=Path(td), compute_stamps=False, allow_dirty_data=True)
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+        _echo_load_warnings(result, unused=True)
+        lines = []
+        for i, hash_seed in enumerate(("1", "2")):
+            run = Path(td) / f"check{i}.sqlite3"
+            _run_in_fresh_process(result.intent_path, run, hash_seed)
+            con = connect_sim_file(run)
+            try:
+                lines.append(con.execute(
+                    "SELECT year, bucket, amount FROM tax_year_summary ORDER BY year, bucket").fetchall())
+            finally:
+                con.close()
+    first, second = lines
+    if not first:
+        raise click.ClickException(f"{name} computed no tax returns (`sim tax list` shows its taxes)")
+    for a, b in zip(first, second, strict=False):
+        if a != b:
+            raise click.ClickException(
+                f"{a[0]}'s {a[1]} came out differently on a second run: {a[2]} then {b[2]}"
+                if a[:2] == b[:2] else f"the runs' {a[0]} returns have different lines: {a[1]}, {b[1]}")
+    if len(first) != len(second):
+        raise click.ClickException(f"the runs computed {len(first)} and {len(second)} return lines")
+    years = len({year for year, _bucket, _amount in first})
+    click.echo(f"ok: {len(first)} return lines over {years} year{'' if years == 1 else 's'}, "
+               "the same in both runs")
 
 
 @tax_group_command.command("add")

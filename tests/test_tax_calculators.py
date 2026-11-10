@@ -167,3 +167,65 @@ def test_the_taxes_folder_is_in_the_provenance_scope(
 ) -> None:
     tax_module("renters")
     assert "taxes" in provenance._scoped_paths(test_data_dir, "retire_alice")
+
+
+def _cli(data_dir: Path, *args: str):
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    return CliRunner().invoke(main, ["sim", *args, "--data-dir", str(data_dir)], terminal_width=200)
+
+
+def test_sim_tax_kinds_lists_the_households_kinds_and_their_params(
+    test_data_dir: Path, tax_module: Callable[..., Path],
+) -> None:
+    tax_module("renters")
+    result = _cli(test_data_dir, "tax", "kinds")
+    assert result.exit_code == 0, result.output
+    assert "federal  (built-in; the federal tax)" in result.output
+    assert "state_renters  (taxes/renters.py; the state tax, on federal)" in result.output
+    result = _cli(test_data_dir, "tax", "kinds", "state_renters")
+    assert "rent_cap" in result.output and "(dollars, default 4000.00)" in result.output
+    # The parameters it inherits from state_tables, with their docs.
+    assert "100 by default" in result.output
+
+
+_HASHED = '''
+from dataclasses import dataclass
+
+from analysis.sim.tax_api import register
+from analysis.sim.taxes.state_base import Adjustment
+from analysis.sim.taxes.state_tables import StateTables, StateTablesYear
+
+
+class OddYear(StateTablesYear):
+    def subtractions(self, income, basis):
+        # Set order of strings changes with the process's hash seed.
+        first = next(iter(set("abcdefgh")))
+        return (*super().subtractions(income, basis), Adjustment("odd", ordinary=ord(first)))
+
+
+@register
+class Odd(StateTables):
+    kind = "state_odd"
+    jurisdiction = "state"
+    year_class = OddYear
+'''
+
+
+@pytest.mark.slow
+def test_sim_tax_check_runs_twice_and_finds_a_calculator_that_depends_on_hash_order(
+    renters: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
+    add_tax: Callable[..., Path], tax_module: Callable[..., Path], test_data_dir: Path,
+) -> None:
+    renters()
+    _tag_rule(retire_alice_csv, "housing", "tax:rent")
+    result = _cli(test_data_dir, "tax", "check", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "the same in both runs" in result.output
+    tax_module("odd", _HASHED)
+    add_tax("state", kind="state_odd")
+    result = _cli(test_data_dir, "tax", "check", "retire_alice")
+    assert result.exit_code != 0
+    assert "2026's state_agi came out differently on a second run" in result.output

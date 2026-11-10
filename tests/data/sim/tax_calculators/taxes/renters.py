@@ -47,6 +47,6 @@ class Renters(StateTables):
         rent_share: Percent = percent("50%")
         """How much of the rent comes off."""
         rent_cap: Dollars = 4000_00
-        """The most the deduction takes off, in cents."""
+        """The most the deduction takes off."""
         public_pension: Tag | None = None
         """The tag on a public pension's income, which the state doesn't tax."""
