@@ -18654,13 +18654,18 @@ def _tax_spec(
         if jurisdiction is not None:
             destination = next((n for n, a in accounts.items()
                                 if a.row.get("subkind") == f"taxes_{jurisdiction}"), None)
+    kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
                           expenses=expenses, jurisdictions=free, source=source,
                           destination=destination,
-                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""))
+                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""),
+                          kinds=sorted(k for k, c in kinds.items() if c.jurisdiction == jurisdiction),
+                          kind=registries.TAX_DEFAULT_KINDS.get(jurisdiction or ""))
 
 
 _TAX_OPTIONS = (
+    click.option("--kind", type=completion.TAX_KIND, default=None,
+                 help="The calculator that computes it (`sim tax kinds`; '' for the built-in one)."),
     click.option("--source-chain", "source_chain", type=completion.ENDPOINT, default=None,
                  help="The account or source chain the tax is paid from."),
     click.option("--destination", type=completion.ACCOUNT, default=None,
@@ -18777,7 +18782,7 @@ def tax_check_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.argument("jurisdiction", required=False, type=click.Choice(registries.TAX_JURISDICTIONS))
 @_tax_options
 def tax_add_command(
-    jurisdiction: str | None, source_chain: str | None, destination: str | None, start: str | None,
+    jurisdiction: str | None, kind: str | None, source_chain: str | None, destination: str | None, start: str | None,
     end: str | None, params_json: str | None, description: str | None, scenario: str | None,
     data_dir: Path | None,
 ) -> None:
@@ -18794,8 +18799,8 @@ def tax_add_command(
     existing = _tax_rows(ref.path)
     if jurisdiction in existing:
         raise click.ClickException(f"{ref.name} already has a {jurisdiction} tax (sim tax edit {jurisdiction})")
-    given = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
-             "params_json": params_json, "description": description}
+    given = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
+             "end": end, "params_json": params_json, "description": description}
 
     def write(answers: Mapping[str, str]) -> None:
         name = answers["jurisdiction"]
@@ -18855,7 +18860,7 @@ def _pick_tax(data: Path, scenario: str | None, jurisdiction: str | None, prompt
 @click.argument("jurisdiction", required=False, type=completion.TAX_JURISDICTION)
 @_tax_options
 def tax_edit_command(
-    jurisdiction: str | None, source_chain: str | None, destination: str | None, start: str | None,
+    jurisdiction: str | None, kind: str | None, source_chain: str | None, destination: str | None, start: str | None,
     end: str | None, params_json: str | None, description: str | None, scenario: str | None,
     data_dir: Path | None,
 ) -> None:
@@ -18875,10 +18880,12 @@ def tax_edit_command(
         inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
         click.echo(f"changed {name} tax{inherited}: {_tax_summary(name, new)}")
 
-    changes = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
-               "params_json": params_json, "description": description}
+    changes = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
+               "end": end, "params_json": params_json, "description": description}
     if any(v is not None for v in changes.values()):
-        write({**row, **{k: v.strip() for k, v in changes.items() if v is not None}})
+        new = {**row, **{k: v.strip() for k, v in changes.items() if v is not None}}
+        new["kind"] = new["kind"] or registries.TAX_DEFAULT_KINDS[name]
+        write(new)
         return
     folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
     spec = _tax_spec(data, folder, scenario_name, "edit", name)

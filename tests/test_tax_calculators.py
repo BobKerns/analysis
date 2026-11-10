@@ -229,3 +229,21 @@ def test_sim_tax_check_runs_twice_and_finds_a_calculator_that_depends_on_hash_or
     result = _cli(test_data_dir, "tax", "check", "retire_alice")
     assert result.exit_code != 0
     assert "2026's state_agi came out differently on a second run" in result.output
+
+
+def test_sim_tax_edit_chooses_the_calculator(
+    add_state_tax: Callable[..., None], tax_module: Callable[..., Path],
+    retire_alice_csv: Callable[[str], Path], test_data_dir: Path,
+) -> None:
+    add_state_tax()
+    tax_module("renters")
+
+    def kind() -> str:
+        return pd.read_csv(retire_alice_csv("taxes/state.csv"), dtype=str, keep_default_na=False)["kind"][0]
+
+    result = _cli(test_data_dir, "tax", "edit", "state", "--kind", "state_renters", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert kind() == "state_renters"
+    result = _cli(test_data_dir, "tax", "edit", "state", "--kind", "", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert kind() == "state_tables"
