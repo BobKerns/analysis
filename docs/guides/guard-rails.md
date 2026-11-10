@@ -19,6 +19,13 @@ the prototype scenario, `retire_alice`, where Alice retires at the end of
 70. The column-by-column reference is
 [ADR-003 §4.11](../architecture/ADR-003-registries-and-csv-schemas.md).
 
+**Video.** *Advanced* gives Alice and Bill lifespans, adds the 4% rule and
+Guyton-Klinger's guardrails, reads them on one run and across an
+ensemble, and adds a `cut_on_breach` strategy that responds to the upper
+guardrail:
+[English](https://www.youtube.com/watch?v=sCqdL0pSIA0),
+[Japanese (日本語)](https://www.youtube.com/watch?v=dcyW3Mzd-yE).
+
 ## Two questions
 
 Every rail is checked two ways, because a year past the line can mean two
