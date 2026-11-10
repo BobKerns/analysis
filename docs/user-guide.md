@@ -762,6 +762,13 @@ together, with worked examples and recipes.
 
 ### 4.7 Lifespan assumptions
 
+**Video.** *Advanced* walks through this section and §4.15 and §4.19
+with Alice and Bill: lifespans drawn from the life table, what a death
+changes, guard rails on their withdrawals, and a strategy that cuts
+spending when a rail is crossed:
+[English](https://www.youtube.com/watch?v=sCqdL0pSIA0),
+[Japanese (日本語)](https://www.youtube.com/watch?v=dcyW3Mzd-yE).
+
 `lifespan.csv` has one optional row for each person: `person` and
 `age_at_death`, a decimal age in years such as `84.5`. The person's final
 month is their birth month plus that many months (`84` is the month of the
@@ -1361,6 +1368,11 @@ floor. Both use this year's tiers, which is all you know in December; the
 floors usually rise, so this errs safe.
 
 ### 4.15 Guard rails: watch spending against a line
+
+**Video.** *Advanced* adds guard rails to Alice and Bill's plan and
+reads them on one run and across an ensemble:
+[English](https://www.youtube.com/watch?v=sCqdL0pSIA0),
+[Japanese (日本語)](https://www.youtube.com/watch?v=dcyW3Mzd-yE).
 
 A guard rail is a line spending, or the withdrawals from your savings,
 should stay on one side of: "take no more than 4% a year", "cut back if the
