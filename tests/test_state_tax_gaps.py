@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from analysis.sim import registries
-from analysis.sim.engine import _indexed_tax_rows, _prepare_tax, _swap_aux_table
+from analysis.sim.engine import TaxRule, _indexed_tax_rows, _prepare_tax, _swap_aux_table
 from analysis.sim.tax_api import Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
 
@@ -72,7 +72,7 @@ def _estimate(con: sqlite3.Connection, aux: Aux, scope: str, year: int = 2026,
     params = {"scope": scope, **({"bracket_series": "CA"} if scope == "state" else {})}
     kind = "state_tables" if scope == "state" else scope
     return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind,
-                        jurisdictions={"federal": ("federal", {"scope": "federal"})}).compute(Extra(more))
+                        jurisdictions={"federal": TaxRule("federal", {"scope": "federal"}, 1)}).compute(Extra(more))
 
 
 def test_the_surcharge_adds_its_rate_above_its_floor(ledger: sqlite3.Connection) -> None:

@@ -681,6 +681,10 @@ _RECONCILIATION_COLUMNS = {
     "state_tax_paid": "state_paid",
     "state_tax_due": "state_due",
     "state_tax_overpaid": "state_refund",
+    "local_tax": "local_liability",
+    "local_tax_paid": "local_paid",
+    "local_tax_due": "local_due",
+    "local_tax_overpaid": "local_refund",
 }
 
 
@@ -688,10 +692,12 @@ def tax_reconciliation(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL)
     """Each tax year's liability, what was withheld or paid during it, and the
     balance due or refunded at the following April's reconciliation. The
     state columns appear only when the run computes state tax, as in
-    :func:`tax_by_year`."""
+    :func:`tax_by_year`, and the local ones only when it computes a local
+    tax (#508)."""
     frame = _tax_buckets(rc, list(_RECONCILIATION_COLUMNS)).rename(columns=_RECONCILIATION_COLUMNS)
-    if frame["state_liability"].isna().all():
-        frame = frame.drop(columns=[c for c in frame.columns if c.startswith("state_")])
+    for scope in ("state", "local"):
+        if frame[f"{scope}_liability"].isna().all():
+            frame = frame.drop(columns=[c for c in frame.columns if c.startswith(f"{scope}_")])
     return _cpi(rc, frame.fillna(0), mode, annual=True)
 
 

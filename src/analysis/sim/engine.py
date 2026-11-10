@@ -178,7 +178,7 @@ def run_scenario(
             r[1]: r for r in txns
         }
         jurisdictions = _tax_jurisdictions(con)
-        tax_rules: Jurisdictions = {j.name: (j.kind, j.params) for j in jurisdictions}
+        tax_rules: Jurisdictions = {j.name: TaxRule(j.kind, j.params, j.id) for j in jurisdictions}
         destinations = {j.name: j.destination_chain for j in jurisdictions}
         paid_with_another = {
             j.id for j in jurisdictions
@@ -2913,9 +2913,18 @@ class _TaxLedger(NamedTuple):
     persons: list[tax_api.Person]
 
 
-Jurisdictions = Mapping[str, tuple[str, Mapping[str, Any]]]
-"""The scenario's tax jurisdictions by name: each one's calculator kind and
-params, for :func:`_prepare_tax` to find the ones a calculator builds on."""
+class TaxRule(NamedTuple):
+    """A tax jurisdiction as :func:`_prepare_tax` prepares it: its
+    calculator kind, its params and its ``tax_jurisdiction`` id, which its
+    errors name."""
+    kind: str
+    params: Mapping[str, Any]
+    id: int
+
+
+Jurisdictions = Mapping[str, TaxRule]
+"""The scenario's tax jurisdictions by name, for :func:`_prepare_tax` to
+find the ones a calculator builds on."""
 
 
 def _tax_ledger(con, tax_year: int) -> _TaxLedger:
@@ -3076,10 +3085,10 @@ def _prepare_tax(
                 raise tax_api.TaxError(
                     f"taxes/{scope}.csv builds on the {name} tax, and the scenario "
                     f"has none (taxes/{name}.csv)")
-            up_kind, up_params = found
+            # Prepared under its own id, which its errors name.
             return _prepare_tax(
-                con, up_params, aux=aux, tax_year=tax_year, tid=tid,
-                kind=up_kind, jurisdictions=jurisdictions, person_lifespan=person_lifespan,
+                con, found.params, aux=aux, tax_year=tax_year, tid=found.id,
+                kind=found.kind, jurisdictions=jurisdictions, person_lifespan=person_lifespan,
                 taxpayers=taxpayers, ledger=ledger, growth_cache=growth_cache, shared=shared)
 
         prepared = _Remembered(calc.prepare(_tax_year(
@@ -3362,9 +3371,9 @@ class _StrategyTax:
 def _fill_bracket_tax_rule(
     tax_rules: Jurisdictions, params: Mapping[str, Any],
     tid: int, name: str,
-) -> tuple[str, Mapping[str, Any]]:
-    """The calculator kind and params of the tax jurisdiction a fill_bracket
-    measures with: the one its ``scope`` names."""
+) -> TaxRule:
+    """The tax jurisdiction a fill_bracket measures with: the one its
+    ``scope`` names."""
     scope = str(params.get("scope", "federal"))
     if scope in tax_rules:
         return tax_rules[scope]
@@ -3374,9 +3383,9 @@ def _fill_bracket_tax_rule(
     )
 
 
-def _paid_with(tax_rules: Jurisdictions, scope: str) -> list[tuple[str, Mapping[str, Any]]]:
-    """The kind and params of each of the scenario's jurisdictions paid with
-    ``scope``'s tax (``registries.TAX_PAID_WITH``), in settlement order."""
+def _paid_with(tax_rules: Jurisdictions, scope: str) -> list[TaxRule]:
+    """Each of the scenario's jurisdictions paid with ``scope``'s tax
+    (``registries.TAX_PAID_WITH``), in settlement order."""
     return [tax_rules[name] for name in registries.TAX_JURISDICTIONS
             if name in tax_rules and registries.TAX_PAID_WITH.get(name) == scope]
 
@@ -3533,11 +3542,12 @@ def _apply_fill_bracket(
     later, spread over the money converted past it."""
     tax_year = month.year
     scope = str(params.get("scope", "federal"))
-    kind, rule = _fill_bracket_tax_rule(tax_rules, params, tid, name)
+    rule = _fill_bracket_tax_rule(tax_rules, params, tid, name)
     # Every estimate here reads the same ledger, so they share their years.
     ledger, shared = _tax_ledger(con, tax_year), {}
     est = _prepare_tax(
-        con, rule, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=tax_rules,
+        con, rule.params, aux=aux, tax_year=tax_year, tid=rule.id, kind=rule.kind,
+        jurisdictions=tax_rules,
         person_lifespan=person_lifespan, taxpayers=taxpayers, growth_cache=inflation_factor_cache,
         ledger=ledger, shared=shared,
     )
@@ -3580,9 +3590,10 @@ def _apply_fill_bracket(
         if scope == "federal":
             magi_est = est
         else:
-            kind, rule = _fill_bracket_tax_rule(tax_rules, {"scope": "federal"}, tid, name)
+            rule = _fill_bracket_tax_rule(tax_rules, {"scope": "federal"}, tid, name)
             magi_est = _prepare_tax(
-                con, rule, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=tax_rules,
+                con, rule.params, aux=aux, tax_year=tax_year, tid=rule.id, kind=rule.kind,
+                jurisdictions=tax_rules,
                 person_lifespan=person_lifespan, taxpayers=taxpayers,
                 growth_cache=inflation_factor_cache, ledger=ledger, shared=shared,
             )
@@ -3602,11 +3613,11 @@ def _apply_fill_bracket(
         # (#508), since the same dollar pays them. A federal rate stays the
         # federal tax's: a state builds on it, but is paid on its own.
         measured_with = [est, *(
-            _prepare_tax(con, paid_rule, aux=aux, tax_year=tax_year, tid=tid, kind=paid_kind,
+            _prepare_tax(con, paid.params, aux=aux, tax_year=tax_year, tid=paid.id, kind=paid.kind,
                          jurisdictions=tax_rules, person_lifespan=person_lifespan,
                          taxpayers=taxpayers, growth_cache=inflation_factor_cache,
                          ledger=ledger, shared=shared)
-            for paid_kind, paid_rule in _paid_with(tax_rules, scope))]
+            for paid in _paid_with(tax_rules, scope))]
         amount = _within_marginal_rate(
             lambda ordinary, ltcg: sum(
                 p.compute(tax_api.Extra(ordinary, ltcg)).tax for p in measured_with),

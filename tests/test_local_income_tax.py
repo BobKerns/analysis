@@ -16,10 +16,10 @@ import pytest
 
 from analysis.sim import registries
 from analysis.sim.connection import RunConnection
-from analysis.sim.engine import _prepare_tax, _swap_aux_table
+from analysis.sim.engine import EngineError, TaxRule, _prepare_tax, _swap_aux_table
 from analysis.sim.tax_api import Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.reports import tax_by_year
+from analysis.sim.reports import tax_by_year, tax_reconciliation
 from analysis.sim.run_charts import tax_figure
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
@@ -73,15 +73,15 @@ def _earn(con: sqlite3.Connection, year: int, amount: int) -> None:
 
 
 JURISDICTIONS = {
-    "federal": ("federal", {"scope": "federal"}),
-    "state": ("state_tables", {"scope": "state", "bracket_series": "CA"}),
+    "federal": TaxRule("federal", {"scope": "federal"}, 1),
+    "state": TaxRule("state_tables", {"scope": "state", "bracket_series": "CA"}, 2),
 }
 
 
 def _estimate(con: sqlite3.Connection, aux: Aux, scope: str = "local", year: int = 2026,
               more: int = 0) -> Return:
-    kind, params = JURISDICTIONS.get(scope, ("local_bands", {"scope": "local"}))
-    return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind,
+    rule = JURISDICTIONS.get(scope, TaxRule("local_bands", {"scope": "local"}, 3))
+    return _prepare_tax(con, rule.params, aux=aux, tax_year=year, tid=rule.id, kind=rule.kind,
                         jurisdictions=JURISDICTIONS).compute(Extra(more))
 
 
@@ -199,6 +199,26 @@ def test_a_county_move_needs_no_local_tax_before_it(
         load_test_copy()
 
 
+def test_a_local_series_of_its_own_is_rejected_with_a_move(
+    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], add_state_tax: Callable[..., None],
+    add_tax: Callable[..., Path],
+) -> None:
+    """A local file naming its own bracket_series keeps reading that table
+    whatever a move swaps, so a move would leave the old county's tax."""
+    add_state_tax()
+    add_tax("local", params_json={"bracket_series": "CA-city"})
+    write_aux("state_local_tax__CA-city.csv", _local_rows("3%"))
+    load_test_copy()
+    write_aux("state_brackets__WA.csv", (
+        "effective_date,filing_status,floor,marginal_rate,floor_growth_series\n"
+        + "".join(f"2020-01-31,{s},0.00,0%,\n" for s in ("Single", "MFJ", "MFS"))))
+    append_calendar_row(date="2028-01", kind="swap_aux_table", series="CA",
+                        params_json=json.dumps({"aux_kind": "state_brackets", "source_series": "WA"}))
+    with pytest.raises(LoadError, match=r"this move doesn't reach the local tax.*bracket_series 'CA-city'"):
+        load_test_copy()
+
+
 def test_a_county_move_into_no_state_is_rejected(
     write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
     load_test_copy: Callable[[], LoadResult],
@@ -256,6 +276,17 @@ def test_tax_report_shows_local_tax_apart_from_the_states(
     assert summary["local_tax_paid"] == 0 and summary["local_tax_due"] == summary["local_tax"]
     assert paid["local"] == summary["local_tax"] and paid["state"] == summary["state_tax_due"]
     assert "local_drawdown_tax" in summary and "state_local_tax" not in summary
+    # The year's liability, what's still owed at its end, and the April
+    # reconciliation count the local tax, no longer inside the state's.
+    with RunConnection(run) as rc:
+        liability = rc.tax_liability_by_year()[year]
+        outstanding = rc.outstanding_tax_by_year()[year]
+        reconciliation = tax_reconciliation(rc)
+    scopes = ("federal", "state", "local")
+    assert liability == pytest.approx(sum(summary[f"{s}_tax"] for s in scopes) / 100)
+    assert outstanding == pytest.approx(sum(summary[f"{s}_tax_due"] for s in scopes) / 100)
+    assert reconciliation.loc[year, "local_liability"] == pytest.approx(summary["local_tax"] / 100)
+    assert reconciliation.loc[year, "local_due"] == pytest.approx(summary["local_tax_due"] / 100)
 
 
 def test_local_bands_without_a_local_file_name_the_command(
@@ -278,3 +309,13 @@ def test_a_local_tax_needs_the_state_it_builds_on(
     write_aux("state_local_tax__CA.csv", _local_rows("3%"))
     with pytest.raises(LoadError, match=r"local_bands calculator builds on the state tax"):
         load_test_copy()
+
+
+def test_an_upstreams_error_names_its_own_jurisdiction(ledger: sqlite3.Connection) -> None:
+    """Prepared for the local tax (id 3), through the state's (2), the
+    federal year names its own jurisdiction (1) in its errors."""
+    _earn(ledger, 2026, 110_000_00)
+    aux = _aux(_band(0, 30_000))
+    del aux[("filing_status", None)]
+    with pytest.raises(EngineError, match=r"tax jurisdiction id=1: no filing_status row"):
+        _estimate(ledger, aux)

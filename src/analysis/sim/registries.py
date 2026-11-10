@@ -449,8 +449,9 @@ STATE_LOCAL_TAX = "state_local_tax"
 """The aux kind of a local income tax (#487): a county's or city's bands on
 the state's taxable income, in the shape of its brackets (Maryland's county
 rate, New York City's brackets). Keyed by state like the brackets, since a
-household lives in one locality, and paid with the state's tax, as most
-are filed on the state return; reported apart from it."""
+household lives in one locality. The local jurisdiction reads it
+(``taxes/local.csv``, ``local_bands``, #508), paid with the state's tax,
+as most are filed on the state return, and reported apart from it."""
 
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""

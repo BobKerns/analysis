@@ -1336,7 +1336,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues)
-    _validate_local_tax(tax_rows, aux_rows, issues)
+    _validate_local_tax(tax_rows, aux_rows, calendar_rows, issues)
     _validate_calendar(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -5164,12 +5164,29 @@ def _validate_taxes(
 
 def _validate_local_tax(
     tax_rows: list[dict[str, str]],
-    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    calendar_rows: list[dict[str, str]], issues: list[str],
 ) -> None:
     """A ``state_local_tax__<XX>`` table is read by the local jurisdiction
     alone (#508), so a scenario with one and no ``taxes/local.csv`` would
-    silently stop paying it."""
-    if any(row["name"] == "local" for row in tax_rows):
+    silently stop paying it. A local file whose params name a
+    ``bracket_series`` of its own keeps reading that table whatever a move
+    swaps, so it can't be used with one: it would charge the old county's
+    tax after the household moved."""
+    local = next((row for row in tax_rows if row["name"] == "local"), None)
+    if local is not None:
+        own = (_safe_json(local.get("params_json")) or {}).get("bracket_series")
+        if own:
+            for where, row in _located(calendar_rows, "calendar.csv"):
+                params = _safe_json(row.get("params_json")) or {}
+                if (row.get("kind") == "swap_aux_table"
+                        and params.get("aux_kind") in ("state_brackets", registries.STATE_LOCAL_TAX)
+                        and (row.get("series") or None) != own):
+                    issues.append(
+                        f"{where}: this move doesn't reach the local tax, whose "
+                        f"{registries.TAXES_DIR}/local.csv names its own bracket_series {own!r}; "
+                        "leave its bracket_series blank to follow the state's tables, which a "
+                        "move swaps")
         return
     tables = sorted({series for kind, series, _p, _e in aux_rows
                      if kind == registries.STATE_LOCAL_TAX and series})
