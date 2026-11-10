@@ -28,12 +28,13 @@ import bisect
 import itertools
 import warnings
 from collections import defaultdict
+from contextvars import ContextVar
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import registries, strategy_api, tax_api, units
+from analysis.sim import registries, strategy_api, tax_api, tax_code, units
 from analysis.sim.dates import add_month_ends
 from analysis.sim.runs import finalize_run, open_run_file
 from analysis.sim.schema import inserted_id
@@ -83,6 +84,8 @@ def run_scenario(
         run_args=run_args, engine_options=engine_options, reserved=reserved,
     )
     strategy_runtime: StrategyRuntime | None = None
+    tax_kinds: tax_code.TaxKinds | None = None
+    kinds_token = None
     try:
         scenario = con.execute(
             'SELECT start, "end" FROM scenario'
@@ -179,6 +182,14 @@ def run_scenario(
         }
         jurisdictions = _tax_jurisdictions(con)
         tax_rules: Jurisdictions = {j.name: TaxRule(j.kind, j.params, j.id) for j in jurisdictions}
+        # The data repo's calculators (#510), a fresh copy for this run, so
+        # nothing a module keeps carries into the next run or member.
+        tax_sources = tax_code.read_snapshot(con)
+        if tax_sources:
+            tax_kinds = tax_code.TaxKinds(tax_sources, fresh=True)
+            if tax_kinds.problems:
+                raise EngineError("\n".join(tax_kinds.problems))
+        kinds_token = _RUN_TAX_KINDS.set(tax_kinds.kinds if tax_kinds is not None else None)
         destinations = {j.name: j.destination_chain for j in jurisdictions}
         paid_with_another = {
             j.id for j in jurisdictions
@@ -620,6 +631,10 @@ def run_scenario(
     finally:
         if strategy_runtime is not None:
             strategy_runtime.close()
+        if kinds_token is not None:
+            _RUN_TAX_KINDS.reset(kinds_token)
+        if tax_kinds is not None:
+            tax_kinds.unload()
         con.close()
     return Path(run_path)
 
@@ -2911,6 +2926,7 @@ class _TaxLedger(NamedTuple):
     items: list[tax_api.IncomeItem]
     losses: list[tax_api.CapitalLoss]
     persons: list[tax_api.Person]
+    spending: list[tax_api.SpendingItem] = []
 
 
 class TaxRule(NamedTuple):
@@ -2927,12 +2943,36 @@ Jurisdictions = Mapping[str, TaxRule]
 find the ones a calculator builds on."""
 
 
+def _rule_tags(con) -> tuple[dict[int, frozenset[str]], dict[int, str]]:
+    """Each scheduled rule's tags, a calendar row's for the rule it fires
+    through (#510), and each rule's ``person``; only the rules that have
+    some."""
+    tags: dict[int, set[str]] = defaultdict(set)
+    for tid, role, name in con.execute(
+            "SELECT x.scheduled_transaction_id, t.role, t.name FROM scheduled_transaction_tag x "
+            "JOIN tag t ON t.id = x.tag_id"):
+        tags[tid].add(f"{role}:{name}")
+    for tid, role, name in con.execute(
+            "SELECT s.id, t.role, t.name FROM scheduled_transaction s "
+            "JOIN calendar_event_tag x ON x.calendar_event_id = s.created_by_event_id "
+            "JOIN tag t ON t.id = x.tag_id"):
+        tags[tid].add(f"{role}:{name}")
+    persons = dict(con.execute(
+        "SELECT id, person FROM scheduled_transaction WHERE person IS NOT NULL AND person <> ''"))
+    return {tid: frozenset(t) for tid, t in tags.items()}, persons
+
+
 def _tax_ledger(con, tax_year: int) -> _TaxLedger:
-    """The income items, capital losses and people up to ``tax_year``, from
-    the transfers posted so far."""
+    """The income items, spending items, capital losses and people up to
+    ``tax_year``, from the transfers posted so far."""
+    account_tags: dict[int, set[str]] = defaultdict(set)
+    for aid, role, name in con.execute(
+            "SELECT x.account_id, t.role, t.name FROM account_tag x JOIN tag t ON t.id = x.tag_id"):
+        account_tags[aid].add(f"{role}:{name}")
     accounts = {
         aid: tax_api.Account(name, kind, subkind or "", owner,
-                             json.loads(meta or "{}").get("hobby") is True)
+                             json.loads(meta or "{}").get("hobby") is True,
+                             frozenset(account_tags.get(aid, ())))
         for aid, name, kind, subkind, owner, meta in con.execute(
             "SELECT id, name, kind, subkind, owner, meta_json FROM account")
     }
@@ -2941,18 +2981,38 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
         # Every transfer names a real account; a unit test's ledger may not.
         return accounts.get(aid) or tax_api.Account(f"#{aid}", "", "", None)
 
+    rule_tags, rule_person = _rule_tags(con)
+    # A rule with tags or a person is its own item; every other rule's
+    # transfers sum together, which keeps a tax year quick to build.
+    keyed = sorted(set(rule_tags) | set(rule_person))
+    rule = (f"CASE WHEN reason_kind IN ('rule', 'ytd_rule') AND reason_id IN "
+            f"({', '.join(str(int(tid)) for tid in keyed)}) THEN reason_id END" if keyed else "NULL")
     year_of = "COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER))"
     items = [
-        tax_api.IncomeItem(int(year), character, account(frm), account(to), int(amount))
-        for year, character, frm, to, amount in con.execute(
-            f"SELECT {year_of} AS y, tax_character, from_account, to_account, SUM(amount) "
+        tax_api.IncomeItem(int(year), character, account(frm), account(to), int(amount),
+                           rule_tags.get(tid, frozenset()) if tid is not None else frozenset())
+        for year, character, frm, to, tid, amount in con.execute(
+            f"SELECT {year_of} AS y, tax_character, from_account, to_account, {rule} AS r, SUM(amount) "
             # A transfer of character none is never income; leaving those out
             # (most of the ledger) keeps a tax year quick to build.
             "FROM transfer_event WHERE tax_character <> 'none' AND y <= ? "
-            "GROUP BY y, tax_character, from_account, to_account",
+            "GROUP BY y, tax_character, from_account, to_account, r",
             (tax_year,),
         )
     ]
+    expense_ids = [aid for aid, a in accounts.items() if a.kind == "expense"]
+    spending = [
+        tax_api.SpendingItem(
+            int(year), character, account(frm), account(to), int(amount),
+            rule_tags.get(tid, frozenset()) if tid is not None else frozenset(),
+            rule_person.get(tid) if tid is not None else None)
+        for year, character, frm, to, tid, amount in con.execute(
+            f"SELECT {year_of} AS y, tax_character, from_account, to_account, {rule} AS r, SUM(amount) "
+            f"FROM transfer_event WHERE to_account IN ({', '.join(map(str, expense_ids))}) AND y <= ? "
+            "GROUP BY y, tax_character, from_account, to_account, r",
+            (tax_year,),
+        )
+    ] if expense_ids else []
     losses = [
         tax_api.CapitalLoss(int(year), character, owner, int(amount))
         for year, character, owner, amount in con.execute(
@@ -2965,7 +3025,7 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
     ]
     persons = [tax_api.Person(pid, born or None, role or "")
                for pid, born, role in con.execute("SELECT id, birthdate, role FROM person")]
-    return _TaxLedger(items, losses, persons)
+    return _TaxLedger(items, losses, persons, spending)
 
 
 def _tax_year(
@@ -2977,17 +3037,25 @@ def _tax_year(
     ledger: _TaxLedger | None = None,
     upstream: Callable[[str], tax_api.Prepared] | None = None,
     growth_cache: dict[tuple[str, date, date, str], int] | None = None,
+    params_class: type[Any] | None = None,
 ) -> tax_api.TaxYear:
     """``tax_year`` as a calculator sees it (#507), from the transfers
-    posted so far: its income items and those of every year before it,
-    the capital losses, the people, the aux tables, and the jurisdictions
-    it builds on (``upstream``). ``growth_cache`` is the run's inflation
-    factors, which indexing the tables reads."""
+    posted so far: its income and spending items and those of every year
+    before it, the capital losses, the people, the aux tables, and the
+    jurisdictions it builds on (``upstream``). ``growth_cache`` is the run's
+    inflation factors, which indexing the tables reads. ``params_class`` is
+    the calculator's ``Params``, which ``params`` (checked at load, #510)
+    fill."""
     scope = str(params.get("scope", "federal"))
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
     if growth_cache is None:
         growth_cache = {}
-    items, losses, persons = ledger or _tax_ledger(con, tax_year)
+    items, losses, persons, spending = ledger or _tax_ledger(con, tax_year)
+    given = {k: v for k, v in params.items() if k != "scope"}
+    try:
+        typed = params_class(**given) if params_class is not None else given
+    except TypeError as e:
+        raise tax_api.TaxError(f"taxes/{scope}.csv: params_json: {e}") from None
 
     def filing_status_in(year: int) -> str:
         return _active_filing_status(
@@ -2996,8 +3064,8 @@ def _tax_year(
         )
 
     return tax_api.TaxYear(
-        year=tax_year, jurisdiction=scope, params=params,
-        items=items, losses=losses, persons=persons,
+        year=tax_year, jurisdiction=scope, params=typed,
+        items=items, losses=losses, persons=persons, spending=spending,
         _table=lambda kind, series, year: _active_aux_rows(aux, kind, series, f"{year}-12-31"),
         _indexed=lambda kind, series: _indexed_tax_rows(aux, kind, series, tax_year, growth_cache),
         _dated=lambda kind, series=None: aux.get((kind, series)) or [],
@@ -3047,6 +3115,20 @@ _SharedPrepares = dict[tuple[str, int], tuple["_TaxLedger", str, tax_api.Prepare
 each was prepared from (:func:`_prepare_tax`)."""
 
 
+_RUN_TAX_KINDS: ContextVar[Mapping[str, type[tax_api.TaxCalculator]] | None] = ContextVar(
+    "_RUN_TAX_KINDS", default=None)
+"""The running scenario's calculator kinds, the data repo's included
+(#510); None when it uses only the built-ins."""
+
+
+def _calculator(kind: str) -> tax_api.TaxCalculator:
+    """The calculator a jurisdiction's ``kind`` names, in the running scenario."""
+    kinds = _RUN_TAX_KINDS.get()
+    if kinds is not None and kind in kinds:
+        return kinds[kind]()
+    return tax_api.calculator(kind)
+
+
 def _prepare_tax(
     con, params: Mapping[str, Any], *,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
@@ -3074,7 +3156,7 @@ def _prepare_tax(
     if lent is not None and lent[0] == ledger and lent[1] == kind:
         return lent[2]
     try:
-        calc = tax_api.calculator(kind)
+        calc = _calculator(kind)
 
         def upstream(name: str) -> tax_api.Prepared:
             if name not in calc.upstream:
@@ -3095,6 +3177,7 @@ def _prepare_tax(
             con, params, aux=aux, tax_year=tax_year, tid=tid,
             person_lifespan=person_lifespan, taxpayers=taxpayers,
             ledger=ledger, upstream=upstream, growth_cache=growth_cache,
+            params_class=type(calc).Params,
         )))
         shared[(scope, tax_year)] = (ledger, kind, prepared)
         return prepared

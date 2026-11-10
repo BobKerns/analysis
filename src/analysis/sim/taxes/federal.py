@@ -9,6 +9,7 @@ of."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import ClassVar
 
@@ -28,6 +29,25 @@ class Federal(TaxCalculator):
     jurisdiction = "federal"
     default_nol_limit_percent: ClassVar[int] = 80
 
+    @dataclass(frozen=True)
+    class Params:
+        """Each ``_aux`` param names the aux table read in place of the
+        usual one (``federal_brackets``, ...)."""
+        filing_status_aux: str = "filing_status"
+        bracket_aux: str = "federal_brackets"
+        bracket_series: str | None = None
+        """The series of the federal tables (``federal_brackets__<series>``)."""
+        standard_deduction_aux: str = "standard_deduction"
+        itemized_deduction_aux: str = "federal_deductions"
+        ltcg_bracket_aux: str = "ltcg_brackets"
+        stcg_bracket_aux: str | None = None
+        """A table of separate short-term gain rates; none federally."""
+        ltcg_exclusion_aux: str | None = None
+        """A table excluding part of the long-term gain; none federally."""
+        ss_threshold_aux: str = "ss_taxation_thresholds"
+        nol_limit_percent: int | None = None
+        """How much of taxable income a carried-in NOL may offset; 80 by default."""
+
     def prepare(self, year: TaxYear) -> Prepared:
         return FederalYear(self, year)
 
@@ -38,13 +58,13 @@ class FederalYear(Prepared):
     def __init__(self, calc: Federal, ty: TaxYear) -> None:
         params = ty.params
         self.filing_status = ty.filing_status
-        bracket_aux = str(params.get("bracket_aux", "federal_brackets"))
+        bracket_aux = params.bracket_aux
         series = common.bracket_series(ty)
         self.brackets = common.brackets(ty, bracket_aux, series)
-        self.ltcg_brackets = common.rate_table(ty, str(params.get("ltcg_bracket_aux", "ltcg_brackets")))
-        stcg_aux = params.get("stcg_bracket_aux")
+        self.ltcg_brackets = common.rate_table(ty, params.ltcg_bracket_aux)
+        stcg_aux = params.stcg_bracket_aux
         self._stcg_brackets = common.rate_table(ty, None if stcg_aux is None else str(stcg_aux))
-        exclusion_aux = params.get("ltcg_exclusion_aux")
+        exclusion_aux = params.ltcg_exclusion_aux
         self._net_ltcg = common.ltcg_exclusion(
             ty, None if exclusion_aux is None else str(exclusion_aux), None)
 
@@ -61,16 +81,16 @@ class FederalYear(Prepared):
         self._ss_tiers: tuple[int, int] | None = None
         if ss_income > 0:
             status = ty.filing_status
-            thresholds = [r for r in ty.table(str(params.get("ss_threshold_aux", "ss_taxation_thresholds")))
+            thresholds = [r for r in ty.table(params.ss_threshold_aux)
                           if r.get("filing_status") == status]
             if not thresholds:
                 raise TaxError(f"{common.where(ty)}: missing ss thresholds for filing_status={status!r}")
             self._ss_tiers = (int(thresholds[0]["tier1_floor"]), int(thresholds[0]["tier2_floor"]))
 
         standard = common.standard_deduction(
-            ty, str(params.get("standard_deduction_aux", "standard_deduction")))
+            ty, params.standard_deduction_aux)
         itemized = common.itemized_deduction(
-            ty, str(params.get("itemized_deduction_aux", "federal_deductions")))
+            ty, params.itemized_deduction_aux)
         self._deduction = deduction = max(standard, itemized)
         # A net operating loss carried in offsets part of this year's
         # taxable income (#231). It doesn't lower AGI first, as the NOL

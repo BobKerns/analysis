@@ -8,6 +8,7 @@ and surcharge. A local tax on it is :mod:`analysis.sim.taxes.local`."""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from analysis.sim import registries
@@ -24,17 +25,14 @@ class StateTablesYear(FederalStateYear):
     def setup(self) -> None:
         ty, params = self.ty, self.ty.params
         where = common.where(ty)
-        bracket_aux = str(params.get("bracket_aux", "state_brackets"))
+        bracket_aux = params.bracket_aux
         # Every table is the state's where the household lives on the year's
         # December 31 (#509): its brackets, gain tables and exclusion (#485).
         series = self.series = common.state_series(ty)
         self.brackets = common.brackets(ty, bracket_aux, series)
-        self.ltcg_brackets = common.rate_table(ty, str(params.get(
-            "ltcg_bracket_aux", registries.STATE_LTCG_BRACKETS)), series)
-        self.stcg_brackets = common.rate_table(ty, str(params.get(
-            "stcg_bracket_aux", registries.STATE_STCG_BRACKETS)), series)
-        self._net_ltcg = common.ltcg_exclusion(ty, str(params.get(
-            "ltcg_exclusion_aux", registries.STATE_LTCG_EXCLUSION)), series)
+        self.ltcg_brackets = common.rate_table(ty, params.ltcg_bracket_aux, series)
+        self.stcg_brackets = common.rate_table(ty, params.stcg_bracket_aux, series)
+        self._net_ltcg = common.ltcg_exclusion(ty, params.ltcg_exclusion_aux, series)
 
         # A state that doesn't recognize an HSA (#490) taxes it like a
         # brokerage account: no deduction going in, its growth each year,
@@ -51,8 +49,7 @@ class StateTablesYear(FederalStateYear):
         # A state's retirement income exclusions (#486) come off before AGI,
         # as the states' own subtractions from income do, after its gain
         # exclusion.
-        exclusion_aux = str(params.get(
-            "retirement_exclusion_aux", registries.STATE_RETIREMENT_EXCLUSION))
+        exclusion_aux = params.retirement_exclusion_aux
         self._exclusion = common.retirement_exclusion(
             ty, exclusion_aux, series,
             net_gain=capital.stcg + self._net_ltcg(capital.ltcg), hsa_taxed=self._hsa_taxed)
@@ -79,7 +76,7 @@ class StateTablesYear(FederalStateYear):
 
     def deductions(self) -> Mapping[str, int]:
         ty, params = self.ty, self.ty.params
-        standard_aux = str(params.get("standard_deduction_aux", registries.STATE_STANDARD_DEDUCTION))
+        standard_aux = params.standard_deduction_aux
         # A state's standard deduction is keyed by state, like its brackets
         # (state_standard_deduction__CA.csv).
         series = self.series if standard_aux == registries.STATE_STANDARD_DEDUCTION else None
@@ -90,7 +87,7 @@ class StateTablesYear(FederalStateYear):
         # state_deductions falls back to federal_deductions when the
         # scenario has no state_deductions rows at all: most states don't
         # need their own file.
-        itemized_aux = str(params.get("itemized_deduction_aux", "state_deductions"))
+        itemized_aux = params.itemized_deduction_aux
         if not ty.has_table(itemized_aux):
             itemized_aux = "federal_deductions"
         itemized = common.itemized_deduction(ty, itemized_aux)
@@ -175,3 +172,20 @@ class StateTables(StateFromFederal):
     kind = "state_tables"
     jurisdiction = "state"
     year_class = StateTablesYear
+
+    @dataclass(frozen=True)
+    class Params:
+        """Each ``_aux`` param names the aux table read in place of the
+        usual one, keyed by the state the household lives in like it. A
+        calculator built on this one extends these (``class
+        Params(StateTables.Params)``)."""
+        filing_status_aux: str = "filing_status"
+        bracket_aux: str = "state_brackets"
+        standard_deduction_aux: str = registries.STATE_STANDARD_DEDUCTION
+        itemized_deduction_aux: str = "state_deductions"
+        retirement_exclusion_aux: str = registries.STATE_RETIREMENT_EXCLUSION
+        ltcg_bracket_aux: str = registries.STATE_LTCG_BRACKETS
+        stcg_bracket_aux: str = registries.STATE_STCG_BRACKETS
+        ltcg_exclusion_aux: str = registries.STATE_LTCG_EXCLUSION
+        nol_limit_percent: int | None = None
+        """How much of taxable income a carried-in NOL may offset; 100 by default."""

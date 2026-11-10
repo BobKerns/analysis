@@ -63,7 +63,7 @@ def answers_of(row: Mapping[str, str]) -> Answers:
 
 def row_of(jurisdiction: str, answers: Mapping[str, str], base: Mapping[str, str] | None = None) -> dict[str, str]:
     """The file's row from ``answers``, over ``base`` (the row being edited)."""
-    kind = next(k for k, j in registries.TAX_KINDS.items() if j == jurisdiction)
+    kind = registries.TAX_DEFAULT_KINDS[jurisdiction]
     row = {**dict.fromkeys(registries.TAX_CSV_HEADER, ""), "kind": kind, **(base or {})}
     row.update({column: (answers.get(column) or "").strip() for column in FIELDS})
     return {column: row[column] for column in registries.TAX_CSV_HEADER}

@@ -18,7 +18,11 @@ from analysis.sim.registries import SCHEDULED_CSV_HEADER
 
 
 @pytest.mark.parametrize(("name", "cells", "message"), [
-    ("federal", {"kind": "state_tables"}, "kind 'state_tables' doesn't compute the federal tax"),
+    ("federal", {"kind": "state_tables"},
+     "kind 'state_tables' computes the state tax; the federal tax takes kind federal"),
+    ("state", {"kind": "nope"}, "no tax calculator kind 'nope'; the state tax takes kind state_tables"),
+    ("federal", {"params_json": '{"bracket_aux": 3}'}, "parameter 'bracket_aux': 3 must be a string"),
+    ("federal", {"params_json": '{"brackets": "x"}'}, "unknown parameter 'brackets'"),
     ("federal", {"upstream": "federal"}, "upstream names the jurisdiction itself"),
     ("federal", {"upstream": "state"}, "upstream must be blank or empty: the federal calculator builds on no"),
     ("federal", {"source_chain": ""}, "source_chain names the chain or account the tax is paid from"),

@@ -63,8 +63,10 @@ def _year(
         rows = [r for r in tables.get((kind, None), []) if r.get(column) == value]
         return rows[-1] if rows else None
 
+    kind = {"federal": "federal", "state": "state_tables", "local": "local_bands"}[jurisdiction]
     return TaxYear(
-        year=YEAR, jurisdiction=jurisdiction, params=dict(params or {}), items=list(items),
+        year=YEAR, jurisdiction=jurisdiction, params=type(calculator(kind)).Params(**(params or {})),
+        items=list(items),
         losses=[], persons=[],
         _table=lambda kind, series, _year: list(tables.get((kind, series), [])),
         _indexed=lambda kind, series: list(tables.get((kind, series), [])),
@@ -135,15 +137,28 @@ def test_an_unknown_kind_is_a_tax_error() -> None:
         calculator("nope")
 
 
-def test_a_kind_registers_once() -> None:
-    calculator("federal")  # the built-ins are registered
+def test_register_checks_the_kind_and_its_jurisdiction() -> None:
+    class Nowhere(TaxCalculator):
+        kind = "nowhere"
+        jurisdiction = "city"
 
-    class Again(TaxCalculator):
-        kind = "federal"
-        jurisdiction = "federal"
+    with pytest.raises(TaxError, match="jurisdiction must be one of federal, state, local"):
+        tax_api.register(Nowhere)
 
-    with pytest.raises(ValueError, match="registered twice"):
-        tax_api.register(Again)
+    class Itself(TaxCalculator):
+        kind = "itself"
+        jurisdiction = "state"
+        upstream = ("state",)
+
+    with pytest.raises(TaxError, match="upstream 'state' must be another"):
+        tax_api.register(Itself)
+
+    class Fine(TaxCalculator):
+        kind = "fine"
+        jurisdiction = "state"
+
+    assert tax_api.is_registered(tax_api.register(Fine))
+    assert not tax_api.is_registered(type("Sub", (Fine,), {}))  # the mark isn't inherited
 
 
 def test_a_returns_memo_cannot_change_the_prepared_year() -> None:

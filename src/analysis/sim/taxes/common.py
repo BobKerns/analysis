@@ -501,7 +501,7 @@ def where(ty: TaxYear) -> str:
 def loss_limit(ty: TaxYear) -> Callable[[int], int]:
     """Each year's capital-loss limit (``capital_loss_limit``), for
     :func:`capital_gains`."""
-    status_aux = str(ty.params.get("filing_status_aux", "filing_status"))
+    status_aux = str(getattr(ty.params, "filing_status_aux", None) or "filing_status")
 
     def limit(year: int) -> int:
         # A carryover from a year before the filing_status table starts (a
@@ -521,7 +521,7 @@ def loss_limit(ty: TaxYear) -> Callable[[int], int]:
 
 def bracket_series(ty: TaxYear) -> str | None:
     """The federal ``bracket_series`` param: its brackets' series, if any."""
-    series = ty.params.get("bracket_series")
+    series = getattr(ty.params, "bracket_series", None)
     return None if series is None else str(series)
 
 
@@ -595,7 +595,8 @@ def ltcg_exclusion(ty: TaxYear, kind: str | None, series: str | None) -> Callabl
 
 def nol_limit_percent(ty: TaxYear, default: int) -> int:
     """How much of taxable income a carried-in NOL may offset (#231)."""
-    percent = int(ty.params.get("nol_limit_percent", default))
+    given = getattr(ty.params, "nol_limit_percent", None)
+    percent = default if given is None else int(given)
     if not 0 <= percent <= 100:
         raise TaxError(f"{where(ty)}: nol_limit_percent must be 0 to 100, got {percent}")
     return percent

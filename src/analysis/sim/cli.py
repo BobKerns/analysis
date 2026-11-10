@@ -18561,14 +18561,14 @@ def target_delete_command(
 # ---------- tax: the scenario's tax jurisdictions (#507) and its state (#483) ----------
 
 
-def _tax_summary(row: Mapping[str, str]) -> str:
-    """One line for a tax jurisdiction file's row."""
+def _tax_summary(name: str, row: Mapping[str, str]) -> str:
+    """One line for jurisdiction ``name``'s file's row."""
     when = f" from {row.get('start') or 'the start'}" + (f" to {row['end']}" if row.get("end") else "")
     # A blank upstream is the calculator's own (#508).
     built_on = row.get("upstream") or " ".join(tax_calculator_upstream(row.get("kind", "")))
     upstream = f" on {built_on}" if built_on else ""
     params = f" {row['params_json']}" if row.get("params_json") else ""
-    paid_with = registries.TAX_PAID_WITH.get(registries.TAX_KINDS.get(row.get("kind", ""), ""))
+    paid_with = registries.TAX_PAID_WITH.get(name)
     with_tax = f"the {paid_with} tax's" if paid_with else "no"
     source = row.get("source_chain") or f"{with_tax} source"
     destination = row.get("destination") or f"{with_tax} destination"
@@ -18698,7 +18698,7 @@ def tax_list_command(scenario: str | None, data_dir: Path | None) -> None:
     for name in (n for n in registries.TAX_JURISDICTIONS if n in rows):
         found = rows[name]
         where = f"  [from {found.inherited_from}]" if found.inherited_from and found.index is None else ""
-        click.echo(f"{name:<7}  {_tax_summary(found.row)}{where}")
+        click.echo(f"{name:<7}  {_tax_summary(name, found.row)}{where}")
 
 
 @tax_group_command.command("add")
@@ -18729,7 +18729,7 @@ def tax_add_command(
         name = answers["jurisdiction"]
         row = tax_guide.row_of(name, answers)
         path = _write_tax(data, ref.name, name, row)
-        click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(row)}")
+        click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(name, row)}")
 
     def paid_with(name: str) -> bool:
         """A jurisdiction paid with another's (local, #508) needs nothing
@@ -18801,7 +18801,7 @@ def tax_edit_command(
             return
         _write_tax(data, scenario_name, name, new)
         inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
-        click.echo(f"changed {name} tax{inherited}: {_tax_summary(new)}")
+        click.echo(f"changed {name} tax{inherited}: {_tax_summary(name, new)}")
 
     changes = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
                "params_json": params_json, "description": description}
@@ -18811,7 +18811,7 @@ def tax_edit_command(
     folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
     spec = _tax_spec(data, folder, scenario_name, "edit", name)
     answers = tax_guide.answers_of(row)
-    click.echo(f"{name}: {_tax_summary(row)}")
+    click.echo(f"{name}: {_tax_summary(name, row)}")
     _tax_guide().review(spec, calendar_guide.GuideContext(), answers,
                         lambda _params: write(tax_guide.row_of(name, answers, row)), show_command=False)
 
