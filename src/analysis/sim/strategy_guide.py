@@ -201,6 +201,7 @@ def owns_sql() -> str:
 
 def decision_log(
     con: sqlite3.Connection, *, strategy: str | None = None, year: int | None = None,
+    hooks: Sequence[str] = (),
 ) -> pd.DataFrame:
     """A run's strategy decisions, oldest first: month, strategy, hook, asked,
     chosen and fallback (dollars), and the note. A ``scale`` decision's note
@@ -224,6 +225,9 @@ def decision_log(
     if year is not None:
         query += " AND substr(s.month, 1, 4) = ?"
         args.append(f"{year:04d}")
+    if hooks:
+        query += f" AND d.hook IN ({', '.join('?' * len(hooks))})"
+        args.extend(hooks)
     frame = pd.read_sql_query(query + " ORDER BY d.id", con, params=args)
     for column in ("asked", "chosen", "fallback"):
         frame[column] = frame.pop(f"{column}_cents") / 100

@@ -35,6 +35,7 @@ __all__ = [
     "LogWriter",
     "Record",
     "failure_tails",
+    "file_end",
     "follow",
     "log_files",
     "plan_log_prune",
@@ -293,12 +294,12 @@ def plan_log_prune(
     for rank, path in enumerate(files):
         if rank == 0:
             continue
-        if not any(rule.keeps(rank, _file_end(path), now) for rule in rules):
+        if not any(rule.keeps(rank, file_end(path), now) for rule in rules):
             doomed.append(path)
     return doomed
 
 
-def _file_end(path: Path) -> datetime:
+def file_end(path: Path) -> datetime:
     """The latest a daily file's records can be from: the end of its (local) day."""
     match = _FILE.match(path.name)
     assert match is not None  # log_files lists only daily files

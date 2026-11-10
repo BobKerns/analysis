@@ -195,20 +195,35 @@ Run files and ensemble batches accumulate under `state/runs/`, quickly with ense
 intents:          # member-intent batches, state/intent/<scenario>/<mode>/<batch>/
   - keep: 5
     since: 7 days
+    protected:    # never deleted, even for space
+      - keep: 2
+      - since: 1 day
 runs:             # single run files and run batches, state/runs/
   - keep: 5
     since: 7 days
+    protected:
+      - keep: 2
+      - since: 1 day
 pins:             # relative to the data repo root, the folder holding state/
   - state/runs/2026-10-17T214106Z_<scenario>_49373e7.sqlite3
 logs:             # the background builder's daily log files, state/builder/logs/
   - keep: 7
     since: 30 days
+    protected:
+      - keep: 2
+      - since: 1 day
+space:            # disk limits; the defaults ship commented out
+  max_size: 20 GB         # all of state/
+  min_free: 10 GB         # free on state/'s disk
+  min_free_percent: 5%
 ```
 
 - **What is counted.** Items are grouped by scenario and kind — single run files, Monte Carlo batches, sensitivity batches, and the intent batches of each mode — and ranked newest first by the timestamp in their names. Counting the modes apart keeps the sensitivity batches the builder makes (§12) from pushing out the Monte Carlo ones. Only names `sim run` writes are recognized (`<stamp>_<scenario>_<version>.sqlite3`, a `<stamp>[-N]` batch folder in a mode's folder); anything else in `state/`, including a scenario's own intent file and its `base_case.sqlite3`, is never pruned.
 - **Rules.** An item is kept when any rule in its section keeps it. A rule keeps it when any condition it gives holds: `keep: N` (among its group's N newest) or `since: <duration>` (made within that long; minutes, hours, days or weeks). So the defaults keep each scenario's five newest and everything from the last week, as backup tools combine keep-last and keep-within. A missing or empty section keeps everything of its kind.
 - **Always kept.** Each group's newest item (a failed run's latest attempt included), and each scenario's newest successful run file and newest successful run batch (one with a batch manifest, no recorded failures, and every member `succeeded`), and anything written in the last ten minutes, which a concurrent `sim run` may still be writing.
 - **Builder logs.** `logs` rules rank the background builder's daily log files (§12) newest first by the date in their names, and age each from the end of that day: a late write to an older file comes from a build that started that day, so it belongs there. The newest is always kept. The builder, not `sim load`, applies them, as it starts and as it starts each new day's file; it never writes a missing `.retention.yaml`, so without one (or without a `logs` section) every log file is kept.
+- **Protected.** A rule may carry a `protected:` list of rules in the same terms. An item any of them keeps is never deleted, by the rules or for space; the lists of a section's rules add together. The defaults protect each group's two newest items and anything from the last day.
+- **Disk space.** The optional `space` section sets limits: `max_size`, the most all of `state/` may take (counted as `du` does, following a symlinked `state/runs` or `state/intent` to where it leads), and `min_free` and `min_free_percent`, the free space to leave on each disk holding `state/`, its runs, its intents or an item. Sizes carry a unit (`B`, `KB` … `TB` in powers of 1000, `KiB` … `TiB` in powers of 1024) and a percentage its `%`; a bare number is refused. After the rules have pruned, if a limit is breached, more is deleted, oldest first across runs, batches, intent batches and builder log files of every scenario, until the limits hold, estimating what each deletion frees. Only what is always kept, pinned or protected is spared, and nothing from a section with no rules. A deletion on another disk doesn't count toward a disk's free space, so it isn't made for it. If the limits still don't hold, each one breached is a warning; the command still succeeds. The one `pruned …` line says how many deletions were for space. Unlike the rules, the space check deletes builder logs as `sim load` and `sim run` run, since a log can be what fills the disk.
 - **Batches go whole.** A batch folder is deleted with all its members, never member by member. A pin naming a batch or anything inside it keeps the batch, and keeps both its run folder and its member intents.
 - **Never fatal.** A malformed file is a warning naming the problem and prunes nothing; the load or run itself still succeeds. A run that fails still prunes afterwards, since its run file stays behind. Each prune prints one `pruned …` line when it deleted something.
 
@@ -301,4 +316,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#437](https://github.com/BobKerns/analysis/issues/437): notebook pickers open a scenario's newest run that succeeded, name it beside the picker, and warn of newer runs that didn't (§4b).
 - [#432](https://github.com/BobKerns/analysis/issues/432): every load records its warnings in the intent, and `sim explain` and the notebooks show them (§6).
 - [#306](https://github.com/BobKerns/analysis/issues/306): a builder branch behind its last-fetched upstream in the code paths is said by `sim builder status`, and once per process by building commands and readers (§12).
+- [#536](https://github.com/BobKerns/analysis/issues/536): disk-space pruning: a `space` section (`max_size`, `min_free`, `min_free_percent`) deletes oldest first past the rules, sparing items kept by each rule's new `protected:` list (§10).
 - [#510](https://github.com/BobKerns/analysis/issues/510): the data repo's `taxes/` folder is in a scenario's tree (§2).

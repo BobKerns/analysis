@@ -6,6 +6,7 @@ import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import click
 import pytest
@@ -18,6 +19,8 @@ from analysis.sim.retention import (
     RETENTION_FILENAME,
     Retention,
     RetentionError,
+    Space,
+    _disk_size,
     parse_retention,
     plan_prune,
     prune_state,
@@ -294,3 +297,164 @@ def test_the_shipped_files_are_the_defaults(prototype_data: Path, repo_root: Pat
     assert retention.runs is not None
     assert [(r.keep, r.since and r.since.days) for r in retention.runs] == [(5, 7)]
     assert retention.pins == ()
+
+
+# -- disk space (#536) --------------------------------------------------------
+
+
+def test_parses_protected_rules_and_space_limits(tmp_path: Path) -> None:
+    retention = _rules(
+        "runs:\n  - keep: 5\n    since: 7 days\n    protected:\n      - keep: 2\n"
+        "      - since: 1 day\n  - keep: 1\n    protected:\n      - keep: 3\n"
+        "space:\n  max_size: 20 GB\n  min_free: 1.5 GiB\n  min_free_percent: 5%\n",
+        tmp_path,
+    )
+    assert [(r.keep, r.since and r.since.days) for r in retention.protected["runs"]] == [
+        (2, None), (None, 1), (3, None)]
+    assert retention.runs is not None and len(retention.runs) == 2
+    assert retention.space == Space(max_size=20 * 10**9, min_free=int(1.5 * 2**30),
+                                    min_free_percent=5.0)
+    assert not _rules("space:\n", tmp_path).space
+
+
+@pytest.mark.parametrize(("text", "message"), [
+    ("runs:\n  - keep: 5\n    protected: 2\n", "runs rule 1: protected: expected a list"),
+    ("runs:\n  - keep: 5\n    protected:\n      - kept: 2\n",
+     "runs rule 1 protected rule 1: unknown key(s): kept"),
+    ("runs:\n  - keep: 5\n    protected:\n      - keep: 1\n        protected: []\n",
+     "unknown key(s): protected"),
+    ("space:\n  max_size: 20\n", "space: max_size must be a size like"),
+    ("space:\n  min_free: lots\n", "space: min_free must be a size like"),
+    ("space:\n  min_free_percent: 5\n", "min_free_percent must be a percentage"),
+    ("space:\n  min_free_percent: 100%\n", "min_free_percent must be a percentage"),
+    ("space:\n  max: 20 GB\n", "space: unknown key(s): max"),
+    ("space: 20 GB\n", "space: expected max_size"),
+])
+def test_rejects_malformed_protection_and_space(tmp_path: Path, text: str, message: str) -> None:
+    with pytest.raises(RetentionError, match=message.replace("(", r"\(").replace(")", r"\)")):
+        _rules(text, tmp_path)
+
+
+def test_a_protected_item_is_kept_from_the_rules_too(
+    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    runs = [fake_state("run", "alice", f"2026-10-0{d}T120000Z") for d in range(1, 5)]
+    retention = _rules("runs:\n  - keep: 1\n    protected:\n      - keep: 3\n", tmp_path)
+    assert _planned(retention, intent_dir, runs_dir) == {runs[0]}
+
+
+class _Disk(NamedTuple):
+    total: int
+    free: int
+
+
+def _usage(total: int, free: int) -> Callable[[Path], _Disk]:
+    """A stand-in for shutil.disk_usage: every path is on one disk this full."""
+    return lambda _path: _Disk(total, free)
+
+
+def test_over_max_size_prunes_oldest_first_across_scenarios_and_kinds(
+    fake_state: Callable[..., Path], test_data_dir: Path, state_dir: Path,
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    alice = [fake_state("run", "alice", f"2026-10-0{d}T120000Z") for d in (1, 4, 6, 8)]
+    bill = [fake_state("batch", "bill", f"2026-10-0{d}T120000Z") for d in (2, 5, 9)]
+    intents = fake_state("intent", "bill", "2026-10-03T120000Z")
+    fake_state("intent", "bill", "2026-10-07T120000Z")
+    (test_data_dir / RETENTION_FILENAME).write_text(
+        "intents:\n  - keep: 5\nruns:\n  - keep: 5\n    protected:\n      - keep: 2\n"
+        "space:\n  max_size: {} B\n")
+    used = _disk_size(state_dir)
+    oldest = [alice[0], bill[0], intents]
+    limit = used - sum(_disk_size(p) for p in oldest)
+    (test_data_dir / RETENTION_FILENAME).write_text(
+        (test_data_dir / RETENTION_FILENAME).read_text().format(limit))
+
+    result = prune_state(test_data_dir, intent_dir, runs_dir, now=NOW)
+
+    assert (result.runs, result.batches, result.intents) == ([alice[0]], [bill[0]], [intents])
+    assert result.for_space == 3 and result.shortfalls == []
+    assert result.summary() == ("pruned 1 run file(s), 1 run batch(es), 1 intent batch(es) "
+                                "(.retention.yaml; 3 for disk space)")
+    assert all(p.exists() for p in [*alice[1:], *bill[1:]])
+
+
+def test_low_free_space_prunes_until_enough_is_free(
+    fake_state: Callable[..., Path], test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    runs = [fake_state("run", "alice", f"2026-10-0{d}T120000Z") for d in range(1, 7)]
+    (test_data_dir / RETENTION_FILENAME).write_text(
+        "runs:\n  - keep: 10\nspace:\n  min_free_percent: 10%\n")
+    total = 1_000_000
+    # Short by a little more than the oldest run: the two oldest must go.
+    free = total // 10 - _disk_size(runs[0]) - 1
+    result = prune_state(test_data_dir, intent_dir, runs_dir, now=NOW,
+                         disk_usage=_usage(total, free))
+    assert result.runs == runs[:2]
+    assert result.shortfalls == []
+
+
+def test_protected_items_survive_a_shortfall_and_it_is_reported(
+    fake_state: Callable[..., Path], test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    runs = [fake_state("run", "alice", f"2026-10-0{d}T120000Z") for d in range(1, 6)]
+    pinned = fake_state("run", "bill", "2026-09-01T120000Z")
+    fake_state("run", "bill", "2026-10-09T120000Z")
+    (test_data_dir / RETENTION_FILENAME).write_text(
+        "runs:\n  - keep: 10\n    protected:\n      - keep: 2\n"
+        f"pins:\n  - {pinned.relative_to(test_data_dir.parent)}\n"
+        "space:\n  min_free: 10 GB\n")
+    result = prune_state(test_data_dir, intent_dir, runs_dir, now=NOW,
+                         disk_usage=_usage(100 * 10**9, 10**9))
+    assert result.runs == runs[:3]
+    assert pinned.exists()
+    assert len(result.shortfalls) == 1
+    assert "free (1.0%), under the space limits" in result.shortfalls[0]
+
+
+def test_a_section_without_rules_is_never_pruned_for_space(
+    fake_state: Callable[..., Path], test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    runs = [fake_state("run", "alice", f"2026-10-0{d}T120000Z") for d in range(1, 4)]
+    (test_data_dir / RETENTION_FILENAME).write_text("space:\n  min_free: 10 GB\n")
+    result = prune_state(test_data_dir, intent_dir, runs_dir, now=NOW,
+                         disk_usage=_usage(100 * 10**9, 10**9))
+    assert not result and all(p.exists() for p in runs)
+    assert result.shortfalls
+
+
+def test_builder_logs_are_pruned_for_space_in_age_order(
+    fake_state: Callable[..., Path], test_data_dir: Path, state_dir: Path,
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    log_dir = state_dir / "builder" / "logs"
+    log_dir.mkdir(parents=True)
+    logs = []
+    for day in ("2026-09-01", "2026-10-02", "2026-10-10", "2026-10-11"):
+        path = log_dir / f"builder-{day}.log"
+        path.write_text("x" * 5000)
+        os.utime(path, (NOW.timestamp() - 86400 * 7, NOW.timestamp() - 86400 * 7))
+        logs.append(path)
+    runs = [fake_state("run", "alice", f"2026-10-0{d}T120000Z") for d in (1, 3, 5)]
+    (test_data_dir / RETENTION_FILENAME).write_text(
+        "runs:\n  - keep: 5\nlogs:\n  - keep: 7\n    protected:\n      - keep: 2\n"
+        "space:\n  min_free: 1 GB\n")
+    free = 10**9 - _disk_size(logs[0]) - _disk_size(runs[0]) - 1
+    result = prune_state(test_data_dir, intent_dir, runs_dir, now=NOW,
+                         disk_usage=_usage(100 * 10**9, free))
+    # Oldest first: the September log, then the 1 Oct run, then the 2 Oct log.
+    assert result.logs == logs[:2] and result.runs == [runs[0]]
+    assert "2 log file(s)" in result.summary()
+
+
+def test_sim_run_warns_when_space_cannot_be_freed(
+    test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (test_data_dir / RETENTION_FILENAME).write_text(
+        "runs:\n  - keep: 5\nspace:\n  max_size: 1 B\n")
+    result = CliRunner().invoke(main, [
+        "sim", "run", "retire_alice", "--data-dir", str(test_data_dir), "--allow-dirty-data",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "warning: state/ still uses" in result.output
+    assert "everything left is protected" in result.output

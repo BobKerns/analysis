@@ -1573,7 +1573,9 @@ how much of the spending went somewhere other than the plan's mix
 (`redirected`) and how much of each group's budget was spent (`filled:`).
 `--by tag:category` groups it by your own tags. `sim strategy log` shows
 each year's decision, such as
-`cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`.
+`cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`; the monthly
+line for each rule a strategy scaled is counted at the end, and
+`--hook scale` lists them.
 
 Compare against the plan as written the same way as above: a child
 scenario with the strategy switched off, run both, and `sim compare` them;
@@ -1763,7 +1765,13 @@ simulator deletes runs that `.retention.yaml`, in the data dir, no longer
 keeps: by default it keeps each scenario's five newest runs and anything from
 the last seven days, and always its newest and newest successful run. The
 first `sim load` or `sim run` writes the file if it's missing. To keep a
-particular run for good, add its path under `pins:` in that file. The file's
+particular run for good, add its path under `pins:` in that file. If disk
+space matters more than age, uncomment the limits under `space:`: at most
+`max_size` for all of `state/`, or the free space (`min_free`,
+`min_free_percent`) to leave on its disk. When one is breached, older runs,
+batches and builder logs go first, oldest first, sparing only each rule's
+`protected:` items (by default the two newest and anything from the last
+day), pins, and each scenario's newest runs. The file's
 comments explain the rules, and
 [ADR-004 §10](architecture/ADR-004-reproducibility-and-activation.md) has
 the details.

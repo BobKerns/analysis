@@ -827,6 +827,7 @@ class ScenarioView:
 
 
 _HOOKS = ("draw", "place", "year_start", "scale", "year_end", "month_start", "on_breach")
+HOOKS = _HOOKS  # the vocabulary, for commands that filter by hook
 _REGISTERED = "__strategy_registered__"
 
 
