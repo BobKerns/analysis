@@ -30,6 +30,11 @@ Watch the *Retirement Simulator Guide* on
 [YouTube](https://www.youtube.com/channel/UCQnUgmsanqEqAj1I-0i7vOA/), in
 [English](https://www.youtube.com/playlist?list=PLMCxY-aRDiI4) and
 [Japanese (日本語)](https://www.youtube.com/playlist?list=PLQhWLzBzvwNM).
+Start with *Video 1: What it does, and how it works*
+([English](https://www.youtube.com/watch?v=VvoRgRvgIiY),
+[Japanese (日本語)](https://www.youtube.com/watch?v=kH_Uzpp4ghU)). It shows that a
+simple model already answers useful questions. You add detail only when a
+question needs it.
 
 The repository also holds an Amazon expense categorizer. Both tools work from
 a CLI and from Jupyter notebooks, on Python 3.14+ with uv.
