@@ -190,6 +190,25 @@ class _Stopped(Exception):
     """Another build on the same Workers failed, so this one gave up."""
 
 
+class SceneError(RuntimeError):
+    """A scene's task failed: its message names the video, language and scene first."""
+
+
+def _in_scene(where: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """``fn``, its failure named for the scene it was making (``where``), so a
+    recording's error says which scene it came from."""
+
+    def run(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except (_Stopped, SceneError):
+            raise
+        except Exception as error:
+            raise SceneError(f"{where}: {error}") from error
+
+    return run
+
+
 class Workers:
     """Where a build's tasks run.
 
@@ -572,6 +591,7 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
     scenes = script.scenes
     n = len(scenes)
     plans = [builder.plan_visual(scene) for scene in scenes]
+    where = [f"{script.name} [{script.lang}] scene {scene.id}" for scene in scenes]
     narrations: list[Future[Any]] = []
     visuals: list[Future[Any]] = []
     # Recordings first: they're usually the longest tasks, and the lane runs one at a time.
@@ -585,9 +605,10 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
             by_scene[i] = done
         else:
             pool = workers.recording if plan.records else workers.general
-            by_scene[i] = workers.submit(pool, _made, plan.make, log=log)
+            by_scene[i] = workers.submit(pool, _in_scene(where[i], _made), plan.make, log=log)
     visuals = [by_scene[i] for i in range(n)]
-    narrations = [workers.submit(workers.general, builder.narration, scene, log=log) for scene in scenes]
+    narrations = [workers.submit(workers.general, _in_scene(where[i], builder.narration), scene, log=log)
+                  for i, scene in enumerate(scenes)]
     clips: list[Future[SceneBuild] | None] = [None] * n
     results: list[SceneBuild] = []
     pending: set[Future[Any]] = {*narrations, *visuals}
@@ -600,7 +621,8 @@ def _assemble(script: Script, builder: _Builder, workers: Workers, out_dir: Path
                 future.result()  # raises the task's error
             for i in range(n):
                 if clips[i] is None and narrations[i].done() and visuals[i].done():
-                    clip = workers.submit(workers.general, builder.clip, scenes[i], narrations[i].result(), plans[i],
+                    clip = workers.submit(workers.general, _in_scene(where[i], builder.clip), scenes[i],
+                                          narrations[i].result(), plans[i],
                                           visuals[i].result(), first=i == 0, last=i == n - 1, log=log)
                     clips[i] = clip
                     pending.add(clip)

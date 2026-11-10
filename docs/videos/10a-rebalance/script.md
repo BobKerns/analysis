@@ -454,7 +454,7 @@ Sleep 400ms
 Enter
 Wait@180s
 Sleep 3s
-Type "clear && sim run no-rebalance-mc"
+Type "clear && sim run no-rebalance-mc --commit"
 Sleep 400ms
 Enter
 Wait@180s
