@@ -1,5 +1,5 @@
 """The states whose tables ship in templates/aux/ (#483), and a state tax
-rule naming the one it reads."""
+reading those of the state the household lives in (residence.csv, #509)."""
 
 from __future__ import annotations
 
@@ -49,22 +49,24 @@ def test_a_shipped_states_2026_brackets_match_its_schedule(
     assert progressive_tax(taxable * 100, _brackets(state, "2026-01-31")) == round(tax * 100)
 
 
-def test_a_state_tax_that_names_no_state_fails_the_load(
+def test_a_state_tax_with_no_residence_fails_the_load(
     add_state_tax: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    add_state_tax(bracket_series=None)
+    add_state_tax(state=None)
 
-    with pytest.raises(LoadError, match=r"taxes/state.csv.*must name its state.*"
-                                        r"sim tax state.*one of CA, DC, ID, KS, NC, NE, none"):
+    with pytest.raises(LoadError, match=r"taxes/state.csv: the scenario doesn't say where the "
+                                        r"household lives; set it with `sim tax state`"):
         load_test_copy()
 
 
 @pytest.mark.parametrize("state", [s for s in _STATES if s != "CA"])
-def test_a_rule_naming_a_shipped_state_taxes_by_its_tables(
+def test_living_in_a_shipped_state_taxes_by_its_tables(
     state: str, add_state_tax: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     runs_dir: Path,
 ) -> None:
-    add_state_tax(bracket_series=state)
+    """Each shipped state's tables, and Florida, with no income tax, the
+    0% none table."""
+    add_state_tax(state="FL" if state == "none" else state)
     run = run_scenario(load_test_copy().intent_path, runs_dir / f"{state}.sqlite3",
                        run_by="test", allow_dirty_data=True, allow_dirty_code=True)
     with sqlite3.connect(run) as con:

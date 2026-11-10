@@ -81,7 +81,7 @@ from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_sce
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
     ACCOUNT_LOTS_CSV_HEADER, CALENDAR_HEADER, GUARD_RAILS_CSV_HEADER, SCENARIO_HEADER,
-    SCHEDULED_CSV_HEADER, TAX_CSV_HEADER,
+    RESIDENCE_CSV_HEADER, RESIDENCE_FILE, SCHEDULED_CSV_HEADER, TAX_CSV_HEADER,
 )
 
 _ANALYSIS_ENV_VARS = (
@@ -296,6 +296,20 @@ def empty_scenarios_dir(test_scenarios_dir: Path) -> Path:
     shutil.rmtree(test_scenarios_dir)
     test_scenarios_dir.mkdir()
     return test_scenarios_dir
+
+@pytest.fixture(scope="function")
+def new_scenario_file(empty_scenarios_dir: Path) -> Callable[[str, str, str], Path]:
+    """``new_scenario_file(scenario, filename, text)``: write one file of a
+    scenario (``taxes/state.csv``, say) into ``empty_scenarios_dir``, the
+    folders made as needed, for a data repo built file by file, such as one
+    a migration script reads; the data repo is ``test_data_dir``."""
+    def write(scenario: str, filename: str, text: str) -> Path:
+        path = empty_scenarios_dir / scenario / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+    return write
+
 
 @pytest.fixture(scope="function")
 def state_dir(tmp_path: Path) -> Generator[Path]:
@@ -642,6 +656,18 @@ def ledger_con() -> Generator[sqlite3.Connection]:
         yield con
     finally:
         con.close()
+
+
+@pytest.fixture(scope="session")
+def set_residence() -> Callable[..., None]:
+    """``set_residence(con, ("2026-01-31", "CA", None), ...)``: where the
+    household lives in a run file or ``ledger_con`` (#509), replacing what it
+    had: rows of (month end from, state, county)."""
+    def write(con: sqlite3.Connection, *rows: tuple[str, str, str | None]) -> None:
+        con.execute("DELETE FROM residence")
+        con.executemany("INSERT INTO residence(effective_date, state, county) VALUES (?, ?, ?)",
+                        rows)
+    return write
 
 
 @pytest.fixture(scope="session")
@@ -1330,11 +1356,39 @@ def write_tax() -> Callable[..., Path]:
 def add_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
     """Give the private retire_alice copy a tax jurisdiction (#507):
     ``add_tax()`` is the federal tax, paid from Asset_Checking into
-    Expense_Taxes_Federal each April from 2027; ``add_tax("state",
-    params_json={"bracket_series": "CA"})`` a state one (the account must
-    exist: ``add_state_tax`` adds both). Cells override the defaults."""
+    Expense_Taxes_Federal each April from 2027; ``add_tax("state")`` a state
+    one (the account must exist and the household live somewhere:
+    ``add_state_tax`` adds all three). Cells override the defaults."""
     return lambda name="federal", **cells: _write_tax_file(
         retire_alice_csv(""), name, **cells)
+
+
+def _add_residence_row(scenario_dir: Path, effective_date: str, state: str, county: str = "",
+                       description: str = "") -> Path:
+    path = scenario_dir / RESIDENCE_FILE
+    rows = (pd.read_csv(path, dtype=str, keep_default_na=False).to_dict("records")
+            if path.exists() else [])
+    rows.append({"effective_date": effective_date, "state": state, "county": county,
+                 "description": description})
+    pd.DataFrame(rows, columns=list(RESIDENCE_CSV_HEADER)).to_csv(path, index=False)
+    return path
+
+
+@pytest.fixture(scope="session")
+def add_residence_to() -> Callable[..., Path]:
+    """``add_residence_to(scenario_dir, "2028-01", "WA", county="")``: add a
+    row to a scenario's residence.csv (#509), where the household lives from
+    that month."""
+    return _add_residence_row
+
+
+@pytest.fixture(scope="function")
+def add_residence(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """``add_residence("2028-01", "WA", county="")``: the private retire_alice
+    copy's household lives in that state (and county) from that month on
+    (residence.csv, #509): a move, after ``add_state_tax``'s first row."""
+    return lambda effective_date, state, county="", description="": _add_residence_row(
+        retire_alice_csv(""), effective_date, state, county, description)
 
 
 @pytest.fixture(scope="function")
@@ -1344,11 +1398,11 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path],
     Expense_Taxes_State account and a state jurisdiction (taxes/state.csv)
     paying the previous year's state tax each April, and the federal one it
     starts from (#508) when the copy has none yet, with savings to pay it
-    (``fund_asset_savings``). ``bracket_series`` names
-    the state: California, the prototype's, unless the test says otherwise
-    (None leaves it out)."""
-    def _add(bracket_series: str | None = "CA") -> None:
-        params = {"bracket_series": bracket_series} if bracket_series else {}
+    (``fund_asset_savings``). ``state`` is where the household lives from the
+    scenario's start (residence.csv, #509): California, the prototype's,
+    unless the test says otherwise (None writes no residence); ``county`` the
+    series of its local tax table."""
+    def _add(state: str | None = "CA", county: str = "") -> None:
         accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str,
                                keep_default_na=False)
         accounts.loc[len(accounts)] = {
@@ -1358,7 +1412,9 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path],
             "meta_json": "{}",
         }
         accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
-        _write_tax_file(retire_alice_csv(""), "state", params_json=params)
+        _write_tax_file(retire_alice_csv(""), "state")
+        if state is not None:
+            _add_residence_row(retire_alice_csv(""), "2026-05", state, county)
         if not (retire_alice_csv("") / "taxes" / "federal.csv").exists():
             _write_tax_file(retire_alice_csv(""), "federal")
             fund_asset_savings("1000000.00")

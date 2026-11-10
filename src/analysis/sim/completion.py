@@ -369,6 +369,10 @@ def _states(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
 
 # A state's code or name in any case: the command checks it (#483).
 STATE = NameType(_states, "state", check=False)
+# A county with a local tax (#509): the <county> of an aux state_local_tax__<county>.csv.
+COUNTY = NameType(
+    _in_scenario(lambda d, s: names.series_names(d, s, "state_local_tax")), "county",
+)
 AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS), "aux kind")  # noqa: ARG005
 
 

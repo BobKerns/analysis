@@ -50,10 +50,10 @@ federal-style income, with capital gains taxed as ordinary income by
 default, less the state's standard deduction, run through the state's
 brackets ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)). A
 state needs two tables in `aux/`, `state_brackets__XX.csv` and
-`state_standard_deduction__XX.csv`, and a state tax, `taxes/state.csv`, that
-names the state. `sim tax state` chooses the state, and adds the state tax if
-the scenario has none; `sim tax move` records a move to another
-state. Where a state treats capital gains differently, up to three more
+`state_standard_deduction__XX.csv`, a state tax, `taxes/state.csv`, and a
+`residence.csv` saying where the household lives. `sim tax state` chooses the
+state, and adds the state tax if the scenario has none; `sim tax move` records
+a move to another state or county. Where a state treats capital gains differently, up to three more
 tables say how: a share of long-term gain excluded, and gain rates of its own
 ([the `aux/` README](./templates/aux/README.md#a-states-capital-gains)).
 Social Security is left out unless `state_social_security__XX.csv` says how
@@ -62,8 +62,8 @@ phase out with income. Two more are optional: `state_surcharge__XX.csv`, a
 surtax on high income (California's 1% over $1 million, Massachusetts's 4%),
 and `state_hsa__XX.csv`, for a state that taxes health savings accounts
 (California). A local income tax on the state's taxable income, such as a
-Maryland county's or New York City's, goes in `state_local_tax__XX.csv`,
-written for your own county or city; one with a base of its own, or one
+Maryland county's or New York City's, goes in a `state_local_tax` table
+written for your own county or city, named for it in `residence.csv`; one with a base of its own, or one
 only on wages, is left out. A state's retirement income exclusions, by age, kind of income
 and household income, go in another optional table,
 `state_retirement_exclusion__XX.csv`; a "Partial" row below whose gap is such

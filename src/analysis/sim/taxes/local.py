@@ -1,7 +1,7 @@
 """The ``local_bands`` tax calculator (#487, #508; ADR-003 §2.6): a local
 income tax charged on the state's taxable income at the
-``state_local_tax__<XX>`` bands, ``XX`` being the state's
-``bracket_series`` unless the local file's params name another."""
+``state_local_tax__<XX>`` bands, ``XX`` being the county the household
+lives in that year (``residence.csv``, #509), or else its state."""
 
 from __future__ import annotations
 
@@ -32,10 +32,12 @@ class LocalBandsYear(Prepared):
     def __init__(self, ty: TaxYear) -> None:
         self.state = ty.upstream("state")
         self.filing_status = self.state.filing_status
-        series = ty.params.get("bracket_series", self.state.bracket_series)
-        self.bracket_series = None if series is None else str(series)
-        self.brackets = (common.rate_table(ty, registries.STATE_LOCAL_TAX, self.bracket_series)
-                         if self.bracket_series is not None else [])
+        residence = ty.residence
+        # A county's own table, or the state's (one for the whole state, or
+        # where the household's county isn't said); none, no local tax.
+        series = None if residence is None else residence.county or residence.state
+        self.brackets = (common.rate_table(ty, registries.STATE_LOCAL_TAX, series)
+                         if series is not None else [])
 
     def compute(self, extra: Extra = NO_EXTRA) -> Return:
         state = self.state.compute(extra)

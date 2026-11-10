@@ -1,12 +1,11 @@
 """A state's own treatment of capital gains (#485): a long-term gain
 exclusion (``state_ltcg_exclusion``) and gain rates of its own
 (``state_ltcg_brackets``, ``state_stcg_brackets``), each keyed by state like
-its brackets."""
+its brackets, so a year reads those of the state it is filed in (#509)."""
 
 from __future__ import annotations
 
 import csv
-import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -149,7 +148,7 @@ def test_the_ordinary_part_of_taxable_income_leaves_out_separately_taxed_short_t
     con = sqlite3.connect(run)
     con.row_factory = sqlite3.Row
     try:
-        ret = _prepare_tax(con, {"scope": "state", "bracket_series": "CA"},
+        ret = _prepare_tax(con, {"scope": "state"},
                            aux=_load_aux(con), tax_year=2026, tid=0,
                            kind="state_tables",
                            jurisdictions={"federal": TaxRule("federal", {"scope": "federal"}, 1)}).compute()
@@ -170,18 +169,16 @@ def test_without_gain_tables_a_state_taxes_gains_as_ordinary_income(
 def test_a_move_to_another_state_takes_its_gain_rules(
     add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
-    retire_alice_csv: Callable[[str], Path], runs_dir: Path,
+    add_residence: Callable[..., Path], runs_dir: Path,
 ) -> None:
-    """Swapping state_brackets swaps the state's gain tables with it, and
-    drops the old state's where the new state has none."""
-    add_state_tax(bracket_series="CA")
+    """After a move a year reads the new state's gain tables, and none of
+    the old state's where the new state has none."""
+    add_state_tax("CA")
     write_aux("state_brackets__WA.csv", _BRACKETS_HEADER + "2026-01-31,MFJ,0,0.00,1%\n")
     write_aux("state_ltcg_exclusion__CA.csv", _EXCLUSION_HEADER + "2026-01-31,50%,,\n")
     write_aux("state_ltcg_brackets__CA.csv", _BRACKETS_HEADER + "2026-01-31,MFJ,0,0.00,3%\n")
     write_aux("state_ltcg_exclusion__WA.csv", _EXCLUSION_HEADER + "2026-01-31,0%,1000.00,\n")
-    append_calendar_row(
-        date="2028-03", kind="swap_aux_table", series="CA",
-        params_json=json.dumps({"aux_kind": "state_brackets", "source_series": "WA"}))
+    add_residence("2028-03", "WA")
     for year in (2026, 2028):
         append_calendar_row(
             date=f"{year}-06", kind="one_off_transfer", account_1="Income_CapitalGain",
@@ -192,24 +189,26 @@ def test_a_move_to_another_state_takes_its_gain_rules(
         exclusion = dict(con.execute(
             "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_ltcg_exclusion'"
         ).fetchall())
-        tables = {kind for (kind,) in con.execute(
-            "SELECT DISTINCT kind FROM aux_table WHERE series = 'CA'")}
+        taxed = dict(con.execute(
+            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_tax'").fetchall())
+        income = dict(con.execute(
+            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_taxable_income'"
+        ).fetchall())
     assert exclusion[2026] == 5_000_00   # California's half, before the move
     assert exclusion[2028] == 1_000_00   # Washington's flat amount
-    assert "state_ltcg_brackets" not in tables
+    # Washington's 1%, without California's gain rate.
+    assert taxed[2028] == progressive_tax(income[2028], [(0, 10_000)])
 
 
 def test_a_move_to_a_state_whose_gain_rule_starts_later_applies_it_from_then(
     add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
-    runs_dir: Path,
+    add_residence: Callable[..., Path], runs_dir: Path,
 ) -> None:
-    add_state_tax(bracket_series="CA")
+    add_state_tax("CA")
     write_aux("state_brackets__WA.csv", _BRACKETS_HEADER + "2026-01-31,MFJ,0,0.00,1%\n")
     write_aux("state_ltcg_exclusion__WA.csv", _EXCLUSION_HEADER + "2029-01-31,0%,1000.00,\n")
-    append_calendar_row(
-        date="2028-03", kind="swap_aux_table", series="CA",
-        params_json=json.dumps({"aux_kind": "state_brackets", "source_series": "WA"}))
+    add_residence("2028-03", "WA")
     for year in (2028, 2029):
         append_calendar_row(
             date=f"{year}-06", kind="one_off_transfer", account_1="Income_CapitalGain",
