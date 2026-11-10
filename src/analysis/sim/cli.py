@@ -1717,11 +1717,11 @@ def _ask_pool_components(data: Path, current: str | None) -> tuple[str, ...]:
 @ensemble_pool_group.command("edit")
 @click.argument("name", required=False, type=completion.POOL)
 @click.argument("components", nargs=-1, type=completion.POOL_COMPONENT)
-@click.option("--size", default=None, help="Member count; '' takes the smallest component's.")
+@click.option("--size", default=None, help="Member count; '' or none takes the smallest component's.")
 @click.option("--base", default=None, type=completion.ENSEMBLE,
               help="The component whose member 0 is the base case; '' takes the first.")
 @click.option("--reserve", default=None,
-              help="The reports' reserve, in CPI-constant dollars; '' takes the base component's.")
+              help="The reports' reserve, in CPI-constant dollars; '' or none takes the base component's.")
 @click.option("--description", default=None,
               help="The pool's description; '' takes the generated 'Pooled from <components>'.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -14851,8 +14851,9 @@ def ensemble_copy(old: str | None, new: str | None, data_dir: Path | None) -> No
 # ---------- editing and deleting a scenario (#190) ----------
 
 def _blank_or[T](value: str, parse: Callable[[str], T], option: str) -> T | None:
-    """``value`` parsed, or ``None`` for a blank one: that option's field inherits."""
-    if not value.strip():
+    """``value`` parsed, or ``None`` for a blank one or ``none``: that
+    option's field inherits."""
+    if not value.strip() or scenario_guide.is_none(value):
         return None
     try:
         return parse(value.strip())
@@ -14882,9 +14883,9 @@ def _reserve_json(text: str) -> int | str:
 
 _SCENARIO_CHECKERS: dict[str, Callable[[str], object]] = {
     "month": _validate_month_date,
-    "seed": lambda text: text == scenario_guide.NEW_SEED or _whole_number(text),
-    "count": _member_count,
-    "money": _reserve_json,
+    "seed": lambda text: text == scenario_guide.NEW_SEED or scenario_guide.is_none(text) or _whole_number(text),
+    "count": lambda text: scenario_guide.is_none(text) or _member_count(text),
+    "money": lambda text: scenario_guide.is_none(text) or _reserve_json(text),
 }
 
 
@@ -14939,7 +14940,9 @@ def _edit_scenario(name: str | None, data_dir: Path | None, *, what: str, new_se
     )
 
     def submit(_params: dict[str, object]) -> None:
-        changed = {field: value for field, value in answers.items() if value != before[field]}
+        cleared = {field: "" for field in ("seed", "size", "reserve")
+                   if scenario_guide.is_none(answers.get(field, ""))}
+        changed = {field: value for field, value in {**answers, **cleared}.items() if value != before[field]}
         if not changed:
             click.echo("no change; nothing was written")
             return
@@ -15064,14 +15067,14 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
         click.option("--parents", default=None, metavar="PARENT[:MIXIN...]", type=completion.PARENTS,
                      help="What it builds on: its parent, then any mix-ins, colon-separated. "
                           "'' makes it a root scenario."),
-        click.option("--seed", default=None, help="Ensemble master seed; '' inherits."),
+        click.option("--seed", default=None, help="Ensemble master seed; '' or none inherits."),
         click.option("--new-seed", is_flag=True, default=False, help="Draw a fresh random seed."),
         click.option("--size", default=None,
                      help="Ensemble member count (meta_json ensemble_size); 0 makes it not an "
-                          "ensemble, '' inherits."),
+                          "ensemble; '' or none drops it, so it inherits the parents' and mix-ins'."),
         click.option("--reserve", default=None,
                      help="The ensemble reports' reserve, in CPI-constant dollars "
-                          "(meta_json reserve); '' inherits."),
+                          "(meta_json reserve); '' or none inherits."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
     ]

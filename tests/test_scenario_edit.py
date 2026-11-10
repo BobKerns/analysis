@@ -77,6 +77,27 @@ def test_edit_sets_and_clears_fields(test_data_dir: Path, test_child_scenario: P
     assert (row["start"], row["seed"], json.loads(row["meta_json"])) == ("", "", {})
 
 
+def test_edit_none_drops_a_field_unlike_zero(test_data_dir: Path, test_child_scenario: Path) -> None:
+    # #296: `none` inherits, as '' does; a size of 0 is a value of its own.
+    result = _sim(test_data_dir, "ensemble", "edit", "child", "--seed", "7", "--size", "0",
+                  "--reserve", "1000")
+    assert result.exit_code == 0, result.output
+    assert json.loads(_row(test_child_scenario)["meta_json"]) == {"ensemble_size": 0, "reserve": 1000}
+    result = _sim(test_data_dir, "ensemble", "edit", "child", "--seed", "none", "--size", "None",
+                  "--reserve", "NONE")
+    assert result.exit_code == 0, result.output
+    row = _row(test_child_scenario)
+    assert (row["seed"], json.loads(row["meta_json"])) == ("", {})
+    assert "meta_json ensemble_size: 0 -> (inherited)" in result.output
+
+
+def test_guided_edit_takes_none_for_inherit(test_data_dir: Path, test_child_scenario: Path) -> None:
+    assert _sim(test_data_dir, "scenario", "edit", "child", "--size", "40").exit_code == 0
+    result = _guided(test_data_dir, "child", answers=["size", "none", "write"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(_row(test_child_scenario)["meta_json"]) == {}
+
+
 def test_edit_new_seed_and_size_zero(test_data_dir: Path, test_child_scenario: Path) -> None:
     result = _sim(test_data_dir, "ensemble", "edit", "child", "--new-seed", "--size", "0")
     assert result.exit_code == 0, result.output

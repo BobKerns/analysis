@@ -15,6 +15,15 @@ from collections.abc import Callable, Sequence
 from analysis.sim.calendar_guide import Answers, Field, KindSpec
 
 NEW_SEED = "new"  # typed as the seed to draw a fresh one
+# Typed for the seed, size or reserve: clears it, so it inherits, as a blank
+# does. Easier to see than '' on a command line, and unlike a size of 0,
+# which a mix-in's or child's own value can't be told apart from (#296).
+NONE = "none"
+
+
+def is_none(text: str) -> bool:
+    """Whether ``text`` is :data:`NONE` (any case)."""
+    return text.strip().lower() == NONE
 
 
 def spec(scenarios: Sequence[str]) -> KindSpec:
@@ -33,11 +42,11 @@ def spec(scenarios: Sequence[str]) -> KindSpec:
                   option="--parents", required=False,
                   choices=lambda ctx, answers: list(scenarios)),  # noqa: ARG005
             Field("seed", "ensemble master seed", type="seed", option="--seed", required=False,
-                  help=f"Blank inherits it; '{NEW_SEED}' draws a fresh one."),
+                  help=f"Blank or '{NONE}' inherits it; '{NEW_SEED}' draws a fresh one."),
             Field("size", "ensemble member count", type="count", option="--size", required=False,
-                  help="0 makes it not an ensemble; blank inherits it."),
+                  help=f"0 makes it not an ensemble; blank or '{NONE}' inherits it."),
             Field("reserve", "reserve in CPI-constant dollars", type="money", option="--reserve",
-                  required=False, help="For the ensemble reports; blank inherits it."),
+                  required=False, help=f"For the ensemble reports; blank or '{NONE}' inherits it."),
         ),
     )
 
@@ -56,9 +65,9 @@ def pool_spec(ensembles: Sequence[str]) -> KindSpec:
                   choices=lambda ctx, answers: [  # noqa: ARG005
                       word.partition("=")[0] for word in answers.get("components", "").split()]),
             Field("size", "member count", type="count", option="--size", required=False,
-                  help="Blank takes the smallest component's."),
+                  help=f"Blank or '{NONE}' takes the smallest component's."),
             Field("reserve", "reserve in CPI-constant dollars", type="money", option="--reserve",
-                  required=False, help="Blank takes the base component's."),
+                  required=False, help=f"Blank or '{NONE}' takes the base component's."),
             Field("description", "description", option="--description", required=False,
                   help="Blank restores the generated 'Pooled from <components>'."),
         ),
