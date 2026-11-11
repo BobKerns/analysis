@@ -1118,6 +1118,24 @@ def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[st
     write_series("bond", "2026-01-31,4%")
 
 
+@pytest.fixture(scope="function")
+def muni_funds(set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+               write_series: Callable[[str, str], Path]) -> None:
+    """Make the private retire_alice copy's brokerage municipal bonds (#265):
+    lot ``default`` $200,000 of many states' (``muni``) and lot ``ca``
+    $100,000 of California's (``muni_CA``), each growing 4% a year, 3% of it
+    paid as tax-exempt interest."""
+    set_brokerage_lots([
+        {"lot": "default", "series": "muni", "opening_balance": "200000.00",
+         "opening_cost_basis": "200000.00"},
+        {"lot": "ca", "series": "muni_CA", "opening_balance": "100000.00",
+         "opening_cost_basis": "100000.00"},
+    ])
+    for series in ("muni", "muni_CA"):
+        write_series(series, "2026-01-31,4%")
+        write_series(f"{series}_yield", "2026-01-31,3%")
+
+
 @pytest.fixture(scope="session")
 def append_calendar_row_to() -> Callable[..., None]:
     """Append a row to any scenario's calendar.csv, by column name:

@@ -144,9 +144,19 @@ def test_a_premium_year_charges_the_tier_of_magi_two_years_earlier(irmaa_run: Ru
         assert summary.loc[year - 2, "federal_irmaa_tier"] == tier, year
 
 
-def test_magi_is_agi_while_tax_exempt_interest_is_not_modeled(irmaa_run: Run) -> None:
+def test_magi_is_agi_without_tax_exempt_interest(irmaa_run: Run) -> None:
     summary = _summary(irmaa_run())
     assert (summary["federal_magi"] == summary["federal_agi"]).all()
+
+
+@pytest.mark.usefixtures("muni_funds")
+def test_municipal_bond_interest_raises_magi_and_the_tier(irmaa_run: Run) -> None:
+    """Municipal bond interest (#265) is out of AGI but in MAGI, so a
+    household near a floor can cross it on its interest alone."""
+    summary = _summary(irmaa_run())
+    exempt = summary["federal_tax_exempt_interest"]
+    assert (exempt > 0).all()
+    assert (summary["federal_magi"] == summary["federal_agi"] + exempt).all()
 
 
 def test_years_before_the_run_read_magi_from_meta_json(irmaa_run: Run) -> None:
@@ -389,6 +399,18 @@ def _converted(run: Path) -> int:
             "JOIN scheduled_transaction st ON st.id = te.reason_id "
             "WHERE te.reason_kind = 'rule' AND st.amount_rule_kind = 'fill_bracket'",
         ).fetchone()[0]
+
+
+@pytest.mark.usefixtures("muni_funds")
+def test_irmaa_tier_counts_municipal_bond_interest(irmaa_run: Run) -> None:
+    """The cap is on MAGI (#265): AGI stops short of the floor by the
+    year's tax-exempt interest."""
+    run = irmaa_run(_conversion(2031, irmaa_tier=0))
+    year = _summary(run).loc[2031]
+    floor = _floor(MFJ_FLOORS[1], 2031)
+    assert floor - 100 <= year["federal_magi"] <= floor
+    assert year["federal_agi"] <= floor - year["federal_tax_exempt_interest"]
+    assert _converted(run) > 0
 
 
 def test_irmaa_tier_keeps_a_conversions_magi_within_the_tier(irmaa_run: Run) -> None:

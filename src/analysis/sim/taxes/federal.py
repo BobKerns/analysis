@@ -78,6 +78,9 @@ class FederalYear(Prepared):
         # but a capital loss doesn't offset them: they join after the netting.
         self._dividends = qualified_dividends
         self._ss_income = ss_income
+        # Municipal bond interest (#265): out of AGI, but in provisional
+        # income and in IRMAA's MAGI.
+        self._exempt = ty.total(registries.TAX_EXEMPT)
         self._ss_tiers: tuple[int, int] | None = None
         if ss_income > 0:
             status = ty.filing_status
@@ -141,7 +144,7 @@ class FederalYear(Prepared):
             return 0
         return common.taxable_social_security(
             ordinary_income=ordinary, ltcg_income=ltcg, ss_income=self._ss_income,
-            tier1=self._ss_tiers[0], tier2=self._ss_tiers[1],
+            tier1=self._ss_tiers[0], tier2=self._ss_tiers[1], exempt_interest=self._exempt,
         )
 
     def _agi(self, extra: Extra) -> int:
@@ -168,10 +171,11 @@ class FederalYear(Prepared):
             "ordinary_taxable": common.ordinary_taxable(taxable, ltcg, stcg, bool(self._stcg_brackets)),
             "tax": common.stacked_tax(
                 taxable, ltcg, stcg, self.brackets, self.ltcg_brackets, self._stcg_brackets),
-            # IRMAA's MAGI (#253): AGI plus tax-exempt interest, which the
-            # model has no character for yet (#265), so it is AGI.
-            "magi": agi,
+            # IRMAA's MAGI (#253): AGI plus tax-exempt interest (#265).
+            "magi": agi + self._exempt,
         }
+        if self._exempt:
+            lines["tax_exempt_interest"] = self._exempt
         # A Return shares the memo, so it must not be writable.
         return Return(lines, MappingProxyType(
             {**self._memo, "ss_untaxed": self._ss_income - taxable_ss}))

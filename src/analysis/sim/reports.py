@@ -594,7 +594,9 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     larger of the standard and itemized ``deduction``, ``income`` (the taxable
     income its brackets taxed), and ``tax``. Federal AGI is Form 1040 line
     11, except that a carried loss comes off taxable income instead and there
-    are no adjustments such as half of self-employment tax; state AGI leaves
+    are no adjustments such as half of self-employment tax.
+    ``fed_exempt_interest``, shown only when some year has any, is the
+    municipal bond interest it leaves out (#265, line 2a). State AGI leaves
     out Social Security and, in ``state_exclusion`` (shown only when some
     year has one), the state's retirement income exclusions (#486). The
     state columns appear only when the run computes state tax. A local
@@ -608,6 +610,11 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     the notebook does; the rate is the same in either.
     """
     frame = _tax_buckets(rc, list(_TAX_COLUMNS)).rename(columns=_TAX_COLUMNS)
+    # Municipal bond interest (#265), only when some year has it: federal
+    # AGI leaves it out, though Social Security taxation and MAGI count it.
+    exempt = _tax_buckets(rc, ["federal_tax_exempt_interest"]).reindex(frame.index)["federal_tax_exempt_interest"]
+    if exempt.fillna(0).ne(0).any():
+        frame.insert(frame.columns.get_loc("fed_agi"), "fed_exempt_interest", exempt.fillna(0))
     if frame["state_tax"].isna().all():
         frame = frame.drop(columns=[c for c in frame.columns if c.startswith("state_")])
     else:

@@ -76,10 +76,11 @@ TAXABLE_GAIN_CHARS = {
 }
 # A taxable lot's reinvested dividends and interest (#468): realized, since
 # they're taxed the year they're paid, though they never reach cash.
-PAYOUT_ACCOUNT_NAMES = frozenset(a.name for a in registries.PAYOUT_ACCOUNTS.values())
+PAYOUT_ACCOUNT_NAMES = frozenset(
+    a.name for a in (*registries.PAYOUT_ACCOUNTS.values(), *registries.MUNI_PAYOUT_ACCOUNTS.values()))
 GROWTH_ACCOUNT_NAMES = frozenset(
     a.name for a in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values() if a.kind == "income")
-NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
+NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain", registries.TAX_EXEMPT}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
 # A local tax (#508) is its own jurisdiction, no longer inside the state's.
@@ -1276,7 +1277,7 @@ class RunConnection(Connection):
             gains.loc[is_loss, "amount"] = -gains.loc[is_loss, "amount"]
             is_unrealized = ((gains["from_kind"] == "income") & ~reaches_cash & ~is_payout) | is_loss
             is_taxable = (reaches_cash | is_payout) & gains["tax_character"].isin(TAXABLE_GAIN_CHARS)
-            is_nontaxable = reaches_cash & gains["tax_character"].isin(NONTAXABLE_GAIN_CHARS)
+            is_nontaxable = (reaches_cash | is_payout) & gains["tax_character"].isin(NONTAXABLE_GAIN_CHARS)
             is_ss = gains["tax_character"] == "ss_benefit"
             is_harvest = (
                 (gains["reason_kind"] == "strategy") & (gains["from_lot"] == gains["to_lot"])

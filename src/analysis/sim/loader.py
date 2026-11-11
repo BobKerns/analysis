@@ -2292,7 +2292,7 @@ def _expand_account_growth(
                 issues.append(f"{where} ({name} / {lot}): {clash}")
             if lot_character == "gains" and row.get("subkind") == "brokerage_taxable":
                 payouts[lot] = [
-                    (registries.PAYOUT_ACCOUNTS[p.payer], p)
+                    (registries.payout_account(p.payer), p)
                     for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
                 ]
             elif row.get("subkind") == "hsa" and lot_character in registries.SHELTERED_PAYOUT_ACCOUNTS:
@@ -2456,7 +2456,7 @@ class LotPayout(NamedTuple):
     prefix: str
     label: str
     payer: str
-    """Its key in ``registries.PAYOUT_ACCOUNTS``, when the lot is taxed."""
+    """Its key for ``registries.payout_account``, when the lot is taxed."""
     spec: dict[str, Any]
 
 
@@ -2486,13 +2486,23 @@ def _lot_payouts(
     out = []
     for suffix, kinds in _PAYOUT_KINDS.items():
         for character, spec in _lot_payout_specs(suffix, symbol, series, blend, weight_sets, rate_series):
-            kind = kinds[character]
+            kind = kinds.get(character) or _muni_payout_kind(character)
             if symbol and kind[0] == "interest_":
                 # A fund's payout is a dividend on its 1099-DIV, whatever it
                 # holds: only a bond or cash held directly pays interest.
                 kind = _FUND_ORDINARY_DIVIDENDS
             out.append(LotPayout(*kind, spec))
     return out
+
+
+def _muni_payout_kind(asset_class: str) -> tuple[str, str, str]:
+    """A municipal bond class's payout (#265): its rule-name prefix, label
+    and payer, the class itself. A fund's is an exempt-interest dividend,
+    still exempt, so unlike other interest it stays itself."""
+    state = registries.muni_state(asset_class)
+    if not state:
+        return "tax_exempt_", "Tax-exempt interest", asset_class
+    return f"tax_exempt_{state.lower()}_", f"Tax-exempt interest ({state} bonds)", asset_class
 
 
 def _lot_payout_specs(
@@ -2528,6 +2538,8 @@ def _lot_payout_specs(
     if symbol and (own := registries.yield_series(symbol, suffix)) in rate_series:
         qualified = bool(held) and held <= registries.QUALIFIED_DIVIDEND_CLASSES
         character = (registries.QUALIFIED_DIVIDEND if qualified else "ordinary") if dividends else fixed
+        if dividends and len(held) == 1 and registries.muni_state(only := next(iter(held))) is not None:
+            character = only  # a muni fund's own yield is exempt interest (#265)
         return [(character, {"series": own})]
     if blend and sets:
         slice_of = {c: f"{symbol}.{c}" if f"{symbol}.{c}" in rate_series else c for c in held}
@@ -2690,7 +2702,7 @@ def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None
         if asset_class not in registries.ASSET_CLASSES:
             issues.append(
                 f"{where}: unknown asset_class '{asset_class}'; "
-                f"allowed: {', '.join(registries.ASSET_CLASSES)}"
+                f"allowed: {registries.asset_class_list()}"
             )
         elif (symbol, as_of, asset_class) in seen:
             issues.append(f"{where}: duplicate {asset_class} for as_of '{as_of}'")
@@ -4178,7 +4190,7 @@ _STATE_LINES: frozenset[str] = frozenset({
     "nol_used", "nol_carryover", "ss_taxable", "ss_benefits", "credits", "deduction",
     "standard_deduction", "itemized_deduction", "capital_loss_used", "capital_loss_carryover",
     "capital_loss_lapsed", "nol_lapsed", "business_net", "hobby_disallowed",
-    "dividends_as_ordinary", "hsa_addback", "hsa_dividends",
+    "dividends_as_ordinary", "hsa_addback", "hsa_dividends", "muni_interest",
     "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
     "drawdown_tax", "drawdown_base", "tax_paid", "tax_due", "tax_overpaid",
 })

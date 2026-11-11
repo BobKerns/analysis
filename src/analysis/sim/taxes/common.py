@@ -308,9 +308,11 @@ def hsa_deferred_flows(ty: TaxYear) -> tuple[int, int]:
 
 def taxable_social_security(
     *, ordinary_income: int, ltcg_income: int, ss_income: int, tier1: int, tier2: int,
+    exempt_interest: int = 0,
 ) -> int:
-    """Approximate taxable Social Security amount under provisional-income rules."""
-    provisional = ordinary_income + ltcg_income + (ss_income // 2)
+    """Approximate taxable Social Security amount under provisional-income
+    rules, which count tax-exempt interest (IRC §86(b)(2)(B), #265)."""
+    provisional = ordinary_income + ltcg_income + exempt_interest + (ss_income // 2)
     if provisional <= tier1:
         return 0
     if provisional <= tier2:
@@ -658,6 +660,16 @@ def bracket_series(ty: TaxYear) -> str | None:
     """The federal ``bracket_series`` param: its brackets' series, if any."""
     series = getattr(ty.params, "bracket_series", None)
     return None if series is None else str(series)
+
+
+def taxable_muni_interest(ty: TaxYear) -> int:
+    """The year's municipal bond interest (#265) a state adds back to
+    federal AGI: every state's but its own, by where the household lives on
+    December 31."""
+    residence = ty.residence_in(ty.year)
+    home = None if residence is None else residence.state
+    return sum(i.amount for i in ty.year_items(registries.TAX_EXEMPT)
+               if registries.MUNI_PAYER_STATE.get(i.payer.name) != home)
 
 
 def state_series(ty: TaxYear, year: int | None = None) -> str:

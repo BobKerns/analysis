@@ -90,7 +90,7 @@ def validate_targets(located: Sequence[tuple[str, Mapping[str, str]]], issues: l
         if asset_class not in registries.ASSET_CLASSES:
             issues.append(
                 f"{where}: unknown asset_class '{asset_class}'; "
-                f"allowed: {', '.join(registries.ASSET_CLASSES)}"
+                f"allowed: {registries.asset_class_list()}"
             )
         try:
             weight = units.percent_to_micros(row.get("weight", ""))
