@@ -3,14 +3,15 @@
 Every fund tear sheet has an **Allocations** section, right after the Snapshot. It gives the fund's asset mix in fixed categories, and is also written out as a machine-readable file so it can be imported into planning software. Run `scripts/allocation.py` to produce it. Never hand-total the numbers.
 
 ## Categories (the retirement simulator's asset classes; percent of net assets; sum to 100)
-These are exactly the simulator's `registries.ASSET_CLASSES`, in its display order, so the export loads into its `allocations.csv` without mapping. `unclassified` is the one extra bucket. The simulator shows it too, but it can't be written to `allocations.csv`, so it must be resolved before export.
+These are exactly the simulator's `registries.BASE_ASSET_CLASSES`, in its display order, so the export loads into its `allocations.csv` without mapping. `unclassified` is the one extra bucket. The simulator shows it too, but it can't be written to `allocations.csv`, so it must be resolved before export.
 
 | Key | Meaning |
 | --- | --- |
 | `stock_us` | stocks of US-domiciled companies |
 | `stock_intl` | stocks of companies domiciled outside the US, including ADRs and US-listed foreign companies |
 | `stock` | stocks whose US/international split couldn't be determined (ideally 0) |
-| `bond` | all bonds: Treasury, agency, mortgage-backed, corporate, TIPS, foreign bonds |
+| `bond` | all bonds but municipal bonds: Treasury, agency, mortgage-backed, corporate, TIPS, foreign bonds |
+| `muni` | municipal bonds, whose interest is federally tax-exempt. A fund of one state's bonds is `muni_<ST>` in the simulator (`muni_CA`): say so in a note, and use that class in the export |
 | `cd` | certificates of deposit held directly (rare in funds; CDs inside a money fund are `cash`) |
 | `cash` | cash and money-market instruments held for liquidity; a money market fund is 100% cash |
 | `real_estate` | real estate held directly. REITs are stocks, not `real_estate` |

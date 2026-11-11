@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Literal, NamedTuple
 
+from analysis.sim import states
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
@@ -240,6 +241,8 @@ TAX_CHARACTERS: set[str] = {
     # A stock fund's dividends, paid and reinvested in a taxable lot (#468):
     # taxed each year, at the long-term gains rates (IRC §1(h)(11)).
     "qualified_dividend",
+    # Municipal bond interest (#265): out of AGI, in provisional income and MAGI.
+    "tax_exempt",
     *BUSINESS_TAX_CHARACTERS,
 }
 
@@ -289,6 +292,7 @@ type AssetClass = Literal[
     "stock_intl",
     "stock",
     "bond",
+    "muni",
     "cd",
     "cash",
     "real_estate",
@@ -296,12 +300,39 @@ type AssetClass = Literal[
 ]
 """Asset classes of allocations.csv (ADR-003 §4.1b), in display order."""
 
-ASSET_CLASSES: tuple[AssetClass, ...] = AssetClass.__value__.__args__
+BASE_ASSET_CLASSES: tuple[AssetClass, ...] = AssetClass.__value__.__args__
+"""The asset classes other than one state's municipal bonds, in display order."""
+
+# Municipal bonds (#265): `muni` is a fund of many states' bonds, `muni_<ST>`
+# one state's (a postal code, `muni_CA`). Their interest is federally exempt;
+# a state taxes every state's but its own.
+MUNI_CLASS = "muni"
+MUNI_STATE_CLASSES: tuple[str, ...] = tuple(f"{MUNI_CLASS}_{s.code}" for s in states.STATES)
+
+ASSET_CLASSES: tuple[str, ...] = tuple(
+    c for base in BASE_ASSET_CLASSES
+    for c in ((base, *MUNI_STATE_CLASSES) if base == MUNI_CLASS else (base,)))
 """Asset classes of allocations.csv (ADR-003 §4.1b), in display order. Closed like the
 other registries; a new class is a one-line addition. `stock` is stock whose split``
 between US and international is not known (a placeholder to refine, but still distinct
-from bonds).
+from bonds). Each state's municipal bonds follow `muni`.
 """
+
+
+def muni_state(asset_class: str) -> str | None:
+    """The state whose bonds ``asset_class`` holds (#265): ``""`` for
+    ``muni``, a fund of many states', and None for a class that isn't
+    municipal bonds."""
+    if asset_class == MUNI_CLASS:
+        return ""
+    return asset_class.removeprefix(f"{MUNI_CLASS}_") if asset_class in MUNI_STATE_CLASSES else None
+
+
+def asset_class_list() -> str:
+    """The asset classes for a message or help text, the per-state
+    municipal bond classes as one pattern."""
+    return ", ".join(f"{MUNI_CLASS}_<ST>" if c == MUNI_STATE_CLASSES[0] else c
+                     for c in ASSET_CLASSES if c not in MUNI_STATE_CLASSES[1:])
 
 ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "weight")
 
@@ -471,6 +502,32 @@ HSA_PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
 }
 
 
+# Municipal bond interest (#265): out of federal AGI, but counted in
+# provisional income (Social Security) and in IRMAA's MAGI. A state adds it
+# back unless the bonds are its own, so each state's bonds have their own
+# payer. Keyed by asset class.
+TAX_EXEMPT = "tax_exempt"
+MUNI_INTEREST = "muni_interest"
+MUNI_PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
+    MUNI_CLASS: GrowthCounterparty(
+        MUNI_INTEREST, "income", "interest", "tax_free", TAX_EXEMPT,
+        "Built-in: tax-exempt interest from many states' municipal bonds, reinvested",
+    ),
+    **{c: GrowthCounterparty(
+        f"{MUNI_INTEREST}__{c.removeprefix(MUNI_CLASS + '_')}", "income", "interest", "tax_free", TAX_EXEMPT,
+        f"Built-in: tax-exempt interest from {c.removeprefix(MUNI_CLASS + '_')} municipal bonds, reinvested",
+    ) for c in MUNI_STATE_CLASSES},
+}
+MUNI_PAYER_STATE: dict[str, str] = {a.name: muni_state(c) or "" for c, a in MUNI_PAYOUT_ACCOUNTS.items()}
+"""Each municipal bond interest account's issuing state, ``""`` for many."""
+
+
+def payout_account(payer: str) -> GrowthCounterparty:
+    """A taxable lot's payout account: a ``PAYOUT_ACCOUNTS`` key, or a
+    municipal bond class (#265)."""
+    return MUNI_PAYOUT_ACCOUNTS.get(payer) or PAYOUT_ACCOUNTS[payer]
+
+
 def hsa_payout_account(payer: str) -> GrowthCounterparty:
     """The HSA payout account for a payout a taxable lot would get from
     ``PAYOUT_ACCOUNTS[payer]`` (#497)."""
@@ -485,12 +542,15 @@ def yield_series(series: str, suffix: str = YIELD_SUFFIX) -> str:
 
 def builtin_payout_accounts() -> tuple[GrowthCounterparty, ...]:
     """Every built-in account a payout comes from, taxed or not."""
-    return (*PAYOUT_ACCOUNTS.values(), *SHELTERED_PAYOUT_ACCOUNTS.values(),
-            *HSA_PAYOUT_ACCOUNTS.values())
+    return (*PAYOUT_ACCOUNTS.values(), *MUNI_PAYOUT_ACCOUNTS.values(),
+            *SHELTERED_PAYOUT_ACCOUNTS.values(), *HSA_PAYOUT_ACCOUNTS.values())
 
 
 def payout_character(asset_class: str) -> str:
-    """How an asset class's payout is taxed (#468)."""
+    """How an asset class's payout is taxed (#468): for municipal bonds
+    (#265), the class itself, since each state's has its own payer."""
+    if muni_state(asset_class) is not None:
+        return asset_class
     return QUALIFIED_DIVIDEND if asset_class in QUALIFIED_DIVIDEND_CLASSES else "ordinary"
 
 

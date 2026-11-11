@@ -117,6 +117,7 @@ The blend applies only when every class the symbol holds resolves to a series. W
 | `ordinary_dividends_<account/lot>` | `ordinary_dividends` | `ordinary` | ordinary income: a fund's (a lot with a symbol's) non-qualified dividends, its bond and cash slices included |
 | `lt_distributions_<account/lot>` | `gain_distributions` | `ltcg` | a long-term gain (1099-DIV box 2a), netted with the year's other gains and losses |
 | `st_distributions_<account/lot>` | `ordinary_dividends` | `ordinary` | ordinary income: a 1099-DIV counts short-term distributions as non-qualified dividends, which capital losses can't offset |
+| `tax_exempt_<account/lot>`, `tax_exempt_<st>_<account/lot>` | `muni_interest`, `muni_interest__<ST>` | `tax_exempt` | municipal bond interest ([#265](https://github.com/BobKerns/analysis/issues/265)): out of federal AGI but in provisional income and MAGI; a state taxes every state's bonds but its own |
 
 What a lot pays comes from yield series, ordinary rate series named `<series>_yield` (`rate__stock_us_yield.csv`, `rate__bond_yield.csv`), so a yield varies and correlates through `set_rate` rows like any rate:
 
@@ -126,6 +127,7 @@ What a lot pays comes from yield series, ordinary rate series named `<series>_yi
 - An ordinary payout is a non-qualified dividend when the lot has a symbol, since whatever a fund pays is a dividend on its 1099-DIV ([#547](https://github.com/BobKerns/analysis/issues/547)), and interest only when it has none. A state's exclusions (ADR-003 §2.6) tell the two apart by their payer's subkind.
 - Cash and CDs pay all of their rate as interest, so their growth rule is left with nothing, except below zero.
 - A class with no yield series pays nothing, as before: its whole return is appreciation.
+- A municipal bond class (`muni`, or one state's, `muni_CA`) pays its yield as tax-exempt interest, from its own payer so a state can tell its own bonds from others'. A fund's is an exempt-interest dividend, still tax-exempt, so it stays apart from the fund's ordinary dividends; a symbol's own `_yield` is split by its allocation's weights when at least half of it is municipal bonds (IRC §852(b)(5) exempt-interest dividends), each municipal bond class's share exempt and the rest ordinary, and is all ordinary when less is. In an IRA or a Roth it is sheltered like any payout, and in an HSA it is an HSA dividend.
 
 Gain distributions come from two more series found the same way: `<series>_cg_yield` (long-term) and `<series>_stcg_yield` (short-term), the symbol's own, else each class's at its weight, else the lot's one series'. Their taxation is fixed, whatever the class, and no class pays all of its rate as gains, so cash and CDs distribute none. A lot with neither series distributes nothing. A long-term distribution adds basis instead of drawing gain out of the lot, so it is not part of the gain a year realized (`drawn_gain`, [ADR-011](ADR-011-tax-calculators.md)), which the after-tax drawdown leaves out of its own share.
 
@@ -202,3 +204,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#468](https://github.com/BobKerns/analysis/issues/468): a taxable lot pays out dividends and interest each year from yield series, taxed that year and reinvested with basis; its growth rule takes them out of total return (§5, §7).
 - [#547](https://github.com/BobKerns/analysis/issues/547): long-term and short-term capital-gain distributions from `<series>_cg_yield` and `<series>_stcg_yield`, taxed `ltcg` and `ordinary`; an untaxed lot holding shares reinvests its payouts untaxed, buying shares without basis; a fund's ordinary payouts are dividends from `ordinary_dividends`, not interest (§5).
 - [#497](https://github.com/BobKerns/analysis/issues/497): every HSA lot gets payouts, from `hsa_dividends` and `hsa_gain_distributions`, which add basis; an HSA lot tracks a basis, and a withdrawal's gain over it is an `hsa_gain` row for a state that taxes the HSA (§5, §7).
+- [#265](https://github.com/BobKerns/analysis/issues/265): a municipal bond class (`muni`, `muni_<ST>`) pays its yield as tax-exempt interest from `muni_interest` or `muni_interest__<ST>` (§5).

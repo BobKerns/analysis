@@ -140,6 +140,7 @@ def run_scenario(
         # A strategy's view of a lot's return counts the dividends and
         # interest it reinvests (#468) as well as its appreciation.
         payout_names = {c.name for c in (*registries.PAYOUT_ACCOUNTS.values(),
+                                         *registries.MUNI_PAYOUT_ACCOUNTS.values(),
                                          *registries.HSA_PAYOUT_ACCOUNTS.values())}
         return_sources = growth_sources | frozenset(r[0] for r in lots if r[9] in payout_names)
         account_id_by_name: dict[str, int] = {
@@ -3763,13 +3764,13 @@ def _apply_fill_bracket(
                   if t.tier > int(params["irmaa_tier"])]
         if floors:
             amount = _largest_within(
-                lambda x, e=magi_est: e.compute(tax_api.Extra(x)).agi, min(floors), amount)
+                lambda x, e=magi_est: e.compute(tax_api.Extra(x)).magi, min(floors), amount)
     if (max_rate := params.get("max_marginal_rate")) is not None:
         limit = units.percent_to_micros(str(max_rate))
         cliff = None
         if magi_est is not None and irmaa is not None:
             def cliff(x: int, e: tax_api.Prepared = magi_est) -> int:
-                return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).agi, month_s, tid)
+                return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).magi, month_s, tid)
         # A rate counts the taxes paid with its own, a state's local tax
         # (#508), since the same dollar pays them. A federal rate stays the
         # federal tax's: a state builds on it, but is paid on its own.

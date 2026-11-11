@@ -298,7 +298,7 @@ project word could be confused with a general word, that is pointed out.
 | **`prices/`** | Shared security price histories every scenario uses unless it says otherwise. |
 | **Itemization** | A CSV file under `itemizations/<name>.csv`. It lists dollar amounts in a `Value` column, and the loader adds them up into one total. Other files can use that total by writing `@name` instead of a plain number (for example `opening_cost_basis = @home_basis`). **This is a different thing from an *itemized deduction*, a tax term — see the next table.** |
 | **`tax_character`** | A label on a money movement that says how it is taxed: `ordinary`, `ltcg`, `stcg`, `tax_free`, `tax_deferred_out`, `return_of_capital`, `none`, and a few others. This label decides which tax bucket the movement is counted in. |
-| **Asset class** | Used only for the portfolio overview (`sim allocation`): `stock_us`, `stock_intl`, `stock` (when the US/international split is not known), `bond`, `cd`, `cash`, `real_estate`, `other`. Set for each symbol in `allocations.csv`. Not related to `tax_character`. |
+| **Asset class** | Used only for the portfolio overview (`sim allocation`): `stock_us`, `stock_intl`, `stock` (when the US/international split is not known), `bond`, `muni` (many states' municipal bonds), `muni_CA` and the like (one state's municipal bonds), `cd`, `cash`, `real_estate`, `other`. Set for each symbol in `allocations.csv`. A municipal bond class also decides how its interest is taxed; otherwise it isn't related to `tax_character`. |
 | **Calendar event** | One dated change in `calendar.csv`. It can change a rate, change an amount, end a rule, or make a one-time transfer. See Part 4.8. |
 | **Scheduled transaction / rule** | One row in `scheduled.csv`. It is a rule that moves money, either on a regular schedule or just once. |
 | **Debit / credit** | The two sides of one money movement. A **debit** takes money out of a lot: a payment, a withdrawal, or the "from" side of any transfer. A **credit** puts money into a lot: the "to" side. For an asset lot, a debit lowers the balance and a credit raises it. For a liability (a loan or a card), a debit is borrowing more, so what you owe goes up, and a credit is paying it down. The refill check runs before each debit, which is why the chain flowcharts label refill "before a debit". These are everyday banking senses, not the bookkeeping ones, where debiting an asset account *raises* it. |
@@ -422,6 +422,16 @@ files pays no income tax.
   too: long-term ones as long-term gains, short-term ones as ordinary
   income. IRAs, Roth accounts and HSAs owe nothing on any of these: their
   earnings are taxed (or not) only when money leaves.
+- **Municipal bond interest** (a lot or fund of asset class `muni`, or
+  `muni_CA` for one state's bonds) is left out of federal AGI. It still
+  counts toward how much Social Security is taxed and toward the MAGI that
+  sets Medicare's IRMAA surcharge, and `sim report tax` shows it as
+  `fed_exempt_interest`. A state taxes every state's municipal bonds but its
+  own: living in California, `muni` interest is taxed and `muni_CA` interest
+  isn't, and after a move away, both are. A territory's bonds (`muni_PR`)
+  are exempt in every state, and the District of Columbia taxes none. A
+  fund that pays at its own `_yield` series is exempt only when at least
+  half of it is municipal bonds, and then only for that share.
 - **Filing status** comes from the `filing_status` aux table for that tax
   year: your data repo's `aux/filing_status.csv`, one row per date such as
   `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
@@ -505,7 +515,7 @@ files pays no income tax.
   `tax:rent` (`sim scheduled edit housing --tags tax:rent`) for the
   renter's credit. `sim report tax --return state` shows each line.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
-  each year.
+  each year plus municipal bond interest.
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.
@@ -1193,9 +1203,10 @@ anything else. To get the weights as a command you can run:
 Look up the most recent published asset breakdown of the fund ABCDX and
 write it as one command:
   sim symbol add ABCDX --name "<its name>" --weight CLASS=PERCENT ...
-- CLASS is one of: stock_us, stock_intl, stock, bond, cd, cash,
-  real_estate, other. Use stock only when the US/international split is
-  not published.
+- CLASS is one of: stock_us, stock_intl, stock, bond, muni, muni_<ST>,
+  cd, cash, real_estate, other. Use stock only when the US/international
+  split is not published. Municipal bonds are muni, or muni_CA (and so on)
+  for a fund of one state's bonds; bond is every other bond.
 - PERCENT has its % sign, such as 62.5%, at most four decimal places. The
   weights must add up to exactly 100%.
 - Add --as-of YYYY-MM, the month the breakdown describes. For a

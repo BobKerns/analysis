@@ -212,6 +212,7 @@ mtimes
 mult
 multimonth
 Multnomah
+muni
 munknown
 nanargmin
 nanmax

@@ -2812,7 +2812,9 @@ def ensemble_guard_rails(
               help="Only asset accounts with this tag (default: the strategy's portfolio, "
                    "else every asset lot).")
 @click.option("--asset-class", "asset_class", type=click.Choice(registries.ASSET_CLASSES), default=None,
-              help="One class's drift (share less target, signed) instead of the largest either way.")
+              show_choices=False,
+              help=f"One class's drift (share less target, signed) instead of the largest either way: "
+                   f"{registries.asset_class_list()}.")
 @_ENSEMBLE_GRAPH_OPTIONS
 def ensemble_drift(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
@@ -9866,8 +9868,9 @@ def account_holders_command(
 @sim_group_command.command("allocation")
 @_scenario_argument
 @click.option("--exclude", "excluded", multiple=True,
-              type=click.Choice([*registries.ASSET_CLASSES, allocation.UNCLASSIFIED]),
-              help="Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified.")
+              type=click.Choice([*registries.ASSET_CLASSES, allocation.UNCLASSIFIED]), show_choices=False,
+              help=f"Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified: "
+                   f"{registries.asset_class_list()}, {allocation.UNCLASSIFIED}.")
 @click.option("--by", "by", type=click.Choice(allocation.GROUPINGS), default=None,
               help="Split each asset class by account, owner, subkind, tax treatment or security (symbol).")
 @click.option("--drift", is_flag=True, default=False,
@@ -10367,7 +10370,8 @@ def report_gains_command(
 
     taxable and non-taxable are income that reached cash (Social Security
     split by the year's computed taxable share), plus a taxable lot's
-    reinvested dividends and interest; unrealized is growth that stayed
+    reinvested dividends and interest (not municipal bond interest, federally
+    exempt but perhaps taxed by the state); unrealized is growth that stayed
     invested. distribution_coverage is the cash part of realized_total
     (less the reinvested payouts) minus expenses: a negative year spent
     principal. --chart draws the gains stacked by
@@ -13236,7 +13240,7 @@ def symbol_group_command() -> None:
 @click.option("--weight", "weight_specs", multiple=True, metavar="CLASS=PERCENT",
               help="Its share in one asset class (repeatable), e.g. --weight stock_us=60% "
                    "--weight bond=40%; together they must add up to 100%. "
-                   f"Classes: {', '.join(registries.ASSET_CLASSES)}.")
+                   f"Classes: {registries.asset_class_list()}.")
 @click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
               help="The month the weights describe (default: every date).")
 @click.option("--fetch/--no-fetch", default=True, show_default=True,
@@ -13310,7 +13314,7 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
     """``symbol add``'s arguments, asked a question at a time."""
     symbol = click.prompt("symbol (ticker)").strip()
     name = click.prompt("name (optional)", default="", show_default=False).strip() or None
-    click.echo(f"  asset classes: {', '.join(registries.ASSET_CLASSES)}")
+    click.echo(f"  asset classes: {registries.asset_class_list()}")
     click.echo("  e.g. stock_us=60% bond=40%; blank to add the weights later (an AI can look them up)")
     while True:
         text = click.prompt("weights (optional)", default="", show_default=False).strip()
