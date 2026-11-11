@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, ClassVar
 
-from analysis.sim import registries
+from analysis.sim import ownership, registries
 from analysis.sim.param_units import Dollars, Percent, Tag, percent
 
 __all__ = [
@@ -145,11 +145,6 @@ class Person:
     role: str
     final_month: str | None = None
 
-    @property
-    def death_year(self) -> int | None:
-        """The tax year of their death, if the scenario gives one."""
-        return int(self.final_month[:4]) if self.final_month else None
-
 
 @dataclass(frozen=True)
 class Residence:
@@ -256,6 +251,14 @@ class TaxYear:
         """This jurisdiction's ``line`` of an earlier year's return; 0 for a
         year it didn't compute. A carryover's history (#277)."""
         return self._line_in(line, year)
+
+    @cached_property
+    def household(self) -> ownership.Household:
+        """The household and its people's final months (#277): whose an
+        account's money was at a death."""
+        return ownership.Household.of(
+            ((p.id, p.role) for p in self.persons),
+            {p.id: p.final_month for p in self.persons if p.final_month})
 
     @cached_property
     def _this_year(self) -> list[IncomeItem]:

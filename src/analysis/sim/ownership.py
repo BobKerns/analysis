@@ -35,6 +35,10 @@ class Household:
         spouses = dict([primaries, primaries[::-1]]) if len(primaries) == 2 else {}
         return cls(tuple(members), dict(final_months), spouses)
 
+    def died_in(self, year: int) -> list[str]:
+        """Who dies in ``year``."""
+        return [p for p, month in self.final_months.items() if int(month[:4]) == year]
+
     def alive_after(self, person: str, month: str) -> bool:
         """Whether ``person`` lives past ``month``."""
         return person not in self.final_months or self.final_months[person] > month

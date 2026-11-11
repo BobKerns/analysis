@@ -172,7 +172,9 @@ def test_a_fall_in_an_hsa_is_its_owners_loss_where_the_state_taxes_it() -> None:
     hsa = Account("Asset_HSA_Alice", "asset", "hsa", "alice")
     growth = registries.GROWTH_COUNTERPARTY_ACCOUNTS["deferred"].name
     fall = IncomeItem(2029, "deferred", hsa, Account(growth, "income", "", None), 10_000_00)
-    result = common.capital_gains(_year(2030, [fall]), loss_limit=lambda _y: 3_000_00, hsa_years={2029})
+    ty = _year(2030, [fall])
+    result = common.capital_gains(ty, loss_limit=lambda _y: 3_000_00,
+                                  hsa_growth=common.hsa_growth_by_owner(ty, {2029}))
     assert (result.carryover_lt, result.lapsed) == (0, 4_000_00)
 
 
@@ -206,3 +208,16 @@ def test_an_owners_gains_net_their_losses_first() -> None:
     items = (_sold_at_a_loss(2028, BILL_OWN, 20_000_00), _sold_at_a_loss(2029, ALICE_OWN, 10_000_00),
              IncomeItem(2029, "ltcg", alice_gain, CHECKING, 10_000_00))
     assert _carry(2030, *items).lapsed == 0
+
+
+def test_a_later_death_shares_only_the_nol_the_earlier_one_left() -> None:
+    """As for a capital loss: Alice's death ended half the joint business's
+    loss, so Bill's takes half of the half left."""
+    joint_shop = Account("Asset_Shop_Joint", "asset", "business", "joint")
+    carol_shop = Account("Asset_Shop_Carol", "asset", "business", "carol")
+    persons = [Person("alice", None, "member", ALICE_DIES), Person("bill", None, "member", "2031-05-31"),
+               Person("carol", None, "member", None)]
+    ty = _year(2031, [_business_loss(2029, joint_shop, 10_000_00), _business_loss(2029, carol_shop, 10_000_00)],
+               persons=persons, nol={2029: 20_000_00, 2030: 15_000_00})
+    # 2,500 of what's left (joint 5,000, Carol's 10,000).
+    assert common.nol_lapse_share(ty) == 2_500_00 / 15_000_00

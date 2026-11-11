@@ -248,8 +248,8 @@ class FederalStateYear(StateYear):
     def fixed_lines(self, basis: Basis) -> Mapping[str, int]:
         fed = basis.federal
         return {line: fed.lines[line] for line in (
-            "business_net", "hobby_disallowed", "capital_loss_used",
-            "capital_loss_carryover", "capital_loss_lapsed", "ss_benefits") if line in fed.lines}
+            "business_net", "hobby_disallowed", *common.CAPITAL_LINES, "ss_benefits")
+            if line in fed.lines}
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
         memo = basis.federal.memo

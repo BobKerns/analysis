@@ -818,7 +818,6 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
         for lot_id, owner in lots:
             if lot_id in stepped:
                 continue  # two deaths in one month: the first stepped it up in full
-            # A joint tenancy is half each (§2040(b)); other shares are out of scope.
             part = household.decedent_part(person, owner, community=community)
             if part is not None:
                 plan.setdefault(month, []).append(StepUp(lot_id, person, *part))
