@@ -390,14 +390,14 @@ and say what changed since last year's plan, and which assumptions were
 furthest off. And it can check the update is complete: every account,
 last year's income, and the rows a new start changes.
 
-## Scene `end`: The series so far
+## Scene `end`: Next time
 
 ```slide
 template = "card"
-heading = "That's the series so far"
-body = "The user guide has everything the videos showed, and more."
+heading = "Next: strategy plugins"
+body = "When no built-in strategy does what you want, write your own."
 speaker = "bill"
 ```
 
-That's the series so far. The user guide has everything the videos
-showed, and more. See you next January.
+Next time: strategy plugins. When no built-in strategy does what Alice and
+Bill want, they write their own, building on one that comes close.
