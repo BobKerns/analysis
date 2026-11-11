@@ -138,10 +138,17 @@ class CapitalLoss:
 
 @dataclass(frozen=True)
 class Person:
-    """One of the scenario's people."""
+    """One of the scenario's people, with the last month they're alive
+    (``YYYY-MM-DD``, the month's end) when the scenario gives a lifespan."""
     id: str
     birthdate: str | None
     role: str
+    final_month: str | None = None
+
+    @property
+    def death_year(self) -> int | None:
+        """The tax year of their death, if the scenario gives one."""
+        return int(self.final_month[:4]) if self.final_month else None
 
 
 @dataclass(frozen=True)

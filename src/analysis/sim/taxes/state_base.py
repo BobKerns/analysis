@@ -103,6 +103,7 @@ class StateYear(Prepared):
         self._deductions = dict(self.deductions())
         self._nol_limit = common.nol_limit_percent(ty, self.nol_limit_percent_default)
         self._nol_in = ty.prior("nol_carryover")
+        self._nol_lapse = common.nol_lapse_share(ty)
         basis = self.basis(NO_EXTRA)
         fixed = self.fixed_lines(basis)
         self._nol_new = common.nol_new(
@@ -199,7 +200,7 @@ class StateYear(Prepared):
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,
             "nol_used": nol_used,
-            "nol_carryover": self._nol_in - nol_used + self._nol_new,
+            **common.nol_carried(self._nol_in - nol_used + self._nol_new, self._nol_lapse),
             "ss_taxable": income.ss,
             "agi": income.agi,
             **self.fixed_lines(basis),
@@ -248,7 +249,7 @@ class FederalStateYear(StateYear):
         fed = basis.federal
         return {line: fed.lines[line] for line in (
             "business_net", "hobby_disallowed", "capital_loss_used",
-            "capital_loss_carryover", "ss_benefits") if line in fed.lines}
+            "capital_loss_carryover", "capital_loss_lapsed", "ss_benefits") if line in fed.lines}
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
         memo = basis.federal.memo

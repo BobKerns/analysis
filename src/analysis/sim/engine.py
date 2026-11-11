@@ -3023,8 +3023,10 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
             (tax_year,),
         )
     ]
-    persons = [tax_api.Person(pid, born or None, role or "")
-               for pid, born, role in con.execute("SELECT id, birthdate, role FROM person")]
+    persons = [tax_api.Person(pid, born or None, role or "", final or None)
+               for pid, born, role, final in con.execute(
+                   "SELECT p.id, p.birthdate, p.role, l.final_month FROM person p "
+                   "LEFT JOIN person_lifespan l ON l.person = p.id")]
     return _TaxLedger(items, losses, persons, spending)
 
 

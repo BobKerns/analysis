@@ -183,6 +183,7 @@ class StateTablesYear(FederalStateYear):
             **super().fixed_lines(basis),
             "capital_loss_used": capital.loss_deduction,
             "capital_loss_carryover": capital.carryover_st + capital.carryover_lt,
+            **({"capital_loss_lapsed": capital.lapsed} if capital.lapsed else {}),
         }
 
     def tax(self, taxable: int, income: Income) -> int:

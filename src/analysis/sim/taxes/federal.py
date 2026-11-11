@@ -98,6 +98,7 @@ class FederalYear(Prepared):
         # little high in a year that uses one.
         self._nol_limit = common.nol_limit_percent(ty, calc.default_nol_limit_percent)
         self._nol_in = ty.prior("nol_carryover")
+        self._nol_lapse = common.nol_lapse_share(ty)
         self._nol_new = common.nol_new(
             agi=self._agi(NO_EXTRA), business_net=business.net,
             capital_loss_used=capital.loss_deduction, deduction=deduction)
@@ -107,6 +108,7 @@ class FederalYear(Prepared):
             "ltcg_exclusion": capital.ltcg - self._net_ltcg(capital.ltcg),
             "capital_loss_used": capital.loss_deduction,
             "capital_loss_carryover": capital.carryover_st + capital.carryover_lt,
+            **({"capital_loss_lapsed": capital.lapsed} if capital.lapsed else {}),
             "ss_benefits": ss_income,
             "standard_deduction": standard,
             "itemized_deduction": itemized,
@@ -159,7 +161,7 @@ class FederalYear(Prepared):
             "ordinary_income": ordinary,
             "ltcg_taxed": ltcg,
             "nol_used": nol_used,
-            "nol_carryover": self._nol_in - nol_used + self._nol_new,
+            **common.nol_carried(self._nol_in - nol_used + self._nol_new, self._nol_lapse),
             "ss_taxable": taxable_ss,
             "agi": agi,
             **self._fixed,

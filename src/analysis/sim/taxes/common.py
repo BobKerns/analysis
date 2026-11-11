@@ -72,6 +72,9 @@ class CapitalGains(NamedTuple):
     loss_deduction: int
     carryover_st: int
     carryover_lt: int
+    lapsed: int = 0
+    """The carryover that ended with a death in the year (#277), already
+    taken out of ``carryover_st`` and ``carryover_lt``."""
 
 
 def net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
@@ -102,24 +105,95 @@ def capital_gains(
     a loss posts a negative one) less its capital losses, netted with the
     carryover from every earlier year, each of which used up to its own
     year's ``loss_limit``. ``extra_ltcg`` adds a long-term result to some
-    years (a state's tax on HSA growth, #490)."""
+    years (a state's tax on HSA growth, #490).
+
+    A carryover is the taxpayer's whose losses made it, and their share ends
+    after the return for the year they die (#277; Rev. Rul. 74-175). Their
+    share is their part of the losses since the carryover was last empty:
+    which year's losses a deduction used first is more than a household
+    plan needs."""
     totals: dict[int, list[int]] = {}
-    for year, character, amount in (
-        *((i.year, i.character, i.amount) for i in ty.items),
-        *((c.year, c.character, -c.amount) for c in ty.losses),
+    # Each year's losses by the owner of the account they came from.
+    losses: dict[int, dict[str | None, int]] = {}
+    for year, character, owner, amount in (
+        *((i.year, i.character, i.payer.owner, i.amount) for i in ty.items),
+        *((c.year, c.character, c.owner, -c.amount) for c in ty.losses),
     ):
         if character in ("stcg", "ltcg") and year <= ty.year:
             totals.setdefault(year, [0, 0])[1 if character == "ltcg" else 0] += amount
+            if amount < 0:
+                by_owner = losses.setdefault(year, {})
+                by_owner[owner] = by_owner.get(owner, 0) - amount
     for year, amount in (extra_ltcg or {}).items():
         if year <= ty.year:
             totals.setdefault(year, [0, 0])[1] += amount
+    deaths = Deaths(ty)
     carry_st = carry_lt = 0
+    building: dict[str | None, int] = {}
     result = CapitalGains(0, 0, 0, 0, 0)
     for year in range(min(totals, default=ty.year), ty.year + 1):
         st, lt = totals.get(year, (0, 0))
         result = net_capital(st - carry_st, lt - carry_lt, functools.partial(loss_limit, year))
         carry_st, carry_lt = result.carryover_st, result.carryover_lt
+        for owner, amount in losses.get(year, {}).items():
+            building[owner] = building.get(owner, 0) + amount
+        lapsed = 0
+        if carry_st + carry_lt and deaths.in_year(year):
+            share = deaths.share(year, building)
+            lapsed_st, lapsed_lt = round(carry_st * share), round(carry_lt * share)
+            carry_st, carry_lt, lapsed = carry_st - lapsed_st, carry_lt - lapsed_lt, lapsed_st + lapsed_lt
+            result = result._replace(carryover_st=carry_st, carryover_lt=carry_lt, lapsed=lapsed)
+        if not carry_st + carry_lt:
+            building = {}
     return result
+
+
+class Deaths:
+    """Whose share of a loss carryover ends in a year (#277). The decedent's
+    own accounts' losses are theirs; a joint account's (owner blank or
+    ``joint``) are half theirs while another of the household lives on, as
+    for a joint tenancy or community property, and all theirs once no one
+    does; and an account they inherited from a spouse who died before them
+    is theirs too."""
+
+    def __init__(self, ty: TaxYear) -> None:
+        self._final = {p.id: p.final_month for p in ty.persons if p.final_month}
+        primaries = [p.id for p in ty.persons if p.role == "primary"]
+        self._household = primaries or [p.id for p in ty.persons if p.role]
+
+    def in_year(self, year: int) -> list[str]:
+        """Who dies in ``year``, the first to die first."""
+        return sorted((p for p, final in self._final.items() if int(final[:4]) == year),
+                      key=lambda p: (self._final[p], p))
+
+    def _alive_after(self, person: str, month: str) -> bool:
+        return person not in self._final or self._final[person] > month
+
+    def _owner_share(self, decedent: str, owner: str | None) -> float:
+        """The decedent's part of a loss on an account ``owner`` holds."""
+        month = self._final[decedent]
+        if owner in (None, "", "joint"):
+            if decedent not in self._household:
+                return 0.0
+            survivor = any(p != decedent and self._alive_after(p, month) for p in self._household)
+            return 0.5 if survivor else 1.0
+        if owner == decedent:
+            return 1.0
+        if owner in self._household and decedent in self._household and owner in self._final \
+                and self._final[owner] < month:
+            return 1.0  # inherited from a spouse who died first
+        return 0.0
+
+    def share(self, year: int, losses: Mapping[str | None, int]) -> float:
+        """The part of a carryover built from ``losses`` (by account owner)
+        that ends with the deaths in ``year``."""
+        total = sum(losses.values())
+        if not total:
+            return 0.0
+        decedents = self.in_year(year)
+        ended = sum(amount * min(1.0, sum(self._owner_share(d, owner) for d in decedents))
+                    for owner, amount in losses.items())
+        return ended / total
 
 
 _HSA_GROWTH_ACCOUNTS = frozenset(
@@ -619,6 +693,43 @@ def nol_new(*, agi: int, business_net: int, capital_loss_used: int, deduction: i
     nonbusiness income, §172(d)(4)), nor does the capital-loss deduction."""
     nonbusiness_income = agi - business_net + capital_loss_used
     return max(0, -business_net - max(0, nonbusiness_income - deduction))
+
+
+def nol_lapse_share(ty: TaxYear) -> float:
+    """The part of the NOL carried out of the year that ends with a death in
+    it (#277): a business's loss is its proprietor's, the ``business``
+    account's ``owner``. Their share is their part of the business losses
+    the return has deducted so far; with one business, that's all of it."""
+    deaths = Deaths(ty)
+    if not deaths.in_year(ty.year):
+        return 0.0
+    by_year_owner: dict[tuple[int, str | None], int] = {}
+    for item in ty.items:
+        if item.year > ty.year:
+            continue
+        if item.character == registries.BUSINESS_INCOME:
+            account, sign = item.payee, 1
+        elif item.character == registries.BUSINESS_EXPENSE:
+            account, sign = item.payer, -1
+        else:
+            continue
+        if account.hobby:
+            continue  # a hobby's expenses aren't deducted, so make no loss
+        key = (item.year, account.owner)
+        by_year_owner[key] = by_year_owner.get(key, 0) + sign * item.amount
+    losses: dict[str | None, int] = {}
+    for (_year, owner), net in by_year_owner.items():
+        if net < 0:
+            losses[owner] = losses.get(owner, 0) - net
+    return deaths.share(ty.year, losses)
+
+
+def nol_carried(carryover: int, lapse_share: float) -> dict[str, int]:
+    """The NOL lines out of a year: what carries on, and what ended with a
+    death (``lapse_share``, :func:`nol_lapse_share`), a line only in that
+    year."""
+    lapsed = round(carryover * lapse_share)
+    return {"nol_carryover": carryover - lapsed, **({"nol_lapsed": lapsed} if lapsed else {})}
 
 
 def nol_used(nol_in: int, before_nol: int, limit_percent: int) -> int:
