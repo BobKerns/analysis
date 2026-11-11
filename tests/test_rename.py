@@ -373,6 +373,23 @@ def test_series_rename_takes_its_yield_along(test_data_dir: Path, test_scenarios
     loads("retire_alice")
 
 
+def test_series_rename_takes_its_gain_distribution_series_along(
+        test_data_dir: Path, test_scenarios_dir: Path, loads: Callable[[str], None]) -> None:
+    """``<series>_cg_yield`` and ``<series>_stcg_yield`` (#547) are found by
+    name like ``_yield``: they follow their series, and can't be renamed alone."""
+    series = test_scenarios_dir / "retire_alice" / "series"
+    for suffix in ("cg_yield", "stcg_yield"):
+        (series / f"rate__brokerage_growth_{suffix}.csv").write_text("effective_date,annual_rate\n2026-01-31,1%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth_cg_yield", "payout")
+    assert result.exit_code != 0 and "brokerage_growth's yield series" in result.output, result.output
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth", "broker_growth")
+    assert result.exit_code == 0, result.output
+    for suffix in ("cg_yield", "stcg_yield"):
+        assert (series / f"rate__broker_growth_{suffix}.csv").is_file()
+        assert not (series / f"rate__brokerage_growth_{suffix}.csv").exists()
+    loads("retire_alice")
+
+
 def test_series_rename_takes_a_yield_only_a_child_has(test_data_dir: Path, test_scenarios_dir: Path,
                                                       loads: Callable[[str], None]) -> None:
     """Renamed from the parent that defines the series, the yield a child

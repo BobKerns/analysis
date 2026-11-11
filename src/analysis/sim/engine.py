@@ -132,7 +132,11 @@ def run_scenario(
         for lot_id, owner in lot_account_name.items():
             lots_by_account.setdefault(owner, []).append(lot_id)
         growth_names = {c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
-        growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names)
+        # An untaxed lot's payouts (#547) are growth for its basis, though
+        # they buy shares.
+        sheltered_names = {c.name for c in registries.SHELTERED_PAYOUT_ACCOUNTS.values()}
+        share_sources = frozenset(r[0] for r in lots if r[9] in sheltered_names)
+        growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names) | share_sources
         # A strategy's view of a lot's return counts the dividends and
         # interest it reinvests (#468) as well as its appreciation.
         payout_names = {c.name for c in registries.PAYOUT_ACCOUNTS.values()}
@@ -232,6 +236,7 @@ def run_scenario(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
             account_tax_treatment, account_subkind, account_name, cost_bases,
             quantities, growth_sources, acquired,
+            share_sources=share_sources,
             chain_name=dict(con.execute("SELECT id, name FROM chain").fetchall()),
             roth=_roth_lots(con, person_birthdates),
         )
@@ -942,7 +947,7 @@ class RefillContext:
 
     __slots__ = ("graph", "aux", "chain_base_date", "inflation_factor_cache",
                  "account_tax_treatment", "account_subkind", "account_name",
-                 "cost_bases", "quantities", "growth_sources", "acquired",
+                 "cost_bases", "quantities", "growth_sources", "share_sources", "acquired",
                  "chain_name", "refilling", "last_refill", "negative_since",
                  "negative_events", "roth", "strategies")
 
@@ -957,6 +962,7 @@ class RefillContext:
         acquired: dict[int, date | None] | None = None,
         chain_name: dict[int, str] | None = None,
         roth: dict[int, RothLot] | None = None,
+        share_sources: frozenset[int] = frozenset(),
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -968,6 +974,7 @@ class RefillContext:
         self.cost_bases = cost_bases
         self.quantities = quantities if quantities is not None else {}
         self.growth_sources = growth_sources
+        self.share_sources = share_sources
         self.acquired = acquired if acquired is not None else {}
         self.chain_name = chain_name if chain_name is not None else {}
         self.roth = roth if roth is not None else {}
@@ -1288,12 +1295,22 @@ def _record_purchase(
     """Money moved into a lot that tracks cost basis buys into it: a purchase, an
     inheritance, proceeds from another taxable lot. Its basis rises by the amount
     and, if shares are tracked, they rise at the lot's implied price. Growth
-    from the built-in counterparties is appreciation and changes neither.
+    from the built-in counterparties is appreciation and changes neither. An
+    untaxed lot's reinvested payout (#547) buys shares but, like growth, adds
+    no basis.
     """
+    if from_id in ctx.share_sources:
+        _buy_shares(ctx, balances, to_id, amount)
+        return
     basis = ctx.cost_bases.get(to_id)
     if basis is None or from_id in ctx.growth_sources:
         return
     ctx.cost_bases[to_id] = basis + amount
+    _buy_shares(ctx, balances, to_id, amount)
+
+
+def _buy_shares(ctx: RefillContext, balances: dict[int, int], to_id: int, amount: int) -> None:
+    """Shares ``amount`` buys in ``to_id``, if it tracks them, at its implied price."""
     quantity, prior = ctx.quantities.get(to_id), balances.get(to_id, 0)
     if quantity and prior > 0:
         ctx.quantities[to_id] = quantity + quantity * amount // prior

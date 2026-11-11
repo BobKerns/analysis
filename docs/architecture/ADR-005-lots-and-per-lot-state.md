@@ -108,12 +108,14 @@ with the weights of the allocation set in force that month (its latest `as_of` o
 
 The blend applies only when every class the symbol holds resolves to a series. When none does, the lot grows at its account's series as before. When only some do, the load warns and also falls back: a series that happens to share a class's name (a cash account's `cash` rate) mustn't stop a scenario that never meant to blend from loading. The income counterparty follows the account's `tax_character`, except in a `retirement` account, where each lot's subkind picks it: `tax_free` for a Roth lot, `deferred` for a traditional one ([ADR-003](ADR-003-registries-and-csv-schemas.md) §2.2). Accrual is an ordinary transfer from an income account into the lot, so growth moves the balance and not the basis, and the ledger stays event-sourced and zero-sum. The engine never marks positions to market.
 
-**A taxable lot pays out part of its return each year** ([#468](https://github.com/BobKerns/analysis/issues/468)). Stocks pay dividends and bonds pay interest, taxed in the year paid even when reinvested, so a `gains` lot in a `brokerage_taxable` account gets up to two more rules beside its growth rule, each a `percent_of_balance` from a built-in payout account into the lot:
+**A taxable lot pays out part of its return each year** ([#468](https://github.com/BobKerns/analysis/issues/468), [#547](https://github.com/BobKerns/analysis/issues/547)). Stocks pay dividends, bonds pay interest, and funds distribute capital gains, all taxed in the year paid even when reinvested, so a `gains` lot in a `brokerage_taxable` account gets up to four more rules beside its growth rule, each a `percent_of_balance` from a built-in payout account into the lot:
 
 | rule | from | `tax_character` | taxed as |
 | --- | --- | --- | --- |
 | `dividends_<account/lot>` | `dividends` | `qualified_dividend` | long-term gain rates, stacked on ordinary income |
 | `interest_<account/lot>` | `investment_interest` | `ordinary` | ordinary income |
+| `lt_distributions_<account/lot>` | `gain_distributions` | `ltcg` | a long-term gain (1099-DIV box 2a), netted with the year's other gains and losses |
+| `st_distributions_<account/lot>` | `investment_interest` | `ordinary` | ordinary income: a 1099-DIV counts short-term distributions as non-qualified dividends, which capital losses can't offset |
 
 What a lot pays comes from yield series, ordinary rate series named `<series>_yield` (`rate__stock_us_yield.csv`, `rate__bond_yield.csv`), so a yield varies and correlates through `set_rate` rows like any rate:
 
@@ -123,7 +125,11 @@ What a lot pays comes from yield series, ordinary rate series named `<series>_yi
 - Cash and CDs pay all of their rate as interest, so their growth rule is left with nothing, except below zero.
 - A class with no yield series pays nothing, as before: its whole return is appreciation.
 
-The growth rule then grows the lot at its total return less the payouts (`{"less": [spec, ...]}` in its `params_json`), so total return is unchanged and only its taxation moves. A payout is never negative (`{"payout": true}` in its rule's `params_json`): a yield below zero, even one slice of a blend's, pays nothing, and the growth rule carries the whole fall as an unrealized loss, so cash at a negative rate loses value without negative interest. Payouts are reinvested: they are money into the lot from an account that is not a growth counterparty, so they add to its basis (§7), and the gain left at a sale is the appreciation alone. Retirement, HSA and other untaxed lots get no payout rules: what they earn is not taxed until it leaves. Taking payouts as cash instead of reinvesting them is not modeled.
+Gain distributions come from two more series found the same way: `<series>_cg_yield` (long-term) and `<series>_stcg_yield` (short-term), the symbol's own, else each class's at its weight, else the lot's one series'. Their taxation is fixed, whatever the class, and no class pays all of its rate as gains, so cash and CDs distribute none. A lot with neither series distributes nothing.
+
+The growth rule then grows the lot at its total return less the payouts (`{"less": [spec, ...]}` in its `params_json`), so total return is unchanged and only its taxation moves. A payout is never negative (`{"payout": true}` in its rule's `params_json`): a yield below zero, even one slice of a blend's, pays nothing, and the growth rule carries the whole fall as an unrealized loss, so cash at a negative rate loses value without negative interest. Payouts are reinvested: they are money into the lot from an account that is not a growth counterparty, so they add to its basis (§7), and the gain left at a sale is the appreciation alone. Taking payouts as cash instead of reinvesting them is not modeled.
+
+**An untaxed lot that holds shares reinvests its payouts too** ([#547](https://github.com/BobKerns/analysis/issues/547)). In an IRA, a Roth or an HSA a payout is not taxed, but it still buys shares at the lot's lower, ex-distribution price, so the share count grows the way a statement shows and the price grows at appreciation alone. A lot growing from `deferred` or `tax_free` (§5 above) that has a `quantity` gets the same payout rules as a taxable lot, from `deferred_payouts` or `tax_free_payouts` with its own character, so nothing is taxed. Those two accounts are treated as growth counterparties for basis: a payout adds no basis (a Roth's basis stays its contributions, §7), reports count it as unrealized growth, and a state that taxes HSA growth taxes it with the rest. Only shares move: the engine buys them at the lot's implied price (balance over shares) before the payout posts. A lot that tracks dollars, with no `quantity`, gets no payout rules, since splitting its growth would change nothing it reports.
 
 ### 6. Prices
 
@@ -188,3 +194,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#256](https://github.com/BobKerns/analysis/issues/256): a Roth lot's five-year rules change at a death (§7).
 - [#255](https://github.com/BobKerns/analysis/issues/255): a lot's basis steps up at a death (§7).
 - [#468](https://github.com/BobKerns/analysis/issues/468): a taxable lot pays out dividends and interest each year from yield series, taxed that year and reinvested with basis; its growth rule takes them out of total return (§5, §7).
+- [#547](https://github.com/BobKerns/analysis/issues/547): long-term and short-term capital-gain distributions from `<series>_cg_yield` and `<series>_stcg_yield`, taxed `ltcg` and `ordinary`; an untaxed lot holding shares reinvests its payouts untaxed, buying shares without basis (§5).

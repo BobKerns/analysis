@@ -412,12 +412,47 @@ PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
         "investment_interest", "income", "interest", "taxable", "ordinary",
         "Built-in: interest and other dividends paid and reinvested in taxable lots",
     ),
+    "ltcg": GrowthCounterparty(
+        "gain_distributions", "income", "dividend", "taxable", "ltcg",
+        "Built-in: long-term capital-gain distributions paid and reinvested in taxable lots",
+    ),
+}
+
+# A fund's capital-gain distributions (#547), beside its dividends: the rate
+# series `<series>_cg_yield` pays long-term gains, taxed as such and netted
+# with the year's other gains, and `<series>_stcg_yield` pays short-term
+# gains, which a 1099-DIV counts as ordinary (non-qualified) dividends. Unlike
+# `_yield`, no class pays all of its rate as gains.
+CG_YIELD_SUFFIX = "_cg_yield"
+STCG_YIELD_SUFFIX = "_stcg_yield"
+PAYOUT_SUFFIXES: tuple[str, ...] = (YIELD_SUFFIX, CG_YIELD_SUFFIX, STCG_YIELD_SUFFIX)
+CG_PAYOUT_CHARACTERS: dict[str, str] = {CG_YIELD_SUFFIX: "ltcg", STCG_YIELD_SUFFIX: "ordinary"}
+
+# An untaxed lot's payouts (#547), when it tracks shares: reinvested in the
+# lot and untaxed, they buy shares as a statement shows, but like growth they
+# add no basis (a Roth's basis stays its contributions) and count as
+# unrealized growth. Keyed by the lot's growth character.
+SHELTERED_PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
+    "deferred": GrowthCounterparty(
+        "deferred_payouts", "income", "capital_gain", "tax_deferred", "deferred",
+        "Built-in: dividends and distributions reinvested in tax-deferred lots",
+    ),
+    "tax_free": GrowthCounterparty(
+        "tax_free_payouts", "income", "capital_gain", "tax_free", "tax_free",
+        "Built-in: dividends and distributions reinvested in tax-free lots (Roth, HSA)",
+    ),
 }
 
 
-def yield_series(series: str) -> str:
-    """The rate series a lot growing at ``series`` pays out from (#468)."""
-    return series + YIELD_SUFFIX
+def yield_series(series: str, suffix: str = YIELD_SUFFIX) -> str:
+    """The rate series a lot growing at ``series`` pays out from (#468):
+    dividends and interest, or with ``suffix`` gain distributions (#547)."""
+    return series + suffix
+
+
+def builtin_payout_accounts() -> tuple[GrowthCounterparty, ...]:
+    """Every built-in account a payout comes from, taxed or not."""
+    return (*PAYOUT_ACCOUNTS.values(), *SHELTERED_PAYOUT_ACCOUNTS.values())
 
 
 def payout_character(asset_class: str) -> str:

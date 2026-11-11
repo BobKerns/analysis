@@ -123,11 +123,13 @@ def capital_gains(
 
 
 _HSA_GROWTH_ACCOUNTS = frozenset(
-    registries.GROWTH_COUNTERPARTY_ACCOUNTS[character].name
+    accounts[character].name
+    for accounts in (registries.GROWTH_COUNTERPARTY_ACCOUNTS, registries.SHELTERED_PAYOUT_ACCOUNTS)
     for character in ("deferred", "tax_free")
 )
 """The built-in accounts an HSA's untaxed growth comes from (or, when it
-falls, goes back to): growth of another character is taxed already."""
+falls, goes back to), its reinvested payouts (#547) included: growth of
+another character is taxed already."""
 
 
 def state_taxes_hsa(ty: TaxYear, state: str, year: int) -> bool:

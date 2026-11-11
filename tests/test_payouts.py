@@ -1,5 +1,6 @@
-"""A taxable lot's yearly payouts: dividends and interest, paid out, taxed and
-reinvested each month (#468, ADR-005 §5)."""
+"""A lot's yearly payouts: dividends, interest and gain distributions, paid out,
+taxed and reinvested each month, or untaxed in a retirement lot (#468, #547,
+ADR-005 §5)."""
 
 from __future__ import annotations
 
@@ -266,3 +267,113 @@ def test_a_blended_funds_payouts_are_not_shown_as_its_rate(test_data_dir: Path) 
     with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
         [row] = [r for r in load_accounts_view(scenario) if r.name == BROKERAGE]
     assert row.rate_series is None or "yield" not in row.rate_series
+
+
+LT_DISTRIBUTIONS = growth_rule_name(BROKERAGE, "fund", prefix="lt_distributions_")
+ST_DISTRIBUTIONS = growth_rule_name(BROKERAGE, "fund", prefix="st_distributions_")
+
+
+@pytest.fixture
+def distributions(write_series: Callable[[str, str], Path]) -> None:
+    """Gain distributions for ``blended_fund``'s stocks (#547): 1.2% of their
+    8% long-term, 0.6% short-term; bonds distribute none."""
+    write_series("stock_us_cg_yield", "2026-01-31,1.2%")
+    write_series("stock_us_stcg_yield", "2026-01-31,0.6%")
+
+
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund", "yields", "distributions")
+def test_gain_distributions_come_out_of_total_return_taxed_by_their_term(
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """Long-term distributions are long-term gains; short-term ones are
+    ordinary (non-qualified) dividends. Both are reinvested with basis, and
+    the total return is unchanged."""
+    result = load_test_copy()
+    assert not result.warnings
+    rules = {name: rule for name, *rule in _query(
+        result.intent_path,
+        "SELECT s.name, s.series, params_json, tax_character, a.name FROM scheduled_transaction s "
+        "JOIN chain c ON c.id = s.from_account JOIN account a ON a.id = c.account_id")}
+    assert rules[LT_DISTRIBUTIONS] == [
+        None, '{"blend":[["",[["stock_us_cg_yield",600000]]]],"payout":true}', "ltcg", "gain_distributions"]
+    assert rules[ST_DISTRIBUTIONS] == [
+        None, '{"blend":[["",[["stock_us_stcg_yield",600000]]]],"payout":true}', "ordinary",
+        "investment_interest"]
+    assert len(json.loads(rules[GROWTH][1])["less"]) == 4
+    run = run_scenario(result.intent_path, runs_dir / "distributions.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    month, growth = _first_month(run, GROWTH)
+    assert _first_month(run, LT_DISTRIBUTIONS) == (month, 18_000)   # $300,000 x 60% x 1.2% / 12
+    assert _first_month(run, ST_DISTRIBUTIONS) == (month, 9_000)    # $300,000 x 60% x 0.6% / 12
+    assert growth + 30_000 + 40_000 + 18_000 + 9_000 == 160_000
+    assert _lot(run, month) == (30_000_000 + 160_000, 20_000_000 + 97_000)
+
+
+@pytest.mark.usefixtures("blended_fund", "distributions")
+def test_long_term_distributions_are_taxed_as_long_term_gains(report_run_file: Path) -> None:
+    run = report_run_file
+    year = _query(run, "SELECT MIN(year) FROM tax_year_summary")[0][0]
+    [(paid,)] = _query(run, (
+        "SELECT SUM(t.amount) FROM transfer_event t "
+        "JOIN scheduled_transaction r ON r.id = t.reason_id "
+        "JOIN simulation_step s ON s.id = t.step_id "
+        "WHERE t.reason_kind = 'rule' AND r.name = ? AND substr(s.month, 1, 4) = ?"),
+        LT_DISTRIBUTIONS, str(year))
+    summary = dict(_query(run, "SELECT bucket, amount FROM tax_year_summary WHERE year = ?", year))
+    assert paid > 0
+    assert summary["federal_ltcg_taxed"] >= paid
+
+
+def _set_retirement_lot(retire_alice_csv: Callable[[str], Path], old: str, new: str) -> None:
+    lots = retire_alice_csv("account_lots.csv")
+    text = lots.read_text()
+    assert old in text
+    lots.write_text(text.replace(old, new))
+
+
+def _quantity(run: Path, account: str, month: str) -> int:
+    return _query(run, (
+        "SELECT ls.quantity_micros FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
+        "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
+        "WHERE a.name = ? AND s.month = ?"), account, month)[0][0]
+
+
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund", "yields", "distributions")
+def test_a_retirement_lot_holding_shares_reinvests_its_payouts_untaxed(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """An IRA and a Roth holding FND shares (#547): their payouts come from
+    the untaxed payout accounts and buy shares, but add no basis, so the
+    Roth's basis stays its contributions. A Roth tracking dollars gets none."""
+    _set_retirement_lot(retire_alice_csv, "Asset_TraditionalIRA_Alice,default,traditional_ira,,,,,500000.00,",
+                        "Asset_TraditionalIRA_Alice,default,traditional_ira,FND,,5000,,500000.00,")
+    _set_retirement_lot(retire_alice_csv, "Asset_Roth_Alice,default,roth_ira,,,,,100000.00,,",
+                        "Asset_Roth_Alice,default,roth_ira,FND,,1000,,100000.00,50000.00,")
+    result = load_test_copy()
+    rules = {name: (character, payer) for name, character, payer in _query(
+        result.intent_path,
+        "SELECT s.name, tax_character, a.name FROM scheduled_transaction s "
+        "JOIN chain c ON c.id = s.from_account JOIN account a ON a.id = c.account_id")}
+    ira_dividends = growth_rule_name("Asset_TraditionalIRA_Alice", "default", prefix="dividends_")
+    roth_lt = growth_rule_name("Asset_Roth_Alice", "default", prefix="lt_distributions_")
+    assert rules[ira_dividends] == ("deferred", "deferred_payouts")
+    assert rules[roth_lt] == ("tax_free", "tax_free_payouts")
+    assert not [n for n in rules if n.endswith("_roth_bill")
+                and n.startswith(("dividends_", "interest_", "lt_", "st_"))]
+    run = run_scenario(result.intent_path, runs_dir / "sheltered.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    month, growth = _first_month(run, growth_rule_name("Asset_TraditionalIRA_Alice", "default"))
+    payouts = sum(_first_month(run, growth_rule_name("Asset_TraditionalIRA_Alice", "default", prefix=p))[1]
+                  for p in ("dividends_", "interest_", "lt_distributions_", "st_distributions_"))
+    # $500,000 at the 6.4% blend, whatever part of it is paid out.
+    assert growth + payouts == 266_666
+    # The payouts buy shares at $100; appreciation buys none.
+    assert _quantity(run, "Asset_TraditionalIRA_Alice", month) == 5000 * 1_000_000 + payouts * 100
+    roth_payouts = sum(_first_month(run, growth_rule_name("Asset_Roth_Alice", "default", prefix=p))[1]
+                       for p in ("dividends_", "interest_", "lt_distributions_", "st_distributions_"))
+    assert _quantity(run, "Asset_Roth_Alice", month) == 1000 * 1_000_000 + roth_payouts * 100
+    [(roth_basis,)] = _query(run, (
+        "SELECT ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
+        "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
+        "WHERE a.name = 'Asset_Roth_Alice' AND s.month = ?"), month)
+    assert roth_basis == 5_000_000

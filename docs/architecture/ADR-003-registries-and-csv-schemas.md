@@ -132,14 +132,17 @@ The income side is **not** author-supplied. Each growth `tax_character` has one 
 
 A `retirement` account's lot takes its growth character from its subkind instead of from the account: `tax_free` for a Roth lot, `deferred` for a traditional one. So Roth and traditional lots in one account grow from their own counterparties, and the account's `tax_character` can stay blank. Only a lot without a subkind falls back to the account's character.
 
-**Yearly payouts** ([#468](https://github.com/BobKerns/analysis/issues/468)). A `gains` lot in a `brokerage_taxable` account also pays out the part of its return that is dividends or interest, from yield series named `<series>_yield` (§4.4), and its growth rule takes those out of the total ([ADR-005](ADR-005-lots-and-per-lot-state.md) §5). Each payout has its own reserved account, created on first use like the growth counterparties:
+**Yearly payouts** ([#468](https://github.com/BobKerns/analysis/issues/468), [#547](https://github.com/BobKerns/analysis/issues/547)). A `gains` lot in a `brokerage_taxable` account also pays out the part of its return that is dividends, interest or capital-gain distributions, from series named `<series>_yield`, `<series>_cg_yield` and `<series>_stcg_yield` (§4.4), and its growth rule takes those out of the total ([ADR-005](ADR-005-lots-and-per-lot-state.md) §5). Each payout has its own reserved account, created on first use like the growth counterparties:
 
 | `tax_character` | account | kind / subkind | `tax_treatment` | rule | meaning |
 | --- | --- | --- | --- | --- | --- |
 | `qualified_dividend` | `dividends` | income / `dividend` | `taxable` | `dividends_<account/lot>` | stock dividends, taxed at long-term gain rates |
-| `ordinary` | `investment_interest` | income / `interest` | `taxable` | `interest_<account/lot>` | bond and cash interest, other dividends |
+| `ordinary` | `investment_interest` | income / `interest` | `taxable` | `interest_<account/lot>`, `st_distributions_<account/lot>` | bond and cash interest, other dividends, short-term gain distributions |
+| `ltcg` | `gain_distributions` | income / `dividend` | `taxable` | `lt_distributions_<account/lot>` | long-term gain distributions |
+| `deferred` | `deferred_payouts` | income / `capital_gain` | `tax_deferred` | any of the above | a traditional lot's payouts, untaxed |
+| `tax_free` | `tax_free_payouts` | income / `capital_gain` | `tax_free` | any of the above | a Roth or HSA lot's payouts, untaxed |
 
-Money from either account into a lot is a purchase, so a reinvested payout adds to the lot's basis. A payout rule's `params_json` carries `"payout": true`, which keeps its amount from going below zero; a negative return falls through to the growth rule.
+The last two pay only a `deferred` or `tax_free` lot that has a `quantity` (#547): they buy it shares but, like growth, add no basis. Money from any of the taxable three into a lot is a purchase, so a reinvested payout adds to the lot's basis. A payout rule's `params_json` carries `"payout": true`, which keeps its amount from going below zero; a negative return falls through to the growth rule.
 
 `gains` and `deferred` are tax characters in their own right (§2 registry): unlike `ltcg`, they are *unrealized*, so the retrospective tax scan ignores them until a sale or distribution converts them into `ltcg`/`tax_deferred_out`. Rules synthesized for `depreciation` record `tax_character='none'` — personal-use depreciation is not deductible.
 
@@ -695,7 +698,7 @@ Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation
   `effective_date`, `age`, `factor` (the divisor, e.g. `26.5`)
 - **`rate__<account_name>.csv`**:
   `effective_date`, `annual_rate` (percent)
-- **`rate__<series>_yield.csv`** (optional, [#468](https://github.com/BobKerns/analysis/issues/468)): a rate series' yield, the part of its return a taxable lot is paid each year as dividends or interest (§2.2): `rate__stock_us_yield.csv` for `stock_us`, `rate__<SYMBOL>_yield.csv` for a symbol. Same columns, varied by `set_rate` rows like any rate. The `t_market_series` template ships the stock and bond classes' yields; the `t_market_ensemble` template varies the bond yield with the bond factor and holds the stock yields.
+- **`rate__<series>_yield.csv`** (optional, [#468](https://github.com/BobKerns/analysis/issues/468)): a rate series' yield, the part of its return a taxable lot is paid each year as dividends or interest (§2.2): `rate__stock_us_yield.csv` for `stock_us`, `rate__<SYMBOL>_yield.csv` for a symbol. Same columns, varied by `set_rate` rows like any rate. **`rate__<series>_cg_yield.csv`** and **`rate__<series>_stcg_yield.csv`** (optional, [#547](https://github.com/BobKerns/analysis/issues/547)) are found the same way and pay long-term and short-term capital-gain distributions (§2.2). The `t_market_series` template ships the stock and bond classes' yields; the `t_market_ensemble` template varies the bond yield with the bond factor and holds the stock yields.
 - **`inflation__<series>.csv`**:
   `effective_date`, `annual_rate` (percent; deterministic projection; future ensembles substitute realizations). Every inflation series needs a row on or before the scenario's `start`, read or not: the run grows each one's index from the first month, so the loader rejects one whose first row is later, unless a calendar row with `aux_kind` `inflation` sets it in the first month (a `set_rate`, or a `swap_aux_table` whose source has a rate in force then), since the run applies that month's calendar before it grows the indexes.
 - **`filing_status.csv`**:
@@ -1167,8 +1170,9 @@ before and after, so the names are the ones the loader actually gives
 alone. A series with a file in the shared `aux/` (`cpi`), an asset class's
 series, and one named for a symbol or `<symbol>.<class>` (read by lots by
 name, ADR-005 §5) are not renamed; only `rate__`/`inflation__` files are a
-series' files. A series' yield (`<series>_yield`, §4.4) is renamed with it,
-and a yield of a series, class or symbol can't be renamed alone. `scenario rename` (the same command as `ensemble rename`)
+series' files. A series' yields (`<series>_yield`, `_cg_yield` and
+`_stcg_yield`, §4.4) are renamed with it, and a yield of a series, class or
+symbol can't be renamed alone. `scenario rename` (the same command as `ensemble rename`)
 moves the folder and rewrites its `scenario.csv` name, its README's title when that is the old name (as `scenario create` writes it), every `parent_scenario` naming
 it, `.current_scenario`, and the links to it in the data repo's markdown
 files (`scenarios/**` and the top level); runs already made keep the old
@@ -1434,3 +1438,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#509](https://github.com/BobKerns/analysis/issues/509): where the household lives is `residence.csv` (new §4.16), dated rows of a state and a county; a tax year reads the tables of the state it lives in on its December 31 ([#498](https://github.com/BobKerns/analysis/issues/498)); a swap of a state-keyed table, and `bracket_series` in the state or local file, are refused (§2.6, §2.10, §3.5, §4.4, §4.15).
 - [#510](https://github.com/BobKerns/analysis/issues/510): a jurisdiction's `kind` may be a household calculator from the data repo's `taxes/*.py`, and every calculator's `params_json` is checked against its typed `Params`, tags included; `sim tax add|edit --kind` (§2.6, §4.15, §4.0).
 - [#511](https://github.com/BobKerns/analysis/issues/511), [#488](https://github.com/BobKerns/analysis/issues/488): aux kind `state_adjustments`, a state's own deductions and credits as named lines from tagged spending or income, the filers or the federal return; param `adjustments_aux`; its indexed figures round to the dollar (§2.6, §4.4).
+- [#547](https://github.com/BobKerns/analysis/issues/547): capital-gain distribution series `<series>_cg_yield` and `<series>_stcg_yield`, paid through the new built-in `gain_distributions` (`ltcg`) and `investment_interest`; untaxed lots holding shares get payouts from the new `deferred_payouts` and `tax_free_payouts` (§2.2, §4.4, §7).

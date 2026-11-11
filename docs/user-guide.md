@@ -418,8 +418,10 @@ files pays no income tax.
   cash interest as ordinary income. Each reinvested payout adds to the lot's
   cost basis, so only the appreciation is left to tax at a sale. How much a
   lot pays comes from a `_yield` rate series beside its growth series; see
-  Part 4.11. IRAs, Roth accounts and HSAs pay nothing out: their earnings
-  are taxed (or not) only when money leaves.
+  Part 4.11. A fund's capital-gain distributions are taxed the same year
+  too: long-term ones as long-term gains, short-term ones as ordinary
+  income. IRAs, Roth accounts and HSAs owe nothing on any of these: their
+  earnings are taxed (or not) only when money leaves.
 - **Filing status** comes from the `filing_status` aux table for that tax
   year: your data repo's `aux/filing_status.csv`, one row per date such as
   `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
@@ -1136,6 +1138,22 @@ A symbol whose own yield you know can have it in
 qualified dividends when everything the symbol holds is stock, and as
 ordinary interest otherwise. Payouts are always reinvested; taking them as
 cash is not modeled yet.
+
+Many funds also distribute capital gains each year, mostly long-term and
+sometimes short-term, and these are taxed whether or not they are
+reinvested. Give them their own series, found the same way as `_yield`:
+`rate__ABCDX_cg_yield.csv` for long-term distributions, taxed as long-term
+gains, and `rate__ABCDX_stcg_yield.csv` for short-term ones, which a 1099-DIV
+counts as ordinary dividends. A class's series (`stock_us_cg_yield`) works
+too. The templates ship none, so nothing is distributed until you add one.
+All three come out of the series' total return, so the lot's value is
+unchanged; only what is taxed, and when, moves.
+
+In an IRA, a Roth or an HSA, a lot that holds shares (it has a `quantity`)
+gets the same payouts, untaxed. They only buy more shares, the way a
+statement shows reinvested dividends, so the projected share count and
+price stay close to the real ones. They add no Roth basis. A lot
+kept in dollars has no shares to keep track of and gets none.
 
 `sim report gains` counts reinvested dividends and interest as realized
 taxable gains.
