@@ -17,6 +17,7 @@ from analysis.sim.engine import run_scenario
 from analysis.sim.loader import LoadError, load_scenario
 from analysis.sim.registries import (
     GROWTH_COUNTERPARTY_ACCOUNTS,
+    HSA_PAYOUT_ACCOUNTS,
     SCHEDULED_CSV_HEADER,
     STATE_EXCLUSION_INCOME,
 )
@@ -450,24 +451,32 @@ def test_load_rejects_an_exclusion_table_without_a_state(
                       loaded_by="test", allow_dirty_data=True)
 
 
-def test_taxed_hsa_growth_is_its_owners_gain(
+def test_a_taxed_hsa_pays_its_dividends_and_gains_to_its_owner(
     ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
 ) -> None:
-    """Where the state taxes an HSA's growth as gain (#490), an exclusion
-    covering gains covers it: Alice's HSA grew $1,000 and Bill's fell $300."""
+    """Where the state taxes an HSA like a brokerage account (#497), an
+    exclusion covering dividends or gains covers its: Alice's HSA paid $200
+    of dividends and she withdrew $1,000 of gain; Bill withdrew at a $300
+    loss. Its growth is nobody's income."""
     growth = GROWTH_COUNTERPARTY_ACCOUNTS["deferred"].name
+    dividends = HSA_PAYOUT_ACCOUNTS["ordinary"].name
     ledger_con.executemany(
         "INSERT INTO account(id, name, kind, subkind, owner) VALUES (?, ?, ?, ?, ?)",
         [(1, "Asset_HSA_Alice", "asset", "hsa", "alice"),
          (2, "Asset_HSA_Bill", "asset", "hsa", "bill"),
-         (3, growth, "income", "capital_gain", None)])
-    for frm, to, amount in ((3, 1, 1_000_00), (2, 3, 300_00)):
+         (3, growth, "income", "capital_gain", None),
+         (4, dividends, "income", "dividend", None)])
+    for frm, to, amount in ((3, 1, 5_000_00), (4, 1, 200_00)):
         ledger_con.execute(
             "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
             "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
             "VALUES (1, '2026-06-30', ?, ?, ?, ?, ?, ?, 0, 'deferred', 'rule')",
             (frm, to, frm, to, amount, amount))
+    ledger_con.executemany(
+        "INSERT INTO hsa_gain(step_id, date, lot_id, amount, tax_character, reason_kind) "
+        "VALUES (1, '2026-06-30', ?, ?, 'ltcg', 'rule')", [(1, 1_000_00), (2, -300_00)])
     pools, _ = person_income(tax_year_of(ledger_con, 2026), ["alice", "bill"], hsa_taxed=True)
-    assert (pools["alice"]["capital_gain"], pools["bill"]["capital_gain"]) == (1_000_00, 0)
+    assert (pools["alice"]["dividend"], pools["alice"]["capital_gain"]) == (200_00, 1_000_00)
+    assert pools["bill"]["capital_gain"] == 0  # never below zero
     pools, _ = person_income(tax_year_of(ledger_con, 2026), ["alice", "bill"])
-    assert pools["alice"]["capital_gain"] == 0
+    assert (pools["alice"]["dividend"], pools["alice"]["capital_gain"]) == (0, 0)

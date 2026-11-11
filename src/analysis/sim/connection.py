@@ -314,6 +314,14 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account a ON a.id = m.account_id "
         "ORDER BY cl.id"
     ),
+    "hsa_gain": (
+        "SELECT g.*, s.month, a.name AS account, m.lot "
+        "FROM hsa_gain g "
+        "JOIN simulation_step s ON s.id = g.step_id "
+        "JOIN account_lot m ON m.id = g.lot_id "
+        "JOIN account a ON a.id = m.account_id "
+        "ORDER BY g.id"
+    ),
     "basis_step_up": (
         "SELECT b.*, a.name AS account, m.lot "
         "FROM basis_step_up b "

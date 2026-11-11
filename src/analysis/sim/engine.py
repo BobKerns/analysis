@@ -139,7 +139,8 @@ def run_scenario(
         growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names) | share_sources
         # A strategy's view of a lot's return counts the dividends and
         # interest it reinvests (#468) as well as its appreciation.
-        payout_names = {c.name for c in registries.PAYOUT_ACCOUNTS.values()}
+        payout_names = {c.name for c in (*registries.PAYOUT_ACCOUNTS.values(),
+                                         *registries.HSA_PAYOUT_ACCOUNTS.values())}
         return_sources = growth_sources | frozenset(r[0] for r in lots if r[9] in payout_names)
         account_id_by_name: dict[str, int] = {
             r[0]: r[1] for r in con.execute(
@@ -239,15 +240,21 @@ def run_scenario(
             share_sources=share_sources,
             chain_name=dict(con.execute("SELECT id, name FROM chain").fetchall()),
             roth=_roth_lots(con, person_birthdates),
+            hsa=frozenset(lot for lot, subkind in account_subkind.items()
+                          if subkind == "hsa" and account_kinds[lot] == "asset"),
         )
         # Each tax year's tax with more income on top, by (scope, year): the
         # after-tax drawdown is priced against the years after it once the run
         # has them (#404).
-        drawdown_pricing: dict[tuple[str, int], Callable[[int, int], int]] = {}
+        drawdown_pricing: dict[tuple[str, int], DrawdownPricing] = {}
         # A Roth lot tracks its basis (contributions and conversions), which
         # comes out tax-free whatever the clock says. A blank opening basis
         # takes the whole opening balance as basis.
-        for lot_id in refill_ctx.roth:
+        # So does an HSA lot (#497): contributions and reinvested payouts,
+        # which a state that doesn't recognize HSAs has taxed already. A
+        # blank opening basis takes the opening balance, as that state never
+        # taxed the growth before the run either.
+        for lot_id in (*refill_ctx.roth, *refill_ctx.hsa):
             if cost_bases.get(lot_id) is None:
                 cost_bases[lot_id] = balances.get(lot_id, 0)
         roth = refill_ctx.roth
@@ -930,7 +937,7 @@ class RefillContext:
                  "account_tax_treatment", "account_subkind", "account_name",
                  "cost_bases", "quantities", "growth_sources", "share_sources", "acquired",
                  "chain_name", "refilling", "last_refill", "negative_since",
-                 "negative_events", "roth", "strategies")
+                 "negative_events", "roth", "hsa", "strategies")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -944,6 +951,7 @@ class RefillContext:
         chain_name: dict[int, str] | None = None,
         roth: dict[int, RothLot] | None = None,
         share_sources: frozenset[int] = frozenset(),
+        hsa: frozenset[int] = frozenset(),
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -959,6 +967,9 @@ class RefillContext:
         self.acquired = acquired if acquired is not None else {}
         self.chain_name = chain_name if chain_name is not None else {}
         self.roth = roth if roth is not None else {}
+        # HSA lots (#497): their basis is what a state that doesn't
+        # recognize HSAs taxes a withdrawal's gain over.
+        self.hsa = hsa
         self.refilling: set[int] = set()  # reentrancy guard against refill cycles
         self.last_refill: dict[int, RefillAttempt] = {}
         self.negative_since: dict[int, bool] = {}
@@ -1173,38 +1184,75 @@ def _post_transfer(
         (step_id, month_s, from_id, to_id, from_id, to_id, amount, requested,
          remainder, tax_char, tax_year, reason_kind, reason_id, parent_event_id),
     )
+    realized = None
     if track is not None:
-        _track_lots(track, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
+        realized = _track_lots(track, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
     if track is not None:
         _warn_if_negative(track, account_kinds, from_id, balances, month_s)
     event_id = inserted_id(cur)
+    if realized:
+        assert track is not None
+        _record_hsa_gain(con, track, step_id, month_s, from_id, realized,
+                         tax_year=tax_year, reason_kind=reason_kind, reason_id=reason_id)
     _link_refills(con, refill_mark, event_id)
     return event_id
+
+
+def _record_hsa_gain(
+    con, ctx: RefillContext, step_id: int, month_s: str, lot_id: int, gain: int,
+    *, tax_year: int | None, reason_kind: str, reason_id: int | None,
+) -> None:
+    """An HSA withdrawal's gain over its basis (a loss negative), which only
+    a state that doesn't recognize HSAs taxes (#497): no money is its own,
+    so it is an ``hsa_gain`` row, not a transfer_event leg, and the federal
+    return never sees it, whatever the withdrawal's own character."""
+    long_term = _is_long_term(ctx.acquired.get(lot_id), _parse_date(month_s))
+    con.execute(
+        "INSERT INTO hsa_gain(step_id, date, lot_id, amount, tax_character, "
+        "tax_year, reason_kind, reason_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, month_s, lot_id, gain, "ltcg" if long_term else "stcg",
+         tax_year, reason_kind, reason_id),
+    )
 
 
 def _track_lots(
     ctx: RefillContext, account_kinds: dict[int, str], balances: dict[int, int],
     from_id: int, to_id: int, amount: int, on: date,
-) -> None:
+) -> int | None:
     """Shares leave ``from_id`` in proportion to the value withdrawn, and
     ``to_id`` records a purchase. Call before ``balances`` moves.
 
     Money out of a Roth lot takes its basis with it (``_roth_basis_out``).
     Rolled into another Roth lot, it carries that basis, or all of it as
     basis when the draw would have been qualified, as a qualified Roth 401k
-    rollover into a Roth IRA does."""
+    rollover into a Roth IRA does.
+
+    Money out of an HSA lot takes its pro-rata share of the lot's basis
+    (#497); moved into another HSA lot it carries that basis. Otherwise the
+    rest, the withdrawal's gain over its basis (a loss negative), is
+    returned, for a state that taxes an HSA; None when there is none."""
     if amount <= 0 or to_id in ctx.growth_sources:
         # A month of negative growth posts back to its counterparty: the lot
         # lost value, which sells no shares and spends no basis.
-        return
+        return None
     carried = amount
+    realized = None
     if from_id in ctx.roth:
         basis_out = _roth_basis_out(ctx, balances, from_id, amount)
         ctx.cost_bases[from_id] = (ctx.cost_bases.get(from_id) or 0) - basis_out
         if to_id in ctx.roth and not _roth_qualified(ctx.roth[from_id], on):
             carried = basis_out
+    elif from_id in ctx.hsa:
+        basis = ctx.cost_bases.get(from_id) or 0
+        prior = balances.get(from_id, 0)
+        basis_out = basis if prior <= amount else basis * amount // prior
+        ctx.cost_bases[from_id] = basis - basis_out
+        if to_id in ctx.hsa:
+            carried = basis_out
+        else:
+            realized = amount - basis_out
     if account_kinds[from_id] == "asset":
         quantity = ctx.quantities.get(from_id)
         prior_balance = balances.get(from_id, 0)
@@ -1214,8 +1262,11 @@ def _track_lots(
             )
     if account_kinds[to_id] == "asset":
         _record_purchase(ctx, balances, from_id, to_id, amount)
-        if carried < amount and (to_basis := ctx.cost_bases.get(to_id)) is not None:
+        # The purchase added the amount; the basis carried may be less (a
+        # Roth's earnings) or more (an HSA moved at a loss).
+        if carried != amount and (to_basis := ctx.cost_bases.get(to_id)) is not None:
             ctx.cost_bases[to_id] = to_basis - (amount - carried)
+    return realized
 
 
 def _post_fixed_amount(
@@ -2925,6 +2976,7 @@ class _TaxLedger(NamedTuple):
     losses: list[tax_api.CapitalLoss]
     persons: list[tax_api.Person]
     spending: list[tax_api.SpendingItem] = []
+    hsa_gains: list[tax_api.HsaGain] = []
 
 
 class TaxRule(NamedTuple):
@@ -3021,11 +3073,21 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
             (tax_year,),
         )
     ]
+    hsa_gains = [
+        tax_api.HsaGain(int(year), character, owner, int(amount))
+        for year, character, owner, amount in con.execute(
+            f"SELECT COALESCE(g.tax_year, CAST(substr(g.date, 1, 4) AS INTEGER)) AS y, "
+            "       g.tax_character, a.owner, SUM(g.amount) "
+            "FROM hsa_gain g LEFT JOIN account_lot l ON l.id = g.lot_id "
+            "LEFT JOIN account a ON a.id = l.account_id WHERE y <= ? GROUP BY y, g.tax_character, a.owner",
+            (tax_year,),
+        )
+    ]
     persons = [tax_api.Person(pid, born or None, role or "", final or None)
                for pid, born, role, final in con.execute(
                    "SELECT p.id, p.birthdate, p.role, l.final_month FROM person p "
                    "LEFT JOIN person_lifespan l ON l.person = p.id")]
-    return _TaxLedger(items, losses, persons, spending)
+    return _TaxLedger(items, losses, persons, spending, hsa_gains)
 
 
 def _tax_year(
@@ -3050,7 +3112,7 @@ def _tax_year(
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
     if growth_cache is None:
         growth_cache = {}
-    items, losses, persons, spending = ledger or _tax_ledger(con, tax_year)
+    items, losses, persons, spending, hsa_gains = ledger or _tax_ledger(con, tax_year)
     given = {k: v for k, v in params.items() if k != "scope"}
     try:
         typed = params_class(**given) if params_class is not None else given
@@ -3065,7 +3127,7 @@ def _tax_year(
 
     return tax_api.TaxYear(
         year=tax_year, jurisdiction=scope, params=typed,
-        items=items, losses=losses, persons=persons, spending=spending,
+        items=items, losses=losses, persons=persons, spending=spending, hsa_gains=hsa_gains,
         _table=lambda kind, series, year: _active_aux_rows(aux, kind, series, f"{year}-12-31"),
         _indexed=lambda kind, series: _indexed_tax_rows(aux, kind, series, tax_year, growth_cache),
         _dated=lambda kind, series=None: aux.get((kind, series)) or [],
@@ -3259,7 +3321,7 @@ def _settle_tax(
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
     refill_ctx: RefillContext | None = None,
-    drawdown_pricing: dict[tuple[str, int], Callable[[int, int], int]] | None = None,
+    drawdown_pricing: dict[tuple[str, int], DrawdownPricing] | None = None,
     own_payments_only: bool = False,
     shared: _SharedPrepares | None = None,
 ) -> None:
@@ -3331,9 +3393,10 @@ def _settle_tax(
         # the year's income, or the drawdown taxes those dollars twice.
         drawn = ret.memo.get("drawn_ordinary", 0)
         realized = ret.memo.get("drawn_gain", 0)
-        drawdown_pricing[(scope, tax_year)] = (
+        drawdown_pricing[(scope, tax_year)] = DrawdownPricing(
             lambda ordinary, gains, prepared=prepared, drawn=drawn, realized=realized:
-            prepared.compute(tax_api.Extra(ordinary - drawn, gains - realized)).tax)
+            prepared.compute(tax_api.Extra(ordinary - drawn, gains - realized)).tax,
+            hsa_taxed=bool(ret.memo.get("hsa_taxed", 0)))
 
     # What was paid toward the year: everything into the destination for
     # it, less another jurisdiction's settlements there (a local tax paid
@@ -3915,6 +3978,14 @@ class IrmaaContext:
         return sum(getattr(tier, part) for part in IRMAA_PARTS[str(params.get("parts", "B+D"))])
 
 
+class DrawdownPricing(NamedTuple):
+    """A tax year's after-tax drawdown pricing (#251): its tax with more
+    ordinary income and long-term gain on top, and whether it taxes an HSA
+    as a brokerage account (#497), so its gain over basis is what's drawn."""
+    tax_with: Callable[[int, int], int]
+    hsa_taxed: bool = False
+
+
 DEFAULT_DRAWDOWN_YEARS = 10
 """Years an after-tax drawdown spreads a traditional balance over (#251):
 the inherited-IRA rule's ten (SECURE Act, 2019)."""
@@ -3922,12 +3993,15 @@ the inherited-IRA rule's ten (SECURE Act, 2019)."""
 
 def _drawdown_tax(
     con, tax_year: int, tax_with_in: Callable[[int], Callable[[int, int], int]],
-    paycheck_years: Collection[int] = (),
+    paycheck_years: Collection[int] = (), *, hsa_taxed: bool = False,
 ) -> tuple[int | None, int]:
     """The money ``tax_year``'s after-tax net worth taxes and the extra tax on
     it (#251): its year-end traditional (tax_deferred) balances, and the
     unrealized gain of its taxable lots with a basis unless ``after_tax``
     says ``step_up``, drawn down evenly over the ``drawdown_years`` after it.
+    Where ``hsa_taxed`` (#497), an HSA lot is taxed like a brokerage lot: its
+    gain over basis is gain, which no ``step_up`` takes away (an HSA never
+    steps up), and its balance isn't traditional money.
     Each year's share is priced on top of that year's own income, brackets
     and filing status, ``tax_with_in(year)`` (#404): money left at a year end
     is spent in the years that follow, not on top of this year's paycheck.
@@ -3944,20 +4018,23 @@ def _drawdown_tax(
         con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}"
     ).get("after_tax") or {}
     years = int(settings.get("drawdown_years", DEFAULT_DRAWDOWN_YEARS))
-    deferred = gains = 0
+    deferred = gains = hsa_gains = 0
     for treatment, subkind, balance, basis in con.execute(
         "SELECT m.tax_treatment, a.subkind, ls.balance, ls.cost_basis "
         "FROM lot_state ls JOIN account_lot m ON m.id = ls.lot_id "
         "JOIN account a ON a.id = m.account_id "
         "WHERE ls.step_id = ? AND a.kind = 'asset'", (step[0],),
     ):
-        if treatment == "tax_deferred":
+        if subkind == "hsa" and hsa_taxed:
+            hsa_gains += max(0, balance - (basis or 0))
+        elif treatment == "tax_deferred":
             deferred += max(0, balance)
         elif (treatment == "taxable" and basis is not None
               and subkind not in registries.CASH_SUBKINDS):
             gains += max(0, balance - basis)
     if settings.get("step_up"):
         gains = 0
+    gains += hsa_gains
     if deferred + gains == 0:
         return 0, 0
     # Each year's share carries its cent of any remainder, so the shares sum
@@ -3975,7 +4052,7 @@ def _drawdown_tax(
 
 
 def _record_drawdown_taxes(
-    con, pricing: Mapping[tuple[str, int], Callable[[int, int], int]],
+    con, pricing: Mapping[tuple[str, int], DrawdownPricing],
 ) -> None:
     """Each computed tax year's ``<scope>_drawdown_base`` and
     ``<scope>_drawdown_tax`` (#251), once the run has every year's income
@@ -3989,8 +4066,8 @@ def _record_drawdown_taxes(
             "WHERE a.kind = 'income' AND a.subkind = 'salary' AND te.amount > 0")
     }
     by_scope: dict[str, dict[int, Callable[[int, int], int]]] = defaultdict(dict)
-    for (scope, year), tax_with in pricing.items():
-        by_scope[scope][year] = tax_with
+    for (scope, year), priced in pricing.items():
+        by_scope[scope][year] = priced.tax_with
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     for scope, by_year in by_scope.items():
         known = sorted(by_year)
@@ -3999,7 +4076,8 @@ def _record_drawdown_taxes(
             return by_year[known[max(0, bisect.bisect_right(known, year) - 1)]]
 
         for year in known:
-            base, extra = _drawdown_tax(con, year, tax_with_in, paycheck_years)
+            base, extra = _drawdown_tax(con, year, tax_with_in, paycheck_years,
+                                        hsa_taxed=pricing[(scope, year)].hsa_taxed)
             if base is None:
                 continue
             for bucket, amount in ((f"{scope}_drawdown_base", base),

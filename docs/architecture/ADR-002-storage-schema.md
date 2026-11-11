@@ -93,7 +93,7 @@ state/
 - **No stored computed columns.** Anything derivable (net worth, totals, "is tax-deferred") is a view or query.
 - **No `run_id` in the ledger.** Each run file holds exactly one run, so a `run_id` column on every ledger table would be a constant. `simulation_run` is a single-row manifest; the file itself is the run identifier.
 - **One-row manifest tables** are not enforced by CHECK; convention only. The loader/engine write exactly one row.
-- **Reserved account names.** The built-in accounts on the far side of account growth (`interest_income`, `capital_gains`, `deferred_gains`, `tax_free_gains`, `depreciation`; `registries.GROWTH_COUNTERPARTY_ACCOUNTS`) and of a lot's payouts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`; `registries.builtin_payout_accounts()`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §2.2) are created at load when a scenario does not declare them, and `rename` refuses to give an account one of their names.
+- **Reserved account names.** The built-in accounts on the far side of account growth (`interest_income`, `capital_gains`, `deferred_gains`, `tax_free_gains`, `depreciation`; `registries.GROWTH_COUNTERPARTY_ACCOUNTS`) and of a lot's payouts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`, `hsa_dividends`, `hsa_gain_distributions`; `registries.builtin_payout_accounts()`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §2.2) are created at load when a scenario does not declare them, and `rename` refuses to give an account one of their names.
 
 ### Placement summary
 
@@ -114,7 +114,7 @@ state/
 | `load_warning` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `hsa_gain`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 64) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 65) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -914,6 +914,22 @@ CREATE TABLE capital_loss (
     reason_id       INTEGER
 );
 
+-- #497: an HSA withdrawal's gain over the lot's basis (contributions and
+-- reinvested payouts), a loss negative. Only a state that doesn't recognize
+-- HSAs taxes it, so it is no transfer_event leg: the federal return never
+-- sees it, whatever the withdrawal's own tax_character.
+CREATE TABLE hsa_gain (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    amount          INTEGER NOT NULL CHECK (amount != 0),
+    tax_character   TEXT NOT NULL CHECK (tax_character IN ('ltcg','stcg')),
+    tax_year        INTEGER,
+    reason_kind     TEXT NOT NULL,
+    reason_id       INTEGER
+);
+
 -- #255: a lot's basis reset at a death (IRC §1014) to its value at the end
 -- of the person's final month: all of the gain or loss, or the decedent's
 -- half of a joint lot outside community property. No money moves.
@@ -1001,6 +1017,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
+| `hsa_gain` | An HSA withdrawal's gain over the lot's basis, a loss negative ([#497](https://github.com/BobKerns/analysis/issues/497)): what a state that doesn't recognize HSAs taxes, with no money of its own, so the federal return never sees it. |
 | `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, the basis before and after, and the `rule` that decided it (`owner`, `inherited`, `joint_half`, `community_property`, `last_survivor`). No money moves. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
@@ -1211,3 +1228,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#509](https://github.com/BobKerns/analysis/issues/509): table `residence` (a scenario's `residence.csv`: where the household lives, by date), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 63).
 - [#510](https://github.com/BobKerns/analysis/issues/510): table `tax_source` (the household's tax calculator code), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 64).
 - [#547](https://github.com/BobKerns/analysis/issues/547): the reserved account names include the payout accounts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`) (Conventions).
+- [#497](https://github.com/BobKerns/analysis/issues/497): run table `hsa_gain` (an HSA withdrawal's gain over its basis, for a state that taxes HSAs); the reserved account names include `hsa_dividends` and `hsa_gain_distributions` (Placement summary, Ledger DDL, glossary, Conventions; schema 65).

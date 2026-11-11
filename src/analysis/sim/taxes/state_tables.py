@@ -36,16 +36,16 @@ class StateTablesYear(FederalStateYear):
         self._net_ltcg = common.ltcg_exclusion(ty, params.ltcg_exclusion_aux, series)
 
         # A state that doesn't recognize an HSA (#490) taxes it like a
-        # brokerage account: no deduction going in, its growth each year,
-        # nothing coming out. Each year by the state it was filed in.
+        # brokerage account (#497): no deduction going in, its dividends and
+        # interest the year they're paid, and its gain over basis when it's
+        # withdrawn, but not the rest of what comes out, which it taxed
+        # already. Each year by the state it was filed in.
         taxed_years = [year for year in common.hsa_flow_years(ty)
                        if common.state_taxes_hsa(ty, common.state_series(ty, year), year)]
-        hsa_growth = common.hsa_growth_by_owner(ty, taxed_years)
         self._hsa_taxed = ty.year in taxed_years
-        self._hsa_growth = sum(hsa_growth.get(ty.year, {}).values())
-        # The state nets its own gains: an HSA's growth is gain to it.
+        # The state nets its own gains: an HSA's are gains to it.
         capital = self._capital = common.capital_gains(
-            ty, loss_limit=common.loss_limit(ty), hsa_growth=hsa_growth)
+            ty, loss_limit=common.loss_limit(ty), hsa_years=taxed_years)
 
         # A state's retirement income exclusions (#486) come off before AGI,
         # as the states' own subtractions from income do, after its gain
@@ -104,18 +104,21 @@ class StateTablesYear(FederalStateYear):
         fed, capital = basis.federal, self._capital
         memo = fed.memo
         dividends = memo.get("qualified_dividends", 0)
-        contributed = withdrawn = 0
+        contributed = withdrawn = dividends_paid = 0
         if self._hsa_taxed:
             contributed, withdrawn = memo.get("hsa_contributed", 0), memo.get("hsa_withdrawn", 0)
+            dividends_paid = sum(common.hsa_dividends(self.ty).values())
         return (
             # A state has no preference for qualified dividends: its gain
             # rules (#485) are for gains, so its dividends are ordinary.
             Adjustment("dividends_as_ordinary", ordinary=dividends, ltcg=-dividends, amount=dividends),
             # A state that taxes an HSA undoes the federal deduction of what
-            # went in, and doesn't tax what came out (#490).
+            # went in, and doesn't tax what came out (#490), but for its gain.
             Adjustment("hsa_addback", ordinary=contributed - withdrawn),
-            # Its own netting of gains and losses, with an HSA's growth as
-            # gain, less the federal result.
+            # It taxes an HSA's dividends and interest the year they're paid (#497).
+            Adjustment("hsa_dividends", ordinary=dividends_paid),
+            # Its own netting of gains and losses, with an HSA's gains (#497),
+            # less the federal result.
             Adjustment(
                 "capital_gain_difference",
                 ordinary=fed["capital_loss_used"] - capital.loss_deduction,
@@ -192,15 +195,19 @@ class StateTablesYear(FederalStateYear):
     def memo(self, basis: Basis) -> Mapping[str, int]:
         memo = basis.federal.memo
         withdrawn = memo.get("hsa_withdrawn", 0) if self._hsa_taxed else 0
+        distributed = common.gain_distributions(self.ty)
+        if self._hsa_taxed:
+            distributed += common.hsa_gain_distributions(self.ty)
         return {
             "hsa_withdrawn": withdrawn,
-            "hsa_growth": self._hsa_growth,
+            # The after-tax drawdown prices an HSA's gain over basis, not its
+            # balance, for a state that taxes it (#497).
+            "hsa_taxed": int(self._hsa_taxed),
             # What the year drew from traditional money (an RMD), and the
-            # gain it realized: a state that taxes an HSA counts its growth,
-            # or fall, as gain (#490), but nothing was sold, and nor is a
-            # reinvested gain distribution (#547).
+            # gain it realized, an HSA withdrawal's included (#497); a
+            # reinvested gain distribution (#547) drew none.
             "drawn_ordinary": memo.get("drawn_ordinary", 0) - withdrawn,
-            "drawn_gain": max(0, self._capital.ltcg - self._hsa_growth - common.gain_distributions(self.ty)),
+            "drawn_gain": max(0, self._capital.ltcg - distributed),
         }
 
 

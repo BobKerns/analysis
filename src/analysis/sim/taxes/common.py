@@ -125,14 +125,13 @@ def net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
 
 
 def capital_gains(
-    ty: TaxYear, *, loss_limit: Callable[[int], int],
-    hsa_growth: Mapping[int, Mapping[str | None, int]] | None = None,
+    ty: TaxYear, *, loss_limit: Callable[[int], int], hsa_years: Collection[int] = (),
 ) -> CapitalGains:
     """The year's capital gains: its ``stcg``/``ltcg`` items (a withdrawal at
     a loss posts a negative one) less its capital losses, netted with the
     carryover from every earlier year, each of which used up to its own
-    year's ``loss_limit``. ``hsa_growth`` (:func:`hsa_growth_by_owner`) is
-    long-term gain too, a fall a loss (a state that taxes an HSA, #490).
+    year's ``loss_limit``. In ``hsa_years``, the years a state taxes an HSA
+    (#497), an HSA's gains (:func:`hsa_gains`) are capital gains too.
 
     A carryover is the taxpayer's whose losses made it, and their share ends
     after the return for the year they die (#277; Rev. Rul. 74-175). Their
@@ -158,10 +157,8 @@ def capital_gains(
         if item.character in ("stcg", "ltcg"):
             owner = _owner(item.payer.owner, item.payee.owner, people, payer_kind=item.payer.kind)
             add(item.year, item.character, owner, item.amount)
-    for year, by_owner in (hsa_growth or {}).items():
-        if year <= ty.year:
-            for owner, growth in by_owner.items():
-                add(year, "ltcg", owner, growth)
+    for year, character, owner, amount in hsa_gains(ty, hsa_years):
+        add(year, character, owner, amount)
     for loss in ty.losses:
         if loss.character in ("stcg", "ltcg") and loss.year <= ty.year:
             add(loss.year, loss.character, loss.owner, -loss.amount)
@@ -244,14 +241,8 @@ def _left(losses: Mapping[str | None, int], ended: Mapping[str | None, float]) -
     return {owner: round(amount * (1 - ended[owner])) for owner, amount in losses.items()}
 
 
-_HSA_GROWTH_ACCOUNTS = frozenset(
-    accounts[character].name
-    for accounts in (registries.GROWTH_COUNTERPARTY_ACCOUNTS, registries.SHELTERED_PAYOUT_ACCOUNTS)
-    for character in ("deferred", "tax_free")
-)
-"""The built-in accounts an HSA's untaxed growth comes from (or, when it
-falls, goes back to), its reinvested payouts (#547) included: growth of
-another character is taxed already."""
+_HSA_DIVIDENDS = registries.HSA_PAYOUT_ACCOUNTS["ordinary"].name
+_HSA_GAIN_DISTRIBUTIONS = registries.HSA_PAYOUT_ACCOUNTS["ltcg"].name
 
 
 def state_taxes_hsa(ty: TaxYear, state: str, year: int) -> bool:
@@ -264,37 +255,42 @@ def state_taxes_hsa(ty: TaxYear, state: str, year: int) -> bool:
 
 
 def hsa_flow_years(ty: TaxYear) -> list[int]:
-    """The years up to this one with money moving into or out of an HSA."""
+    """The years up to this one with money moving into or out of an HSA, or
+    a withdrawal's gain (#497): one untaxed federally has no income item."""
     return sorted({i.year for i in ty.items
-                   if i.year <= ty.year and "hsa" in (i.payer.subkind, i.payee.subkind)})
+                   if i.year <= ty.year and "hsa" in (i.payer.subkind, i.payee.subkind)}
+                  | {g.year for g in ty.hsa_gains if g.year <= ty.year})
 
 
-def _hsa_growth(item) -> int | None:
-    """An item's net untaxed HSA growth (a fall negative), or None when it
-    isn't HSA growth."""
-    if item.payee.subkind == "hsa" and item.payer.name in _HSA_GROWTH_ACCOUNTS:
-        return item.amount
-    if item.payer.subkind == "hsa" and item.payee.name in _HSA_GROWTH_ACCOUNTS:
-        return -item.amount
-    return None
-
-
-def _hsa_owner(item) -> str | None:
-    """The owner of the HSA an item of its growth is in."""
-    return item.payee.owner if item.payee.subkind == "hsa" else item.payer.owner
-
-
-def hsa_growth_by_owner(ty: TaxYear, years: Collection[int]) -> dict[int, dict[str | None, int]]:
-    """Each of ``years``' net untaxed growth of the HSAs by the HSA's owner,
-    a fall negative; a year with none has no entry (#486, #490)."""
-    years = set(years)
-    out: dict[int, dict[str | None, int]] = {}
-    for item in ty.items:
-        if item.year in years and (growth := _hsa_growth(item)) is not None:
-            by_owner = out.setdefault(item.year, {})
-            owner = _hsa_owner(item)
-            by_owner[owner] = by_owner.get(owner, 0) + growth
+def hsa_dividends(ty: TaxYear) -> dict[str | None, int]:
+    """The year's dividends and interest reinvested in HSA lots (#497), by
+    the HSA's owner: untaxed federally, ordinary income to a state that
+    taxes an HSA."""
+    out: dict[str | None, int] = {}
+    for item in ty.year_items():
+        if item.payer.name == _HSA_DIVIDENDS and item.payee.subkind == "hsa":
+            out[item.payee.owner] = out.get(item.payee.owner, 0) + item.amount
     return out
+
+
+def hsa_gains(ty: TaxYear, years: Collection[int]) -> Iterator[tuple[int, str, str | None, int]]:
+    """An HSA's capital gains in each of ``years`` up to this one (#497), as
+    ``(year, character, owner, amount)``: its withdrawals' gains over basis
+    (a loss negative), and its reinvested long-term gain distributions."""
+    years = {year for year in years if year <= ty.year}
+    for gain in ty.hsa_gains:
+        if gain.year in years:
+            yield gain.year, gain.character, gain.owner, gain.amount
+    for item in ty.items:
+        if item.year in years and item.payer.name == _HSA_GAIN_DISTRIBUTIONS and item.payee.subkind == "hsa":
+            yield item.year, "ltcg", item.payee.owner, item.amount
+
+
+def hsa_gain_distributions(ty: TaxYear) -> int:
+    """The year's long-term gain distributions reinvested in HSA lots
+    (#497): gain to a state that taxes an HSA, but none drawn from a lot."""
+    return sum(i.amount for i in ty.year_items()
+               if i.payer.name == _HSA_GAIN_DISTRIBUTIONS and i.payee.subkind == "hsa")
 
 
 def hsa_deferred_flows(ty: TaxYear) -> tuple[int, int]:
@@ -472,7 +468,8 @@ def person_income(
     :func:`_owner` says; the household's is split evenly among ``people``. An
     HSA's flows are ``other`` income, not a retirement account's, and none
     at all when the state taxes the HSA as a brokerage account
-    (``hsa_taxed``, #490); then its growth is its owner's capital gain."""
+    (``hsa_taxed``, #490); then its dividends are its owner's, and its
+    gains their capital gain (#497)."""
     pools = {p: dict.fromkeys(registries.STATE_EXCLUSION_INCOME, 0) for p in people}
     ss = dict.fromkeys(people, 0)
     # Items of the same kind of account and owners are summed before they
@@ -503,9 +500,13 @@ def person_income(
             else:
                 pools[person][pool] += sign * share
     if hsa_taxed:
-        # The state counts an HSA's growth as long-term gain (#490): its
-        # owner's, a fall offsetting their other gains.
-        for owner, amount in hsa_growth_by_owner(ty, [ty.year]).get(ty.year, {}).items():
+        # The state taxes an HSA like a brokerage account (#497): its
+        # dividends and interest, and its gains at withdrawal, are its
+        # owner's, a loss offsetting their other gains.
+        for owner, amount in hsa_dividends(ty).items():
+            for person, share in _shares(owner, amount, people, pools):
+                pools[person]["dividend"] += share
+        for _year, _character, owner, amount in hsa_gains(ty, [ty.year]):
             for person, share in _shares(owner, amount, people, pools):
                 pools[person]["capital_gain"] += share
     # A realized loss recorded apart from its sale (#199) offsets its lot

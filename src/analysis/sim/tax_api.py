@@ -35,7 +35,7 @@ from analysis.sim import ownership, registries
 from analysis.sim.param_units import Dollars, Percent, Tag, percent
 
 __all__ = [
-    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "IncomeItem", "Percent", "Person",
+    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "HsaGain", "IncomeItem", "Percent", "Person",
     "Prepared", "Residence", "Return", "SpendingItem", "Tag", "TaxCalculator", "TaxError",
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
@@ -137,6 +137,18 @@ class CapitalLoss:
 
 
 @dataclass(frozen=True)
+class HsaGain:
+    """An HSA withdrawal's gain over the lot's basis (``hsa_gain``, #497), a
+    loss negative, summed by tax year, character and the lot's owner: what a
+    state that doesn't recognize HSAs taxes, and the federal return never
+    sees."""
+    year: int
+    character: str
+    owner: str | None
+    amount: int
+
+
+@dataclass(frozen=True)
 class Person:
     """One of the scenario's people, with the last month they're alive
     (``YYYY-MM-DD``, the month's end) when the scenario gives a lifespan."""
@@ -158,7 +170,7 @@ class Residence:
 class TaxYear:
     """One tax year, as a calculator sees it.
 
-    ``items`` and ``losses`` cover every year up to ``year``: a capital loss
+    ``items``, ``losses`` and ``hsa_gains`` cover every year up to ``year``: a capital loss
     carries forward, so this year's netting reads the years before it.
     Tables are read through the methods, as of the year's end.
     ``params`` is the jurisdiction's ``params_json`` as the calculator's
@@ -184,6 +196,9 @@ class TaxYear:
     end), in date order."""
     spending: Sequence[SpendingItem] = ()
     _line_in: Callable[[str, int], int] = field(repr=False, default=lambda _line, _year: 0)
+    hsa_gains: Sequence[HsaGain] = ()
+    """Every year's HSA withdrawals' gains over basis up to ``year`` (#497),
+    for a state that taxes an HSA."""
 
     @property
     def filing_status(self) -> str:

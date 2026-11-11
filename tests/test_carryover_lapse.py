@@ -6,8 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from analysis.sim.tax_api import NO_EXTRA, Account, CapitalLoss, IncomeItem, Person, Return, TaxYear
-from analysis.sim import registries
+from analysis.sim.tax_api import NO_EXTRA, Account, CapitalLoss, HsaGain, IncomeItem, Person, Return, TaxYear
 from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import Basis
 from analysis.sim.taxes.state_tables import StateTablesYear
@@ -22,10 +21,11 @@ BILL_DIES = "2034-08-31"
 
 def _year(year: int, items: Sequence[IncomeItem] = (), losses: Sequence[CapitalLoss] = (), *,
           alice: str | None = ALICE_DIES, bill: str | None = None,
-          persons: Sequence[Person] | None = None, nol: Mapping[int, int] | None = None) -> TaxYear:
+          persons: Sequence[Person] | None = None, nol: Mapping[int, int] | None = None,
+          hsa_gains: Sequence[HsaGain] = ()) -> TaxYear:
     """A tax year with only what the carryovers read: the items, the losses,
     the people (Alice and Bill with their final months, unless ``persons``),
-    and ``nol``, the NOL carried out of earlier years."""
+    ``nol``, the NOL carried out of earlier years, and the HSA's gains."""
     def unused(*_args: object) -> list:
         return []
 
@@ -37,6 +37,7 @@ def _year(year: int, items: Sequence[IncomeItem] = (), losses: Sequence[CapitalL
         _table=unused, _indexed=unused, _dated=unused, _keyed=lambda *_a: None,
         _filing_status_in=lambda _y: "MFJ", _prior=lambda _line: 0, _series_of=unused,
         _line_in=lambda line, y: (nol or {}).get(y, 0) if line == "nol_carryover" else 0,
+        hsa_gains=list(hsa_gains),
     )
 
 
@@ -168,14 +169,12 @@ def test_a_loss_is_the_receiving_accounts_owners_when_the_payer_has_none() -> No
     assert _carry(2030, loss).lapsed == 10_000_00 - 2 * 3_000_00
 
 
-def test_a_fall_in_an_hsa_is_its_owners_loss_where_the_state_taxes_it() -> None:
-    hsa = Account("Asset_HSA_Alice", "asset", "hsa", "alice")
-    growth = registries.GROWTH_COUNTERPARTY_ACCOUNTS["deferred"].name
-    fall = IncomeItem(2029, "deferred", hsa, Account(growth, "income", "", None), 10_000_00)
-    ty = _year(2030, [fall])
-    result = common.capital_gains(ty, loss_limit=lambda _y: 3_000_00,
-                                  hsa_growth=common.hsa_growth_by_owner(ty, {2029}))
+def test_an_hsa_withdrawal_at_a_loss_is_its_owners_loss_where_the_state_taxes_it() -> None:
+    ty = _year(2030, hsa_gains=[HsaGain(2029, "ltcg", "alice", -10_000_00)])
+    result = common.capital_gains(ty, loss_limit=lambda _y: 3_000_00, hsa_years={2029})
     assert (result.carryover_lt, result.lapsed) == (0, 4_000_00)
+    # Where the state follows the federal rules, it is no loss at all.
+    assert common.capital_gains(ty, loss_limit=lambda _y: 3_000_00).loss_deduction == 0
 
 
 def test_a_later_death_shares_only_what_the_earlier_one_left() -> None:

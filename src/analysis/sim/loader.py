@@ -2295,6 +2295,14 @@ def _expand_account_growth(
                     (registries.PAYOUT_ACCOUNTS[p.payer], p)
                     for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
                 ]
+            elif row.get("subkind") == "hsa" and lot_character in registries.SHELTERED_PAYOUT_ACCOUNTS:
+                # An HSA's payouts (#497) are untaxed federally but taxed by
+                # a state that doesn't recognize HSAs, which needs them
+                # whether or not the lot tracks shares.
+                payouts[lot] = [
+                    (registries.hsa_payout_account(p.payer), p)
+                    for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
             elif (sheltered := registries.SHELTERED_PAYOUT_ACCOUNTS.get(lot_character)) and m.get("quantity"):
                 # An untaxed lot's payouts (#547) only buy shares, so a lot
                 # that tracks dollars has no use for them.
@@ -2365,7 +2373,9 @@ def _expand_account_growth(
                     # is a fall in value, which the growth rule carries.
                     "params_json": json.dumps({"blend": spec["blend"], "payout": True} if "blend" in spec
                                               else {"payout": True}, separators=(",", ":")),
-                    "tax_character": payer.tax_character,
+                    # An HSA's payout keeps its lot's growth character, so
+                    # the federal return passes it by (#497).
+                    "tax_character": lot_character if payer.name in _HSA_PAYOUT_NAMES else payer.tax_character,
                     "start": start,
                     "description": (
                         f"{payout.label} on {name}{where_lot}, reinvested ("
@@ -2401,6 +2411,7 @@ def _expand_account_growth(
 
 _GROWTH_NAMES = frozenset(c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values())
 _SHELTERED_PAYOUT_NAMES = frozenset(c.name for c in registries.SHELTERED_PAYOUT_ACCOUNTS.values())
+_HSA_PAYOUT_NAMES = frozenset(c.name for c in registries.HSA_PAYOUT_ACCOUNTS.values())
 
 
 def _builtin_label(name: str) -> str:
@@ -4167,7 +4178,7 @@ _STATE_LINES: frozenset[str] = frozenset({
     "nol_used", "nol_carryover", "ss_taxable", "ss_benefits", "credits", "deduction",
     "standard_deduction", "itemized_deduction", "capital_loss_used", "capital_loss_carryover",
     "capital_loss_lapsed", "nol_lapsed", "business_net", "hobby_disallowed",
-    "dividends_as_ordinary", "hsa_addback",
+    "dividends_as_ordinary", "hsa_addback", "hsa_dividends",
     "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
     "drawdown_tax", "drawdown_base", "tax_paid", "tax_due", "tax_overpaid",
 })
