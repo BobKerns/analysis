@@ -5,6 +5,7 @@ balance at that point, not one written in advance."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def sim(test_data_dir: Path) -> Callable[..., Result]:
 
 
 def _lot_balances(run: Path, account: str) -> dict[str, int]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return dict(con.execute(
             "SELECT s.month, ls.balance FROM lot_state ls "
             "JOIN simulation_step s ON s.id = ls.step_id "
@@ -51,7 +52,7 @@ def _lot_balances(run: Path, account: str) -> dict[str, int]:
 
 def _growth(run: Path, account: str, month: str) -> int:
     """What ``account``'s growth rule credited it with in ``month``."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT SUM(te.amount) FROM transfer_event te "
             "JOIN scheduled_transaction s ON s.id = te.reason_id AND te.reason_kind = 'rule' "
@@ -63,7 +64,7 @@ def _growth(run: Path, account: str, month: str) -> int:
 
 def _balance_events(run: Path) -> list[tuple[str, str, str, int, str, str | None]]:
     """Every transfer a transfer_balance event's synthesized rule posted."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT te.date, fa.name, ta.name, te.amount, s.amount_rule_kind, s.description "
             "FROM transfer_event te "
@@ -118,7 +119,7 @@ def test_a_source_with_a_minimum_balance_is_not_refilled_before_it_empties(
     checking = _lot_balances(run, "Asset_Checking")
     [(_date, _from, _to, moved, _kind, _description)] = _balance_events(run)
     assert moved == checking["2027-02-28"]
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         refills = con.execute(
             "SELECT COUNT(*) FROM transfer_event te "
             "JOIN transfer_event debit ON debit.id = te.parent_event_id "
@@ -137,7 +138,7 @@ def test_an_empty_lot_moves_nothing(
     run = run_scenario(load_test_copy().intent_path, runs_dir / "empty.sqlite3", run_by="TEST",
                        allow_dirty_data=True, allow_dirty_code=True)
     assert _balance_events(run) == []
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         applied = con.execute(
             "SELECT COUNT(*) FROM applied_calendar_event ace "
             "JOIN calendar_event ce ON ce.id = ace.calendar_event_id "
@@ -173,7 +174,7 @@ def test_the_rollover_date_may_vary(
     add_alice_401k("100000.00")
     append_calendar_row(**ROLLOVER, name="rollover", vary_target="date",
                         vary_distribution="uniform", vary_low="2029-01-31", vary_high="2031-12-31")
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         assert con.execute(
             "SELECT vary_target FROM calendar_event WHERE name = 'rollover'"
         ).fetchone() == ("date",)
@@ -244,10 +245,10 @@ def test_calendar_edit_rewrites_the_row_in_place(
 def test_a_varying_rollover_reports_the_accounts_it_moves_between() -> None:
     from analysis.sim.draws_db import row_affects
 
-    con = sqlite3.connect(":memory:")
-    con.row_factory = sqlite3.Row
-    row = con.execute(
-        "SELECT 'transfer_balance' AS kind, 'Asset_401k_Alice' AS account_1, "
-        "'Asset_TraditionalIRA_Alice' AS account_2, NULL AS series, NULL AS scheduled_name"
-    ).fetchone()
-    assert row_affects(row) == "Asset_401k_Alice → Asset_TraditionalIRA_Alice"
+    with closing(sqlite3.connect(":memory:")) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT 'transfer_balance' AS kind, 'Asset_401k_Alice' AS account_1, "
+            "'Asset_TraditionalIRA_Alice' AS account_2, NULL AS series, NULL AS scheduled_name"
+        ).fetchone()
+        assert row_affects(row) == "Asset_401k_Alice → Asset_TraditionalIRA_Alice"

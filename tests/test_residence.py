@@ -6,6 +6,7 @@ its brackets, standard deduction, Social Security table, and the rest."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -26,7 +27,7 @@ def _run(load_test_copy: Callable[[], LoadResult], runs_dir: Path, name: str) ->
 
 
 def _buckets(run: Path, bucket: str) -> dict[int, int]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return dict(con.execute(
             "SELECT year, amount FROM tax_year_summary WHERE bucket = ?", (bucket,)).fetchall())
 
@@ -62,7 +63,7 @@ def test_the_residence_is_in_the_intent_and_the_run(
     _washington(write_aux)
     add_residence("2030-07", "WA")
     run = _run(load_test_copy, runs_dir, "run")
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         assert con.execute(
             "SELECT effective_date, state, county FROM residence ORDER BY effective_date"
         ).fetchall() == [("2026-05-31", "CA", None), ("2030-07-31", "WA", None)]
@@ -79,7 +80,7 @@ def test_rows_merge_by_date_over_the_lineage(
     _washington(write_aux)
     add_residence_to(test_child_scenario, "2030-07", "WA")
     add_residence_to(test_child_scenario, "2026-05", "NC")
-    with sqlite3.connect(load_test_scenario("child")) as con:
+    with closing(sqlite3.connect(load_test_scenario("child"))) as con:
         assert con.execute(
             "SELECT effective_date, state FROM residence ORDER BY effective_date"
         ).fetchall() == [("2026-05-31", "NC"), ("2030-07-31", "WA")]
@@ -340,7 +341,7 @@ def test_a_rows_left_out_county_is_blank_not_its_parents(
         f"2020-01-31,{status},0,0.00,1%\n" for status in ("Single", "MFJ", "MFS")))
     add_state_tax("CA", county="CA-county")
     (test_child_scenario / "residence.csv").write_text("effective_date,state\n2026-05,NC\n")
-    with sqlite3.connect(load_test_scenario("child")) as con:
+    with closing(sqlite3.connect(load_test_scenario("child"))) as con:
         assert con.execute("SELECT state, county FROM residence").fetchall() == [("NC", None)]
 
 

@@ -4,6 +4,7 @@ taxable income at a target, its loader checks, and ``sim scheduled add``."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -22,7 +23,7 @@ def _top_22(run: Path, year: int, status: str = "MFJ") -> int:
     """The top of the 22% bracket for ``status`` in tax ``year``, as the run
     indexed the prototype's aux/federal_brackets.csv (#467): the floor of
     the 24% bracket above it."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         aux = engine._load_aux(con)
     rows = engine._indexed_tax_rows(aux, "federal_brackets", None, year, {})
     return next(
@@ -76,7 +77,7 @@ def fill_run(
 
 def _conversions(run: Path) -> pd.DataFrame:
     """Each fill_bracket conversion: its year, amount, and what it aimed at."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         rows = con.execute(
             "SELECT CAST(substr(te.date, 1, 4) AS INTEGER), te.amount, te.meta_json, te.id "
             "FROM transfer_event te JOIN scheduled_transaction st ON st.id = te.reason_id "
@@ -89,7 +90,7 @@ def _conversions(run: Path) -> pd.DataFrame:
 
 
 def _summary(run: Path) -> pd.DataFrame:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         frame = pd.read_sql_query("SELECT year, bucket, amount FROM tax_year_summary", con)
     return frame.pivot_table(index="year", columns="bucket", values="amount", aggfunc="sum")
 
@@ -100,7 +101,7 @@ def _ordinary_taxable(summary: pd.DataFrame, year: int) -> int:
 
 
 def _ira_balance_after(run: Path, event_id: int) -> int:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT ls.balance FROM lot_state ls JOIN transfer_event te ON te.step_id = ls.step_id "
             "JOIN account_lot l ON l.id = ls.lot_id JOIN account a ON a.id = l.account_id "
@@ -186,7 +187,7 @@ def test_the_conversion_comes_after_the_years_rmd(fill_run: Rules) -> None:
     """Alice's RMDs start in 2038 (age 73): that December the RMD posts
     first, even though the conversion rule is listed before it."""
     run = fill_run({"start": "2038-01-31", "params_json": '{"max_amount": "5000.00"}'})
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         rmd = con.execute(
             "SELECT te.id FROM transfer_event te JOIN scheduled_transaction st "
             "ON st.id = te.reason_id WHERE te.reason_kind = 'rule' "

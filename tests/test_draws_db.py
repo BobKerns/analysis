@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from datetime import date
@@ -376,7 +377,7 @@ def test_a_draws_database_from_another_schema_version_is_gathered_again(mc_batch
 
     path = build_draws_db(mc_batch)
     assert draws_db_current(mc_batch)
-    with sqlite3.connect(path) as con:
+    with closing(sqlite3.connect(path)) as con, con:
         con.execute("UPDATE batch SET schema_version = schema_version - 1")
     assert not draws_db_current(mc_batch)
     result = CliRunner().invoke(main, [

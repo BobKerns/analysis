@@ -709,6 +709,8 @@ def run_skill(
         raise
     finally:
         timer.cancel()
+        if proc.stdout is not None:
+            proc.stdout.close()
         # Nothing it started outlives the run.
         if proc.poll() is not None:
             kill()

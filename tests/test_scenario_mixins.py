@@ -5,6 +5,7 @@ in ``lineage.load_order``."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -30,7 +31,7 @@ PARENT_LINE = [*TEMPLATE_LINE, "base", PARENT]
 
 
 def _amounts(intent_path: Path) -> dict[str, int]:
-    with sqlite3.connect(intent_path) as con:
+    with closing(sqlite3.connect(intent_path)) as con:
         return dict(con.execute("SELECT name, amount_cents FROM scheduled_transaction"))
 
 
@@ -131,7 +132,7 @@ def test_a_mixins_series_and_chain_overrides_are_inherited(
         ),
     })
     derive_scenario("combo", f"{PARENT}:mix_rates")
-    with sqlite3.connect(load_test_scenario("combo")) as con:
+    with closing(sqlite3.connect(load_test_scenario("combo"))) as con:
         (payload,) = con.execute(
             "SELECT payload_json FROM aux_table WHERE kind = 'rate' AND series = 'Asset_Checking'"
         ).fetchone()
@@ -169,7 +170,7 @@ def test_the_intent_records_parents_and_load_order(
     derive_scenario("main", PARENT)
     derive_scenario("mix", PARENT)
     derive_scenario("combo", "main:mix")
-    with sqlite3.connect(load_test_scenario("combo")) as con:
+    with closing(sqlite3.connect(load_test_scenario("combo"))) as con:
         parents, order = con.execute(
             "SELECT parents_json, load_order_json FROM scenario"
         ).fetchone()

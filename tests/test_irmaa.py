@@ -5,6 +5,7 @@ tier table and growth series, and its loader checks."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -107,7 +108,7 @@ def _bonus(year: int, amount: str) -> dict[str, str]:
 
 def _charges(run: Path) -> pd.DataFrame:
     """Each month's irmaa charge, by rule name, indexed by month."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         frame = pd.read_sql_query(
             "SELECT te.date AS month, st.name, te.amount FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id "
@@ -116,7 +117,7 @@ def _charges(run: Path) -> pd.DataFrame:
 
 
 def _summary(run: Path) -> pd.DataFrame:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         frame = pd.read_sql_query("SELECT year, bucket, amount FROM tax_year_summary", con)
     return frame.pivot_table(index="year", columns="bucket", values="amount", aggfunc="sum")
 
@@ -222,9 +223,9 @@ def _con_with_magi(**by_year: int) -> sqlite3.Connection:
 
 def test_a_floor_is_more_than_its_magi_floor() -> None:
     aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 200_000_00, None))}
-    at, above = _con_with_magi(y2026=200_000_00), _con_with_magi(y2026=200_000_01)
-    assert _context(aux).charge(at, 2028, {}, 1) == 0
-    assert _context(aux).charge(above, 2028, {}, 1) == 110_00
+    with closing(_con_with_magi(y2026=200_000_00)) as at, closing(_con_with_magi(y2026=200_000_01)) as above:
+        assert _context(aux).charge(at, 2028, {}, 1) == 0
+        assert _context(aux).charge(above, 2028, {}, 1) == 110_00
 
 
 def test_a_blank_series_holds_a_figure_flat_and_a_named_one_grows_and_rounds() -> None:
@@ -258,8 +259,8 @@ def test_a_missing_federal_magi_is_an_error() -> None:
     from analysis.sim.engine import EngineError
 
     aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 1, None))}
-    with pytest.raises(EngineError, match="no federal MAGI for 2027"):
-        _context(aux).charge(_con_with_magi(), 2029, {}, 1)
+    with closing(_con_with_magi()) as con, pytest.raises(EngineError, match="no federal MAGI for 2027"):
+        _context(aux).charge(con, 2029, {}, 1)
 
 
 def test_the_first_premium_years_without_prior_magi_charge_nothing(irmaa_run: Run) -> None:
@@ -382,7 +383,7 @@ def _conversion(year: int, **params: Any) -> dict[str, str]:
 
 
 def _converted(run: Path) -> int:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT COALESCE(SUM(te.amount), 0) FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id "

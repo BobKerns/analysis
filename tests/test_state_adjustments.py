@@ -6,6 +6,7 @@ return, and the loader's checks on it."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def _tag_rule(retire_alice_csv: Callable[[str], Path], rule: str, tags: str) -> 
 
 
 def _lines(run: Path, *buckets: str) -> dict[str, dict[int, int]]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return {bucket: dict(con.execute(
             "SELECT year, amount FROM tax_year_summary WHERE bucket = ? ORDER BY year", (bucket,)))
             for bucket in buckets}

@@ -96,11 +96,11 @@ with build_lock(Path(sys.argv[1]), "base"):
 @pytest.fixture
 def held_elsewhere(intent_dir: Path):
     """Another process holding ``base``'s build lock for about a second."""
-    proc = subprocess.Popen([sys.executable, "-c", _HOLD, str(intent_dir), "1.0"],
-                            stdout=subprocess.PIPE, text=True)
-    assert proc.stdout is not None and proc.stdout.readline().strip() == "held"
-    yield proc
-    proc.wait(timeout=10)
+    with subprocess.Popen([sys.executable, "-c", _HOLD, str(intent_dir), "1.0"],
+                          stdout=subprocess.PIPE, text=True) as proc:
+        assert proc.stdout is not None and proc.stdout.readline().strip() == "held"
+        yield proc
+        proc.wait(timeout=10)
 
 
 @pytest.mark.slow

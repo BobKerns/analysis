@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -74,7 +75,7 @@ def test_store_is_built_on_first_open_and_rebuilt_when_a_member_changes(
     assert series_db_current(batch)
 
     member = batch / "member_0001.sqlite3"
-    with sqlite3.connect(member) as con:
+    with closing(sqlite3.connect(member)) as con, con:
         con.execute("UPDATE account SET name = 'Asset_Renamed' WHERE name = 'Asset_Checking'")
     stat = member.stat()
     os.utime(member, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
@@ -101,7 +102,7 @@ def test_store_from_other_code_is_rebuilt(
 ) -> None:
     batch = seeded_ensemble_batch("recipe", 1)
     build_series_db(batch)
-    with sqlite3.connect(series_db_path(batch)) as con:
+    with closing(sqlite3.connect(series_db_path(batch))) as con, con:
         con.execute("UPDATE batch SET code_hash = 'older'")
     assert not series_db_current(batch)
     open_series(batch)
@@ -143,7 +144,7 @@ def test_recipes_pair_though_their_first_succeeded_members_differ(
     from analysis.sim.notebook_ui.ensemble_widgets import RecipeSeeds
 
     seeded_ensemble_batch("baseline", 1)
-    with sqlite3.connect(seeded_ensemble_batch("child", 1) / "member_0000.sqlite3") as con:
+    with closing(sqlite3.connect(seeded_ensemble_batch("child", 1) / "member_0000.sqlite3")) as con, con:
         con.execute("UPDATE simulation_run SET status = 'failed'")
     seeded_ensemble_batch("other", 2)
     seeds = RecipeSeeds(runs_dir, ["baseline", "child", "other"])
@@ -180,7 +181,7 @@ def test_member_statuses_still_raise_on_a_damaged_member(tmp_path: Path) -> None
     """Only a member whose tables aren't written yet reads as running."""
     from analysis.sim.ensemble import member_run_statuses
 
-    with sqlite3.connect(tmp_path / "member_0000.sqlite3") as con:
+    with closing(sqlite3.connect(tmp_path / "member_0000.sqlite3")) as con, con:
         con.execute("CREATE TABLE simulation_run (id INTEGER)")  # no status column
     with pytest.raises(sqlite3.OperationalError, match="no such column"):
         member_run_statuses(tmp_path)

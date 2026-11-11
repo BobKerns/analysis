@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib
+from contextlib import closing
 import pandas as pd
 import pytest
 
@@ -433,7 +434,7 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
 
     seeded_ensemble_batch("baseline", 1)
     for member in seeded_ensemble_batch("child", 1).glob("member_*.sqlite3"):
-        with sqlite3.connect(member) as con:
+        with closing(sqlite3.connect(member)) as con, con:
             con.execute("UPDATE account SET name = 'Asset_Renamed' WHERE name = 'Asset_Checking'")
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
@@ -467,7 +468,7 @@ def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
     seeded_ensemble_batch("baseline", 1)
     seeded_ensemble_batch("other", 1)
     for member in seeded_ensemble_batch("child", 1).glob("member_*.sqlite3"):
-        with sqlite3.connect(member) as con:
+        with closing(sqlite3.connect(member)) as con, con:
             con.execute("UPDATE account SET name = 'Asset_Renamed' WHERE name = 'Asset_Checking'")
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))

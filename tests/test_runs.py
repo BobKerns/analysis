@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 import subprocess
 import sys
 from pathlib import Path
@@ -61,15 +62,15 @@ def test_open_run_file_snapshots_intent_and_writes_simulation_run(tmp_path: Path
         assert run["data_repo_path"] == m["data_repo_path"]
         assert run["data_repo_name"] == m["data_repo_name"]
 
-        for tbl in ("person", "account", "account_lot",
-                    "scheduled_transaction", "scenario"):
-            src = sqlite3.connect(intent_path).execute(
-                f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-            dst = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-            assert src == dst, f"{tbl} row count mismatch"
+        with closing(sqlite3.connect(intent_path)) as intent_con:
+            for tbl in ("person", "account", "account_lot",
+                        "scheduled_transaction", "scenario"):
+                src = intent_con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                dst = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                assert src == dst, f"{tbl} row count mismatch"
 
-        src_ids = [r[0] for r in sqlite3.connect(intent_path).execute(
-            "SELECT id FROM account ORDER BY id").fetchall()]
+            src_ids = [r[0] for r in intent_con.execute(
+                "SELECT id FROM account ORDER BY id").fetchall()]
         dst_ids = [r[0] for r in con.execute(
             "SELECT id FROM account ORDER BY id").fetchall()]
         assert src_ids == dst_ids
