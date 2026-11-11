@@ -111,6 +111,17 @@ sim symbol add BALX --name "Example Balanced Fund" --weight stock_us=60% --weigh
 stage invest
 sim invest Asset_Savings Asset_Brokerage_Joint balanced --symbol BALX --amount 30000 \
     --date 2027-01 > /dev/null
+# BALX's prices, which the prices scene reads. It's made up, so they're
+# written in rather than fetched (video 11 uses the same ones). No lot here
+# holds shares of it, so they change nothing the later scenes show.
+mkdir -p sim/prices
+cat > sim/prices/security_price__BALX.csv <<'CSV'
+effective_date,price
+2025-12-31,50.00
+2026-06-30,51.30
+2026-12-31,47.80
+CSV
+stage prices
 stage invest-roth
 sim scenario create roth-fund convert > /dev/null
 sim invest Asset_TraditionalIRA_Alice Asset_Roth_Alice fund_2030 --source-lot default \
