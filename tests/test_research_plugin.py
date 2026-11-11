@@ -146,7 +146,8 @@ def test_allocation_script_classes_match_registry():
     text = (rp.SOURCE_DIR / "skills" / "fund-tear-sheet" / "scripts" / "allocation.py").read_text()
     copy = re.search(r"^SIM_CLASSES = (\[.*\])$", text, re.M)
     assert copy is not None
-    assert tuple(json.loads(copy.group(1))) == registries.ASSET_CLASSES
+    # One state's municipal bonds (muni_CA) are the notes' to name.
+    assert tuple(json.loads(copy.group(1))) == registries.BASE_ASSET_CLASSES
 
 
 def _fund_calc(tmp_path: Path, rows: list[tuple[str, str, str, str]]) -> str:

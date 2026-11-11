@@ -176,6 +176,18 @@ def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False)
     return order
 
 
+def scenario_start(scenarios_dir: Path, scenario_name: str) -> str | None:
+    """``scenario_name``'s ``start`` as its load sees it: the last one set
+    along its load order, or None when none is, or a pool (#560). Tolerant,
+    as :func:`load_order` is: the loader validates the value."""
+    if is_pool(scenarios_dir, scenario_name):
+        return None
+    start = None
+    for name in load_order(scenarios_dir, scenario_name):
+        start = _first_row(scenario_dir(scenarios_dir, name)).get("start", "").strip() or start
+    return start
+
+
 def pool_base(scenarios_dir: Path, name: str) -> str | None:
     """A pool's base component as its ``meta_json`` names it (the first
     component unless ``base`` says otherwise), unchecked; ``None`` for a

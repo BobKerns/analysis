@@ -298,7 +298,7 @@ project word could be confused with a general word, that is pointed out.
 | **`prices/`** | Shared security price histories every scenario uses unless it says otherwise. |
 | **Itemization** | A CSV file under `itemizations/<name>.csv`. It lists dollar amounts in a `Value` column, and the loader adds them up into one total. Other files can use that total by writing `@name` instead of a plain number (for example `opening_cost_basis = @home_basis`). **This is a different thing from an *itemized deduction*, a tax term — see the next table.** |
 | **`tax_character`** | A label on a money movement that says how it is taxed: `ordinary`, `ltcg`, `stcg`, `tax_free`, `tax_deferred_out`, `return_of_capital`, `none`, and a few others. This label decides which tax bucket the movement is counted in. |
-| **Asset class** | Used only for the portfolio overview (`sim allocation`): `stock_us`, `stock_intl`, `stock` (when the US/international split is not known), `bond`, `cd`, `cash`, `real_estate`, `other`. Set for each symbol in `allocations.csv`. Not related to `tax_character`. |
+| **Asset class** | Used only for the portfolio overview (`sim allocation`): `stock_us`, `stock_intl`, `stock` (when the US/international split is not known), `bond`, `muni` (many states' municipal bonds), `muni_CA` and the like (one state's municipal bonds), `cd`, `cash`, `real_estate`, `other`. Set for each symbol in `allocations.csv`. A municipal bond class also decides how its interest is taxed; otherwise it isn't related to `tax_character`. |
 | **Calendar event** | One dated change in `calendar.csv`. It can change a rate, change an amount, end a rule, or make a one-time transfer. See Part 4.8. |
 | **Scheduled transaction / rule** | One row in `scheduled.csv`. It is a rule that moves money, either on a regular schedule or just once. |
 | **Debit / credit** | The two sides of one money movement. A **debit** takes money out of a lot: a payment, a withdrawal, or the "from" side of any transfer. A **credit** puts money into a lot: the "to" side. For an asset lot, a debit lowers the balance and a credit raises it. For a liability (a loan or a card), a debit is borrowing more, so what you owe goes up, and a credit is paying it down. The refill check runs before each debit, which is why the chain flowcharts label refill "before a debit". These are everyday banking senses, not the bookkeeping ones, where debiting an asset account *raises* it. |
@@ -422,6 +422,16 @@ files pays no income tax.
   too: long-term ones as long-term gains, short-term ones as ordinary
   income. IRAs, Roth accounts and HSAs owe nothing on any of these: their
   earnings are taxed (or not) only when money leaves.
+- **Municipal bond interest** (a lot or fund of asset class `muni`, or
+  `muni_CA` for one state's bonds) is left out of federal AGI. It still
+  counts toward how much Social Security is taxed and toward the MAGI that
+  sets Medicare's IRMAA surcharge, and `sim report tax` shows it as
+  `fed_exempt_interest`. A state taxes every state's municipal bonds but its
+  own: living in California, `muni` interest is taxed and `muni_CA` interest
+  isn't, and after a move away, both are. A territory's bonds (`muni_PR`)
+  are exempt in every state, and the District of Columbia taxes none. A
+  fund that pays at its own `_yield` series is exempt only when at least
+  half of it is municipal bonds, and then only for that share.
 - **Filing status** comes from the `filing_status` aux table for that tax
   year: your data repo's `aux/filing_status.csv`, one row per date such as
   `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
@@ -471,6 +481,16 @@ files pays no income tax.
   loss. Growth left in the HSA isn't taxed. An HSA lot's basis starts at
   its `opening_cost_basis` in `account_lots.csv`, or its whole balance when
   that is blank.
+- **Washington**: it ships, and has two taxes. Its capital gains tax
+  (`state_gains_tax__WA.csv`, `state_gains_deduction__WA.csv`) takes 7% of
+  the year's net long-term gain over a deduction ($278,000 in 2025, grown
+  with inflation), and 9.9% of the part over $1 million. A short-term loss
+  doesn't offset the gain, and a home's gain (from a `real_estate`
+  account) is exempt; dividends, interest, IRA withdrawals and Social
+  Security aren't taxed. From 2028 its income tax takes 9.9% of income
+  over $1 million, Social Security, pensions and IRA withdrawals included,
+  and credits the gains tax against it. If a court strikes that tax down,
+  a dated 0% row of `state_brackets__WA.csv` in your data repo ends it.
 - **Local income tax**: some counties and cities tax income on top of the
   state (a Maryland county, New York City, an Indiana county, the Portland
   area). Where the local tax is figured on the state's taxable income, put
@@ -505,7 +525,7 @@ files pays no income tax.
   `tax:rent` (`sim scheduled edit housing --tags tax:rent`) for the
   renter's credit. `sim report tax --return state` shows each line.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
-  each year.
+  each year plus municipal bond interest.
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.
@@ -621,7 +641,10 @@ Asset_Brokerage_Joint,inherited_2029,,AAA,2029-03-15,500,,,50000.00
   instead. The balance is then calculated from a price. Run
   `sim prices fetch` to get prices; it saves them to
   `prices/security_price__<SYMBOL>.csv`, and `sim prices show` lists what
-  it saved. Run `sim prices check` to compare a
+  it saved. With the background builder installed, you don't need to: it
+  fetches them after each weekday's close and commits them to `main` when
+  `main` is checked out and has no uncommitted changes. New prices after a
+  scenario's start don't change its results, so they rerun nothing. Run `sim prices check` to compare a
   balance you typed in against quantity times price. Part 4.11 covers
   adding a symbol the data repo doesn't have yet.
 - Once you have a run, `sim account holdings <account>` shows every lot's
@@ -998,11 +1021,11 @@ writes it). A tax year is taxed by the state you live in on its December 31,
 so a move in February 2031 leaves 2030's return, paid that April, in the old
 state, and 2031 is the new state's. Everything the state tax reads follows
 the move: the new state's brackets, standard deduction, Social Security,
-gain, surcharge, retirement exclusion and HSA tables, or none where it has
-none (the federal standard deduction stands in for a missing one). The new
-state needs its tables, as `aux/state_brackets__WA.csv` say, unless they
-ship or it has no income tax (it then reads a 0% table,
-`state_brackets__none.csv`). A move to another county is a row too:
+gain, gains tax, surcharge, retirement exclusion and HSA tables, or none where it has
+none (the federal standard deduction stands in for a missing one). Washington's
+tables ship, so that move needs none of your own. Another state needs its
+tables, as `aux/state_brackets__OR.csv` say, unless they ship or it has no
+income tax (it then reads a 0% table, `state_brackets__none.csv`). A move to another county is a row too:
 `sim tax move 2033-01 CA --county CA-county` reads
 `aux/state_local_tax__CA-county.csv` from then on. A child scenario adds its
 own rows to its parent's, and one of the same month replaces the parent's.
@@ -1193,9 +1216,10 @@ anything else. To get the weights as a command you can run:
 Look up the most recent published asset breakdown of the fund ABCDX and
 write it as one command:
   sim symbol add ABCDX --name "<its name>" --weight CLASS=PERCENT ...
-- CLASS is one of: stock_us, stock_intl, stock, bond, cd, cash,
-  real_estate, other. Use stock only when the US/international split is
-  not published.
+- CLASS is one of: stock_us, stock_intl, stock, bond, muni, muni_<ST>,
+  cd, cash, real_estate, other. Use stock only when the US/international
+  split is not published. Municipal bonds are muni, or muni_CA (and so on)
+  for a fund of one state's bonds; bond is every other bond.
 - PERCENT has its % sign, such as 62.5%, at most four decimal places. The
   weights must add up to exactly 100%.
 - Add --as-of YYYY-MM, the month the breakdown describes. For a
@@ -1283,8 +1307,8 @@ in advance, and with `--yes` and no `--symbol` nothing is written.
 **Video.** *Investments* walks through this section and §4.2 and §4.11
 with Alice and Bill: the lots in each account, buying a fund, how each lot
 grows, where the tax falls, and a Roth conversion into a stock fund:
-[English](https://www.youtube.com/watch?v=O_W-DNmeSRs),
-[Japanese (日本語)](https://www.youtube.com/watch?v=vhOpASCNACg).
+[English](https://www.youtube.com/watch?v=pZ7fnO18Wug),
+[Japanese (日本語)](https://www.youtube.com/watch?v=y5amRH5w594).
 
 `sim invest` sets up a purchase the scenario makes later in one command. It
 writes a new lot, holding the symbol you name and acquired on the date, and a
@@ -1558,13 +1582,87 @@ parameter, a lifespan or a calendar row, and the sensitivity notebook
 sweeps it like the rest. See
 [ADR-006 §3b](architecture/ADR-006-ensemble-scenarios.md).
 
-You can write your own in Python, in your data repo's `strategies/` folder.
-`sim strategy kinds` lists what's available, with each parameter, and
+**Strategy plugins.** You can write your own kind in Python, in your data
+repo's `sim/strategies/` folder: a strategy plugin. It can build on a
+built-in by subclassing it or by delegating to it. For example, Alice and
+Bill want guardrail to decide how much travel a year can afford, while
+their own code decides which trips fit, taken whole:
+
+```python
+from dataclasses import dataclass
+
+from analysis.sim.strategies import Guardrail
+from analysis.sim.strategy_api import Context, Decision, RuleView, Spend, register
+
+
+@register
+class WholeTrips(Guardrail):
+    """Guardrail decides the year's travel budget; the trips fit into it
+    whole, most wanted first, and the rest wait a year."""
+
+    kind = "whole_trips"
+
+    @dataclass(frozen=True)
+    class Params(Guardrail.Params):
+        order: tuple[str, ...] = ()
+        """The trips, most wanted first."""
+
+    def year_start(self, ctx: Context) -> Decision | None:
+        decision = super().year_start(ctx)       # guardrail's January decision
+        allowance = ctx.memory.get("factor", 1.0) * ctx.budget()
+        costs = ctx.rule_budgets()               # each trip, this year
+        kept, skipped = [], []
+        for trip in self.in_order(costs):
+            if sum(costs[t] for t in kept) + costs[trip] <= allowance:
+                kept.append(trip)
+            else:
+                skipped.append(trip)
+        ctx.memory["kept"] = kept
+        note = decision.note if decision else ""
+        if skipped:
+            note += f"; skip {', '.join(skipped)}"
+        return Decision([], note=note)
+
+    def scale(self, ctx: Context, rule: RuleView, amount: int) -> Decision | None:
+        if rule.name in ctx.memory.get("kept", [rule.name]):
+            return None                          # pay it as planned
+        return Decision([Spend(0)], note=f"skip {rule.name} this year")
+
+    def in_order(self, trips):
+        """The trips, most wanted first; any that order leaves out come last."""
+        order = list(self.params.order)
+        return sorted(trips, key=lambda t: order.index(t) if t in order else len(order))
+```
+
+Delegating instead, the kind holds a guardrail rather than being one, and
+hands it the January decision with a memory of its own:
+
+```python
+@register
+class WholeTripsByDelegation(Strategy):
+    kind = "whole_trips_delegated"
+    Params = WholeTrips.Params
+
+    def __init__(self, name, params):
+        super().__init__(name, params)
+        self.guardrail = self.delegate(Guardrail)    # takes the parameters it shares
+
+    def year_start(self, ctx):
+        decision = self.guardrail.year_start(ctx.with_memory("guardrail"))
+        factor = ctx.memory["guardrail"].get("factor", 1.0)
+        ...                                          # then as above
+```
+
+`sim strategy kinds` lists it with guardrail's parameters and its own,
+and a strategy file uses it like any other kind
+(`sim strategy add spend --kind whole_trips --rules flex:optional
+--param portfolio=portfolio:invest --param 'order=["visit_family","trip_abroad"]'`).
+Commit the module before you run: the data repo has to be clean.
 `sim strategy check` runs a scenario twice to make sure your strategy
 decides the same way each time. The code is copied into each run, so a run
-always shows exactly what decided it. The design, and the API a strategy is
-written against, are in
-[ADR-010](architecture/ADR-010-responsive-strategies.md).
+always shows exactly what decided it. The design, the API a strategy is
+written against, and the built-in classes you can build on are in
+[ADR-010](architecture/ADR-010-responsive-strategies.md) §3.
 
 ### 4.17 Spend less after bad years (spending strategies)
 

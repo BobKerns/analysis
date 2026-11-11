@@ -17,7 +17,7 @@ from analysis.sim.taxes.common import progressive_tax
 from analysis.sim.lineage import TEMPLATE_AUX_DIR
 from analysis.sim.loader import LoadError, LoadResult
 
-_STATES = ["CA", "DC", "ID", "KS", "NC", "NE", "none"]
+_STATES = ["CA", "DC", "ID", "KS", "NC", "NE", "WA", "none"]
 
 
 def _brackets(state: str, effective_date: str, status: str = "MFJ") -> list[tuple[int, int]]:

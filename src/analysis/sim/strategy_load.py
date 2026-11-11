@@ -90,7 +90,7 @@ def validate_targets(located: Sequence[tuple[str, Mapping[str, str]]], issues: l
         if asset_class not in registries.ASSET_CLASSES:
             issues.append(
                 f"{where}: unknown asset_class '{asset_class}'; "
-                f"allowed: {', '.join(registries.ASSET_CLASSES)}"
+                f"allowed: {registries.asset_class_list()}"
             )
         try:
             weight = units.percent_to_micros(row.get("weight", ""))
@@ -586,10 +586,10 @@ def prepare_vary(
                 issues.append(f"{where}: {param} is varied twice")
                 continue
             seen.add(param)
-            fields = {f.name for f in dataclasses.fields(cls.Params)}
+            fields = [f.name for f in dataclasses.fields(cls.Params)]
             if param not in fields:
                 issues.append(f"{where}: kind '{s.kind}' has no parameter '{param}' "
-                              f"(known: {', '.join(sorted(fields)) or 'none'})")
+                              f"(known: {', '.join(fields) or 'none'})")
                 continue
             how = _vary_unit(cls, param)
             if how is None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Literal, NamedTuple
 
+from analysis.sim import states
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
@@ -240,6 +241,8 @@ TAX_CHARACTERS: set[str] = {
     # A stock fund's dividends, paid and reinvested in a taxable lot (#468):
     # taxed each year, at the long-term gains rates (IRC §1(h)(11)).
     "qualified_dividend",
+    # Municipal bond interest (#265): out of AGI, in provisional income and MAGI.
+    "tax_exempt",
     *BUSINESS_TAX_CHARACTERS,
 }
 
@@ -289,6 +292,7 @@ type AssetClass = Literal[
     "stock_intl",
     "stock",
     "bond",
+    "muni",
     "cd",
     "cash",
     "real_estate",
@@ -296,12 +300,39 @@ type AssetClass = Literal[
 ]
 """Asset classes of allocations.csv (ADR-003 §4.1b), in display order."""
 
-ASSET_CLASSES: tuple[AssetClass, ...] = AssetClass.__value__.__args__
+BASE_ASSET_CLASSES: tuple[AssetClass, ...] = AssetClass.__value__.__args__
+"""The asset classes other than one state's municipal bonds, in display order."""
+
+# Municipal bonds (#265): `muni` is a fund of many states' bonds, `muni_<ST>`
+# one state's (a postal code, `muni_CA`). Their interest is federally exempt;
+# a state taxes every state's but its own.
+MUNI_CLASS = "muni"
+MUNI_STATE_CLASSES: tuple[str, ...] = tuple(f"{MUNI_CLASS}_{s.code}" for s in states.STATES)
+
+ASSET_CLASSES: tuple[str, ...] = tuple(
+    c for base in BASE_ASSET_CLASSES
+    for c in ((base, *MUNI_STATE_CLASSES) if base == MUNI_CLASS else (base,)))
 """Asset classes of allocations.csv (ADR-003 §4.1b), in display order. Closed like the
 other registries; a new class is a one-line addition. `stock` is stock whose split``
 between US and international is not known (a placeholder to refine, but still distinct
-from bonds).
+from bonds). Each state's municipal bonds follow `muni`.
 """
+
+
+def muni_state(asset_class: str) -> str | None:
+    """The state whose bonds ``asset_class`` holds (#265): ``""`` for
+    ``muni``, a fund of many states', and None for a class that isn't
+    municipal bonds."""
+    if asset_class == MUNI_CLASS:
+        return ""
+    return asset_class.removeprefix(f"{MUNI_CLASS}_") if asset_class in MUNI_STATE_CLASSES else None
+
+
+def asset_class_list() -> str:
+    """The asset classes for a message or help text, the per-state
+    municipal bond classes as one pattern."""
+    return ", ".join(f"{MUNI_CLASS}_<ST>" if c == MUNI_STATE_CLASSES[0] else c
+                     for c in ASSET_CLASSES if c not in MUNI_STATE_CLASSES[1:])
 
 ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "weight")
 
@@ -471,6 +502,32 @@ HSA_PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
 }
 
 
+# Municipal bond interest (#265): out of federal AGI, but counted in
+# provisional income (Social Security) and in IRMAA's MAGI. A state adds it
+# back unless the bonds are its own, so each state's bonds have their own
+# payer. Keyed by asset class.
+TAX_EXEMPT = "tax_exempt"
+MUNI_INTEREST = "muni_interest"
+MUNI_PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
+    MUNI_CLASS: GrowthCounterparty(
+        MUNI_INTEREST, "income", "interest", "tax_free", TAX_EXEMPT,
+        "Built-in: tax-exempt interest from many states' municipal bonds, reinvested",
+    ),
+    **{c: GrowthCounterparty(
+        f"{MUNI_INTEREST}__{c.removeprefix(MUNI_CLASS + '_')}", "income", "interest", "tax_free", TAX_EXEMPT,
+        f"Built-in: tax-exempt interest from {c.removeprefix(MUNI_CLASS + '_')} municipal bonds, reinvested",
+    ) for c in MUNI_STATE_CLASSES},
+}
+MUNI_PAYER_STATE: dict[str, str] = {a.name: muni_state(c) or "" for c, a in MUNI_PAYOUT_ACCOUNTS.items()}
+"""Each municipal bond interest account's issuing state, ``""`` for many."""
+
+
+def payout_account(payer: str) -> GrowthCounterparty:
+    """A taxable lot's payout account: a ``PAYOUT_ACCOUNTS`` key, or a
+    municipal bond class (#265)."""
+    return MUNI_PAYOUT_ACCOUNTS.get(payer) or PAYOUT_ACCOUNTS[payer]
+
+
 def hsa_payout_account(payer: str) -> GrowthCounterparty:
     """The HSA payout account for a payout a taxable lot would get from
     ``PAYOUT_ACCOUNTS[payer]`` (#497)."""
@@ -485,12 +542,15 @@ def yield_series(series: str, suffix: str = YIELD_SUFFIX) -> str:
 
 def builtin_payout_accounts() -> tuple[GrowthCounterparty, ...]:
     """Every built-in account a payout comes from, taxed or not."""
-    return (*PAYOUT_ACCOUNTS.values(), *SHELTERED_PAYOUT_ACCOUNTS.values(),
-            *HSA_PAYOUT_ACCOUNTS.values())
+    return (*PAYOUT_ACCOUNTS.values(), *MUNI_PAYOUT_ACCOUNTS.values(),
+            *SHELTERED_PAYOUT_ACCOUNTS.values(), *HSA_PAYOUT_ACCOUNTS.values())
 
 
 def payout_character(asset_class: str) -> str:
-    """How an asset class's payout is taxed (#468)."""
+    """How an asset class's payout is taxed (#468): for municipal bonds
+    (#265), the class itself, since each state's has its own payer."""
+    if muni_state(asset_class) is not None:
+        return asset_class
     return QUALIFIED_DIVIDEND if asset_class in QUALIFIED_DIVIDEND_CLASSES else "ordinary"
 
 
@@ -531,6 +591,16 @@ as most are filed on the state return, and reported apart from it."""
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""
 
+STATE_GAINS_TAX = "state_gains_tax"
+"""The aux kind of a state's tax on long-term capital gains apart from its
+income tax (#489), in the shape of its brackets: Washington's 7%, and 9.9%
+over $1 million. Its base is the federal net long-term gain (Schedule D
+line 15) less a home's, after ``state_gains_deduction``."""
+
+STATE_GAINS_DEDUCTION = "state_gains_deduction"
+"""The aux kind of the standard deduction of a state's gains tax (#489),
+one figure per filing status like ``state_standard_deduction``."""
+
 STATE_HSA_TREATMENTS: tuple[str, ...] = ("federal", "taxable")
 """A ``state_hsa`` row's ``treatment``: ``federal`` follows the federal
 rules (the default, without a table); ``taxable`` is California's, which
@@ -563,13 +633,14 @@ income before state AGI, ``deduction`` after it (beside the standard or
 itemized deduction), ``credit`` against the tax (never more than the tax)."""
 
 STATE_ADJUSTMENT_BASES: tuple[str, ...] = (
-    "spending", "income", "filers", "federal_tax", "federal_deduction",
+    "spending", "income", "filers", "federal_tax", "federal_deduction", "gains_tax",
 )
 """What a ``state_adjustments`` row's line is figured from: the year's
 ``spending`` carrying its tag (rent, premiums), its ordinary ``income``
 carrying the tag (a public pension), the ``filers`` (an exemption of
 ``amount`` each), or the federal return's ``tax`` (a deduction for federal
-tax paid) or ``deduction`` (Utah's taxpayer credit)."""
+tax paid) or ``deduction`` (Utah's taxpayer credit), or the state's own
+``gains_tax`` (#489; Washington credits it against its income tax)."""
 
 STATE_LTCG_BRACKETS = "state_ltcg_brackets"
 """A state's own rates on long-term gain (#485), stacked on top of its
@@ -592,19 +663,23 @@ STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
     "state_brackets", STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
     STATE_LTCG_EXCLUSION, STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA,
     STATE_RETIREMENT_EXCLUSION, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
+    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
 })
 """The aux kinds keyed by state (or, for ``state_local_tax``, by county):
 a tax year reads the series where the household lives that year
 (``residence.csv``, #509), so none of them is swapped by a move."""
 
-OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset(
-    {STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS})
-"""The state tables a state may lack (#490, #487): then it has no surcharge
-or local tax, and its HSA follows the federal rules."""
+OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset({
+    STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
+    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
+})
+"""The state tables a state may lack (#490, #487, #489): then it has no
+surcharge, local tax or gains tax, and its HSA follows the federal rules."""
 
-STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX})
-"""The state tables of bands whose rates add to the brackets' (#490, #487):
-a filing status the brackets have and the table lacks would tax nothing."""
+STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX, STATE_GAINS_TAX})
+"""The state tables of bands (#490, #487, #489): a surcharge's and a local
+tax's rates add to the brackets', and a gains tax's tax its own base. A
+filing status the brackets have and the table lacks would tax nothing."""
 
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
@@ -618,6 +693,8 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     "state_brackets": {"floor_series": "floor"},
     STATE_SURCHARGE: {"floor_series": "floor"},
     STATE_LOCAL_TAX: {"floor_series": "floor"},
+    STATE_GAINS_TAX: {"floor_series": "floor"},
+    STATE_GAINS_DEDUCTION: {"amount_series": "amount"},
     "ltcg_brackets": {"floor_series": "floor"},
     STATE_LTCG_BRACKETS: {"floor_series": "floor"},
     STATE_STCG_BRACKETS: {"floor_series": "floor"},
@@ -666,6 +743,12 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # How a state treats an HSA (#490), read with the brackets' series:
     # `treatment` is one of STATE_HSA_TREATMENTS. Without a table, `federal`.
     STATE_HSA: ("effective_date", "treatment"),
+    # A state's tax on long-term gains apart from its income tax (#489):
+    # bands in the shape of its brackets on the gain after its own
+    # deduction, read with the brackets' series. Washington's.
+    STATE_GAINS_TAX:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    STATE_GAINS_DEDUCTION: ("effective_date", "filing_status", "amount"),
     # Federal long-term capital gain rates: the same shape as federal_brackets,
     # but a band's floor is the taxable income (ordinary income plus the gain,
     # stacked on top) at which its rate starts. Optional: without it long-term
@@ -793,6 +876,7 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "state_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_SURCHARGE: {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_LOCAL_TAX: {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_GAINS_TAX: {"marginal_rate": ("marginal_rate_micros", "percent")},
     "ltcg_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_LTCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_STCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
@@ -832,6 +916,8 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     STATE_LTCG_EXCLUSION: frozenset({"min_exclusion", "max_exclusion"}),
     STATE_SURCHARGE: frozenset({"floor"}),
     STATE_LOCAL_TAX: frozenset({"floor"}),
+    STATE_GAINS_TAX: frozenset({"floor"}),
+    STATE_GAINS_DEDUCTION: frozenset({"amount"}),
     "standard_deduction": frozenset({"amount"}),
     STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
     STATE_RETIREMENT_EXCLUSION: frozenset({"amount", "income_limit", "phaseout"}),

@@ -107,6 +107,9 @@ def _no_ambient_analysis_env(
     # turns the builder back on itself.
     monkeypatch.setenv("ANALYSIS_BUILDER", "off")
     monkeypatch.delenv("ANALYSIS_BUILDER_CHILD", raising=False)
+    # Nor fetches prices or installs a timer (#560), even with the builder on:
+    # a test that does turns this off and passes a fake provider.
+    monkeypatch.setenv("ANALYSIS_PRICE_FETCH", "off")
 
 
 _STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_REPO")
@@ -663,6 +666,22 @@ def ledger_con() -> Generator[sqlite3.Connection]:
 
 
 @pytest.fixture(scope="session")
+def post_transfer() -> Callable[..., None]:
+    """``post_transfer(con, year, frm, to, amount, character)``: a rule's
+    transfer of ``amount`` cents from account ``frm`` to ``to`` on June 30 of
+    ``year``, in ``ledger_con`` (whose lot ids are the account ids)."""
+    def post(con: sqlite3.Connection, year: int, frm: int, to: int, amount: int,
+             character: str) -> None:
+        con.execute(
+            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'rule')",
+            (f"{year}-06-30", frm, to, frm, to, amount, amount, character),
+        )
+    return post
+
+
+@pytest.fixture(scope="session")
 def set_residence() -> Callable[..., None]:
     """``set_residence(con, ("2026-01-31", "CA", None), ...)``: where the
     household lives in a run file or ``ledger_con`` (#509), replacing what it
@@ -980,6 +999,51 @@ def load_test_scenario(test_data_dir: Path, intent_dir: Path) -> Callable[[str],
     return _load
 
 
+CommitFiles = Callable[..., str]
+
+
+def _commit_files(repo: git.Repo, files: Mapping[str, str] | None = None,
+                  message: str = "edit") -> str:
+    """Write ``files`` (paths relative to the repo's top) into ``repo``,
+    commit everything there as a test author, and return the commit."""
+    root = Path(str(repo.working_tree_dir))
+    for name, text in (files or {}).items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    repo.git.add(A=True)
+    actor = git.Actor("t", "t@t")
+    return repo.index.commit(message, author=actor, committer=actor).hexsha
+
+
+@pytest.fixture
+def commit_files() -> CommitFiles:
+    """``commit_files(repo, {path: text}, message)``: write the files into a
+    test's git repo (a ``code_repo``, ``data_repo_sim``'s, ``commit_test_data``'s)
+    and commit everything; returns the commit."""
+    return _commit_files
+
+
+@pytest.fixture(scope="function")
+def data_repo_sim(tmp_path: Path, test_data_dir: Path) -> Path:
+    """The private data copy as a real data repo's ``sim/`` subtree: a git
+    repo on main, everything committed, ``state/`` and ``sim/.analysis``
+    ignored, as the builder (#300) and its price fetches (#560) expect.
+    Returns the ``sim`` dir."""
+    data_repo = tmp_path / "datarepo"
+    data_dir = data_repo / "sim"
+    data_repo.mkdir()
+    test_data_dir.rename(data_dir)
+    (data_repo / ".gitignore").write_text("sim/.analysis\nstate/\n")
+    repo = git.Repo.init(data_repo, b="main")
+    with repo.config_writer() as cw:
+        cw.set_value("commit", "gpgsign", "false")
+    repo.git.add(A=True)
+    actor = git.Actor("t", "t@t")
+    repo.index.commit("init", author=actor, committer=actor)
+    repo.close()
+    return data_dir
+
+
 @pytest.fixture(scope="function")
 def commit_test_data(test_data_dir: Path) -> Callable[[], Path]:
     """Make the private data copy a git repo with everything committed, for
@@ -1116,6 +1180,24 @@ def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[st
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,fund,"))
     write_series("stock_us", "2026-01-31,8%")
     write_series("bond", "2026-01-31,4%")
+
+
+@pytest.fixture(scope="function")
+def muni_funds(set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+               write_series: Callable[[str, str], Path]) -> None:
+    """Make the private retire_alice copy's brokerage municipal bonds (#265):
+    lot ``default`` $200,000 of many states' (``muni``) and lot ``ca``
+    $100,000 of California's (``muni_CA``), each growing 4% a year, 3% of it
+    paid as tax-exempt interest."""
+    set_brokerage_lots([
+        {"lot": "default", "series": "muni", "opening_balance": "200000.00",
+         "opening_cost_basis": "200000.00"},
+        {"lot": "ca", "series": "muni_CA", "opening_balance": "100000.00",
+         "opening_cost_basis": "100000.00"},
+    ])
+    for series in ("muni", "muni_CA"):
+        write_series(series, "2026-01-31,4%")
+        write_series(f"{series}_yield", "2026-01-31,3%")
 
 
 @pytest.fixture(scope="session")

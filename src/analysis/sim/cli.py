@@ -2812,7 +2812,9 @@ def ensemble_guard_rails(
               help="Only asset accounts with this tag (default: the strategy's portfolio, "
                    "else every asset lot).")
 @click.option("--asset-class", "asset_class", type=click.Choice(registries.ASSET_CLASSES), default=None,
-              help="One class's drift (share less target, signed) instead of the largest either way.")
+              show_choices=False,
+              help=f"One class's drift (share less target, signed) instead of the largest either way: "
+                   f"{registries.asset_class_list()}.")
 @_ENSEMBLE_GRAPH_OPTIONS
 def ensemble_drift(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
@@ -4073,13 +4075,20 @@ def _scenario_argument(fn):
 def _run_target_options(fn):
     """The options ``sim explain``, ``sim networth`` and ``sim strategy log``
     share for finding a run. ``--scenario`` is the same as the TARGET argument
-    (#410), as reports take it."""
+    (#410), as reports take it. ``--member N`` reads member N of an
+    ensemble's latest batch instead of member 0 (#411)."""
     @functools.wraps(fn)
-    def wrapper(*args: Any, scenario_opt: str | None = None, **kwargs: Any) -> Any:
+    def wrapper(*args: Any, scenario_opt: str | None = None, member: int | None = None, **kwargs: Any) -> Any:
         if scenario_opt is not None:
             if kwargs.get(positional) not in (None, scenario_opt):
                 raise click.UsageError("give the scenario once, as SCENARIO or --scenario")
             kwargs[positional] = scenario_opt
+        if member is not None:
+            if kwargs.get("runfile") is not None:
+                raise click.UsageError("give --member or --runfile, not both")
+            kwargs["runfile"] = _ensemble_member_path(kwargs.get(positional), member, kwargs.get("data_dir"),
+                                                      kwargs.get("runs_dir"))
+            kwargs[positional] = None
         return fn(*args, **kwargs)
 
     positional = "target" if "target" in inspect.signature(fn).parameters else "scenario"
@@ -4089,6 +4098,8 @@ def _run_target_options(fn):
                      help="The same as SCENARIO: the scenario whose latest run to read."),
         click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
                      default=None, help="Run file (default: the scenario's latest run)."),
+        click.option("--member", type=click.IntRange(min=0), default=None,
+                     help="For an ensemble: this member of its latest batch (default: member 0)."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
         click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
@@ -4096,6 +4107,20 @@ def _run_target_options(fn):
     ]):
         decorated = option(decorated)
     return decorated
+
+
+def _ensemble_member_path(target: str | None, member: int, data_dir: Path | None, runs_dir: Path | None) -> Path:
+    """Member ``member``'s run file in the latest batch of the ensemble TARGET
+    names (the current scenario when it is omitted)."""
+    ref = _resolve_scenario(_resolve_data_dir(data_dir), target, runs_dir=runs_dir)
+    batch = latest_ensemble_batch(ref.runs_dir / ref.name, mode="monte_carlo")
+    if batch is None:
+        raise click.ClickException(f"no ensemble batch for {ref.name!r} in {ref.runs_dir}; run `sim run` first")
+    path = batch / f"member_{member:04d}.sqlite3"
+    if not path.exists():
+        count = len(list(batch.glob("member_*.sqlite3")))
+        raise click.ClickException(f"{ref.name}'s latest batch has no member {member} (it has 0 to {count - 1})")
+    return path
 
 
 def _checked_run_file(path: Path) -> Path:
@@ -9866,8 +9891,9 @@ def account_holders_command(
 @sim_group_command.command("allocation")
 @_scenario_argument
 @click.option("--exclude", "excluded", multiple=True,
-              type=click.Choice([*registries.ASSET_CLASSES, allocation.UNCLASSIFIED]),
-              help="Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified.")
+              type=click.Choice([*registries.ASSET_CLASSES, allocation.UNCLASSIFIED]), show_choices=False,
+              help=f"Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified: "
+                   f"{registries.asset_class_list()}, {allocation.UNCLASSIFIED}.")
 @click.option("--by", "by", type=click.Choice(allocation.GROUPINGS), default=None,
               help="Split each asset class by account, owner, subkind, tax treatment or security (symbol).")
 @click.option("--drift", is_flag=True, default=False,
@@ -10367,7 +10393,8 @@ def report_gains_command(
 
     taxable and non-taxable are income that reached cash (Social Security
     split by the year's computed taxable share), plus a taxable lot's
-    reinvested dividends and interest; unrealized is growth that stayed
+    reinvested dividends and interest (not municipal bond interest, federally
+    exempt but perhaps taxed by the state); unrealized is growth that stayed
     invested. distribution_coverage is the cash part of realized_total
     (less the reinvested payouts) minus expenses: a negative year spent
     principal. --chart draws the gains stacked by
@@ -12136,6 +12163,17 @@ def _fetch_prices(
     return failed
 
 
+def _note_stale_prices(data: Path) -> None:
+    """#560: say so when the builder's scheduled fetch of a held symbol has
+    failed for days, as its latest price above is then that old."""
+    from analysis.sim import price_schedule
+
+    stale = price_schedule.stale_held(price_schedule.read_state(data), datetime.now(UTC))
+    if stale:
+        click.echo(f"the background fetch of {', '.join(stale)} has failed for days; "
+                   "see sim builder status", err=True)
+
+
 @prices_group_command.command("show")
 @click.argument("symbols", type=completion.SYMBOL, nargs=-1)
 @click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
@@ -12188,6 +12226,7 @@ def prices_show_command(symbols: tuple[str, ...], since_text: str | None, data_d
                           prices.format_price(r.latest_price), change(r.month_change),
                           change(r.year_change))
         console.print(table)
+        _note_stale_prices(data)
         return
 
     try:
@@ -13236,7 +13275,7 @@ def symbol_group_command() -> None:
 @click.option("--weight", "weight_specs", multiple=True, metavar="CLASS=PERCENT",
               help="Its share in one asset class (repeatable), e.g. --weight stock_us=60% "
                    "--weight bond=40%; together they must add up to 100%. "
-                   f"Classes: {', '.join(registries.ASSET_CLASSES)}.")
+                   f"Classes: {registries.asset_class_list()}.")
 @click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
               help="The month the weights describe (default: every date).")
 @click.option("--fetch/--no-fetch", default=True, show_default=True,
@@ -13310,7 +13349,7 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
     """``symbol add``'s arguments, asked a question at a time."""
     symbol = click.prompt("symbol (ticker)").strip()
     name = click.prompt("name (optional)", default="", show_default=False).strip() or None
-    click.echo(f"  asset classes: {', '.join(registries.ASSET_CLASSES)}")
+    click.echo(f"  asset classes: {registries.asset_class_list()}")
     click.echo("  e.g. stock_us=60% bond=40%; blank to add the weights later (an AI can look them up)")
     while True:
         text = click.prompt("weights (optional)", default="", show_default=False).strip()
@@ -18166,7 +18205,10 @@ def builder_group() -> None:
     scenario whose results could have changed. Opening a scenario's run waits
     for a pending build of it. It builds only when the code is committed and
     matches the workspace's local branch (main, unless ``install BRANCH``
-    named another). ANALYSIS_BUILDER=off turns it off.
+    named another). It also fetches prices after each weekday's close, on a
+    branch merged into the data repo's main when that is checked out and
+    clean. ANALYSIS_BUILDER=off turns it off; ANALYSIS_PRICE_FETCH=off, or
+    ``install --no-prices``, turns off only the price fetches.
     """
 
 
@@ -18182,8 +18224,10 @@ _BUILDER_DATA_DIR = click.option(
 
 @builder_group.command(name="install")
 @click.argument("branch", required=False)
+@click.option("--prices/--no-prices", "fetch_prices", default=None,
+              help="Fetch prices after each weekday's close (default: as before, else yes).")
 @_BUILDER_DATA_DIR
-def builder_install(branch: str | None, data_dir: Path | None) -> None:
+def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Path | None) -> None:
     """Opt this workspace pair in: check the code worktree and the data repo
     name each other, record the pair, and install the data repo's hooks.
 
@@ -18191,25 +18235,50 @@ def builder_install(branch: str | None, data_dir: Path | None) -> None:
     recorded before, else main). Every shell, notebook and builder of the
     workspace reads it from there, so they all agree; run this again to
     change it.
-    """
-    from analysis.sim import builder
 
+    Unless --no-prices, it also installs an hourly timer (a launchd agent on
+    macOS, a crontab line elsewhere) that wakes the builder, so prices are
+    fetched after each weekday's close. They are committed on the data repo's
+    builder/prices branch and merged into main when main is checked out and
+    has no uncommitted changes.
+    """
+    from analysis.sim import builder, price_schedule
+
+    resolved = _builder_data_dir(data_dir)
     try:
-        done = builder.install(_builder_data_dir(data_dir), branch)
+        done = builder.install(resolved, branch, fetch_prices)
     except ValueError as exc:
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
         click.echo(line)
-    click.echo(builder.notify(_builder_data_dir(data_dir)))
+    # By the recorded choice alone: ANALYSIS_PRICE_FETCH=off is for one shell
+    # (an agent's, a test's), so install_timer then leaves the timer as it is.
+    if (builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}).get("prices", True):
+        click.echo(price_schedule.install_timer(resolved, _builder_sim(resolved)))
+    elif line := price_schedule.uninstall_timer(resolved):
+        click.echo(line)
+    click.echo(builder.notify(resolved))
+
+
+def _builder_sim(data_dir: Path) -> Path:
+    """The ``sim`` a timer runs: the pair's code worktree's, else this one."""
+    from analysis.sim import builder
+
+    code = (builder.read_config(builder.BuilderPaths.for_data(data_dir)) or {}).get("code_dir")
+    sim = Path(code) / ".venv" / "bin" / "sim" if code else None
+    return sim if sim is not None and sim.exists() else Path(sys.executable).parent / "sim"
 
 
 @builder_group.command(name="uninstall")
 @_BUILDER_DATA_DIR
 def builder_uninstall(data_dir: Path | None) -> None:
-    """Opt this workspace out and stop its builder."""
-    from analysis.sim import builder
+    """Opt this workspace out, stop its builder, and remove its price timer."""
+    from analysis.sim import builder, price_schedule
 
-    for line in builder.uninstall(_builder_data_dir(data_dir)):
+    resolved = _builder_data_dir(data_dir)
+    for line in builder.uninstall(resolved):
+        click.echo(line)
+    if line := price_schedule.uninstall_timer(resolved):
         click.echo(line)
 
 
@@ -18262,6 +18331,56 @@ def builder_run(data_dir: Path | None) -> None:
     raise SystemExit(builder.run_daemon(
         _builder_data_dir(data_dir), echo=lambda text: click.echo(text),
     ))
+
+
+@builder_group.command(name="prices")
+@click.option("--if-due", is_flag=True, default=False,
+              help="Only when a scheduled fetch is due (what the builder runs).")
+@_BUILDER_DATA_DIR
+def builder_prices(if_due: bool, data_dir: Path | None) -> None:
+    """Fetch prices on the builder's branch now, as the schedule does. The
+    builder merges them into the data repo's main, between builds, once main
+    is checked out with no uncommitted changes.
+
+    Every symbol `sim prices fetch` with none named would fetch. Unlike that
+    command, it never touches your checkout: it works in its own sparse
+    worktree, and a failing symbol is reported in `sim builder status`.
+    """
+    from analysis.sim import builder, price_schedule
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    config = builder.read_config(paths)
+    if config is None:
+        raise click.ClickException("background builds aren't installed here (sim builder install)")
+    if price_schedule.switched_off():
+        click.echo(f"price fetches are off ({price_schedule.SWITCH_ENV}=off)")
+        return
+    if if_due and not (price_schedule.enabled(config) and price_schedule.due(
+            price_schedule.read_state(resolved), datetime.now(UTC))):
+        click.echo("no fetch due")
+        return
+    from analysis.sim.builder_log import LogWriter
+    from analysis.sim.locks import BUILDER_CHILD_ENV
+
+    # The daemon copies its own child's output into the log; a fetch run by
+    # the timer or by hand writes its lines there itself.
+    writer = None if os.environ.get(BUILDER_CHILD_ENV) else LogWriter(paths.log_dir)
+    if writer is not None:
+        writer.event("fetching prices")
+    try:
+        outcome = price_schedule.fetch(resolved, paths.prices_worktree)
+    except price_schedule.PriceScheduleError as exc:
+        if writer is not None:
+            writer.event(f"price fetch failed: {exc}")
+        raise click.ClickException(str(exc)) from None
+    for line in outcome.lines:
+        click.echo(line)
+        if writer is not None:
+            writer.output(line)
+    if outcome.committed:
+        # The daemon merges, between builds; this starts it if need be.
+        click.echo(builder.notify(resolved))
 
 
 @builder_group.command(name="series", hidden=True)
@@ -18326,6 +18445,15 @@ def builder_status(data_dir: Path | None) -> None:
         click.echo(f"waiting: {name} ({why})")
     for name, failed in sorted((status.get("failed") or {}).items()):
         click.echo(f"failed: {name}: {failed.get('message')}")
+    from analysis.sim import price_schedule
+
+    if price_schedule.enabled(config):
+        for line in price_schedule.describe(price_schedule.read_state(resolved), datetime.now(UTC)):
+            click.echo(line)
+    elif price_schedule.switched_off():
+        click.echo(f"prices: not fetched ({price_schedule.SWITCH_ENV}=off)")
+    else:
+        click.echo("prices: not fetched (sim builder install --prices to start)")
     click.echo(f"log: {paths.log_dir} (sim builder log)")
 
 
@@ -19388,7 +19516,7 @@ def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | N
     """The series of the tables a state tax reads for living in ``state``,
     or None (with why, echoed) for a territory the federal tax stands in for.
     Tables of its own in the data repo win, as they do in the engine
-    (``states.tax_series``): Washington's, say, for its gains tax."""
+    (``states.tax_series``)."""
     has_tables = state.code in names.series_names(data_dir, scenario, "state_brackets")
     if not has_tables:
         if state.status == states.NOT_SUPPORTED:
@@ -19399,9 +19527,6 @@ def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | N
             click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
                        "federal tax stands in for it: no state tax is needed.")
             return None
-        if state.code in states.GAINS_TAX_ONLY:
-            click.echo(f"{states.label(state.code)} has no income tax; its capital gains tax "
-                       "isn't modeled.")
     series = states.tax_series(state.code, has_tables=has_tables)
     if series == state.code and not has_tables:
         raise click.ClickException(

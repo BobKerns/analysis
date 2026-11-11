@@ -40,11 +40,12 @@ __all__ = [
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
-API_VERSION = 2
+API_VERSION = 3
 """Bumped when a calculator written against the previous version could
 break, or one written for this version needs what the previous lacks. 1
 (#510) is the first a data repo can write to; 2 (#511) adds a state year's
-``other_deductions`` and ``credit_lines`` steps."""
+``other_deductions`` and ``credit_lines`` steps; 3 (#489) its ``excise``
+step and :attr:`Extra.real_estate_ltcg`."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""
@@ -129,11 +130,14 @@ class SpendingItem:
 @dataclass(frozen=True)
 class CapitalLoss:
     """A realized loss recorded apart from its sale (``capital_loss``, #199),
-    summed by tax year, character and the lot's owner."""
+    summed by tax year, character, the lot's owner and its account's
+    subkind (a ``real_estate`` loss, which a state's gains tax leaves out,
+    #489)."""
     year: int
     character: str
     owner: str | None
     amount: int
+    subkind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -316,9 +320,12 @@ class TaxYear:
 @dataclass(frozen=True)
 class Extra:
     """Income added on top of the year's, for a what-if: ``ordinary`` more
-    ordinary income (a Roth conversion) and ``ltcg`` more long-term gain."""
+    ordinary income (a Roth conversion) and ``ltcg`` more long-term gain,
+    ``real_estate_ltcg`` of it a home's (the after-tax drawdown's), which a
+    state's gains tax leaves out (#489)."""
     ordinary: int = 0
     ltcg: int = 0
+    real_estate_ltcg: int = 0
 
 
 NO_EXTRA = Extra()
@@ -330,11 +337,13 @@ class Return:
     ``tax_year_summary`` as ``<jurisdiction>_<line>``, and ``memo`` lines
     kept for the engine and not written.
 
-    The engine reads three memo lines, each 0 when left out: ``drawn_ordinary``,
+    The engine reads four memo lines, each 0 when left out: ``drawn_ordinary``,
     the year's ordinary income drawn from traditional money (an RMD), and
     ``drawn_gain``, the long-term gain its sales realized (not a reinvested
     gain distribution, #547), which the after-tax drawdown's share of a later
-    year replaces, so it isn't taxed twice; and ``hsa_taxed``, 1 when the
+    year replaces, so it isn't taxed twice; ``drawn_real_estate_gain``, real
+    estate's part of ``drawn_gain``, which it takes off the share's
+    :attr:`Extra.real_estate_ltcg` likewise (#489); and ``hsa_taxed``, 1 when the
     jurisdiction taxes an HSA like a brokerage account (#497), so the
     drawdown prices an HSA's gain over basis rather than its whole balance.
     Any other memo line is the calculator's own.
@@ -360,6 +369,12 @@ class Return:
     @property
     def agi(self) -> int:
         return self.lines["agi"]
+
+    @property
+    def magi(self) -> int:
+        """IRMAA's MAGI (#253): AGI plus tax-exempt interest (#265), the
+        ``magi`` line when the return has one, else AGI."""
+        return self.lines.get("magi", self.agi)
 
     @property
     def taxable_income(self) -> int:

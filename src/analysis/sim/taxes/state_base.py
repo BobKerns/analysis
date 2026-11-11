@@ -14,7 +14,9 @@ override on its :class:`StateYear`:
    (lines that depend on the year's income), then a carried-in NOL, then
    taxable income;
 5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits` and
-   :meth:`~StateYear.credit_lines`.
+   :meth:`~StateYear.credit_lines`;
+6. :meth:`~StateYear.excise`, a tax apart from the income tax (Washington's
+   on capital gains, #489), added to the tax.
 """
 
 from __future__ import annotations
@@ -162,6 +164,12 @@ class StateYear(Prepared):
         used up. None by default."""
         return {}
 
+    def excise(self, basis: Basis) -> tuple[Mapping[str, int], int]:
+        """A tax the state levies apart from its income tax, on its own base
+        (Washington's on capital gains, #489): its lines and the tax, which
+        is added to the income tax after credits. None by default."""
+        return {}, 0
+
     def memo(self, basis: Basis) -> Mapping[str, int]:
         """The return's memo (``drawn_ordinary``, ``drawn_gain``)."""
         return {}
@@ -196,6 +204,7 @@ class StateYear(Prepared):
         for line, amount in self.credit_lines(tax, income, basis).items():
             credit_lines[line] = max(0, min(amount, tax - credits))
             credits += credit_lines[line]
+        excise_lines, excise = self.excise(basis)
         lines = {
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,
@@ -212,7 +221,8 @@ class StateYear(Prepared):
             "ordinary_taxable": common.ordinary_taxable(
                 taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),
             "credits": credits,
-            "tax": tax - credits,
+            **excise_lines,
+            "tax": tax - credits + excise,
         }
         return Return(lines, MappingProxyType(dict(self.memo(basis))))
 

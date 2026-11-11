@@ -40,11 +40,13 @@ blockifying
 blockquotes
 Bogleheads
 BONDX
+bootout
 boxstyle
 BPOS
 BUILDKIT
 businesswire
 cachedir
+cacheinfo
 calevt
 capex
 capitalizable
@@ -99,6 +101,7 @@ errorbar
 errstate
 esac
 espeak
+ESSB
 evals
 Evensky
 executemany
@@ -126,6 +129,7 @@ getbasetemp
 geteuid
 gethostname
 getpid
+getuid
 Ghostty
 globenewswire
 gmtoffset
@@ -212,6 +216,7 @@ mtimes
 mult
 multimonth
 Multnomah
+muni
 munknown
 nanargmin
 nanmax
@@ -345,6 +350,7 @@ stcg
 stdlib
 steelblue
 Stooq
+subclassing
 subkey
 subkind
 subkinds

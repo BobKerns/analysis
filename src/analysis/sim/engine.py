@@ -140,6 +140,7 @@ def run_scenario(
         # A strategy's view of a lot's return counts the dividends and
         # interest it reinvests (#468) as well as its appreciation.
         payout_names = {c.name for c in (*registries.PAYOUT_ACCOUNTS.values(),
+                                         *registries.MUNI_PAYOUT_ACCOUNTS.values(),
                                          *registries.HSA_PAYOUT_ACCOUNTS.values())}
         return_sources = growth_sources | frozenset(r[0] for r in lots if r[9] in payout_names)
         account_id_by_name: dict[str, int] = {
@@ -3077,12 +3078,13 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
         )
     ] if expense_ids else []
     losses = [
-        tax_api.CapitalLoss(int(year), character, owner, int(amount))
-        for year, character, owner, amount in con.execute(
+        tax_api.CapitalLoss(int(year), character, owner, int(amount), subkind)
+        for year, character, owner, subkind, amount in con.execute(
             f"SELECT COALESCE(cl.tax_year, CAST(substr(cl.date, 1, 4) AS INTEGER)) AS y, "
-            "       cl.tax_character, a.owner, SUM(cl.amount) "
+            "       cl.tax_character, a.owner, a.subkind, SUM(cl.amount) "
             "FROM capital_loss cl LEFT JOIN account_lot l ON l.id = cl.lot_id "
-            "LEFT JOIN account a ON a.id = l.account_id WHERE y <= ? GROUP BY y, cl.tax_character, a.owner",
+            "LEFT JOIN account a ON a.id = l.account_id WHERE y <= ? "
+            "GROUP BY y, cl.tax_character, a.owner, a.subkind",
             (tax_year,),
         )
     ]
@@ -3406,9 +3408,14 @@ def _settle_tax(
         # the year's income, or the drawdown taxes those dollars twice.
         drawn = ret.memo.get("drawn_ordinary", 0)
         realized = ret.memo.get("drawn_gain", 0)
+        # A home sold this year is in the realized gain the share replaces,
+        # so its part comes off the share's real estate too (#489).
+        realized_home = ret.memo.get("drawn_real_estate_gain", 0)
         drawdown_pricing[(scope, tax_year)] = DrawdownPricing(
-            lambda ordinary, gains, prepared=prepared, drawn=drawn, realized=realized:
-            prepared.compute(tax_api.Extra(ordinary - drawn, gains - realized)).tax,
+            lambda ordinary, gains, real_estate=0, prepared=prepared, drawn=drawn,
+            realized=realized, realized_home=realized_home:
+            prepared.compute(tax_api.Extra(
+                ordinary - drawn, gains - realized, real_estate - realized_home)).tax,
             hsa_taxed=bool(ret.memo.get("hsa_taxed", 0)))
 
     # What was paid toward the year: everything into the destination for
@@ -3763,13 +3770,13 @@ def _apply_fill_bracket(
                   if t.tier > int(params["irmaa_tier"])]
         if floors:
             amount = _largest_within(
-                lambda x, e=magi_est: e.compute(tax_api.Extra(x)).agi, min(floors), amount)
+                lambda x, e=magi_est: e.compute(tax_api.Extra(x)).magi, min(floors), amount)
     if (max_rate := params.get("max_marginal_rate")) is not None:
         limit = units.percent_to_micros(str(max_rate))
         cliff = None
         if magi_est is not None and irmaa is not None:
             def cliff(x: int, e: tax_api.Prepared = magi_est) -> int:
-                return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).agi, month_s, tid)
+                return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).magi, month_s, tid)
         # A rate counts the taxes paid with its own, a state's local tax
         # (#508), since the same dollar pays them. A federal rate stays the
         # federal tax's: a state builds on it, but is paid on its own.
@@ -3993,9 +4000,10 @@ class IrmaaContext:
 
 class DrawdownPricing(NamedTuple):
     """A tax year's after-tax drawdown pricing (#251): its tax with more
-    ordinary income and long-term gain on top, and whether it taxes an HSA
-    as a brokerage account (#497), so its gain over basis is what's drawn."""
-    tax_with: Callable[[int, int], int]
+    ordinary income and long-term gain on top, the gain's real estate part
+    third (#489), and whether it taxes an HSA as a brokerage account (#497),
+    so its gain over basis is what's drawn."""
+    tax_with: Callable[[int, int, int], int]
     hsa_taxed: bool = False
 
 
@@ -4005,7 +4013,7 @@ the inherited-IRA rule's ten (SECURE Act, 2019)."""
 
 
 def _drawdown_tax(
-    con, tax_year: int, tax_with_in: Callable[[int], Callable[[int, int], int]],
+    con, tax_year: int, tax_with_in: Callable[[int], Callable[[int, int, int], int]],
     paycheck_years: Collection[int] = (), *, hsa_taxed: bool = False,
 ) -> tuple[int | None, int]:
     """The money ``tax_year``'s after-tax net worth taxes and the extra tax on
@@ -4014,7 +4022,9 @@ def _drawdown_tax(
     says ``step_up``, drawn down evenly over the ``drawdown_years`` after it.
     Where ``hsa_taxed`` (#497), an HSA lot is taxed like a brokerage lot: its
     gain over basis is gain, which no ``step_up`` takes away (an HSA never
-    steps up), and its balance isn't traditional money.
+    steps up), and its balance isn't traditional money. A home's gain is
+    priced as gain, passed apart as well, since a state's gains tax leaves it
+    out (#489).
     Each year's share is priced on top of that year's own income, brackets
     and filing status, ``tax_with_in(year)`` (#404): money left at a year end
     is spent in the years that follow, not on top of this year's paycheck.
@@ -4031,7 +4041,7 @@ def _drawdown_tax(
         con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}"
     ).get("after_tax") or {}
     years = int(settings.get("drawdown_years", DEFAULT_DRAWDOWN_YEARS))
-    deferred = gains = hsa_gains = 0
+    deferred = gains = hsa_gains = real_estate = 0
     for treatment, subkind, balance, basis in con.execute(
         "SELECT m.tax_treatment, a.subkind, ls.balance, ls.cost_basis "
         "FROM lot_state ls JOIN account_lot m ON m.id = ls.lot_id "
@@ -4045,22 +4055,25 @@ def _drawdown_tax(
         elif (treatment == "taxable" and basis is not None
               and subkind not in registries.CASH_SUBKINDS):
             gains += max(0, balance - basis)
+            if subkind == "real_estate":
+                real_estate += max(0, balance - basis)
     if settings.get("step_up"):
-        gains = 0
+        gains = real_estate = 0
     gains += hsa_gains
     if deferred + gains == 0:
         return 0, 0
     # Each year's share carries its cent of any remainder, so the shares sum
     # to the whole base.
-    (deferred_share, deferred_extra), (gains_share, gains_extra) = (
-        divmod(deferred, years), divmod(gains, years))
+    (deferred_share, deferred_extra), (gains_share, gains_extra), (home_share, home_extra) = (
+        divmod(deferred, years), divmod(gains, years), divmod(real_estate, years))
     draw_years = (year for year in itertools.count(tax_year + 1) if year not in paycheck_years)
     extra = 0
     # The years are endless, so the shares end the loop.
     for i, draw_year in zip(range(years), draw_years, strict=False):
         tax_with = tax_with_in(draw_year)
-        share = (deferred_share + (i < deferred_extra), gains_share + (i < gains_extra))
-        extra += tax_with(*share) - tax_with(0, 0)
+        share = (deferred_share + (i < deferred_extra), gains_share + (i < gains_extra),
+                 home_share + (i < home_extra))
+        extra += tax_with(*share) - tax_with(0, 0, 0)
     return deferred + gains, extra
 
 
@@ -4078,14 +4091,14 @@ def _record_drawdown_taxes(
             "FROM transfer_event te JOIN account a ON a.id = te.from_account "
             "WHERE a.kind = 'income' AND a.subkind = 'salary' AND te.amount > 0")
     }
-    by_scope: dict[str, dict[int, Callable[[int, int], int]]] = defaultdict(dict)
+    by_scope: dict[str, dict[int, Callable[[int, int, int], int]]] = defaultdict(dict)
     for (scope, year), priced in pricing.items():
         by_scope[scope][year] = priced.tax_with
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     for scope, by_year in by_scope.items():
         known = sorted(by_year)
 
-        def tax_with_in(year: int, by_year=by_year, known=known) -> Callable[[int, int], int]:
+        def tax_with_in(year: int, by_year=by_year, known=known) -> Callable[[int, int, int], int]:
             return by_year[known[max(0, bisect.bisect_right(known, year) - 1)]]
 
         for year in known:

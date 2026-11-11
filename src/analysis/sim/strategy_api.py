@@ -19,6 +19,7 @@ never become amounts without the strategy rounding them to whole cents.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -45,7 +46,7 @@ __all__ = [
     "register", "sale_gain",
 ]
 
-API_VERSION = 9
+API_VERSION = 11
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
@@ -63,7 +64,10 @@ and ``ctx.rail``. 5 (#459) added ``ctx.survival_years``,
 ``taxes``, the set of the scenario's tax jurisdictions. 8 (#507) renamed
 the tax summary's lines. 9 (#508) made the local tax its own jurisdiction:
 ``ctx.tax`` takes ``scope="local"``, the state's estimate no longer includes
-it, and ``last_year``'s ``state_local_tax`` is ``local_tax``."""
+it, and ``last_year``'s ``state_local_tax`` is ``local_tax``. 11 (#411)
+added ``ctx.rule_budgets`` and ``ctx.with_memory``, :meth:`Strategy.delegate`,
+and made the built-in kinds' classes (:mod:`analysis.sim.strategies`) part
+of the API, for a household's kind to subclass or delegate to."""
 
 
 class StrategyError(Exception):
@@ -242,7 +246,9 @@ class TaxEstimate:
     ordinary_taxable: int
     """The part of ``taxable_income`` that isn't long-term gain."""
     agi: int
-    """Adjusted gross income, which is also IRMAA's MAGI (#253)."""
+    """Adjusted gross income."""
+    magi: int
+    """IRMAA's MAGI (#253): AGI plus tax-exempt interest (#265)."""
 
 
 _RENAMED_LINES = {
@@ -350,7 +356,7 @@ class TaxView:
         ret = self._est(scope).compute(tax_api.Extra(ordinary, ltcg))
         return TaxEstimate(
             tax=ret.tax, taxable_income=ret.taxable_income,
-            ordinary_taxable=ret.ordinary_taxable, agi=ret.agi,
+            ordinary_taxable=ret.ordinary_taxable, agi=ret.agi, magi=ret.magi,
         )
 
     def marginal(
@@ -459,6 +465,7 @@ class Context:
         cpi: Callable[[date], int] | None = None,
         people: Mapping[str, PersonView] | None = None,
         budget: Callable[[], int] | None = None,
+        rule_budgets: Callable[[], Mapping[str, int]] | None = None,
         annual_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
         trailing_return: Callable[[tuple[LotRef, ...], int], float | None] | None = None,
         tax: TaxView | None = None,
@@ -474,6 +481,7 @@ class Context:
         self._cpi = cpi
         self._people = people if people is not None else {}
         self._budget = budget
+        self._rule_budgets = rule_budgets
         self._annual_return = annual_return
         self._trailing_return = trailing_return
         self._tax = tax
@@ -549,6 +557,24 @@ class Context:
         run's end. Today's plan, not a forecast of inflation. Zero for a
         strategy that owns no rules."""
         return self._budget() if self._budget is not None else 0
+
+    def rule_budgets(self) -> dict[str, int]:
+        """:meth:`budget` rule by rule: each owned rule's name and its
+        spending over the twelve months from this one, at this month's
+        prices, in cents. Empty for a strategy that owns no rules."""
+        return dict(self._rule_budgets()) if self._rule_budgets is not None else {}
+
+    def with_memory(self, key: str) -> Context:
+        """This context with ``memory[key]`` as its memory (a dict, made
+        empty the first time), for a strategy a kind delegates to
+        (:meth:`Strategy.delegate`): each keeps its own state under its own
+        key, and both are recorded with the kind's memory."""
+        sub = self.memory.setdefault(key, {})
+        if not isinstance(sub, dict):
+            raise StrategyError(f"memory[{key!r}] is not a dict")
+        ctx = copy.copy(self)
+        ctx.memory = sub
+        return ctx
 
     def annual_return(self, lots: Iterable[LotRef], year: int) -> float | None:
         """A finished year's investment return on ``lots``: the growth
@@ -748,6 +774,21 @@ class Strategy:
     def __init__(self, name: str, params: Any) -> None:
         self.name = name
         self.params = params
+
+    def delegate[S: Strategy](self, kind: type[S], **params: Any) -> S:
+        """An instance of ``kind`` (a built-in, say) to hand some of this
+        strategy's work to: its ``Params`` take the fields of this one's
+        that share their names, then ``params`` (already in stored units:
+        cents, millionths). Call its hooks with ``ctx.with_memory(key)``
+        so its memory stays apart from this one's. Its ``check`` isn't run
+        at load; call it from this kind's own ``check`` when it matters."""
+        own = {f.name: getattr(self.params, f.name) for f in dataclasses.fields(self.params)}
+        names = {f.name for f in dataclasses.fields(kind.Params)}
+        values = {name: value for name, value in own.items() if name in names} | params
+        try:
+            return kind(self.name, kind.Params(**values))
+        except TypeError as exc:
+            raise StrategyError(f"{type(self).__name__} can't delegate to {kind.__name__}: {exc}") from None
 
     def draw(self, ctx: Context, chain: ChainView, need: int) -> Decision | None:
         """Choose which leaves of the owned source ``chain`` pay ``need``

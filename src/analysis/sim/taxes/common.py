@@ -102,6 +102,14 @@ class CapitalGains(NamedTuple):
     lapsed: int = 0
     """The carryover that ended with a death in the year (#277), already
     taken out of ``carryover_st`` and ``carryover_lt``."""
+    long_term: int = 0
+    """The year's long-term result less the long-term loss carried in,
+    before a short-term loss offsets it: Schedule D line 15, the base of a
+    state's gains tax (#489). Negative for a net loss."""
+    loss_deduction_lt: int = 0
+    """The long-term part of ``loss_deduction`` (a short-term loss is
+    deducted first), which a state's gains tax takes out of its income
+    (#489)."""
 
 
 def net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
@@ -121,6 +129,7 @@ def net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
     return CapitalGains(
         max(0, st), max(0, lt), deduction,
         loss_st - used_st, loss_lt - (deduction - used_st),
+        loss_deduction_lt=deduction - used_st,
     )
 
 
@@ -166,9 +175,11 @@ def capital_gains(
     carry_st = carry_lt = 0
     building: dict[str | None, int] = {}
     result = CapitalGains(0, 0, 0, 0, 0)
+    long_term = 0
     for year in range(min(totals, default=ty.year), ty.year + 1):
         st, lt = totals.get(year, (0, 0))
-        result = net_capital(st - carry_st, lt - carry_lt, functools.partial(loss_limit, year))
+        long_term = lt - carry_lt
+        result = net_capital(st - carry_st, long_term, functools.partial(loss_limit, year))
         carry_st, carry_lt = result.carryover_st, result.carryover_lt
         for owner, net in nets.get(year, {}).items():
             if net < 0:
@@ -183,7 +194,19 @@ def capital_gains(
             building = _left(building, ended)
         if not carry_st + carry_lt:
             building = {}
-    return result
+    return result._replace(long_term=long_term)
+
+
+def real_estate_gain(ty: TaxYear) -> int:
+    """The year's net long-term result on real estate (#489): what sales from
+    a ``real_estate`` account realized, less the long-term losses recorded
+    on one (a rental sold below its basis), which Washington's gains tax
+    leaves out either way. A loss on a home isn't deductible, so it posts
+    none."""
+    gain = sum(i.amount for i in ty.year_items("ltcg") if i.payer.subkind == "real_estate")
+    return gain - sum(loss.amount for loss in ty.losses
+                      if loss.year == ty.year and loss.character == "ltcg"
+                      and loss.subkind == "real_estate")
 
 
 _GAIN_DISTRIBUTIONS = registries.PAYOUT_ACCOUNTS["ltcg"].name
@@ -308,9 +331,11 @@ def hsa_deferred_flows(ty: TaxYear) -> tuple[int, int]:
 
 def taxable_social_security(
     *, ordinary_income: int, ltcg_income: int, ss_income: int, tier1: int, tier2: int,
+    exempt_interest: int = 0,
 ) -> int:
-    """Approximate taxable Social Security amount under provisional-income rules."""
-    provisional = ordinary_income + ltcg_income + (ss_income // 2)
+    """Approximate taxable Social Security amount under provisional-income
+    rules, which count tax-exempt interest (IRC §86(b)(2)(B), #265)."""
+    provisional = ordinary_income + ltcg_income + exempt_interest + (ss_income // 2)
     if provisional <= tier1:
         return 0
     if provisional <= tier2:
@@ -660,6 +685,34 @@ def bracket_series(ty: TaxYear) -> str | None:
     return None if series is None else str(series)
 
 
+EXEMPT_INTEREST = "tax_exempt_interest"
+
+
+def exempt_interest_memo(ty: TaxYear) -> dict[str, int]:
+    """The federal memo's municipal bond interest (#265): the year's
+    ``tax_exempt_interest``, and ``tax_exempt_interest__<ST>``, the part
+    from one state's bonds, for each state that paid some."""
+    memo = {EXEMPT_INTEREST: 0}
+    for item in ty.year_items(registries.TAX_EXEMPT):
+        memo[EXEMPT_INTEREST] += item.amount
+        if issuer := registries.MUNI_PAYER_STATE.get(item.payer.name):
+            key = f"{EXEMPT_INTEREST}__{issuer}"
+            memo[key] = memo.get(key, 0) + item.amount
+    return memo
+
+
+def taxable_muni_interest(memo: Mapping[str, int], home: str | None) -> int:
+    """The municipal bond interest (#265) a state adds back to federal AGI,
+    from the federal ``memo``: every state's but ``home``'s, where the
+    household lives, and never a territory's. The District of Columbia adds
+    back none."""
+    if home in states.TAXES_NO_MUNI_INTEREST:
+        return 0
+    exempt = {home, *states.MUNI_EXEMPT_EVERYWHERE}
+    return memo.get(EXEMPT_INTEREST, 0) - sum(
+        memo.get(f"{EXEMPT_INTEREST}__{issuer}", 0) for issuer in exempt if issuer)
+
+
 def state_series(ty: TaxYear, year: int | None = None) -> str:
     """The series of the state tables a tax year reads (#509): the state the
     household lives in on December 31 of ``year`` (the tax year's own by
@@ -847,8 +900,9 @@ class StateAdjustment:
     base: str
     figure: int
     """What the row grants before the income test, from its fixed base
-    (spending, income, filers); for a federal base, its rate and cap
-    applied by :meth:`from_federal`."""
+    (spending, income, filers); for a base the return figures (the federal
+    tax or deduction, the state's gains tax), its rate and cap applied by
+    :meth:`from_base`."""
     rate_micros: int | None
     cap: int | None
     income_limit: int | None
@@ -858,8 +912,9 @@ class StateAdjustment:
     """How many exemptions a ``filers`` line is: ``phaseout_rate`` takes its
     share of each dollar over from each, as California's does."""
 
-    def from_federal(self, amount: int) -> int:
-        """The figure for a ``federal_tax`` or ``federal_deduction`` base."""
+    def from_base(self, amount: int) -> int:
+        """The figure for a ``federal_tax``, ``federal_deduction`` or
+        ``gains_tax`` base of ``amount``."""
         value = max(0, amount)
         if self.rate_micros is not None:
             value = value * self.rate_micros // 1_000_000

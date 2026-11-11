@@ -69,15 +69,6 @@ def ledger(ledger_con: sqlite3.Connection,
     return ledger_con
 
 
-def _post(con: sqlite3.Connection, year: int, frm: int, to: int, amount: int, character: str) -> None:
-    con.execute(
-        "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
-        "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
-        "VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'rule')",
-        (f"{year}-06-30", frm, to, frm, to, amount, amount, character),
-    )
-
-
 def _hsa_gain(con: sqlite3.Connection, year: int, amount: int, character: str = "ltcg") -> None:
     """An HSA withdrawal's gain over its basis (#497), a loss negative."""
     con.execute(
@@ -93,8 +84,10 @@ def _estimate(con: sqlite3.Connection, aux: Aux, scope: str, year: int = 2026,
                         jurisdictions={"federal": TaxRule("federal", {"scope": "federal"}, 1)}).compute(Extra(more))
 
 
-def test_the_surcharge_adds_its_rate_above_its_floor(ledger: sqlite3.Connection) -> None:
-    _post(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
+def test_the_surcharge_adds_its_rate_above_its_floor(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    post_transfer(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
     taxable = 2_000_000_00
     state = _estimate(ledger, _aux(surcharge=True), "state")
     assert state.tax == taxable // 10 + (taxable - 1_000_000_00) // 100
@@ -107,11 +100,12 @@ def test_the_surcharge_adds_its_rate_above_its_floor(ledger: sqlite3.Connection)
 
 def test_a_state_that_taxes_an_hsa_taxes_a_withdrawals_gain_not_its_growth(
     ledger: sqlite3.Connection,
+    post_transfer: Callable[..., None],
 ) -> None:
-    _post(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
-    _post(ledger, 2026, CHECKING, HSA, 8_000_00, "tax_deferred_in")
-    _post(ledger, 2026, DEFERRED_GAINS, HSA, 1_000_00, "deferred")
-    _post(ledger, 2026, HSA, MEDICAL, 2_000_00, "tax_deferred_out")
+    post_transfer(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
+    post_transfer(ledger, 2026, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    post_transfer(ledger, 2026, DEFERRED_GAINS, HSA, 1_000_00, "deferred")
+    post_transfer(ledger, 2026, HSA, MEDICAL, 2_000_00, "tax_deferred_out")
     _hsa_gain(ledger, 2026, 500_00)
 
     federal = _estimate(ledger, _aux(hsa="taxable"), "federal")
@@ -137,13 +131,15 @@ def test_a_state_that_taxes_an_hsa_taxes_a_withdrawals_gain_not_its_growth(
     assert "hsa_taxed" not in federal.memo
 
 
-def test_an_hsa_withdrawal_at_a_loss_is_a_capital_loss_for_the_state(ledger: sqlite3.Connection) -> None:
-    _post(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
-    _post(ledger, 2026, HSA, DEFERRED_GAINS, 5_000_00, "deferred")
-    _post(ledger, 2026, HSA, MEDICAL, 10_000_00, "none")
+def test_an_hsa_withdrawal_at_a_loss_is_a_capital_loss_for_the_state(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    post_transfer(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
+    post_transfer(ledger, 2026, HSA, DEFERRED_GAINS, 5_000_00, "deferred")
+    post_transfer(ledger, 2026, HSA, MEDICAL, 10_000_00, "none")
     _hsa_gain(ledger, 2026, -5_000_00)
-    _post(ledger, 2027, SALARY, CHECKING, 100_000_00, "ordinary")
-    _post(ledger, 2027, HSA, MEDICAL, 10_000_00, "none")
+    post_transfer(ledger, 2027, SALARY, CHECKING, 100_000_00, "ordinary")
+    post_transfer(ledger, 2027, HSA, MEDICAL, 10_000_00, "none")
     _hsa_gain(ledger, 2027, 4_000_00)
 
     fell = _estimate(ledger, _aux(hsa="taxable"), "state")
@@ -158,16 +154,17 @@ def test_an_hsa_withdrawal_at_a_loss_is_a_capital_loss_for_the_state(ledger: sql
 
 def test_each_year_reads_the_tables_of_the_state_it_is_filed_in(
     ledger: sqlite3.Connection, set_residence: Callable[..., None],
+    post_transfer: Callable[..., None],
 ) -> None:
     """A tax year reads every table keyed by the state where the household
     lives on its December 31 (#509), whenever it is computed: the old
     state's surcharge and HSA rules for the years before the move, the new
     state's, or none, from the year of the move: no surcharge, and the
     federal HSA rules. An HSA year before the move stays the old state's."""
-    _post(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
-    _post(ledger, 2027, SALARY, CHECKING, 2_010_000_00, "ordinary")
-    _post(ledger, 2026, CHECKING, HSA, 8_000_00, "tax_deferred_in")
-    _post(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    post_transfer(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
+    post_transfer(ledger, 2027, SALARY, CHECKING, 2_010_000_00, "ordinary")
+    post_transfer(ledger, 2026, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    post_transfer(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     aux = _aux(surcharge=True, hsa="taxable")
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
     set_residence(ledger, ("2026-01-31", "CA", None), ("2027-03-31", "WA", None))
@@ -182,24 +179,26 @@ def test_each_year_reads_the_tables_of_the_state_it_is_filed_in(
 
 def test_a_move_to_a_state_whose_tables_start_later_waits_for_them(
     ledger: sqlite3.Connection, set_residence: Callable[..., None],
+    post_transfer: Callable[..., None],
 ) -> None:
-    _post(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    post_transfer(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     aux = _aux()
     aux[("state_brackets", "OR")] = aux[("state_brackets", "CA")]
     aux[(registries.STATE_HSA, "OR")] = [("2030-01-31", {"treatment": "taxable"})]
     set_residence(ledger, ("2026-01-31", "CA", None), ("2028-03-31", "OR", None))
     assert _estimate(ledger, aux, "state", 2029)["ordinary_income"] == -8_000_00
-    _post(ledger, 2030, CHECKING, HSA, 8_000_00, "tax_deferred_in")
+    post_transfer(ledger, 2030, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     assert _estimate(ledger, aux, "state", 2030)["ordinary_income"] == 0
 
 
 def test_a_move_in_the_first_months_of_a_year_files_the_year_before_in_the_old_state(
     ledger: sqlite3.Connection, set_residence: Callable[..., None],
+    post_transfer: Callable[..., None],
 ) -> None:
     """#498: a move in February is before the April settlement of the year
     before, which is still filed where the household lived on its December
     31, with that state's surcharge."""
-    _post(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
+    post_transfer(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
     aux = _aux(surcharge=True)
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
     set_residence(ledger, ("2026-01-31", "CA", None), ("2027-02-28", "WA", None))
@@ -240,8 +239,9 @@ def _aux_rows(result: LoadResult) -> list[tuple[str, str | None, dict[str, Any],
 
 def test_the_old_states_later_surcharge_never_applies_after_a_move(
     ledger: sqlite3.Connection, set_residence: Callable[..., None],
+    post_transfer: Callable[..., None],
 ) -> None:
-    _post(ledger, 2031, SALARY, CHECKING, 110_000_00, "ordinary")
+    post_transfer(ledger, 2031, SALARY, CHECKING, 110_000_00, "ordinary")
     aux = _aux()
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
     aux[(registries.STATE_SURCHARGE, "CA")] = [("2031-01-31", {
@@ -252,14 +252,15 @@ def test_the_old_states_later_surcharge_never_applies_after_a_move(
 
 def test_a_state_that_taxes_an_hsa_taxes_its_payouts_the_year_they_are_paid(
     ledger: sqlite3.Connection,
+    post_transfer: Callable[..., None],
 ) -> None:
     """An HSA's dividends and gain distributions (#497) are untaxed
     federally; a state that taxes the HSA taxes them as a brokerage
     account's, and its growth not at all."""
-    _post(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
-    _post(ledger, 2026, DEFERRED_GAINS, HSA, 1_000_00, "tax_free")
-    _post(ledger, 2026, HSA_DIVIDENDS, HSA, 300_00, "tax_free")
-    _post(ledger, 2026, HSA_GAIN_DISTRIBUTIONS, HSA, 200_00, "tax_free")
+    post_transfer(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
+    post_transfer(ledger, 2026, DEFERRED_GAINS, HSA, 1_000_00, "tax_free")
+    post_transfer(ledger, 2026, HSA_DIVIDENDS, HSA, 300_00, "tax_free")
+    post_transfer(ledger, 2026, HSA_GAIN_DISTRIBUTIONS, HSA, 200_00, "tax_free")
     federal = _estimate(ledger, _aux(hsa="taxable"), "federal")
     assert (federal["ordinary_income"], federal["ltcg_taxed"]) == (100_000_00, 0)
     state = _estimate(ledger, _aux(hsa="taxable"), "state")
@@ -273,13 +274,14 @@ def test_a_state_that_taxes_an_hsa_taxes_its_payouts_the_year_they_are_paid(
 @pytest.mark.parametrize("scope", ["federal", "state"])
 def test_a_reinvested_gain_distribution_is_no_gain_drawn_from_a_lot(
     ledger: sqlite3.Connection, scope: str,
+    post_transfer: Callable[..., None],
 ) -> None:
     """The after-tax drawdown replaces the gain a year's sales drew out of
     its lots (``drawn_gain``). A long-term distribution (#547) is taxed as a
     gain but adds basis, taking nothing out of a lot's embedded gain."""
-    _post(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
-    _post(ledger, 2026, GAIN_DISTRIBUTIONS, BROKERAGE, 6_000_00, "ltcg")
-    _post(ledger, 2026, BROKERAGE, CHECKING, 4_000_00, "ltcg")
+    post_transfer(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
+    post_transfer(ledger, 2026, GAIN_DISTRIBUTIONS, BROKERAGE, 6_000_00, "ltcg")
+    post_transfer(ledger, 2026, BROKERAGE, CHECKING, 4_000_00, "ltcg")
     taxed = _estimate(ledger, _aux(), scope)
     assert taxed["ltcg_taxed"] == 10_000_00
     assert taxed.memo["drawn_gain"] == 4_000_00
@@ -288,10 +290,11 @@ def test_a_reinvested_gain_distribution_is_no_gain_drawn_from_a_lot(
 
 def test_a_year_with_no_hsa_flow_still_prices_the_hsa_as_the_state_taxes_it(
     ledger: sqlite3.Connection,
+    post_transfer: Callable[..., None],
 ) -> None:
     """The after-tax drawdown reads ``hsa_taxed`` from every year's return
     (#497), the local tax's too, whether or not the HSA moved that year."""
-    _post(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
+    post_transfer(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
     assert _estimate(ledger, _aux(hsa="taxable"), "state").memo["hsa_taxed"] == 1
     assert _estimate(ledger, _aux(), "state").memo["hsa_taxed"] == 0
     rules = {"federal": TaxRule("federal", {"scope": "federal"}, 1),
