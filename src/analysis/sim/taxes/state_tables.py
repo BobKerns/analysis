@@ -42,7 +42,13 @@ class StateTablesYear(FederalStateYear):
         # already. Each year by the state it was filed in.
         taxed_years = [year for year in common.hsa_flow_years(ty)
                        if common.state_taxes_hsa(ty, common.state_series(ty, year), year)]
-        self._hsa_taxed = ty.year in taxed_years
+        # This year's own flag doesn't need a flow: the after-tax drawdown
+        # prices a quiet HSA's gain over basis too.
+        self._hsa_taxed = common.state_taxes_hsa(ty, series, ty.year)
+        # What the HSA paid this year, which every compute reads.
+        self._hsa_dividends = sum(common.hsa_dividends(ty).values()) if self._hsa_taxed else 0
+        self._distributed = common.gain_distributions(ty) + (
+            common.hsa_gain_distributions(ty) if self._hsa_taxed else 0)
         # The state nets its own gains: an HSA's are gains to it.
         capital = self._capital = common.capital_gains(
             ty, loss_limit=common.loss_limit(ty), hsa_years=taxed_years)
@@ -104,10 +110,9 @@ class StateTablesYear(FederalStateYear):
         fed, capital = basis.federal, self._capital
         memo = fed.memo
         dividends = memo.get("qualified_dividends", 0)
-        contributed = withdrawn = dividends_paid = 0
+        contributed = withdrawn = 0
         if self._hsa_taxed:
             contributed, withdrawn = memo.get("hsa_contributed", 0), memo.get("hsa_withdrawn", 0)
-            dividends_paid = sum(common.hsa_dividends(self.ty).values())
         return (
             # A state has no preference for qualified dividends: its gain
             # rules (#485) are for gains, so its dividends are ordinary.
@@ -116,7 +121,7 @@ class StateTablesYear(FederalStateYear):
             # went in, and doesn't tax what came out (#490), but for its gain.
             Adjustment("hsa_addback", ordinary=contributed - withdrawn),
             # It taxes an HSA's dividends and interest the year they're paid (#497).
-            Adjustment("hsa_dividends", ordinary=dividends_paid),
+            Adjustment("hsa_dividends", ordinary=self._hsa_dividends),
             # Its own netting of gains and losses, with an HSA's gains (#497),
             # less the federal result.
             Adjustment(
@@ -195,9 +200,6 @@ class StateTablesYear(FederalStateYear):
     def memo(self, basis: Basis) -> Mapping[str, int]:
         memo = basis.federal.memo
         withdrawn = memo.get("hsa_withdrawn", 0) if self._hsa_taxed else 0
-        distributed = common.gain_distributions(self.ty)
-        if self._hsa_taxed:
-            distributed += common.hsa_gain_distributions(self.ty)
         return {
             "hsa_withdrawn": withdrawn,
             # The after-tax drawdown prices an HSA's gain over basis, not its
@@ -207,7 +209,7 @@ class StateTablesYear(FederalStateYear):
             # gain it realized, an HSA withdrawal's included (#497); a
             # reinvested gain distribution (#547) drew none.
             "drawn_ordinary": memo.get("drawn_ordinary", 0) - withdrawn,
-            "drawn_gain": max(0, self._capital.ltcg - distributed),
+            "drawn_gain": max(0, self._capital.ltcg - self._distributed),
         }
 
 

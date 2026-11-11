@@ -54,4 +54,7 @@ class LocalBandsYear(Prepared):
         memo = state.memo
         return Return(lines, MappingProxyType({
             "drawn_ordinary": memo.get("drawn_ordinary", 0),
-            "drawn_gain": memo.get("drawn_gain", 0)}))
+            "drawn_gain": memo.get("drawn_gain", 0),
+            # The local bands tax the state's taxable income, so they price
+            # an HSA as the state does (#497).
+            "hsa_taxed": memo.get("hsa_taxed", 0)}))

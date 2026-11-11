@@ -1245,14 +1245,17 @@ def _track_lots(
         if to_id in ctx.roth and not _roth_qualified(ctx.roth[from_id], on):
             carried = basis_out
     elif from_id in ctx.hsa:
+        # Only what the lot holds can be gain: money drawn past its balance
+        # (an overdrawn HSA, which the run allows) had no growth.
         basis = ctx.cost_bases.get(from_id) or 0
         prior = balances.get(from_id, 0)
-        basis_out = basis if prior <= amount else basis * amount // prior
+        covered = min(amount, max(0, prior))
+        basis_out = 0 if covered <= 0 else basis if covered >= prior else basis * covered // prior
         ctx.cost_bases[from_id] = basis - basis_out
         if to_id in ctx.hsa:
             carried = basis_out
         else:
-            realized = amount - basis_out
+            realized = covered - basis_out
     if account_kinds[from_id] == "asset":
         quantity = ctx.quantities.get(from_id)
         prior_balance = balances.get(from_id, 0)

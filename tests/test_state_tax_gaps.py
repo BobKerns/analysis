@@ -284,3 +284,18 @@ def test_a_reinvested_gain_distribution_is_no_gain_drawn_from_a_lot(
     assert taxed["ltcg_taxed"] == 10_000_00
     assert taxed.memo["drawn_gain"] == 4_000_00
 
+
+
+def test_a_year_with_no_hsa_flow_still_prices_the_hsa_as_the_state_taxes_it(
+    ledger: sqlite3.Connection,
+) -> None:
+    """The after-tax drawdown reads ``hsa_taxed`` from every year's return
+    (#497), the local tax's too, whether or not the HSA moved that year."""
+    _post(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
+    assert _estimate(ledger, _aux(hsa="taxable"), "state").memo["hsa_taxed"] == 1
+    assert _estimate(ledger, _aux(), "state").memo["hsa_taxed"] == 0
+    rules = {"federal": TaxRule("federal", {"scope": "federal"}, 1),
+             "state": TaxRule("state_tables", {"scope": "state"}, 2)}
+    local = _prepare_tax(ledger, {"scope": "local"}, aux=_aux(hsa="taxable"), tax_year=2026, tid=3,
+                         kind="local_bands", jurisdictions=rules).compute()
+    assert local.memo["hsa_taxed"] == 1

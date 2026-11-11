@@ -30,7 +30,7 @@ def _query(db: Path, sql: str, *args: Any) -> list[tuple]:
 
 @pytest.fixture
 def hsa_scenario(retire_alice_csv: Callable[[str], Path], write_series: Callable[[str, str], Path],
-                 add_state_tax: Callable[..., None]) -> None:
+                 add_state_tax: Callable[..., None], append_calendar_row: Callable[..., None]) -> None:
     """Alice's HSA in California: $10,000 with a $6,000 basis, growing 6% a
     year at ``hsa_fund``, 2% of it paid out as interest, and a $3,000
     qualified medical withdrawal in June 2027."""
@@ -50,14 +50,10 @@ def hsa_scenario(retire_alice_csv: Callable[[str], Path], write_series: Callable
     lots.to_csv(retire_alice_csv("account_lots.csv"), index=False)
     write_series("hsa_fund", "2026-01-31,6%")
     write_series("hsa_fund_yield", "2026-01-31,2%")
-    calendar = retire_alice_csv("calendar.csv")
-    columns = calendar.read_text().splitlines()[0].split(",")
-    row = dict.fromkeys(columns, "") | {
-        "date": "2027-06-30", "kind": "one_off_transfer", "account_1": HSA, "lot_1": "default",
-        "account_2": "Expense_Healthcare", "amount": "3000.00", "tax_character": "none",
-        "description": "a qualified medical expense"}
-    with calendar.open("a") as f:
-        f.write(",".join(row[c] for c in columns) + "\n")
+    append_calendar_row(
+        date="2027-06-30", kind="one_off_transfer", account_1=HSA, lot_1="default",
+        account_2="Expense_Healthcare", amount="3000.00", tax_character="none",
+        description="a qualified medical expense")
 
 
 def _lot(run: Path, month: str) -> tuple[int, int]:
@@ -158,3 +154,21 @@ def test_an_hsa_withdrawal_takes_its_share_of_the_basis(
     _post_transfer(ledger_con, balances, kinds, 1, "2026-06-30", 1, 4, 1_000_00, "deferred", 1,
                    refill_ctx=ctx)
     assert ctx.cost_bases[1] == 4_000_00
+
+
+def test_an_overdrawn_hsa_realizes_nothing_past_its_balance(ledger_con: sqlite3.Connection) -> None:
+    """Money drawn past an HSA's balance (the run lets it go negative) had
+    no growth: only what the lot held is weighed against its basis."""
+    from analysis.sim.engine import _post_transfer
+
+    balances = {1: 2_000_00, 2: 0, 3: 0, 4: 0}
+    kinds = {1: "asset", 2: "asset", 3: "asset", 4: "income"}
+    ctx = _hsa_context({1: 1_000_00, 2: 0, 3: None})
+    with pytest.warns(RuntimeWarning, match="went negative"):
+        _post_transfer(ledger_con, balances, kinds, 1, "2026-06-30", 1, 3, 5_000_00, "none", 1,
+                       refill_ctx=ctx)
+    _post_transfer(ledger_con, balances, kinds, 1, "2026-07-31", 1, 3, 1_000_00, "none", 1,
+                   refill_ctx=ctx)
+    # The $2,000 it held was $1,000 of gain; the rest, then and later, none.
+    assert ledger_con.execute("SELECT amount FROM hsa_gain").fetchall() == [(1_000_00,)]
+    assert ctx.cost_bases[1] == 0
