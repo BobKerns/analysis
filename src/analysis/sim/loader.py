@@ -2461,6 +2461,7 @@ _PAYOUT_KINDS: dict[str, dict[str, tuple[str, str, str]]] = {
     registries.STCG_YIELD_SUFFIX: {
         "ordinary": ("st_distributions_", "Short-term gain distributions", registries.NONQUALIFIED_DIVIDEND)},
 }
+_FUND_ORDINARY_DIVIDENDS = ("ordinary_dividends_", "Non-qualified dividends", registries.NONQUALIFIED_DIVIDEND)
 
 
 def _lot_payouts(
@@ -2474,7 +2475,12 @@ def _lot_payouts(
     out = []
     for suffix, kinds in _PAYOUT_KINDS.items():
         for character, spec in _lot_payout_specs(suffix, symbol, series, blend, weight_sets, rate_series):
-            out.append(LotPayout(*kinds[character], spec))
+            kind = kinds[character]
+            if symbol and kind[0] == "interest_":
+                # A fund's payout is a dividend on its 1099-DIV, whatever it
+                # holds: only a bond or cash held directly pays interest.
+                kind = _FUND_ORDINARY_DIVIDENDS
+            out.append(LotPayout(*kind, spec))
     return out
 
 

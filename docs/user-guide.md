@@ -414,8 +414,8 @@ files pays no income tax.
   income.
 - **Dividends and interest** from a taxable brokerage lot are taxed in the
   year they are paid, even though the simulator reinvests them: stock
-  dividends (`qualified_dividend`) at the long-term gain rates, and bond and
-  cash interest as ordinary income. Each reinvested payout adds to the lot's
+  dividends (`qualified_dividend`) at the long-term gain rates, and other
+  dividends and interest as ordinary income. Each reinvested payout adds to the lot's
   cost basis, so only the appreciation is left to tax at a sale. How much a
   lot pays comes from a `_yield` rate series beside its growth series; see
   Part 4.11. A fund's capital-gain distributions are taxed the same year
@@ -1129,14 +1129,16 @@ simulator splits each lot's growth into the two: what it pays out, from a
 include yields for the asset classes (`stock_us_yield` 1.5%,
 `stock_intl_yield` 3%, `stock_yield` 2%, `bond_yield` 4%), so a fund pays at
 the blend of its classes' yields with no setup: stocks as qualified
-dividends, bonds as ordinary interest. A lot growing at one series pays
-that series' yield, and cash and CDs pay all of their rate as interest.
+dividends, bonds as ordinary (non-qualified) dividends, since anything a
+fund pays is a dividend on its 1099-DIV. A lot growing at one series pays
+that series' yield, and cash and CDs pay all of their rate. Only a lot with
+no symbol (a bond or cash held directly) is paid interest.
 
 A symbol whose own yield you know can have it in
 `series/rate__ABCDX_yield.csv` (`effective_date,annual_rate`, such as
 `2026-01-31,2.5%`), which then replaces the class blend. It is taxed as
 qualified dividends when everything the symbol holds is stock, and as
-ordinary interest otherwise. Payouts are always reinvested; taking them as
+ordinary dividends otherwise. Payouts are always reinvested; taking them as
 cash is not modeled yet.
 
 Many funds also distribute capital gains each year, mostly long-term and

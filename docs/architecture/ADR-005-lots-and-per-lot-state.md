@@ -113,7 +113,8 @@ The blend applies only when every class the symbol holds resolves to a series. W
 | rule | from | `tax_character` | taxed as |
 | --- | --- | --- | --- |
 | `dividends_<account/lot>` | `dividends` | `qualified_dividend` | long-term gain rates, stacked on ordinary income |
-| `interest_<account/lot>` | `investment_interest` | `ordinary` | ordinary income |
+| `interest_<account/lot>` | `investment_interest` | `ordinary` | ordinary income: interest, paid only to a lot with no symbol (a bond or cash held directly) |
+| `ordinary_dividends_<account/lot>` | `ordinary_dividends` | `ordinary` | ordinary income: a fund's (a lot with a symbol's) non-qualified dividends, its bond and cash slices included |
 | `lt_distributions_<account/lot>` | `gain_distributions` | `ltcg` | a long-term gain (1099-DIV box 2a), netted with the year's other gains and losses |
 | `st_distributions_<account/lot>` | `ordinary_dividends` | `ordinary` | ordinary income: a 1099-DIV counts short-term distributions as non-qualified dividends, which capital losses can't offset |
 
@@ -122,6 +123,7 @@ What a lot pays comes from yield series, ordinary rate series named `<series>_yi
 - A symbol with its own `<SYMBOL>_yield` series pays at it: qualified dividends when every class its allocation holds is a stock class (`stock`, `stock_us`, `stock_intl`), else ordinary.
 - A fund growing at its allocation's blend pays each class's `<class>_yield` at its weight, the stock classes as qualified dividends and the rest as ordinary, each part a blend of its own (`{"blend": ...}` in the payout rule's `params_json`).
 - A lot growing at one series pays `<series>_yield`, taxed by the series' asset class (ordinary when it has none).
+- An ordinary payout is a non-qualified dividend when the lot has a symbol, since whatever a fund pays is a dividend on its 1099-DIV ([#547](https://github.com/BobKerns/analysis/issues/547)), and interest only when it has none. A state's exclusions (ADR-003 §2.6) tell the two apart by their payer's subkind.
 - Cash and CDs pay all of their rate as interest, so their growth rule is left with nothing, except below zero.
 - A class with no yield series pays nothing, as before: its whole return is appreciation.
 
@@ -194,4 +196,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#256](https://github.com/BobKerns/analysis/issues/256): a Roth lot's five-year rules change at a death (§7).
 - [#255](https://github.com/BobKerns/analysis/issues/255): a lot's basis steps up at a death (§7).
 - [#468](https://github.com/BobKerns/analysis/issues/468): a taxable lot pays out dividends and interest each year from yield series, taxed that year and reinvested with basis; its growth rule takes them out of total return (§5, §7).
-- [#547](https://github.com/BobKerns/analysis/issues/547): long-term and short-term capital-gain distributions from `<series>_cg_yield` and `<series>_stcg_yield`, taxed `ltcg` and `ordinary`; an untaxed lot holding shares reinvests its payouts untaxed, buying shares without basis (§5).
+- [#547](https://github.com/BobKerns/analysis/issues/547): long-term and short-term capital-gain distributions from `<series>_cg_yield` and `<series>_stcg_yield`, taxed `ltcg` and `ordinary`; an untaxed lot holding shares reinvests its payouts untaxed, buying shares without basis; a fund's ordinary payouts are dividends from `ordinary_dividends`, not interest (§5).

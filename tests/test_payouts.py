@@ -21,7 +21,8 @@ from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
 BROKERAGE = "Asset_Brokerage_Joint"
 GROWTH = growth_rule_name(BROKERAGE, "fund")
 DIVIDENDS = growth_rule_name(BROKERAGE, "fund", prefix="dividends_")
-INTEREST = growth_rule_name(BROKERAGE, "fund", prefix="interest_")
+# A fund's non-qualified dividends (#547): its bond slice's, here.
+ORDINARY_DIVIDENDS = growth_rule_name(BROKERAGE, "fund", prefix="ordinary_dividends_")
 
 
 def _query(db: Path, sql: str, *args: Any) -> list[tuple]:
@@ -39,7 +40,8 @@ def _rules(intent: Path) -> dict[str, tuple[str | None, dict, str]]:
         for name, series, params, character in _query(
             intent,
             "SELECT name, series, params_json, tax_character FROM scheduled_transaction "
-            "WHERE name LIKE 'growth_%' OR name LIKE 'dividends_%' OR name LIKE 'interest_%'")
+            "WHERE name LIKE 'growth_%' OR name LIKE 'dividends_%' OR name LIKE 'interest_%' "
+            "OR name LIKE 'ordinary_dividends_%'")
     }
 
 
@@ -72,7 +74,7 @@ def yields(write_series: Callable[[str, str], Path]) -> None:
 @pytest.mark.usefixtures("without_prototype_defaults", "blended_fund")
 def test_without_yield_series_a_lot_pays_nothing(load_test_copy: Callable[[], LoadResult]) -> None:
     rules = _rules(load_test_copy().intent_path)
-    assert not [n for n in rules if n.startswith(("dividends_", "interest_"))]
+    assert not [n for n in rules if n.startswith(("dividends_", "interest_", "ordinary_dividends_"))]
     assert "less" not in rules[GROWTH][1]
 
 
@@ -86,8 +88,14 @@ def test_a_fund_pays_each_class_yield_split_by_how_it_is_taxed(
     assert rules[DIVIDENDS] == (
         None, {"blend": [["", [["stock_us_yield", 600_000]]]], "payout": True},
         "qualified_dividend")
-    assert rules[INTEREST] == (
+    assert rules[ORDINARY_DIVIDENDS] == (
         None, {"blend": [["", [["bond_yield", 400_000]]]], "payout": True}, "ordinary")
+    # A fund's bond slice pays a dividend, not interest (#547): only a bond
+    # or cash held directly pays interest.
+    payers = dict(_query(result.intent_path, (
+        "SELECT s.name, a.name FROM scheduled_transaction s JOIN chain c ON c.id = s.from_account "
+        "JOIN account a ON a.id = c.account_id WHERE s.name IN (?, ?)"), DIVIDENDS, ORDINARY_DIVIDENDS))
+    assert payers == {DIVIDENDS: "dividends", ORDINARY_DIVIDENDS: "ordinary_dividends"}
     assert sorted(map(json.dumps, rules[GROWTH][1]["less"])) == sorted(
         json.dumps({"blend": [["", [[paid, weight]]]]})
         for paid, weight in (("stock_us_yield", 600_000), ("bond_yield", 400_000)))
@@ -101,7 +109,7 @@ def test_payouts_and_appreciation_add_to_the_total_return_and_payouts_add_basis(
                        allow_dirty_data=True, allow_dirty_code=True)
     month, growth = _first_month(run, GROWTH)
     assert _first_month(run, DIVIDENDS) == (month, 30_000)   # $300,000 x 60% x 2% / 12
-    assert _first_month(run, INTEREST) == (month, 40_000)    # $300,000 x 40% x 4% / 12
+    assert _first_month(run, ORDINARY_DIVIDENDS) == (month, 40_000)    # $300,000 x 40% x 4% / 12
     assert growth + 30_000 + 40_000 == 160_000               # the 6.4% blend, as before
     # Appreciation leaves the basis alone; reinvested payouts are purchases.
     balance, basis = _lot(run, month)
@@ -117,13 +125,13 @@ def test_qualified_dividends_are_taxed_at_capital_gains_rates(report_run_file: P
         "JOIN scheduled_transaction r ON r.id = t.reason_id "
         "JOIN simulation_step s ON s.id = t.step_id "
         "WHERE t.reason_kind = 'rule' AND r.name IN (?, ?) AND substr(s.month, 1, 4) = ? "
-        "GROUP BY r.name"), DIVIDENDS, INTEREST, str(year)))
+        "GROUP BY r.name"), DIVIDENDS, ORDINARY_DIVIDENDS, str(year)))
     summary = dict(_query(run, "SELECT bucket, amount FROM tax_year_summary WHERE year = ?", year))
-    assert paid[DIVIDENDS] > 0 and paid[INTEREST] > 0
+    assert paid[DIVIDENDS] > 0 and paid[ORDINARY_DIVIDENDS] > 0
     # Dividends stack on ordinary income at the capital gains rates; interest
     # is ordinary income.
     assert summary["federal_ltcg_taxed"] >= paid[DIVIDENDS]
-    assert summary["federal_ordinary_income"] >= paid[INTEREST]
+    assert summary["federal_ordinary_income"] >= paid[ORDINARY_DIVIDENDS]
 
 
 def test_only_taxable_brokerage_lots_pay_out(
@@ -164,7 +172,7 @@ def test_a_return_below_its_yield_is_an_unrealized_loss_that_sells_no_shares(
     write_series("bond_yield", "2026-01-31,4%")
     run = run_scenario(load_test_copy().intent_path, runs_dir / "loss.sqlite3", run_by="TEST",
                        allow_dirty_data=True, allow_dirty_code=True)
-    month, interest = _first_month(run, INTEREST)
+    month, interest = _first_month(run, ORDINARY_DIVIDENDS)
     # The fall posts as much back from the lot to capital_gains.
     assert _first_month(run, GROWTH) == (month, interest)
     quantity = _query(run, (
@@ -177,7 +185,8 @@ def test_a_return_below_its_yield_is_an_unrealized_loss_that_sells_no_shares(
     paid = _query(run, (
         "SELECT SUM(t.amount) FROM transfer_event t JOIN scheduled_transaction r ON r.id = t.reason_id "
         "JOIN simulation_step s ON s.id = t.step_id "
-        "WHERE t.reason_kind = 'rule' AND r.name = ? AND substr(s.month, 1, 4) = ?"), INTEREST, str(year))[0][0]
+        "WHERE t.reason_kind = 'rule' AND r.name = ? AND substr(s.month, 1, 4) = ?"),
+        ORDINARY_DIVIDENDS, str(year))[0][0]
     assert gains.loc[year, "unrealized"] == pytest.approx(-paid / 100)
     assert gains.loc[year, "taxable"] >= paid / 100
 
@@ -219,7 +228,7 @@ def test_reinvested_payouts_are_taxable_gains_that_cover_no_spending(
     paid = _query(run, (
         "SELECT SUM(t.amount) FROM transfer_event t JOIN scheduled_transaction r ON r.id = t.reason_id "
         "WHERE t.reason_kind = 'rule' AND r.name IN (?, ?) AND substr(t.date, 1, 4) = ?"),
-        DIVIDENDS, INTEREST, str(year))[0][0]
+        DIVIDENDS, ORDINARY_DIVIDENDS, str(year))[0][0]
     with RunConnection(run) as ran:
         row = ran.gains_by_category().loc[year]
     assert row["taxable"] >= paid / 100
@@ -228,11 +237,11 @@ def test_reinvested_payouts_are_taxable_gains_that_cover_no_spending(
 
 
 @pytest.mark.usefixtures("without_prototype_defaults", "blended_fund")
-def test_a_negative_slice_leaves_a_funds_interest_whole(
+def test_a_negative_slice_leaves_a_funds_dividends_whole(
     test_data_dir: Path, write_series: Callable[[str, str], Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:
-    """Half bonds paying 4%, half cash at -1.2%: the bonds' interest is paid
+    """Half bonds paying 4%, half cash at -1.2%: the bonds' payout is paid
     in full, and the cash's fall stays an unrealized loss on the growth rule,
     so the fund's total return is unchanged."""
     (test_data_dir / "allocations.csv").write_text(
@@ -241,7 +250,7 @@ def test_a_negative_slice_leaves_a_funds_interest_whole(
     write_series("cash", "2026-01-31,-1.2%")
     run = run_scenario(load_test_copy().intent_path, runs_dir / "slice.sqlite3", run_by="TEST",
                        allow_dirty_data=True, allow_dirty_code=True)
-    month, interest = _first_month(run, INTEREST)
+    month, interest = _first_month(run, ORDINARY_DIVIDENDS)
     # $150,000 of bonds at 4% a year: $500 a month.
     assert interest == 50_000
     # The fund returns 1.4% a year, $350 a month: $150 less than it paid.
@@ -368,13 +377,13 @@ def test_a_retirement_lot_holding_shares_reinvests_its_payouts_untaxed(
                        allow_dirty_data=True, allow_dirty_code=True)
     month, growth = _first_month(run, growth_rule_name("Asset_TraditionalIRA_Alice", "default"))
     payouts = sum(_first_month(run, growth_rule_name("Asset_TraditionalIRA_Alice", "default", prefix=p))[1]
-                  for p in ("dividends_", "interest_", "lt_distributions_", "st_distributions_"))
+                  for p in ("dividends_", "ordinary_dividends_", "lt_distributions_", "st_distributions_"))
     # $500,000 at the 6.4% blend, whatever part of it is paid out.
     assert growth + payouts == 266_666
     # The payouts buy shares at $100; appreciation buys none.
     assert _quantity(run, "Asset_TraditionalIRA_Alice", month) == 5000 * 1_000_000 + payouts * 100
     roth_payouts = sum(_first_month(run, growth_rule_name("Asset_Roth_Alice", "default", prefix=p))[1]
-                       for p in ("dividends_", "interest_", "lt_distributions_", "st_distributions_"))
+                       for p in ("dividends_", "ordinary_dividends_", "lt_distributions_", "st_distributions_"))
     assert _quantity(run, "Asset_Roth_Alice", month) == 1000 * 1_000_000 + roth_payouts * 100
     [(roth_basis,)] = _query(run, (
         "SELECT ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
