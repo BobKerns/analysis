@@ -1033,7 +1033,8 @@ own rows to its parent's, and one of the same month replaces the parent's.
 A move to a territory works the same way. Guam, the Northern Mariana Islands
 and the U.S. Virgin Islands tax their residents under a copy of the federal
 tax law, paid to the territory instead of the IRS, so the federal tax is the
-whole tax there and the state tax pays nothing. Each has local breaks for
+whole tax there and the state tax pays nothing. Tables of your own for one
+are refused, since they would tax the same income twice. Each has local breaks for
 income earned there, such as the Northern Mariana Islands' rebate, which a
 household retiring from the mainland seldom has. Puerto Rico and American
 Samoa have tax codes of their own, which the simulator can't model yet

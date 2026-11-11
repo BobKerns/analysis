@@ -4020,9 +4020,17 @@ def _validate_residence(
                           "lives here from")
         state = (row.get("state") or "").strip()
         row["state"] = state
-        if state not in states.BY_CODE:
+        known = states.BY_CODE.get(state)
+        if known is None:
             issues.append(f"{where}: state {state!r} is not a state's or territory's postal code "
                           "(CA, WA, ...)")
+        elif known.status == states.NOT_SUPPORTED:
+            issues.append(f"{where}: {states.own_tax_code(state)}")
+        elif known.status == states.FEDERAL_RULE and ("state_brackets", state) in supplied:
+            issues.append(
+                f"{where}: the federal tax stands in for {states.label(state)}'s, which copies "
+                f"it, so aux/state_brackets__{state}.csv would tax the same income twice; "
+                "remove it (#491)")
     has_state = any(row["name"] == "state" for row in tax_rows)
     for where, row in _located(tax_rows, registries.TAXES_DIR):
         if row["name"] in ("state", "local") and "bracket_series" in tax_files.params(row):
@@ -4036,14 +4044,10 @@ def _validate_residence(
         return
     for where, row in _located(residence_rows, registries.RESIDENCE_FILE):
         state = row["state"]
-        if state not in states.BY_CODE:
-            continue
+        if state not in states.BY_CODE or states.BY_CODE[state].status == states.NOT_SUPPORTED:
+            continue  # refused above
         series = states.tax_series(state, has_tables=("state_brackets", state) in supplied)
-        if ("state_brackets", series) not in supplied and states.BY_CODE[state].status == states.NOT_SUPPORTED:
-            issues.append(
-                f"{where}: {states.label(state)} has a tax code of its own the simulator can't "
-                f"model yet ({states.OWN_TAX_CODE_ISSUE})")
-        elif ("state_brackets", series) not in supplied:
+        if ("state_brackets", series) not in supplied:
             issues.append(
                 f"{where}: no aux/state_brackets__{series}.csv for {states.label(state)}'s "
                 "income tax; the simulator doesn't ship its tables yet, so add them")

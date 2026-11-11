@@ -124,14 +124,23 @@ def label(code: str) -> str:
     return f"{state.name} ({code})" if state else code
 
 
+def own_tax_code(code: str) -> str:
+    """Why a territory with a tax code of its own (``NOT_SUPPORTED``) is
+    refused, for the CLI and the loader alike."""
+    return (f"{label(code)} has a tax code of its own the simulator can't model yet "
+            f"({OWN_TAX_CODE_ISSUE})")
+
+
 def tax_series(code: str, *, has_tables: bool = False) -> str:
     """The series of the tables a state tax reads for a household living in
     ``code`` (#509): its own when it has them (``has_tables``), ships them
     (Washington's gains tax, #489) or taxes income, else the 0% ``none``
-    tables, as for a state with no income tax or a territory the federal
-    tax stands in for."""
+    tables, as for a state with no income tax. A territory the federal tax
+    stands in for reads ``none`` even with tables of its own, which would
+    tax the same income twice; the loader refuses them (#491)."""
     state = BY_CODE.get(code)
-    if (has_tables or state is None or state.status == SHIPPED
-            or (state.taxes_income and state.status != FEDERAL_RULE)):
+    if state is not None and state.status == FEDERAL_RULE:
+        return NO_TAX_SERIES
+    if has_tables or state is None or state.status == SHIPPED or state.taxes_income:
         return code
     return NO_TAX_SERIES

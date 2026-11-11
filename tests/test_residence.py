@@ -91,7 +91,6 @@ def test_rows_merge_by_date_over_the_lineage(
     (("", "OR"), r"residence.csv line 3: effective_date is required"),
     (("2026-05", "OR"), r"residence.csv line 3: duplicate effective_date"),
     (("2028-01", "NY"), r"residence.csv line 3: no aux/state_brackets__NY.csv for New York \(NY\)"),
-    (("2028-01", "PR"), r"residence.csv line 3: Puerto Rico \(PR\) has a tax code of its own .*issues/570"),
 ])
 def test_the_loader_checks_each_row(
     row: tuple[str, str], message: str, add_state_tax: Callable[..., None],
@@ -103,8 +102,37 @@ def test_the_loader_checks_each_row(
         load_test_copy()
 
 
+@pytest.mark.parametrize("state_tax", [True, False])
+def test_a_territory_with_a_tax_code_of_its_own_is_refused(
+    state_tax: bool, add_state_tax: Callable[..., None], add_residence: Callable[..., Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """With or without a state tax: the federal tax alone would tax Puerto
+    Rico's own income, which federal law leaves to Puerto Rico (#491)."""
+    if state_tax:
+        add_state_tax("CA")
+    else:
+        add_residence("2026-05", "CA")
+    add_residence("2028-01", "PR")
+    with pytest.raises(LoadError, match=r"Puerto Rico \(PR\) has a tax code of its own .*issues/570"):
+        load_test_copy()
+
+
+def test_tables_of_a_mirror_territory_are_refused(
+    add_state_tax: Callable[..., None], add_residence: Callable[..., Path],
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """The federal tax already stands in for the Virgin Islands' (#491)."""
+    add_state_tax("CA")
+    write_aux("state_brackets__VI.csv", BRACKETS + "".join(
+        f"2026-01-31,{status},0,0.00,5%\n" for status in ("Single", "MFJ", "MFS")))
+    add_residence("2028-01", "VI")
+    with pytest.raises(LoadError, match=r"state_brackets__VI.csv would tax the same income twice"):
+        load_test_copy()
+
+
 @pytest.mark.parametrize("state", ["FL", "GU", "MP", "VI"])
-def test_a_state_without_income_tax_reads_the_none_tables(
+def test_no_tax_states_and_mirror_territories_read_the_none_tables(
     state: str, add_state_tax: Callable[..., None], add_residence: Callable[..., Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:

@@ -224,12 +224,19 @@ def test_a_mirror_code_territory_is_taxed_by_the_federal_tax_alone(
     load_test_copy()
 
 
+@pytest.mark.parametrize("own_tables", [False, True])
 @pytest.mark.parametrize("command", [["state", "PR"], ["move", "2031-07", "PR"]])
 def test_puerto_rico_is_refused_naming_its_issue(
-    command: list[str], test_data_dir: Path, add_state_tax: Callable[..., None],
+    command: list[str], own_tables: bool, test_data_dir: Path,
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
     retire_alice_csv: Callable[[str], Path],
 ) -> None:
+    """Tables of its own don't help: the federal tax would still tax the
+    income federal law leaves to Puerto Rico (#491)."""
     add_state_tax()
+    if own_tables:
+        write_aux("state_brackets__PR.csv", "effective_date,filing_status,bracket_index,"
+                  "floor,marginal_rate\n2026-01-31,MFJ,0,0.00,7%\n")
 
     result = _tax(test_data_dir, *command, "--yes")
 
