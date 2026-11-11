@@ -164,7 +164,7 @@ class StateTablesYear(FederalStateYear):
     def other_deductions(self, income: Income, basis: Basis) -> Mapping[str, int]:
         return self._adjusted("deduction", income.agi, basis)
 
-    def credits(self, tax: int, income: Income, basis: Basis) -> int | Mapping[str, int]:
+    def credit_lines(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
         return self._adjusted("credit", income.agi, basis)
 
     def _taxable_ss(self, basis: Basis) -> int:

@@ -66,7 +66,7 @@ def test_each_row_is_a_line_of_the_state_return(
         "2026-01-31,rent_deduction,deduction,spending,tax:rent,50%,4000.00,,,,,,",
         "2026-01-31,federal_tax_deduction,deduction,federal_tax,,,1000.00,,,,,,",
         "2026-01-31,military_subtraction,subtraction,income,tax:military,,5000.00,,,,,,",
-        "2026-01-31,senior_credit,credit,filers,,,100.00,,65,,,,",
+        "2026-01-31,senior_credit,credit,filers,,,100.00,,62,,,,",
         "2026-01-31,low_income_credit,credit,filers,,,50.00,,,,1000.00,,",
     ]) + "\n")
     run = run_test_copy()
@@ -77,19 +77,21 @@ def test_each_row_is_a_line_of_the_state_return(
     assert lines["state_rent_deduction"][2027] == 4000_00
     assert lines["state_federal_tax_deduction"][2027] == 1000_00
     assert lines["state_military_subtraction"][2027] == 5000_00
-    # Alice is 65 in 2030, Bill in 2032.
+    # Alice is 62 in 2027, Bill in 2029, both still working and taxed.
     senior = lines["state_senior_credit"]
-    assert senior[2029] == 0 and senior[2030] == senior[2031] == 100_00 and senior[2032] == 200_00
-    # Only below $1,000 of state AGI: none while they work, both filers'
-    # once retired, when California taxes none of their Social Security.
+    assert senior[2026] == 0 and senior[2027] == senior[2028] == 100_00 and senior[2029] == 200_00
+    # Only below $1,000 of state AGI, which they reach only once retired,
+    # when California taxes none of their Social Security; and a credit
+    # takes no more than the tax left.
     low, agi = lines["state_low_income_credit"], lines["state_agi"]
     assert low[2027] == 0
-    assert all(low[y] == (100_00 if agi[y] <= 1000_00 else 0) for y in low)
+    assert all(low[y] == 0 for y in low if agi[y] > 1000_00)
+    assert all(low[y] + senior[y] == lines["state_credits"][y] for y in low)
     # The deductions come off after AGI, with the deduction taken.
     year = 2027
     assert lines["state_taxable_income"][year] == (
         lines["state_agi"][year] - lines["state_deduction"][year] - 5000_00)
-    assert lines["state_credits"][2030] == 100_00
+    assert lines["state_credits"][2027] == 100_00
 
 
 @pytest.mark.slow
@@ -99,14 +101,21 @@ def test_the_shipped_california_table_gives_exemption_credits(
     """templates/aux/state_adjustments__CA.csv (2025's figures): $153 for
     each filer, and $153 more for each from 65."""
     add_state_tax()
-    lines = _lines(run_test_copy(), "state_personal_exemption_credit",
+    run = run_test_copy()
+    lines = _lines(run, "state_personal_exemption_credit",
                    "state_senior_exemption_credit", "state_renters_credit")
     personal, senior = lines["state_personal_exemption_credit"], lines["state_senior_exemption_credit"]
     assert personal[2026] == 306_00
-    assert personal[2030] > 306_00  # indexed by cpi
-    assert senior[2029] == 0 and 0 < senior[2030] < senior[2032]
+    assert personal[2027] > 306_00  # indexed by cpi, to the dollar
+    assert personal[2027] % 100 == 0
+    assert senior[2029] == 0  # Alice is 65 in 2030
     # Nothing carries tax:rent: no renter's credit.
     assert set(lines["state_renters_credit"].values()) == {0}
+    # The lines show what each took, so they add up to the credits taken,
+    # never past the tax.
+    credits = _lines(run, "state_credits")["state_credits"]
+    assert all(personal[y] + senior[y] + lines["state_renters_credit"][y] == credits[y]
+               for y in credits)
 
 
 def test_a_tag_nothing_carries_is_noted_not_refused(
@@ -130,6 +139,8 @@ def test_a_tag_nothing_carries_is_noted_not_refused(
     ("x,credit,filers,,,100.00,,,,1000.00,500.00,1%", "give phaseout or phaseout_rate, not both"),
     ("x,credit,filers,,,100.00,,,,,1000.00,", "a phase-out needs the income_limit"),
     ("x,credit,filers,,,100.00,,old,,,,", "min_age 'old' must be an age"),
+    ("x,credit,filers,,,100.00,,,,1000.00,,0%", "phaseout_rate must be more than 0%"),
+    ("tax_due,credit,filers,,,100.00,,,,,,", "name 'tax_due' is a line the state return already has"),
     ("x,credit,filers,,,100.00,,,HOH,,,", "filing_status 'HOH' must be blank"),
 ])
 def test_the_loader_checks_a_state_adjustments_row(

@@ -563,9 +563,15 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
 """Optional columns of the tax tables the law indexes for inflation (#467),
 by kind: {series column: the money column it grows}. Each names an
 inflation series that grows the row's figure from the table's effective
-date to January of the tax year, rounded down to $50; blank or missing
+date to January of the tax year, rounded down to $50 (or the kind's
+``TAX_INDEX_ROUNDING``); blank or missing
 holds it flat. Social Security's thresholds and the capital loss limit are
 fixed in law, so they have none."""
+
+TAX_INDEX_ROUNDING: dict[str, int] = {STATE_ADJUSTMENTS: 100}
+"""Kinds whose indexed figures round down to other than $50, in cents: a
+state's own credits and limits round to the dollar (California's $153
+exemption credit, #488), where $50 would swallow most of their growth."""
 
 AUX_SERIES_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     IRMAA_TIERS: IRMAA_SERIES_COLUMNS,

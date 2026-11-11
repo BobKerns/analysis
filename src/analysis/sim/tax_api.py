@@ -44,7 +44,7 @@ API_VERSION = 2
 """Bumped when a calculator written against the previous version could
 break, or one written for this version needs what the previous lacks. 1
 (#510) is the first a data repo can write to; 2 (#511) adds a state year's
-``other_deductions`` step and named ``credits``."""
+``other_deductions`` and ``credit_lines`` steps."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""

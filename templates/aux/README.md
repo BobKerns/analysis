@@ -93,7 +93,7 @@ return, written to the run as `state_<name>` and shown by
 | --- | --- |
 | `effective_date` | When the rows take effect; the rows of one date are the whole set. |
 | `name` | The line, in lower case (`renters_credit`). One row per line and filing status. |
-| `step` | `subtraction` (off income before state AGI), `deduction` (off state AGI, after the standard or itemized deduction) or `credit` (off the tax, never below zero). |
+| `step` | `subtraction` (off income before state AGI), `deduction` (off state AGI, after the standard or itemized deduction) or `credit` (off the tax, never below zero: each credit takes, in file order, only the tax left). |
 | `base` | What it is figured from: `spending` or `income` carrying `tag`, `filers` (`amount` for each), `federal_tax` (the federal return's tax) or `federal_deduction` (its deduction). |
 | `tag` | For `spending` and `income`: the tag on what counts, as `tax:rent`. Tag the rule that pays it, or the account it is paid into (`sim scheduled edit housing --tags tax:rent`). |
 | `rate` | The share that counts (`50%`); blank is all of it. Not for `filers`. |
@@ -104,7 +104,7 @@ return, written to the run as `state_<name>` and shown by
 | `income_limit` | Above this state AGI the line ends, unless `phaseout` or `phaseout_rate` says otherwise. |
 | `phaseout` | It falls in a straight line to nothing over this many dollars past the limit. |
 | `phaseout_rate` | Or it loses this share of each dollar over (each filer's, for `filers`). |
-| `amount_series`, `income_limit_series` | Optional inflation series that index `amount` and `income_limit`. |
+| `amount_series`, `income_limit_series` | Optional inflation series that index `amount` and `income_limit`, rounded down to the dollar. |
 
 A spending or income row whose tag nothing in the scenario carries comes
 out zero, and `sim check` says so. Rules figured from property value, or

@@ -113,7 +113,7 @@ What it does:
 - `StateTables` is the built-in state calculator; `RentersYear` is one year
   of it, and overrides `subtractions`, one of the steps a state year goes
   through (`additions`, `subtractions`, `deductions`, `other_deductions`,
-  `tax`, `credits`).
+  `tax`, `credits`, `credit_lines`).
   Each `Adjustment` is a line of the return, written to the run as
   `state_<line>`.
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is

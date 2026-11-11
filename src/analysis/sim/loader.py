@@ -4055,10 +4055,11 @@ _STATE_LINES: frozenset[str] = frozenset({
     "standard_deduction", "itemized_deduction", "capital_loss_used", "capital_loss_carryover",
     "business_net", "hobby_disallowed", "dividends_as_ordinary", "hsa_addback",
     "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
-    "drawdown_tax", "drawdown_base",
+    "drawdown_tax", "drawdown_base", "tax_paid", "tax_due", "tax_overpaid",
 })
-"""The lines the built-in state calculator writes itself, which a
-``state_adjustments`` row can't be named (it would overwrite one)."""
+"""The lines the built-in state calculator writes itself, and the buckets
+the engine's settlement adds beside them, which a ``state_adjustments``
+row can't be named (it would overwrite one, or be overwritten)."""
 
 _LINE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -4135,7 +4136,8 @@ def _validate_state_adjustments(
         if (payload.get("phaseout") is not None or payload.get("phaseout_rate_micros") is not None) \
                 and payload.get("income_limit") is None:
             issues.append(f"{where}: a phase-out needs the income_limit it starts at")
-        if (payload.get("phaseout_rate_micros") or 1) <= 0:
+        phaseout_rate = payload.get("phaseout_rate_micros")
+        if phaseout_rate is not None and phaseout_rate <= 0:
             issues.append(f"{where}: phaseout_rate must be more than 0%")
         age = payload.get("min_age")
         try:

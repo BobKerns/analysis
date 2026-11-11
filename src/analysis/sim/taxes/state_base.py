@@ -13,7 +13,8 @@ override on its :class:`StateYear`:
 4. :meth:`~StateYear.deductions`, then :meth:`~StateYear.other_deductions`
    (lines that depend on the year's income), then a carried-in NOL, then
    taxable income;
-5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits`.
+5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits` and
+   :meth:`~StateYear.credit_lines`.
 """
 
 from __future__ import annotations
@@ -150,11 +151,15 @@ class StateYear(Prepared):
         return common.stacked_tax(
             taxable, income.ltcg, income.stcg, self.brackets, self.ltcg_brackets, self.stcg_brackets)
 
-    def credits(self, tax: int, income: Income, basis: Basis) -> int | Mapping[str, int]:
-        """Credits against ``tax``: a total, or named lines (#511) each
-        written to the return. Together they never take the tax below zero.
-        None by default."""
+    def credits(self, tax: int, income: Income, basis: Basis) -> int:
+        """Credits against ``tax``, a total; none by default."""
         return 0
+
+    def credit_lines(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
+        """Named credits against ``tax`` (#511), each written to the return
+        as what it took: in order, after :meth:`credits`, until the tax is
+        used up. None by default."""
+        return {}
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
         """The return's memo (``drawn_ordinary``, ``drawn_gain``)."""
@@ -183,10 +188,13 @@ class StateYear(Prepared):
         nol_used = common.nol_used(self._nol_in, before_nol, self._nol_limit)
         taxable = max(0, before_nol - nol_used)
         tax = self.tax(taxable, income)
-        credited = self.credits(tax, income, basis)
-        credit_lines = {} if isinstance(credited, int) else dict(credited)
-        total = credited if isinstance(credited, int) else sum(credit_lines.values())
-        credits = max(0, min(tax, total))
+        # Credits are never refundable: a named line shows what it took,
+        # in order, so the lines add up to the credits taken.
+        credits = min(tax, self.credits(tax, income, basis))
+        credit_lines = {}
+        for line, amount in self.credit_lines(tax, income, basis).items():
+            credit_lines[line] = max(0, min(amount, tax - credits))
+            credits += credit_lines[line]
         lines = {
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,
