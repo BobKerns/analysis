@@ -32,12 +32,13 @@ def _growth_rule(intent: Path) -> tuple[str | None, dict, str]:
     return series, json.loads(params or "{}"), description
 
 
-FUND_PAYOUT_RULES = tuple(growth_rule_name(BROKERAGE, "fund", prefix=p) for p in ("dividends_", "interest_"))
+FUND_PAYOUT_RULES = tuple(growth_rule_name(BROKERAGE, "fund", prefix=p) for p in (
+    "dividends_", "ordinary_dividends_", "lt_distributions_", "st_distributions_"))
 
 
 def _first_growth(run_file: Path) -> int:
     """The fund's first month of total return: its appreciation, plus the
-    dividends and interest it pays out and reinvests (#468)."""
+    dividends and distributions it pays out and reinvests (#468, #547)."""
     con = sqlite3.connect(run_file)
     try:
         rules = (FUND_RULE, *FUND_PAYOUT_RULES)
