@@ -177,7 +177,7 @@ def parse_weights(specs: list[str]) -> dict[str, str]:
             raise ValueError(f"weight {spec!r} must be CLASS=PERCENT, e.g. stock_us=60%")
         if asset_class not in registries.ASSET_CLASSES:
             raise ValueError(
-                f"unknown asset class {asset_class!r}; allowed: {', '.join(registries.ASSET_CLASSES)}"
+                f"unknown asset class {asset_class!r}; allowed: {registries.asset_class_list()}"
             )
         if asset_class in weights:
             raise ValueError(f"asset class {asset_class} is given twice")

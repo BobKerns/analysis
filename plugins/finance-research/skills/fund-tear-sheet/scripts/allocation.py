@@ -5,11 +5,14 @@ Usage:
     python allocation.py fund-work/data.csv --ticker VTWNX [--holdings fund-work/holdings.csv]
                          [--out-dir fund-work]
 
-Categories (the simulator's asset classes, analysis.sim.registries.ASSET_CLASSES, in its order, plus unclassified; percentages of the fund's net assets, summing to 100):
+Categories (the simulator's asset classes, analysis.sim.registries.BASE_ASSET_CLASSES, in its order, plus unclassified; percentages of the fund's net assets, summing to 100):
     stock_us        stocks of companies domiciled in the US
     stock_intl      stocks of companies domiciled outside the US (ADRs count as international)
     stock           stocks whose US/international split couldn't be determined (ideally 0)
     bond            bonds of any kind (government, agency, corporate, mortgage, TIPS, foreign bonds)
+                    but municipal bonds
+    muni            municipal bonds, whose interest is federally tax-exempt; a fund of one state's
+                    bonds is muni_<ST> in the simulator (muni_CA), which the notes should say
     cd              certificates of deposit held directly (rare in funds; CDs inside a money fund are cash)
     cash            cash, money-market instruments, T-bills and repo held as cash management;
                     a money market fund is 100% cash
@@ -50,9 +53,9 @@ import os
 import sys
 from collections import defaultdict
 
-# The simulator's asset classes (analysis.sim.registries.ASSET_CLASSES), in its display order, plus
-# "unclassified", which the simulator also shows but which can't be written to allocations.csv.
-SIM_CLASSES = ["stock_us", "stock_intl", "stock", "bond", "cd", "cash", "real_estate", "other"]
+# The simulator's asset classes (analysis.sim.registries.BASE_ASSET_CLASSES), in its display order,
+# plus "unclassified", which the simulator also shows but which can't be written to allocations.csv.
+SIM_CLASSES = ["stock_us", "stock_intl", "stock", "bond", "muni", "cd", "cash", "real_estate", "other"]
 CATS = SIM_CLASSES + ["unclassified"]
 US = {"us", "usa", "united states", "united states of america", "u.s.", "u.s.a."}
 

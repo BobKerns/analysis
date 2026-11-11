@@ -35,7 +35,7 @@ A `TaxYear` is read-only:
 
 ### 3. What it returns: `Return`
 
-A `Return` has named lines in cents, each written to `tax_year_summary` as `<jurisdiction>_<line>`, and a memo kept for the engine and for jurisdictions built on it, not written. Every calculator fills `agi`, `taxable_income`, `ordinary_taxable`, `tax`, `nol_carryover` and `capital_loss_carryover`. The engine reads three memo lines: `drawn_ordinary` and `drawn_gain` (what the year drew from traditional money and the gain its sales realized, leaving out reinvested gain distributions, #547), so the after-tax drawdown doesn't tax them twice, and `hsa_taxed` (1 when the jurisdiction taxes an HSA as a brokerage account, #497), so the drawdown prices an HSA's gain over basis instead of its balance; without it an HSA's balance is traditional money.
+A `Return` has named lines in cents, each written to `tax_year_summary` as `<jurisdiction>_<line>`, and a memo kept for the engine and for jurisdictions built on it, not written. Every calculator fills `agi`, `taxable_income`, `ordinary_taxable`, `tax`, `nol_carryover` and `capital_loss_carryover`. The engine reads three memo lines: `drawn_ordinary` and `drawn_gain` (what the year drew from traditional money and the gain its sales realized, leaving out reinvested gain distributions, #547), so the after-tax drawdown doesn't tax them twice, and `hsa_taxed` (1 when the jurisdiction taxes an HSA as a brokerage account, #497), so the drawdown prices an HSA's gain over basis instead of its balance; without it an HSA's balance is traditional money. A federal calculator's optional `magi` line (`Return.magi`, AGI when left out) is the MAGI `irmaa` and `fill_bracket` read: AGI plus tax-exempt interest (#265).
 
 ### 4. Purity
 
@@ -102,3 +102,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#277](https://github.com/BobKerns/analysis/issues/277): a `Person` carries its `final_month`, and a `TaxYear` its `household` and any earlier year's line (`line_in`); the built-in calculators end a decedent's share of the loss carryovers after the year of the death (§2).
 - [#547](https://github.com/BobKerns/analysis/issues/547): `drawn_gain` leaves out reinvested long-term gain distributions, which draw no gain out of a lot (§3).
 - [#497](https://github.com/BobKerns/analysis/issues/497): `TaxYear.hsa_gains` (an HSA withdrawal's gain over its basis) and the memo line `hsa_taxed` the after-tax drawdown reads (§2, §3); additive, so no API bump.
+- [#265](https://github.com/BobKerns/analysis/issues/265): `Return.magi`, the `magi` line or AGI, which `irmaa` and `fill_bracket` read (§2).

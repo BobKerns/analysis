@@ -308,9 +308,11 @@ def hsa_deferred_flows(ty: TaxYear) -> tuple[int, int]:
 
 def taxable_social_security(
     *, ordinary_income: int, ltcg_income: int, ss_income: int, tier1: int, tier2: int,
+    exempt_interest: int = 0,
 ) -> int:
-    """Approximate taxable Social Security amount under provisional-income rules."""
-    provisional = ordinary_income + ltcg_income + (ss_income // 2)
+    """Approximate taxable Social Security amount under provisional-income
+    rules, which count tax-exempt interest (IRC §86(b)(2)(B), #265)."""
+    provisional = ordinary_income + ltcg_income + exempt_interest + (ss_income // 2)
     if provisional <= tier1:
         return 0
     if provisional <= tier2:
@@ -658,6 +660,34 @@ def bracket_series(ty: TaxYear) -> str | None:
     """The federal ``bracket_series`` param: its brackets' series, if any."""
     series = getattr(ty.params, "bracket_series", None)
     return None if series is None else str(series)
+
+
+EXEMPT_INTEREST = "tax_exempt_interest"
+
+
+def exempt_interest_memo(ty: TaxYear) -> dict[str, int]:
+    """The federal memo's municipal bond interest (#265): the year's
+    ``tax_exempt_interest``, and ``tax_exempt_interest__<ST>``, the part
+    from one state's bonds, for each state that paid some."""
+    memo = {EXEMPT_INTEREST: 0}
+    for item in ty.year_items(registries.TAX_EXEMPT):
+        memo[EXEMPT_INTEREST] += item.amount
+        if issuer := registries.MUNI_PAYER_STATE.get(item.payer.name):
+            key = f"{EXEMPT_INTEREST}__{issuer}"
+            memo[key] = memo.get(key, 0) + item.amount
+    return memo
+
+
+def taxable_muni_interest(memo: Mapping[str, int], home: str | None) -> int:
+    """The municipal bond interest (#265) a state adds back to federal AGI,
+    from the federal ``memo``: every state's but ``home``'s, where the
+    household lives, and never a territory's. The District of Columbia adds
+    back none."""
+    if home in states.TAXES_NO_MUNI_INTEREST:
+        return 0
+    exempt = {home, *states.MUNI_EXEMPT_EVERYWHERE}
+    return memo.get(EXEMPT_INTEREST, 0) - sum(
+        memo.get(f"{EXEMPT_INTEREST}__{issuer}", 0) for issuer in exempt if issuer)
 
 
 def state_series(ty: TaxYear, year: int | None = None) -> str:

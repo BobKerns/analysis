@@ -93,7 +93,7 @@ state/
 - **No stored computed columns.** Anything derivable (net worth, totals, "is tax-deferred") is a view or query.
 - **No `run_id` in the ledger.** Each run file holds exactly one run, so a `run_id` column on every ledger table would be a constant. `simulation_run` is a single-row manifest; the file itself is the run identifier.
 - **One-row manifest tables** are not enforced by CHECK; convention only. The loader/engine write exactly one row.
-- **Reserved account names.** The built-in accounts on the far side of account growth (`interest_income`, `capital_gains`, `deferred_gains`, `tax_free_gains`, `depreciation`; `registries.GROWTH_COUNTERPARTY_ACCOUNTS`) and of a lot's payouts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`, `hsa_dividends`, `hsa_gain_distributions`; `registries.builtin_payout_accounts()`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §2.2) are created at load when a scenario does not declare them, and `rename` refuses to give an account one of their names.
+- **Reserved account names.** The built-in accounts on the far side of account growth (`interest_income`, `capital_gains`, `deferred_gains`, `tax_free_gains`, `depreciation`; `registries.GROWTH_COUNTERPARTY_ACCOUNTS`) and of a lot's payouts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `muni_interest`, `muni_interest__<ST>` for each state, `deferred_payouts`, `tax_free_payouts`, `hsa_dividends`, `hsa_gain_distributions`; `registries.builtin_payout_accounts()`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §2.2) are created at load when a scenario does not declare them, and `rename` refuses to give an account one of their names.
 
 ### Placement summary
 
@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 65) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 66) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -506,7 +506,7 @@ CREATE TABLE scheduled_transaction (
                                  'return_of_capital','property_tax','none',
                                  'excluded_gain','home_sale',
                                  'capital_improvement','roth_nonqualified',
-                                 'qualified_dividend',
+                                 'qualified_dividend','tax_exempt',
                                  'business_income','business_expense')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
@@ -606,7 +606,7 @@ CREATE TABLE year_to_date (
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
                          'excluded_gain','home_sale','capital_improvement',
-                         'roth_nonqualified','qualified_dividend',
+                         'roth_nonqualified','qualified_dividend','tax_exempt',
                          'business_income','business_expense')),
     year          INTEGER,
     description   TEXT,
@@ -1229,3 +1229,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#510](https://github.com/BobKerns/analysis/issues/510): table `tax_source` (the household's tax calculator code), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 64).
 - [#547](https://github.com/BobKerns/analysis/issues/547): the reserved account names include the payout accounts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`) (Conventions).
 - [#497](https://github.com/BobKerns/analysis/issues/497): run table `hsa_gain` (an HSA withdrawal's gain over its basis, for a state that taxes HSAs); the reserved account names include `hsa_dividends` and `hsa_gain_distributions` (Placement summary, Ledger DDL, glossary, Conventions; schema 65).
+- [#265](https://github.com/BobKerns/analysis/issues/265): tax character `tax_exempt` (municipal bond interest); the reserved account names include `muni_interest` and `muni_interest__<ST>` (Intent layer DDL, Conventions; schema 66).
