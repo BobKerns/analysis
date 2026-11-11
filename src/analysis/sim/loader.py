@@ -2268,7 +2268,8 @@ def _expand_account_growth(
         # so Roth and traditional lots in one account grow from different
         # built-ins whatever the account's tax_character says (#224).
         lot_series: list[tuple[str, str, AllocationBlend | None, str]] = []
-        payouts: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        # Each lot's payouts and the built-in account they come from.
+        payouts: dict[str, list[tuple[registries.GrowthCounterparty, LotPayout]]] = {}
         for m in lots_by_account.get(name) or [{}]:
             symbol = m.get("symbol") or ""
             lot = m.get("lot") or registries.DEFAULT_LOT
@@ -2286,8 +2287,20 @@ def _expand_account_growth(
             )
             grows_at = series or ("" if blend else account_series)
             lot_series.append((lot, grows_at, blend, lot_character))
+            held = {c for _, weights in weight_sets.get(symbol, ()) for c in weights} if blend else set()
+            if clash := _payout_name_clash({grows_at, symbol, *held}, rate_series):
+                issues.append(f"{where} ({name} / {lot}): {clash}")
             if lot_character == "gains" and row.get("subkind") == "brokerage_taxable":
-                payouts[lot] = _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                payouts[lot] = [
+                    (registries.PAYOUT_ACCOUNTS[p.payer], p)
+                    for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
+            elif (sheltered := registries.SHELTERED_PAYOUT_ACCOUNTS.get(lot_character)) and m.get("quantity"):
+                # An untaxed lot's payouts (#547) only buy shares, so a lot
+                # that tracks dollars has no use for them.
+                payouts[lot] = [
+                    (sheltered, p) for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
         growing = [entry for entry in lot_series if entry[1] or entry[2]]
         if not growing:
             if character:
@@ -2312,7 +2325,7 @@ def _expand_account_growth(
             )
             continue
         needed = [registries.GROWTH_COUNTERPARTY_ACCOUNTS[c] for *_, c in growing] + [
-            registries.PAYOUT_ACCOUNTS[c] for lot, *_ in growing for c, _ in payouts.get(lot, ())
+            payer for lot, *_ in growing for payer, _ in payouts.get(lot, ())
         ]
         for counterparty in needed:
             if counterparty.name in account_names:
@@ -2324,7 +2337,7 @@ def _expand_account_growth(
                 "owner": "", "tax_treatment": counterparty.tax_treatment,
                 "opened": "", "closed": "", "tags": "",
                 "meta_json": json.dumps(
-                    {"builtin": "growth" if counterparty.name in _GROWTH_NAMES else "payout",
+                    {"builtin": _builtin_label(counterparty.name),
                      "description": counterparty.description},
                     separators=(",", ":"),
                 ),
@@ -2336,9 +2349,9 @@ def _expand_account_growth(
             counterparty = registries.GROWTH_COUNTERPARTY_ACCOUNTS[lot_character]
             lot_payouts = payouts.get(lot, [])
             where_lot = f" / {lot}" if lot != registries.DEFAULT_LOT else ""
-            for payout_character, spec in lot_payouts:
-                payer = registries.PAYOUT_ACCOUNTS[payout_character]
-                payout_name = growth_rule_name(name, lot, rule_names, prefix=_PAYOUT_PREFIX[payout_character])
+            for payer, payout in lot_payouts:
+                spec = payout.spec
+                payout_name = growth_rule_name(name, lot, rule_names, prefix=payout.prefix)
                 rule_names.add(payout_name)
                 scheduled_rows.append({
                     "name": payout_name,
@@ -2355,8 +2368,7 @@ def _expand_account_growth(
                     "tax_character": payer.tax_character,
                     "start": start,
                     "description": (
-                        f"{'Dividends' if payout_character == registries.QUALIFIED_DIVIDEND else 'Interest'}"
-                        f" on {name}{where_lot}, reinvested ("
+                        f"{payout.label} on {name}{where_lot}, reinvested ("
                         + (_describe_blend(spec["blend"]) if "blend" in spec else spec["series"]) + ")"
                     ),
                 })
@@ -2376,7 +2388,7 @@ def _expand_account_growth(
                 "cadence": "monthly",
                 "amount_rule_kind": "percent_of_balance",
                 "series": series,
-                "params_json": _growth_params(blend, [spec for _, spec in lot_payouts]),
+                "params_json": _growth_params(blend, [p.spec for _, p in lot_payouts]),
                 "tax_character": counterparty.tax_character,
                 "start": start,
                 "description": (
@@ -2388,7 +2400,16 @@ def _expand_account_growth(
 
 
 _GROWTH_NAMES = frozenset(c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values())
-_PAYOUT_PREFIX = {registries.QUALIFIED_DIVIDEND: "dividends_", "ordinary": "interest_"}
+_SHELTERED_PAYOUT_NAMES = frozenset(c.name for c in registries.SHELTERED_PAYOUT_ACCOUNTS.values())
+
+
+def _builtin_label(name: str) -> str:
+    """A built-in account's ``meta_json.builtin``: ``growth``, a taxed
+    ``payout``, or an untaxed lot's ``sheltered_payout`` (#547), which the
+    run treats as growth but which buys shares."""
+    if name in _GROWTH_NAMES:
+        return "growth"
+    return "sheltered_payout" if name in _SHELTERED_PAYOUT_NAMES else "payout"
 
 
 def _growth_params(blend: AllocationBlend | None, less: list[dict[str, Any]]) -> str:
@@ -2403,32 +2424,100 @@ def _growth_params(blend: AllocationBlend | None, less: list[dict[str, Any]]) ->
     return json.dumps(params, separators=(",", ":")) if params else ""
 
 
+def _payout_name_clash(names: Collection[str], rate_series: Collection[str | None]) -> str | None:
+    """Why a lot can't read its payouts, if it can't: a series ``x_cg``
+    (or ``x_stcg``) whose dividend yield ``x_cg_yield`` is also ``x``'s
+    long-term (short-term) gain distributions (#547). The file would mean
+    both, so the series needs another name."""
+    for name in sorted(n for n in names if n):
+        for suffix in (registries.CG_YIELD_SUFFIX, registries.STCG_YIELD_SUFFIX):
+            ending = suffix.removesuffix(registries.YIELD_SUFFIX)
+            if name.endswith(ending) and (paid := registries.yield_series(name)) in rate_series:
+                return (f"{name!r} ends in {ending!r}, so {paid!r} would be both its yield and "
+                        f"{name.removesuffix(ending)!r}'s gain distributions; rename the series")
+    return None
+
+
+class LotPayout(NamedTuple):
+    """One payout rule a lot gets (#468, #547): what it is, how a taxable lot
+    is taxed on it, and its rate (``{"series": ...}`` or ``{"blend": ...}``)."""
+
+    prefix: str
+    label: str
+    payer: str
+    """Its key in ``registries.PAYOUT_ACCOUNTS``, when the lot is taxed."""
+    spec: dict[str, Any]
+
+
+# Each payout series suffix: its rule-name prefix, label and taxable payer,
+# keyed by the character a taxable lot is taxed at. Dividends' character
+# follows the asset class; a gain distribution's is fixed.
+_PAYOUT_KINDS: dict[str, dict[str, tuple[str, str, str]]] = {
+    registries.YIELD_SUFFIX: {
+        registries.QUALIFIED_DIVIDEND: ("dividends_", "Dividends", registries.QUALIFIED_DIVIDEND),
+        "ordinary": ("interest_", "Interest", "ordinary"),
+    },
+    registries.CG_YIELD_SUFFIX: {"ltcg": ("lt_distributions_", "Long-term gain distributions", "ltcg")},
+    registries.STCG_YIELD_SUFFIX: {
+        "ordinary": ("st_distributions_", "Short-term gain distributions", registries.NONQUALIFIED_DIVIDEND)},
+}
+_FUND_ORDINARY_DIVIDENDS = ("ordinary_dividends_", "Non-qualified dividends", registries.NONQUALIFIED_DIVIDEND)
+
+
 def _lot_payouts(
     symbol: str, series: str, blend: AllocationBlend | None,
     weight_sets: Mapping[str, list[tuple[str, dict[str, int]]]],
     rate_series: Collection[str | None],
-) -> list[tuple[str, dict[str, Any]]]:
-    """What a taxable lot pays out each year (#468, ADR-005 §5), as
-    ``(tax character, rate spec)`` pairs, a spec being ``{"series": ...}`` or
-    ``{"blend": ...}``: none, one, or a qualified and an ordinary part.
+) -> list[LotPayout]:
+    """Every payout a lot gets each year (#468, #547, ADR-005 §5): its
+    dividends and interest from ``_yield`` series, then its long-term and
+    short-term gain distributions from ``_cg_yield`` and ``_stcg_yield``."""
+    out = []
+    for suffix, kinds in _PAYOUT_KINDS.items():
+        for character, spec in _lot_payout_specs(suffix, symbol, series, blend, weight_sets, rate_series):
+            kind = kinds[character]
+            if symbol and kind[0] == "interest_":
+                # A fund's payout is a dividend on its 1099-DIV, whatever it
+                # holds: only a bond or cash held directly pays interest.
+                kind = _FUND_ORDINARY_DIVIDENDS
+            out.append(LotPayout(*kind, spec))
+    return out
 
-    A symbol with its own ``<SYMBOL>_yield`` series pays at it, as qualified
-    dividends if everything its allocation holds is stock, else as ordinary.
-    A fund growing at its allocation's blend pays each class's
-    ``<class>_yield``, split by how each is taxed. A lot growing at one
-    series pays ``<series>_yield``, taxed by the series' class. Cash and CDs
-    pay all of their rate. A class with no yield series pays nothing.
+
+def _lot_payout_specs(
+    suffix: str, symbol: str, series: str, blend: AllocationBlend | None,
+    weight_sets: Mapping[str, list[tuple[str, dict[str, int]]]],
+    rate_series: Collection[str | None],
+) -> list[tuple[str, dict[str, Any]]]:
+    """What a lot pays from the ``suffix`` series, as ``(tax character, rate
+    spec)`` pairs: none, one, or for dividends a qualified and an ordinary part.
+
+    A symbol with its own ``<SYMBOL><suffix>`` series pays at it, a dividend
+    as qualified if everything its allocation holds is stock, else as
+    ordinary. A fund growing at its allocation's blend pays each class's
+    ``<class><suffix>``, dividends split by how each is taxed. A lot growing
+    at one series pays ``<series><suffix>``, a dividend taxed by the series'
+    class. Cash and CDs pay all of their rate as interest. A class with no
+    such series pays nothing.
     """
+    dividends = suffix == registries.YIELD_SUFFIX
+    if not dividends:
+        fixed = registries.CG_PAYOUT_CHARACTERS[suffix]
+
+    def character_of(asset_class: str) -> str:
+        return registries.payout_character(asset_class) if dividends else fixed
+
     def class_payout(asset_class: str, grows_at: str) -> str | None:
-        if (yielded := registries.yield_series(asset_class)) in rate_series:
+        if (yielded := registries.yield_series(asset_class, suffix)) in rate_series:
             return yielded
-        return grows_at if asset_class in registries.ALL_PAYOUT_CLASSES else None
+        return grows_at if dividends and asset_class in registries.ALL_PAYOUT_CLASSES else None
 
     sets = weight_sets.get(symbol) if symbol else None
     held = {c for _, weights in sets or () for c, w in weights.items() if w}
-    if symbol and (own := registries.yield_series(symbol)) in rate_series:
+    if symbol and (own := registries.yield_series(symbol, suffix)) in rate_series:
         qualified = bool(held) and held <= registries.QUALIFIED_DIVIDEND_CLASSES
-        return [(registries.QUALIFIED_DIVIDEND if qualified else "ordinary", {"series": own})]
+        character = (registries.QUALIFIED_DIVIDEND if qualified else "ordinary") if dividends else fixed
+        return [(character, {"series": own})]
     if blend and sets:
         slice_of = {c: f"{symbol}.{c}" if f"{symbol}.{c}" in rate_series else c for c in held}
         by_character: dict[str, AllocationBlend] = {}
@@ -2436,8 +2525,8 @@ def _lot_payouts(
             parts: dict[str, list[list[Any]]] = {}
             for c, w in sorted(weights.items()):
                 if w and (paid := class_payout(c, slice_of[c])) is not None:
-                    parts.setdefault(registries.payout_character(c), []).append([paid, w])
-            for character in {registries.payout_character(c) for c in held}:
+                    parts.setdefault(character_of(c), []).append([paid, w])
+            for character in {character_of(c) for c in held}:
                 by_character.setdefault(character, []).append([as_of, parts.get(character, [])])
         return [
             (character, {"blend": sets_})
@@ -2447,11 +2536,12 @@ def _lot_payouts(
     if not series:
         return []
     asset_class = series if series in registries.ASSET_CLASSES else registries.SYMBOL_ASSET_CLASS.get(symbol, "")
-    paid = (registries.yield_series(series) if registries.yield_series(series) in rate_series
-            else series if asset_class in registries.ALL_PAYOUT_CLASSES else None)
+    paid = (own if (own := registries.yield_series(series, suffix)) in rate_series
+            else series if dividends and asset_class in registries.ALL_PAYOUT_CLASSES else None)
     if paid is None:
         return []
-    return [(registries.payout_character(asset_class) if asset_class else "ordinary", {"series": paid})]
+    return [(character_of(asset_class) if asset_class else ("ordinary" if dividends else fixed),
+             {"series": paid})]
 
 
 type AllocationBlend = list[list[Any]]

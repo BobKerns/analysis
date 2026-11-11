@@ -189,6 +189,15 @@ def capital_gains(
     return result
 
 
+_GAIN_DISTRIBUTIONS = registries.PAYOUT_ACCOUNTS["ltcg"].name
+
+
+def gain_distributions(ty: TaxYear) -> int:
+    """The year's reinvested long-term gain distributions (#547): gain it
+    was paid, not gain it drew out of a lot, which they add basis to."""
+    return sum(i.amount for i in ty.year_items("ltcg") if i.payer.name == _GAIN_DISTRIBUTIONS)
+
+
 _HOLDING_KINDS = frozenset({"asset", "liability"})
 """The kinds of account that hold money for someone: one with no person
 for its owner is the household's."""
@@ -236,11 +245,13 @@ def _left(losses: Mapping[str | None, int], ended: Mapping[str | None, float]) -
 
 
 _HSA_GROWTH_ACCOUNTS = frozenset(
-    registries.GROWTH_COUNTERPARTY_ACCOUNTS[character].name
+    accounts[character].name
+    for accounts in (registries.GROWTH_COUNTERPARTY_ACCOUNTS, registries.SHELTERED_PAYOUT_ACCOUNTS)
     for character in ("deferred", "tax_free")
 )
 """The built-in accounts an HSA's untaxed growth comes from (or, when it
-falls, goes back to): growth of another character is taxed already."""
+falls, goes back to), its reinvested payouts (#547) included: growth of
+another character is taxed already."""
 
 
 def state_taxes_hsa(ty: TaxYear, state: str, year: int) -> bool:

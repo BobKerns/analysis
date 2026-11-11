@@ -101,11 +101,11 @@ def load_accounts_view(
     chains = sc.items("chain")
     account_id_by_chain = chains.set_index("id")["account_id"] if not chains.empty else {}
     scheduled = sc.items("scheduled")
-    # A taxable lot's payouts (#468) are part of its growth, not a rate of
+    # A lot's payouts (#468, #547) are part of its growth, not a rate of
     # their own: the growth rule's series is the lot's total return. A cash
     # or CD lot pays all of its return, so its payout is its only rate.
     payers = set(chains.loc[chains["name"].isin(
-        [a.name for a in registries.PAYOUT_ACCOUNTS.values()]), "id"]) if not chains.empty else set()
+        [a.name for a in registries.builtin_payout_accounts()]), "id"]) if not chains.empty else set()
     rate_rows = scheduled[scheduled["amount_rule_kind"] == "percent_of_balance"]
     is_payout = rate_rows["from_account"].isin(payers)
     # A fund growing at its blend has a growth rule with no series; it still

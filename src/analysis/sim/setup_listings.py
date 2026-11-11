@@ -86,7 +86,7 @@ def loader_accounts() -> frozenset[str]:
     which are also the source of every rule it adds: a lot's growth rule or
     payout. What :data:`BUILT_IN` marks."""
     return frozenset(account.name for account in (
-        *registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.PAYOUT_ACCOUNTS.values()))
+        *registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.builtin_payout_accounts()))
 
 
 def checked_origins(origins: Mapping[str, str], names: Sequence[str],

@@ -93,7 +93,7 @@ state/
 - **No stored computed columns.** Anything derivable (net worth, totals, "is tax-deferred") is a view or query.
 - **No `run_id` in the ledger.** Each run file holds exactly one run, so a `run_id` column on every ledger table would be a constant. `simulation_run` is a single-row manifest; the file itself is the run identifier.
 - **One-row manifest tables** are not enforced by CHECK; convention only. The loader/engine write exactly one row.
-- **Reserved account names.** The built-in accounts on the far side of account growth (`interest_income`, `capital_gains`, `deferred_gains`, `tax_free_gains`, `depreciation`; `registries.GROWTH_COUNTERPARTY_ACCOUNTS`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §2.2) are created at load when a scenario does not declare them, and `rename` refuses to give an account one of their names.
+- **Reserved account names.** The built-in accounts on the far side of account growth (`interest_income`, `capital_gains`, `deferred_gains`, `tax_free_gains`, `depreciation`; `registries.GROWTH_COUNTERPARTY_ACCOUNTS`) and of a lot's payouts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`; `registries.builtin_payout_accounts()`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §2.2) are created at load when a scenario does not declare them, and `rename` refuses to give an account one of their names.
 
 ### Placement summary
 
@@ -1210,3 +1210,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#410](https://github.com/BobKerns/analysis/issues/410): table `strategy_disabled` keeps a disabled strategy's kind and parameters with the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 62).
 - [#509](https://github.com/BobKerns/analysis/issues/509): table `residence` (a scenario's `residence.csv`: where the household lives, by date), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 63).
 - [#510](https://github.com/BobKerns/analysis/issues/510): table `tax_source` (the household's tax calculator code), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 64).
+- [#547](https://github.com/BobKerns/analysis/issues/547): the reserved account names include the payout accounts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`) (Conventions).
