@@ -175,15 +175,16 @@ every other scenario.
 | File | What it is |
 | --- | --- |
 | `federal_brackets.csv` | US federal ordinary-income tax brackets. One row per (effective_date, filing_status, bracket_index). |
-| `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. Six states ship; see "The states that ship" below. |
+| `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. Seven states ship; see "The states that ship" below. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
 | `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state tax (`taxes/state.csv`), keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
 | `state_social_security__<state>.csv` | Optional: how the state taxes Social Security, keyed by state like `state_brackets__<state>.csv`. Without it (California, and most states) a state rule taxes none. With it, the state starts from the federally taxable amount and leaves out `exclusion_percent` of it, for each filing status. Optional `phaseout_start` (federal AGI) starts taking the exclusion away: evenly down to nothing at `phaseout_end` (the same figure for a cliff, as in New Mexico), or by `phaseout_rate` of each dollar over (a credit in a flat-rate state such as Utah: the credit's phase-out rate divided by the tax rate). A state that follows the federal amount (Montana) writes `0%`. `phaseout_start_series`/`phaseout_end_series` index the limits like `floor_series`. Columns: `effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,phaseout_rate`. Age tests (Colorado, Rhode Island) aren't modeled. Check the figures with the state's revenue department. |
 | `state_surcharge__<state>.csv` | A state's surcharge on high taxable income, in the columns of its brackets, whose rates add to the brackets' rates. Optional, keyed by state like `state_brackets__<state>.csv`. `__CA` is California's Behavioral Health Services Tax: 1% of taxable income over $1 million, the same for every filing status and not indexed, so its `floor_series` is blank. |
 | `state_local_tax__<state>.csv` | Optional: a local income tax (county, city, school district) on the state's taxable income, in the columns of its brackets: Maryland's county rate as one band, New York City's brackets, or a Portland-area tax as a 0% band below its threshold. Named for a county (`residence.csv` names the household's) or, for one table across the state, the state; paid with the state's tax, and shown as `local_tax` in `sim report tax`. Two local taxes on the same base, such as Portland's Metro and Multnomah County taxes, go in one table, their rates added. Needs a row for every filing status the state's brackets have. None ships. |
+| `state_gains_tax__<state>.csv` / `state_gains_deduction__<state>.csv` | Optional: a state's tax on long-term capital gains apart from its income tax, keyed by state; see "A state's gains tax" below. `__WA` ships Washington's. |
 | `state_hsa__<state>.csv` | How a state taxes a health savings account: `treatment` `taxable` or `federal`. Optional, keyed by state; without one the HSA follows the federal rules. `__CA` says `taxable`: California doesn't recognize HSAs and taxes one like a brokerage account, so a contribution isn't deducted, its dividends and interest are taxed the year they're paid, and a withdrawal is taxed on its gain over the account's cost basis. |
 | `state_retirement_exclusion__<state>.csv` | Optional: the state's retirement income exclusions, keyed by state like `state_brackets__<state>.csv` and read by a state tax. None ships (California has none); see "State retirement income exclusions" below. |
-| `state_adjustments__<state>.csv` | Optional: the state's own deductions and credits, keyed by state like `state_brackets__<state>.csv` and read by a state tax; each row is a named line of the return. `__CA` ships California's personal and senior exemption credits and its renter's credit, 2025's figures; see "State deductions and credits" below. |
+| `state_adjustments__<state>.csv` | Optional: the state's own deductions and credits, keyed by state like `state_brackets__<state>.csv` and read by a state tax; each row is a named line of the return. `__CA` ships California's personal and senior exemption credits and its renter's credit, 2025's figures, and `__WA` Washington's credit for its gains tax from 2028; see "State deductions and credits" below. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, a tax jurisdiction uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
 | `filing_status.csv` | The household's filing status from each effective date, one row per change. Empty here: put the household's in the data repo's `aux/`. A joint filer becomes Single the year after a death without a row. |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |
@@ -352,9 +353,10 @@ gains (`stcg`, for a lot held a year or less) are taxed federally as ordinary in
 
 ## The states that ship
 
-Six states' brackets and standard deductions ship here, each pair named for
+Seven states' brackets and standard deductions ship here, each pair named for
 its state: California (`__CA`), the District of Columbia (`__DC`), Idaho
-(`__ID`), Kansas (`__KS`), Nebraska (`__NE`) and North Carolina (`__NC`).
+(`__ID`), Kansas (`__KS`), Nebraska (`__NE`), North Carolina (`__NC`) and
+Washington (`__WA`).
 A state tax (`taxes/state.csv`) reads the tables of the state the household
 lives in, from the scenario's `residence.csv`; it won't load without one.
 `sim tax state` writes it, asking for the state by name.
@@ -363,8 +365,8 @@ table for a state with no income tax, which `sim tax state` and
 `sim tax move` choose for such a state, so a move there needs no tables. The tables carry each state's 2026 law, checked
 against its revenue department's 2026 publications in November 2026. A
 state's personal exemption, where it has one, is folded into the standard
-deduction. None of these five taxes Social Security, so none needs a
-`state_social_security` table.
+deduction. None of the others taxes Social Security, so only Washington's
+needs a `state_social_security` table.
 
 - **District of Columbia:** brackets the same for every filing status, not
   indexed. The standard deduction follows the federal one ($16,100, or
@@ -391,6 +393,23 @@ deduction. None of these five taxes Social Security, so none needs a
   tax form, and estimate the 2027 floors by growing 2026's by the same
   ratio, to the nearest $10, until Nebraska publishes them. The personal
   exemption credit isn't modeled.
+- **Washington:** two taxes. Its capital gains tax (RCW 82.87) is
+  `state_gains_tax__WA.csv` and `state_gains_deduction__WA.csv`: 7% of the
+  year's net long-term gain over the deduction, and from 2025 9.9% of the
+  part over $1 million, which isn't indexed. The deduction was $250,000 for
+  2022, $262,000 for 2023, $270,000 for 2024 and $278,000 for 2025, indexed
+  each year; Washington hasn't published 2026's, so the 2026 rows carry
+  2025's and grow it with `cpi`. A couple shares one deduction and one
+  $1 million, so the `MFS` rows have half of each. A home's gain is exempt;
+  see "A state's gains tax" below. Its income tax (ESSB 6346) starts in
+  2028: `state_brackets__WA.csv` is 0% until then and 9.9% from 2028, over a
+  $1 million standard deduction (`state_standard_deduction__WA.csv`, held
+  flat: the law indexes it every other year from 2030). It taxes Social
+  Security as the federal return does (`state_social_security__WA.csv`,
+  0% excluded), and `state_adjustments__WA.csv` credits the gains tax
+  against it. If a court strikes it down, a dated 0% row of
+  `state_brackets__WA.csv` in the data repo ends it. The charitable and
+  family-owned small business deductions aren't modeled.
 - **North Carolina:** a flat 3.99% for 2026, 3.49% for 2027-2029, 3.24% for
   2030-2032 and 2.99% from 2033 (Session Law 2026-41). Standard deduction
   $12,750, or $25,500 joint, not indexed. The exclusion for government
@@ -416,3 +435,15 @@ for its current rule before writing one.
 
 A move to another state (`sim tax move`, a row of `residence.csv`) takes these with it: the
 new state's tables, or none if it has none.
+
+## A state's gains tax
+
+A tax on long-term gains apart from the income tax, as Washington's is, takes two tables
+named for the state: `state_gains_tax__<state>.csv` in the columns of `state_brackets`, its
+rates on the gain after its deduction, and `state_gains_deduction__<state>.csv` in the
+columns of `state_standard_deduction`. Its base is the year's net long-term gain as Schedule
+D line 15 has it (long-term gains less long-term losses and the loss carried in, which a
+short-term loss doesn't offset), less a home's gain (from a `real_estate` account). The
+tax is added to the state's tax after its credits, and the state's income taxes that base
+in place of its net long-term gain. A `state_adjustments` credit with base `gains_tax`
+credits it against the income tax.

@@ -79,7 +79,7 @@ def test_the_drawdown_taxes_every_cent_of_its_base(report_run_file: Path) -> Non
     """The yearly shares carry the remainder, so a tax of 100% on every
     share is the whole base, to the cent."""
     with closing(sqlite3.connect(report_run_file)) as con:
-        base, extra = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains: ordinary + gains)
+        base, extra = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains, _home=0: ordinary + gains)
     assert base and base % 10  # a remainder to carry
     assert extra == base
 
@@ -88,13 +88,13 @@ def test_each_share_is_priced_in_the_year_it_would_be_drawn(report_run_file: Pat
     """#404: 2030's year-end money is drawn over 2031-2040, each share on
     that year's income, not on top of 2030's own (a last paycheck)."""
     with closing(sqlite3.connect(report_run_file)) as con:
-        base, every_year = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains: ordinary + gains)
+        base, every_year = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains, _home=0: ordinary + gains)
         _, only_2031 = _drawdown_tax(
-            con, 2030, lambda year: (lambda ordinary, gains: ordinary + gains) if year == 2031
-            else (lambda ordinary, gains: 0))
+            con, 2030, lambda year: (lambda ordinary, gains, _home=0: ordinary + gains) if year == 2031
+            else (lambda ordinary, gains, _home=0: 0))
         _, only_2030 = _drawdown_tax(
-            con, 2030, lambda year: (lambda ordinary, gains: ordinary + gains) if year == 2030
-            else (lambda ordinary, gains: 0))
+            con, 2030, lambda year: (lambda ordinary, gains, _home=0: ordinary + gains) if year == 2030
+            else (lambda ordinary, gains, _home=0: 0))
     assert base and every_year == base
     assert only_2031 in (base // 10, base // 10 + 1)
     assert only_2030 == 0
@@ -103,9 +103,9 @@ def test_each_share_is_priced_in_the_year_it_would_be_drawn(report_run_file: Pat
 def test_the_drawdown_waits_for_the_paychecks_to_end(report_run_file: Path) -> None:
     """#404: savings aren't drawn while still earning, so a share never
     lands in a year with salary."""
-    def only(priced: int) -> Callable[[int], Callable[[int, int], int]]:
-        return lambda year: (lambda ordinary, gains: ordinary + gains) if year == priced \
-            else (lambda ordinary, gains: 0)
+    def only(priced: int) -> Callable[[int], Callable[[int, int, int], int]]:
+        return lambda year: (lambda ordinary, gains, _home=0: ordinary + gains) if year == priced \
+            else (lambda ordinary, gains, _home=0: 0)
     with closing(sqlite3.connect(report_run_file)) as con:
         base, in_2031 = _drawdown_tax(con, 2030, only(2031), paycheck_years={2031, 2032})
         _, in_2033 = _drawdown_tax(con, 2030, only(2033), paycheck_years={2031, 2032})

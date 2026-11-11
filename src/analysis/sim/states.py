@@ -31,9 +31,8 @@ class State(NamedTuple):
 
     @property
     def taxes_income(self) -> bool:
-        """Whether it has a tax on wages and retirement income. Washington
-        has none, only a tax on large capital gains (not modeled, #489)."""
-        return self.status != NO_TAX and self.code not in GAINS_TAX_ONLY
+        """Whether it has a tax on wages and retirement income."""
+        return self.status != NO_TAX
 
 
 TERRITORIES = frozenset({"AS", "GU", "MP", "PR", "VI"})
@@ -42,7 +41,6 @@ TERRITORIES = frozenset({"AS", "GU", "MP", "PR", "VI"})
 # the District of Columbia taxes no state's bonds.
 MUNI_EXEMPT_EVERYWHERE = TERRITORIES
 TAXES_NO_MUNI_INTEREST = frozenset({"DC"})
-GAINS_TAX_ONLY = frozenset({"WA"})
 
 STATES: tuple[State, ...] = (
     State("AL", "Alabama", PARTIAL),
@@ -92,7 +90,7 @@ STATES: tuple[State, ...] = (
     State("UT", "Utah", PARTIAL),
     State("VT", "Vermont", TABLES_NEEDED),
     State("VA", "Virginia", PARTIAL),
-    State("WA", "Washington", PARTIAL),
+    State("WA", "Washington", SHIPPED),
     State("WV", "West Virginia", PARTIAL),
     State("WI", "Wisconsin", PARTIAL),
     State("WY", "Wyoming", NO_TAX),

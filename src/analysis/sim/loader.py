@@ -4222,6 +4222,7 @@ _STATE_LINES: frozenset[str] = frozenset({
     "capital_loss_lapsed", "nol_lapsed", "business_net", "hobby_disallowed",
     "dividends_as_ordinary", "hsa_addback", "hsa_dividends", "muni_interest",
     "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
+    "ltcg_for_gains_base", "gains_base", "gains_deduction", "gains_tax",
     "drawdown_tax", "drawdown_base", "tax_paid", "tax_due", "tax_overpaid",
 })
 """The lines the built-in state calculator writes itself, and the buckets

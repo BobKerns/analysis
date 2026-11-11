@@ -3,8 +3,10 @@ from federal AGI (#508) and adjusts it by tables keyed by the state
 the household lives in that year (``residence.csv``, #509): qualified dividends as ordinary income, an HSA it
 taxes, its own capital-gain netting and exclusion, retirement exclusions and
 a Social Security exclusion; then its deduction, brackets, gain tables
-and surcharge; and its own deductions and credits (``state_adjustments``,
-#511). A local tax on it is :mod:`analysis.sim.taxes.local`."""
+and surcharge; its own deductions and credits (``state_adjustments``,
+#511); and a tax on long-term gains apart from its income tax
+(``state_gains_tax``, #489). A local tax on it is
+:mod:`analysis.sim.taxes.local`."""
 
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from analysis.sim import registries
-from analysis.sim.tax_api import TaxError, register
+from analysis.sim.tax_api import Extra, TaxError, register
 from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import (
     Adjustment, Basis, FederalStateYear, Income, StateFromFederal,
@@ -86,6 +88,16 @@ class StateTablesYear(FederalStateYear):
         # a named line at its step.
         self._adjustments = common.state_adjustments(ty, params.adjustments_aux, series)
 
+        # A tax on long-term gains apart from the income tax (#489):
+        # Washington's, on the federal net long-term gain (Schedule D line
+        # 15) less a home's, after its own deduction. Its rates are bands
+        # like the surcharge's; without them there is none.
+        self._gains_bands = common.rate_table(ty, params.gains_tax_aux, series)
+        deduction = [r for r in ty.indexed(params.gains_deduction_aux, series)
+                     if r.get("filing_status") == ty.filing_status]
+        self._gains_deduction = int(deduction[0]["amount"]) if deduction else 0
+        self._real_estate_gain = common.real_estate_gain(ty)
+
     def deductions(self) -> Mapping[str, int]:
         ty, params = self.ty, self.ty.params
         standard_aux = params.standard_deduction_aux
@@ -140,6 +152,13 @@ class StateTablesYear(FederalStateYear):
         gain = capital.ltcg + extra.ltcg
         exclusion = Adjustment("ltcg_exclusion", ltcg=gain - self._net_ltcg(gain))
         ordinary, ltcg = income.ordinary, income.ltcg - exclusion.ltcg
+        # A state with a gains tax taxes the gain it taxes in place of its
+        # net long-term gain (#489): ESSB 6346 takes long-term gains and
+        # losses out of federal AGI and adds back the gains tax's base, so a
+        # home's gain stays out, and a short-term loss doesn't offset it.
+        swap = Adjustment("ltcg_for_gains_base",
+                          ltcg=ltcg - self._gains_base(extra) if self._gains_bands else 0)
+        ltcg -= swap.ltcg
         # Gain taken away (the drawdown estimate replaces posted gain) can't
         # be left out; gain added isn't in anyone's income by kind.
         net_gain = min(self._exclusion.net_gain, capital.stcg + self._net_ltcg(gain))
@@ -150,13 +169,13 @@ class StateTablesYear(FederalStateYear):
         # The table's subtractions come off ordinary income, tested against
         # the income before them, and never take it below zero.
         left = income.ordinary - exclusion.ordinary - retirement.ordinary - retirement.stcg
-        test = income.agi - exclusion.value - retirement.value - ss.value
+        test = income.agi - exclusion.value - swap.value - retirement.value - ss.value
         own = []
         for line, amount in self._adjusted("subtraction", test, basis).items():
             amount = min(amount, max(0, left))
             left -= amount
             own.append(Adjustment(line, ordinary=amount))
-        return (exclusion, retirement, ss, *own)
+        return (exclusion, *([swap] if self._gains_bands else []), retirement, ss, *own)
 
     def _adjusted(self, step: str, income: int, basis: Basis) -> dict[str, int]:
         """The table's lines at ``step``, after the household income test on
@@ -167,9 +186,11 @@ class StateTablesYear(FederalStateYear):
                 continue
             figure = a.figure
             if a.base == "federal_tax":
-                figure = a.from_federal(basis.federal["tax"])
+                figure = a.from_base(basis.federal["tax"])
             elif a.base == "federal_deduction":
-                figure = a.from_federal(basis.federal["deduction"])
+                figure = a.from_base(basis.federal["deduction"])
+            elif a.base == "gains_tax":
+                figure = a.from_base(self.excise(basis)[1])
             out[a.name] = a.after_income_test(figure, income)
         return out
 
@@ -200,6 +221,21 @@ class StateTablesYear(FederalStateYear):
 
     def tax(self, taxable: int, income: Income) -> int:
         return super().tax(taxable, income) + common.progressive_tax(taxable, self._surcharge)
+
+    def _gains_base(self, extra: Extra) -> int:
+        """What the gains tax taxes before its deduction (#489): the net
+        long-term gain, as Schedule D line 15 has it, less a home's, with a
+        what-if's on top."""
+        return max(0, self._capital.long_term - self._real_estate_gain
+                   + extra.ltcg - extra.real_estate_ltcg)
+
+    def excise(self, basis: Basis) -> tuple[Mapping[str, int], int]:
+        if not self._gains_bands:
+            return {}, 0
+        base = self._gains_base(basis.extra)
+        tax = common.progressive_tax(max(0, base - self._gains_deduction), self._gains_bands)
+        return {"gains_base": base, "gains_deduction": self._gains_deduction,
+                "gains_tax": tax}, tax
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
         memo = basis.federal.memo
@@ -240,5 +276,7 @@ class StateTables(StateFromFederal):
         stcg_bracket_aux: str = registries.STATE_STCG_BRACKETS
         ltcg_exclusion_aux: str = registries.STATE_LTCG_EXCLUSION
         adjustments_aux: str = registries.STATE_ADJUSTMENTS
+        gains_tax_aux: str = registries.STATE_GAINS_TAX
+        gains_deduction_aux: str = registries.STATE_GAINS_DEDUCTION
         nol_limit_percent: int | None = None
         """How much of taxable income a carried-in NOL may offset; 100 by default."""

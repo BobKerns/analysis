@@ -591,6 +591,16 @@ as most are filed on the state return, and reported apart from it."""
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""
 
+STATE_GAINS_TAX = "state_gains_tax"
+"""The aux kind of a state's tax on long-term capital gains apart from its
+income tax (#489), in the shape of its brackets: Washington's 7%, and 9.9%
+over $1 million. Its base is the federal net long-term gain (Schedule D
+line 15) less a home's, after ``state_gains_deduction``."""
+
+STATE_GAINS_DEDUCTION = "state_gains_deduction"
+"""The aux kind of the standard deduction of a state's gains tax (#489),
+one figure per filing status like ``state_standard_deduction``."""
+
 STATE_HSA_TREATMENTS: tuple[str, ...] = ("federal", "taxable")
 """A ``state_hsa`` row's ``treatment``: ``federal`` follows the federal
 rules (the default, without a table); ``taxable`` is California's, which
@@ -623,13 +633,14 @@ income before state AGI, ``deduction`` after it (beside the standard or
 itemized deduction), ``credit`` against the tax (never more than the tax)."""
 
 STATE_ADJUSTMENT_BASES: tuple[str, ...] = (
-    "spending", "income", "filers", "federal_tax", "federal_deduction",
+    "spending", "income", "filers", "federal_tax", "federal_deduction", "gains_tax",
 )
 """What a ``state_adjustments`` row's line is figured from: the year's
 ``spending`` carrying its tag (rent, premiums), its ordinary ``income``
 carrying the tag (a public pension), the ``filers`` (an exemption of
 ``amount`` each), or the federal return's ``tax`` (a deduction for federal
-tax paid) or ``deduction`` (Utah's taxpayer credit)."""
+tax paid) or ``deduction`` (Utah's taxpayer credit), or the state's own
+``gains_tax`` (#489; Washington credits it against its income tax)."""
 
 STATE_LTCG_BRACKETS = "state_ltcg_brackets"
 """A state's own rates on long-term gain (#485), stacked on top of its
@@ -652,19 +663,23 @@ STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
     "state_brackets", STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
     STATE_LTCG_EXCLUSION, STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA,
     STATE_RETIREMENT_EXCLUSION, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
+    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
 })
 """The aux kinds keyed by state (or, for ``state_local_tax``, by county):
 a tax year reads the series where the household lives that year
 (``residence.csv``, #509), so none of them is swapped by a move."""
 
-OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset(
-    {STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS})
-"""The state tables a state may lack (#490, #487): then it has no surcharge
-or local tax, and its HSA follows the federal rules."""
+OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset({
+    STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
+    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
+})
+"""The state tables a state may lack (#490, #487, #489): then it has no
+surcharge, local tax or gains tax, and its HSA follows the federal rules."""
 
-STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX})
-"""The state tables of bands whose rates add to the brackets' (#490, #487):
-a filing status the brackets have and the table lacks would tax nothing."""
+STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX, STATE_GAINS_TAX})
+"""The state tables of bands (#490, #487, #489): a surcharge's and a local
+tax's rates add to the brackets', and a gains tax's tax its own base. A
+filing status the brackets have and the table lacks would tax nothing."""
 
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
@@ -678,6 +693,8 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     "state_brackets": {"floor_series": "floor"},
     STATE_SURCHARGE: {"floor_series": "floor"},
     STATE_LOCAL_TAX: {"floor_series": "floor"},
+    STATE_GAINS_TAX: {"floor_series": "floor"},
+    STATE_GAINS_DEDUCTION: {"amount_series": "amount"},
     "ltcg_brackets": {"floor_series": "floor"},
     STATE_LTCG_BRACKETS: {"floor_series": "floor"},
     STATE_STCG_BRACKETS: {"floor_series": "floor"},
@@ -726,6 +743,12 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # How a state treats an HSA (#490), read with the brackets' series:
     # `treatment` is one of STATE_HSA_TREATMENTS. Without a table, `federal`.
     STATE_HSA: ("effective_date", "treatment"),
+    # A state's tax on long-term gains apart from its income tax (#489):
+    # bands in the shape of its brackets on the gain after its own
+    # deduction, read with the brackets' series. Washington's.
+    STATE_GAINS_TAX:
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
+    STATE_GAINS_DEDUCTION: ("effective_date", "filing_status", "amount"),
     # Federal long-term capital gain rates: the same shape as federal_brackets,
     # but a band's floor is the taxable income (ordinary income plus the gain,
     # stacked on top) at which its rate starts. Optional: without it long-term
@@ -853,6 +876,7 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "state_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_SURCHARGE: {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_LOCAL_TAX: {"marginal_rate": ("marginal_rate_micros", "percent")},
+    STATE_GAINS_TAX: {"marginal_rate": ("marginal_rate_micros", "percent")},
     "ltcg_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_LTCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
     STATE_STCG_BRACKETS: {"marginal_rate": ("marginal_rate_micros", "percent")},
@@ -892,6 +916,8 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     STATE_LTCG_EXCLUSION: frozenset({"min_exclusion", "max_exclusion"}),
     STATE_SURCHARGE: frozenset({"floor"}),
     STATE_LOCAL_TAX: frozenset({"floor"}),
+    STATE_GAINS_TAX: frozenset({"floor"}),
+    STATE_GAINS_DEDUCTION: frozenset({"amount"}),
     "standard_deduction": frozenset({"amount"}),
     STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
     STATE_RETIREMENT_EXCLUSION: frozenset({"amount", "income_limit", "phaseout"}),

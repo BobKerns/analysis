@@ -40,11 +40,12 @@ __all__ = [
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
-API_VERSION = 2
+API_VERSION = 3
 """Bumped when a calculator written against the previous version could
 break, or one written for this version needs what the previous lacks. 1
 (#510) is the first a data repo can write to; 2 (#511) adds a state year's
-``other_deductions`` and ``credit_lines`` steps."""
+``other_deductions`` and ``credit_lines`` steps; 3 (#489) its ``excise``
+step and :attr:`Extra.real_estate_ltcg`."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""
@@ -316,9 +317,12 @@ class TaxYear:
 @dataclass(frozen=True)
 class Extra:
     """Income added on top of the year's, for a what-if: ``ordinary`` more
-    ordinary income (a Roth conversion) and ``ltcg`` more long-term gain."""
+    ordinary income (a Roth conversion) and ``ltcg`` more long-term gain,
+    ``real_estate_ltcg`` of it a home's (the after-tax drawdown's), which a
+    state's gains tax leaves out (#489)."""
     ordinary: int = 0
     ltcg: int = 0
+    real_estate_ltcg: int = 0
 
 
 NO_EXTRA = Extra()

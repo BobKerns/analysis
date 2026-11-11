@@ -481,6 +481,16 @@ files pays no income tax.
   loss. Growth left in the HSA isn't taxed. An HSA lot's basis starts at
   its `opening_cost_basis` in `account_lots.csv`, or its whole balance when
   that is blank.
+- **Washington**: it ships, and has two taxes. Its capital gains tax
+  (`state_gains_tax__WA.csv`, `state_gains_deduction__WA.csv`) takes 7% of
+  the year's net long-term gain over a deduction ($278,000 in 2025, grown
+  with inflation), and 9.9% of the part over $1 million. A short-term loss
+  doesn't offset the gain, and a home's gain (from a `real_estate`
+  account) is exempt; dividends, interest, IRA withdrawals and Social
+  Security aren't taxed. From 2028 its income tax takes 9.9% of income
+  over $1 million, Social Security, pensions and IRA withdrawals included,
+  and credits the gains tax against it. If a court strikes that tax down,
+  a dated 0% row of `state_brackets__WA.csv` in your data repo ends it.
 - **Local income tax**: some counties and cities tax income on top of the
   state (a Maryland county, New York City, an Indiana county, the Portland
   area). Where the local tax is figured on the state's taxable income, put
@@ -1011,11 +1021,11 @@ writes it). A tax year is taxed by the state you live in on its December 31,
 so a move in February 2031 leaves 2030's return, paid that April, in the old
 state, and 2031 is the new state's. Everything the state tax reads follows
 the move: the new state's brackets, standard deduction, Social Security,
-gain, surcharge, retirement exclusion and HSA tables, or none where it has
-none (the federal standard deduction stands in for a missing one). The new
-state needs its tables, as `aux/state_brackets__WA.csv` say, unless they
-ship or it has no income tax (it then reads a 0% table,
-`state_brackets__none.csv`). A move to another county is a row too:
+gain, gains tax, surcharge, retirement exclusion and HSA tables, or none where it has
+none (the federal standard deduction stands in for a missing one). Washington's
+tables ship, so that move needs none of your own. Another state needs its
+tables, as `aux/state_brackets__OR.csv` say, unless they ship or it has no
+income tax (it then reads a 0% table, `state_brackets__none.csv`). A move to another county is a row too:
 `sim tax move 2033-01 CA --county CA-county` reads
 `aux/state_local_tax__CA-county.csv` from then on. A child scenario adds its
 own rows to its parent's, and one of the same month replaces the parent's.

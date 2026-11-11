@@ -102,6 +102,10 @@ class CapitalGains(NamedTuple):
     lapsed: int = 0
     """The carryover that ended with a death in the year (#277), already
     taken out of ``carryover_st`` and ``carryover_lt``."""
+    long_term: int = 0
+    """The year's long-term result less the long-term loss carried in,
+    before a short-term loss offsets it: Schedule D line 15, the base of a
+    state's gains tax (#489). Negative for a net loss."""
 
 
 def net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
@@ -166,9 +170,11 @@ def capital_gains(
     carry_st = carry_lt = 0
     building: dict[str | None, int] = {}
     result = CapitalGains(0, 0, 0, 0, 0)
+    long_term = 0
     for year in range(min(totals, default=ty.year), ty.year + 1):
         st, lt = totals.get(year, (0, 0))
-        result = net_capital(st - carry_st, lt - carry_lt, functools.partial(loss_limit, year))
+        long_term = lt - carry_lt
+        result = net_capital(st - carry_st, long_term, functools.partial(loss_limit, year))
         carry_st, carry_lt = result.carryover_st, result.carryover_lt
         for owner, net in nets.get(year, {}).items():
             if net < 0:
@@ -183,7 +189,14 @@ def capital_gains(
             building = _left(building, ended)
         if not carry_st + carry_lt:
             building = {}
-    return result
+    return result._replace(long_term=long_term)
+
+
+def real_estate_gain(ty: TaxYear) -> int:
+    """The year's long-term gain on real estate (#489): what its sales from a
+    ``real_estate`` account realized, which Washington's gains tax leaves
+    out. A loss on a home isn't deductible, so it posts none."""
+    return sum(i.amount for i in ty.year_items("ltcg") if i.payer.subkind == "real_estate")
 
 
 _GAIN_DISTRIBUTIONS = registries.PAYOUT_ACCOUNTS["ltcg"].name
@@ -877,8 +890,9 @@ class StateAdjustment:
     base: str
     figure: int
     """What the row grants before the income test, from its fixed base
-    (spending, income, filers); for a federal base, its rate and cap
-    applied by :meth:`from_federal`."""
+    (spending, income, filers); for a base the return figures (the federal
+    tax or deduction, the state's gains tax), its rate and cap applied by
+    :meth:`from_base`."""
     rate_micros: int | None
     cap: int | None
     income_limit: int | None
@@ -888,8 +902,9 @@ class StateAdjustment:
     """How many exemptions a ``filers`` line is: ``phaseout_rate`` takes its
     share of each dollar over from each, as California's does."""
 
-    def from_federal(self, amount: int) -> int:
-        """The figure for a ``federal_tax`` or ``federal_deduction`` base."""
+    def from_base(self, amount: int) -> int:
+        """The figure for a ``federal_tax``, ``federal_deduction`` or
+        ``gains_tax`` base of ``amount``."""
         value = max(0, amount)
         if self.rate_micros is not None:
             value = value * self.rate_micros // 1_000_000

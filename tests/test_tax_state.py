@@ -93,7 +93,9 @@ def test_without_a_state_it_lists_the_choices_and_asks(
     assert "lives in California (CA) from 2026-05" in result.output
     assert "With tax tables: California (CA), District of Columbia (DC)," in result.output
     assert "No income tax: Alaska (AK), Florida (FL)," in result.output
-    assert "Washington (WA)" in result.output.split("No income tax:")[1]
+    # Washington's capital gains and income taxes ship (#489).
+    assert "Washington (WA)" in result.output.split("No income tax:")[0]
+    assert "Washington (WA)" not in result.output.split("No income tax:")[1]
     assert "a state's name or two-letter code" in result.output
     assert _residence(retire_alice_csv("")) == [("2026-05", "NC", "")]
 
@@ -356,7 +358,7 @@ def test_a_move_needs_the_starting_state_first(
     assert "choose the state you live in first (sim tax state)" in result.output
 
 
-def test_washington_has_no_income_tax_to_model(
+def test_a_move_to_washington_reads_its_shipped_tables(
     test_data_dir: Path, add_state_tax: Callable[..., None],
     retire_alice_csv: Callable[[str], Path],
 ) -> None:
@@ -365,7 +367,8 @@ def test_washington_has_no_income_tax_to_model(
     result = _tax(test_data_dir, "move", "2031-07", "WA", "--yes")
 
     assert result.exit_code == 0, result.output
-    assert "its capital gains tax isn't modeled" in result.output
+    assert "isn't modeled" not in result.output
+    assert "has no tax tables" not in result.output
     assert _residence(retire_alice_csv(""))[-1] == ("2031-07", "WA", "")
 
 

@@ -20,7 +20,7 @@ A scenario's `taxes/<jurisdiction>.csv` (ADR-003 §4.15) names the kind that com
 
 ### 2. What a calculator sees: `TaxYear`
 
-For each tax year a jurisdiction settles or estimates, the engine builds a `TaxYear` and asks the calculator to `prepare` it once. The prepared year answers `compute(extra)` as often as asked, with more ordinary income or long-term gain on top (`Extra`) for the what-ifs: `fill_bracket`, the after-tax drawdown, IRMAA's MAGI and a strategy's `ctx.tax` all ask it, so none can disagree with the settlement.
+For each tax year a jurisdiction settles or estimates, the engine builds a `TaxYear` and asks the calculator to `prepare` it once. The prepared year answers `compute(extra)` as often as asked, with more ordinary income or long-term gain on top (`Extra`, which also says how much of the gain is a home's, which a state's gains tax leaves out, [#489](https://github.com/BobKerns/analysis/issues/489)) for the what-ifs: `fill_bracket`, the after-tax drawdown, IRMAA's MAGI and a strategy's `ctx.tax` all ask it, so none can disagree with the settlement.
 
 A `TaxYear` is read-only:
 
@@ -43,7 +43,7 @@ A calculator is a pure function of its `TaxYear`: no clock, files, network, unse
 
 ### 5. The API and its version
 
-The API is `analysis.sim.tax_api` and the calculator classes and bases in `analysis.sim.taxes`, which a household's calculator may subclass: `federal.Federal`, `state_tables.StateTables` (and its year, `StateTablesYear`), `local.LocalBands`, and `state_base`'s `StateFromFederal`, `StateFromIncome`, `StateYear`, `Adjustment`, `Income` and `Basis`. A state calculator usually builds on `StateTables`, overriding a step of its year (`additions`, `subtractions`, `deductions`, `other_deductions`, `tax`, `credits`, `credit_lines`) and extending its `Params`. `other_deductions` returns named deductions taken after AGI that may depend on the year's income; `credit_lines` named credits, each written to the return as what it took, in order, after `credits`' total, until the tax is used up (API 2, [#511](https://github.com/BobKerns/analysis/issues/511)). `analysis.sim.taxes.common` is the built-ins' own helpers, which can change without notice.
+The API is `analysis.sim.tax_api` and the calculator classes and bases in `analysis.sim.taxes`, which a household's calculator may subclass: `federal.Federal`, `state_tables.StateTables` (and its year, `StateTablesYear`), `local.LocalBands`, and `state_base`'s `StateFromFederal`, `StateFromIncome`, `StateYear`, `Adjustment`, `Income` and `Basis`. A state calculator usually builds on `StateTables`, overriding a step of its year (`additions`, `subtractions`, `deductions`, `other_deductions`, `tax`, `credits`, `credit_lines`, `excise`) and extending its `Params`. `other_deductions` returns named deductions taken after AGI that may depend on the year's income; `credit_lines` named credits, each written to the return as what it took, in order, after `credits`' total, until the tax is used up (API 2, [#511](https://github.com/BobKerns/analysis/issues/511)). `excise` is a tax apart from the income tax, on a base of its own, added to the tax after the credits: its lines and the tax (API 3, [#489](https://github.com/BobKerns/analysis/issues/489); the built-in's is a state's `state_gains_tax`, Washington's tax on long-term gains). `analysis.sim.taxes.common` is the built-ins' own helpers, which can change without notice.
 
 `tax_api.API_VERSION` is bumped when a calculator written against the previous version could break, or one written for this version needs what the previous lacks. A module may set `API_VERSION` to the version it was written for; a newer one than the code provides is a load error.
 
@@ -103,3 +103,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#547](https://github.com/BobKerns/analysis/issues/547): `drawn_gain` leaves out reinvested long-term gain distributions, which draw no gain out of a lot (§3).
 - [#497](https://github.com/BobKerns/analysis/issues/497): `TaxYear.hsa_gains` (an HSA withdrawal's gain over its basis) and the memo line `hsa_taxed` the after-tax drawdown reads (§2, §3); additive, so no API bump.
 - [#265](https://github.com/BobKerns/analysis/issues/265): `Return.magi`, the `magi` line or AGI, which `irmaa` and `fill_bracket` read (§2).
+- [#489](https://github.com/BobKerns/analysis/issues/489): API 3: a state year's `excise` step, a tax apart from the income tax added after credits, and `Extra.real_estate_ltcg`, the part of a what-if's gain that is a home's (§2, §5).

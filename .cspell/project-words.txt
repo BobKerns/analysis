@@ -101,6 +101,7 @@ errorbar
 errstate
 esac
 espeak
+ESSB
 evals
 Evensky
 executemany
