@@ -178,12 +178,12 @@ Enter
 Sleep 2s
 Show
 Sleep 500ms
-Type "sim ytd add wages_alice Income_Salary_Alice Asset_Checking 96412 --tax-character ordinary --year 2026 --description \"Alice's W-2\""
+Type `sim ytd add wages_alice Income_Salary_Alice Asset_Checking 96412 --tax-character ordinary --year 2026 --description "Alice's W-2"`
 Sleep 400ms
 Enter
 Wait
 Sleep 2s
-Type "sim ytd add wages_bill Income_Salary_Bill Asset_Checking 84780 --tax-character ordinary --year 2026 --description \"Bill's W-2\""
+Type `sim ytd add wages_bill Income_Salary_Bill Asset_Checking 84780 --tax-character ordinary --year 2026 --description "Bill's W-2"`
 Sleep 400ms
 Enter
 Wait

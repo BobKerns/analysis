@@ -268,6 +268,11 @@ def _parse(path: Path, *, translation: bool) -> tuple[dict[str, Any], list[Scene
                 for n, tape_line in enumerate(body, start=lineno + 1):
                     if tape_line.strip().startswith("Output"):
                         raise ScriptError(f"{path}:{n}: a tape must not set Output; the builder does")
+                    if tape_line.strip().startswith('Type "') and '\\"' in tape_line:
+                        # VHS types a backslash as it stands, so the shell
+                        # sees an unclosed quote and waits at `>`.
+                        raise ScriptError(f"{path}:{n}: VHS doesn't unescape \\\" in a \"...\" string; "
+                                          "write the Type in `backticks` instead")
             current["visual"] = Visual(kind, source, fields)
             continue
 
