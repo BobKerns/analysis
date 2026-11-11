@@ -609,10 +609,11 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     paid or refunded. CPI-constant dollars use each year's year-end CPI, as
     the notebook does; the rate is the same in either.
     """
-    frame = _tax_buckets(rc, list(_TAX_COLUMNS)).rename(columns=_TAX_COLUMNS)
+    both = _tax_buckets(rc, [*_TAX_COLUMNS, "federal_tax_exempt_interest"])
+    frame = both[list(_TAX_COLUMNS)].rename(columns=_TAX_COLUMNS)
     # Municipal bond interest (#265), only when some year has it: federal
     # AGI leaves it out, though Social Security taxation and MAGI count it.
-    exempt = _tax_buckets(rc, ["federal_tax_exempt_interest"]).reindex(frame.index)["federal_tax_exempt_interest"]
+    exempt = both["federal_tax_exempt_interest"]
     if exempt.fillna(0).ne(0).any():
         frame.insert(frame.columns.get_loc("fed_agi"), "fed_exempt_interest", exempt.fillna(0))
     if frame["state_tax"].isna().all():

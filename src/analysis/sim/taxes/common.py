@@ -662,18 +662,32 @@ def bracket_series(ty: TaxYear) -> str | None:
     return None if series is None else str(series)
 
 
-def taxable_muni_interest(ty: TaxYear) -> int:
-    """The year's municipal bond interest (#265) a state adds back to
-    federal AGI: every state's but its own, by where the household lives on
-    December 31, and never a territory's. The District of Columbia adds
+EXEMPT_INTEREST = "tax_exempt_interest"
+
+
+def exempt_interest_memo(ty: TaxYear) -> dict[str, int]:
+    """The federal memo's municipal bond interest (#265): the year's
+    ``tax_exempt_interest``, and ``tax_exempt_interest__<ST>``, the part
+    from one state's bonds, for each state that paid some."""
+    memo = {EXEMPT_INTEREST: 0}
+    for item in ty.year_items(registries.TAX_EXEMPT):
+        memo[EXEMPT_INTEREST] += item.amount
+        if issuer := registries.MUNI_PAYER_STATE.get(item.payer.name):
+            key = f"{EXEMPT_INTEREST}__{issuer}"
+            memo[key] = memo.get(key, 0) + item.amount
+    return memo
+
+
+def taxable_muni_interest(memo: Mapping[str, int], home: str | None) -> int:
+    """The municipal bond interest (#265) a state adds back to federal AGI,
+    from the federal ``memo``: every state's but ``home``'s, where the
+    household lives, and never a territory's. The District of Columbia adds
     back none."""
-    residence = ty.residence_in(ty.year)
-    home = None if residence is None else residence.state
     if home in states.TAXES_NO_MUNI_INTEREST:
         return 0
-    return sum(i.amount for i in ty.year_items(registries.TAX_EXEMPT)
-               if (issuer := registries.MUNI_PAYER_STATE.get(i.payer.name)) != home
-               and issuer not in states.MUNI_EXEMPT_EVERYWHERE)
+    exempt = {home, *states.MUNI_EXEMPT_EVERYWHERE}
+    return memo.get(EXEMPT_INTEREST, 0) - sum(
+        memo.get(f"{EXEMPT_INTEREST}__{issuer}", 0) for issuer in exempt if issuer)
 
 
 def state_series(ty: TaxYear, year: int | None = None) -> str:

@@ -91,7 +91,9 @@ def test_exempt_interest_counts_in_provisional_income() -> None:
     with_muni = common.taxable_social_security(
         ordinary_income=20_000_00, ltcg_income=0, ss_income=30_000_00, exempt_interest=10_000_00,
         **tiers)
-    assert with_muni > without
+    # Provisional $45,000: 85% of the $1,000 over tier 2, plus half the
+    # $12,000 between the tiers.
+    assert with_muni == 6_850_00
 
 
 def test_each_states_bonds_are_an_asset_class_with_its_own_payer() -> None:

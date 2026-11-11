@@ -133,6 +133,9 @@ class FederalYear(Prepared):
             "excluded_gain": ty.total("excluded_gain"),
             "roth_qualified": sum(i.amount for i in ty.year_items("tax_free")
                                   if i.payer.subkind == registries.RETIREMENT_SUBKIND),
+            # Municipal bond interest (#265), and each issuing state's part
+            # of it, for a state to add back all but its own bonds'.
+            **common.exempt_interest_memo(ty),
         }
 
     def _taxed_ltcg(self, extra_gain: int) -> int:

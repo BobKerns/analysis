@@ -81,10 +81,6 @@ class StateTablesYear(FederalStateYear):
         # is its own jurisdiction (local_bands, #508).
         self._surcharge = common.rate_table(ty, registries.STATE_SURCHARGE, series)
 
-        # Municipal bond interest federal AGI leaves out (#265): the state
-        # taxes other states' bonds, not its own.
-        self._muni_interest = common.taxable_muni_interest(ty)
-
         # The state's own deductions and credits (#511, #488): a renter's
         # deduction, an exemption, a deduction for federal tax paid. Each is
         # a named line at its step.
@@ -126,8 +122,10 @@ class StateTablesYear(FederalStateYear):
             Adjustment("hsa_addback", ordinary=contributed - withdrawn),
             # It taxes an HSA's dividends and interest the year they're paid (#497).
             Adjustment("hsa_dividends", ordinary=self._hsa_dividends),
-            # Other states' municipal bond interest (#265), as Schedule CA adds it.
-            Adjustment("muni_interest", ordinary=self._muni_interest),
+            # Other states' municipal bond interest (#265), as Schedule CA
+            # adds it: the state taxes other states' bonds, not its own.
+            Adjustment("muni_interest", ordinary=common.taxable_muni_interest(
+                memo, None if self.ty.residence is None else self.ty.residence.state)),
             # Its own netting of gains and losses, with an HSA's gains (#497),
             # less the federal result.
             Adjustment(
