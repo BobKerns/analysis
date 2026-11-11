@@ -92,6 +92,7 @@ def test_cjk_sentences_split_on_full_stops() -> None:
         ("## Scene `a`: A\n\nWords.\n", "no ```tape, ```slide or ```notebook"),
         ("## Scene `a`: A\n\n```slide\ntemplate='title'\n```\n\n## Scene `a`: B\n", "appears twice"),
         ("## Scene `a`: A\n\n```tape\nOutput x.gif\n```\n", "must not set Output"),
+        ('## Scene `a`: A\n\n```tape\nType "echo \\"it\'s\\""\n```\n', "write the Type in `backticks`"),
         ("## Scene `a`: A\n\n```slide\nheading='x'\n```\n", "needs template"),
         ("## Not a scene\n", "must be ## Scene"),
         ("## Scene `a`: A\n\n```slide\ntemplate='title'\n", "never closed"),
