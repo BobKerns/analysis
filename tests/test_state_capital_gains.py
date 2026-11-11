@@ -43,8 +43,12 @@ def state_gains(
         run = run_scenario(load_test_copy().intent_path, runs_dir / f"r{next(runs)}.sqlite3",
                            run_by="test", allow_dirty_data=True, allow_dirty_code=True)
         with sqlite3.connect(run) as con:
-            return dict(con.execute(
+            summary = dict(con.execute(
                 "SELECT bucket, amount FROM tax_year_summary WHERE year = 2026").fetchall())
+        # The tax before credits: California's exemption credits (#488) come
+        # off it, and these tests check the brackets' tax.
+        summary["state_tax"] += summary.get("state_credits", 0)
+        return summary
     return _run
 
 

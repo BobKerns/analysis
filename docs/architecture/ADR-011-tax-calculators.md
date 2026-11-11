@@ -43,7 +43,7 @@ A calculator is a pure function of its `TaxYear`: no clock, files, network, unse
 
 ### 5. The API and its version
 
-The API is `analysis.sim.tax_api` and the calculator classes and bases in `analysis.sim.taxes`, which a household's calculator may subclass: `federal.Federal`, `state_tables.StateTables` (and its year, `StateTablesYear`), `local.LocalBands`, and `state_base`'s `StateFromFederal`, `StateFromIncome`, `StateYear`, `Adjustment`, `Income` and `Basis`. A state calculator usually builds on `StateTables`, overriding a step of its year (`additions`, `subtractions`, `deductions`, `credits`, `tax`) and extending its `Params`. `analysis.sim.taxes.common` is the built-ins' own helpers, which can change without notice.
+The API is `analysis.sim.tax_api` and the calculator classes and bases in `analysis.sim.taxes`, which a household's calculator may subclass: `federal.Federal`, `state_tables.StateTables` (and its year, `StateTablesYear`), `local.LocalBands`, and `state_base`'s `StateFromFederal`, `StateFromIncome`, `StateYear`, `Adjustment`, `Income` and `Basis`. A state calculator usually builds on `StateTables`, overriding a step of its year (`additions`, `subtractions`, `deductions`, `other_deductions`, `tax`, `credits`, `credit_lines`) and extending its `Params`. `other_deductions` returns named deductions taken after AGI that may depend on the year's income; `credit_lines` named credits, each written to the return as what it took, in order, after `credits`' total, until the tax is used up (API 2, [#511](https://github.com/BobKerns/analysis/issues/511)). `analysis.sim.taxes.common` is the built-ins' own helpers, which can change without notice.
 
 `tax_api.API_VERSION` is bumped when a calculator written against the previous version could break, or one written for this version needs what the previous lacks. A module may set `API_VERSION` to the version it was written for; a newer one than the code provides is a load error.
 
@@ -92,8 +92,10 @@ A guide with a worked example is [docs/guides/tax-calculators.md](../guides/tax-
 
 - A jurisdiction beyond federal, state and local (a non-resident state return, the credit for tax paid to another state).
 - Estimated quarterly payments, probably a strategy reading `ctx.tax`.
-- State deductions and credits themselves (rent, property tax, 529 contributions, long-term care premiums), each a household calculator or a built-in's step ([#511](https://github.com/BobKerns/analysis/issues/511)).
+- Itemized deductions figured from tagged spending (property tax, mortgage interest, charity, medical; [#542](https://github.com/BobKerns/analysis/issues/542)).
 
 ## Amendments
 
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [#511](https://github.com/BobKerns/analysis/issues/511): API 2: a state year's `other_deductions` and `credit_lines` steps; a state's own deductions and credits are rows of the built-in's `state_adjustments` table (§5, deferred questions).

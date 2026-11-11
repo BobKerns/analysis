@@ -1,0 +1,10 @@
+effective_date,name,step,base,tag,rate,amount,per_person,min_age,filing_status,income_limit,phaseout,phaseout_rate,amount_series,income_limit_series
+2026-01-31,personal_exemption_credit,credit,filers,,,153.00,,,Single,252203.00,,0.24%,cpi,cpi
+2026-01-31,personal_exemption_credit,credit,filers,,,153.00,,,MFS,252203.00,,0.48%,cpi,cpi
+2026-01-31,personal_exemption_credit,credit,filers,,,153.00,,,MFJ,504411.00,,0.24%,cpi,cpi
+2026-01-31,senior_exemption_credit,credit,filers,,,153.00,,65,Single,252203.00,,0.24%,cpi,cpi
+2026-01-31,senior_exemption_credit,credit,filers,,,153.00,,65,MFS,252203.00,,0.48%,cpi,cpi
+2026-01-31,senior_exemption_credit,credit,filers,,,153.00,,65,MFJ,504411.00,,0.24%,cpi,cpi
+2026-01-31,renters_credit,credit,spending,tax:rent,,60.00,,,Single,53994.00,,,,cpi
+2026-01-31,renters_credit,credit,spending,tax:rent,,60.00,,,MFS,53994.00,,,,cpi
+2026-01-31,renters_credit,credit,spending,tax:rent,,120.00,,,MFJ,107988.00,,,,cpi

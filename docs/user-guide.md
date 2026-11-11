@@ -489,6 +489,14 @@ files pays no income tax.
   as `state_exclusion`. Give a pension income account its owner, so the
   pension counts as that person's; a joint account's income is split
   between you.
+- **State deductions and credits** of the state's own, such as a renter's
+  deduction or credit, a 529 or long-term care premium deduction, personal
+  exemptions and exemption credits, or a deduction for federal tax paid, are
+  rows of `state_adjustments__<state>.csv` in `aux/`. California's
+  exemption credits and renter's credit ship. A row that counts spending
+  or income reads a tag: tag the rule that pays your rent
+  `tax:rent` (`sim scheduled edit housing --tags tax:rent`) for the
+  renter's credit. `sim report tax --return state` shows each line.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year.
 - **RMDs** are calculated from the account's lot balances on the previous

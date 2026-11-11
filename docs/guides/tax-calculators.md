@@ -9,7 +9,13 @@ The simulator computes each income tax, federal, state and local, with a
 that starts from federal AGI and reads its brackets and other tables for
 the state you live in) and `local_bands`. When your state has a rule they
 don't model (a renter deduction, a public pension exclusion, a credit for
-long-term care premiums), you can write a calculator of your own, a small
+long-term care premiums), first see whether a row of the state's
+`state_adjustments` table can say it: a share of tagged spending or
+income, up to a cap, for filers from an age, below an income, as a
+subtraction, deduction or credit (the code repository's
+`templates/aux/README.md` lists the columns). Most renter's, 529 and
+premium rules fit. When one doesn't (a circuit breaker figured from
+property value, say), you can write a calculator of your own, a small
 Python class in your data repo, and have a scenario use it. A calculator
 reads what the year's money did and returns the lines of a return; it
 never touches the ledger, and a run records the exact code it ran.
@@ -106,7 +112,8 @@ What it does:
 
 - `StateTables` is the built-in state calculator; `RentersYear` is one year
   of it, and overrides `subtractions`, one of the steps a state year goes
-  through (`additions`, `subtractions`, `deductions`, `tax`, `credits`).
+  through (`additions`, `subtractions`, `deductions`, `other_deductions`,
+  `tax`, `credits`, `credit_lines`).
   Each `Adjustment` is a line of the return, written to the run as
   `state_<line>`.
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is

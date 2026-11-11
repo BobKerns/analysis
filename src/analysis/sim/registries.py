@@ -483,6 +483,25 @@ in the order a row that covers several uses them up: ordinary income from a
 a ``capital_gain`` (``stcg``/``ltcg``); and ``other``, the rest of the state's
 taxable income. ``all`` in a row stands for every one of them."""
 
+STATE_ADJUSTMENTS = "state_adjustments"
+"""The aux kind of a state's own deductions and credits (#511, #488), keyed
+by state like its brackets: each row a named line of the return, computed
+from tagged spending or income, the filers, or the federal return."""
+
+STATE_ADJUSTMENT_STEPS: tuple[str, ...] = ("subtraction", "deduction", "credit")
+"""Where a ``state_adjustments`` row's line comes off: ``subtraction`` from
+income before state AGI, ``deduction`` after it (beside the standard or
+itemized deduction), ``credit`` against the tax (never more than the tax)."""
+
+STATE_ADJUSTMENT_BASES: tuple[str, ...] = (
+    "spending", "income", "filers", "federal_tax", "federal_deduction",
+)
+"""What a ``state_adjustments`` row's line is figured from: the year's
+``spending`` carrying its tag (rent, premiums), its ordinary ``income``
+carrying the tag (a public pension), the ``filers`` (an exemption of
+``amount`` each), or the federal return's ``tax`` (a deduction for federal
+tax paid) or ``deduction`` (Utah's taxpayer credit)."""
+
 STATE_LTCG_BRACKETS = "state_ltcg_brackets"
 """A state's own rates on long-term gain (#485), stacked on top of its
 taxable income as ``ltcg_brackets`` is federally: a lower rate (Montana), a
@@ -503,14 +522,14 @@ state taxes none of it."""
 STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
     "state_brackets", STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
     STATE_LTCG_EXCLUSION, STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA,
-    STATE_RETIREMENT_EXCLUSION, STATE_LOCAL_TAX,
+    STATE_RETIREMENT_EXCLUSION, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
 })
 """The aux kinds keyed by state (or, for ``state_local_tax``, by county):
 a tax year reads the series where the household lives that year
 (``residence.csv``, #509), so none of them is swapped by a move."""
 
 OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset(
-    {STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX})
+    {STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS})
 """The state tables a state may lack (#490, #487): then it has no surcharge
 or local tax, and its HSA follows the federal rules."""
 
@@ -539,13 +558,20 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
         "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
     },
     STATE_RETIREMENT_EXCLUSION: {"amount_series": "amount"},
+    STATE_ADJUSTMENTS: {"amount_series": "amount", "income_limit_series": "income_limit"},
 }
 """Optional columns of the tax tables the law indexes for inflation (#467),
 by kind: {series column: the money column it grows}. Each names an
 inflation series that grows the row's figure from the table's effective
-date to January of the tax year, rounded down to $50; blank or missing
+date to January of the tax year, rounded down to $50 (or the kind's
+``TAX_INDEX_ROUNDING``); blank or missing
 holds it flat. Social Security's thresholds and the capital loss limit are
 fixed in law, so they have none."""
+
+TAX_INDEX_ROUNDING: dict[str, int] = {STATE_ADJUSTMENTS: 100}
+"""Kinds whose indexed figures round down to other than $50, in cents: a
+state's own credits and limits round to the dollar (California's $153
+exemption credit, #488), where $50 would swallow most of their growth."""
 
 AUX_SERIES_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     IRMAA_TIERS: IRMAA_SERIES_COLUMNS,
@@ -614,6 +640,19 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     STATE_RETIREMENT_EXCLUSION: (
         "effective_date", "name", "income", "min_age", "amount", "filing_status",
         "income_limit", "phaseout", "less_ss",
+    ),
+    # A state's own deductions and credits (#511, #488), keyed by state
+    # like its brackets: each `name` a line of the return, at `step`
+    # (STATE_ADJUSTMENT_STEPS), figured from `base` (STATE_ADJUSTMENT_BASES;
+    # `tag` for spending and income) times `rate` (blank: all of it), at
+    # most `amount` (each eligible filer's with `per_person`; for `filers`,
+    # the amount each). Filers count from `min_age`. Above `income_limit`
+    # it ends at once, falls to nothing over `phaseout` dollars, or loses
+    # `phaseout_rate` of each dollar over. A blank filing_status applies to
+    # every status. Every column after `base` may be left out.
+    STATE_ADJUSTMENTS: (
+        "effective_date", "name", "step", "base", "tag", "rate", "amount", "per_person",
+        "min_age", "filing_status", "income_limit", "phaseout", "phaseout_rate",
     ),
     # Itemized deductions: a dated total, no filing_status split (unlike
     # standard_deduction). Optional; when present, a tax jurisdiction uses
@@ -697,6 +736,10 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
         "exclusion_percent": ("exclusion_micros", "percent"),
         "phaseout_rate": ("phaseout_rate_micros", "percent"),
     },
+    STATE_ADJUSTMENTS: {
+        "rate": ("rate_micros", "percent"),
+        "phaseout_rate": ("phaseout_rate_micros", "percent"),
+    },
     "life_table": {"q_female": ("q_female_micros", "number"),
                    "q_male": ("q_male_micros", "number")},
 }
@@ -723,6 +766,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "standard_deduction": frozenset({"amount"}),
     STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
     STATE_RETIREMENT_EXCLUSION: frozenset({"amount", "income_limit", "phaseout"}),
+    STATE_ADJUSTMENTS: frozenset({"amount", "income_limit", "phaseout"}),
     "federal_deductions": frozenset({"amount"}),
     "state_deductions": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
@@ -734,6 +778,10 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
 
 AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
+    STATE_ADJUSTMENTS: frozenset({
+        "tag", "rate", "amount", "per_person", "min_age", "filing_status", "income_limit",
+        "phaseout", "phaseout_rate",
+    }),
 }
 """Columns of ``AUX_KIND_COLUMNS`` a file may leave out, by kind: a missing
 column or a blank cell is stored as None."""
