@@ -586,10 +586,10 @@ def prepare_vary(
                 issues.append(f"{where}: {param} is varied twice")
                 continue
             seen.add(param)
-            fields = {f.name for f in dataclasses.fields(cls.Params)}
+            fields = [f.name for f in dataclasses.fields(cls.Params)]
             if param not in fields:
                 issues.append(f"{where}: kind '{s.kind}' has no parameter '{param}' "
-                              f"(known: {', '.join(sorted(fields)) or 'none'})")
+                              f"(known: {', '.join(fields) or 'none'})")
                 continue
             how = _vary_unit(cls, param)
             if how is None:

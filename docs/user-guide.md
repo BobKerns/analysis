@@ -1582,13 +1582,87 @@ parameter, a lifespan or a calendar row, and the sensitivity notebook
 sweeps it like the rest. See
 [ADR-006 §3b](architecture/ADR-006-ensemble-scenarios.md).
 
-You can write your own in Python, in your data repo's `strategies/` folder.
-`sim strategy kinds` lists what's available, with each parameter, and
+**Strategy plugins.** You can write your own kind in Python, in your data
+repo's `sim/strategies/` folder: a strategy plugin. It can build on a
+built-in by subclassing it or by delegating to it. For example, Alice and
+Bill want guardrail to decide how much travel a year can afford, while
+their own code decides which trips fit, taken whole:
+
+```python
+from dataclasses import dataclass
+
+from analysis.sim.strategies import Guardrail
+from analysis.sim.strategy_api import Context, Decision, RuleView, Spend, register
+
+
+@register
+class WholeTrips(Guardrail):
+    """Guardrail decides the year's travel budget; the trips fit into it
+    whole, most wanted first, and the rest wait a year."""
+
+    kind = "whole_trips"
+
+    @dataclass(frozen=True)
+    class Params(Guardrail.Params):
+        order: tuple[str, ...] = ()
+        """The trips, most wanted first."""
+
+    def year_start(self, ctx: Context) -> Decision | None:
+        decision = super().year_start(ctx)       # guardrail's January decision
+        allowance = ctx.memory.get("factor", 1.0) * ctx.budget()
+        costs = ctx.rule_budgets()               # each trip, this year
+        kept, skipped = [], []
+        for trip in self.in_order(costs):
+            if sum(costs[t] for t in kept) + costs[trip] <= allowance:
+                kept.append(trip)
+            else:
+                skipped.append(trip)
+        ctx.memory["kept"] = kept
+        note = decision.note if decision else ""
+        if skipped:
+            note += f"; skip {', '.join(skipped)}"
+        return Decision([], note=note)
+
+    def scale(self, ctx: Context, rule: RuleView, amount: int) -> Decision | None:
+        if rule.name in ctx.memory.get("kept", [rule.name]):
+            return None                          # pay it as planned
+        return Decision([Spend(0)], note=f"skip {rule.name} this year")
+
+    def in_order(self, trips):
+        """The trips, most wanted first; any that order leaves out come last."""
+        order = list(self.params.order)
+        return sorted(trips, key=lambda t: order.index(t) if t in order else len(order))
+```
+
+Delegating instead, the kind holds a guardrail rather than being one, and
+hands it the January decision with a memory of its own:
+
+```python
+@register
+class WholeTripsByDelegation(Strategy):
+    kind = "whole_trips_delegated"
+    Params = WholeTrips.Params
+
+    def __init__(self, name, params):
+        super().__init__(name, params)
+        self.guardrail = self.delegate(Guardrail)    # takes the parameters it shares
+
+    def year_start(self, ctx):
+        decision = self.guardrail.year_start(ctx.with_memory("guardrail"))
+        factor = ctx.memory["guardrail"].get("factor", 1.0)
+        ...                                          # then as above
+```
+
+`sim strategy kinds` lists it with guardrail's parameters and its own,
+and a strategy file uses it like any other kind
+(`sim strategy add spend --kind whole_trips --rules flex:optional
+--param portfolio=portfolio:invest --param 'order=["visit_family","trip_abroad"]'`).
+Commit the module before you run: the data repo has to be clean.
 `sim strategy check` runs a scenario twice to make sure your strategy
 decides the same way each time. The code is copied into each run, so a run
-always shows exactly what decided it. The design, and the API a strategy is
-written against, are in
-[ADR-010](architecture/ADR-010-responsive-strategies.md).
+always shows exactly what decided it. The design, the API a strategy is
+written against, and the built-in classes you can build on are in
+[ADR-010](architecture/ADR-010-responsive-strategies.md) §3.
 
 ### 4.17 Spend less after bad years (spending strategies)
 

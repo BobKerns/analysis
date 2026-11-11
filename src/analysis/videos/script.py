@@ -155,6 +155,22 @@ def _front_matter(lines: list[str], path: Path) -> tuple[dict[str, Any], int]:
     raise ScriptError(f"{path}:1: front matter opened with +++ is never closed")
 
 
+def _code_from_file(fields: dict[str, Any], path: Path, lineno: int) -> dict[str, Any]:
+    """A code slide's ``code`` and ``first`` from ``code_file`` (beside the
+    script) and ``code_lines = [first, last]``, so the slide shows the file
+    the video's setup uses, and can't drift from it."""
+    file = path.parent / str(fields["code_file"])
+    if not file.is_file():
+        raise ScriptError(f"{path}:{lineno}: code_file {fields['code_file']!r}: no such file beside the script")
+    lines = file.read_text(encoding="utf-8").split("\n")
+    span = fields.get("code_lines", [1, len(lines)])
+    if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(n, int) for n in span)
+            or not 1 <= span[0] <= span[1] <= len(lines)):
+        raise ScriptError(f"{path}:{lineno}: code_lines must be [first, last] within {file.name}'s "
+                          f"{len(lines)} lines, not {span!r}")
+    return {**fields, "code": "\n".join(lines[span[0] - 1:span[1]]), "first": span[0]}
+
+
 def _parse(path: Path, *, translation: bool) -> tuple[dict[str, Any], list[Scene]]:
     lines = path.read_text(encoding="utf-8").splitlines()
     meta, i = _front_matter(lines, path)
@@ -257,6 +273,8 @@ def _parse(path: Path, *, translation: bool) -> tuple[dict[str, Any], list[Scene
                     raise ScriptError(f"{path}:{lineno}: slide fields: {e}") from e
                 if not translation and "template" not in fields:
                     raise ScriptError(f"{path}:{lineno}: a slide needs template = \"<name>\"")
+                if "code_file" in fields:
+                    fields = _code_from_file(fields, path, lineno)
             elif kind == "notebook":
                 from analysis.videos import notebook
 
