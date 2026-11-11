@@ -233,7 +233,7 @@ def test_a_data_repo_kind_snapshots_every_module(
         modules = [m for (m,) in con.execute("SELECT module FROM strategy_source ORDER BY module")]
     finally:
         con.close()
-    assert modules == ["_helpers", "last_leaf"]
+    assert modules == ["_helpers", "last_leaf", "whole_items"]
 
 
 _DRAW = "strategies/draw_by_allocation.csv"
@@ -877,3 +877,22 @@ def test_run_readers_take_the_scenario_either_way(
     assert "drift from target set main" in drifted.output
     both = _cli(strategy_scenarios, "report", "income", "alice_rebalance", "--scenario", "alice_rebalance_off")
     assert both.exit_code != 0 and "give the scenario once" in both.output
+
+
+def test_strategy_log_reads_an_ensemble_member(
+    strategy_scenarios: Path, strategy_ensemble_batch: Path, runs_dir: Path,
+) -> None:
+    """``--member N`` reads that member of the latest batch (#411)."""
+    member = _cli(strategy_scenarios, "strategy", "log", "alice_rebalance", "--member", "2",
+                  "--runs-dir", str(runs_dir))
+    assert member.exit_code == 0, member.output
+    by_file = _cli(strategy_scenarios, "strategy", "log", "--runfile",
+                   str(strategy_ensemble_batch / "member_0002.sqlite3"))
+    assert member.output.split("\n", 1)[1] == by_file.output.split("\n", 1)[1] != ""  # past "Using scenario"
+    missing = _cli(strategy_scenarios, "strategy", "log", "alice_rebalance", "--member", "3",
+                   "--runs-dir", str(runs_dir))
+    assert missing.exit_code != 0
+    assert "has no member 3 (it has 0 to 2)" in missing.output
+    both = _cli(strategy_scenarios, "strategy", "log", "--member", "1", "--runfile",
+                str(strategy_ensemble_batch / "member_0001.sqlite3"))
+    assert "give --member or --runfile, not both" in both.output

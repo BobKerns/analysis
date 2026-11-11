@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup, escape
 
 from analysis.videos.script import ScriptError
 from analysis.videos.theme import Theme
@@ -281,9 +282,42 @@ _FIRST_VOICE = threading.Lock()
 # --- slides ------------------------------------------------------------------
 
 
+# Token colors for code on a slide (the window template's ``code`` look):
+# a dark editor's, readable at a distance.
+CODE_STYLE = "one-dark"
+
+
+def highlight_code(text: str, language: str = "python", marks: Sequence[int] = (), first: int = 1) -> Markup:
+    """``text`` as numbered, colored lines, one ``<div class="ln">`` each,
+    numbered from ``first`` (a slice of a file keeps the file's numbers),
+    those in ``marks`` with ``mark`` added so a slide can point at them.
+    Built a token at a time, so a token that spans lines (a docstring)
+    still breaks into whole lines."""
+    from pygments.lexers import get_lexer_by_name
+    from pygments.styles import get_style_by_name
+
+    style = get_style_by_name(CODE_STYLE)
+    lines: list[list[str]] = [[]]
+    for ttype, value in get_lexer_by_name(language).get_tokens(text.rstrip("\n")):
+        color = style.style_for_token(ttype)["color"]
+        for i, piece in enumerate(value.split("\n")):
+            if i:
+                lines.append([])
+            if piece:
+                text_html = str(escape(piece))
+                lines[-1].append(f'<span style="color:#{color}">{text_html}</span>' if color else text_html)
+    if len(lines) > 1 and not lines[-1]:
+        lines.pop()  # the newline the lexer ends its text with
+    marked = set(marks)
+    return Markup("".join(
+        f'<div class="ln{" mark" if n in marked else ""}"><span class="no">{n}</span>{"".join(parts) or " "}</div>'
+        for n, parts in enumerate(lines, first)))
+
+
 def slide_html(theme: Theme, meta: dict[str, Any], fields: dict[str, Any], lang: str) -> str:
     """The slide's page: its template filled from front matter, then the slide's fields."""
     env = Environment(loader=FileSystemLoader(theme.templates), autoescape=select_autoescape(["html"]))
+    env.filters["highlight"] = highlight_code
 
     def asset(name: str) -> str:
         path = theme.assets / f"{name}.svg"

@@ -97,12 +97,23 @@ def test_cjk_sentences_split_on_full_stops() -> None:
         ("## Not a scene\n", "must be ## Scene"),
         ("## Scene `a`: A\n\n```slide\ntemplate='title'\n", "never closed"),
         ("Nothing here.\n", "no scenes"),
+        ("## Scene `a`: A\n\n```slide\ntemplate='window'\ncode_file='gone.py'\n```\n", "no such file"),
+        ("## Scene `a`: A\n\n```slide\ntemplate='window'\ncode_file='script.md'\ncode_lines=[3, 99]\n```\n",
+         "code_lines must be"),
     ],
 )
 def test_script_errors(videos_root: Path, body: str, message: str) -> None:
     folder = _write(videos_root / "01-x", body)
     with pytest.raises(scripts.ScriptError, match=message):
         scripts.load(folder)
+
+
+def test_a_code_slide_reads_its_lines_from_a_file_beside_the_script(videos_root: Path) -> None:
+    folder = _write(videos_root / "01-x", "## Scene `a`: A\n\n```slide\ntemplate = 'window'\nlook = 'code'\n"
+                    "code_file = 'plugin.py'\ncode_lines = [2, 3]\n```\n\nWords.\n")
+    (folder / "plugin.py").write_text("one\ntwo\nthree\nfour\n")
+    fields = scripts.load(folder).scenes[0].visual.fields
+    assert (fields["code"], fields["first"]) == ("two\nthree", 2)
 
 
 TRANSLATION = """\
@@ -367,6 +378,22 @@ def test_window_draws_command_lines_files_and_a_blind_prompt(videos_root: Path) 
         theme, {}, {"template": "window", "look": "files", "address": "\\\\wsl$", "lines": ["data"]}, "en")
     assert '<div class="address">\\\\wsl$</div>' in files
     assert '<div class="row"><span class="folder"></span>data</div>' in files
+
+
+def test_window_code_look_numbers_colors_and_marks_lines(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    code = 'def f(x):\n    """Two\n    lines."""\n    return x < 1\n'
+    html = render.slide_html(theme, {}, {"template": "window", "look": "code", "title": "f.py", "code": code,
+                                         "marks": [4], "status": "Python"}, "en")
+    assert 'class="window code marking"' in html
+    lines = re.findall(r'<div class="ln( mark)?"><span class="no">(\d+)</span>', html)
+    assert lines == [("", "1"), ("", "2"), ("", "3"), (" mark", "4")]  # the docstring breaks into its lines
+    assert "&lt;</span>" in html and 'style="color:#' in html  # escaped, and colored
+    assert '<span class="remote">Python</span>' in html
+    unmarked = render.slide_html(theme, {}, {"template": "window", "look": "code", "code": "x = 1", "first": 21},
+                                 "en")
+    assert 'class="window code"' in unmarked  # nothing dimmed
+    assert '<span class="no">21</span>' in unmarked  # a slice keeps its file's line numbers
 
 
 def _tape_builder(videos_root: Path, repo_root: Path, tmp_path: Path, front: str) -> _Builder:

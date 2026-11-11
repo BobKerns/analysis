@@ -400,6 +400,7 @@ class StrategyRuntime:
             cpi=(lambda since: self._cpi(since, month)) if self._cpi_index else None,
             people=self._people_at(month),
             budget=lambda: self._budget(owned, month),
+            rule_budgets=lambda: self._rule_budgets(owned, month),
             annual_return=self._annual_return,
             trailing_return=lambda refs, months: self._trailing_return(refs, months, month),
             tax=self._tax_view(month),
@@ -487,6 +488,16 @@ class StrategyRuntime:
         if self._rule_budget is None:
             return 0
         return sum(self._rule_budget(tid, month) for tid in owned.rules)
+
+    def _rule_budgets(self, owned: Owned, month: date) -> dict[str, int]:
+        out: dict[str, int] = {}
+        if self._rule_budget is None:
+            return out
+        for tid in owned.rules:
+            # Summed by name: a rule's rows (an override ending one, say) are one rule to a household.
+            name = self.rule_view(tid).name
+            out[name] = out.get(name, 0) + self._rule_budget(tid, month)
+        return out
 
     def _annual_return(self, refs: tuple[LotRef, ...], year: int) -> float | None:
         """Growth posted to ``refs`` in ``year`` over their balance at its start."""
