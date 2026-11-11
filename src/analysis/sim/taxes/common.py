@@ -423,8 +423,18 @@ def _exclusion_income(row: Mapping[str, Any]) -> list[str]:
     return kinds
 
 
+def _yes(value: Any) -> bool:
+    """A yes/no cell (``less_ss``, ``per_person``): ``yes`` or ``true``."""
+    return str(value or "").strip().lower() in ("yes", "true")
+
+
 def _exclusion_less_ss(row: Mapping[str, Any]) -> bool:
-    return str(row.get("less_ss") or "").strip().lower() in ("yes", "true")
+    return _yes(row.get("less_ss"))
+
+
+def age_months(born: date | None, year: int) -> int | None:
+    """Whole months of age on December 31 of ``year``; None without a birthdate."""
+    return None if born is None else (year - born.year) * 12 + 12 - born.month
 
 
 def household(ty: TaxYear) -> dict[str, date | None]:
@@ -471,7 +481,7 @@ def retirement_exclusion(
         for person in people:
             born = birthdates[person]
             # Whole months of age on December 31.
-            months = None if born is None else (ty.year - born.year) * 12 + 12 - born.month
+            months = age_months(born, ty.year)
             reached = [
                 r for r in name_rows
                 if months is not None and months >= _exclusion_age_months(r)
@@ -655,10 +665,13 @@ def band_tax(low: int, high: int, table: Sequence[tuple[int, int]]) -> int:
 
 # -- A state's own deductions and credits (#511, #488) ------------------------
 
-_ADJUSTMENT_INCOME_CHARACTERS: tuple[str, ...] = ("ordinary", "tax_deferred_out")
+_ADJUSTMENT_INCOME_CHARACTERS: tuple[str, ...] = (
+    "ordinary", "tax_deferred_out", "roth_nonqualified", registries.BUSINESS_INCOME,
+)
 """The characters of the tagged income a ``state_adjustments`` row with
 base ``income`` counts: what a state taxes as ordinary income (a pension,
-a retirement account's distribution)."""
+a retirement account's distribution, an early Roth one, business
+receipts)."""
 
 
 @dataclass(frozen=True)
@@ -702,10 +715,6 @@ class StateAdjustment:
         return 0
 
 
-def _yes(value: Any) -> bool:
-    return str(value or "").strip().lower() in ("yes", "true")
-
-
 def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustment]:
     """``state``'s own deductions and credits for the year (#511, #488),
     from the ``kind`` table in force (``state_adjustments__<state>``): one
@@ -731,7 +740,7 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
         eligible = min(filers, sum(
             1 for born in birthdates.values()
             if min_months == 0
-            or born is not None and (ty.year - born.year) * 12 + 12 - born.month >= min_months))
+            or (age_months(born, ty.year) or 0) >= min_months))
         amount = None if row.get("amount") is None else int(row["amount"])
         base, rate = str(row["base"]), row.get("rate_micros")
         cap = amount if amount is None or not _yes(row.get("per_person")) else amount * eligible
