@@ -262,14 +262,19 @@ def hsa_flow_years(ty: TaxYear) -> list[int]:
                   | {g.year for g in ty.hsa_gains if g.year <= ty.year})
 
 
+def _hsa_payouts(items: Iterable[IncomeItem], payer_name: str) -> Iterator[IncomeItem]:
+    """The ``items`` that ``payer_name``, an HSA payout account, paid into an
+    HSA lot."""
+    return (item for item in items if item.payer.name == payer_name and item.payee.subkind == "hsa")
+
+
 def hsa_dividends(ty: TaxYear) -> dict[str | None, int]:
     """The year's dividends and interest reinvested in HSA lots (#497), by
     the HSA's owner: untaxed federally, ordinary income to a state that
     taxes an HSA."""
     out: dict[str | None, int] = {}
-    for item in ty.year_items():
-        if item.payer.name == _HSA_DIVIDENDS and item.payee.subkind == "hsa":
-            out[item.payee.owner] = out.get(item.payee.owner, 0) + item.amount
+    for item in _hsa_payouts(ty.year_items(), _HSA_DIVIDENDS):
+        out[item.payee.owner] = out.get(item.payee.owner, 0) + item.amount
     return out
 
 
@@ -281,16 +286,15 @@ def hsa_gains(ty: TaxYear, years: Collection[int]) -> Iterator[tuple[int, str, s
     for gain in ty.hsa_gains:
         if gain.year in years:
             yield gain.year, gain.character, gain.owner, gain.amount
-    for item in ty.items:
-        if item.year in years and item.payer.name == _HSA_GAIN_DISTRIBUTIONS and item.payee.subkind == "hsa":
+    for item in _hsa_payouts(ty.items, _HSA_GAIN_DISTRIBUTIONS):
+        if item.year in years:
             yield item.year, "ltcg", item.payee.owner, item.amount
 
 
 def hsa_gain_distributions(ty: TaxYear) -> int:
     """The year's long-term gain distributions reinvested in HSA lots
     (#497): gain to a state that taxes an HSA, but none drawn from a lot."""
-    return sum(i.amount for i in ty.year_items()
-               if i.payer.name == _HSA_GAIN_DISTRIBUTIONS and i.payee.subkind == "hsa")
+    return sum(i.amount for i in _hsa_payouts(ty.year_items(), _HSA_GAIN_DISTRIBUTIONS))
 
 
 def hsa_deferred_flows(ty: TaxYear) -> tuple[int, int]:

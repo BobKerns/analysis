@@ -1250,7 +1250,7 @@ def _track_lots(
         basis = ctx.cost_bases.get(from_id) or 0
         prior = balances.get(from_id, 0)
         covered = min(amount, max(0, prior))
-        basis_out = 0 if covered <= 0 else basis if covered >= prior else basis * covered // prior
+        basis_out = _pro_rata_basis(basis, prior, covered)
         ctx.cost_bases[from_id] = basis - basis_out
         if to_id in ctx.hsa:
             carried = basis_out
@@ -2395,7 +2395,7 @@ def _post_withdrawal(
         # A refill into the account is a purchase that raised its basis.
         basis = cost_bases[from_id] or 0
     prior_balance = balances.get(from_id, 0)
-    basis_out = 0 if prior_balance <= 0 else min(basis, basis * amount // prior_balance)
+    basis_out = _pro_rata_basis(basis, prior_balance, amount)
     gain = amount - basis_out
     if refill_ctx is not None:
         _track_lots(refill_ctx, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
@@ -2685,6 +2685,15 @@ def _has_basis_step(graph: ChainGraph, chain_id: int, lot_id: int) -> bool:
     return False
 
 
+def _pro_rata_basis(basis: int, prior: int, amount: int) -> int:
+    """The share of a lot's ``basis`` that ``amount`` drawn from its ``prior``
+    balance takes: none from an empty or overdrawn lot, all of it when the
+    draw empties the lot."""
+    if prior <= 0 or amount <= 0:
+        return 0
+    return basis if amount >= prior else basis * amount // prior
+
+
 def _sale_basis(
     refill_ctx: RefillContext | None, balances: dict[int, int], lot_id: int, amount: int,
 ) -> _SaleBasis:
@@ -2699,7 +2708,8 @@ def _sale_basis(
             "set opening_cost_basis in account_lots.csv"
         )
     prior = balances.get(lot_id, 0)
-    return _SaleBasis(basis if prior <= amount else basis * amount // prior)
+    # A sale past an empty or overdrawn lot still carries its whole basis.
+    return _SaleBasis(basis if prior <= amount else _pro_rata_basis(basis, prior, amount))
 
 
 def _chain_sweep(
@@ -4497,7 +4507,7 @@ def _post_strategy_move(
         )
         basis = ctx.cost_bases[from_id] or 0
         prior = balances.get(from_id, 0)
-        basis_out = 0 if prior <= 0 else min(basis, basis * amount // prior)
+        basis_out = _pro_rata_basis(basis, prior, amount)
         _post_transfer(
             con, balances, account_kinds, step_id, month_s, from_id, to_id, amount, "none",
             decision_id, refill_mark=mark, **common,
