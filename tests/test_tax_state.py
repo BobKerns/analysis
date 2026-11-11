@@ -93,9 +93,9 @@ def test_without_a_state_it_lists_the_choices_and_asks(
     assert "lives in California (CA) from 2026-05" in result.output
     assert "With tax tables: California (CA), District of Columbia (DC)," in result.output
     assert "No income tax: Alaska (AK), Florida (FL)," in result.output
-    # Washington's capital gains and income taxes ship (#489).
+    # Washington's tables ship (#489), but until 2028 it taxes only gains.
     assert "Washington (WA)" in result.output.split("No income tax:")[0]
-    assert "Washington (WA)" not in result.output.split("No income tax:")[1]
+    assert "Washington (WA)" in result.output.split("No income tax:")[1]
     assert "a state's name or two-letter code" in result.output
     assert _residence(retire_alice_csv("")) == [("2026-05", "NC", "")]
 

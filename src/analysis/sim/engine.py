@@ -3078,12 +3078,13 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
         )
     ] if expense_ids else []
     losses = [
-        tax_api.CapitalLoss(int(year), character, owner, int(amount))
-        for year, character, owner, amount in con.execute(
+        tax_api.CapitalLoss(int(year), character, owner, int(amount), subkind)
+        for year, character, owner, subkind, amount in con.execute(
             f"SELECT COALESCE(cl.tax_year, CAST(substr(cl.date, 1, 4) AS INTEGER)) AS y, "
-            "       cl.tax_character, a.owner, SUM(cl.amount) "
+            "       cl.tax_character, a.owner, a.subkind, SUM(cl.amount) "
             "FROM capital_loss cl LEFT JOIN account_lot l ON l.id = cl.lot_id "
-            "LEFT JOIN account a ON a.id = l.account_id WHERE y <= ? GROUP BY y, cl.tax_character, a.owner",
+            "LEFT JOIN account a ON a.id = l.account_id WHERE y <= ? "
+            "GROUP BY y, cl.tax_character, a.owner, a.subkind",
             (tax_year,),
         )
     ]
@@ -3407,9 +3408,14 @@ def _settle_tax(
         # the year's income, or the drawdown taxes those dollars twice.
         drawn = ret.memo.get("drawn_ordinary", 0)
         realized = ret.memo.get("drawn_gain", 0)
+        # A home sold this year is in the realized gain the share replaces,
+        # so its part comes off the share's real estate too (#489).
+        realized_home = ret.memo.get("drawn_real_estate_gain", 0)
         drawdown_pricing[(scope, tax_year)] = DrawdownPricing(
-            lambda ordinary, gains, real_estate=0, prepared=prepared, drawn=drawn, realized=realized:
-            prepared.compute(tax_api.Extra(ordinary - drawn, gains - realized, real_estate)).tax,
+            lambda ordinary, gains, real_estate=0, prepared=prepared, drawn=drawn,
+            realized=realized, realized_home=realized_home:
+            prepared.compute(tax_api.Extra(
+                ordinary - drawn, gains - realized, real_estate - realized_home)).tax,
             hsa_taxed=bool(ret.memo.get("hsa_taxed", 0)))
 
     # What was paid toward the year: everything into the destination for

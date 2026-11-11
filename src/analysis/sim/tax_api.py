@@ -130,11 +130,14 @@ class SpendingItem:
 @dataclass(frozen=True)
 class CapitalLoss:
     """A realized loss recorded apart from its sale (``capital_loss``, #199),
-    summed by tax year, character and the lot's owner."""
+    summed by tax year, character, the lot's owner and its account's
+    subkind (a ``real_estate`` loss, which a state's gains tax leaves out,
+    #489)."""
     year: int
     character: str
     owner: str | None
     amount: int
+    subkind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -334,11 +337,13 @@ class Return:
     ``tax_year_summary`` as ``<jurisdiction>_<line>``, and ``memo`` lines
     kept for the engine and not written.
 
-    The engine reads three memo lines, each 0 when left out: ``drawn_ordinary``,
+    The engine reads four memo lines, each 0 when left out: ``drawn_ordinary``,
     the year's ordinary income drawn from traditional money (an RMD), and
     ``drawn_gain``, the long-term gain its sales realized (not a reinvested
     gain distribution, #547), which the after-tax drawdown's share of a later
-    year replaces, so it isn't taxed twice; and ``hsa_taxed``, 1 when the
+    year replaces, so it isn't taxed twice; ``drawn_real_estate_gain``, real
+    estate's part of ``drawn_gain``, which it takes off the share's
+    :attr:`Extra.real_estate_ltcg` likewise (#489); and ``hsa_taxed``, 1 when the
     jurisdiction taxes an HSA like a brokerage account (#497), so the
     drawdown prices an HSA's gain over basis rather than its whole balance.
     Any other memo line is the calculator's own.

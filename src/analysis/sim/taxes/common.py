@@ -106,6 +106,10 @@ class CapitalGains(NamedTuple):
     """The year's long-term result less the long-term loss carried in,
     before a short-term loss offsets it: Schedule D line 15, the base of a
     state's gains tax (#489). Negative for a net loss."""
+    loss_deduction_lt: int = 0
+    """The long-term part of ``loss_deduction`` (a short-term loss is
+    deducted first), which a state's gains tax takes out of its income
+    (#489)."""
 
 
 def net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
@@ -125,6 +129,7 @@ def net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
     return CapitalGains(
         max(0, st), max(0, lt), deduction,
         loss_st - used_st, loss_lt - (deduction - used_st),
+        loss_deduction_lt=deduction - used_st,
     )
 
 
@@ -193,10 +198,15 @@ def capital_gains(
 
 
 def real_estate_gain(ty: TaxYear) -> int:
-    """The year's long-term gain on real estate (#489): what its sales from a
-    ``real_estate`` account realized, which Washington's gains tax leaves
-    out. A loss on a home isn't deductible, so it posts none."""
-    return sum(i.amount for i in ty.year_items("ltcg") if i.payer.subkind == "real_estate")
+    """The year's net long-term result on real estate (#489): what sales from
+    a ``real_estate`` account realized, less the long-term losses recorded
+    on one (a rental sold below its basis), which Washington's gains tax
+    leaves out either way. A loss on a home isn't deductible, so it posts
+    none."""
+    gain = sum(i.amount for i in ty.year_items("ltcg") if i.payer.subkind == "real_estate")
+    return gain - sum(loss.amount for loss in ty.losses
+                      if loss.year == ty.year and loss.character == "ltcg"
+                      and loss.subkind == "real_estate")
 
 
 _GAIN_DISTRIBUTIONS = registries.PAYOUT_ACCOUNTS["ltcg"].name

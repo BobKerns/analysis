@@ -125,6 +125,42 @@ def test_a_homes_gain_is_exempt(ledger: sqlite3.Connection) -> None:
     assert state.tax == _gains_tax(300_000_00 - DEDUCTION)
 
 
+def test_a_loss_recorded_on_real_estate_does_not_lower_the_base(ledger: sqlite3.Connection) -> None:
+    """A rental sold below its basis records its shortfall as a capital
+    loss; Washington exempts real estate either way."""
+    _post(ledger, 2026, BROKERAGE, 400_000_00, "ltcg")
+    ledger.execute(
+        "INSERT INTO capital_loss(step_id, date, lot_id, amount, tax_character, reason_kind) "
+        "VALUES (1, '2026-06-30', ?, ?, 'ltcg', 'rule')", (HOME, 100_000_00))
+    assert _state(ledger)["gains_base"] == 400_000_00
+
+
+def test_the_drawdown_of_a_home_sale_year_replaces_its_gain_once(
+    ledger: sqlite3.Connection,
+) -> None:
+    """The engine takes the year's realized gain, and real estate's part of
+    it, off a drawdown share, which then holds only the unrealized gain."""
+    _post(ledger, 2026, HOME, 500_000_00, "ltcg")
+    _post(ledger, 2026, BROKERAGE, 300_000_00, "ltcg")
+    memo = _state(ledger).memo
+    assert memo["drawn_gain"] == 800_000_00
+    assert memo["drawn_real_estate_gain"] == 500_000_00
+    share = Extra(0, 200_000_00 - memo["drawn_gain"], 0 - memo["drawn_real_estate_gain"])
+    assert _state(ledger, extra=share)["gains_base"] == 200_000_00
+
+
+def test_from_2028_a_long_term_loss_deduction_is_out_of_the_income_too(
+    ledger: sqlite3.Connection,
+) -> None:
+    """ESSB 6346 takes long-term losses out of federal AGI, the $3,000 of
+    one deducted from ordinary income included."""
+    _post(ledger, 2028, SALARY, 1_500_000_00, "ordinary")
+    _post(ledger, 2028, BROKERAGE, -100_000_00, "ltcg")
+    state = _state(ledger, 2028)
+    assert state["capital_loss_used"] == 3_000_00
+    assert state.agi == 1_500_000_00
+
+
 def test_before_2028_ordinary_income_and_what_ifs_of_it_are_not_taxed(
     ledger: sqlite3.Connection,
 ) -> None:

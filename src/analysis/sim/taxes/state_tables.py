@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from analysis.sim import registries
-from analysis.sim.tax_api import Extra, TaxError, register
+from analysis.sim.tax_api import NO_EXTRA, Extra, TaxError, register
 from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import (
     Adjustment, Basis, FederalStateYear, Income, StateFromFederal,
@@ -55,13 +55,30 @@ class StateTablesYear(FederalStateYear):
         capital = self._capital = common.capital_gains(
             ty, loss_limit=common.loss_limit(ty), hsa_years=taxed_years)
 
+        # A tax on long-term gains apart from the income tax (#489):
+        # Washington's, on the federal net long-term gain (Schedule D line
+        # 15) less real estate's, after its own deduction. Its rates are
+        # bands like the surcharge's; without them there is none. Line 15
+        # is the federal netting's, without a taxed HSA's gains.
+        self._gains_bands = common.rate_table(ty, params.gains_tax_aux, series)
+        deduction = [r for r in ty.indexed(params.gains_deduction_aux, series)
+                     if r.get("filing_status") == ty.filing_status]
+        self._gains_deduction = int(deduction[0]["amount"]) if deduction else 0
+        self._real_estate_gain = common.real_estate_gain(ty)
+        self._line_15 = capital.long_term
+        if self._gains_bands and taxed_years:
+            self._line_15 = common.capital_gains(ty, loss_limit=common.loss_limit(ty)).long_term
+        # The excise of the last what-if, which its credit reads too.
+        self._excise: tuple[Basis, tuple[Mapping[str, int], int]] | None = None
+
         # A state's retirement income exclusions (#486) come off before AGI,
         # as the states' own subtractions from income do, after its gain
         # exclusion.
         exclusion_aux = params.retirement_exclusion_aux
         self._exclusion = common.retirement_exclusion(
             ty, exclusion_aux, series,
-            net_gain=capital.stcg + self._net_ltcg(capital.ltcg), hsa_taxed=self._hsa_taxed)
+            net_gain=capital.stcg + self._taxed_ltcg(capital.ltcg, NO_EXTRA),
+            hsa_taxed=self._hsa_taxed)
 
         # A state taxes Social Security only by its state_social_security
         # table (#484).
@@ -87,16 +104,6 @@ class StateTablesYear(FederalStateYear):
         # deduction, an exemption, a deduction for federal tax paid. Each is
         # a named line at its step.
         self._adjustments = common.state_adjustments(ty, params.adjustments_aux, series)
-
-        # A tax on long-term gains apart from the income tax (#489):
-        # Washington's, on the federal net long-term gain (Schedule D line
-        # 15) less a home's, after its own deduction. Its rates are bands
-        # like the surcharge's; without them there is none.
-        self._gains_bands = common.rate_table(ty, params.gains_tax_aux, series)
-        deduction = [r for r in ty.indexed(params.gains_deduction_aux, series)
-                     if r.get("filing_status") == ty.filing_status]
-        self._gains_deduction = int(deduction[0]["amount"]) if deduction else 0
-        self._real_estate_gain = common.real_estate_gain(ty)
 
     def deductions(self) -> Mapping[str, int]:
         ty, params = self.ty, self.ty.params
@@ -154,21 +161,24 @@ class StateTablesYear(FederalStateYear):
         ordinary, ltcg = income.ordinary, income.ltcg - exclusion.ltcg
         # A state with a gains tax taxes the gain it taxes in place of its
         # net long-term gain (#489): ESSB 6346 takes long-term gains and
-        # losses out of federal AGI and adds back the gains tax's base, so a
-        # home's gain stays out, and a short-term loss doesn't offset it.
-        swap = Adjustment("ltcg_for_gains_base",
-                          ltcg=ltcg - self._gains_base(extra) if self._gains_bands else 0)
-        ltcg -= swap.ltcg
+        # losses out of federal AGI (a long-term loss's deduction from
+        # ordinary income too) and adds back the gains tax's base, so real
+        # estate's gain stays out, and a short-term loss doesn't offset it.
+        swap = Adjustment("ltcg_for_gains_base")
+        if self._gains_bands:
+            swap = Adjustment("ltcg_for_gains_base", ordinary=-capital.loss_deduction_lt,
+                              ltcg=ltcg - self._gains_base(extra))
+        ordinary, ltcg = ordinary - swap.ordinary, ltcg - swap.ltcg
         # Gain taken away (the drawdown estimate replaces posted gain) can't
         # be left out; gain added isn't in anyone's income by kind.
-        net_gain = min(self._exclusion.net_gain, capital.stcg + self._net_ltcg(gain))
+        net_gain = min(self._exclusion.net_gain, capital.stcg + self._taxed_ltcg(gain, extra))
         off_ordinary, off_ltcg, off_short = self._exclusion.split(ordinary, ltcg, net_gain)
         retirement = Adjustment(
             "retirement_exclusion", ordinary=off_ordinary - off_short, stcg=off_short, ltcg=off_ltcg)
         ss = Adjustment("ss_difference", ss=income.ss - self._taxable_ss(basis))
         # The table's subtractions come off ordinary income, tested against
         # the income before them, and never take it below zero.
-        left = income.ordinary - exclusion.ordinary - retirement.ordinary - retirement.stcg
+        left = ordinary - retirement.ordinary - retirement.stcg
         test = income.agi - exclusion.value - swap.value - retirement.value - ss.value
         own = []
         for line, amount in self._adjusted("subtraction", test, basis).items():
@@ -224,18 +234,28 @@ class StateTablesYear(FederalStateYear):
 
     def _gains_base(self, extra: Extra) -> int:
         """What the gains tax taxes before its deduction (#489): the net
-        long-term gain, as Schedule D line 15 has it, less a home's, with a
-        what-if's on top."""
-        return max(0, self._capital.long_term - self._real_estate_gain
+        long-term gain, as Schedule D line 15 has it, less real estate's,
+        with a what-if's on top."""
+        return max(0, self._line_15 - self._real_estate_gain
                    + extra.ltcg - extra.real_estate_ltcg)
+
+    def _taxed_ltcg(self, gain: int, extra: Extra) -> int:
+        """The long-term gain in the state's income: ``gain`` less its
+        exclusion, or a gains tax's base in its place (#489)."""
+        return self._gains_base(extra) if self._gains_bands else self._net_ltcg(gain)
 
     def excise(self, basis: Basis) -> tuple[Mapping[str, int], int]:
         if not self._gains_bands:
             return {}, 0
+        # A what-if's credit reads it before compute adds it.
+        if self._excise is not None and self._excise[0] is basis:
+            return self._excise[1]
         base = self._gains_base(basis.extra)
         tax = common.progressive_tax(max(0, base - self._gains_deduction), self._gains_bands)
-        return {"gains_base": base, "gains_deduction": self._gains_deduction,
-                "gains_tax": tax}, tax
+        result = {"gains_base": base, "gains_deduction": self._gains_deduction,
+                  "gains_tax": tax}, tax
+        self._excise = (basis, result)
+        return result
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
         memo = basis.federal.memo
@@ -250,6 +270,10 @@ class StateTablesYear(FederalStateYear):
             # reinvested gain distribution (#547) drew none.
             "drawn_ordinary": memo.get("drawn_ordinary", 0) - withdrawn,
             "drawn_gain": max(0, self._capital.ltcg - self._distributed),
+            # Real estate's part of it, which a gains tax leaves out of the
+            # drawdown that replaces it too (#489).
+            "drawn_real_estate_gain": max(0, min(
+                self._real_estate_gain, self._capital.ltcg - self._distributed)),
         }
 
 
