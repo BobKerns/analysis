@@ -12,8 +12,13 @@ SHIPPED = "Shipped"  # its tables come with the simulator
 NO_TAX = "No tax"  # no income tax: no state rule
 TABLES_NEEDED = "Tables needed"  # the model fits; its tables have to be written
 PARTIAL = "Partial"  # the tables work, but some of its rules aren't modeled
-FEDERAL_RULE = "Federal rule"  # a territory whose tax mirrors the federal one
+FEDERAL_RULE = "Federal rule"  # a territory whose tax mirrors the federal one (#491)
 NOT_SUPPORTED = "Not supported"  # a tax code of its own the model can't express
+
+# Puerto Rico and American Samoa: a code of their own, and the federal tax
+# reaches only the income from outside them, so neither the federal rule
+# nor state tables can stand in (#491).
+OWN_TAX_CODE_ISSUE = "https://github.com/BobKerns/analysis/issues/570"
 
 # The series a state tax reads while the household lives in a state with
 # no income tax: templates/aux/ ships it as a 0% table.
@@ -99,9 +104,9 @@ STATES: tuple[State, ...] = (
     State("WY", "Wyoming", NO_TAX),
     State("AS", "American Samoa", NOT_SUPPORTED),
     State("GU", "Guam", FEDERAL_RULE),
-    State("MP", "Northern Mariana Islands", PARTIAL),
+    State("MP", "Northern Mariana Islands", FEDERAL_RULE),
     State("PR", "Puerto Rico", NOT_SUPPORTED),
-    State("VI", "U.S. Virgin Islands", PARTIAL),
+    State("VI", "U.S. Virgin Islands", FEDERAL_RULE),
 )
 
 BY_CODE: dict[str, State] = {s.code: s for s in STATES}
@@ -119,14 +124,23 @@ def label(code: str) -> str:
     return f"{state.name} ({code})" if state else code
 
 
+def own_tax_code(code: str) -> str:
+    """Why a territory with a tax code of its own (``NOT_SUPPORTED``) is
+    refused, for the CLI and the loader alike."""
+    return (f"{label(code)} has a tax code of its own the simulator can't model yet "
+            f"({OWN_TAX_CODE_ISSUE})")
+
+
 def tax_series(code: str, *, has_tables: bool = False) -> str:
     """The series of the tables a state tax reads for a household living in
     ``code`` (#509): its own when it has them (``has_tables``), ships them
     (Washington's gains tax, #489) or taxes income, else the 0% ``none``
-    tables, as for a state with no income tax or a territory the federal
-    tax stands in for."""
+    tables, as for a state with no income tax. A territory the federal tax
+    stands in for reads ``none`` even with tables of its own, which would
+    tax the same income twice; the loader refuses them (#491)."""
     state = BY_CODE.get(code)
-    if (has_tables or state is None or state.status == SHIPPED
-            or (state.taxes_income and state.status != FEDERAL_RULE)):
+    if state is not None and state.status == FEDERAL_RULE:
+        return NO_TAX_SERIES
+    if has_tables or state is None or state.status == SHIPPED or state.taxes_income:
         return code
     return NO_TAX_SERIES

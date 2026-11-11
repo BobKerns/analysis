@@ -102,16 +102,50 @@ def test_the_loader_checks_each_row(
         load_test_copy()
 
 
-def test_a_state_without_income_tax_reads_the_none_tables(
+@pytest.mark.parametrize("state_tax", [True, False])
+def test_a_territory_with_a_tax_code_of_its_own_is_refused(
+    state_tax: bool, add_state_tax: Callable[..., None], add_residence: Callable[..., Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """With or without a state tax: the federal tax alone would tax Puerto
+    Rico's own income, which federal law leaves to Puerto Rico (#491)."""
+    if state_tax:
+        add_state_tax("CA")
+    else:
+        add_residence("2026-05", "CA")
+    add_residence("2028-01", "PR")
+    with pytest.raises(LoadError, match=r"Puerto Rico \(PR\) has a tax code of its own .*issues/570"):
+        load_test_copy()
+
+
+def test_tables_of_a_mirror_territory_are_refused(
     add_state_tax: Callable[..., None], add_residence: Callable[..., Path],
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """The federal tax already stands in for the Virgin Islands' (#491)."""
+    add_state_tax("CA")
+    write_aux("state_brackets__VI.csv", BRACKETS + "".join(
+        f"2026-01-31,{status},0,0.00,5%\n" for status in ("Single", "MFJ", "MFS")))
+    add_residence("2028-01", "VI")
+    with pytest.raises(LoadError, match=r"state_brackets__VI.csv would tax the same income twice"):
+        load_test_copy()
+
+
+@pytest.mark.parametrize("state", ["FL", "GU", "MP", "VI"])
+def test_no_tax_states_and_mirror_territories_read_the_none_tables(
+    state: str, add_state_tax: Callable[..., None], add_residence: Callable[..., Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:
     """Florida has no income tax and no tables: it reads the shipped 0%
-    ``none`` ones, and the state tax pays nothing."""
+    ``none`` ones, and the state tax pays nothing. So does a territory whose
+    tax is a copy of the federal one (#491): the federal tax goes on as
+    before."""
     add_state_tax("CA")
-    add_residence("2028-01", "FL")
-    tax = _buckets(_run(load_test_copy, runs_dir, "florida"), "state_tax")
+    add_residence("2028-01", state)
+    run = _run(load_test_copy, runs_dir, state)
+    tax, federal = _buckets(run, "state_tax"), _buckets(run, "federal_tax")
     assert tax[2027] > 0 and tax[2028] == 0
+    assert federal[2028] > 0
 
 
 def test_a_county_with_a_local_tax_of_its_own(

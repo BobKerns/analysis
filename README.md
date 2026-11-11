@@ -80,7 +80,7 @@ state's own revenue department before relying on a figure.
 | **No tax** | No income tax: leave out the state rule. |
 | **Tables needed** | The model fits; write the state's tables. |
 | **Partial** | The tables work, but the rules listed are not modeled, so the estimate is rough. |
-| **Federal rule** | The territory's tax mirrors the federal one; the federal rule stands in for it. |
+| **Federal rule** | The territory's tax mirrors the federal one and is paid to the territory rather than the IRS; the federal tax stands in for it. |
 | **Not supported** | A tax system of its own that the model can't express. |
 
 | State | Status | Not modeled |
@@ -139,11 +139,11 @@ state's own revenue department before relying on a figure.
 
 | Territory | Status | Not modeled |
 | --- | --- | --- |
-| American Samoa | Not supported | Own tax code; local income exempt from federal tax |
-| Guam | Federal rule | Tax is paid to Guam rather than the IRS |
-| Northern Mariana Islands | Partial | Rebates of the mirrored tax on local income |
-| Puerto Rico | Not supported | Own tax code; local income exempt from federal tax |
-| U.S. Virgin Islands | Partial | Local surcharges and credits on the mirrored tax |
+| American Samoa | Not supported | Own tax code; local income exempt from federal tax ([#570](https://github.com/BobKerns/analysis/issues/570)) |
+| Guam | Federal rule | |
+| Northern Mariana Islands | Federal rule | Rebate of the tax on CNMI-source income; wage tax |
+| Puerto Rico | Not supported | Own tax code; local income exempt from federal tax ([#570](https://github.com/BobKerns/analysis/issues/570)) |
+| U.S. Virgin Islands | Federal rule | Economic Development Commission incentives |
 
 ## Directory Structure
 - `src/analysis/` — Core package code
