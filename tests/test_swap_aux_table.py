@@ -1,6 +1,7 @@
 """``swap_aux_table`` calendar events (#197): from a date, an aux table is
-replaced by another of the same kind -- a move to another state's brackets,
-say -- and the calendar kinds the engine never built are gone."""
+replaced by another of the same kind -- a change of law's brackets, say --
+and the calendar kinds the engine never built are gone. A move to another
+state is a residence row (#509), not a swap: ``tests/test_residence.py``."""
 
 from __future__ import annotations
 
@@ -205,105 +206,28 @@ def test_calendar_add_swap_aux_table_writes_a_row_that_loads(
     test_data_dir: Path, write_aux: Callable[[str, str], Path],
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    write_aux("state_brackets__WA.csv",
+    write_aux("federal_brackets__2031.csv",
               "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
-              "2026-01-31,MFJ,0,0.00,0%\n")
+              + "".join(f"2026-01-31,{s},0,0.00,10%\n" for s in ("Single", "MFJ", "MFS")))
     result = CliRunner().invoke(main, [
-        "sim", "calendar", "add", "swap-aux-table", "2031-07", "state_brackets", "WA",
-        "--series", "CA", "--description", "move",
+        "sim", "calendar", "add", "swap-aux-table", "2031-07", "federal_brackets", "2031",
+        "--description", "new law",
         "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
     ])
     assert result.exit_code == 0, result.output
-    assert "swap_aux_table state_brackets__CA -> state_brackets__WA on 2031-07" in result.output
+    assert "swap_aux_table federal_brackets -> federal_brackets__2031 on 2031-07" in result.output
     rows = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
     row = rows.query("kind == 'swap_aux_table'").iloc[0]
-    assert row["series"] == "CA"
-    assert json.loads(row["params_json"]) == {"aux_kind": "state_brackets", "source_series": "WA"}
+    assert row["series"] == ""
+    assert json.loads(row["params_json"]) == {"aux_kind": "federal_brackets", "source_series": "2031"}
     load_test_copy()
 
 
-def test_a_move_to_another_state_takes_its_standard_deduction(
-    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
-    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
-    runs_dir: Path,
-) -> None:
-    """Swapping state_brackets swaps state_standard_deduction with it (#248),
-    so the new state's brackets don't run with the old state's deduction."""
-    add_state_tax(bracket_series="CA")
-    write_aux("state_brackets__WA.csv",
-              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
-              "2026-01-31,MFJ,0,0.00,0%\n")
-    write_aux("state_standard_deduction__WA.csv",
-              "effective_date,filing_status,amount\n2026-01-31,MFJ,1000.00\n")
-    _swap(append_calendar_row, "2028-03", "state_brackets", "CA", "WA")
-    assert not any("standard deduction" in w for w in load_test_copy().warnings)
-    run = _run(load_test_copy, runs_dir, "move")
-    with sqlite3.connect(run) as con:
-        deduction = dict(con.execute(
-            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_standard_deduction'"
-        ).fetchall())
-    assert deduction[2026] == 11_080_00  # California's, before the move
-    assert deduction[2028] == 1_000_00
-
-
-def test_a_move_to_a_state_without_a_standard_deduction_falls_back_to_federal(
-    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
-    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
-    runs_dir: Path,
-) -> None:
-    add_state_tax(bracket_series="CA")
-    write_aux("state_brackets__WA.csv",
-              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
-              "2026-01-31,MFJ,0,0.00,0%\n")
-    _swap(append_calendar_row, "2028-03", "state_brackets", "CA", "WA")
-    warnings = load_test_copy().warnings
-    assert any("after the move to WA" in w and "state_standard_deduction__WA.csv" in w
-               for w in warnings)
-    run = _run(load_test_copy, runs_dir, "move")
-    with sqlite3.connect(run) as con:
-        deduction = dict(con.execute(
-            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_standard_deduction'"
-        ).fetchall())
-    assert deduction[2028] == 33_000_00  # the federal figure (indexed, #467), not California's
-
-
-def test_a_move_without_a_state_tax_rule_says_nothing_of_the_deduction(
-    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
-    load_test_copy: Callable[[], LoadResult],
-) -> None:
-    """With no state tax rule, nothing reads either state table, so a move
-    to a state without its own standard deduction isn't worth a warning."""
-    write_aux("state_brackets__WA.csv",
-              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
-              "2026-01-31,MFJ,0,0.00,0%\n")
-    _swap(append_calendar_row, "2028-03", "state_brackets", "CA", "WA")
-    assert not any("standard deduction" in w for w in load_test_copy().warnings)
-
-
-@pytest.mark.parametrize("taxed_in", ["CA", "WA"])
-def test_a_move_takes_the_states_social_security_table(
-    taxed_in: str,
-    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
-    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
-    runs_dir: Path,
-) -> None:
-    """Swapping state_brackets swaps state_social_security with it (#484): a
-    move to a state without one taxes no Social Security from then on, and a
-    move to one with one starts taxing it."""
-    add_state_tax(bracket_series="CA")
-    write_aux("state_brackets__WA.csv",
-              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
-              "2026-01-31,MFJ,0,0.00,1%\n2026-01-31,Single,0,0.00,1%\n")
-    write_aux("state_standard_deduction__WA.csv",
-              "effective_date,filing_status,amount\n"
-              "2026-01-31,MFJ,1000.00\n2026-01-31,Single,1000.00\n")
-    write_aux(f"state_social_security__{taxed_in}.csv",
-              "effective_date,filing_status,exclusion_percent\n"
-              "2026-01-31,MFJ,0%\n2026-01-31,Single,0%\n")
-    _swap(append_calendar_row, "2026-07", "state_brackets", "CA", "WA")
-    run = _run(load_test_copy, runs_dir, "move")
-    with sqlite3.connect(run) as con:
-        taxable = dict(con.execute(
-            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_ss_taxable'"
-        ).fetchall())
-    assert any(v > 0 for v in taxable.values()) == (taxed_in == "WA")
+def test_calendar_add_swap_aux_table_refuses_a_state_table(test_data_dir: Path) -> None:
+    """A move is `sim tax move` now (#509)."""
+    result = CliRunner().invoke(main, [
+        "sim", "calendar", "add", "swap-aux-table", "2031-07", "state_brackets", "WA",
+        "--series", "CA", "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+    ])
+    assert result.exit_code != 0
+    assert "a move is `sim tax move DATE STATE`" in result.output

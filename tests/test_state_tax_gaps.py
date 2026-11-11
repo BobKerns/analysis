@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from analysis.sim import registries
-from analysis.sim.engine import TaxRule, _indexed_tax_rows, _prepare_tax, _swap_aux_table
+from analysis.sim.engine import TaxRule, _prepare_tax
 from analysis.sim.tax_api import Extra, Return
 from analysis.sim.loader import LoadError, LoadResult
 
@@ -21,9 +21,10 @@ Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
 CHECKING, HSA, DEFERRED_GAINS, SALARY, MEDICAL = 1, 2, 3, 4, 5
 
 
+
 def _aux(*, surcharge: bool = False, hsa: str | None = None) -> Aux:
-    """A state with a 10% flat bracket and a $10,000 deduction, and a
-    federal one with the same, for an MFJ household."""
+    """A household in California with a 10% flat bracket and a $10,000
+    deduction, and a federal tax with the same, for an MFJ household."""
     flat = [("2026-01-31", {"filing_status": "MFJ", "floor": 0, "marginal_rate_micros": 100_000})]
     deduction = [("2026-01-31", {"filing_status": "MFJ", "amount": 10_000_00})]
     aux: Aux = {
@@ -45,7 +46,9 @@ def _aux(*, surcharge: bool = False, hsa: str | None = None) -> Aux:
 
 
 @pytest.fixture
-def ledger(ledger_con: sqlite3.Connection) -> sqlite3.Connection:
+def ledger(ledger_con: sqlite3.Connection,
+           set_residence: Callable[..., None]) -> sqlite3.Connection:
+    set_residence(ledger_con, ("2026-01-31", "CA", None))
     ledger_con.executemany(
         "INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)",
         [(CHECKING, "Asset_Checking", "asset", "cash"),
@@ -69,7 +72,7 @@ def _post(con: sqlite3.Connection, year: int, frm: int, to: int, amount: int, ch
 
 def _estimate(con: sqlite3.Connection, aux: Aux, scope: str, year: int = 2026,
               more: int = 0) -> Return:
-    params = {"scope": scope, **({"bracket_series": "CA"} if scope == "state" else {})}
+    params = {"scope": scope}
     kind = "state_tables" if scope == "state" else scope
     return _prepare_tax(con, params, aux=aux, tax_year=year, tid=1, kind=kind,
                         jurisdictions={"federal": TaxRule("federal", {"scope": "federal"}, 1)}).compute(Extra(more))
@@ -131,21 +134,21 @@ def test_an_hsa_that_falls_is_a_capital_loss_for_the_state(ledger: sqlite3.Conne
     assert _estimate(ledger, _aux(hsa="taxable"), "federal")["capital_loss_used"] == 0
 
 
-def test_a_move_keeps_the_old_states_tables_for_the_years_before_it(
-    ledger: sqlite3.Connection,
+def test_each_year_reads_the_tables_of_the_state_it_is_filed_in(
+    ledger: sqlite3.Connection, set_residence: Callable[..., None],
 ) -> None:
-    """A swap of state_brackets moves each table keyed by the state with it.
-    The old state's surcharge and HSA rows still answer for the years before
-    the move (an April return, a loss carried in); from the move, the new
-    state's apply, or none: no surcharge, and the federal HSA rules."""
+    """A tax year reads every table keyed by the state where the household
+    lives on its December 31 (#509), whenever it is computed: the old
+    state's surcharge and HSA rules for the years before the move, the new
+    state's, or none, from the year of the move: no surcharge, and the
+    federal HSA rules. An HSA year before the move stays the old state's."""
     _post(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
     _post(ledger, 2027, SALARY, CHECKING, 2_010_000_00, "ordinary")
     _post(ledger, 2026, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     _post(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     aux = _aux(surcharge=True, hsa="taxable")
     aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
-    _swap_aux_table(ledger, 1, "2027-03-31",
-                    {"aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux)
+    set_residence(ledger, ("2026-01-31", "CA", None), ("2027-03-31", "WA", None))
     taxable = 2_000_000_00
     before = _estimate(ledger, aux, "state", 2026)
     assert before.tax == taxable // 10 + 1_000_000_00 // 100
@@ -153,23 +156,32 @@ def test_a_move_keeps_the_old_states_tables_for_the_years_before_it(
     after = _estimate(ledger, aux, "state", 2027)
     assert after.tax == taxable // 10
     assert _estimate(ledger, aux, "state", 2029)["ordinary_income"] == -8_000_00
-    assert ledger.execute(
-        "SELECT DISTINCT kind FROM aux_table WHERE series = 'CA' ORDER BY kind").fetchall() == [
-        ("state_brackets",), (registries.STATE_HSA,), (registries.STATE_SURCHARGE,)]
 
 
 def test_a_move_to_a_state_whose_tables_start_later_waits_for_them(
-    ledger: sqlite3.Connection,
+    ledger: sqlite3.Connection, set_residence: Callable[..., None],
 ) -> None:
     _post(ledger, 2029, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     aux = _aux()
     aux[("state_brackets", "OR")] = aux[("state_brackets", "CA")]
     aux[(registries.STATE_HSA, "OR")] = [("2030-01-31", {"treatment": "taxable"})]
-    _swap_aux_table(ledger, 1, "2028-03-31",
-                    {"aux_kind": "state_brackets", "series": "CA", "source_series": "OR"}, aux)
+    set_residence(ledger, ("2026-01-31", "CA", None), ("2028-03-31", "OR", None))
     assert _estimate(ledger, aux, "state", 2029)["ordinary_income"] == -8_000_00
     _post(ledger, 2030, CHECKING, HSA, 8_000_00, "tax_deferred_in")
     assert _estimate(ledger, aux, "state", 2030)["ordinary_income"] == 0
+
+
+def test_a_move_in_the_first_months_of_a_year_files_the_year_before_in_the_old_state(
+    ledger: sqlite3.Connection, set_residence: Callable[..., None],
+) -> None:
+    """#498: a move in February is before the April settlement of the year
+    before, which is still filed where the household lived on its December
+    31, with that state's surcharge."""
+    _post(ledger, 2026, SALARY, CHECKING, 2_010_000_00, "ordinary")
+    aux = _aux(surcharge=True)
+    aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
+    set_residence(ledger, ("2026-01-31", "CA", None), ("2027-02-28", "WA", None))
+    assert _estimate(ledger, aux, "state", 2026).tax == 2_000_000_00 // 10 + 1_000_000_00 // 100
 
 
 def test_the_templates_ship_the_california_tables(
@@ -204,39 +216,13 @@ def _aux_rows(result: LoadResult) -> list[tuple[str, str | None, dict[str, Any],
         con.close()
 
 
-def test_a_moved_surcharge_keeps_its_indexing_and_a_later_one_left_behind_goes(
-    ledger: sqlite3.Connection,
+def test_the_old_states_later_surcharge_never_applies_after_a_move(
+    ledger: sqlite3.Connection, set_residence: Callable[..., None],
 ) -> None:
-    """A surcharge row the move re-dates still grows from its own table's
-    date; and the old state's surcharge that would start only after the
-    move never applies."""
+    _post(ledger, 2031, SALARY, CHECKING, 110_000_00, "ordinary")
     aux = _aux()
-    aux[("inflation", "cpi")] = [("2020-01-31", {"annual_rate_micros": 100_000})]
-    aux[("state_brackets", "MA")] = aux[("state_brackets", "CA")]
-    aux[(registries.STATE_SURCHARGE, "MA")] = [("2026-01-31", {
-        "filing_status": "MFJ", "floor": 1_000_000_00, "marginal_rate_micros": 40_000,
-        "floor_series": "cpi"})]
+    aux[("state_brackets", "WA")] = aux[("state_brackets", "CA")]
     aux[(registries.STATE_SURCHARGE, "CA")] = [("2031-01-31", {
         "filing_status": "MFJ", "floor": 0, "marginal_rate_micros": 10_000, "floor_series": None})]
-    _swap_aux_table(ledger, 1, "2029-03-31",
-                    {"aux_kind": "state_brackets", "series": "CA", "source_series": "MA"}, aux)
-    rows = _indexed_tax_rows(aux, registries.STATE_SURCHARGE, "CA", 2030, {})
-    assert rows[0]["floor"] > 1_300_000_00  # grown since 2026, not since the move
-    aux2 = _aux()
-    aux2[("state_brackets", "WA")] = aux2[("state_brackets", "CA")]
-    aux2[(registries.STATE_SURCHARGE, "CA")] = [("2031-01-31", {
-        "filing_status": "MFJ", "floor": 0, "marginal_rate_micros": 10_000, "floor_series": None})]
-    _swap_aux_table(ledger, 2, "2029-03-31",
-                    {"aux_kind": "state_brackets", "series": "CA", "source_series": "WA"}, aux2)
-    assert (registries.STATE_SURCHARGE, "CA") not in aux2
-
-
-def test_swapping_the_hsa_table_alone_keeps_the_years_before(ledger: sqlite3.Connection) -> None:
-    _post(ledger, 2026, CHECKING, HSA, 8_000_00, "tax_deferred_in")
-    aux = _aux(hsa="taxable")
-    aux[(registries.STATE_HSA, "federal")] = [("2026-01-31", {"treatment": "federal"})]
-    _swap_aux_table(ledger, 1, "2027-03-31",
-                    {"aux_kind": registries.STATE_HSA, "series": "CA", "source_series": "federal"}, aux)
-    assert _estimate(ledger, aux, "state", 2026)["ordinary_income"] == 0
-    _post(ledger, 2027, CHECKING, HSA, 8_000_00, "tax_deferred_in")
-    assert _estimate(ledger, aux, "state", 2027)["ordinary_income"] == -8_000_00
+    set_residence(ledger, ("2026-01-31", "CA", None), ("2029-03-31", "WA", None))
+    assert _estimate(ledger, aux, "state", 2031).tax == 100_000_00 // 10

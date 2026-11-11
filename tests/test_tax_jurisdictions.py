@@ -57,9 +57,9 @@ def test_a_states_upstream_column_may_only_spell_out_federal(
     load_test_copy: Callable[[], LoadResult],
 ) -> None:
     add_state_tax()
-    add_tax("state", upstream="federal", params_json={"bracket_series": "CA"})
+    add_tax("state", upstream="federal")
     load_test_copy()
-    add_tax("state", upstream="state", params_json={"bracket_series": "CA"})
+    add_tax("state", upstream="state")
     with pytest.raises(LoadError, match="upstream must be blank or federal"):
         load_test_copy()
 

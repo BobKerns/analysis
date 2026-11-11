@@ -534,14 +534,15 @@ KINDS: tuple[KindSpec, ...] = (
         ),
     ),
     KindSpec(
-        "swap-aux-table", "an aux table is replaced by another, as in a move",
+        "swap-aux-table", "an aux table is replaced by another, as in a change of law",
         key=("date", "aux_kind", "series"),
         fields=(
             _DATE,
             Field(
                 "aux_kind", "kind of table", strict=True,
                 choices=lambda ctx, answers: sorted(registries.SWAPPABLE_AUX_KINDS),  # noqa: ARG005
-                help="state_brackets for a move to another state.",
+                help="federal_brackets for a change of law; a move to another state is "
+                     "`sim tax move`.",
             ),
             Field(
                 "source_series", "replacement series",

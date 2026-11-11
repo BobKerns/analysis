@@ -27,7 +27,8 @@ from typing import Any, ClassVar
 
 __all__ = [
     "API_VERSION", "Account", "CapitalLoss", "Extra", "IncomeItem", "KINDS", "Person",
-    "Prepared", "Return", "TaxCalculator", "TaxError", "TaxYear", "calculator", "register",
+    "Prepared", "Residence", "Return", "TaxCalculator", "TaxError", "TaxYear", "calculator",
+    "register",
 ]
 
 API_VERSION = 1
@@ -84,6 +85,14 @@ class Person:
 
 
 @dataclass(frozen=True)
+class Residence:
+    """Where the household lives (``residence.csv``, #509): a state's postal
+    code, and the county whose local tax applies, if it names one."""
+    state: str
+    county: str | None = None
+
+
+@dataclass(frozen=True)
 class TaxYear:
     """One tax year, as a calculator sees it.
 
@@ -104,6 +113,9 @@ class TaxYear:
     _prior: Callable[[str], int] = field(repr=False)
     _series_of: Callable[[str], list[str]] = field(repr=False)
     _upstream: Callable[[str], Prepared] = field(repr=False, default=lambda name: _no_upstream(name))
+    _residences: Sequence[tuple[str, Residence]] = field(repr=False, default=())
+    """Where the household lives, from each row's effective date (a month
+    end), in date order."""
 
     @property
     def filing_status(self) -> str:
@@ -115,6 +127,21 @@ class TaxYear:
         """The rows of table ``kind`` (``series`` for one keyed by state) in
         force at the year's end; [] when there are none."""
         return self._table(kind, series, self.year)
+
+    @property
+    def residence(self) -> Residence | None:
+        """Where the household lives on the year's December 31, which is
+        where it files (#509); None in a scenario that says nowhere."""
+        return self.residence_in(self.year)
+
+    def residence_in(self, year: int) -> Residence | None:
+        """:attr:`residence` for another year (an earlier year's HSA). A
+        year before the first row is the first row's: it says where the
+        household lived when the scenario starts."""
+        if not self._residences:
+            return None
+        in_force = [where for effective, where in self._residences if effective <= f"{year}-12-31"]
+        return in_force[-1] if in_force else self._residences[0][1]
 
     def table_as_of(self, kind: str, series: str | None, year: int) -> list[Row]:
         """:meth:`table` as of another year's end."""
@@ -236,9 +263,6 @@ class Prepared:
     filing_status: str
     brackets: Sequence[tuple[int, int]]
     ltcg_brackets: Sequence[tuple[int, int]] = ()
-    bracket_series: str | None = None
-    """The series its tables are keyed by (a state's ``bracket_series``),
-    for a jurisdiction built on it whose tables follow (#508)."""
 
     def compute(self, extra: Extra = NO_EXTRA) -> Return:
         raise NotImplementedError

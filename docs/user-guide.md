@@ -441,9 +441,10 @@ files pays no income tax.
   taxed as ordinary income, its gain exclusion, retirement exclusions, an
   HSA it taxes), each shown as its own `state_` line of the tax summary. So
   a state tax needs the federal one (`taxes/federal.csv`). It uses the
-  brackets of the state `taxes/state.csv` names: choose it with `sim tax
-  state`, which asks for the state by name and adds a state tax like the
-  federal one if there is none. For California it reads `state_brackets__CA.csv`
+  brackets of the state the household lives in, which `residence.csv`
+  says: choose it with `sim tax state`, which asks for the state by name
+  and adds a state tax like the federal one if there is none. A year is
+  taxed by the state you live in on its December 31. For California it reads `state_brackets__CA.csv`
   and the state's standard deduction from
   `state_standard_deduction__CA.csv` (named for the same state). Tables for California, the District of Columbia, Idaho, Kansas,
   Nebraska and North Carolina come with the simulator; for another state,
@@ -466,10 +467,13 @@ files pays no income tax.
 - **Local income tax**: some counties and cities tax income on top of the
   state (a Maryland county, New York City, an Indiana county, the Portland
   area). Where the local tax is figured on the state's taxable income, put
-  your own county's or city's rates in `aux/state_local_tax__<state>.csv`, in
-  the columns of the state's brackets: one band for a flat county rate, the
-  city's brackets, or a 0% band below a threshold, with rows for each
-  filing status your state brackets have. Then `sim tax add local` adds
+  your own county's or city's rates in `aux/state_local_tax__<county>.csv`
+  (any name, such as `MD-county`), in the columns of the state's brackets:
+  one band for a flat county rate, the city's brackets, or a 0% band below
+  a threshold, with rows for each filing status your state brackets have,
+  and name the county where you live: `sim tax state --county MD-county`.
+  (A table named for the state, `state_local_tax__MD.csv`, applies wherever
+  you live in it without a county.) Then `sim tax add local` adds
   `taxes/local.csv`, the local tax's own file: it is paid with the state's
   tax unless you name another source or destination, and `sim report tax`
   shows it as `local_tax`, apart from `state_tax`. A scenario with the table
@@ -931,7 +935,7 @@ only for ensembles, Part 4.10):
 | `retire_scheduled` | `scheduled_name` | "salary stops on retirement" |
 | `one_off_transfer` | `account_1`/`lot_1`, `account_2`/`lot_2`, `amount`, `tax_character` | a windfall, a gift, a settlement; either side may be a chain (Part 4.5) |
 | `transfer_balance` | `account_1`/`lot_1`, `account_2`/`lot_2`, `tax_character`; `amount` left blank | rolling a 401(k) into an IRA: moves everything the lot holds at the start of that month |
-| `swap_aux_table` | `series` (the table replaced; blank for one without a series), `params_json` naming the kind and the replacement | moving to another state: from that month, the state tax brackets are another state's |
+| `swap_aux_table` | `series` (the table replaced; blank for one without a series), `params_json` naming the kind and the replacement | a tax law that changes on a known date: from that month, the federal brackets are another table |
 
 Leave `tax_character` blank on a `one_off_transfer` or `transfer_balance` out
 of a brokerage lot and the move is a sale: the lot's share of basis comes out
@@ -946,30 +950,32 @@ A rule that should start on a future date needs no calendar event: give its
 `scheduled.csv` row that `start` date.
 
 For a move, `sim tax move 2031-07 Washington` asks for anything left out
-and writes the calendar row. The new state needs its tables, as
-`aux/state_brackets__WA.csv` say, unless they ship or it has no income tax
-(its rule then reads a 0% table, `state_brackets__none.csv`). The row it
-writes swaps them in on the moving date:
+and adds a row to the scenario's `residence.csv`, which says where the
+household lives from each month on:
 
 ```csv
-date,kind,series,params_json
-2031-07,swap_aux_table,CA,"{""aux_kind"": ""state_brackets"", ""source_series"": ""WA""}"
+effective_date,state,county,description
+2026-05,CA,,
+2031-07,WA,,Move to Washington (WA)
 ```
 
-From July 2031 on, everything that read the `CA` brackets reads the `WA`
-ones instead, including their later dated changes. The state
-tax (`taxes/state.csv`) names the state it starts in (`sim tax state` sets
-it). The state's standard
-deduction, surcharge, local tax and HSA tables move with its brackets by
-themselves: the new state's if it has them, otherwise none (the federal
-standard deduction stands in). A move to another county in the same state
-swaps the local tax alone: write the new county's as, say,
-`aux/state_local_tax__CA-county.csv`, and swap it in with
-`"aux_kind": "state_local_tax", "source_series": "CA-county"`. You needn't
-have a local tax table before the move; for a move to a county with no local
-tax, swap in one with a single 0% band for each filing status. Swap `state_deductions` the same way if you use it. Any aux table works the same way: a new
-federal bracket table on the date a law takes effect, or another inflation
-series.
+The first row is where you live when the scenario starts (`sim tax state`
+writes it). A tax year is taxed by the state you live in on its December 31,
+so a move in February 2031 leaves 2030's return, paid that April, in the old
+state, and 2031 is the new state's. Everything the state tax reads follows
+the move: the new state's brackets, standard deduction, Social Security,
+gain, surcharge, retirement exclusion and HSA tables, or none where it has
+none (the federal standard deduction stands in for a missing one). The new
+state needs its tables, as `aux/state_brackets__WA.csv` say, unless they
+ship or it has no income tax (it then reads a 0% table,
+`state_brackets__none.csv`). A move to another county is a row too:
+`sim tax move 2033-01 CA --county CA-county` reads
+`aux/state_local_tax__CA-county.csv` from then on. A child scenario adds its
+own rows to its parent's, and one of the same month replaces the parent's.
+
+Any other aux table can be swapped with a calendar row, `swap_aux_table`: a
+new federal bracket table on the date a law takes effect, or another
+inflation series. A state's tables can't be: they follow where you live.
 
 ### 4.9 Modeling itemized deductions (for example, a big medical year)
 
@@ -1413,6 +1419,12 @@ usual rails, how to write them and how to read the results.
 
 ### 4.16 Draw from whatever is overweight (responsive strategies)
 
+**Video.** *Rebalancing* walks through this section with Alice and Bill:
+classing every lot, a target, a strategy that draws and one that invests,
+what it did, and what it buys across an ensemble:
+[English](https://www.youtube.com/watch?v=Id-wps0PVrw),
+[Japanese (日本語)](https://www.youtube.com/watch?v=sd8p2AofnSA).
+
 A chain draws its steps in the order you wrote them, whatever your
 portfolio looks like. A **strategy** decides instead, from the month's
 balances. The built-in `rebalance` keeps a portfolio near a target
@@ -1551,7 +1563,9 @@ how much of the spending went somewhere other than the plan's mix
 (`redirected`) and how much of each group's budget was spent (`filled:`).
 `--by tag:category` groups it by your own tags. `sim strategy log` shows
 each year's decision, such as
-`cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`.
+`cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`; the monthly
+line for each rule a strategy scaled is counted at the end, and
+`--hook scale` lists them.
 
 Compare against the plan as written the same way as above: a child
 scenario with the strategy switched off, run both, and `sim compare` them;
@@ -1741,7 +1755,13 @@ simulator deletes runs that `.retention.yaml`, in the data dir, no longer
 keeps: by default it keeps each scenario's five newest runs and anything from
 the last seven days, and always its newest and newest successful run. The
 first `sim load` or `sim run` writes the file if it's missing. To keep a
-particular run for good, add its path under `pins:` in that file. The file's
+particular run for good, add its path under `pins:` in that file. If disk
+space matters more than age, uncomment the limits under `space:`: at most
+`max_size` for all of `state/`, or the free space (`min_free`,
+`min_free_percent`) to leave on its disk. When one is breached, older runs,
+batches and builder logs go first, oldest first, sparing only each rule's
+`protected:` items (by default the two newest and anything from the last
+day), pins, and each scenario's newest runs. The file's
 comments explain the rules, and
 [ADR-004 §10](architecture/ADR-004-reproducibility-and-activation.md) has
 the details.

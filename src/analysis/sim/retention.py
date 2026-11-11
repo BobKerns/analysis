@@ -32,23 +32,44 @@ missing or empty section prunes nothing of that kind.
 newest first by the date in their names, aged from the end of that day; the daemon applies them as it starts and
 each time it starts a new day's file (``builder_log.prune_logs``), and the
 newest file is always kept.
+
+A ``space`` section (#536) sets disk limits: ``max_size`` for all of
+``state/``, ``min_free`` and ``min_free_percent`` for the disk it is on. When
+one is breached after the rules have pruned, more is deleted, oldest first
+across runs, batches, intent batches and log files, until the limits hold.
+Only what is protected survives that: the items always kept above, pins, and
+whatever a rule's ``protected:`` list keeps (same ``keep``/``since`` terms;
+a protected item is never deleted, by the rules either)::
+
+    runs:
+      - keep: 5
+        since: 7 days
+        protected:
+          - keep: 2
+          - since: 1 day
+    space:
+      max_size: 20 GB
+      min_free: 10 GB
+      min_free_percent: 5%
 """
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 
+from analysis.sim import builder_log
 from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
-from analysis.sim.loader import BATCH_MODE_DIRS
+from analysis.sim.loader import BATCH_MODE_DIRS, DEFAULT_STATE_DIR, find_state_dir
 from analysis.sim.schema import connect_sim_file
 
 __all__ = [
@@ -60,9 +81,13 @@ __all__ = [
     "Retention",
     "RetentionError",
     "Rule",
+    "Space",
+    "format_size",
     "parse_duration",
+    "parse_size",
     "parse_retention",
     "plan_prune",
+    "plan_space_prune",
     "prune_state",
     "read_retention",
 ]
@@ -82,18 +107,29 @@ DEFAULT_RETENTION = """\
 #   since: 7 days      made within that long (minutes, hours, days or weeks)
 # Each scenario's newest run and batch, and its newest successful ones, are
 # always kept. Delete a section's rules to keep everything of that kind.
+#
+# A rule's `protected:` list (same terms) keeps an item whatever happens.
+# It matters when a `space` limit below is breached: then more is deleted,
+# oldest first, until the limits hold, sparing only what is protected,
+# always kept, or pinned.
 
 # Ensemble and sensitivity batches' member intents
 # (state/intent/<scenario>/monte-carlo/ and .../sensitivity/).
 intents:
   - keep: 5
     since: 7 days
+    protected:
+      - keep: 2
+      - since: 1 day
 
 # Single run files and ensemble/sensitivity batches (state/runs/; batches in
 # state/runs/<scenario>/monte-carlo/ and .../sensitivity/, counted apart).
 runs:
   - keep: 5
     since: 7 days
+    protected:
+      - keep: 2
+      - since: 1 day
 
 # Runs or batches never to prune, relative to the data repo root (beside
 # state/), e.g. state/runs/<stamp>_<scenario>_<version>.sqlite3. Pinning a
@@ -104,6 +140,18 @@ pins: []
 logs:
   - keep: 7
     since: 30 days
+    protected:
+      - keep: 2
+      - since: 1 day
+
+# Disk limits, checked after each `sim load` and `sim run`. Uncomment any:
+# state/ as a whole may use at most max_size, and at least min_free and
+# min_free_percent must stay free on its disk. Sizes in B, KB, MB, GB or TB
+# (or KiB, MiB, GiB, TiB).
+space:
+  # max_size: 20 GB
+  # min_free: 10 GB
+  # min_free_percent: 5%
 """
 
 # `sim run` names: `<stamp>[-N]_<scenario>_<data version>.sqlite3` for a
@@ -114,7 +162,14 @@ _STAMP = r"\d{4}-\d\d-\d\dT\d{6}Z"
 _RUN_FILE = re.compile(rf"^({_STAMP})(?:-(\d+))?_(.+)_[^_]+\.sqlite3$")
 _BATCH_DIR = re.compile(rf"^({_STAMP})(?:-(\d+))?$")
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(minute|hour|day|week)s?\s*$", re.IGNORECASE)
-_SECTIONS = ("intents", "runs", "pins", "logs")
+_SECTIONS = ("intents", "runs", "pins", "logs", "space")
+_RULE_SECTIONS = ("intents", "runs", "logs")
+_SIZE_UNITS = {"b": 1}
+for _power, _prefix in enumerate(("k", "m", "g", "t"), start=1):
+    _SIZE_UNITS[f"{_prefix}b"] = 1000 ** _power
+    _SIZE_UNITS[f"{_prefix}ib"] = 1024 ** _power
+_SIZE = re.compile(rf"^\s*(\d+(?:\.\d+)?)\s*({'|'.join(_SIZE_UNITS)})\s*$", re.IGNORECASE)
+_PERCENT = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*%\s*$")
 # Beyond this, `now - since` could leave datetime's range.
 _LONGEST_SINCE = timedelta(days=366_000)
 # A run or batch written to this recently may still be in progress in another
@@ -142,13 +197,29 @@ class Rule:
 
 
 @dataclass(frozen=True)
+class Space:
+    """The ``space`` section's limits, in bytes and percent; ``None`` is no limit."""
+
+    max_size: int | None = None
+    min_free: int | None = None
+    min_free_percent: float | None = None
+
+    def __bool__(self) -> bool:
+        return any(v is not None for v in (self.max_size, self.min_free, self.min_free_percent))
+
+
+@dataclass(frozen=True)
 class Retention:
-    """Parsed ``.retention.yaml``. ``None`` for a section means keep all."""
+    """Parsed ``.retention.yaml``. ``None`` for a section means keep all.
+    ``protected`` holds each section's ``protected:`` rules, from all its
+    rules together."""
 
     intents: tuple[Rule, ...] | None = None
     runs: tuple[Rule, ...] | None = None
     pins: tuple[Path, ...] = ()
     logs: tuple[Rule, ...] | None = None
+    protected: Mapping[str, tuple[Rule, ...]] = field(default_factory=dict)
+    space: Space = Space()
 
 
 @dataclass(frozen=True)
@@ -156,7 +227,7 @@ class StateItem:
     """A prunable run file or batch folder under state/."""
 
     path: Path
-    kind: str  # "run", "batch" (state/runs) or "intent" (state/intent batch)
+    kind: str  # "run", "batch" (state/runs), "intent" (state/intent batch) or "log"
     scenario: str
     mode: str  # a batch's or intent batch's mode folder (#454); "" for a run
     made: datetime
@@ -168,19 +239,24 @@ class PruneResult:
     runs: list[Path] = field(default_factory=list)
     batches: list[Path] = field(default_factory=list)
     intents: list[Path] = field(default_factory=list)
+    logs: list[Path] = field(default_factory=list)
     created: Path | None = None  # the default rules file, when this wrote it
+    for_space: int = 0  # how many of the deletions were for the space limits
+    # Limits still breached once everything unprotected is gone.
+    shortfalls: list[str] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.runs or self.batches or self.intents)
+        return bool(self.runs or self.batches or self.intents or self.logs)
 
     def summary(self) -> str:
         parts = [
             f"{len(paths)} {label}"
             for paths, label in ((self.runs, "run file(s)"), (self.batches, "run batch(es)"),
-                                 (self.intents, "intent batch(es)"))
+                                 (self.intents, "intent batch(es)"), (self.logs, "log file(s)"))
             if paths
         ]
-        return f"pruned {', '.join(parts)} ({RETENTION_FILENAME})"
+        why = f"; {self.for_space} for disk space" if self.for_space else ""
+        return f"pruned {', '.join(parts)} ({RETENTION_FILENAME}{why})"
 
 
 def read_retention(data_dir: Path) -> Retention | None:
@@ -214,39 +290,111 @@ def parse_retention(text: str, *, base: Path) -> Retention:
     pins = [] if pins is None else pins
     if not isinstance(pins, list) or not all(isinstance(p, str) and p.strip() for p in pins):
         raise RetentionError("pins: expected a list of paths")
+    sections = {name: _rules(name, doc.get(name)) for name in _RULE_SECTIONS}
     return Retention(
-        intents=_rules("intents", doc.get("intents")),
-        runs=_rules("runs", doc.get("runs")),
+        intents=sections["intents"][0],
+        runs=sections["runs"][0],
         pins=tuple((base / p.strip()).resolve() for p in pins),
-        logs=_rules("logs", doc.get("logs")),
+        logs=sections["logs"][0],
+        protected={name: rules[1] for name, rules in sections.items() if rules[1]},
+        space=_space(doc.get("space")),
     )
 
 
-def _rules(section: str, raw: Any) -> tuple[Rule, ...] | None:
+def _rules(section: str, raw: Any) -> tuple[tuple[Rule, ...] | None, tuple[Rule, ...]]:
+    """A section's rules, and the ``protected:`` rules of all of them."""
     # An empty section keeping nothing would delete everything but the
     # newest items, which is never what a blank section means. Other falsy
     # values (0, "") are malformed, not empty, so they fall through.
-    if raw is None or raw == []:
-        return None
+    if raw is None or raw == [] or raw == {}:
+        return None, ()
+    # One rule may be written bare, as a map, in any section: `logs: {keep: 7}`
+    # reads the same as `logs: [{keep: 7}]`.
+    if isinstance(raw, dict):
+        raw = [raw]
     if not isinstance(raw, list):
-        raise RetentionError(f"{section}: expected a list of rules")
-    rules = []
+        raise RetentionError(f"{section}: expected a rule or a list of rules")
+    rules: list[Rule] = []
+    protected: list[Rule] = []
     for i, entry in enumerate(raw, start=1):
         where = f"{section} rule {i}"
-        if not isinstance(entry, dict) or not entry:
-            raise RetentionError(f"{where}: expected keep: N and/or since: <duration>, "
-                                 f"got {entry!r}")
-        unknown = sorted(str(k) for k in entry if k not in ("keep", "since"))
-        if unknown:
-            raise RetentionError(f"{where}: unknown key(s): {', '.join(unknown)}")
-        keep = entry.get("keep")
-        if keep is not None and (isinstance(keep, bool) or not isinstance(keep, int) or keep < 1):
-            raise RetentionError(f"{where}: keep must be a positive whole number, got {keep!r}")
-        since = entry.get("since")
-        if keep is None and since is None:
-            raise RetentionError(f"{where}: give keep, since, or both")
-        rules.append(Rule(keep=keep, since=None if since is None else _duration(where, since)))
-    return tuple(rules)
+        rules.append(_rule(where, entry, ("keep", "since", "protected")))
+        guard = entry.get("protected")
+        if guard is None:
+            continue
+        if isinstance(guard, dict):
+            guard = [guard]
+        if not isinstance(guard, list) or not guard:
+            raise RetentionError(f"{where}: protected: expected a rule or a list of rules")
+        protected.extend(_rule(f"{where} protected rule {j}", sub, ("keep", "since"))
+                         for j, sub in enumerate(guard, start=1))
+    return tuple(rules), tuple(protected)
+
+
+def _rule(where: str, entry: Any, keys: tuple[str, ...]) -> Rule:
+    if not isinstance(entry, dict) or not entry:
+        raise RetentionError(f"{where}: expected keep: N and/or since: <duration>, "
+                             f"got {entry!r}")
+    unknown = sorted(str(k) for k in entry if k not in keys)
+    if unknown:
+        raise RetentionError(f"{where}: unknown key(s): {', '.join(unknown)}")
+    keep = entry.get("keep")
+    if keep is not None and (isinstance(keep, bool) or not isinstance(keep, int) or keep < 1):
+        raise RetentionError(f"{where}: keep must be a positive whole number, got {keep!r}")
+    since = entry.get("since")
+    if keep is None and since is None:
+        raise RetentionError(f"{where}: give keep, since, or both")
+    return Rule(keep=keep, since=None if since is None else _duration(where, since))
+
+
+def _space(raw: Any) -> Space:
+    if raw is None:
+        return Space()
+    if not isinstance(raw, dict):
+        raise RetentionError("space: expected max_size, min_free and/or min_free_percent")
+    keys = ("max_size", "min_free", "min_free_percent")
+    unknown = sorted(str(k) for k in raw if k not in keys)
+    if unknown:
+        raise RetentionError(f"space: unknown key(s): {', '.join(unknown)} "
+                             f"(expected {', '.join(keys)})")
+
+    def size(key: str) -> int | None:
+        value = raw.get(key)
+        if value is None:
+            return None
+        try:
+            return parse_size(value)
+        except RetentionError as exc:
+            raise RetentionError(f"space: {key} {exc}") from None
+
+    percent = raw.get("min_free_percent")
+    if percent is not None:
+        match = _PERCENT.match(str(percent))
+        if match is None or not 0 < float(match[1]) < 100:
+            raise RetentionError("space: min_free_percent must be a percentage between "
+                                 f"0% and 100%, like 5%, got {percent!r}")
+        percent = float(match[1])
+    return Space(max_size=size("max_size"), min_free=size("min_free"),
+                 min_free_percent=percent)
+
+
+def parse_size(raw: Any) -> int:
+    """``'20 GB'`` (B, KB, MB, GB, TB: powers of 1000; KiB ... TiB: of 1024)
+    as a number of bytes. A bare number is refused: its unit would be a guess."""
+    match = _SIZE.match(str(raw))
+    if match is None or isinstance(raw, bool):
+        raise RetentionError(f"must be a size like '20 GB' (B, KB, MB, GB, TB, "
+                             f"or KiB, MiB, GiB, TiB), got {raw!r}")
+    return int(float(match[1]) * _SIZE_UNITS[match[2].lower()])
+
+
+def format_size(size: float) -> str:
+    """Bytes as a short decimal size, ``'1.5 GB'``."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(size) < 1000:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1000
+    return f"{size:.1f} TB"
 
 
 def _duration(where: str, raw: Any) -> timedelta:
@@ -276,45 +424,95 @@ def parse_duration(raw: Any) -> timedelta:
 def plan_prune(
     retention: Retention, intent_dir: Path, runs_dir: Path, *, now: datetime | None = None,
 ) -> list[StateItem]:
-    """What ``retention`` would prune, without touching anything."""
-    now = now or datetime.now(UTC)
-    pinned_batches = set()
-    items = [*_run_items(Path(runs_dir)), *_intent_items(Path(intent_dir))]
-    for item in items:
-        if item.kind != "run" and _is_pinned(item.path, retention.pins):
-            pinned_batches.add((item.scenario, item.mode, item.path.name))
+    """What ``retention``'s rules would prune, without touching anything."""
+    return _classify(retention, intent_dir, runs_dir, None, now or datetime.now(UTC))[0]
 
-    doomed: list[StateItem] = []
-    groups: dict[tuple[str, str, str], list[StateItem]] = {}
-    for item in items:
-        groups.setdefault((item.kind, item.scenario, item.mode), []).append(item)
-    for (kind, _scenario, _mode), group in sorted(groups.items()):
-        rules = retention.intents if kind == "intent" else retention.runs
-        if rules is None:
-            continue
-        group.sort(key=lambda it: (it.made, it.order), reverse=True)
-        protected = {0}
-        if kind != "intent":
-            protected.add(_newest_succeeded(group))
-        for rank, item in enumerate(group):
-            if (rank in protected
-                    or _active(item.path, now)
-                    or any(rule.keeps(rank, item.made, now) for rule in rules)
-                    or _is_pinned(item.path, retention.pins)
-                    or (kind != "run"
-                        and (item.scenario, item.mode, item.path.name) in pinned_batches)):
-                continue
-            doomed.append(item)
-    return doomed
+
+class _Usage(Protocol):
+    @property
+    def total(self) -> int: ...
+    @property
+    def free(self) -> int: ...
+
+
+# shutil.disk_usage, or a stand-in for tests.
+DiskUsage = Callable[[Path], _Usage]
+
+
+def plan_space_prune(
+    space: Space, spare: list[StateItem], state_roots: Iterable[Path], *,
+    disk_usage: DiskUsage = shutil.disk_usage,
+) -> tuple[list[StateItem], list[str]]:
+    """Of ``spare`` (items no rule needs, or kept but unprotected), those to
+    delete, oldest first, until ``space``'s limits hold; and a line for each
+    limit still breached after that. ``state_roots`` are the folders whose
+    total ``max_size`` limits; free space is checked on each disk that holds
+    one of them or an item. Freed space is estimated from the items' sizes,
+    so nothing is touched."""
+    if not space:
+        return [], []
+    roots = _distinct_roots(state_roots)
+    used = sum(_disk_size(root) for root in roots) if space.max_size is not None else 0
+    disks: dict[int, list[int]] = {}  # device: [total, free]
+    where: dict[int, Path] = {}
+
+    def disk(path: Path) -> int | None:
+        try:
+            dev = path.stat().st_dev
+        except OSError:
+            return None
+        if dev not in disks:
+            usage = disk_usage(path)
+            disks[dev] = [usage.total, usage.free]
+            where[dev] = path
+        return dev
+
+    for root in roots:
+        disk(root)
+
+    def short_disks() -> set[int]:
+        return {dev for dev, (total, free) in disks.items()
+                if (space.min_free is not None and free < space.min_free)
+                or (space.min_free_percent is not None
+                    and free * 100 < space.min_free_percent * total)}
+
+    def over() -> bool:
+        return space.max_size is not None and used > space.max_size
+
+    chosen = []
+    for item in sorted(spare, key=lambda it: (it.made, it.order)):
+        dev = disk(item.path)
+        short = short_disks()
+        if not over() and not short:
+            break
+        if not over() and dev not in short:
+            continue  # on another disk: deleting it frees nothing that's short
+        size = _disk_size(item.path)
+        chosen.append(item)
+        used -= size
+        if dev is not None:
+            disks[dev][1] += size
+    shortfalls = []
+    if over():
+        shortfalls.append(f"state/ still uses {format_size(used)}, over max_size "
+                          f"{format_size(space.max_size or 0)}")
+    for dev in sorted(short_disks()):
+        total, free = disks[dev]
+        shortfalls.append(f"the disk holding {where[dev]} has {format_size(free)} free "
+                          f"({free * 100 / total:.1f}%), under the space limits")
+    return chosen, shortfalls
 
 
 def prune_state(
     data_dir: Path, intent_dir: Path, runs_dir: Path, *, now: datetime | None = None,
+    disk_usage: DiskUsage = shutil.disk_usage,
 ) -> PruneResult:
     """Apply the data repo's ``.retention.yaml`` to ``intent_dir`` and
-    ``runs_dir``. A missing file is first created with ``DEFAULT_RETENTION``
+    ``runs_dir``, and its ``space`` limits to them and the builder's log files
+    too. A missing file is first created with ``DEFAULT_RETENTION``
     (``result.created``); a bad file raises RetentionError before anything is
     deleted."""
+    now = now or datetime.now(UTC)
     result = PruneResult()
     retention = read_retention(data_dir)
     if retention is None:
@@ -322,17 +520,118 @@ def prune_state(
         path.write_text(DEFAULT_RETENTION)
         result.created = path
         retention = parse_retention(DEFAULT_RETENTION, base=Path(data_dir).resolve().parent)
-    for item in plan_prune(retention, intent_dir, runs_dir, now=now):
-        if item.kind == "run":
-            item.path.unlink(missing_ok=True)
-            Path(f"{item.path}-journal").unlink(missing_ok=True)
-            result.runs.append(item.path)
-        else:
-            shutil.rmtree(item.path)
-            _remove_if_empty(item.path.parent)  # the mode's folder
-            _remove_if_empty(item.path.parent.parent)  # the scenario's
-            (result.batches if item.kind == "batch" else result.intents).append(item.path)
+    state_dir = find_state_dir(data_dir, DEFAULT_STATE_DIR)
+    builder_dir = state_dir / "builder"
+    doomed, spare = _classify(retention, intent_dir, runs_dir, builder_dir, now)
+    for item in doomed:
+        _delete(item, result)
+    if retention.space:
+        extra, result.shortfalls = plan_space_prune(
+            retention.space, spare, (state_dir, Path(runs_dir), Path(intent_dir)),
+            disk_usage=disk_usage)
+        for item in extra:
+            _delete(item, result)
+        result.for_space = len(extra)
     return result
+
+
+def _delete(item: StateItem, result: PruneResult) -> None:
+    if item.kind == "run":
+        item.path.unlink(missing_ok=True)
+        Path(f"{item.path}-journal").unlink(missing_ok=True)
+        result.runs.append(item.path)
+    elif item.kind == "log":
+        item.path.unlink(missing_ok=True)
+        result.logs.append(item.path)
+    else:
+        shutil.rmtree(item.path)
+        _remove_if_empty(item.path.parent)  # the mode's folder
+        _remove_if_empty(item.path.parent.parent)  # the scenario's
+        (result.batches if item.kind == "batch" else result.intents).append(item.path)
+
+
+def _classify(
+    retention: Retention, intent_dir: Path, runs_dir: Path, builder_dir: Path | None,
+    now: datetime,
+) -> tuple[list[StateItem], list[StateItem]]:
+    """``(doomed, spare)``: what the rules prune, and what only a breached
+    space limit may (kept or not by the rules, but not protected). Log files
+    are never doomed here, since the builder applies the ``logs`` rules; they
+    are only ever spare, when ``builder_dir`` is given."""
+    pinned_batches = set()
+    items = [*_run_items(Path(runs_dir)), *_intent_items(Path(intent_dir))]
+    for item in items:
+        if item.kind != "run" and _is_pinned(item.path, retention.pins):
+            pinned_batches.add((item.scenario, item.mode, item.path.name))
+    if builder_dir is not None:
+        items.extend(StateItem(path, "log", "", "", builder_log.file_end(path), (path.name, 1))
+                     for path in builder_log.log_files(builder_dir))
+
+    doomed: list[StateItem] = []
+    spare: list[StateItem] = []
+    groups: dict[tuple[str, str, str], list[StateItem]] = {}
+    for item in items:
+        groups.setdefault((item.kind, item.scenario, item.mode), []).append(item)
+    for (kind, _scenario, _mode), group in sorted(groups.items()):
+        section = {"intent": "intents", "log": "logs"}.get(kind, "runs")
+        rules: tuple[Rule, ...] | None = getattr(retention, section)
+        if rules is None:
+            continue
+        protected = retention.protected.get(section, ())
+        group.sort(key=lambda it: (it.made, it.order), reverse=True)
+        always = {0}
+        if kind in ("run", "batch"):
+            always.add(_newest_succeeded(group))
+        for rank, item in enumerate(group):
+            if (rank in always
+                    or _active(item.path, now)
+                    or _is_pinned(item.path, retention.pins)
+                    or (kind in ("batch", "intent")
+                        and (item.scenario, item.mode, item.path.name) in pinned_batches)
+                    or any(rule.keeps(rank, item.made, now) for rule in protected)):
+                continue
+            if kind != "log" and not any(rule.keeps(rank, item.made, now) for rule in rules):
+                doomed.append(item)
+            else:
+                spare.append(item)
+    return doomed, spare
+
+
+def _distinct_roots(paths: Iterable[Path]) -> list[Path]:
+    """The existing folders among ``paths``, resolved, without one inside another
+    (a symlinked state/runs is counted where it leads)."""
+    resolved = sorted({Path(p).resolve() for p in paths if Path(p).is_dir()},
+                      key=lambda p: len(p.parts))
+    roots: list[Path] = []
+    for path in resolved:
+        if not any(path.is_relative_to(root) for root in roots):
+            roots.append(path)
+    return roots
+
+
+def _disk_size(path: Path) -> int:
+    """Disk space ``path`` takes, as ``du`` counts it: allocated blocks,
+    symlinks not followed, each file once however many links it has."""
+    seen: set[tuple[int, int]] = set()
+    total = 0
+    stack = [str(path)]
+    while stack:
+        current = stack.pop()
+        try:
+            st = os.lstat(current)
+        except OSError:
+            continue  # gone meanwhile
+        if (st.st_dev, st.st_ino) in seen:
+            continue
+        seen.add((st.st_dev, st.st_ino))
+        total += st.st_blocks * 512
+        if os.path.isdir(current) and not os.path.islink(current):
+            try:
+                with os.scandir(current) as entries:
+                    stack.extend(entry.path for entry in entries)
+            except OSError:
+                continue
+    return total
 
 
 def _run_items(runs_dir: Path) -> Iterable[StateItem]:

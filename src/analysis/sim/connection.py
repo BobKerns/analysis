@@ -244,6 +244,7 @@ _ITEM_SQL: dict[str, str] = {
         "ORDER BY symbol, as_of, asset_class"
     ),
     "person_lifespan": "SELECT * FROM person_lifespan ORDER BY person",
+    "residence": "SELECT * FROM residence ORDER BY effective_date",
     "chain": (
         "SELECT c.*, a.name AS account_name, a.kind AS account_kind, m.lot AS lot "
         "FROM chain c "

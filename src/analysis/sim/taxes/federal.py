@@ -39,7 +39,7 @@ class FederalYear(Prepared):
         params = ty.params
         self.filing_status = ty.filing_status
         bracket_aux = str(params.get("bracket_aux", "federal_brackets"))
-        series = common.bracket_series(ty, bracket_aux)
+        series = common.bracket_series(ty)
         self.brackets = common.brackets(ty, bracket_aux, series)
         self.ltcg_brackets = common.rate_table(ty, str(params.get("ltcg_bracket_aux", "ltcg_brackets")))
         stcg_aux = params.get("stcg_bracket_aux")

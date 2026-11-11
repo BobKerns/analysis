@@ -71,7 +71,7 @@ def _bucket(con: sqlite3.Connection, year: int, bucket: str) -> int:
 def state_ira(test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
               add_state_tax: Callable[..., None]) -> Path:
     """retire_alice with a California tax rule and Alice's $30,000 IRA draw."""
-    add_state_tax(bracket_series="CA")
+    add_state_tax("CA")
     _ira_draw(retire_alice_csv)
     return test_data_dir
 
@@ -240,10 +240,10 @@ def test_joint_income_is_split_between_the_spouses(
 
 
 def test_a_move_takes_the_new_states_exclusions(
-    state_ira: Path, tmp_path: Path, append_calendar_row: Callable[..., None],
+    state_ira: Path, tmp_path: Path, add_residence: Callable[..., Path],
 ) -> None:
-    """A swap of state_brackets swaps the exclusions with it; a state with
-    none excludes nothing."""
+    """A year reads the exclusions of the state it is filed in; a state
+    with none excludes nothing."""
     _exclusions(state_ira, "2025-01,retirement,retirement_account,,,,,,\n")
     for state in ("WA", "NY"):
         (state_ira / "aux" / f"state_brackets__{state}.csv").write_text(
@@ -252,15 +252,16 @@ def test_a_move_takes_the_new_states_exclusions(
     (state_ira / "aux" / "state_retirement_exclusion__NY.csv").write_text(
         HEADER + "2025-01,pension,retirement_account,59.5,20000,,,,\n", encoding="utf-8")
     for date, state in (("2028-03", "WA"), ("2030-03", "NY")):
-        append_calendar_row(
-            date=date, kind="swap_aux_table", series="CA",
-            params_json=json.dumps({"aux_kind": "state_brackets", "source_series": state}))
+        add_residence(date, state)
     con, _ = _run(state_ira, tmp_path)
     try:
-        # Each year is figured the April after it, with the tables then.
+        # Each year is filed where the household lives on its December 31,
+        # though the April settling it comes after the next move (#498).
         assert _bucket(con, 2026, "state_retirement_exclusion") == 30_000_00
+        assert _bucket(con, 2027, "state_retirement_exclusion") == 30_000_00
         assert _bucket(con, 2028, "state_retirement_exclusion") == 0
-        assert _bucket(con, 2029, "state_retirement_exclusion") == 20_000_00
+        assert _bucket(con, 2029, "state_retirement_exclusion") == 0
+        assert _bucket(con, 2030, "state_retirement_exclusion") == 20_000_00
     finally:
         con.close()
 
@@ -316,7 +317,7 @@ def test_an_offset_gain_does_not_use_up_a_cap() -> None:
 
 
 def test_a_move_to_a_state_whose_exclusions_start_later(
-    state_ira: Path, tmp_path: Path, append_calendar_row: Callable[..., None],
+    state_ira: Path, tmp_path: Path, add_residence: Callable[..., Path],
 ) -> None:
     """A new state's exclusion table dated after the move takes over on its
     own date, and the move doesn't fail for it."""
@@ -326,9 +327,7 @@ def test_a_move_to_a_state_whose_exclusions_start_later(
         "2026-01-31,MFJ,0,0.00,1%\n", encoding="utf-8")
     (state_ira / "aux" / "state_retirement_exclusion__NY.csv").write_text(
         HEADER + "2030-01,pension,retirement_account,,5000,,,,\n", encoding="utf-8")
-    append_calendar_row(
-        date="2028-03", kind="swap_aux_table", series="CA",
-        params_json=json.dumps({"aux_kind": "state_brackets", "source_series": "NY"}))
+    add_residence("2028-03", "NY")
     con, _ = _run(state_ira, tmp_path)
     try:
         assert _bucket(con, 2028, "state_retirement_exclusion") == 0

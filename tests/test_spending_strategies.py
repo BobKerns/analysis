@@ -130,7 +130,11 @@ def test_threshold_skips_years_below_its_minimum(
     run = run_strategy_scenario(SCENARIO)
     notes = [(month[:4], note) for month, note, _detail in _year_starts(run)]
     assert notes[0] == ("2026", "skip this year: portfolio $800,000 below $900,000")
-    assert notes[1][0] == "2030" and notes[1][1].startswith("spend again: portfolio $1,0")
+    # A note every January, whether it skips or spends.
+    assert [year for year, _note in notes] == [str(y) for y in range(2026, 2026 + len(notes))]
+    spent = [(year, note) for year, note in notes if not note.startswith("skip")]
+    assert spent[0][0] == "2030" and spent[0][1].startswith("spend again: portfolio $1,0")
+    assert spent[1][1].startswith("spend: portfolio $")
     baseline = _baseline_by_year(run)
     assert baseline["2027"][0] > 0 and baseline["2027"][1] == 0
     assert baseline["2030"][0] == baseline["2030"][1] > 0
@@ -141,7 +145,13 @@ def test_threshold_skips_years_below_its_minimum(
     assert paid == 0
     log = _cli(strategy_scenarios, "strategy", "log", str(run), "--strategy", "flex", "--year", "2027")
     assert log.exit_code == 0, log.output
-    assert "scale" in log.output and "travel: 0% of plan" in log.output
+    # The January decision, and a count of the monthly scale lines it leaves out.
+    assert "skip this year" in log.output and "travel: 0% of plan" not in log.output
+    assert "(13 monthly scale lines not shown; --hook scale lists them)" in log.output
+    log = _cli(strategy_scenarios, "strategy", "log", str(run), "--strategy", "flex", "--year", "2027",
+               "--hook", "scale")
+    assert log.exit_code == 0, log.output
+    assert "travel: 0% of plan" in log.output and "skip this year" not in log.output
 
 
 def test_threshold_can_skip_the_year_after_a_loss(
@@ -186,6 +196,32 @@ def test_guardrail_cuts_when_the_rate_climbs(
     _strategy(strategy_csv, "guardrail")
     run = run_strategy_scenario(SCENARIO)
     assert not [n for _m, n, _d in _year_starts(run) if n.startswith("cut")]
+
+
+def test_strategy_log_hides_scale_lines_the_same_way_in_any_year(
+    strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path],
+    run_strategy_scenario: Callable[[str], Path],
+) -> None:
+    """Guardrail notes every January, a hold too, and its scale lines stay
+    hidden (and counted) in a single year as in the whole run."""
+    _strategy(strategy_csv, "guardrail", final_years=0)
+    run = run_strategy_scenario(SCENARIO)
+    starts = _year_starts(run)
+    assert [m[:4] for m, _n, _d in starts] == [str(y) for y in range(2026, 2026 + len(starts))]
+    # A year after the first change, so the rules are scaled, that holds.
+    first = min(m[:4] for m, note, _d in starts if note.startswith(("cut", "raise")))
+    quiet = next(m[:4] for m, note, _d in starts if m[:4] > first and note.startswith("hold"))
+    log = _cli(strategy_scenarios, "strategy", "log", str(run), "--strategy", "flex", "--year", quiet)
+    assert log.exit_code == 0, log.output
+    assert "hold: rate" in log.output and "travel:" not in log.output
+    assert "monthly scale lines not shown; --hook scale lists them)" in log.output
+
+
+def test_strategy_log_hook_is_a_known_hook_and_not_for_breaches(strategy_scenarios: Path) -> None:
+    typo = _cli(strategy_scenarios, "strategy", "log", "--hook", "scales")
+    assert typo.exit_code != 0 and "'scales' is not one of" in typo.output
+    both = _cli(strategy_scenarios, "strategy", "log", "--hook", "scale", "--breaches")
+    assert both.exit_code != 0 and "--breaches lists breaches instead" in both.output
 
 
 def test_ceiling_floor_holds_real_change_within_its_limits(

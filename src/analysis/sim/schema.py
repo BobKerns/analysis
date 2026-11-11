@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 62
+SCHEMA_VERSION = 63
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -421,6 +421,18 @@ CREATE TABLE strategy_source (
     module  TEXT PRIMARY KEY,
     sha256  TEXT NOT NULL,
     source  TEXT NOT NULL
+);
+
+-- Where the household lives (residence.csv, merged by date over the lineage;
+-- #509): from effective_date (a month end) on, a state's postal code and
+-- optionally a county, the series of its state_local_tax table. A tax year
+-- reads the row in force on its December 31.
+CREATE TABLE residence (
+    id             INTEGER PRIMARY KEY,
+    effective_date TEXT NOT NULL UNIQUE,
+    state          TEXT NOT NULL,
+    county         TEXT,
+    description    TEXT NOT NULL DEFAULT ''
 );
 
 -- The scenario's income tax jurisdictions (taxes/<name>.csv, merged over the
@@ -953,6 +965,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "calendar_event",
     "scheduled_transaction",
     "tax_jurisdiction",
+    "residence",
     "aux_table",
     "scenario",
     "person_lifespan",

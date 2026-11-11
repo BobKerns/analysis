@@ -10,7 +10,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import date
 from typing import Any, NamedTuple
 
-from analysis.sim import registries
+from analysis.sim import registries, states
 from analysis.sim.tax_api import TaxError, TaxYear
 
 
@@ -519,17 +519,23 @@ def loss_limit(ty: TaxYear) -> Callable[[int], int]:
     return limit
 
 
-def bracket_series(ty: TaxYear, bracket_aux: str) -> str | None:
-    """The ``bracket_series`` param, or for ``state_brackets`` the one
-    series there is."""
+def bracket_series(ty: TaxYear) -> str | None:
+    """The federal ``bracket_series`` param: its brackets' series, if any."""
     series = ty.params.get("bracket_series")
-    if bracket_aux == "state_brackets" and series is None:
-        state_series = ty.series_of("state_brackets")
-        if len(state_series) == 1:
-            return state_series[0]
-        if len(state_series) > 1:
-            raise TaxError(f"{where(ty)}: bracket_series required for state_brackets")
     return None if series is None else str(series)
+
+
+def state_series(ty: TaxYear, year: int | None = None) -> str:
+    """The series of the state tables a tax year reads (#509): the state the
+    household lives in on December 31 of ``year`` (the tax year's own by
+    default), or ``none`` for one without an income tax."""
+    residence = ty.residence_in(ty.year if year is None else year)
+    if residence is None:
+        raise TaxError(
+            f"{where(ty)}: the scenario doesn't say where the household lives in "
+            f"{ty.year if year is None else year}; set it with `sim tax state` (residence.csv)")
+    return states.tax_series(
+        residence.state, has_tables=ty.has_table("state_brackets", residence.state))
 
 
 def rate_table(ty: TaxYear, kind: str | None, series: str | None = None) -> list[tuple[int, int]]:
