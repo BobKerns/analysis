@@ -11,22 +11,25 @@ from analysis.sim.calendar_guide import Answers, Field, KindSpec
 
 __all__ = ["FIELDS", "answers_of", "row_of", "spec"]
 
-FIELDS = ("source_chain", "destination", "start", "end", "params_json", "description")
-"""The row's columns the guide asks, in order; ``kind`` follows from the
-jurisdiction, and ``upstream`` and ``schedule`` have one value each for now."""
+FIELDS = ("kind", "source_chain", "destination", "start", "end", "params_json", "description")
+"""The row's columns the guide asks, in order; ``upstream`` follows from the
+kind, and ``schedule`` has one value for now."""
 
 
 def spec(
     command: str, *, endpoints: Sequence[str], expenses: Sequence[str],
     jurisdictions: Sequence[str] = (), source: str | None = None,
     destination: str | None = None, paid_with: str | None = None,
+    kinds: Sequence[str] = (), kind: str | None = None,
 ) -> KindSpec:
     """The questions for ``sim tax <command>``. ``endpoints`` complete the
     source (accounts and source chains), ``expenses`` the destination (the
     scenario's expense accounts). ``jurisdictions``, for ``add``, are the
     ones the scenario lacks; ``source`` and ``destination`` are the
     defaults offered. ``paid_with`` names the jurisdiction one is paid with
-    (the state, for a local tax, #508): blank, they are that one's."""
+    (the state, for a local tax, #508): blank, they are that one's.
+    ``kinds`` are the calculators that compute the jurisdiction, the data
+    repo's included (#510), and ``kind`` the one offered."""
     with_help = f"Blank: the {paid_with} tax's." if paid_with else ""
     asked: tuple[Field, ...] = ()
     if jurisdictions:
@@ -36,6 +39,12 @@ def spec(
         command, "a tax jurisdiction", words=("sim", "tax"),
         fields=(
             *asked,
+            Field("kind", "calculator kind", option="--kind", default=kind, strict=bool(kinds),
+                  required=False, help="Blank: the built-in one. `sim tax kinds` lists them.",
+                  choices=lambda ctx, answers: list(kinds),  # noqa: ARG005
+                  # Asked only when the data repo has a calculator for the
+                  # jurisdiction; offered at the review either way.
+                  ask=lambda ctx, answers: len(kinds) > 1),  # noqa: ARG005
             Field("source_chain", "paid from (an account or source chain)", option="--source-chain",
                   default=source, required=paid_with is None, help=with_help,
                   choices=lambda ctx, answers: list(endpoints)),  # noqa: ARG005
@@ -63,7 +72,8 @@ def answers_of(row: Mapping[str, str]) -> Answers:
 
 def row_of(jurisdiction: str, answers: Mapping[str, str], base: Mapping[str, str] | None = None) -> dict[str, str]:
     """The file's row from ``answers``, over ``base`` (the row being edited)."""
-    kind = next(k for k, j in registries.TAX_KINDS.items() if j == jurisdiction)
-    row = {**dict.fromkeys(registries.TAX_CSV_HEADER, ""), "kind": kind, **(base or {})}
+    row = {**dict.fromkeys(registries.TAX_CSV_HEADER, ""), **(base or {})}
     row.update({column: (answers.get(column) or "").strip() for column in FIELDS})
+    # Blank is the built-in calculator for the jurisdiction.
+    row["kind"] = row["kind"] or registries.TAX_DEFAULT_KINDS[jurisdiction]
     return {column: row[column] for column in registries.TAX_CSV_HEADER}

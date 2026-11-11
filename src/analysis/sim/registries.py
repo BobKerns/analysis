@@ -59,11 +59,11 @@ TAX_CSV_HEADER: tuple[str, ...] = (
     "kind", "upstream", "source_chain", "destination", "schedule", "start", "end",
     "params_json", "description",
 )
-TAX_KINDS: dict[str, str] = {
-    "federal": "federal", "state_tables": "state", "local_bands": "local"}
-"""Each calculator kind and the jurisdiction it computes. Until calculators
-are pluggable (#507), a kind computes one jurisdiction, whose file has that
-name."""
+TAX_DEFAULT_KINDS: dict[str, str] = {
+    "federal": "federal", "state": "state_tables", "local": "local_bands"}
+"""The built-in calculator each jurisdiction's file starts with (`sim tax
+add`); a household's own kind (``taxes/*.py``, #510) says which
+jurisdiction it computes."""
 TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state", "local")
 """The jurisdictions, in the order they settle: a state's return builds on
 the federal one, a local one on the state's (#508)."""

@@ -266,6 +266,18 @@ def strategy_kind_names(data_dir: Path) -> list[str]:
     })
 
 
+def tax_kind_names(data_dir: Path) -> list[str]:
+    """The built-in tax calculator kinds and those the data repo's ``taxes/``
+    modules appear to define (read as text, as for strategy kinds)."""
+    from analysis.sim import taxes
+
+    folders = [Path(taxes.__file__).parent, data_dir / "taxes"]
+    return sorted({
+        kind for folder in folders if folder.is_dir()
+        for path in folder.glob("*.py") for kind in _KIND_RE.findall(path.read_text(encoding="utf-8"))
+    })
+
+
 def itemization_names(data_dir: Path, scenario: str) -> list[str]:
     """The itemizations the scenario can name: ``itemizations/<name>.csv``
     in its lineage or the shared folder."""

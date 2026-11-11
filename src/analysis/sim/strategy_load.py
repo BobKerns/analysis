@@ -22,6 +22,7 @@ from typing import Any, get_type_hints
 from analysis.sim import registries, units
 from analysis.sim.distributions import DistributionError, rewrite_outcomes
 from analysis.sim.asset_classes import UNCLASSIFIED, class_weights
+from analysis.sim.param_units import param_types
 from analysis.sim.strategy_api import ScenarioView, Strategy, param_units
 from analysis.sim.strategy_code import StrategyKinds
 
@@ -115,7 +116,8 @@ OWNING_HOOKS = frozenset({"draw", "place", "scale"})
 
 def _convert_param(
     unit: str | None, value: object, *, tags: Collection[str], target_sets: Collection[str],
-    accounts: Collection[str] | None = None,
+    accounts: Collection[str] | None = None, plain: type | None = None,
+    tag_carriers: str = "account",
 ) -> object:
     match unit:
         case "percent":
@@ -128,7 +130,7 @@ def _convert_param(
             if not isinstance(value, str) or ":" not in value:
                 raise ValueError(f"{value!r} must be an account tag like \"portfolio:invest\"")
             if value not in tags:
-                raise ValueError(f"no account carries tag {value!r}")
+                raise ValueError(f"no {tag_carriers} carries tag {value!r}")
             return value
         case "account":
             if not isinstance(value, str) or not value:
@@ -142,18 +144,37 @@ def _convert_param(
                 raise ValueError(f"no target set {value!r} (known: {known})")
             return value
         case _:
+            if plain is not None and not _is_plain(value, plain):
+                raise ValueError(f"{value!r} must be {_PLAIN_NAMES[plain]}")
             return value
 
 
+_PLAIN_NAMES: dict[type, str] = {str: "a string", int: "a whole number", float: "a number", bool: "true or false"}
+
+
+def _is_plain(value: object, plain: type) -> bool:
+    """Whether ``value`` from JSON is a ``plain`` (a whole number is a number,
+    but true and false are not numbers)."""
+    if isinstance(value, bool):
+        return plain is bool
+    if plain is float:
+        return isinstance(value, (int, float))
+    return isinstance(value, plain)
+
+
 def convert_params(
-    cls: type[Strategy], raw: Mapping[str, object], *,
+    cls: type[Any], raw: Mapping[str, object], *,
     tags: Collection[str], target_sets: Collection[str], accounts: Collection[str] | None = None,
+    check_types: bool = False, tag_carriers: str = "account",
 ) -> tuple[dict[str, Any], list[str]]:
     """``params_json`` in stored units, checked against ``cls.Params``; the
-    converted values and the problems (one per bad field)."""
+    converted values and the problems (one per bad field). ``check_types``
+    also checks a plain field's JSON type (a string, a number), as a tax
+    calculator's are (#510)."""
     problems: list[str] = []
     fields = {f.name: f for f in dataclasses.fields(cls.Params)}
     unit_of = param_units(cls.Params)
+    plain_of = param_types(cls.Params) if check_types else {}
     for key in raw:
         if key not in fields:
             problems.append(f"unknown parameter '{key}' (known: {', '.join(fields) or 'none'})")
@@ -170,7 +191,7 @@ def convert_params(
         try:
             out[key] = _convert_param(
                 unit.name if unit else None, raw[key], tags=tags, target_sets=target_sets,
-                accounts=accounts,
+                accounts=accounts, plain=plain_of.get(key), tag_carriers=tag_carriers,
             )
         except ValueError as e:
             problems.append(f"parameter '{key}': {e}")

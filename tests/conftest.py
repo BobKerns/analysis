@@ -1345,6 +1345,21 @@ def _write_tax_file(scenario_dir: Path, name: str = "federal", **cells: Any) -> 
     return path
 
 
+@pytest.fixture(scope="function")
+def tax_module(test_data_dir: Path, test_data: Path) -> Callable[..., Path]:
+    """``tax_module("renters")``: copy a calculator module from
+    ``tests/data/sim/tax_calculators/taxes/`` into the private data repo's
+    ``taxes/`` folder (#510); ``tax_module("mine", text)`` writes one."""
+    def _write(name: str, text: str | None = None) -> Path:
+        path = test_data_dir / "taxes" / f"{name}.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if text is None:
+            text = (test_data / "sim" / "tax_calculators" / "taxes" / f"{name}.py").read_text()
+        path.write_text(text)
+        return path
+    return _write
+
+
 @pytest.fixture(scope="session")
 def write_tax() -> Callable[..., Path]:
     """``write_tax(scenario_dir, name="federal", **cells)``: write a tax

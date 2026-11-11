@@ -650,6 +650,30 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     return frame
 
 
+_NOT_MONEY_LINES = frozenset({"irmaa_tier"})
+"""Return lines that count something other than money (#253)."""
+
+
+def tax_return(rc: RunConnection, jurisdiction: str,
+               mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
+    """Every line of one jurisdiction's returns (#510): a row per year, a
+    column per line its calculator wrote (``tax_year_summary``'s
+    ``<jurisdiction>_<line>``), in dollars; a household calculator's own
+    lines included. Empty when the run computed none."""
+    summary = rc.items("tax_year_summary")
+    prefix = f"{jurisdiction}_"
+    summary = summary[summary["bucket"].str.startswith(prefix)]
+    if summary.empty:
+        return pd.DataFrame()
+    frame = (summary.assign(line=summary["bucket"].str.removeprefix(prefix))
+             .pivot_table(index="year", columns="line", values="amount", aggfunc="sum"))
+    counts = [c for c in frame.columns if c in _NOT_MONEY_LINES]
+    money = _cpi(rc, frame.drop(columns=counts) / 100, mode, annual=True)
+    frame = money.join(frame[counts]) if counts else money
+    frame.index.name = "year"
+    return frame
+
+
 _SCOPE_PREFIX = {"federal": "fed", "state": "state"}
 """Column prefixes: ``fed`` keeps the wide tax tables narrower."""
 

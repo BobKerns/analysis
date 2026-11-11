@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 63
+SCHEMA_VERSION = 64
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -418,6 +418,15 @@ CREATE TABLE calendar_event_tag (
 -- from the data repo, so a run file carries the code it ran and an ensemble
 -- worker needs no data directory. Built-in kinds store nothing here.
 CREATE TABLE strategy_source (
+    module  TEXT PRIMARY KEY,
+    sha256  TEXT NOT NULL,
+    source  TEXT NOT NULL
+);
+
+-- Household tax calculators (#510, ADR-011): the data repo's taxes/*.py,
+-- verbatim, kept as strategy_source is, when a jurisdiction names a kind
+-- they define. Built-in kinds store nothing here.
+CREATE TABLE tax_source (
     module  TEXT PRIMARY KEY,
     sha256  TEXT NOT NULL,
     source  TEXT NOT NULL
@@ -975,6 +984,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "scheduled_transaction_tag",
     "calendar_event_tag",
     "strategy_source",
+    "tax_source",
     "strategy",
     "strategy_trigger",
     "strategy_vary",

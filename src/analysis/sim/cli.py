@@ -43,7 +43,7 @@ from analysis.sim import (
     allocation, asset_classes, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide,
     guard_rails, load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
     scheduled_guide, sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files,
-    strategy_guide, symbols, states, tax_files, tax_guide, units, working_set, ytd_guide,
+    strategy_guide, symbols, states, tax_code, tax_files, tax_guide, units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -10377,11 +10377,14 @@ def report_gains_command(
 @_scenario_argument
 @click.option("--reconciliation", is_flag=True, default=False,
               help="Each year's liability, what was paid during it, and the April balance due or refund.")
+@click.option("--return", "jurisdiction", type=completion.TAX_JURISDICTION, default=None,
+              help="Every line of one jurisdiction's return, a line per row and a year per column, "
+                   "its calculator's own lines included.")
 @_year_range_options
 @_report_graph_options
 @_report_options
 def report_tax_command(
-    reconciliation: bool, first_year: int | None, last_year: int | None,
+    reconciliation: bool, jurisdiction: str | None, first_year: int | None, last_year: int | None,
     as_graph: bool, graph_file: Path | None, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
@@ -10397,9 +10400,23 @@ def report_tax_command(
 
     --chart draws federal, state and local tax stacked by year with the
     effective rate; with --reconciliation, each April's balance due and refund.
+
+    --return JURISDICTION shows every line its calculator wrote, a household
+    calculator's own lines (taxes/*.py) included, a year per column.
     """
     years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
+    if jurisdiction is not None:
+        if reconciliation or as_graph or graph_file is not None:
+            raise click.UsageError("--return shows a table: no --reconciliation or chart with it")
+        with _report_run(scenario, data_dir, runfile) as (rc, described):
+            _hold_tables()
+            frame = _shown_years(reports.tax_return(rc, jurisdiction, mode), years)
+        if frame.empty:
+            click.echo(f"no {jurisdiction} tax was computed in this run ({described})")
+            return
+        _print_report(frame.T.rename_axis("line"), f"the {jurisdiction} return", described, mode)
+        return
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         _hold_tables()
         frame = _shown_years(reports.tax_reconciliation(rc, mode) if reconciliation
@@ -17994,14 +18011,21 @@ def strategy_kinds_command(kind: str | None, data_dir: Path | None) -> None:
     strategies/ modules, each with what it does and its parameters. With
     KIND, just that one."""
     kinds = _strategy_kinds(_resolve_data_dir(data_dir))
+    _echo_kinds(kinds, kind, "strategy",
+                lambda cls: f"hooks: {', '.join(sorted(cls.hooks))}")
+
+
+def _echo_kinds(kinds: Any, kind: str | None, what: str, about: Callable[[Any], str]) -> None:
+    """``sim strategy kinds`` and ``sim tax kinds``: each kind, where it
+    comes from, ``about`` it, its docstring and its parameters."""
     chosen = [kind] if kind else sorted(kinds.kinds)
     for i, name in enumerate(chosen):
         if name not in kinds.kinds:
-            raise click.ClickException(f"no strategy kind {name!r}; kinds: {', '.join(sorted(kinds.kinds))}")
+            raise click.ClickException(f"no {what} kind {name!r}; kinds: {', '.join(sorted(kinds.kinds))}")
         cls = kinds.kinds[name]
         if i:
             click.echo("")
-        click.echo(f"{name}  ({kinds.origin[name]}; hooks: {', '.join(sorted(cls.hooks))})")
+        click.echo(f"{name}  ({kinds.origin[name]}; {about(cls)})")
         for line in strategy_guide.describe_kind(cls).splitlines():
             click.echo(f"  {line}".rstrip())
         params = strategy_guide.kind_params(cls)
@@ -18593,14 +18617,14 @@ def target_delete_command(
 # ---------- tax: the scenario's tax jurisdictions (#507) and its state (#483) ----------
 
 
-def _tax_summary(row: Mapping[str, str]) -> str:
-    """One line for a tax jurisdiction file's row."""
+def _tax_summary(name: str, row: Mapping[str, str]) -> str:
+    """One line for jurisdiction ``name``'s file's row."""
     when = f" from {row.get('start') or 'the start'}" + (f" to {row['end']}" if row.get("end") else "")
     # A blank upstream is the calculator's own (#508).
     built_on = row.get("upstream") or " ".join(tax_calculator_upstream(row.get("kind", "")))
     upstream = f" on {built_on}" if built_on else ""
     params = f" {row['params_json']}" if row.get("params_json") else ""
-    paid_with = registries.TAX_PAID_WITH.get(registries.TAX_KINDS.get(row.get("kind", ""), ""))
+    paid_with = registries.TAX_PAID_WITH.get(name)
     with_tax = f"the {paid_with} tax's" if paid_with else "no"
     source = row.get("source_chain") or f"{with_tax} source"
     destination = row.get("destination") or f"{with_tax} destination"
@@ -18679,13 +18703,18 @@ def _tax_spec(
         if jurisdiction is not None:
             destination = next((n for n, a in accounts.items()
                                 if a.row.get("subkind") == f"taxes_{jurisdiction}"), None)
+    kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
                           expenses=expenses, jurisdictions=free, source=source,
                           destination=destination,
-                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""))
+                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""),
+                          kinds=sorted(k for k, c in kinds.items() if c.jurisdiction == jurisdiction),
+                          kind=registries.TAX_DEFAULT_KINDS.get(jurisdiction or ""))
 
 
 _TAX_OPTIONS = (
+    click.option("--kind", type=completion.TAX_KIND, default=None,
+                 help="The calculator that computes it (`sim tax kinds`; '' for the built-in one)."),
     click.option("--source-chain", "source_chain", type=completion.ENDPOINT, default=None,
                  help="The account or source chain the tax is paid from."),
     click.option("--destination", type=completion.ACCOUNT, default=None,
@@ -18730,14 +18759,79 @@ def tax_list_command(scenario: str | None, data_dir: Path | None) -> None:
     for name in (n for n in registries.TAX_JURISDICTIONS if n in rows):
         found = rows[name]
         where = f"  [from {found.inherited_from}]" if found.inherited_from and found.index is None else ""
-        click.echo(f"{name:<7}  {_tax_summary(found.row)}{where}")
+        click.echo(f"{name:<7}  {_tax_summary(name, found.row)}{where}")
+
+
+@tax_group_command.command("kinds")
+@click.argument("kind", required=False, type=completion.TAX_KIND)
+@_LISTING_DATA_DIR_OPTION
+def tax_kinds_command(kind: str | None, data_dir: Path | None) -> None:
+    """List the tax calculator kinds: the built-ins and the data repo's
+    taxes/ modules, each with the tax it computes, the returns it builds
+    on, what it does and its parameters. With KIND, just that one."""
+    kinds = tax_code.TaxKinds(tax_code.read_sources(_resolve_data_dir(data_dir)))
+    for problem in kinds.problems:
+        click.echo(f"WARN: {problem}", err=True)
+
+    def about(cls: Any) -> str:
+        built_on = f", on {', '.join(cls.upstream)}" if cls.upstream else ""
+        return f"the {cls.jurisdiction} tax{built_on}"
+
+    _echo_kinds(kinds, kind, "tax calculator", about)
+
+
+@tax_group_command.command("check")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@_LISTING_DATA_DIR_OPTION
+def tax_check_command(scenario: str | None, data_dir: Path | None) -> None:
+    """Load the scenario and run it twice, comparing every line of every
+    tax return: a calculator must compute the same way every time (no
+    clock, files, network or unseeded randomness), or runs can't be
+    reproduced (ADR-004, ADR-011). Reports the first difference.
+
+    Each run is its own Python process with its own string-hash seed, as an
+    ensemble worker or the next `sim run` would be, so a calculator that
+    depends on set order or hash() is caught too."""
+    data = _resolve_data_dir(data_dir)
+    name = _resolve_scenario(data, scenario).name
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            result = load_scenario(data, name, intent_dir=Path(td), compute_stamps=False, allow_dirty_data=True)
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+        _echo_load_warnings(result, unused=True)
+        lines = []
+        for i, hash_seed in enumerate(("1", "2")):
+            run = Path(td) / f"check{i}.sqlite3"
+            _run_in_fresh_process(result.intent_path, run, hash_seed)
+            con = connect_sim_file(run)
+            try:
+                lines.append(con.execute(
+                    "SELECT year, bucket, amount FROM tax_year_summary ORDER BY year, bucket").fetchall())
+            finally:
+                con.close()
+    first, second = lines
+    if not first:
+        raise click.ClickException(f"{name} computed no tax returns (`sim tax list` shows its taxes)")
+    for a, b in zip(first, second, strict=False):
+        if a != b:
+            raise click.ClickException(
+                f"{a[0]}'s {a[1]} came out differently on a second run: {a[2]} then {b[2]}"
+                if a[:2] == b[:2] else f"the runs' {a[0]} returns have different lines: {a[1]}, {b[1]}")
+    if len(first) != len(second):
+        raise click.ClickException(f"the runs computed {len(first)} and {len(second)} return lines")
+    years = len({year for year, _bucket, _amount in first})
+    click.echo(f"ok: {len(first)} return lines over {years} year{'' if years == 1 else 's'}, "
+               "the same in both runs")
 
 
 @tax_group_command.command("add")
 @click.argument("jurisdiction", required=False, type=click.Choice(registries.TAX_JURISDICTIONS))
 @_tax_options
 def tax_add_command(
-    jurisdiction: str | None, source_chain: str | None, destination: str | None, start: str | None,
+    jurisdiction: str | None, kind: str | None, source_chain: str | None, destination: str | None, start: str | None,
     end: str | None, params_json: str | None, description: str | None, scenario: str | None,
     data_dir: Path | None,
 ) -> None:
@@ -18754,14 +18848,14 @@ def tax_add_command(
     existing = _tax_rows(ref.path)
     if jurisdiction in existing:
         raise click.ClickException(f"{ref.name} already has a {jurisdiction} tax (sim tax edit {jurisdiction})")
-    given = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
-             "params_json": params_json, "description": description}
+    given = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
+             "end": end, "params_json": params_json, "description": description}
 
     def write(answers: Mapping[str, str]) -> None:
         name = answers["jurisdiction"]
         row = tax_guide.row_of(name, answers)
         path = _write_tax(data, ref.name, name, row)
-        click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(row)}")
+        click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(name, row)}")
 
     def paid_with(name: str) -> bool:
         """A jurisdiction paid with another's (local, #508) needs nothing
@@ -18815,7 +18909,7 @@ def _pick_tax(data: Path, scenario: str | None, jurisdiction: str | None, prompt
 @click.argument("jurisdiction", required=False, type=completion.TAX_JURISDICTION)
 @_tax_options
 def tax_edit_command(
-    jurisdiction: str | None, source_chain: str | None, destination: str | None, start: str | None,
+    jurisdiction: str | None, kind: str | None, source_chain: str | None, destination: str | None, start: str | None,
     end: str | None, params_json: str | None, description: str | None, scenario: str | None,
     data_dir: Path | None,
 ) -> None:
@@ -18833,17 +18927,19 @@ def tax_edit_command(
             return
         _write_tax(data, scenario_name, name, new)
         inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
-        click.echo(f"changed {name} tax{inherited}: {_tax_summary(new)}")
+        click.echo(f"changed {name} tax{inherited}: {_tax_summary(name, new)}")
 
-    changes = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
-               "params_json": params_json, "description": description}
+    changes = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
+               "end": end, "params_json": params_json, "description": description}
     if any(v is not None for v in changes.values()):
-        write({**row, **{k: v.strip() for k, v in changes.items() if v is not None}})
+        new = {**row, **{k: v.strip() for k, v in changes.items() if v is not None}}
+        new["kind"] = new["kind"] or registries.TAX_DEFAULT_KINDS[name]
+        write(new)
         return
     folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
     spec = _tax_spec(data, folder, scenario_name, "edit", name)
     answers = tax_guide.answers_of(row)
-    click.echo(f"{name}: {_tax_summary(row)}")
+    click.echo(f"{name}: {_tax_summary(name, row)}")
     _tax_guide().review(spec, calendar_guide.GuideContext(), answers,
                         lambda _params: write(tax_guide.row_of(name, answers, row)), show_command=False)
 

@@ -7,6 +7,7 @@ Git-based provenance stamps (ADR-004) are computed via ``analysis.sim.provenance
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import math
 import os
@@ -24,7 +25,7 @@ from typing import Any, NamedTuple
 
 from analysis.sim import (
     asset_classes, guard_rails, life_table, load_warnings, registries, states, strategy_api,
-    strategy_code, strategy_files, strategy_load, tax_files, units,
+    strategy_code, strategy_files, strategy_load, tax_code, tax_files, units,
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
@@ -53,6 +54,7 @@ from analysis.sim.lineage import (
     read_parents,
 )
 from analysis.sim.lineage import scenario_dir as _scenario_dir
+from analysis.sim.param_units import param_units
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -1317,6 +1319,12 @@ def load_scenario(
         ("effective_date",), issues, replace_whole=True,  # a county left out is blank
     )
     strategy_sources = strategy_code.read_sources(data_dir)
+    tax_kinds = tax_code.TaxKinds(tax_code.read_sources(data_dir))
+    # A broken calculator module fails the loads that name a kind of the
+    # data repo's (it may be the one that broke); others get a hint.
+    builtin = tax_code.builtin_kinds()
+    (issues if any(row.get("kind") not in builtin for row in tax_rows) else unused).extend(
+        tax_kinds.problems)
 
 
     aux_files = [
@@ -1344,7 +1352,8 @@ def load_scenario(
     )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
-    _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues)
+    _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues,
+                    kinds=tax_kinds, tags=_scenario_tags(accounts, scheduled_rows, calendar_rows))
     _validate_local_tax(tax_rows, aux_rows, issues)
     _validate_residence(residence_rows, tax_rows, aux_rows, issues)
     _validate_calendar(
@@ -1494,6 +1503,8 @@ def load_scenario(
             target_rows=target_rows, rail_rows=rail_rows, disabled=disabled_strategies,
         ))
         counts.update(strategy_load.write_strategy_vary(con, strategy_varies))
+        counts["tax_source"] = tax_code.write_sources(
+            con, tax_code.snapshot(tax_kinds, [row.get("kind", "") for row in tax_rows]))
         load_warnings.write(con, warnings, unused)
         _write_manifest(
             con,
@@ -5134,19 +5145,51 @@ TAX_RETIRED_PARAMS: dict[str, str] = {
 """``tax_accumulator`` params a jurisdiction file doesn't take (#507), and why."""
 
 
-def tax_calculator_upstream(kind: str) -> tuple[str, ...]:
+def tax_calculator_upstream(kind: str, kinds: tax_code.TaxKinds | None = None) -> tuple[str, ...]:
     """The jurisdictions calculator ``kind`` builds on (#508); none for an
-    unknown kind, which is reported on its own."""
-    from analysis.sim import tax_api  # noqa: PLC0415  (the calculators load on first use)
-    try:
-        return tax_api.calculator(kind).upstream
-    except tax_api.TaxError:
-        return ()
+    unknown kind, which is reported on its own. ``kinds`` are the scenario's,
+    the data repo's included; the built-ins without it."""
+    cls = (kinds.kinds if kinds is not None else tax_code.builtin_kinds()).get(kind)
+    return cls.upstream if cls is not None else ()
+
+
+def _untagged_defaults(cls: type[Any], given: Mapping[str, Any], tags: frozenset[str]) -> list[str]:
+    """A calculator's ``Tag`` params left at their defaults that nothing in
+    the scenario carries (#510): a deduction the household meant to take
+    would otherwise come out zero. A given one was checked with the rest."""
+    units = param_units(cls.Params)
+    out = []
+    for f in dataclasses.fields(cls.Params):
+        unit = units.get(f.name)
+        if unit is None or unit.name != "tag" or f.name in given:
+            continue
+        if isinstance(f.default, str) and f.default not in tags:
+            out.append(f"the {cls.kind} calculator reads tag {f.default!r} (its {f.name!r}), "
+                       "and no account, scheduled rule or calendar row carries it; tag what it "
+                       f"counts, or name another tag in params_json ({f.name!r})")
+    return out
+
+
+def _scenario_tags(
+    accounts: Sequence[Mapping[str, str]], scheduled_rows: Sequence[Mapping[str, str]],
+    calendar_rows: Sequence[Mapping[str, str]],
+) -> frozenset[str]:
+    """Every tag an account, scheduled rule or calendar row carries, as
+    ``role:name``: what a calculator's ``Tag`` param may name (#510). A
+    malformed tag is reported with its row."""
+    out: set[str] = set()
+    for row in (*accounts, *scheduled_rows, *calendar_rows):
+        try:
+            out.update(f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", "")))
+        except ValueError:
+            continue
+    return frozenset(out)
 
 
 def _validate_taxes(
     tax_rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
-    accounts: list[dict[str, str]], scenario_row: Mapping[str, str], issues: list[str],
+    accounts: list[dict[str, str]], scenario_row: Mapping[str, str], issues: list[str], *,
+    kinds: tax_code.TaxKinds | None = None, tags: frozenset[str] = frozenset(),
 ) -> None:
     """``taxes/<jurisdiction>.csv`` (#507, ADR-003 §4.15): a calculator kind
     for the jurisdiction, upstream jurisdictions the scenario has and that
@@ -5154,9 +5197,13 @@ def _validate_taxes(
     pay into, a known schedule, and calculator params that are a JSON
     object. Resolves ``source_chain`` and ``destination`` to leaf names in
     place, and fills a blank ``start`` with the scenario's and a blank
-    ``schedule`` with ``april``."""
+    ``schedule`` with ``april``. The params are checked against the
+    calculator's ``Params`` (#510) and rewritten in stored units, a ``Tag``
+    param naming a tag some account, rule or calendar row in ``tags``
+    carries."""
+    calculators = kinds if kinds is not None else tax_code.TaxKinds({})
     defined = [row["name"] for row in tax_rows]
-    kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
+    account_kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
     by_name = {row["name"]: row for row in tax_rows}
     for row in tax_rows:
         # A jurisdiction paid with another's (local with the state's, #508)
@@ -5169,13 +5216,16 @@ def _validate_taxes(
         where = row.get(ORIGIN) or f"{registries.TAXES_DIR}/{row['name']}.csv"
         name = row["name"]
         kind = row.get("kind", "")
-        if registries.TAX_KINDS.get(kind) != name:
-            fits = [k for k, j in registries.TAX_KINDS.items() if j == name]
-            issues.append(f"{where}: kind {kind!r} doesn't compute the {name} tax "
-                          f"(it takes kind {', '.join(fits)})")
+        cls = calculators.kinds.get(kind)
+        if cls is None or cls.jurisdiction != name:
+            fits = sorted(k for k, c in calculators.kinds.items() if c.jurisdiction == name)
+            what = (f"kind {kind!r} computes the {cls.jurisdiction} tax" if cls is not None
+                    else f"no tax calculator kind {kind!r}" if kind else "no kind")
+            issues.append(f"{where}: {what}; the {name} tax takes kind {', '.join(fits)} "
+                          "(`sim tax kinds` lists them)")
         # A calculator declares the returns it builds on (#508); the column
         # may only spell that out, and blank takes it.
-        declared = tax_calculator_upstream(kind)
+        declared = tax_calculator_upstream(kind, calculators)
         given = (row.get("upstream") or "").split()
         if given and sorted(given) != sorted(declared):
             issues.append(
@@ -5205,8 +5255,8 @@ def _validate_taxes(
                           "into an account")
         elif problem := _resolve_ref(row, "destination", "", leaves, chain_names):
             issues.append(f"{where}: destination {problem}")
-        elif kinds.get(destination) not in (None, "expense"):
-            issues.append(f"{where}: destination '{destination}' is a {kinds[destination]} account; "
+        elif account_kinds.get(destination) not in (None, "expense"):
+            issues.append(f"{where}: destination '{destination}' is a {account_kinds[destination]} account; "
                           "the tax is paid into an expense account")
         schedule = row.get("schedule") or registries.TAX_SCHEDULES[0]
         if schedule not in registries.TAX_SCHEDULES:
@@ -5223,6 +5273,22 @@ def _validate_taxes(
         for key, why in TAX_RETIRED_PARAMS.items():
             if key in params:
                 issues.append(f"{where}: params_json takes no {key!r}: {why}")
+        if cls is None or (cls.jurisdiction != name):
+            continue
+        # The retired params have their own messages (and a state's
+        # bracket_series its own, with the residence).
+        retired = {*TAX_RETIRED_PARAMS, *(("bracket_series",) if name in ("state", "local") else ())}
+        converted, problems = strategy_load.convert_params(
+            cls, {k: v for k, v in params.items() if k not in retired},
+            tags=tags, target_sets=(), accounts={a.get("name", "") for a in accounts},
+            check_types=True, tag_carriers="account, scheduled rule or calendar row")
+        issues.extend(f"{where}: {problem}" for problem in problems)
+        if not problems:
+            problems = _untagged_defaults(cls, converted, tags)
+            issues.extend(f"{where}: {problem}" for problem in problems)
+        if not problems and not set(params) & retired:
+            row["params_json"] = json.dumps(converted, sort_keys=True, separators=(",", ":")) \
+                if converted else ""
 
 
 def _validate_local_tax(

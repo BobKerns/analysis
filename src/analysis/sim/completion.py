@@ -31,7 +31,7 @@ __all__ = [
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
     "RULE_TAG", "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES",
     "SENSITIVITY_ROW", "STRATEGY",
-    "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET", "TAX_JURISDICTION",
+    "STRATEGY_KIND", "SYMBOL", "TAG", "TAG_FILTER", "TARGET_SET", "TAX_JURISDICTION", "TAX_KIND",
     "TARGET_SET_OR_NEW", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
 ]
 
@@ -271,6 +271,7 @@ TAX_JURISDICTION = NameType(_in_scenario(names.tax_jurisdiction_names), "tax jur
 TARGET_SET = NameType(_in_scenario(names.target_set_names), "target set")
 TARGET_SET_OR_NEW = NameType(_in_scenario(names.target_set_names), "target set", check=False)
 STRATEGY_KIND = NameType(lambda ctx, data_dir: names.strategy_kind_names(data_dir), "strategy kind")  # noqa: ARG005
+TAX_KIND = NameType(lambda ctx, data_dir: names.tax_kind_names(data_dir), "tax calculator kind")  # noqa: ARG005
 GUARD_RAIL = NameType(_in_scenario(names.guard_rail_names), "guard rail")
 
 

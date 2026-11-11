@@ -192,6 +192,7 @@ def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:
         "securities.csv",
         "allocations.csv",
         "strategies",  # strategy code (#326): an edit can change any run that uses it
+        "taxes",  # tax calculator code (#510), likewise
         "aux",
         "prices",
         "itemizations",

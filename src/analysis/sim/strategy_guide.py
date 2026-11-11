@@ -46,7 +46,16 @@ class ParamInfo:
 
 def _field_docs(params: type) -> dict[str, str]:
     """The string literal under each field of ``params`` (each attribute's
-    docstring), read from its source; {} when the source can't be read."""
+    docstring), read from its source and its bases' (a tax calculator's
+    ``Params`` extends its base's, #510); {} when the source can't be read."""
+    docs: dict[str, str] = {}
+    for cls in reversed(params.__mro__):
+        if cls is not object and dataclasses.is_dataclass(cls):
+            docs.update(_own_field_docs(cls))
+    return docs
+
+
+def _own_field_docs(params: type) -> dict[str, str]:
     try:
         tree = ast.parse(textwrap.dedent(inspect.getsource(params)))
     except (OSError, TypeError, SyntaxError):
@@ -73,7 +82,7 @@ def written(unit: str | None, value: object) -> str:
             return value if isinstance(value, str) else json.dumps(value)
 
 
-def kind_params(cls: type[Strategy]) -> list[ParamInfo]:
+def kind_params(cls: type[Any]) -> list[ParamInfo]:
     """``cls.Params``'s fields in order."""
     docs = _field_docs(cls.Params)
     unit_of = param_units(cls.Params)
@@ -93,7 +102,7 @@ def kind_params(cls: type[Strategy]) -> list[ParamInfo]:
     return out
 
 
-def describe_kind(cls: type[Strategy]) -> str:
+def describe_kind(cls: type[Any]) -> str:
     """The kind's docstring without its indentation, paragraphs kept."""
     return inspect.cleandoc(cls.__doc__ or "").strip()
 
