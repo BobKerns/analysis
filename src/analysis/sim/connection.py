@@ -804,9 +804,22 @@ class RunConnection(Connection):
             nw["month"] = pd.to_datetime(nw["month"])
             nw["nominal"] = nw["nominal_cents"] / 100
             nw["cpi_constant"] = nw["constant_cents"].astype("Float64") / 100
+            if (scale := getattr(self, "_cpi_scale", 1.0)) != 1.0:
+                nw["cumulative_index_micros"] = nw["cumulative_index_micros"].astype("Float64") * scale
+                nw["cpi_constant"] = nw["cpi_constant"] / scale
             return nw.set_index("month")
 
         return self._cached("net_worth_frame", _build)
+
+    def rebase_cpi(self, scale: float) -> None:
+        """Scale this run's CPI index by ``scale``, so its CPI-constant dollars
+        are another run's (#502): a comparison of runs that start in
+        different months deflates them all to the baseline's start. Every
+        CPI-constant figure this connection gives reads the index from
+        ``net_worth_frame``, so the derived caches are dropped."""
+        self._cpi_scale = scale
+        if getattr(self, "_derived_cache", None) is not None:
+            self._derived_cache.clear()
 
     def after_tax_net_worth_frame(self) -> pd.DataFrame:
         """Month-indexed after-tax net worth (#251), ``nominal`` and

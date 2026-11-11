@@ -389,7 +389,7 @@ def test_sim_compare_guard_rails_refuses_cpi_constant_without_a_cpi_index(
 
 
 class _Rules:
-    """A run's scheduled rules, enough for ``compare.rule_differences``."""
+    """A run's scheduled rules and its start, enough for ``compare.rule_differences``."""
 
     def __init__(self, **ss_fields: object) -> None:
         self.frame = pd.DataFrame([{
@@ -399,6 +399,8 @@ class _Rules:
         }])
 
     def items(self, kind: str) -> pd.DataFrame:
+        if kind == "scenario":
+            return pd.DataFrame([{"start": "2025-01-31"}])
         assert kind == "scheduled"
         return self.frame
 

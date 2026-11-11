@@ -41,7 +41,8 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import (
     allocation, asset_classes, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide,
-    guard_rails, load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
+    guard_rails, load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, roll,
+    scenario_guide,
     scheduled_guide, sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files,
     strategy_guide, symbols, states, tax_code, tax_files, tax_guide, units, working_set, ytd_guide,
 )
@@ -4523,7 +4524,7 @@ def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode
 
 
 COMPARE_SECTIONS = (
-    "runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "spending",
+    "runs", "differences", "start", "net-worth", "break-even", "guard-rails", "strategies", "spending",
     "social-security", "tax", "account",
 )
 """``sim compare``'s sections, in the order it prints them (#188)."""
@@ -4674,7 +4675,11 @@ def compare_command(
         # Every section clips on its own, and some (strategies, guard rails)
         # cover only part of a run: check the range against the runs once.
         _check_years_in_runs(connections.values(), years)
+        rebased = compare.align_cpi(connections, baseline)
         click.echo(f"{', '.join(variants)} vs {baseline}, {mode_label} dollars")
+        if rebased and mode == DollarMode.CPI_CONSTANT:
+            click.echo(f"  ({', '.join(rebased)} in {baseline}'s dollars: "
+                       f"{baseline} starts {connections[baseline].cpi_index().index[0]:%Y-%m})")
 
         if "runs" in shown:
             meta, warnings = compare.comparability(connections, scenarios)
@@ -4718,6 +4723,16 @@ def compare_command(
             else:
                 _echo_frame(ytd.map(_cell))
             _echo_strategy_differences(connections, scenarios, baseline)
+
+        if "start" in shown:
+            later = compare.later_starts(connections, baseline, variants)
+            if "start" in sections and not later:
+                click.echo(f"\nNo variant starts after {baseline}, so there is no start to compare.")
+            for name in later:
+                month, frame = compare.start_comparison(connections, baseline, name)
+                click.echo(f"\nWhere {name} starts: {baseline}'s projection for {month:%Y-%m} "
+                           f"against {name}'s opening balances (nominal):")
+                _echo_frame(frame.map(_cell))
 
         graphed = as_graph or graph_file is not None
         nw = pd.DataFrame()
@@ -14927,6 +14942,280 @@ def ensemble_copy(old: str | None, new: str | None, data_dir: Path | None) -> No
 
     Either name left out is asked for."""
     _copy_scenario(old, new, data_dir, what="ensemble")
+
+
+# ---------- rolling a scenario forward (#502) ----------
+
+
+def _money_text(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def _shares_text(value: float) -> str:
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def _ask_money(prompt: str, default: float | None, accept: bool) -> str:
+    """Dollars, asked for with ``default`` offered, as a CSV cell."""
+    shown = _money_text(default) if default is not None else None
+    if accept and shown is not None:
+        return shown
+    while True:
+        text = click.prompt(prompt, default=shown, show_default=True).strip()
+        try:
+            return _money_text(_parse_amount_cents(text) / 100)
+        except click.ClickException as exc:
+            click.echo(f"  {exc.message}")
+
+
+def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
+    shown = _shares_text(default) if default is not None else None
+    if accept and shown is not None:
+        return shown
+    while True:
+        text = click.prompt(prompt, default=shown, show_default=True).strip()
+        try:
+            return _shares_text(float(_check_quantity(text)))
+        except click.ClickException as exc:
+            click.echo(f"  {exc.message}")
+
+
+def _price_on(data: Path, symbol: str, start: str) -> tuple[str, float] | None:
+    """The latest stored price of ``symbol`` on or before ``start``'s first
+    day, as the loader values a lot with shares and no balance: (date, price)."""
+    history = prices.price_history(data / "prices", symbol)
+    if history is None or history.empty:
+        return None
+    known = history[history["effective_date"].astype(str) <= f"{start}-01"]
+    if known.empty:
+        return None
+    last = known.iloc[-1]
+    return str(last["effective_date"]), float(last["price"])
+
+
+@scenario_group_command.command("roll")
+@click.argument("name", required=False, type=completion.SCENARIO)
+@click.argument("start", required=False)
+@click.option("--keep", default=None,
+              help="Keep the scenario as it stands as this new scenario, a sibling copy "
+                   "(default name NAME-YEAR, the old start's year).")
+@click.option("--no-keep", is_flag=True, help="Don't keep a copy of the plan as it stands.")
+@click.option("--yes", "accept", is_flag=True,
+              help="Take every default without asking: the old plan's projections, and "
+                   "pinning the old first year's rows to that year.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep: bool,
+                  accept: bool, data_dir: Path | None) -> None:
+    """Bring scenario NAME up to date: start it again at START (YYYY-MM),
+    opening with what the accounts hold then (#502).
+
+    First it offers to keep the scenario as it stands, as a sibling copy
+    (--keep, default NAME-YEAR), so last year's plan can be compared with
+    this year's (`sim compare`). Then it asks, lot by lot, for what each
+    asset and liability holds at START: shares for a lot whose symbol has a
+    price by then (its balance is shares x price), dollars otherwise, and the
+    cost basis where the lot tracks one. Each question offers what the
+    scenario's latest run projected for the month before START; --yes takes
+    those. A lot's prior_year_end_balance, when it has one, follows.
+
+    Moving into a new year changes some rows' meaning, so it also asks
+    about them: a year-to-date row with no year belongs to the first year,
+    and is pinned to the old one; a rule's ytd_amount becomes a
+    year-to-date row of the old year. It lists the calendar rows before
+    START, which no longer happen, and the rules whose ytd_preroll now
+    counts the new year's months, and says what last year's tax needs.
+
+    Everything is written in one edit, only if NAME and every scenario
+    built on it still load. NAME stays current. START defaults to the
+    first January after the old start (and not before this year's)."""
+    if keep is not None and no_keep:
+        raise click.UsageError("--keep and --no-keep are exclusive")
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, name)
+    name = ref.name
+    if is_pool(data / "scenarios", name) or _is_template(data / "scenarios", name):
+        raise click.ClickException(f"{name} can't be rolled forward: only a scenario of this data repo can")
+    scenario_dir = data / "scenarios" / name
+    old = sc.scenario_span(data, name)[0]
+    if old is None:
+        raise click.ClickException(f"{name} has no start, so there is nothing to roll forward")
+    old_start = old.month
+    if start is None:
+        suggested = roll.default_start(old_start, date.today())
+        start = suggested if accept else click.prompt("new start (YYYY-MM)", default=suggested)
+    start = month_end_iso(_validate_month_date(start.strip()))[:7]
+    if start <= old_start:
+        raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
+    old_year, new_year = int(old_start[:4]), int(start[:4])
+    if not no_keep and keep is None:
+        suggested = f"{name}-{old_year}"
+        keep = suggested if accept else click.prompt(
+            "keep the plan as it stands as (blank: don't)", default=suggested).strip() or None
+    if keep is not None:
+        keep = keep.strip()
+        if keep in names.scenario_names(data):
+            raise click.ClickException(f"there is already a scenario {keep!r}; --keep another name")
+    click.echo(f"Rolling {name} forward: {old_start} -> {start}")
+
+    month = roll.month_before(start)
+    projected: dict[tuple[str, str], roll.Projection] = {}
+    run_path = scenario_run_path(ref.runs_dir, name, wait=False)
+    if run_path is not None:
+        with RunConnection(run_path, name) as rc:
+            projected = roll.projections(rc, month)
+    if projected:
+        click.echo(f"Each default is what {name}'s latest run projected for {month:%Y-%m} "
+                   "(--yes takes them all).")
+    else:
+        click.echo(f"No run of {name} reaches {month:%Y-%m}, so each default is the "
+                   "current opening value.")
+
+    accounts = _overlay_rows(scenario_dir, "accounts.csv")
+    lots = [one for one in _scenario_lots(scenario_dir, name) if not one.deleted]
+    rows: list[tuple[_Lot, dict[str, str]]] = []
+    seen = set()
+    for one in lots:
+        account = accounts.get(one.account)
+        if account is None or account.row.get("kind") not in ("asset", "liability"):
+            continue
+        seen.add((one.account, one.lot))
+        rows.append((one, _rolled_lot(data, one, account.row, projected.get((one.account, one.lot)),
+                                      start, accept)))
+    for (account_name, lot), projection in sorted(projected.items()):
+        # An account whose lot isn't in any file (one with no lot rows) that
+        # the old plan put money in.
+        if (account_name, lot) in seen or lot != registries.DEFAULT_LOT or not projection.balance:
+            continue
+        account = accounts.get(account_name)
+        if account is None:
+            continue
+        blank = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "") | {"account_name": account_name}
+        implicit = _Lot(blank, None, None, implicit=True)
+        rows.append((implicit, _rolled_lot(data, implicit, account.row, projection, start, accept)))
+
+    pins: list[_Overlaid] = []
+    converted: list[_Overlaid] = []
+    if new_year != old_year:
+        for found in roll.unpinned_year_to_date(scenario_dir):
+            label = (f"year-to-date row {found.row['name']} ({found.row.get('amount', '')}) "
+                     f"has no year, so it would move into {new_year}: pin it to {old_year}?")
+            if accept or click.confirm(label, default=True):
+                pins.append(found)
+        for found in roll.ytd_amount_rules(scenario_dir):
+            label = (f"rule {found.row['name']}'s ytd_amount ({found.row['ytd_amount']}) was "
+                     f"{old_year}'s catch-up: make it a {old_year} year-to-date row?")
+            if accept or click.confirm(label, default=True):
+                converted.append(found)
+
+    with _scenario_edit(data, name) as edit:
+        if keep is not None:
+            try:
+                rename.copy_scenario(edit.data_dir, name, keep, created_by=sc.current_user())
+            except (OSError, ValueError) as exc:
+                raise click.ClickException(str(exc).replace(str(edit.data_dir), str(data))) from None
+        staged_dir = edit.path(scenario_dir)
+        sc.edit_scenario_row(staged_dir, {"start": start}, {})
+        lots_path = edit.path(scenario_dir / "account_lots.csv")
+        for one, row in rows:
+            _append_csv_row(lots_path, registries.ACCOUNT_LOTS_CSV_HEADER, row, replace=one.index)
+        ytd_path = edit.path(scenario_dir / "year_to_date.csv")
+        if pins or converted:
+            _widen_ytd_header(ytd_path, scenario_dir)
+        for found in pins:
+            row = {column: found.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
+            _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
+                            replace=found.index)
+        scheduled_path = edit.path(scenario_dir / "scheduled.csv")
+        for found in converted:
+            rule = found.row
+            _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, {
+                "name": f"{rule['name']}_{old_year}", "from_account": rule.get("from_account", ""),
+                "from_lot": rule.get("from_lot", ""), "to_account": rule.get("to_account", ""),
+                "to_lot": rule.get("to_lot", ""), "amount": rule["ytd_amount"],
+                "tax_character": rule.get("tax_character", ""), "year": str(old_year),
+                "description": f"{rule['name']}: paid in {old_year} before {old_start}",
+            })
+            _append_csv_row(scheduled_path, registries.SCHEDULED_CSV_HEADER,
+                            rule | {"ytd_amount": ""}, replace=found.index)
+
+    click.echo(f"rolled {name} forward to {start}")
+    if keep is not None:
+        click.echo(f"  kept the plan as it stood as {keep}")
+    for one, row in rows:
+        click.echo(f"  {one.account} ({one.lot}): {row['opening_balance'] or row['quantity'] + ' sh'}"
+                   + (f", basis {row['opening_cost_basis']}" if row["opening_cost_basis"] else ""))
+    for found in pins:
+        click.echo(f"  year-to-date row {found.row['name']}: pinned to {old_year}")
+    for found in converted:
+        click.echo(f"  {found.row['name']}'s ytd_amount: now year-to-date row "
+                   f"{found.row['name']}_{old_year}")
+    for entry in roll.calendar_before(scenario_dir, start):
+        click.echo(f"  calendar {entry.row.get('date')} {entry.row.get('kind')} "
+                   f"{entry.row.get('description') or entry.row.get('scheduled_name') or ''}"
+                   .rstrip() + f": before {start}, so it no longer happens")
+    for rule_name in roll.preroll_rules(scenario_dir):
+        if start[5:] != "01":
+            click.echo(f"  rule {rule_name}'s ytd_preroll now counts {new_year}'s months before {start}")
+    if new_year != old_year and start[5:] == "01":
+        click.echo(
+            f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
+            f"record it with `sim ytd add NAME FROM TO AMOUNT --tax-character ... --year "
+            f"{new_year - 1}` (W-2s, 1099s, tax already withheld)")
+    click.echo(f"next: `sim run {name} --commit`"
+               + (f", `sim run {keep} --commit`, then `sim compare {keep} {name}`" if keep else ""))
+
+
+def _rolled_lot(
+    data: Path, one: _Lot, account: dict[str, str], projection: roll.Projection | None,
+    start: str, accept: bool,
+) -> dict[str, str]:
+    """``one``'s row, opening at ``start`` with what is asked for (the
+    projection offered), for ``sim scenario roll``."""
+    row = dict(one.row)
+    label = f"{one.account} ({one.lot})"
+    symbol = row.get("symbol", "").strip()
+    price = _price_on(data, symbol, start) if symbol and row.get("quantity", "").strip() else None
+    if price is not None:
+        current = float(row["quantity"].replace(",", ""))
+        shares = _ask_shares(f"{label} {symbol} shares",
+                             projection.quantity if projection and projection.quantity else current, accept)
+        row["quantity"] = shares
+        row["opening_balance"] = ""
+        balance = float(shares) * price[1]
+        click.echo(f"  = ${balance:,.2f} at {price[1]:,.2f} on {price[0]}")
+    else:
+        current = _cell_float(row.get("opening_balance", ""))
+        balance = float(_ask_money(f"{label} balance",
+                                   projection.balance if projection else current, accept))
+        row["opening_balance"] = _money_text(balance)
+        if row.get("quantity", "").strip() and projection and projection.quantity:
+            row["quantity"] = _shares_text(projection.quantity)
+    tracks_basis = row.get("opening_cost_basis", "").strip() or (
+        projection is not None and projection.basis is not None
+        and account.get("subkind", "") not in registries.CASH_SUBKINDS)
+    if tracks_basis:
+        current = _cell_float(row.get("opening_cost_basis", "")) or balance
+        row["opening_cost_basis"] = _ask_money(
+            f"{label} cost basis", projection.basis if projection and projection.basis is not None
+            else current, accept)
+    if row.get("prior_year_end_balance", "").strip():
+        # The Dec 31 before the start: the opening balance itself when the
+        # start is a January.
+        row["prior_year_end_balance"] = (
+            _money_text(balance) if start[5:] == "01"
+            else _ask_money(f"{label} balance on Dec 31, {int(start[:4]) - 1}", balance, accept))
+    if one.implicit:
+        row["lot"] = ""
+    return row
+
+
+def _cell_float(text: str) -> float | None:
+    cleaned = text.strip().replace(",", "").replace("$", "")
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None  # an @itemization: no number to offer
 
 
 # ---------- editing and deleting a scenario (#190) ----------
