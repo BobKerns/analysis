@@ -119,7 +119,7 @@ def test_the_proprietors_nol_ends_after_the_year_they_die(
         "person,age_at_death,vary_distribution,vary_low,vary_high,vary_mode,"
         "vary_correlate_with,vary_correlation\nalice,66,,,,,,\n")  # final month 2031-03
     run = run_file("alice_business")
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         lines = {(bucket.removeprefix("federal_"), year): amount for year, bucket, amount in con.execute(
             "SELECT year, bucket, amount FROM tax_year_summary WHERE bucket LIKE 'federal_nol_%'")}
     assert lines["nol_carryover", 2030] > 0

@@ -344,7 +344,7 @@ def test_a_joint_carryover_ends_half_at_the_first_death_and_all_at_the_second(
     add_tax(start="2028-04")
     write_lifespans("alice,70,,,,,,", "bill,72,,,,,,")  # final months 2035-03 and 2039-08
     run = _run(load_test_copy, runs_dir)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         lines = {(bucket, year): amount for bucket, year, amount in con.execute(
             "SELECT bucket, year, amount FROM tax_year_summary "
             "WHERE bucket IN ('federal_capital_loss_carryover', 'federal_capital_loss_lapsed')")}
