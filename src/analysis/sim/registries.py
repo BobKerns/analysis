@@ -451,6 +451,32 @@ SHELTERED_PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
 }
 
 
+# An HSA lot's payouts (#497): untaxed federally, as a sheltered lot's are
+# (the leg keeps the lot's growth character), but a state that doesn't
+# recognize HSAs (California, `state_hsa`) taxes them the year they're paid,
+# as it would a brokerage account's. So unlike a sheltered payout they buy
+# into the lot, adding to the basis that state taxes a withdrawal over, and
+# an HSA lot gets them whether or not it tracks shares. Dividends, interest
+# and short-term distributions are ordinary income to the state; long-term
+# distributions are gain. Keyed by that.
+HSA_PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
+    "ordinary": GrowthCounterparty(
+        "hsa_dividends", "income", "dividend", "tax_free", "tax_free",
+        "Built-in: dividends and interest reinvested in HSA lots",
+    ),
+    "ltcg": GrowthCounterparty(
+        "hsa_gain_distributions", "income", "dividend", "tax_free", "tax_free",
+        "Built-in: long-term gain distributions reinvested in HSA lots",
+    ),
+}
+
+
+def hsa_payout_account(payer: str) -> GrowthCounterparty:
+    """The HSA payout account for a payout a taxable lot would get from
+    ``PAYOUT_ACCOUNTS[payer]`` (#497)."""
+    return HSA_PAYOUT_ACCOUNTS["ltcg" if payer == "ltcg" else "ordinary"]
+
+
 def yield_series(series: str, suffix: str = YIELD_SUFFIX) -> str:
     """The rate series a lot growing at ``series`` pays out from (#468):
     dividends and interest, or with ``suffix`` gain distributions (#547)."""
@@ -459,7 +485,8 @@ def yield_series(series: str, suffix: str = YIELD_SUFFIX) -> str:
 
 def builtin_payout_accounts() -> tuple[GrowthCounterparty, ...]:
     """Every built-in account a payout comes from, taxed or not."""
-    return (*PAYOUT_ACCOUNTS.values(), *SHELTERED_PAYOUT_ACCOUNTS.values())
+    return (*PAYOUT_ACCOUNTS.values(), *SHELTERED_PAYOUT_ACCOUNTS.values(),
+            *HSA_PAYOUT_ACCOUNTS.values())
 
 
 def payout_character(asset_class: str) -> str:

@@ -463,9 +463,14 @@ files pays no income tax.
   `aux/` README describes them all. Two more tables, also named for the
   state, are optional: `state_surcharge__CA.csv` adds California's 1% on
   taxable income over $1 million, and `state_hsa__CA.csv` says California
-  doesn't recognize health savings accounts, so its tax doesn't deduct what
-  goes into an HSA, taxes the account's growth each year (a fall is a
-  capital loss), and leaves what comes out alone.
+  doesn't recognize health savings accounts, so it taxes an HSA like a
+  brokerage account: it doesn't deduct what goes in, taxes the dividends
+  and interest the year they're paid, and taxes what comes out only on its
+  gain over the account's cost basis (contributions and reinvested
+  dividends), even a qualified medical withdrawal; a loss is a capital
+  loss. Growth left in the HSA isn't taxed. An HSA lot's basis starts at
+  its `opening_cost_basis` in `account_lots.csv`, or its whole balance when
+  that is blank.
 - **Local income tax**: some counties and cities tax income on top of the
   state (a Maryland county, New York City, an Indiana county, the Portland
   area). Where the local tax is figured on the state's taxable income, put
@@ -1160,11 +1165,15 @@ too. The templates ship none, so nothing is distributed until you add one.
 All three come out of the series' total return, so the lot's value is
 unchanged; only what is taxed, and when, moves.
 
-In an IRA, a Roth or an HSA, a lot that holds shares (it has a `quantity`)
+In an IRA or a Roth, a lot that holds shares (it has a `quantity`)
 gets the same payouts, untaxed. They only buy more shares, the way a
 statement shows reinvested dividends, so the projected share count and
 price stay close to the real ones. They add no Roth basis. A lot
 kept in dollars has no shares to keep track of and gets none.
+
+Every HSA lot gets them, shares or not: they're untaxed federally, but
+California taxes them the year they're paid, as it would a brokerage
+account's, and they add to the cost basis it taxes a withdrawal over.
 
 `sim report gains` counts reinvested dividends and interest as realized
 taxable gains.

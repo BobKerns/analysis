@@ -103,6 +103,7 @@ type ItemType = Literal[
     "scenario",
     "tax_year_summary",
     "capital_loss",
+    "hsa_gain",
     "basis_step_up",
     "year_to_date",
     "person",

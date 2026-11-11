@@ -35,7 +35,7 @@ from analysis.sim import ownership, registries
 from analysis.sim.param_units import Dollars, Percent, Tag, percent
 
 __all__ = [
-    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "IncomeItem", "Percent", "Person",
+    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "HsaGain", "IncomeItem", "Percent", "Person",
     "Prepared", "Residence", "Return", "SpendingItem", "Tag", "TaxCalculator", "TaxError",
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
@@ -137,6 +137,18 @@ class CapitalLoss:
 
 
 @dataclass(frozen=True)
+class HsaGain:
+    """An HSA withdrawal's gain over the lot's basis (``hsa_gain``, #497), a
+    loss negative, summed by tax year, character and the lot's owner: what a
+    state that doesn't recognize HSAs taxes, and the federal return never
+    sees."""
+    year: int
+    character: str
+    owner: str | None
+    amount: int
+
+
+@dataclass(frozen=True)
 class Person:
     """One of the scenario's people, with the last month they're alive
     (``YYYY-MM-DD``, the month's end) when the scenario gives a lifespan."""
@@ -158,7 +170,7 @@ class Residence:
 class TaxYear:
     """One tax year, as a calculator sees it.
 
-    ``items`` and ``losses`` cover every year up to ``year``: a capital loss
+    ``items``, ``losses`` and ``hsa_gains`` cover every year up to ``year``: a capital loss
     carries forward, so this year's netting reads the years before it.
     Tables are read through the methods, as of the year's end.
     ``params`` is the jurisdiction's ``params_json`` as the calculator's
@@ -184,6 +196,9 @@ class TaxYear:
     end), in date order."""
     spending: Sequence[SpendingItem] = ()
     _line_in: Callable[[str, int], int] = field(repr=False, default=lambda _line, _year: 0)
+    hsa_gains: Sequence[HsaGain] = ()
+    """Every year's HSA withdrawals' gains over basis up to ``year`` (#497),
+    for a state that taxes an HSA."""
 
     @property
     def filing_status(self) -> str:
@@ -315,12 +330,14 @@ class Return:
     ``tax_year_summary`` as ``<jurisdiction>_<line>``, and ``memo`` lines
     kept for the engine and not written.
 
-    The engine reads two memo lines, each 0 when left out: ``drawn_ordinary``,
+    The engine reads three memo lines, each 0 when left out: ``drawn_ordinary``,
     the year's ordinary income drawn from traditional money (an RMD), and
     ``drawn_gain``, the long-term gain its sales realized (not a reinvested
-    gain distribution, #547). The after-tax drawdown's
-    share of a later year replaces them, so it isn't taxed twice. Any other
-    memo line is the calculator's own.
+    gain distribution, #547), which the after-tax drawdown's share of a later
+    year replaces, so it isn't taxed twice; and ``hsa_taxed``, 1 when the
+    jurisdiction taxes an HSA like a brokerage account (#497), so the
+    drawdown prices an HSA's gain over basis rather than its whole balance.
+    Any other memo line is the calculator's own.
 
     Every calculator fills ``REQUIRED``. A what-if (:class:`Extra`) works
     out again the lines more income changes (the income lines, AGI,
