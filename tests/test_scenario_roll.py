@@ -115,6 +115,50 @@ def test_roll_to_a_later_month_offers_the_dec_31_balance_as_prior_year_end(
     assert ira["prior_year_end_balance"] == f"{december[key].balance:.2f}"
 
 
+def test_roll_leaves_a_ytd_amount_it_cant_make_a_row_and_says_so(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    update_scheduled: Callable[..., None],
+) -> None:
+    rules = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
+    rule = next(row for row in rules.to_dict("records") if row["from_account"] == "Asset_Checking")
+    # A rule drawing through a chain: a year-to-date row takes accounts only.
+    update_scheduled(rule["name"], ytd_amount="500.00", from_account="asset_checking_liquidity")
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--no-keep", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert f"rule {rule['name']}'s ytd_amount is 2026's catch-up, but it moves money through a chain" \
+        in result.output
+    assert _rows(retire_alice_csv("scheduled.csv"))[rule["name"]]["ytd_amount"] == "500.00"
+
+
+def test_roll_keeps_a_quarterly_rule_with_no_start_on_its_months(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    update_scheduled: Callable[..., None],
+) -> None:
+    rules = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
+    rule = next(row for row in rules.to_dict("records") if row["amount_rule_kind"] == "fixed_amount")
+    update_scheduled(rule["name"], start="", cadence="quarterly")
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--no-keep", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert _rows(retire_alice_csv("scheduled.csv"))[rule["name"]]["start"] == "2026-05-31"
+    assert f"rule {rule['name']}: starts 2026-05" in result.output
+
+
+def test_roll_within_the_year_keeps_the_lots_dec_31_balance_without_a_run(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    before = _rows(retire_alice_csv("account_lots.csv"))["Asset_TraditionalIRA_Alice/default"]
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2026-09", "--no-keep", "--yes")
+
+    assert result.exit_code == 0, result.output
+    after = _rows(retire_alice_csv("account_lots.csv"))["Asset_TraditionalIRA_Alice/default"]
+    assert after["prior_year_end_balance"] == f"{float(before['prior_year_end_balance']):.2f}"
+
+
 def test_roll_keeps_an_authored_zero_cost_basis(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     update_account_value: Callable[..., None],

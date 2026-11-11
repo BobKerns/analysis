@@ -418,8 +418,19 @@ def test_rule_differences_show_every_field_as_it_reads() -> None:
     assert compare.rule_differences(runs, ["base", "base"], "base").empty
 
 
+def test_rule_starts_before_the_same_start_still_differ() -> None:
+    """#502: two annual rules that began before the same start fire in their
+    own months, so their starts are a difference, not both ``(start)``."""
+    runs = cast(Mapping[str, RunConnection], {
+        "base": _Rules("2026-05-31", start="2025-03-31"),
+        "variant": _Rules("2026-05-31", start="2026-05-31")})
+    rules = compare.rule_differences(runs, ["base", "variant"], "base")
+    assert rules.loc[("ss_bill", "start")].to_dict() == {"base": "2025-03-31", "variant": "(start)"}
+
+
 @pytest.mark.parametrize(("old", "new", "differs"), [
     ("2026-05-31", "2027-01-31", False),  # each starts with its scenario
+    ("", "2027-01-31", False),  # blank begins with its scenario
     ("2027-01-31", "2027-01-31", False),  # authored alike, new's first month
     ("2026-08-31", "2026-08-31", False),  # authored alike, before new's start
     ("2026-08-31", "2027-03-31", True),

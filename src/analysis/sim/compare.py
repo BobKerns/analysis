@@ -18,7 +18,7 @@ import pandas as pd
 
 from analysis.frames import index_years, named_rows
 from analysis.sim.connection import RunConnection, year_end_values
-from analysis.sim.dates import month_before
+from analysis.sim.dates import month_before, month_end_iso
 from analysis.sim.types import Death, DollarMode
 
 __all__ = [
@@ -128,13 +128,13 @@ def _same(a: Any, b: Any) -> bool:
     return (_blank(a) and _blank(b)) or (not _blank(a) and not _blank(b) and str(a) == str(b))
 
 
-def _at_start(value: Any, start: str | None, *, or_before: bool = False) -> Any:
-    """``value``, or ``START`` when it is a date in the ``start`` month (or,
-    ``or_before``, any earlier one: a rule that began before the scenario
-    starts runs from its start)."""
+def _at_start(value: Any, start: str | None) -> Any:
+    """``value``, or ``START`` when it is a date in the ``start`` month. An
+    earlier date stays: a quarterly or annual rule's start sets its months,
+    so two that began before their scenarios can still differ."""
     if start is None or not isinstance(value, str):
         return value
-    return START if value[:7] == start or (or_before and value[:7] < start) else value
+    return START if value[:7] == start else value
 
 
 def rule_differences(
@@ -151,27 +151,36 @@ def rule_differences(
             .set_index("name").reindex(columns=columns)
         for name in scenarios
     }
+    present = {name: set(frame.index) for name, frame in rules.items()}
     index = sorted(set().union(*(frame.index for frame in rules.values())))
     rules = {name: frame.reindex(index) for name, frame in rules.items()}
     starts = {name: _start_month(connections[name]) for name in scenarios}
 
-    def shown(name: str, rule: str, column: str) -> Any:
+    def raw(name: str, rule: str, column: str) -> Any:
         value = rules[name].at[rule, column]
+        start = starts[name]
+        if column == "start" and _blank(value) and rule in present[name] and start:
+            # A rule with no start begins with its scenario, as the loader reads it.
+            return month_end_iso(start)
+        return value
+
+    def shown(name: str, rule: str, column: str) -> Any:
+        value = raw(name, rule, column)
         if _blank(value):
             return None
         if column == "start":
-            return _at_start(value, starts[name], or_before=True)
+            return _at_start(value, starts[name])
         formatter = RULE_COMPARE_COLUMNS[column][1]
         return formatter(value) if formatter else str(value)
 
     rows = []
     for rule in index:
         for column in columns:
-            raw = {name: rules[name].at[rule, column] for name in scenarios}
+            authored = {name: raw(name, rule, column) for name in scenarios}
             if column == "start" and all(
-                    _same(raw[name], raw[baseline]) for name in scenarios):
-                # The same authored date: not a difference, though one
-                # scenario's start makes it ``START`` there (#502).
+                    _same(authored[name], authored[baseline]) for name in scenarios):
+                # The same date: not a difference, though one scenario's
+                # start makes it ``START`` there (#502).
                 continue
             values = {name: shown(name, rule, column) for name in scenarios}
             if any(values[name] != values[baseline] for name in scenarios):

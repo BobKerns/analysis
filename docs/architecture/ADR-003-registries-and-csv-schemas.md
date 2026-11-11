@@ -1194,7 +1194,10 @@ January start and is asked for otherwise, offering the run's Dec 31. When START 
 each `year_to_date.csv` row with no `year` (§4.10) is offered to be pinned
 to the old start's year, and each rule's `ytd_amount` to become a
 year-to-date row of that year with the rule's accounts and character (the
-rule's `ytd_amount` cleared). It lists the calendar rows dated before START
+rule's `ytd_amount` cleared); a rule through a chain, or with no character,
+is listed to record by hand instead. A rule with no `start` whose schedule
+counts from it (quarterly, biweekly, `ytd_preroll`) is offered the old
+start, so its months don't move with the scenario's. It lists the calendar rows dated before START
 (not latent factors or date markers), and the rules whose `ytd_preroll` now
 counts the new year's months; within the same year, the year-to-date rows
 and `ytd_amount`s that now cover too few months. For a start in a later

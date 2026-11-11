@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from analysis.sim.connection import RunConnection
 
 __all__ = [
-    "Projection", "calendar_before", "cell_dollars", "default_start", "projections",
+    "Projection", "anchored_rules", "calendar_before", "cell_dollars", "default_start", "projections",
     "preroll_rules", "unpinned_year_to_date", "ytd_amount_rules",
 ]
 
@@ -106,11 +106,28 @@ def ytd_amount_rules(scenario_dir: Path) -> list[Overlaid]:
             if _amount(found.row.get("ytd_amount", ""))]
 
 
+# Cadences counted from the rule's start: a blank start is the scenario's.
+_ANCHORED_CADENCES = frozenset({"quarterly", "biweekly"})
+
+
+def _preroll(row: dict[str, str]) -> bool:
+    return row.get("ytd_preroll", "").strip() in ("1", "true", "True")
+
+
+def anchored_rules(scenario_dir: Path) -> list[Overlaid]:
+    """The scheduled rules with no ``start`` whose schedule counts from it:
+    a quarterly or biweekly cadence, or ``ytd_preroll``. The loader gives
+    them the scenario's start, so a later one shifts their months."""
+    return [found for found in overlay_rows(scenario_dir, "scheduled.csv").values()
+            if not found.row.get("start", "").strip()
+            and (found.row.get("cadence", "") in _ANCHORED_CADENCES or _preroll(found.row))]
+
+
 def preroll_rules(scenario_dir: Path) -> list[str]:
     """The scheduled rules with ``ytd_preroll``: their catch-up follows the
     start by itself, counting the new first year's months before it."""
     return [name for name, found in overlay_rows(scenario_dir, "scheduled.csv").items()
-            if found.row.get("ytd_preroll", "").strip() in ("1", "true", "True")]
+            if _preroll(found.row)]
 
 
 # A latent factor or a date marker is a definition, not something that

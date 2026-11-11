@@ -1788,7 +1788,11 @@ A new year changes what some rows mean, so `roll` deals with those too:
   whichever it is. `roll` offers to pin it to the old year, where it
   happened.
 - A rule's `ytd_amount` was the old first year's catch-up. `roll` offers to
-  make it a year-to-date row of that year.
+  make it a year-to-date row of that year (one that goes through a chain
+  it lists, for you to record by hand).
+- A rule with no start counts a quarterly schedule, or `ytd_preroll`'s
+  months, from the scenario's start. `roll` offers to give it the old
+  start, so it keeps its months.
 - A calendar row dated before the new start no longer happens. `roll` lists
   them.
 - Last year's income tax is paid in April from last year's income, which

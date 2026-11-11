@@ -15106,7 +15106,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             continue
         seen.add((one.account, one.lot))
         rows.append((one, _rolled_lot(data, one, account.row, projected.get((one.account, one.lot)),
-                                      year_end.get((one.account, one.lot)), start, accept)))
+                                      year_end.get((one.account, one.lot)), start, accept,
+                                      same_year=new_year == old_year)))
     for (account_name, lot), projection in sorted(projected.items()):
         # An account whose lot isn't in any file (one with no lot rows) that
         # the old plan put money in.
@@ -15119,21 +15120,40 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             "account_name": account_name, "lot": lot}
         implicit = _Lot(blank, None, None, implicit=True)
         rows.append((implicit, _rolled_lot(data, implicit, account.row, projection,
-                                           year_end.get((account_name, lot)), start, accept)))
+                                           year_end.get((account_name, lot)), start, accept,
+                                           same_year=new_year == old_year)))
 
     pins: list[_Overlaid] = []
     converted: list[_Overlaid] = []
+    unconverted: list[tuple[_Overlaid, str]] = []
     if new_year != old_year:
         for found in roll.unpinned_year_to_date(scenario_dir):
             label = (f"year-to-date row {found.row['name']} ({found.row.get('amount', '')}) "
                      f"has no year, so it would move into {new_year}: pin it to {old_year}?")
             if accept or click.confirm(label, default=True):
                 pins.append(found)
+        chains = set(names.chain_names(data, name))
         for found in roll.ytd_amount_rules(scenario_dir):
-            label = (f"rule {found.row['name']}'s ytd_amount ({found.row['ytd_amount']}) was "
+            rule = found.row
+            # A year-to-date row moves between accounts, with a character.
+            if why := ("it moves money through a chain"
+                       if {rule.get("from_account"), rule.get("to_account")} & chains
+                       else "it has no tax_character" if not rule.get("tax_character", "").strip()
+                       else None):
+                unconverted.append((found, why))
+                continue
+            label = (f"rule {rule['name']}'s ytd_amount ({rule['ytd_amount']}) was "
                      f"{old_year}'s catch-up: make it a {old_year} year-to-date row?")
             if accept or click.confirm(label, default=True):
                 converted.append(found)
+    # A rule with no start counts its cadence (a quarter, a biweekly payday,
+    # ytd_preroll's months) from the scenario's start, which is moving.
+    anchored: list[_Overlaid] = []
+    for found in roll.anchored_rules(scenario_dir):
+        label = (f"rule {found.row['name']} has no start, so its {found.row.get('cadence')} "
+                 f"schedule counts from the scenario's: keep counting from {old_start}?")
+        if accept or click.confirm(label, default=True):
+            anchored.append(found)
 
     with _scenario_edit(data, name) as edit:
         if keep is not None:
@@ -15154,8 +15174,14 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
                             replace=found.index)
         scheduled_path = edit.path(scenario_dir / "scheduled.csv")
+        # Each rule changed once, whichever of the edits below it takes.
+        rule_rows = {found.row["name"]: (found, dict(found.row)) for found in [*converted, *anchored]}
+        anchor = month_end_iso(old_start)
+        for found in anchored:
+            rule_rows[found.row["name"]][1]["start"] = anchor
         for found in converted:
             rule = found.row
+            rule_rows[rule["name"]][1]["ytd_amount"] = ""
             _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, {
                 "name": f"{rule['name']}_{old_year}", "from_account": rule.get("from_account", ""),
                 "from_lot": rule.get("from_lot", ""), "to_account": rule.get("to_account", ""),
@@ -15163,8 +15189,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                 "tax_character": rule.get("tax_character", ""), "year": str(old_year),
                 "description": f"{rule['name']}: paid in {old_year} before {old_start}",
             })
-            _append_csv_row(scheduled_path, registries.SCHEDULED_CSV_HEADER,
-                            rule | {"ytd_amount": ""}, replace=found.index)
+        for found, rule in rule_rows.values():
+            _append_csv_row(scheduled_path, registries.SCHEDULED_CSV_HEADER, rule, replace=found.index)
 
     click.echo(f"rolled {name} forward to {start}")
     if keep is not None:
@@ -15177,6 +15203,12 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     for found in converted:
         click.echo(f"  {found.row['name']}'s ytd_amount: now year-to-date row "
                    f"{found.row['name']}_{old_year}")
+    for found, why in unconverted:
+        click.echo(f"  rule {found.row['name']}'s ytd_amount is {old_year}'s catch-up, but {why}: "
+                   f"record it with `sim ytd add ... --year {old_year}` and clear it "
+                   f"(`sim scheduled edit {found.row['name']} --ytd-amount ''`)")
+    for found in anchored:
+        click.echo(f"  rule {found.row['name']}: starts {old_start}, so its schedule keeps its months")
     for entry in roll.calendar_before(scenario_dir, start):
         click.echo(f"  calendar {entry.row.get('date')} {entry.row.get('kind')} "
                    f"{entry.row.get('description') or entry.row.get('scheduled_name') or ''}"
@@ -15206,7 +15238,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
 
 def _rolled_lot(
     data: Path, one: _Lot, account: dict[str, str], projection: roll.Projection | None,
-    year_end: roll.Projection | None, start: str, accept: bool,
+    year_end: roll.Projection | None, start: str, accept: bool, *, same_year: bool,
 ) -> dict[str, str]:
     """``one``'s row, opening at ``start`` with what is asked for (the
     projection offered, and ``year_end``'s balance for the Dec 31 before
@@ -15245,11 +15277,14 @@ def _rolled_lot(
             else current, accept)
     if row.get("prior_year_end_balance", "").strip():
         # The Dec 31 before the start: the opening balance itself when the
-        # start is a January.
+        # start is a January. Otherwise the run's, or with none that reaches
+        # it, the lot's own when that Dec 31 hasn't changed (the same year).
+        authored = roll.cell_dollars(row["prior_year_end_balance"])
+        offered = (year_end.balance if year_end
+                   else authored if same_year and authored is not None else balance)
         row["prior_year_end_balance"] = (
             _money_text(balance) if start[5:] == "01"
-            else _ask_money(f"{label} balance on Dec 31, {int(start[:4]) - 1}",
-                            year_end.balance if year_end else balance, accept))
+            else _ask_money(f"{label} balance on Dec 31, {int(start[:4]) - 1}", offered, accept))
     if one.implicit and account.get("subkind", "") not in INVESTMENT_ASSET_SUBKINDS:
         # An implicit default lot stays blank; an investment account must
         # name its lot (``default``), as the loader requires.
