@@ -69,15 +69,6 @@ def ledger(ledger_con: sqlite3.Connection,
     return ledger_con
 
 
-def _post(con: sqlite3.Connection, year: int, frm: int, amount: int, character: str) -> None:
-    con.execute(
-        "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
-        "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
-        "VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'rule')",
-        (f"{year}-06-30", frm, CHECKING, frm, CHECKING, amount, amount, character),
-    )
-
-
 def _state(con: sqlite3.Connection, year: int = 2026, extra: Extra = NO_EXTRA) -> Return:
     return _prepare_tax(
         con, {"scope": "state"}, aux=_aux(), tax_year=year, tid=1, kind="state_tables",
@@ -90,8 +81,9 @@ def _gains_tax(taxable: int) -> int:
 
 def test_a_long_term_gain_over_the_deduction_is_taxed_at_7_and_over_a_million_at_9_9(
     ledger: sqlite3.Connection,
+    post_transfer: Callable[..., None],
 ) -> None:
-    _post(ledger, 2026, BROKERAGE, 1_500_000_00 + DEDUCTION, "ltcg")
+    post_transfer(ledger, 2026, BROKERAGE, CHECKING, 1_500_000_00 + DEDUCTION, "ltcg")
     state = _state(ledger)
     assert state["gains_base"] == 1_500_000_00 + DEDUCTION
     assert state["gains_deduction"] == DEDUCTION
@@ -100,35 +92,43 @@ def test_a_long_term_gain_over_the_deduction_is_taxed_at_7_and_over_a_million_at
     assert state.tax == 119_500_00
 
 
-def test_a_short_term_loss_does_not_offset_the_long_term_gain(ledger: sqlite3.Connection) -> None:
-    _post(ledger, 2026, BROKERAGE, 400_000_00, "ltcg")
-    _post(ledger, 2026, BROKERAGE, -100_000_00, "stcg")
+def test_a_short_term_loss_does_not_offset_the_long_term_gain(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    post_transfer(ledger, 2026, BROKERAGE, CHECKING, 400_000_00, "ltcg")
+    post_transfer(ledger, 2026, BROKERAGE, CHECKING, -100_000_00, "stcg")
     state = _state(ledger)
     assert state["gains_base"] == 400_000_00
     assert state.tax == _gains_tax(400_000_00 - DEDUCTION)
 
 
-def test_a_long_term_loss_carried_in_offsets_it(ledger: sqlite3.Connection) -> None:
+def test_a_long_term_loss_carried_in_offsets_it(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
     """Schedule D line 15 nets the long-term loss carried from 2026."""
-    _post(ledger, 2026, BROKERAGE, -100_000_00, "ltcg")
-    _post(ledger, 2027, BROKERAGE, 400_000_00, "ltcg")
+    post_transfer(ledger, 2026, BROKERAGE, CHECKING, -100_000_00, "ltcg")
+    post_transfer(ledger, 2027, BROKERAGE, CHECKING, 400_000_00, "ltcg")
     assert _state(ledger, 2026)["gains_base"] == 0
     # 2026's $3,000 of the loss offset ordinary income; the rest carried.
     assert _state(ledger, 2027)["gains_base"] == 400_000_00 - 97_000_00
 
 
-def test_a_homes_gain_is_exempt(ledger: sqlite3.Connection) -> None:
-    _post(ledger, 2026, HOME, 500_000_00, "ltcg")
-    _post(ledger, 2026, BROKERAGE, 300_000_00, "ltcg")
+def test_a_homes_gain_is_exempt(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    post_transfer(ledger, 2026, HOME, CHECKING, 500_000_00, "ltcg")
+    post_transfer(ledger, 2026, BROKERAGE, CHECKING, 300_000_00, "ltcg")
     state = _state(ledger)
     assert state["gains_base"] == 300_000_00
     assert state.tax == _gains_tax(300_000_00 - DEDUCTION)
 
 
-def test_a_loss_recorded_on_real_estate_does_not_lower_the_base(ledger: sqlite3.Connection) -> None:
+def test_a_loss_recorded_on_real_estate_does_not_lower_the_base(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
     """A rental sold below its basis records its shortfall as a capital
     loss; Washington exempts real estate either way."""
-    _post(ledger, 2026, BROKERAGE, 400_000_00, "ltcg")
+    post_transfer(ledger, 2026, BROKERAGE, CHECKING, 400_000_00, "ltcg")
     ledger.execute(
         "INSERT INTO capital_loss(step_id, date, lot_id, amount, tax_character, reason_kind) "
         "VALUES (1, '2026-06-30', ?, ?, 'ltcg', 'rule')", (HOME, 100_000_00))
@@ -137,11 +137,12 @@ def test_a_loss_recorded_on_real_estate_does_not_lower_the_base(ledger: sqlite3.
 
 def test_the_drawdown_of_a_home_sale_year_replaces_its_gain_once(
     ledger: sqlite3.Connection,
+    post_transfer: Callable[..., None],
 ) -> None:
     """The engine takes the year's realized gain, and real estate's part of
     it, off a drawdown share, which then holds only the unrealized gain."""
-    _post(ledger, 2026, HOME, 500_000_00, "ltcg")
-    _post(ledger, 2026, BROKERAGE, 300_000_00, "ltcg")
+    post_transfer(ledger, 2026, HOME, CHECKING, 500_000_00, "ltcg")
+    post_transfer(ledger, 2026, BROKERAGE, CHECKING, 300_000_00, "ltcg")
     memo = _state(ledger).memo
     assert memo["drawn_gain"] == 800_000_00
     assert memo["drawn_real_estate_gain"] == 500_000_00
@@ -151,11 +152,12 @@ def test_the_drawdown_of_a_home_sale_year_replaces_its_gain_once(
 
 def test_from_2028_a_long_term_loss_deduction_is_out_of_the_income_too(
     ledger: sqlite3.Connection,
+    post_transfer: Callable[..., None],
 ) -> None:
     """ESSB 6346 takes long-term losses out of federal AGI, the $3,000 of
     one deducted from ordinary income included."""
-    _post(ledger, 2028, SALARY, 1_500_000_00, "ordinary")
-    _post(ledger, 2028, BROKERAGE, -100_000_00, "ltcg")
+    post_transfer(ledger, 2028, SALARY, CHECKING, 1_500_000_00, "ordinary")
+    post_transfer(ledger, 2028, BROKERAGE, CHECKING, -100_000_00, "ltcg")
     state = _state(ledger, 2028)
     assert state["capital_loss_used"] == 3_000_00
     assert state.agi == 1_500_000_00
@@ -163,8 +165,9 @@ def test_from_2028_a_long_term_loss_deduction_is_out_of_the_income_too(
 
 def test_before_2028_ordinary_income_and_what_ifs_of_it_are_not_taxed(
     ledger: sqlite3.Connection,
+    post_transfer: Callable[..., None],
 ) -> None:
-    _post(ledger, 2026, SALARY, 2_000_000_00, "ordinary")
+    post_transfer(ledger, 2026, SALARY, CHECKING, 2_000_000_00, "ordinary")
     assert _state(ledger).tax == 0
     # A Roth conversion on top costs nothing; a gain does, unless a home's.
     assert _state(ledger, extra=Extra(500_000_00)).tax == 0
@@ -175,13 +178,14 @@ def test_before_2028_ordinary_income_and_what_ifs_of_it_are_not_taxed(
 
 def test_from_2028_income_over_a_million_is_taxed_and_credits_the_gains_tax(
     ledger: sqlite3.Connection,
+    post_transfer: Callable[..., None],
 ) -> None:
     """ESSB 6346: the income tax's base is federal AGI with the gains tax's
     base in place of the long-term gain, so a home's gain stays out; the
     gains tax paid is credited against it."""
-    _post(ledger, 2028, SALARY, 1_500_000_00, "ordinary")
-    _post(ledger, 2028, BROKERAGE, 778_000_00, "ltcg")
-    _post(ledger, 2028, HOME, 400_000_00, "ltcg")
+    post_transfer(ledger, 2028, SALARY, CHECKING, 1_500_000_00, "ordinary")
+    post_transfer(ledger, 2028, BROKERAGE, CHECKING, 778_000_00, "ltcg")
+    post_transfer(ledger, 2028, HOME, CHECKING, 400_000_00, "ltcg")
     state = _state(ledger, 2028)
     gains_tax = _gains_tax(500_000_00)
     assert state["gains_tax"] == gains_tax
@@ -194,10 +198,12 @@ def test_from_2028_income_over_a_million_is_taxed_and_credits_the_gains_tax(
     assert state.tax == income_tax
 
 
-def test_the_credit_never_takes_more_than_the_income_tax(ledger: sqlite3.Connection) -> None:
+def test_the_credit_never_takes_more_than_the_income_tax(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
     """Below the $1 million deduction there's no income tax to credit
     against, and the gains tax is still paid in full."""
-    _post(ledger, 2028, BROKERAGE, 778_000_00, "ltcg")
+    post_transfer(ledger, 2028, BROKERAGE, CHECKING, 778_000_00, "ltcg")
     state = _state(ledger, 2028)
     assert state["capital_gains_tax_credit"] == 0
     assert state.tax == _gains_tax(500_000_00)
