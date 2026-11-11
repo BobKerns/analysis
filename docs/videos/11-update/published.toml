@@ -2,8 +2,8 @@
 # scenes: each scene's length in seconds in the build that was uploaded.
 
 [en]
-video = "S18GvCz74zo"
-uploaded = 2026-11-11T08:04:20Z
+video = "8db_avIPyaA"
+uploaded = 2026-11-11T18:35:07Z
 scenes = [
   ["title", 10.25],
   ["contents", 15.00],
@@ -17,24 +17,24 @@ scenes = [
   ["strategies", 21.56],
   ["imports", 21.77],
   ["ai", 17.75],
-  ["end", 8.26],
+  ["end", 9.98],
 ]
 
 [ja]
-video = "qJ6THMNtTto"
-uploaded = 2026-11-11T08:04:40Z
+video = "G8olwcX-Udw"
+uploaded = 2026-11-11T18:35:25Z
 scenes = [
   ["title", 14.37],
   ["contents", 17.18],
   ["why", 31.46],
   ["roll", 83.75],
-  ["taxes", 69.04],
-  ["spending", 36.64],
+  ["taxes", 68.96],
+  ["spending", 36.56],
   ["compare", 44.82],
   ["after", 36.89],
   ["what-ifs", 28.23],
   ["strategies", 24.23],
   ["imports", 29.95],
   ["ai", 22.19],
-  ["end", 11.16],
+  ["end", 12.18],
 ]
