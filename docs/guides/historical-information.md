@@ -24,12 +24,15 @@ It reads no network, takes about twenty seconds, and prints the tables
 below as Markdown, so anyone can rerun it:
 
 ```sh
-.venv/bin/python scripts/historical_compression.py
-.venv/bin/python scripts/historical_compression.py --start-year 2000 --end-year 2025
+uv run scripts/historical_compression.py
+uv run scripts/historical_compression.py --start-year 2000 --end-year 2025
 ```
 
 `--start-year` and `--end-year` keep only the years between them (inclusive),
 for every series including monthly CPI.
+The script declares its own dependencies in a PEP 723 header, with this
+checkout as one of them, so `uv run` builds its environment without the
+project's `.venv`.
 
 ## What it shows
 

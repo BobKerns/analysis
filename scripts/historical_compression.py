@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.14"
+# dependencies = ["analysis", "click", "numpy", "pandas", "scipy"]
+#
+# [tool.uv.sources]
+# analysis = { path = "..", editable = true }
+# ///
 """How much information is in each historical series? A compression test (#286).
 
 For each series in the committed `historical_data/` (inflation, the 10-year
@@ -12,14 +19,13 @@ time. docs/guides/historical-information.md reads the results.
 
 Reads only `historical_data/`, never the network. The output is Markdown.
 
-Usage: .venv/bin/python scripts/historical_compression.py [--start-year Y] [--end-year Y]
+Usage: uv run scripts/historical_compression.py [--start-year Y] [--end-year Y]
   e.g. --start-year 2000 for every series since 2000, monthly CPI included;
   --end-year 1979 for the years before it
 """
 # cspell:ignore resid logpdf prequential
 from __future__ import annotations
 
-import argparse
 import bz2
 import lzma
 import math
@@ -27,6 +33,7 @@ import random
 import zlib
 from pathlib import Path
 
+import click
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -140,17 +147,15 @@ def report(name: str, x: np.ndarray, step: float, unit: str, span: str, shuffles
         print(f"| {k} | {real[k]:,.0f} | {shuffled[k]:,.0f} | {real[k] / shuffled[k]:.3f} |")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--start-year", type=int, default=None,
-                    help="leave out years (and months) before this one")
-    ap.add_argument("--end-year", type=int, default=None,
-                    help="leave out years (and months) after this one")
-    ap.add_argument("--shuffles", type=int, default=50,
-                    help="shuffled copies averaged for each compressor (default 50)")
-    args = ap.parse_args()
-    start, end = args.start_year, args.end_year
-
+@click.command(help=(__doc__ or "").split("\n\nUsage:")[0])
+@click.option("--start-year", type=int, default=None,
+              help="Leave out years (and months) before this one.")
+@click.option("--end-year", type=int, default=None,
+              help="Leave out years (and months) after this one.")
+@click.option("--shuffles", type=int, default=50, show_default=True,
+              help="Shuffled copies averaged for each compressor.")
+def main(start_year: int | None, end_year: int | None, shuffles: int) -> None:
+    start, end = start_year, end_year
     h = load_history(Fetcher(HISTORICAL_DATA, None))
     for name, s in h.labeled():
         s = s.astype(float)
@@ -162,7 +167,7 @@ def main() -> None:
             print(f"\n### {name}: only {len(s)} years, skipped")
             continue
         span = f"{int(s.index[0])}–{int(s.index[-1])}"
-        report(name, s.to_numpy(), 0.1, "year", span, args.shuffles)
+        report(name, s.to_numpy(), 0.1, "year", span, shuffles)
 
     # Month-over-month change in percent, each dated by the later month, so
     # --start-year 2000 starts with January 2000's change.
@@ -176,7 +181,7 @@ def main() -> None:
         keep &= years <= end
     mom = mom[keep]
     span = f"{mom.index[0]:%Y-%m}–{mom.index[-1]:%Y-%m}"
-    report("CPI-U month-over-month (SA)", mom.to_numpy(), 0.01, "month", span, args.shuffles)
+    report("CPI-U month-over-month (SA)", mom.to_numpy(), 0.01, "month", span, shuffles)
 
 
 if __name__ == "__main__":
