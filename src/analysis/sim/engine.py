@@ -34,7 +34,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import registries, strategy_api, tax_api, tax_code, units
+from analysis.sim import ownership, registries, strategy_api, tax_api, tax_code, units
 from analysis.sim.dates import add_month_ends
 from analysis.sim.runs import finalize_run, open_run_file
 from analysis.sim.schema import inserted_id
@@ -765,12 +765,12 @@ class StepUp(NamedTuple):
     rule: str
 
 
-def _household(con) -> list[str]:
-    """The household: the ``primary`` persons, or everyone with a role if
-    none is marked."""
-    primaries = [r[0] for r in con.execute("SELECT id FROM person WHERE role = 'primary' ORDER BY id")]
-    return primaries or [
-        r[0] for r in con.execute("SELECT id FROM person WHERE role IS NOT NULL ORDER BY id")]
+def _household(con) -> ownership.Household:
+    """The household (``ownership.Household``): the ``primary`` persons, or
+    everyone with a role if none is marked, and their final months."""
+    return ownership.Household.of(
+        con.execute("SELECT id, role FROM person"),
+        dict(con.execute("SELECT person, final_month FROM person_lifespan").fetchall()))
 
 
 def _rule_lifespans(con, person_lifespan: Mapping[str, str]) -> dict[str, str]:
@@ -779,7 +779,7 @@ def _rule_lifespans(con, person_lifespan: Mapping[str, str]) -> dict[str, str]:
     death. ``joint`` gets one only when every household member has a lifespan;
     while anyone may live on, a joint rule runs to the end."""
     lifespans = dict(person_lifespan)
-    household = _household(con)
+    household = _household(con).members
     if "joint" not in lifespans and household and all(p in lifespans for p in household):
         lifespans["joint"] = max(lifespans[p] for p in household)
     return lifespans
@@ -796,13 +796,12 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
     their deaths it steps up in full if no one else in the household is
     left alive, or under ``community_property`` (§1014(b)(6): both halves of
     community property step up). Otherwise only the decedent's half does
-    (§2040(b))."""
-    deaths = dict(con.execute("SELECT person, final_month FROM person_lifespan").fetchall())
+    (§2040(b)). ``ownership.Household.decedent_part`` decides, as it does
+    for the end of a decedent's loss carryovers (#277)."""
+    household = _household(con)
+    deaths = household.final_months
     if not deaths:
         return {}
-    primaries = [r[0] for r in con.execute("SELECT id FROM person WHERE role = 'primary' ORDER BY id")]
-    household = _household(con)
-    spouses = dict([primaries, primaries[::-1]]) if len(primaries) == 2 else {}
     meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
     community = bool(meta.get("community_property", False))
     no_step_up = sorted(registries.CASH_SUBKINDS | {registries.RETIREMENT_SUBKIND, "hsa"})
@@ -813,33 +812,15 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
         no_step_up,
     ).fetchall()
 
-    def alive_after(person: str, month: str) -> bool:
-        return person not in deaths or deaths[person] > month
-
     plan: dict[str, list[StepUp]] = {}
     for person, month in sorted(deaths.items(), key=lambda d: (d[1], d[0])):
         stepped = {s.lot_id for s in plan.get(month, ())}
         for lot_id, owner in lots:
             if lot_id in stepped:
                 continue  # two deaths in one month: the first stepped it up in full
-            if owner in (None, "", "joint"):
-                if person not in household:
-                    continue
-                survivor = any(p != person and alive_after(p, month) for p in household)
-                # A joint tenancy is half each (§2040(b)); other shares are out of scope.
-                if not survivor:
-                    share, rule = 1, "last_survivor"
-                elif community:
-                    share, rule = 1, "community_property"
-                else:
-                    share, rule = 2, "joint_half"
-            elif owner == person:
-                share, rule = 1, "owner"
-            elif spouses.get(owner) == person and deaths.get(owner, month) < month:
-                share, rule = 1, "inherited"
-            else:
-                continue
-            plan.setdefault(month, []).append(StepUp(lot_id, person, share, rule))
+            part = household.decedent_part(person, owner, community=community)
+            if part is not None:
+                plan.setdefault(month, []).append(StepUp(lot_id, person, *part))
     return plan
 
 
@@ -3023,8 +3004,10 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
             (tax_year,),
         )
     ]
-    persons = [tax_api.Person(pid, born or None, role or "")
-               for pid, born, role in con.execute("SELECT id, birthdate, role FROM person")]
+    persons = [tax_api.Person(pid, born or None, role or "", final or None)
+               for pid, born, role, final in con.execute(
+                   "SELECT p.id, p.birthdate, p.role, l.final_month FROM person p "
+                   "LEFT JOIN person_lifespan l ON l.person = p.id")]
     return _TaxLedger(items, losses, persons, spending)
 
 
@@ -3073,6 +3056,7 @@ def _tax_year(
             aux, kind, column, value, f"{year}-12-31"),
         _filing_status_in=filing_status_in,
         _prior=lambda line: _summary_amount(con, tax_year - 1, f"{scope}_{line}"),
+        _line_in=lambda line, year: _summary_amount(con, year, f"{scope}_{line}"),
         _series_of=lambda kind: sorted(
             series for (k, series) in aux if k == kind and series is not None),
         _residences=_residences(con),

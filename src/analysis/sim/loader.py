@@ -4076,7 +4076,8 @@ _STATE_LINES: frozenset[str] = frozenset({
     "agi", "tax", "taxable_income", "ordinary_taxable", "ordinary_income", "ltcg_taxed",
     "nol_used", "nol_carryover", "ss_taxable", "ss_benefits", "credits", "deduction",
     "standard_deduction", "itemized_deduction", "capital_loss_used", "capital_loss_carryover",
-    "business_net", "hobby_disallowed", "dividends_as_ordinary", "hsa_addback",
+    "capital_loss_lapsed", "nol_lapsed", "business_net", "hobby_disallowed",
+    "dividends_as_ordinary", "hsa_addback",
     "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
     "drawdown_tax", "drawdown_base", "tax_paid", "tax_due", "tax_overpaid",
 })
