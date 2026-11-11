@@ -191,3 +191,18 @@ def test_a_later_death_shares_only_what_the_earlier_one_left() -> None:
     assert (carry(2030).carryover_lt, carry(2030).lapsed) == (15_000_00, 5_000_00)
     # Bill's half of the joint loss Alice's death left: 2,500 of the 15,000.
     assert (carry(2031).carryover_lt, carry(2031).lapsed) == (12_500_00, 2_500_00)
+
+
+def test_a_joint_accounts_loss_stays_joint_when_paid_into_ones_own_account() -> None:
+    checking = Account("Asset_Checking_Alice", "asset", "cash", "alice")
+    loss = IncomeItem(2028, "ltcg", JOINT, checking, -20_000_00)
+    assert _carry(2030, loss).lapsed == 5_500_00  # half the 11,000 left
+
+
+def test_an_owners_gains_net_their_losses_first() -> None:
+    """Alice's 2029 loss is offset by her own gain that year, so the
+    carryover she dies with is all Bill's."""
+    alice_gain = Account("Asset_Fund_Alice", "asset", "brokerage", "alice")
+    items = (_sold_at_a_loss(2028, BILL_OWN, 20_000_00), _sold_at_a_loss(2029, ALICE_OWN, 10_000_00),
+             IncomeItem(2029, "ltcg", alice_gain, CHECKING, 10_000_00))
+    assert _carry(2030, *items).lapsed == 0

@@ -114,20 +114,22 @@ def capital_gains(
     same year still counts as the decedent's if their account made it."""
     people = {p.id for p in ty.persons}
     totals: dict[int, list[int]] = {}
-    # Each year's losses by whose they were (None: the household's).
-    losses: dict[int, dict[str | None, int]] = {}
+    # Each year's net result by whose it was (None: the household's); a net
+    # loss is what that owner added to the carryover.
+    nets: dict[int, dict[str | None, int]] = {}
 
     def add(year: int, character: str, owner: str | None, amount: int) -> None:
         totals.setdefault(year, [0, 0])[1 if character == "ltcg" else 0] += amount
-        if amount < 0:
-            by_owner = losses.setdefault(year, {})
-            by_owner[owner] = by_owner.get(owner, 0) - amount
+        by_owner = nets.setdefault(year, {})
+        owner = None if owner in ownership.JOINT_OWNERS else owner
+        by_owner[owner] = by_owner.get(owner, 0) + amount
 
     for item in ty.items:
         if item.year > ty.year:
             continue
         if item.character in ("stcg", "ltcg"):
-            add(item.year, item.character, _owner(item.payer.owner, item.payee.owner, people), item.amount)
+            owner = _owner(item.payer.owner, item.payee.owner, people, payer_kind=item.payer.kind)
+            add(item.year, item.character, owner, item.amount)
         elif item.year in hsa_years and (growth := _hsa_growth(item)) is not None:
             add(item.year, "ltcg", _hsa_owner(item), growth)
     for loss in ty.losses:
@@ -141,8 +143,9 @@ def capital_gains(
         st, lt = totals.get(year, (0, 0))
         result = net_capital(st - carry_st, lt - carry_lt, functools.partial(loss_limit, year))
         carry_st, carry_lt = result.carryover_st, result.carryover_lt
-        for owner, amount in losses.get(year, {}).items():
-            building[owner] = building.get(owner, 0) + amount
+        for owner, net in nets.get(year, {}).items():
+            if net < 0:
+                building[owner] = building.get(owner, 0) - net
         if carry_st + carry_lt and deaths.in_year(year):
             ended = deaths.ended(year, building)
             share = deaths.share(building, ended)
@@ -157,10 +160,22 @@ def capital_gains(
     return result
 
 
-def _owner(payer: str | None, payee: str | None, people: Collection[str]) -> str | None:
-    """Whose an item is: its paying account's owner's, or else its receiving
-    account's; None when neither is one person's (``joint``, no owner)."""
-    return payer if payer in people else payee if payee in people else None
+_HOLDING_KINDS = frozenset({"asset", "liability"})
+"""The kinds of account that hold money for someone: one with no person
+for its owner is the household's."""
+
+
+def _owner(payer: str | None, payee: str | None, people: Collection[str], *,
+           payer_kind: str = "asset") -> str | None:
+    """Whose an item is: its paying account's owner's, or else, when the
+    payer holds nothing for anyone (an income account), its receiving
+    account's. None is the household's: a joint account's (owner ``joint``
+    or none), or an item neither account's owner holds alone."""
+    if payer in people:
+        return payer
+    if payer_kind in _HOLDING_KINDS:
+        return None
+    return payee if payee in people else None
 
 
 class Deaths:
@@ -428,9 +443,8 @@ def person_income(
     ty: TaxYear, people: Sequence[str], *, hsa_taxed: bool = False,
 ) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
     """Each person's income this year by ``STATE_EXCLUSION_INCOME`` kind
-    (never below zero), and their Social Security. An item is its paying
-    account's owner's, or else its receiving account's; one neither owns
-    alone (``joint``, or no owner) is split evenly among ``people``. An
+    (never below zero), and their Social Security. An item is whose
+    :func:`_owner` says; the household's is split evenly among ``people``. An
     HSA's flows are ``other`` income, not a retirement account's, and none
     at all when the state taxes the HSA as a brokerage account
     (``hsa_taxed``, #490); then its growth is its owner's capital gain."""
@@ -458,7 +472,7 @@ def person_income(
             pool, sign = _EXCLUSION_POOL_BY_CHARACTER[character]
             if hsa and character == "tax_deferred_out":
                 pool = "other"
-        for person, share in _shares(_owner(payer, payee, pools), amount, people, pools):
+        for person, share in _shares(_owner(payer, payee, pools, payer_kind=kind), amount, people, pools):
             if pool == "ss":
                 ss[person] += share
             else:
