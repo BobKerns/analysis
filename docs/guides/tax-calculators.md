@@ -74,7 +74,9 @@ API_VERSION = 4
 
 # Schedule H's worksheet for 2025: up to each federal AGI, the share of it
 # the property tax must exceed. Past the last row, no credit.
-UNDER_70 = [(24_999_00, percent("3%")), (51_999_00, percent("4%")), (66_000_00, percent("5%"))]
+UNDER_70 = [(24_999_00, percent("3%")),
+            (51_999_00, percent("4%")),
+            (66_000_00, percent("5%"))]
 AGE_70 = [(90_000_00, percent("3%"))]
 
 
@@ -92,13 +94,14 @@ class PropertyCreditYear(StateTablesYear):
         paid = self.ty.spent(params.property_tax)
         if params.rent is not None:
             paid += self.ty.spent(params.rent) // 5  # 20% of rent counts
+        credit = paid - agi * share // 1_000_000
         most = self.ty.grown(params.most, params.series, 2025)
-        return {"property_credit": max(0, min(paid - agi * share // 1_000_000, most))}
+        return {"property_credit": max(0, min(credit, most))}
 
     def oldest(self):
         """The older filer's age on December 31."""
-        return max((self.ty.year - int(person.birthdate[:4]) for person in self.ty.persons
-                    if person.birthdate and person.role == "primary"), default=0)
+        return max((self.ty.year - int(p.birthdate[:4]) for p in self.ty.persons
+                    if p.birthdate and p.role == "primary"), default=0)
 
 
 @register

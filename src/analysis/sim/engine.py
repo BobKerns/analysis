@@ -2293,6 +2293,19 @@ def _chain_leaves(chain_id: int, graph: ChainGraph, seen: set[int]) -> set[int]:
     return out
 
 
+def _first_leaf(graph: ChainGraph | None, chain_id: int | None) -> int | None:
+    """The lot a chain draws from first, following its first steps: where a
+    refund paid back to the chain goes (#568)."""
+    seen: set[int] = set()
+    while graph is not None and chain_id is not None and chain_id not in seen:
+        if chain_id in graph.leaf_lot:
+            return graph.leaf_lot[chain_id]
+        seen.add(chain_id)
+        steps = graph.members.get(chain_id)
+        chain_id = steps[0][0] if steps else None
+    return None
+
+
 def _settle_order(graph: ChainGraph) -> list[int]:
     """Accounts with a refill/overflow policy, ordered so a source account's
     own policy settles before anything downstream draws from or sweeps into
@@ -3455,6 +3468,18 @@ def _settle_tax(
                 account_subkind, account_name, step_id, month_s, graph,
                 source_chain_id, tax_due, to_id, reason_kind="tax", reason_id=tid,
                 tax_year=tax_year, refill_ctx=refill_ctx,
+            )
+    elif post_transfer and tax_overpaid > 0:
+        # More was paid than the year owes (withholding past the tax, or a
+        # refundable credit taking it below zero, #568): the jurisdiction
+        # pays it back, into the account the tax is paid from.
+        assert step_id is not None
+        refund_to = from_id if from_id is not None else _first_leaf(graph, source_chain_id)
+        if refund_to is not None:
+            _post_transfer(
+                con, balances, account_kinds, step_id, month_s,
+                to_id, refund_to, tax_overpaid, tax_char, tid, tax_year=tax_year,
+                refill_ctx=refill_ctx, reason_kind="tax",
             )
 
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

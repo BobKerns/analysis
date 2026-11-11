@@ -256,14 +256,17 @@ def test_sim_tax_edit_chooses_the_calculator(
     assert kind() == "state_tables"
 
 
-def test_the_guides_example_is_the_tested_calculator() -> None:
-    """docs/guides/tax-calculators.md shows property_credit.py whole, so the
-    guide's code is the code these tests run."""
+def test_the_guides_and_videos_example_is_the_tested_calculator() -> None:
+    """docs/guides/tax-calculators.md shows property_credit.py whole, and
+    video 13 shows (and its setup copies) its own copy, so the code both
+    show is the code these tests run."""
     root = Path(__file__).parent.parent
     guide = (root / "docs" / "guides" / "tax-calculators.md").read_text(encoding="utf-8")
     module = (root / "tests" / "data" / "sim" / "tax_calculators" / "taxes" / "property_credit.py").read_text(
         encoding="utf-8")
     assert f"```python\n{module}```" in guide
+    video = root / "docs" / "videos" / "13-tax-plugins" / "property_credit.py"
+    assert video.read_text(encoding="utf-8") == module
 
 
 @pytest.fixture
@@ -293,3 +296,15 @@ def test_a_refundable_credit_takes_the_tax_below_zero(
     # They owe DC nothing then, so DC pays the whole credit back in April.
     refund = _summary(run, "state_tax_overpaid")
     assert all(tax[year] == -amount and refund[year] == amount for year, amount in credit.items())
+    # And the refund is money: each April, out of the state tax account back
+    # into checking, which pays the tax.
+    con = sqlite3.connect(run)
+    try:
+        paid_back = dict(con.execute(
+            "SELECT e.tax_year, e.amount FROM transfer_event e "
+            "JOIN account a ON a.id = e.from_account JOIN account b ON b.id = e.to_account "
+            "WHERE a.name = 'Expense_Taxes_State' AND b.name = 'Asset_Checking' "
+            "AND e.reason_kind = 'tax'"))
+    finally:
+        con.close()
+    assert paid_back == {year: amount for year, amount in credit.items() if year < max(credit)}

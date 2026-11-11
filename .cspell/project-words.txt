@@ -312,6 +312,7 @@ rollups
 rootdir
 Roths
 roundtrips
+rowhouse
 RRGGBB
 rtol
 runfile
