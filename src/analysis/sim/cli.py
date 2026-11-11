@@ -16669,8 +16669,8 @@ def _ytd_summary(row: dict[str, str]) -> str:
 
 @ytd_group_command.command("add")
 @click.argument("name", required=False)
-@click.argument("from_account", required=False, type=completion.ACCOUNT)
-@click.argument("to_account", required=False, type=completion.ACCOUNT)
+@click.argument("from_account", required=False, type=completion.ACCOUNT_OR_BUILTIN)
+@click.argument("to_account", required=False, type=completion.ACCOUNT_OR_BUILTIN)
 @click.argument("amount", required=False)
 @click.option("--from-lot", type=completion.LotName("from_account"), default=None,
               help="Lot of the from account; asked for when a blank one would not say which.")

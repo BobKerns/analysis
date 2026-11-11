@@ -99,6 +99,14 @@ def account_names(data_dir: Path, scenario: str) -> list[str]:
     return _column((d / "accounts.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
 
 
+def builtin_account_names() -> list[str]:
+    """The accounts the loader makes on demand (ADR-003 §2.2): growth's other
+    side, and where payouts come from. Not in any accounts.csv, but a
+    transfer or a year-to-date row may name one (``capital_gains``)."""
+    builtins = (*registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.builtin_payout_accounts())
+    return sorted({counterparty.name for counterparty in builtins})
+
+
 def lot_names(data_dir: Path, scenario: str, account: str, *, implicit: bool = True) -> list[str]:
     """``account``'s lots: the ones account_lots.csv names, a blank lot
     being the default one, or (when ``implicit``) just the default lot of an

@@ -477,7 +477,9 @@ def _prepare_demo(data: Path, setup: Path | None, theme: Theme, store: Path) -> 
         if setup is not None:
             bash = need("bash", "install bash")
             script = f'set -euo pipefail\nsource {rc}\ncd "$ANALYSIS_DATA_DIR"\nset -x\nsource {setup.resolve()}\n'
-            proc = finish(spawn([bash, "-c", script], cwd=root, stdout=subprocess.PIPE,
+            # No terminal to read: a command that asks something fails rather
+            # than waiting for an answer no one can type.
+            proc = finish(spawn([bash, "-c", script], cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, env={**os.environ, "PATH": tool_path()}))
             if proc.returncode != 0:
                 tail = "\n".join(proc.stdout.splitlines()[-25:])

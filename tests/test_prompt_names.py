@@ -472,3 +472,18 @@ def test_ensemble_reports_run_on_the_current_scenario(
     assert result.exit_code == 0, result.output
     assert "Using scenario retire_alice" in result.stderr
     assert "ensembles with runs" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_builtin_account_is_not_a_mistyped_one(sim: Callable[..., Result]) -> None:
+    # The loader makes `capital_gains` (and `dividends`...) on demand: naming
+    # one isn't a typo, and asking again waits on a terminal (video 11's setup
+    # hung there).
+    result = sim("ytd", "add", "gains_2025", "capital_gains", "capital_gains", "1500",
+                 "--tax-character", "ltcg", "--year", "2025", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+
+
+def test_builtin_accounts_include_payouts_and_growth() -> None:
+    assert {"capital_gains", "dividends", "interest_income"} <= set(names.builtin_account_names())
