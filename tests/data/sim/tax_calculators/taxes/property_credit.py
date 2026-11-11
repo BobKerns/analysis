@@ -1,0 +1,60 @@
+"""DC's income tax with its property tax credit (Schedule H), the worked
+example in docs/guides/tax-calculators.md and video 13: the built-in
+``state_tables``, less a refundable credit for property tax above a share
+of federal AGI."""
+
+from dataclasses import dataclass
+
+from analysis.sim.tax_api import Dollars, Tag, percent, register
+from analysis.sim.taxes.state_tables import StateTables, StateTablesYear
+
+API_VERSION = 4
+
+# Schedule H's worksheet for 2025: up to each federal AGI, the share of it
+# the property tax must exceed. Past the last row, no credit.
+UNDER_70 = [(24_999_00, percent("3%")), (51_999_00, percent("4%")), (66_000_00, percent("5%"))]
+AGE_70 = [(90_000_00, percent("3%"))]
+
+
+class PropertyCreditYear(StateTablesYear):
+    """One year of DC's tax, with the credit."""
+
+    def refundable_credits(self, tax, income, basis):
+        params = self.ty.params
+        agi = basis.federal.lines["agi"]
+        bands = AGE_70 if self.oldest() >= 70 else UNDER_70
+        share = next((share for top, share in bands
+                      if agi <= self.ty.grown(top, params.series, 2025)), None)
+        if share is None:
+            return {}
+        paid = self.ty.spent(params.property_tax)
+        if params.rent is not None:
+            paid += self.ty.spent(params.rent) // 5  # 20% of rent counts
+        most = self.ty.grown(params.most, params.series, 2025)
+        return {"property_credit": max(0, min(paid - agi * share // 1_000_000, most))}
+
+    def oldest(self):
+        """The older filer's age on December 31."""
+        return max((self.ty.year - int(person.birthdate[:4]) for person in self.ty.persons
+                    if person.birthdate and person.role == "primary"), default=0)
+
+
+@register
+class PropertyCredit(StateTables):
+    """``state_tables`` with DC's property tax credit: the year's property
+    tax, or 20% of its rent, above a share of federal AGI, up to ``most``,
+    paid even when no tax is due. Its 2025 figures grow with ``series``."""
+    kind = "property_credit"
+    jurisdiction = "state"
+    year_class = PropertyCreditYear
+
+    @dataclass(frozen=True)
+    class Params(StateTables.Params):
+        property_tax: Tag = "tax:property"
+        """The tag on the property tax paid."""
+        rent: Tag | None = None
+        """The tag on rent paid, for a renter."""
+        most: Dollars = 1425_00
+        """The largest credit, in 2025."""
+        series: str = "cpi"
+        """The inflation series the 2025 figures grow by."""

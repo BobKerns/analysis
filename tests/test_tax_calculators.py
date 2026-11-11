@@ -257,10 +257,39 @@ def test_sim_tax_edit_chooses_the_calculator(
 
 
 def test_the_guides_example_is_the_tested_calculator() -> None:
-    """docs/guides/tax-calculators.md shows renters.py whole, so the guide's
-    code is the code these tests run."""
+    """docs/guides/tax-calculators.md shows property_credit.py whole, so the
+    guide's code is the code these tests run."""
     root = Path(__file__).parent.parent
     guide = (root / "docs" / "guides" / "tax-calculators.md").read_text(encoding="utf-8")
-    module = (root / "tests" / "data" / "sim" / "tax_calculators" / "taxes" / "renters.py").read_text(
+    module = (root / "tests" / "data" / "sim" / "tax_calculators" / "taxes" / "property_credit.py").read_text(
         encoding="utf-8")
     assert f"```python\n{module}```" in guide
+
+
+@pytest.fixture
+def property_credit(add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
+                    tax_module: Callable[..., Path],
+                    retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """The private retire_alice copy, living in DC and taxed through the
+    ``property_credit`` example calculator (#568), its housing tagged as
+    property tax; ``property_credit(**params)`` sets its params."""
+    add_state_tax("DC")
+    tax_module("property_credit")
+    _tag_rule(retire_alice_csv, "housing", "tax:property")
+    return lambda **params: add_tax("state", kind="property_credit", params_json=params)
+
+
+@pytest.mark.slow
+def test_a_refundable_credit_takes_the_tax_below_zero(
+    property_credit: Callable[..., Path], run_test_copy: Callable[[], Path],
+) -> None:
+    property_credit()
+    run = run_test_copy()
+    credit, tax = _summary(run, "state_property_credit"), _summary(run, "state_tax")
+    # Working, Alice and Bill earn too much; once retired, their $800 a
+    # month of housing is far past the cap, which grows with inflation.
+    assert 2030 not in credit
+    assert 1425_00 < credit[2031] < credit[2032] < 1425_00 * 2
+    # They owe DC nothing then, so DC pays the whole credit back in April.
+    refund = _summary(run, "state_tax_overpaid")
+    assert all(tax[year] == -amount and refund[year] == amount for year, amount in credit.items())

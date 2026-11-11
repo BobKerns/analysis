@@ -16,7 +16,9 @@ override on its :class:`StateYear`:
 5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits` and
    :meth:`~StateYear.credit_lines`;
 6. :meth:`~StateYear.excise`, a tax apart from the income tax (Washington's
-   on capital gains, #489), added to the tax.
+   on capital gains, #489), added to the tax;
+7. :meth:`~StateYear.refundable_credits` (#568), taken off last, which can
+   leave the tax below zero: the state pays it back.
 """
 
 from __future__ import annotations
@@ -170,6 +172,13 @@ class StateYear(Prepared):
         is added to the income tax after credits. None by default."""
         return {}, 0
 
+    def refundable_credits(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
+        """Named credits the state pays whatever the tax (#568): each is
+        written to the return in full and taken off after :meth:`excise`, so
+        the tax can end below zero, a refund. ``tax`` is the tax so far.
+        None by default."""
+        return {}
+
     def memo(self, basis: Basis) -> Mapping[str, int]:
         """The return's memo (``drawn_ordinary``, ``drawn_gain``)."""
         return {}
@@ -197,14 +206,16 @@ class StateYear(Prepared):
         nol_used = common.nol_used(self._nol_in, before_nol, self._nol_limit)
         taxable = max(0, before_nol - nol_used)
         tax = self.tax(taxable, income)
-        # Credits are never refundable: a named line shows what it took,
-        # in order, so the lines add up to the credits taken.
+        # These credits can't take the tax below zero: a named line shows
+        # what it took, in order, so the lines add up to the credits taken.
         credits = min(tax, self.credits(tax, income, basis))
         credit_lines = {}
         for line, amount in self.credit_lines(tax, income, basis).items():
             credit_lines[line] = max(0, min(amount, tax - credits))
             credits += credit_lines[line]
         excise_lines, excise = self.excise(basis)
+        refundable = {line: max(0, amount) for line, amount in self.refundable_credits(
+            tax - credits + excise, income, basis).items()}
         lines = {
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,
@@ -222,7 +233,8 @@ class StateYear(Prepared):
                 taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),
             "credits": credits,
             **excise_lines,
-            "tax": tax - credits + excise,
+            **refundable,
+            "tax": tax - credits + excise - sum(refundable.values()),
         }
         return Return(lines, MappingProxyType(dict(self.memo(basis))))
 

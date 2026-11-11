@@ -3154,6 +3154,8 @@ def _tax_year(
         _series_of=lambda kind: sorted(
             series for (k, series) in aux if k == kind and series is not None),
         _residences=_residences(con),
+        _grown=lambda amount, series, since: _grown_amount(
+            aux, amount, series, since, tax_year, growth_cache),
         **({"_upstream": upstream} if upstream is not None else {}),
     )
 
@@ -4297,6 +4299,24 @@ def _lookup_aux(
 _TAX_INDEX_ROUNDING = 5_000
 """Indexed tax figures round down to a multiple of $50, as IRC §1(f)(7)
 rounds the brackets and standard deduction (#467)."""
+
+
+def _grown_amount(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    amount: int, series: str, since: int, tax_year: int,
+    cache: dict[tuple[str, date, date, str], int],
+) -> int:
+    """:meth:`tax_api.TaxYear.grown`: ``amount`` grown from January of
+    ``since`` to January of ``tax_year`` by ``series``, as
+    :func:`_indexed_tax_rows` grows a table's figures (#568)."""
+    if ("inflation", series) not in aux:
+        raise tax_api.TaxError(f"no inflation series {series!r} to grow an amount by")
+    try:
+        factor = _cumulative_inflation_factor(
+            aux, series, date(since, 1, 31), date(tax_year, 1, 31), cache)
+    except EngineError as e:
+        raise tax_api.TaxError(str(e)) from None
+    return amount * factor // 1_000_000
 
 
 def _indexed_tax_rows(
