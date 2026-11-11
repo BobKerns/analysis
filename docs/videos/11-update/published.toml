@@ -1,0 +1,40 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "S18GvCz74zo"
+uploaded = 2026-11-11T08:04:20Z
+scenes = [
+  ["title", 10.25],
+  ["contents", 15.00],
+  ["why", 25.26],
+  ["roll", 70.81],
+  ["taxes", 68.96],
+  ["spending", 36.56],
+  ["compare", 39.52],
+  ["after", 33.13],
+  ["what-ifs", 24.03],
+  ["strategies", 21.56],
+  ["imports", 21.77],
+  ["ai", 17.75],
+  ["end", 8.26],
+]
+
+[ja]
+video = "qJ6THMNtTto"
+uploaded = 2026-11-11T08:04:40Z
+scenes = [
+  ["title", 14.37],
+  ["contents", 17.18],
+  ["why", 31.46],
+  ["roll", 83.75],
+  ["taxes", 69.04],
+  ["spending", 36.64],
+  ["compare", 44.82],
+  ["after", 36.89],
+  ["what-ifs", 28.23],
+  ["strategies", 24.23],
+  ["imports", 29.95],
+  ["ai", 22.19],
+  ["end", 11.16],
+]
