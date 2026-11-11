@@ -179,12 +179,16 @@ class StateTablesYear(FederalStateYear):
 
     def fixed_lines(self, basis: Basis) -> Mapping[str, int]:
         capital = self._capital
-        return {
+        lines = {
             **super().fixed_lines(basis),
             "capital_loss_used": capital.loss_deduction,
             "capital_loss_carryover": capital.carryover_st + capital.carryover_lt,
-            **({"capital_loss_lapsed": capital.lapsed} if capital.lapsed else {}),
         }
+        # The state nets its own losses, so the federal lapse isn't its.
+        lines.pop("capital_loss_lapsed", None)
+        if capital.lapsed:
+            lines["capital_loss_lapsed"] = capital.lapsed
+        return lines
 
     def tax(self, taxable: int, income: Income) -> int:
         return super().tax(taxable, income) + common.progressive_tax(taxable, self._surcharge)

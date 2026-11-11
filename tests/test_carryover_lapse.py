@@ -6,8 +6,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from analysis.sim.tax_api import Account, CapitalLoss, IncomeItem, Person, TaxYear
+from analysis.sim.tax_api import NO_EXTRA, Account, CapitalLoss, IncomeItem, Person, Return, TaxYear
 from analysis.sim.taxes import common
+from analysis.sim.taxes.state_base import Basis
+from analysis.sim.taxes.state_tables import StateTablesYear
 
 CHECKING = Account("Asset_Checking", "asset", "cash", None)
 ALICE_OWN = Account("Asset_Brokerage_Alice", "asset", "brokerage", "alice")
@@ -121,3 +123,14 @@ def test_the_survivors_business_loss_carries_on() -> None:
 def test_no_death_in_the_year_no_nol_lapses() -> None:
     assert common.nol_lapse_share(_year(2029, [_business_loss(2029, SHOP, 10_000_00)])) == 0
     assert common.nol_carried(8_000_00, 0.0) == {"nol_carryover": 8_000_00}
+
+
+def test_the_state_reports_its_own_lapse_not_the_federal_one() -> None:
+    """The state nets its own losses (an HSA's growth is gain to it), so a
+    federal lapse it doesn't share stays off its return."""
+    federal = Return({"capital_loss_carryover": 0, "capital_loss_lapsed": 11_000_00})
+    year = object.__new__(StateTablesYear)
+    year._capital = common.CapitalGains(0, 0, 3_000_00, 0, 0)
+    assert "capital_loss_lapsed" not in year.fixed_lines(Basis(NO_EXTRA, federal))
+    year._capital = common.CapitalGains(0, 0, 3_000_00, 0, 0, lapsed=4_000_00)
+    assert year.fixed_lines(Basis(NO_EXTRA, federal))["capital_loss_lapsed"] == 4_000_00
