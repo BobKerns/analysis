@@ -15,22 +15,12 @@ from click.testing import CliRunner, Result
 from analysis.cli import main
 from analysis.sim import compare, roll
 from analysis.sim.connection import RunConnection
-from analysis.sim.loader import latest_run_path
+from analysis.sim.dates import month_before
 
 
 def _sim(data_dir: Path, *args: str, input: str | None = None) -> Result:  # noqa: A002 -- CliRunner's name
     return CliRunner().invoke(main, ["sim", *args, "--data-dir", str(data_dir)], input=input,
                               terminal_width=200)
-
-
-def _run(data_dir: Path, intent_dir: Path, runs_dir: Path, name: str) -> Path:
-    result = CliRunner().invoke(main, [
-        "sim", "run", name, "--data-dir", str(data_dir), "--intent-dir", str(intent_dir),
-        "--runs-dir", str(runs_dir), "--allow-dirty-data"])
-    assert result.exit_code == 0, result.output
-    found = latest_run_path(runs_dir, name)
-    assert found is not None
-    return found
 
 
 def _rows(path: Path) -> dict[str, dict[str, str]]:
@@ -49,11 +39,11 @@ def test_default_start_is_the_next_january_not_before_this_year() -> None:
 
 @pytest.mark.uses_current_scenario_write
 def test_roll_takes_the_projection_keeps_the_old_plan_and_pins_last_years_rows(
-    test_data_dir: Path, test_scenarios_dir: Path, intent_dir: Path, runs_dir: Path,
+    test_data_dir: Path, test_scenarios_dir: Path, latest_test_run: Callable[[str], Path],
 ) -> None:
-    run = _run(test_data_dir, intent_dir, runs_dir, "retire_alice")
+    run = latest_test_run("retire_alice")
     with RunConnection(run, "retire_alice") as rc:
-        projected = roll.projections(rc, roll.month_before("2027-01"))
+        projected = roll.projections(rc, month_before("2027-01"))
     folder = test_scenarios_dir / "retire_alice"
     before = (folder / "account_lots.csv").read_bytes()
 
@@ -108,12 +98,12 @@ def test_roll_asks_for_each_lot_offering_the_current_value_without_a_run(
 
 @pytest.mark.uses_current_scenario_write
 def test_roll_to_a_later_month_offers_the_dec_31_balance_as_prior_year_end(
-    test_data_dir: Path, test_scenarios_dir: Path, intent_dir: Path, runs_dir: Path,
+    test_data_dir: Path, test_scenarios_dir: Path, latest_test_run: Callable[[str], Path],
 ) -> None:
-    run = _run(test_data_dir, intent_dir, runs_dir, "retire_alice")
+    run = latest_test_run("retire_alice")
     with RunConnection(run, "retire_alice") as rc:
-        december = roll.projections(rc, roll.month_before("2027-01"))
-        june = roll.projections(rc, roll.month_before("2027-07"))
+        december = roll.projections(rc, month_before("2027-01"))
+        june = roll.projections(rc, month_before("2027-07"))
 
     result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-07", "--no-keep", "--yes")
 
@@ -126,24 +116,33 @@ def test_roll_to_a_later_month_offers_the_dec_31_balance_as_prior_year_end(
 
 
 def test_roll_keeps_an_authored_zero_cost_basis(
-    test_data_dir: Path, test_scenarios_dir: Path,
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    update_account_value: Callable[..., None],
 ) -> None:
-    path = test_scenarios_dir / "retire_alice" / "account_lots.csv"
-    with path.open(newline="", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        header, lots = list(reader.fieldnames or []), list(reader)
-    lot = next(row for row in lots if row["account_name"] == "Asset_Brokerage_Joint")
-    lot["opening_cost_basis"] = "0"
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(lots)
+    update_account_value("Asset_Brokerage_Joint", "default", opening_cost_basis="0")
 
     result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--no-keep", "--yes")
 
     assert result.exit_code == 0, result.output
-    rolled = _rows(path)[f"Asset_Brokerage_Joint/{lot['lot'] or 'default'}"]
+    rolled = _rows(retire_alice_csv("account_lots.csv"))["Asset_Brokerage_Joint/default"]
     assert rolled["opening_cost_basis"] == "0.00"
+
+
+def test_roll_with_yes_refuses_a_value_it_has_no_default_for(
+    test_data_dir: Path, update_account_value: Callable[..., None],
+) -> None:
+    update_account_value("Asset_Savings", "", opening_balance="@1000+2000")
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--no-keep", "--yes")
+
+    assert result.exit_code != 0
+    assert "Asset_Savings (default) balance: no default to take with --yes" in result.output
+
+
+def test_roll_to_a_spring_start_reminds_of_last_years_tax(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-03", "--no-keep", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "2026's tax is settled in April 2027" in result.output
 
 
 def test_roll_refuses_a_start_that_is_not_later(test_data_dir: Path) -> None:
@@ -153,25 +152,20 @@ def test_roll_refuses_a_start_that_is_not_later(test_data_dir: Path) -> None:
 
 
 def test_roll_makes_a_ytd_amount_a_row_of_the_old_year(
-    test_data_dir: Path, test_scenarios_dir: Path,
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    update_scheduled: Callable[..., None],
 ) -> None:
-    path = test_scenarios_dir / "retire_alice" / "scheduled.csv"
-    with path.open(newline="", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        header, rules = list(reader.fieldnames or []), list(reader)
-    rule = next(row for row in rules if row["amount_rule_kind"] == "fixed_amount"
+    path = retire_alice_csv("scheduled.csv")
+    rules = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rule = next(row for row in rules.to_dict("records") if row["amount_rule_kind"] == "fixed_amount"
                 and row["from_account"].startswith("Asset_") and row["tax_character"])
-    rule["ytd_amount"] = "1234.00"
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(rules)
+    update_scheduled(rule["name"], ytd_amount="1234.00")
 
     result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--no-keep", "--yes")
 
     assert result.exit_code == 0, result.output
     assert _rows(path)[rule["name"]]["ytd_amount"] == ""
-    converted = _rows(test_scenarios_dir / "retire_alice" / "year_to_date.csv")[f"{rule['name']}_2026"]
+    converted = _rows(retire_alice_csv("year_to_date.csv"))[f"{rule['name']}_2026"]
     assert (converted["amount"], converted["year"], converted["from_account"]) == (
         "1234.00", "2026", rule["from_account"])
 
@@ -179,14 +173,14 @@ def test_roll_makes_a_ytd_amount_a_row_of_the_old_year(
 @pytest.mark.slow
 @pytest.mark.uses_current_scenario_write
 def test_compare_across_starts_shares_one_dollar_and_shows_where_the_new_plan_starts(
-    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+    test_data_dir: Path, runs_dir: Path, latest_test_run: Callable[[str], Path],
 ) -> None:
-    _run(test_data_dir, intent_dir, runs_dir, "retire_alice")
+    latest_test_run("retire_alice")
     result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--yes",
                   "--keep", "plan_2026")
     assert result.exit_code == 0, result.output
-    old = _run(test_data_dir, intent_dir, runs_dir, "plan_2026")
-    new = _run(test_data_dir, intent_dir, runs_dir, "retire_alice")
+    old = latest_test_run("plan_2026")
+    new = latest_test_run("retire_alice")
 
     with RunConnection(old, "plan_2026") as before, RunConnection(new, "retire_alice") as after:
         connections = {"plan_2026": before, "retire_alice": after}

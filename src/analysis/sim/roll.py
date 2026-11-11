@@ -17,7 +17,7 @@ found here so the command can deal with each:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from analysis.sim.connection import RunConnection
 
 __all__ = [
-    "Projection", "calendar_before", "default_start", "month_before", "projections",
+    "Projection", "calendar_before", "cell_dollars", "default_start", "projections",
     "preroll_rules", "unpinned_year_to_date", "ytd_amount_rules",
 ]
 
@@ -55,23 +55,14 @@ def default_start(old_start: str, today: date) -> str:
     return f"{year}-01"
 
 
-def month_before(start: str) -> pd.Timestamp:
-    """The month end before ``start`` (``YYYY-MM``): the last month the old
-    plan has to say about before the new one begins."""
-    first = date(int(start[:4]), int(start[5:7]), 1)
-    stamp = pd.Timestamp(first - timedelta(days=1))
-    assert isinstance(stamp, pd.Timestamp)  # never NaT: a real date
-    return stamp
-
-
-def projections(rc: RunConnection, month: pd.Timestamp) -> dict[tuple[str, str], Projection]:
+def projections(rc: RunConnection, month: date) -> dict[tuple[str, str], Projection]:
     """Every asset and liability lot's balance, basis and shares in the run
     at the end of ``month``, by (account, lot); empty when the run doesn't
     reach that month. A liability's balance is what is owed, as authored."""
     lots = rc.items("lot_balance")
     if lots.empty:
         return {}
-    lots = lots[pd.to_datetime(lots["month"]) == month]
+    lots = lots[pd.to_datetime(lots["month"]).dt.date == month]
     found = {}
     for row in named_rows(lots):
         found[(str(row.account), str(row.lot))] = Projection(
@@ -82,15 +73,23 @@ def projections(rc: RunConnection, month: pd.Timestamp) -> dict[tuple[str, str],
     return found
 
 
-def _amount(text: str) -> bool:
-    """Whether a money cell says anything other than zero."""
+def cell_dollars(text: str) -> float | None:
+    """A money cell's dollars; ``None`` when it's blank, or an
+    ``@itemization`` (no one number to offer)."""
     cleaned = text.strip().replace(",", "").replace("$", "")
-    if not cleaned:
-        return False
     try:
-        return float(cleaned) != 0
+        return float(cleaned) if cleaned else None
     except ValueError:
-        return True  # an @itemization: something, whatever it sums to
+        return None
+
+
+def _amount(text: str) -> bool:
+    """Whether a money cell says anything other than zero (an
+    ``@itemization`` says something, whatever it sums to)."""
+    if not text.strip():
+        return False
+    value = cell_dollars(text)
+    return value is None or value != 0
 
 
 def unpinned_year_to_date(scenario_dir: Path) -> list[Overlaid]:

@@ -1196,8 +1196,12 @@ to the old start's year, and each rule's `ytd_amount` to become a
 year-to-date row of that year with the rule's accounts and character (the
 rule's `ytd_amount` cleared). It lists the calendar rows dated before START
 (not latent factors or date markers), and the rules whose `ytd_preroll` now
-counts the new year's months, and for a January start names what the prior
-year's April tax needs. The whole edit is one staged edit, the kept copy
+counts the new year's months; within the same year, the year-to-date rows
+and `ytd_amount`s that now cover too few months. For a start in a later
+year by April, it names what the prior year's April tax needs. `--yes`
+fails, rather than asks, at a question with no default (an
+`@itemization` balance and no run). A lot deleted in the scenario isn't
+brought back by an older run's projection. The whole edit is one staged edit, the kept copy
 included.
 
 `calendar edit` chooses its row before its prompts, which can stay open a

@@ -1773,12 +1773,14 @@ default name is the scenario's name and the old start's year), so you can
 compare last year's plan with this year's. Then it moves the start, and
 asks, lot by lot, what each account holds now: shares for a lot kept in
 shares (a symbol, shares and no balance) whose symbol has a price by the
-new start (the balance is shares times that price), dollars otherwise, and the cost basis where the lot keeps one. A Roth's
-basis is what was put in, so a year the market fell leaves it above the
+new start (the balance is shares times that price), dollars otherwise,
+and the cost basis where the lot keeps one. A Roth's basis is what was put
+in, so a year the market fell leaves it above the
 balance. Each question offers what the plan's newest run projected for the
 month before the new start; press Enter to take it, or `--yes` to take
-them all. A lot's Dec 31 balance (`prior_year_end_balance`), when it has
-one, follows.
+them all (`--yes` stops instead when a question has nothing to offer). A
+lot's Dec 31 balance (`prior_year_end_balance`), when it has one, follows,
+offering the run's Dec 31.
 
 A new year changes what some rows mean, so `roll` deals with those too:
 
@@ -1790,9 +1792,13 @@ A new year changes what some rows mean, so `roll` deals with those too:
 - A calendar row dated before the new start no longer happens. `roll` lists
   them.
 - Last year's income tax is paid in April from last year's income, which
-  the new plan never ran. Record that income with `sim ytd add ...
+  a new plan starting by April never ran. Record that income with `sim ytd add ...
   --year 2026` (§4.13), from the W-2s and 1099s, with any tax already
   withheld.
+
+Rolled to a later month of the same year, the year-to-date rows and
+`ytd_amount`s still cover only the months before the old start. `roll`
+lists them, to update with `sim ytd edit` and `sim scheduled edit`.
 
 Everything is written in one edit, only if the scenario and everything
 built on it still load. What's built on it follows by itself: a what-if

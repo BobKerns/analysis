@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
 
 from analysis.frames import index_years, named_rows
 from analysis.sim.connection import RunConnection, year_end_values
-from analysis.sim.roll import month_before
+from analysis.sim.dates import month_before
 from analysis.sim.types import Death, DollarMode
 
 __all__ = [
@@ -426,15 +426,14 @@ def later_starts(connections: Mapping[str, RunConnection], baseline: str,
         start = _start_month(connections[name])
         if base_start is None or start is None or start <= base_start:
             continue
-        before = month_before(start)
-        if before in months:
+        if pd.Timestamp(month_before(start)) in months:
             later.append(name)
     return later
 
 
 def start_comparison(
     connections: Mapping[str, RunConnection], baseline: str, variant: str,
-) -> tuple[pd.Timestamp, pd.DataFrame]:
+) -> tuple[date, pd.DataFrame]:
     """What the baseline's run projected each asset lot to hold at the end
     of the month before ``variant`` starts, against what the variant opens
     with, in nominal dollars (both are that month's dollars): last year's
@@ -445,7 +444,7 @@ def start_comparison(
     start = _start_month(connections[variant])
     assert start is not None
     month = month_before(start)
-    projected = connections[baseline].lot_balance_pivot().loc[month].dropna()
+    projected = connections[baseline].lot_balance_pivot().loc[pd.Timestamp(month)].dropna()
     projected.index = pd.MultiIndex.from_tuples(
         [tuple(label.split("/", 1)) for label in projected.index], names=["account", "lot"])
     lots = connections[variant].items("account_lot")

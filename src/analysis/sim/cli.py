@@ -151,7 +151,7 @@ from analysis.sim.staging import (
 )
 from analysis.sim.life_table import equivalent_multiplier
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, is_full_date, is_marker_name, is_month_or_date, month_end_iso, parse_day,
+    MONTH_FORMAT_HINT, is_full_date, is_marker_name, is_month_or_date, month_before, month_end_iso, parse_day,
     parse_relative_date, parse_vary_date,
 )
 from analysis.sim.lineage import (
@@ -14957,11 +14957,21 @@ def _shares_text(value: float) -> str:
     return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
+def _accepted(prompt: str, shown: str | None) -> str:
+    """What ``--yes`` takes for ``prompt``: its default, or, with none to
+    take (an @itemization and no run), a refusal rather than a question."""
+    if shown is None:
+        raise click.ClickException(
+            f"{prompt}: no default to take with --yes (no run reaches the month, and the "
+            "current value isn't one number); run without --yes to answer it")
+    return shown
+
+
 def _ask_money(prompt: str, default: float | None, accept: bool) -> str:
     """Dollars, asked for with ``default`` offered, as a CSV cell."""
     shown = _money_text(default) if default is not None else None
-    if accept and shown is not None:
-        return shown
+    if accept:
+        return _accepted(prompt, shown)
     while True:
         text = click.prompt(prompt, default=shown, show_default=True).strip()
         try:
@@ -14972,8 +14982,8 @@ def _ask_money(prompt: str, default: float | None, accept: bool) -> str:
 
 def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
     shown = _shares_text(default) if default is not None else None
-    if accept and shown is not None:
-        return shown
+    if accept:
+        return _accepted(prompt, shown)
     while True:
         text = click.prompt(prompt, default=shown, show_default=True).strip()
         try:
@@ -15061,7 +15071,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             raise click.ClickException(f"there is already a scenario {keep!r}; --keep another name")
     click.echo(f"Rolling {name} forward: {old_start} -> {start}")
 
-    month = roll.month_before(start)
+    month = month_before(start)
     projected: dict[tuple[str, str], roll.Projection] = {}
     # The Dec 31 before a start that isn't a January: what a lot's
     # prior_year_end_balance (an RMD's base) defaults to.
@@ -15074,7 +15084,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         with RunConnection(run_path, name) as rc:
             projected = roll.projections(rc, month)
             if projected and start[5:] != "01":
-                year_end = roll.projections(rc, roll.month_before(f"{new_year}-01"))
+                year_end = roll.projections(rc, month_before(f"{new_year}-01"))
         if projected:
             break
     if projected:
@@ -15085,9 +15095,11 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                    "current opening value.")
 
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
-    lots = [one for one in _scenario_lots(scenario_dir, name) if not one.deleted]
+    every_lot = _scenario_lots(scenario_dir, name)
+    lots = [one for one in every_lot if not one.deleted]
     rows: list[tuple[_Lot, dict[str, str]]] = []
-    seen = set()
+    # A deleted lot counts as seen: an older run may still project it.
+    seen = {(one.account, one.lot) for one in every_lot if one.deleted}
     for one in lots:
         account = accounts.get(one.account)
         if account is None or account.row.get("kind") not in ("asset", "liability"):
@@ -15172,7 +15184,18 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     for rule_name in roll.preroll_rules(scenario_dir):
         if start[5:] != "01":
             click.echo(f"  rule {rule_name}'s ytd_preroll now counts {new_year}'s months before {start}")
-    if new_year != old_year and start[5:] == "01":
+    if new_year == old_year:
+        # Same year: the first year's catch-ups now cover fewer months
+        # than they should, and only the person knows the new totals.
+        before = f"{month_before(start):%Y-%m}"
+        for found in roll.unpinned_year_to_date(scenario_dir):
+            click.echo(f"  year-to-date row {found.row['name']} covers {new_year} before "
+                       f"{old_start}: update it through {before} (`sim ytd edit`)")
+        for found in roll.ytd_amount_rules(scenario_dir):
+            click.echo(f"  rule {found.row['name']}'s ytd_amount covers {new_year} before "
+                       f"{old_start}: update it through {before} (`sim scheduled edit`)")
+    if new_year != old_year and int(start[5:7]) <= 4:
+        # A start by April: the prior year's tax is still to be paid in it.
         click.echo(
             f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
             f"record it with `sim ytd add NAME FROM TO AMOUNT --tax-character ... --year "
@@ -15205,7 +15228,7 @@ def _rolled_lot(
         balance = float(shares) * price[1]
         click.echo(f"  = ${balance:,.2f} at {price[1]:,.2f} on {price[0]}")
     else:
-        current = _cell_float(row.get("opening_balance", ""))
+        current = roll.cell_dollars(row.get("opening_balance", ""))
         balance = float(_ask_money(f"{label} balance",
                                    projection.balance if projection else current, accept))
         row["opening_balance"] = _money_text(balance)
@@ -15215,7 +15238,7 @@ def _rolled_lot(
         projection is not None and projection.basis is not None
         and account.get("subkind", "") not in registries.CASH_SUBKINDS)
     if tracks_basis:
-        authored = _cell_float(row.get("opening_cost_basis", ""))
+        authored = roll.cell_dollars(row.get("opening_cost_basis", ""))
         current = balance if authored is None else authored
         row["opening_cost_basis"] = _ask_money(
             f"{label} cost basis", projection.basis if projection and projection.basis is not None
@@ -15232,14 +15255,6 @@ def _rolled_lot(
         # name its lot (``default``), as the loader requires.
         row["lot"] = ""
     return row
-
-
-def _cell_float(text: str) -> float | None:
-    cleaned = text.strip().replace(",", "").replace("$", "")
-    try:
-        return float(cleaned) if cleaned else None
-    except ValueError:
-        return None  # an @itemization: no number to offer
 
 
 # ---------- editing and deleting a scenario (#190) ----------

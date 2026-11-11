@@ -682,6 +682,9 @@ class RunConnection(Connection):
         return f"{self.name}@{self.date.strftime('%Y-%m-%d %H:%M')}"
 
     _scenario: ScenarioConnection | None
+    # What CPI-constant dollars deflate by, over the run's own index (#502).
+    _cpi_scale: float = 1.0
+
     @property
     def scenario(self) -> ScenarioConnection:
         if self._scenario is None:
@@ -816,7 +819,7 @@ class RunConnection(Connection):
     @property
     def cpi_scale(self) -> float:
         """What ``rebase_cpi`` scaled this run's deflator by (1 when not)."""
-        return getattr(self, "_cpi_scale", 1.0)
+        return self._cpi_scale
 
     def rebase_cpi(self, scale: float) -> None:
         """Deflate this run's CPI-constant dollars by its index times
