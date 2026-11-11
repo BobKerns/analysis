@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from datetime import date
@@ -653,7 +654,6 @@ def test_refill_legs_point_at_the_debit_that_triggered_them(ledger_con: sqlite3.
     assert brokerage_parent == savings_leg
 
 
-@pytest.mark.allow_negative_balance
 @pytest.mark.parametrize(
     ("refill_chain", "minimum", "refilling", "status", "message", "needed", "drawn"),
     [
@@ -708,7 +708,6 @@ def test_negative_balance_warning_says_what_the_refill_did(
     }]
 
 
-@pytest.mark.allow_negative_balance
 def test_chain_draw_warning_reports_the_refill_it_drew(ledger_con: sqlite3.Connection) -> None:
     """#105: a chain step that refills, then gives what it can down to a
     negative minimum_balance, warns with that refill -- not with the empty
@@ -745,7 +744,6 @@ def test_chain_draw_warning_reports_the_refill_it_drew(ledger_con: sqlite3.Conne
     assert refill_ctx.negative_events[0]["refill_status"] == "drawn"
 
 
-@pytest.mark.allow_negative_balance
 def test_negative_balance_warnings_record_the_refill_in_run_args(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
     tmp_path: Path,
@@ -1657,7 +1655,7 @@ def test_a_dead_owners_account_keeps_its_rules_without_a_person(
     ).intent_path
     run_path = tmp_path / "r.sqlite3"
     run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
-    with sqlite3.connect(run_path) as con:
+    with closing(sqlite3.connect(run_path)) as con:
         after = con.execute(
             "SELECT COUNT(*) FROM transfer_event te JOIN scheduled_transaction s ON s.id = te.reason_id "
             "WHERE s.name = 'salary_alice' AND te.date > '2027-01-31'",
@@ -2154,8 +2152,11 @@ def test_state_social_security_table_taxes_it(
             years = [r[0] for r in con.execute(
                 "SELECT year FROM tax_year_summary "
                 "WHERE bucket = 'state_ss_benefits' AND amount > 0 ORDER BY year")]
+            # Before credits (California's exemption credits, #488), which
+            # can take a small tax to nothing either way.
             return {y: (_summary(con, y, "state_ss_taxable"),
-                        _summary(con, y, "state_tax")) for y in years}
+                        _summary(con, y, "state_tax") + _summary(con, y, "state_credits"))
+                    for y in years}
         finally:
             con.close()
             run.unlink()  # run_test_copy writes the same file each time

@@ -6,6 +6,7 @@ in its month."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,7 +19,11 @@ from analysis.sim.registries import SCHEDULED_CSV_HEADER
 
 
 @pytest.mark.parametrize(("name", "cells", "message"), [
-    ("federal", {"kind": "state_tables"}, "kind 'state_tables' doesn't compute the federal tax"),
+    ("federal", {"kind": "state_tables"},
+     "kind 'state_tables' computes the state tax; the federal tax takes kind federal"),
+    ("state", {"kind": "nope"}, "no tax calculator kind 'nope'; the state tax takes kind state_tables"),
+    ("federal", {"params_json": '{"bracket_aux": 3}'}, "parameter 'bracket_aux': 3 must be a string"),
+    ("federal", {"params_json": '{"brackets": "x"}'}, "unknown parameter 'brackets'"),
     ("federal", {"upstream": "federal"}, "upstream names the jurisdiction itself"),
     ("federal", {"upstream": "state"}, "upstream must be blank or empty: the federal calculator builds on no"),
     ("federal", {"source_chain": ""}, "source_chain names the chain or account the tax is paid from"),
@@ -105,7 +110,7 @@ def test_a_child_scenarios_tax_file_replaces_its_parents_whole(
     write_tax(test_child_scenario, start="2030-04")
     run = run_scenario(load_test_scenario("child"), runs_dir / "child.sqlite3", run_by="T",
                        allow_dirty_data=True, allow_dirty_code=True)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         [(start,)] = con.execute("SELECT start FROM tax_jurisdiction WHERE name = 'federal'")
         paid = [d for (d,) in con.execute(
             "SELECT DISTINCT date FROM transfer_event WHERE reason_kind = 'tax' ORDER BY date")]

@@ -628,8 +628,9 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     taxes = [c for c in ("fed_tax", "state_tax", "local_tax") if c in frame.columns]
     frame["total_tax"] = frame[taxes].sum(axis=1, min_count=1)
     # A business (#231) adds its federal Schedule C result, the expenses a
-    # hobby couldn't deduct, and the loss carried forward: each only when
-    # some year has one, since most scenarios have none of them.
+    # hobby couldn't deduct, and the loss carried forward or ended at a
+    # death (#277): each only when some year has one, since most scenarios
+    # have none of them.
     business = _tax_buckets(rc, list(_BUSINESS_COLUMNS)).rename(columns=_BUSINESS_COLUMNS)
     business = business.reindex(frame.index)
     frame = frame.join(business.loc[:, business.fillna(0).ne(0).any()])
@@ -647,6 +648,30 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     agi = frame["fed_agi"].where(frame["fed_agi"] > 0)
     frame.insert(frame.columns.get_loc("total_tax") + 1, "effective_rate",
                  frame["total_tax"] / agi)
+    return frame
+
+
+_NOT_MONEY_LINES = frozenset({"irmaa_tier"})
+"""Return lines that count something other than money (#253)."""
+
+
+def tax_return(rc: RunConnection, jurisdiction: str,
+               mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
+    """Every line of one jurisdiction's returns (#510): a row per year, a
+    column per line its calculator wrote (``tax_year_summary``'s
+    ``<jurisdiction>_<line>``), in dollars; a household calculator's own
+    lines included. Empty when the run computed none."""
+    summary = rc.items("tax_year_summary")
+    prefix = f"{jurisdiction}_"
+    summary = summary[summary["bucket"].str.startswith(prefix)]
+    if summary.empty:
+        return pd.DataFrame()
+    frame = (summary.assign(line=summary["bucket"].str.removeprefix(prefix))
+             .pivot_table(index="year", columns="line", values="amount", aggfunc="sum"))
+    counts = [c for c in frame.columns if c in _NOT_MONEY_LINES]
+    money = _cpi(rc, frame.drop(columns=counts) / 100, mode, annual=True)
+    frame = money.join(frame[counts]) if counts else money
+    frame.index.name = "year"
     return frame
 
 
@@ -669,6 +694,8 @@ _BUSINESS_COLUMNS = {
     "federal_business_net": "business_net",
     "federal_hobby_disallowed": "hobby_disallowed",
     "federal_nol_carryover": "nol_carryover",
+    # The decedent's share of the NOL, ended at a death (#277).
+    "federal_nol_lapsed": "nol_lapsed",
 }
 
 

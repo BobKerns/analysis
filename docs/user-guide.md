@@ -414,12 +414,14 @@ files pays no income tax.
   income.
 - **Dividends and interest** from a taxable brokerage lot are taxed in the
   year they are paid, even though the simulator reinvests them: stock
-  dividends (`qualified_dividend`) at the long-term gain rates, and bond and
-  cash interest as ordinary income. Each reinvested payout adds to the lot's
+  dividends (`qualified_dividend`) at the long-term gain rates, and other
+  dividends and interest as ordinary income. Each reinvested payout adds to the lot's
   cost basis, so only the appreciation is left to tax at a sale. How much a
   lot pays comes from a `_yield` rate series beside its growth series; see
-  Part 4.11. IRAs, Roth accounts and HSAs pay nothing out: their earnings
-  are taxed (or not) only when money leaves.
+  Part 4.11. A fund's capital-gain distributions are taxed the same year
+  too: long-term ones as long-term gains, short-term ones as ordinary
+  income. IRAs, Roth accounts and HSAs owe nothing on any of these: their
+  earnings are taxed (or not) only when money leaves.
 - **Filing status** comes from the `filing_status` aux table for that tax
   year: your data repo's `aux/filing_status.csv`, one row per date such as
   `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
@@ -461,9 +463,14 @@ files pays no income tax.
   `aux/` README describes them all. Two more tables, also named for the
   state, are optional: `state_surcharge__CA.csv` adds California's 1% on
   taxable income over $1 million, and `state_hsa__CA.csv` says California
-  doesn't recognize health savings accounts, so its tax doesn't deduct what
-  goes into an HSA, taxes the account's growth each year (a fall is a
-  capital loss), and leaves what comes out alone.
+  doesn't recognize health savings accounts, so it taxes an HSA like a
+  brokerage account: it doesn't deduct what goes in, taxes the dividends
+  and interest the year they're paid, and taxes what comes out only on its
+  gain over the account's cost basis (contributions and reinvested
+  dividends), even a qualified medical withdrawal; a loss is a capital
+  loss. Growth left in the HSA isn't taxed. An HSA lot's basis starts at
+  its `opening_cost_basis` in `account_lots.csv`, or its whole balance when
+  that is blank.
 - **Local income tax**: some counties and cities tax income on top of the
   state (a Maryland county, New York City, an Indiana county, the Portland
   area). Where the local tax is figured on the state's taxable income, put
@@ -489,11 +496,29 @@ files pays no income tax.
   as `state_exclusion`. Give a pension income account its owner, so the
   pension counts as that person's; a joint account's income is split
   between you.
+- **State deductions and credits** of the state's own, such as a renter's
+  deduction or credit, a 529 or long-term care premium deduction, personal
+  exemptions and exemption credits, or a deduction for federal tax paid, are
+  rows of `state_adjustments__<state>.csv` in `aux/`. California's
+  exemption credits and renter's credit ship. A row that counts spending
+  or income reads a tag: tag the rule that pays your rent
+  `tax:rent` (`sim scheduled edit housing --tags tax:rent`) for the
+  renter's credit. `sim report tax --return state` shows each line.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year.
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.
+- **Your own rules**: a deduction or credit the built-in calculators don't
+  have (a renter's deduction, a public pension exclusion), or a state they
+  don't model, can be a small Python class in your data repo's `taxes/`
+  folder, named by a tax file's `kind` (`sim tax edit state --kind ...`).
+  It reads your spending and income by tag, so a rent deduction follows the
+  rent you pay. `sim tax kinds` lists the calculators and their parameters,
+  `sim tax check` runs a scenario twice to make sure its results don't
+  change, and `sim report tax --return state` shows every line of a return.
+  [The tax calculators guide](guides/tax-calculators.md) works an example
+  through.
 
 **One important thing to know before you model a sale (Part 4.5):** the
 simulator can automatically split a withdrawal into "return of capital" and
@@ -800,6 +825,15 @@ Setting `age_at_death` is also all you need to do for filing status to change
 correctly after a spouse's death: MFJ or MFS automatically becomes Single,
 starting the following year (Part 3). You do not need to add a matching row
 to `filing_status.csv`.
+
+A death also ends the decedent's own tax losses. Their share of a capital-loss
+carryover, and of a business's net operating loss, can still be used on the
+return for the year they die, and then it's gone. Losses on their own
+accounts are theirs, and half of a joint account's while the spouse lives.
+The survivor keeps their own share. A loss counts by its year, so one
+taken from the decedent's account later in the year of the death still
+counts as theirs. `sim report tax --return federal` shows
+what ended as `capital_loss_lapsed` and `nol_lapsed`.
 
 In an ensemble the age can vary from member to member. Give
 `vary_distribution` (`uniform` or `triangular`) and the lowest and highest
@@ -1109,15 +1143,37 @@ simulator splits each lot's growth into the two: what it pays out, from a
 include yields for the asset classes (`stock_us_yield` 1.5%,
 `stock_intl_yield` 3%, `stock_yield` 2%, `bond_yield` 4%), so a fund pays at
 the blend of its classes' yields with no setup: stocks as qualified
-dividends, bonds as ordinary interest. A lot growing at one series pays
-that series' yield, and cash and CDs pay all of their rate as interest.
+dividends, bonds as ordinary (non-qualified) dividends, since anything a
+fund pays is a dividend on its 1099-DIV. A lot growing at one series pays
+that series' yield, and cash and CDs pay all of their rate. Only a lot with
+no symbol (a bond or cash held directly) is paid interest.
 
 A symbol whose own yield you know can have it in
 `series/rate__ABCDX_yield.csv` (`effective_date,annual_rate`, such as
 `2026-01-31,2.5%`), which then replaces the class blend. It is taxed as
 qualified dividends when everything the symbol holds is stock, and as
-ordinary interest otherwise. Payouts are always reinvested; taking them as
+ordinary dividends otherwise. Payouts are always reinvested; taking them as
 cash is not modeled yet.
+
+Many funds also distribute capital gains each year, mostly long-term and
+sometimes short-term, and these are taxed whether or not they are
+reinvested. Give them their own series, found the same way as `_yield`:
+`rate__ABCDX_cg_yield.csv` for long-term distributions, taxed as long-term
+gains, and `rate__ABCDX_stcg_yield.csv` for short-term ones, which a 1099-DIV
+counts as ordinary dividends. A class's series (`stock_us_cg_yield`) works
+too. The templates ship none, so nothing is distributed until you add one.
+All three come out of the series' total return, so the lot's value is
+unchanged; only what is taxed, and when, moves.
+
+In an IRA or a Roth, a lot that holds shares (it has a `quantity`)
+gets the same payouts, untaxed. They only buy more shares, the way a
+statement shows reinvested dividends, so the projected share count and
+price stay close to the real ones. They add no Roth basis. A lot
+kept in dollars has no shares to keep track of and gets none.
+
+Every HSA lot gets them, shares or not: they're untaxed federally, but
+California taxes them the year they're paid, as it would a brokerage
+account's, and they add to the cost basis it taxes a withdrawal over.
 
 `sim report gains` counts reinvested dividends and interest as realized
 taxable gains.
@@ -1512,6 +1568,13 @@ written against, are in
 
 ### 4.17 Spend less after bad years (spending strategies)
 
+**Video.** *Spending strategies* walks through this section with Alice
+and Bill: travel tagged as optional spending, the plan as written across
+eighty futures, and the threshold, guardrail, ceiling and floor, and VPW
+strategies side by side:
+[English](https://www.youtube.com/watch?v=Hv4B9sdu4PY),
+[Japanese (日本語)](https://www.youtube.com/watch?v=FgyPqniorvk).
+
 Your scheduled rules spend the same inflation-indexed amount every year,
 whatever the markets do. A **spending strategy** changes that: it owns the
 rules carrying a tag and decides, each January, how much of their budget to
@@ -1734,6 +1797,66 @@ allocation would, which helps after a crash that recovers slowly and costs
 growth when markets rise. The design is in
 [ADR-010 §6.5](architecture/ADR-010-responsive-strategies.md).
 
+### 4.21 Bring the plan up to date each year
+
+A plan only knows what you told it when you wrote it. Once a year, or after
+a big change, start it again from what the accounts hold now:
+
+```sh
+sim scenario roll base 2027-01 --keep plan-2026
+```
+
+`roll` first keeps the plan as it stands as a sibling copy (`--keep`; the
+default name is the scenario's name and the old start's year), so you can
+compare last year's plan with this year's. Then it moves the start, and
+asks, lot by lot, what each account holds now: shares for a lot kept in
+shares (a symbol, shares and no balance) whose symbol has a price by the
+new start (the balance is shares times that price), dollars otherwise,
+and the cost basis where the lot keeps one. A Roth's basis is what was put
+in, so a year the market fell leaves it above the
+balance. Each question offers what the plan's newest run projected for the
+month before the new start; press Enter to take it, or `--yes` to take
+them all (`--yes` stops instead when a question has nothing to offer). A
+lot's Dec 31 balance (`prior_year_end_balance`), when it has one, follows,
+offering the run's Dec 31.
+
+A new year changes what some rows mean, so `roll` deals with those too:
+
+- A year-to-date row (§4.13) with no year belongs to the first year,
+  whichever it is. `roll` offers to pin it to the old year, where it
+  happened.
+- A rule's `ytd_amount` was the old first year's catch-up. `roll` offers to
+  make it a year-to-date row of that year (one that goes through a chain
+  it lists, for you to record by hand).
+- A rule with no start counts a quarterly schedule, or `ytd_preroll`'s
+  months, from the scenario's start. `roll` offers to give it the old
+  start, so it keeps its months.
+- A calendar row dated before the new start no longer happens. `roll` lists
+  them.
+- Last year's income tax is paid in April from last year's income, which
+  a new plan starting by April never ran. Record that income with `sim ytd add ...
+  --year 2026` (§4.13), from the W-2s and 1099s, with any tax already
+  withheld.
+
+Rolled to a later month of the same year, the year-to-date rows and
+`ytd_amount`s still cover only the months before the old start. `roll`
+lists them, to update with `sim ytd edit` and `sim scheduled edit`.
+
+Everything is written in one edit, only if the scenario and everything
+built on it still load. What's built on it follows by itself: a what-if
+built on `base` starts when `base` does. Then run both and compare them:
+
+```sh
+sim run base --commit
+sim run plan-2026 --commit
+sim compare plan-2026 base
+```
+
+`sim compare` shows where the new plan starts: for each lot, what last
+year's plan expected it to hold, what it holds now, and the difference
+(the `start` section). Its other sections put both runs in the baseline's
+dollars, so a year's inflation doesn't show up as a difference.
+
 ## 5. Looking at your results
 
 **Video.** *Looking at the results* walks through this section with Alice
@@ -1830,9 +1953,12 @@ base scenario, runs them, and compares them with `sim compare` and
 `sim compare BASELINE VARIANT` puts two or more scenarios' latest runs side
 by side, as `scenario_compare.ipynb` does: whether the runs came from the same
 code and data, the rules, calendar events, accounts and lots each defines
-differently, net worth at each year end with each variant's difference, and
+differently, where a variant that starts later starts (what the baseline
+projected each lot to hold then, against what the variant opens with, §4.21),
+net worth at each year end with each variant's difference, and
 the month after which each variant stays ahead (break-even), and each
-scenario's guard rail margins when any has rails. When they differ, it adds
+scenario's guard rail margins when any has rails. Runs that start in
+different months are all shown in the baseline's dollars. When they differ, it adds
 gross Social Security by year and over the run (comparing claim ages), and
 total tax by year, the `total_tax` `sim report tax` prints, with each run's
 lifetime tax, Social Security and final net worth (what a Roth conversion
@@ -1990,6 +2116,7 @@ asset-class mix; see Part 4.11.
 - [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
 - [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
 - [`docs/guides/century-of-rates.md`](guides/century-of-rates.md) — a century of inflation, interest rates and stock returns: what carries over from one year to the next.
+- [`docs/guides/historical-information.md`](guides/historical-information.md) — a compression test of the historical series: which carry memory, which are every year news, and what the models miss.
 - [`docs/guides/chains.md`](guides/chains.md) — chains step by step: drawing and sweeping, shares, chains inside chains, refill and overflow.
 - [`docs/guides/guard-rails.md`](guides/guard-rails.md) — guard rails: the 4% rule, Guyton-Klinger's rails and budgets, and reading their margins (Part 4.15).
 - [`docs/guides/ensembles.md`](guides/ensembles.md) — ranges of outcomes instead of one number (Part 4.10); [ADR-006](architecture/ADR-006-ensemble-scenarios.md) has the full design.

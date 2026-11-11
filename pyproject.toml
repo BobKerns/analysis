@@ -62,10 +62,15 @@ packages = ["src/analysis"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Any warning a test doesn't expect fails it, unclosed files and SQLite
+# connections included. A test that expects one captures it (pytest.warns,
+# or the allow_negative_balance marker); one irrelevant to a test is
+# ignored in that test, as narrowly as it can be.
+filterwarnings = ["error"]
 markers = [
     "uses_current_scenario_write: exempt from the no-op write_current_scenario fixture (see tests/conftest.py)",
     "uses_working_set_write: exempt from the no-op .working_set write fixture (see tests/conftest.py)",
-    "allow_negative_balance: exempt from the negative-balance-is-an-error fixture (see tests/conftest.py)",
+    "allow_negative_balance: the test runs an account short on purpose; the went-negative warning must fire (see tests/conftest.py)",
     "uses_real_cpu_count: exempt from the one-CPU sim run --jobs default fixture (see tests/conftest.py)",
     "slow: takes about a second or more; the local gate runs -m 'not slow', CI runs everything",
 ]
@@ -87,3 +92,7 @@ python-version = "3.14"
 
 [tool.ty.src]
 include = ["src", "tests", "plugins"]
+# The example household tax calculator extends a built-in's nested Params
+# class (`class Params(StateTables.Params)`), the documented pattern, which ty
+# refuses as an override of a class-literal attribute.
+exclude = ["tests/data/sim/tax_calculators/taxes"]

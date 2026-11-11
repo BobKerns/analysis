@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -103,7 +104,7 @@ def test_a_run_made_from_dirty_code_is_never_trusted(
     sim_all()
     stamp_runs(runs_dir)
     for run_file in runs_dir.glob("*retire_alice*.sqlite3"):
-        with sqlite3.connect(run_file) as con:
+        with closing(sqlite3.connect(run_file)) as con, con:
             con.execute("UPDATE simulation_run SET code_dirty = 1")
     assert _skipped(sim_all()) == ["base"]
 

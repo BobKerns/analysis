@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from contextlib import closing
 from click.testing import CliRunner
 
 from analysis.cli import main
@@ -228,7 +229,7 @@ def _rename_account(batch_dir: Path, old: str, new: str) -> None:
     import sqlite3
 
     for member in batch_dir.glob("member_*.sqlite3"):
-        with sqlite3.connect(member) as con:
+        with closing(sqlite3.connect(member)) as con, con:
             con.execute("UPDATE account SET name = ? WHERE name = ?", (new, old))
 
 

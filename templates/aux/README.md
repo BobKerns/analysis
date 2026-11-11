@@ -79,6 +79,45 @@ The loader (`src/analysis/sim/loader.py`) parses the filename to figure out the
 kind and series; the required columns per kind are listed in
 `src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and [ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4.
 
+## State deductions and credits
+
+A state's own deductions and credits that its brackets and exclusions
+don't cover go in `state_adjustments__<state>.csv`: a renter's deduction
+or credit, a deduction for 529 contributions or long-term care premiums,
+a public pension exclusion, personal exemptions and exemption credits,
+and a deduction for federal tax paid. Each row is one line of the state
+return, written to the run as `state_<name>` and shown by
+`sim report tax --return state`.
+
+| Column | Meaning |
+| --- | --- |
+| `effective_date` | When the rows take effect; the rows of one date are the whole set. |
+| `name` | The line, in lower case (`renters_credit`). One row per line and filing status. |
+| `step` | `subtraction` (off income before state AGI), `deduction` (off state AGI, after the standard or itemized deduction) or `credit` (off the tax, never below zero: each credit takes, in file order, only the tax left). |
+| `base` | What it is figured from: `spending` or `income` carrying `tag`, `filers` (`amount` for each), `federal_tax` (the federal return's tax) or `federal_deduction` (its deduction). |
+| `tag` | For `spending` and `income`: the tag on what counts, as `tax:rent`. Tag the rule that pays it, or the account it is paid into (`sim scheduled edit housing --tags tax:rent`). |
+| `rate` | The share that counts (`50%`); blank is all of it. Not for `filers`. |
+| `amount` | The cap; for `filers`, each filer's amount. Blank is no cap. |
+| `per_person` | `yes`: the cap is each filer's. |
+| `min_age` | Only filers who have reached this age by December 31 count. |
+| `filing_status` | `MFJ`, `Single` or `MFS`; blank is every status. A row for the status wins over a blank one. |
+| `income_limit` | Above this state AGI the line ends, unless `phaseout` or `phaseout_rate` says otherwise. |
+| `phaseout` | It falls in a straight line to nothing over this many dollars past the limit. |
+| `phaseout_rate` | Or it loses this share of each dollar over (each filer's, for `filers`). |
+| `amount_series`, `income_limit_series` | Optional inflation series that index `amount` and `income_limit`, rounded down to the dollar. |
+
+A spending or income row whose tag nothing in the scenario carries comes
+out zero, and `sim check` says so. Rules figured from property value, or
+from tax as a share of income (most circuit breakers), don't fit a row:
+they need a household calculator (`docs/guides/tax-calculators.md`).
+
+`__CA` holds California's 2025 personal and senior exemption credits
+($153 each, phased out by $6 for each $2,500 of income over the limit) and
+its renter's credit ($60, or $120 filing jointly, below an income limit).
+California phases the exemption credits out by federal AGI; the model
+tests state AGI. The renter's credit needs at least half a year of rent on
+a California home; the model counts any rent tagged `tax:rent`.
+
 ## State retirement income exclusions
 
 Most states leave some retirement income out of their income tax: a
@@ -142,8 +181,9 @@ every other scenario.
 | `state_social_security__<state>.csv` | Optional: how the state taxes Social Security, keyed by state like `state_brackets__<state>.csv`. Without it (California, and most states) a state rule taxes none. With it, the state starts from the federally taxable amount and leaves out `exclusion_percent` of it, for each filing status. Optional `phaseout_start` (federal AGI) starts taking the exclusion away: evenly down to nothing at `phaseout_end` (the same figure for a cliff, as in New Mexico), or by `phaseout_rate` of each dollar over (a credit in a flat-rate state such as Utah: the credit's phase-out rate divided by the tax rate). A state that follows the federal amount (Montana) writes `0%`. `phaseout_start_series`/`phaseout_end_series` index the limits like `floor_series`. Columns: `effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,phaseout_rate`. Age tests (Colorado, Rhode Island) aren't modeled. Check the figures with the state's revenue department. |
 | `state_surcharge__<state>.csv` | A state's surcharge on high taxable income, in the columns of its brackets, whose rates add to the brackets' rates. Optional, keyed by state like `state_brackets__<state>.csv`. `__CA` is California's Behavioral Health Services Tax: 1% of taxable income over $1 million, the same for every filing status and not indexed, so its `floor_series` is blank. |
 | `state_local_tax__<state>.csv` | Optional: a local income tax (county, city, school district) on the state's taxable income, in the columns of its brackets: Maryland's county rate as one band, New York City's brackets, or a Portland-area tax as a 0% band below its threshold. Named for a county (`residence.csv` names the household's) or, for one table across the state, the state; paid with the state's tax, and shown as `local_tax` in `sim report tax`. Two local taxes on the same base, such as Portland's Metro and Multnomah County taxes, go in one table, their rates added. Needs a row for every filing status the state's brackets have. None ships. |
-| `state_hsa__<state>.csv` | How a state taxes a health savings account: `treatment` `taxable` or `federal`. Optional, keyed by state; without one the HSA follows the federal rules. `__CA` says `taxable`: California doesn't recognize HSAs, so a contribution isn't deducted, the account's growth is taxed each year, and what comes out was taxed already. |
+| `state_hsa__<state>.csv` | How a state taxes a health savings account: `treatment` `taxable` or `federal`. Optional, keyed by state; without one the HSA follows the federal rules. `__CA` says `taxable`: California doesn't recognize HSAs and taxes one like a brokerage account, so a contribution isn't deducted, its dividends and interest are taxed the year they're paid, and a withdrawal is taxed on its gain over the account's cost basis. |
 | `state_retirement_exclusion__<state>.csv` | Optional: the state's retirement income exclusions, keyed by state like `state_brackets__<state>.csv` and read by a state tax. None ships (California has none); see "State retirement income exclusions" below. |
+| `state_adjustments__<state>.csv` | Optional: the state's own deductions and credits, keyed by state like `state_brackets__<state>.csv` and read by a state tax; each row is a named line of the return. `__CA` ships California's personal and senior exemption credits and its renter's credit, 2025's figures; see "State deductions and credits" below. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, a tax jurisdiction uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
 | `filing_status.csv` | The household's filing status from each effective date, one row per change. Empty here: put the household's in the data repo's `aux/`. A joint filer becomes Single the year after a death without a row. |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |

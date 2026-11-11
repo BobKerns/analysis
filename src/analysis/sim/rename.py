@@ -153,7 +153,7 @@ def account_defined(name: str) -> Defines:
 
 
 RESERVED_ACCOUNTS = frozenset(
-    c.name for c in (*registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.PAYOUT_ACCOUNTS.values()))
+    c.name for c in (*registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.builtin_payout_accounts()))
 """Accounts the loader makes for declared growth and payouts (#468) when no scenario has one;
 a rename onto one of these names would turn an account into the built-in."""
 

@@ -45,6 +45,7 @@ import json
 import os
 import sqlite3
 import zlib
+from contextlib import closing
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -542,7 +543,7 @@ class EnsembleSeries:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.batch_dir = self.path.parent
-        with self._connect() as con:
+        with closing(self._connect()) as con:
             self._meta = json.loads(con.execute("SELECT meta_json FROM batch").fetchone()[0])
             self._members: dict[int, _Member] = {}
             for (member_id, stem, index, seed, months, cpi, nw_cpi, deaths, household_end,
@@ -641,7 +642,7 @@ class EnsembleSeries:
     def target_sets(self) -> dict[str, list[tuple[str, dict[str, float]]]]:
         """The batch's target sets, as ``drift.target_sets`` reads a run's."""
         def build() -> dict[str, list[tuple[str, dict[str, float]]]]:
-            with self._connect() as con:
+            with closing(self._connect()) as con:
                 return weight_sets(
                     (name, as_of, asset_class, weight / 1_000_000) for name, as_of, asset_class, weight
                     in con.execute("SELECT target_set, as_of, asset_class, weight_micros FROM allocation_target"))
@@ -650,7 +651,7 @@ class EnsembleSeries:
     def watches(self) -> list[Watch]:
         """The batch's strategies that steer to a target set."""
         def build() -> list[Watch]:
-            with self._connect() as con:
+            with closing(self._connect()) as con:
                 return [Watch(*row) for row in con.execute(
                     "SELECT strategy, target_set, portfolio, band FROM watch ORDER BY strategy")]
         return self.memo(("watches",), build)
@@ -768,7 +769,7 @@ class EnsembleSeries:
         months, summed over ``categories``. Every such month of the member's
         is there, zero if none of ``categories`` spent in it, as a member's
         report has a row for it in every category."""
-        with self._connect() as con:
+        with closing(self._connect()) as con:
             rows = pd.read_sql_query("SELECT member_id, lot, month, category, cents FROM spending_outside", con)
         if rows.empty:
             return {}
@@ -784,7 +785,7 @@ class EnsembleSeries:
         subject = self._subjects.get(key)
         if subject is None:
             return {}
-        with self._connect() as con:
+        with closing(self._connect()) as con:
             return {member_id: _unpack(blob) for member_id, blob in con.execute(
                 "SELECT member_id, nominal FROM series WHERE subject_id = ?", (subject[0],))}
 
@@ -833,7 +834,7 @@ class EnsembleSeries:
         as ``guard_rails.run_pieces`` gives them for a run file."""
         from analysis.sim.guard_rails import RunPieces
 
-        with self._connect() as con:
+        with closing(self._connect()) as con:
             keys = {flow_id: (from_name, to_name, rule_tags) for flow_id, from_name, to_name, rule_tags
                     in con.execute("SELECT id, from_name, to_name, rule_tags FROM flow_key")}
             blobs: dict[int, list[tuple[int, bytes]]] = {}

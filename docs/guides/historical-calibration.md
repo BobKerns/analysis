@@ -17,6 +17,10 @@ the series and computes every table below. The command
 that produced each table is printed under it, so you can run the same thing
 on other series or years.
 
+[How much information is in the historical series?](historical-information.md)
+checks the templates' choices of memory and shock shape from a different
+direction, with a compression test anyone can rerun.
+
 ## Reading the tables
 
 Every rate here is an **annual rate**: for a price index, December over the

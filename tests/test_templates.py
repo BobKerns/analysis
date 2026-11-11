@@ -217,7 +217,8 @@ def test_the_ensemble_templates_set_no_seed_of_their_own() -> None:
     """Bob: an ensemble template as a mix-in after a scenario must not
     override that scenario's seed; t_empty's 42 is only a fallback."""
     import csv
-    seeds = {name: next(csv.DictReader((TEMPLATE_SCENARIOS_DIR / name / "scenario.csv").open()))["seed"]
+    seeds = {name: next(csv.DictReader(
+                 (TEMPLATE_SCENARIOS_DIR / name / "scenario.csv").read_text().splitlines()))["seed"]
              for name in TEMPLATES}
     assert {name for name, seed in seeds.items() if seed} == {"t_empty"}
 

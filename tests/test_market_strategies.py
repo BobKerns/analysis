@@ -156,7 +156,6 @@ def _down_market(strategy_csv: Callable[[str, str], Path], **params: object) -> 
         "Asset_Savings,,,,,\n")
 
 
-@pytest.mark.allow_negative_balance  # the crash runs the household short late in the run
 def test_down_market_skips_what_fell_and_leaves_the_rest_to_the_chain(
     strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
 ) -> None:
@@ -180,7 +179,6 @@ def test_down_market_skips_what_fell_and_leaves_the_rest_to_the_chain(
     assert max(month for month, *_ in draws) < "2036-01-31"
 
 
-@pytest.mark.allow_negative_balance
 def test_down_market_lookback_two_years_spares_stocks_still_under_water(
     strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
 ) -> None:
@@ -194,7 +192,6 @@ def test_down_market_lookback_two_years_spares_stocks_still_under_water(
     assert "over 24 months" in draws[-1][1]
 
 
-@pytest.mark.allow_negative_balance
 def test_down_market_annual_cadence_reads_the_last_calendar_year(
     strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
 ) -> None:
@@ -260,7 +257,6 @@ def test_buckets_need_is_indexed_to_cpi(
     assert refills[later]["need"] == pytest.approx(expected, abs=5)
 
 
-@pytest.mark.allow_negative_balance
 def test_buckets_refills_cash_from_bonds_after_stocks_fall(
     strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
 ) -> None:

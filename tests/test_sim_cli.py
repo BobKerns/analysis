@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import io
 import json
 import sqlite3
@@ -490,8 +491,8 @@ def test_sim_scenario_create_derives_and_activates(test_data_dir: Path, tmp_path
         data, "late", intent_dir=tmp_path / "c", allow_dirty_data=True,
     )
     for table in ("account", "scheduled_transaction", "account_lot"):
-        with sqlite3.connect(parent.intent_path) as pcon, \
-                sqlite3.connect(child.intent_path) as ccon:
+        with closing(sqlite3.connect(parent.intent_path)) as pcon, \
+                closing(sqlite3.connect(child.intent_path)) as ccon:
             assert (
                 ccon.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 == pcon.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -2595,10 +2596,10 @@ def test_sim_calendar_add_accepts_year_month(
     assert df[df["series"] == "Asset_Checking"].iloc[-1]["date"] == "2027-02"
     loaded = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(loaded.intent_path)
-    assert ("2027-02-28",) in con.execute(
-        "SELECT date FROM calendar_event WHERE kind = 'set_rate' AND amount = 45000"
-    ).fetchall()
+    with closing(sqlite3.connect(loaded.intent_path)) as con:
+        assert ("2027-02-28",) in con.execute(
+            "SELECT date FROM calendar_event WHERE kind = 'set_rate' AND amount = 45000"
+        ).fetchall()
 
 
 @pytest.mark.parametrize(("start", "ok"), [("2030-03", False), ("2030-03-13", True)])

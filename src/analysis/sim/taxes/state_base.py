@@ -10,8 +10,11 @@ override on its :class:`StateYear`:
 2. :meth:`~StateYear.additions` and :meth:`~StateYear.subtractions`: named
    lines of the return, each changing income of one or more kinds;
 3. state AGI, the start plus the additions less the subtractions;
-4. :meth:`~StateYear.deductions`, then a carried-in NOL, then taxable income;
-5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits`.
+4. :meth:`~StateYear.deductions`, then :meth:`~StateYear.other_deductions`
+   (lines that depend on the year's income), then a carried-in NOL, then
+   taxable income;
+5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits` and
+   :meth:`~StateYear.credit_lines`.
 """
 
 from __future__ import annotations
@@ -100,6 +103,7 @@ class StateYear(Prepared):
         self._deductions = dict(self.deductions())
         self._nol_limit = common.nol_limit_percent(ty, self.nol_limit_percent_default)
         self._nol_in = ty.prior("nol_carryover")
+        self._nol_lapse = common.nol_lapse_share(ty)
         basis = self.basis(NO_EXTRA)
         fixed = self.fixed_lines(basis)
         self._nol_new = common.nol_new(
@@ -136,6 +140,12 @@ class StateYear(Prepared):
         """The deduction lines; ``deduction`` is the one taken."""
         raise NotImplementedError
 
+    def other_deductions(self, income: Income, basis: Basis) -> Mapping[str, int]:
+        """Named deductions taken after AGI besides :meth:`deductions`'
+        ``deduction``, which may depend on the year's income (a renter's
+        deduction with an income limit, #511); none by default."""
+        return {}
+
     def tax(self, taxable: int, income: Income) -> int:
         """The tax on ``taxable`` income, with long- and short-term gain
         stacked as the brackets say."""
@@ -143,8 +153,14 @@ class StateYear(Prepared):
             taxable, income.ltcg, income.stcg, self.brackets, self.ltcg_brackets, self.stcg_brackets)
 
     def credits(self, tax: int, income: Income, basis: Basis) -> int:
-        """Credits against ``tax``; none by default."""
+        """Credits against ``tax``, a total; none by default."""
         return 0
+
+    def credit_lines(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
+        """Named credits against ``tax`` (#511), each written to the return
+        as what it took: in order, after :meth:`credits`, until the tax is
+        used up. None by default."""
+        return {}
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
         """The return's memo (``drawn_ordinary``, ``drawn_gain``)."""
@@ -166,21 +182,32 @@ class StateYear(Prepared):
     def compute(self, extra: Extra = NO_EXTRA) -> Return:
         basis = self.basis(extra)
         income, adjustments = self._income(basis)
-        before_nol = income.agi - self._deductions["deduction"]
+        others = dict(self.other_deductions(income, basis))
+        # A NOL is figured without these (#511): a nonbusiness deduction
+        # offsets only nonbusiness income, as the federal rule says.
+        before_nol = income.agi - self._deductions["deduction"] - sum(others.values())
         nol_used = common.nol_used(self._nol_in, before_nol, self._nol_limit)
         taxable = max(0, before_nol - nol_used)
         tax = self.tax(taxable, income)
+        # Credits are never refundable: a named line shows what it took,
+        # in order, so the lines add up to the credits taken.
         credits = min(tax, self.credits(tax, income, basis))
+        credit_lines = {}
+        for line, amount in self.credit_lines(tax, income, basis).items():
+            credit_lines[line] = max(0, min(amount, tax - credits))
+            credits += credit_lines[line]
         lines = {
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,
             "nol_used": nol_used,
-            "nol_carryover": self._nol_in - nol_used + self._nol_new,
+            **common.nol_carried(self._nol_in - nol_used + self._nol_new, self._nol_lapse),
             "ss_taxable": income.ss,
             "agi": income.agi,
             **self.fixed_lines(basis),
             **adjustments,
             **self._deductions,
+            **others,
+            **credit_lines,
             "taxable_income": taxable,
             "ordinary_taxable": common.ordinary_taxable(
                 taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),
@@ -221,8 +248,8 @@ class FederalStateYear(StateYear):
     def fixed_lines(self, basis: Basis) -> Mapping[str, int]:
         fed = basis.federal
         return {line: fed.lines[line] for line in (
-            "business_net", "hobby_disallowed", "capital_loss_used",
-            "capital_loss_carryover", "ss_benefits") if line in fed.lines}
+            "business_net", "hobby_disallowed", *common.CAPITAL_LINES, "ss_benefits")
+            if line in fed.lines}
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
         memo = basis.federal.memo

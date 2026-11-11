@@ -58,6 +58,7 @@ own data, that setup belongs in a fixture instead.
 from __future__ import annotations
 from collections.abc import Callable, Generator, Mapping, Sequence
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import shutil
@@ -76,7 +77,7 @@ from analysis.sim.engine import _load_aux, _tax_year, run_scenario
 from analysis.sim.ensemble import resolve_member
 from analysis.sim.schema import apply_run_schema
 from analysis.sim.tax_api import TaxYear
-from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
+from analysis.sim.loader import LoadResult, ScenarioRef, latest_run_path, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
@@ -208,14 +209,17 @@ def _negative_balance_is_an_error(request: pytest.FixtureRequest) -> Generator[N
     exercising, not a deliberate outcome -- better to fail loudly at the
     test that caused it than let it slip into the warnings summary at the
     end of the run, one of a pile easy to stop reading closely. A test that
-    genuinely wants the old warn-and-continue behavior (verifying the
-    warning itself, or deliberately modeling a shortfall) opts back in with
-    ``@pytest.mark.allow_negative_balance``. This is a test-suite-only
-    policy -- ``engine.py`` itself is untouched, so a real ``sim run``
-    still only warns.
+    deliberately models a shortfall marks itself
+    ``@pytest.mark.allow_negative_balance``: the warning is then expected,
+    so it is captured and must fire (a marker on a test that no longer
+    runs short fails, rather than going stale). A test checking the
+    warning's own text uses ``pytest.warns`` and needs no marker. This is a
+    test-suite-only policy -- ``engine.py`` itself is untouched, so a real
+    ``sim run`` still only warns.
     """
     if request.node.get_closest_marker("allow_negative_balance"):
-        yield
+        with pytest.warns(RuntimeWarning, match="went negative"):
+            yield
         return
     with warnings.catch_warnings():
         warnings.filterwarnings("error", category=RuntimeWarning, message=".*went negative.*")
@@ -1345,6 +1349,21 @@ def _write_tax_file(scenario_dir: Path, name: str = "federal", **cells: Any) -> 
     return path
 
 
+@pytest.fixture(scope="function")
+def tax_module(test_data_dir: Path, test_data: Path) -> Callable[..., Path]:
+    """``tax_module("renters")``: copy a calculator module from
+    ``tests/data/sim/tax_calculators/taxes/`` into the private data repo's
+    ``taxes/`` folder (#510); ``tax_module("mine", text)`` writes one."""
+    def _write(name: str, text: str | None = None) -> Path:
+        path = test_data_dir / "taxes" / f"{name}.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if text is None:
+            text = (test_data / "sim" / "tax_calculators" / "taxes" / f"{name}.py").read_text()
+        path.write_text(text)
+        return path
+    return _write
+
+
 @pytest.fixture(scope="session")
 def write_tax() -> Callable[..., Path]:
     """``write_tax(scenario_dir, name="federal", **cells)``: write a tax
@@ -1457,16 +1476,6 @@ def close_plots():
     plt.close("all")
 
 
-@pytest.fixture(scope="function", autouse=True)
-def no_FigureCanvasAgg_warning():
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore",
-                                category=UserWarning,
-                                message=".*FigureCanvasAgg.*"
-                                )
-        yield
-
-
 # --- ADR-007 sensitivity batches -------------------------------------------
 
 
@@ -1510,6 +1519,19 @@ def sim_load_test_copy(test_data_dir: Path, intent_dir: Path, runs_dir: Path) ->
              "--allow-dirty-data", *extra)
         return runs_dir / scenario
     return _load
+
+
+@pytest.fixture(scope="function")
+def latest_test_run(sim_load_test_copy: Callable[..., Path], runs_dir: Path) -> Callable[[str], Path]:
+    """Callable running ``sim load`` (load and run) on a scenario of the
+    private data copy, as ``sim_load_test_copy`` does; returns its newest run
+    file, where ``sim`` commands looking for a scenario's runs find it."""
+    def _run(scenario: str) -> Path:
+        sim_load_test_copy(scenario=scenario)
+        found = latest_run_path(runs_dir, scenario)
+        assert found is not None, scenario
+        return found
+    return _run
 
 
 @pytest.fixture(scope="function")
@@ -1601,7 +1623,7 @@ def stamp_runs(code_repo: git.Repo) -> Callable[[Path], None]:
             run_file.rename(run_file.with_name(
                 f"2000-01-01T{n:06d}Z_{run_file.name.split('_', 1)[1]}"))
         for run_file in runs_dir.rglob("*.sqlite3"):
-            with sqlite3.connect(run_file) as con:
+            with closing(sqlite3.connect(run_file)) as con, con:
                 if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'simulation_run'").fetchone():
                     con.execute("UPDATE simulation_run SET code_version = ?, code_dirty = 0",
                                 (code_repo.head.commit.hexsha,))

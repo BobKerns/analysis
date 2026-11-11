@@ -33,7 +33,7 @@ from IPython.display import HTML, clear_output, display
 from analysis.frames import clip_years, index_years
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
-from analysis.sim import load_warnings, shortfalls
+from analysis.sim import compare, load_warnings, shortfalls
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
@@ -871,6 +871,7 @@ def _load_multi(
 
     resolved_variants = [name for name in variants if name in connections]
     scenarios = [baseline, *resolved_variants]
+    compare.align_cpi(connections, baseline)
 
     import matplotlib.pyplot as plt
 

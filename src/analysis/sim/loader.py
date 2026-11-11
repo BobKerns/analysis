@@ -7,6 +7,7 @@ Git-based provenance stamps (ADR-004) are computed via ``analysis.sim.provenance
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import math
 import os
@@ -24,7 +25,7 @@ from typing import Any, NamedTuple
 
 from analysis.sim import (
     asset_classes, guard_rails, life_table, load_warnings, registries, states, strategy_api,
-    strategy_code, strategy_files, strategy_load, tax_files, units,
+    strategy_code, strategy_files, strategy_load, tax_code, tax_files, units,
 )
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
@@ -53,6 +54,7 @@ from analysis.sim.lineage import (
     read_parents,
 )
 from analysis.sim.lineage import scenario_dir as _scenario_dir
+from analysis.sim.param_units import param_units
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -1317,6 +1319,12 @@ def load_scenario(
         ("effective_date",), issues, replace_whole=True,  # a county left out is blank
     )
     strategy_sources = strategy_code.read_sources(data_dir)
+    tax_kinds = tax_code.TaxKinds(tax_code.read_sources(data_dir))
+    # A broken calculator module fails the loads that name a kind of the
+    # data repo's (it may be the one that broke); others get a hint.
+    builtin = tax_code.builtin_kinds()
+    (issues if any(row.get("kind") not in builtin for row in tax_rows) else unused).extend(
+        tax_kinds.problems)
 
 
     aux_files = [
@@ -1344,7 +1352,9 @@ def load_scenario(
     )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
-    _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues)
+    scenario_tags = _scenario_tags(accounts, scheduled_rows, calendar_rows)
+    _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues,
+                    kinds=tax_kinds, tags=scenario_tags)
     _validate_local_tax(tax_rows, aux_rows, issues)
     _validate_residence(residence_rows, tax_rows, aux_rows, issues)
     _validate_calendar(
@@ -1372,6 +1382,9 @@ def load_scenario(
     _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
+    _validate_state_adjustments(
+        aux_rows, issues, unused, tax_rows=tax_rows, residence_rows=residence_rows,
+        tags=scenario_tags)
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -1494,6 +1507,8 @@ def load_scenario(
             target_rows=target_rows, rail_rows=rail_rows, disabled=disabled_strategies,
         ))
         counts.update(strategy_load.write_strategy_vary(con, strategy_varies))
+        counts["tax_source"] = tax_code.write_sources(
+            con, tax_code.snapshot(tax_kinds, [row.get("kind", "") for row in tax_rows]))
         load_warnings.write(con, warnings, unused)
         _write_manifest(
             con,
@@ -2253,7 +2268,8 @@ def _expand_account_growth(
         # so Roth and traditional lots in one account grow from different
         # built-ins whatever the account's tax_character says (#224).
         lot_series: list[tuple[str, str, AllocationBlend | None, str]] = []
-        payouts: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        # Each lot's payouts and the built-in account they come from.
+        payouts: dict[str, list[tuple[registries.GrowthCounterparty, LotPayout]]] = {}
         for m in lots_by_account.get(name) or [{}]:
             symbol = m.get("symbol") or ""
             lot = m.get("lot") or registries.DEFAULT_LOT
@@ -2271,8 +2287,28 @@ def _expand_account_growth(
             )
             grows_at = series or ("" if blend else account_series)
             lot_series.append((lot, grows_at, blend, lot_character))
+            held = {c for _, weights in weight_sets.get(symbol, ()) for c in weights} if blend else set()
+            if clash := _payout_name_clash({grows_at, symbol, *held}, rate_series):
+                issues.append(f"{where} ({name} / {lot}): {clash}")
             if lot_character == "gains" and row.get("subkind") == "brokerage_taxable":
-                payouts[lot] = _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                payouts[lot] = [
+                    (registries.PAYOUT_ACCOUNTS[p.payer], p)
+                    for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
+            elif row.get("subkind") == "hsa" and lot_character in registries.SHELTERED_PAYOUT_ACCOUNTS:
+                # An HSA's payouts (#497) are untaxed federally but taxed by
+                # a state that doesn't recognize HSAs, which needs them
+                # whether or not the lot tracks shares.
+                payouts[lot] = [
+                    (registries.hsa_payout_account(p.payer), p)
+                    for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
+            elif (sheltered := registries.SHELTERED_PAYOUT_ACCOUNTS.get(lot_character)) and m.get("quantity"):
+                # An untaxed lot's payouts (#547) only buy shares, so a lot
+                # that tracks dollars has no use for them.
+                payouts[lot] = [
+                    (sheltered, p) for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
         growing = [entry for entry in lot_series if entry[1] or entry[2]]
         if not growing:
             if character:
@@ -2297,7 +2333,7 @@ def _expand_account_growth(
             )
             continue
         needed = [registries.GROWTH_COUNTERPARTY_ACCOUNTS[c] for *_, c in growing] + [
-            registries.PAYOUT_ACCOUNTS[c] for lot, *_ in growing for c, _ in payouts.get(lot, ())
+            payer for lot, *_ in growing for payer, _ in payouts.get(lot, ())
         ]
         for counterparty in needed:
             if counterparty.name in account_names:
@@ -2309,7 +2345,7 @@ def _expand_account_growth(
                 "owner": "", "tax_treatment": counterparty.tax_treatment,
                 "opened": "", "closed": "", "tags": "",
                 "meta_json": json.dumps(
-                    {"builtin": "growth" if counterparty.name in _GROWTH_NAMES else "payout",
+                    {"builtin": _builtin_label(counterparty.name),
                      "description": counterparty.description},
                     separators=(",", ":"),
                 ),
@@ -2321,9 +2357,9 @@ def _expand_account_growth(
             counterparty = registries.GROWTH_COUNTERPARTY_ACCOUNTS[lot_character]
             lot_payouts = payouts.get(lot, [])
             where_lot = f" / {lot}" if lot != registries.DEFAULT_LOT else ""
-            for payout_character, spec in lot_payouts:
-                payer = registries.PAYOUT_ACCOUNTS[payout_character]
-                payout_name = growth_rule_name(name, lot, rule_names, prefix=_PAYOUT_PREFIX[payout_character])
+            for payer, payout in lot_payouts:
+                spec = payout.spec
+                payout_name = growth_rule_name(name, lot, rule_names, prefix=payout.prefix)
                 rule_names.add(payout_name)
                 scheduled_rows.append({
                     "name": payout_name,
@@ -2337,11 +2373,12 @@ def _expand_account_growth(
                     # is a fall in value, which the growth rule carries.
                     "params_json": json.dumps({"blend": spec["blend"], "payout": True} if "blend" in spec
                                               else {"payout": True}, separators=(",", ":")),
-                    "tax_character": payer.tax_character,
+                    # An HSA's payout keeps its lot's growth character, so
+                    # the federal return passes it by (#497).
+                    "tax_character": lot_character if payer.name in _HSA_PAYOUT_NAMES else payer.tax_character,
                     "start": start,
                     "description": (
-                        f"{'Dividends' if payout_character == registries.QUALIFIED_DIVIDEND else 'Interest'}"
-                        f" on {name}{where_lot}, reinvested ("
+                        f"{payout.label} on {name}{where_lot}, reinvested ("
                         + (_describe_blend(spec["blend"]) if "blend" in spec else spec["series"]) + ")"
                     ),
                 })
@@ -2361,7 +2398,7 @@ def _expand_account_growth(
                 "cadence": "monthly",
                 "amount_rule_kind": "percent_of_balance",
                 "series": series,
-                "params_json": _growth_params(blend, [spec for _, spec in lot_payouts]),
+                "params_json": _growth_params(blend, [p.spec for _, p in lot_payouts]),
                 "tax_character": counterparty.tax_character,
                 "start": start,
                 "description": (
@@ -2373,7 +2410,17 @@ def _expand_account_growth(
 
 
 _GROWTH_NAMES = frozenset(c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values())
-_PAYOUT_PREFIX = {registries.QUALIFIED_DIVIDEND: "dividends_", "ordinary": "interest_"}
+_SHELTERED_PAYOUT_NAMES = frozenset(c.name for c in registries.SHELTERED_PAYOUT_ACCOUNTS.values())
+_HSA_PAYOUT_NAMES = frozenset(c.name for c in registries.HSA_PAYOUT_ACCOUNTS.values())
+
+
+def _builtin_label(name: str) -> str:
+    """A built-in account's ``meta_json.builtin``: ``growth``, a taxed
+    ``payout``, or an untaxed lot's ``sheltered_payout`` (#547), which the
+    run treats as growth but which buys shares."""
+    if name in _GROWTH_NAMES:
+        return "growth"
+    return "sheltered_payout" if name in _SHELTERED_PAYOUT_NAMES else "payout"
 
 
 def _growth_params(blend: AllocationBlend | None, less: list[dict[str, Any]]) -> str:
@@ -2388,32 +2435,100 @@ def _growth_params(blend: AllocationBlend | None, less: list[dict[str, Any]]) ->
     return json.dumps(params, separators=(",", ":")) if params else ""
 
 
+def _payout_name_clash(names: Collection[str], rate_series: Collection[str | None]) -> str | None:
+    """Why a lot can't read its payouts, if it can't: a series ``x_cg``
+    (or ``x_stcg``) whose dividend yield ``x_cg_yield`` is also ``x``'s
+    long-term (short-term) gain distributions (#547). The file would mean
+    both, so the series needs another name."""
+    for name in sorted(n for n in names if n):
+        for suffix in (registries.CG_YIELD_SUFFIX, registries.STCG_YIELD_SUFFIX):
+            ending = suffix.removesuffix(registries.YIELD_SUFFIX)
+            if name.endswith(ending) and (paid := registries.yield_series(name)) in rate_series:
+                return (f"{name!r} ends in {ending!r}, so {paid!r} would be both its yield and "
+                        f"{name.removesuffix(ending)!r}'s gain distributions; rename the series")
+    return None
+
+
+class LotPayout(NamedTuple):
+    """One payout rule a lot gets (#468, #547): what it is, how a taxable lot
+    is taxed on it, and its rate (``{"series": ...}`` or ``{"blend": ...}``)."""
+
+    prefix: str
+    label: str
+    payer: str
+    """Its key in ``registries.PAYOUT_ACCOUNTS``, when the lot is taxed."""
+    spec: dict[str, Any]
+
+
+# Each payout series suffix: its rule-name prefix, label and taxable payer,
+# keyed by the character a taxable lot is taxed at. Dividends' character
+# follows the asset class; a gain distribution's is fixed.
+_PAYOUT_KINDS: dict[str, dict[str, tuple[str, str, str]]] = {
+    registries.YIELD_SUFFIX: {
+        registries.QUALIFIED_DIVIDEND: ("dividends_", "Dividends", registries.QUALIFIED_DIVIDEND),
+        "ordinary": ("interest_", "Interest", "ordinary"),
+    },
+    registries.CG_YIELD_SUFFIX: {"ltcg": ("lt_distributions_", "Long-term gain distributions", "ltcg")},
+    registries.STCG_YIELD_SUFFIX: {
+        "ordinary": ("st_distributions_", "Short-term gain distributions", registries.NONQUALIFIED_DIVIDEND)},
+}
+_FUND_ORDINARY_DIVIDENDS = ("ordinary_dividends_", "Non-qualified dividends", registries.NONQUALIFIED_DIVIDEND)
+
+
 def _lot_payouts(
     symbol: str, series: str, blend: AllocationBlend | None,
     weight_sets: Mapping[str, list[tuple[str, dict[str, int]]]],
     rate_series: Collection[str | None],
-) -> list[tuple[str, dict[str, Any]]]:
-    """What a taxable lot pays out each year (#468, ADR-005 §5), as
-    ``(tax character, rate spec)`` pairs, a spec being ``{"series": ...}`` or
-    ``{"blend": ...}``: none, one, or a qualified and an ordinary part.
+) -> list[LotPayout]:
+    """Every payout a lot gets each year (#468, #547, ADR-005 §5): its
+    dividends and interest from ``_yield`` series, then its long-term and
+    short-term gain distributions from ``_cg_yield`` and ``_stcg_yield``."""
+    out = []
+    for suffix, kinds in _PAYOUT_KINDS.items():
+        for character, spec in _lot_payout_specs(suffix, symbol, series, blend, weight_sets, rate_series):
+            kind = kinds[character]
+            if symbol and kind[0] == "interest_":
+                # A fund's payout is a dividend on its 1099-DIV, whatever it
+                # holds: only a bond or cash held directly pays interest.
+                kind = _FUND_ORDINARY_DIVIDENDS
+            out.append(LotPayout(*kind, spec))
+    return out
 
-    A symbol with its own ``<SYMBOL>_yield`` series pays at it, as qualified
-    dividends if everything its allocation holds is stock, else as ordinary.
-    A fund growing at its allocation's blend pays each class's
-    ``<class>_yield``, split by how each is taxed. A lot growing at one
-    series pays ``<series>_yield``, taxed by the series' class. Cash and CDs
-    pay all of their rate. A class with no yield series pays nothing.
+
+def _lot_payout_specs(
+    suffix: str, symbol: str, series: str, blend: AllocationBlend | None,
+    weight_sets: Mapping[str, list[tuple[str, dict[str, int]]]],
+    rate_series: Collection[str | None],
+) -> list[tuple[str, dict[str, Any]]]:
+    """What a lot pays from the ``suffix`` series, as ``(tax character, rate
+    spec)`` pairs: none, one, or for dividends a qualified and an ordinary part.
+
+    A symbol with its own ``<SYMBOL><suffix>`` series pays at it, a dividend
+    as qualified if everything its allocation holds is stock, else as
+    ordinary. A fund growing at its allocation's blend pays each class's
+    ``<class><suffix>``, dividends split by how each is taxed. A lot growing
+    at one series pays ``<series><suffix>``, a dividend taxed by the series'
+    class. Cash and CDs pay all of their rate as interest. A class with no
+    such series pays nothing.
     """
+    dividends = suffix == registries.YIELD_SUFFIX
+    if not dividends:
+        fixed = registries.CG_PAYOUT_CHARACTERS[suffix]
+
+    def character_of(asset_class: str) -> str:
+        return registries.payout_character(asset_class) if dividends else fixed
+
     def class_payout(asset_class: str, grows_at: str) -> str | None:
-        if (yielded := registries.yield_series(asset_class)) in rate_series:
+        if (yielded := registries.yield_series(asset_class, suffix)) in rate_series:
             return yielded
-        return grows_at if asset_class in registries.ALL_PAYOUT_CLASSES else None
+        return grows_at if dividends and asset_class in registries.ALL_PAYOUT_CLASSES else None
 
     sets = weight_sets.get(symbol) if symbol else None
     held = {c for _, weights in sets or () for c, w in weights.items() if w}
-    if symbol and (own := registries.yield_series(symbol)) in rate_series:
+    if symbol and (own := registries.yield_series(symbol, suffix)) in rate_series:
         qualified = bool(held) and held <= registries.QUALIFIED_DIVIDEND_CLASSES
-        return [(registries.QUALIFIED_DIVIDEND if qualified else "ordinary", {"series": own})]
+        character = (registries.QUALIFIED_DIVIDEND if qualified else "ordinary") if dividends else fixed
+        return [(character, {"series": own})]
     if blend and sets:
         slice_of = {c: f"{symbol}.{c}" if f"{symbol}.{c}" in rate_series else c for c in held}
         by_character: dict[str, AllocationBlend] = {}
@@ -2421,8 +2536,8 @@ def _lot_payouts(
             parts: dict[str, list[list[Any]]] = {}
             for c, w in sorted(weights.items()):
                 if w and (paid := class_payout(c, slice_of[c])) is not None:
-                    parts.setdefault(registries.payout_character(c), []).append([paid, w])
-            for character in {registries.payout_character(c) for c in held}:
+                    parts.setdefault(character_of(c), []).append([paid, w])
+            for character in {character_of(c) for c in held}:
                 by_character.setdefault(character, []).append([as_of, parts.get(character, [])])
         return [
             (character, {"blend": sets_})
@@ -2432,11 +2547,12 @@ def _lot_payouts(
     if not series:
         return []
     asset_class = series if series in registries.ASSET_CLASSES else registries.SYMBOL_ASSET_CLASS.get(symbol, "")
-    paid = (registries.yield_series(series) if registries.yield_series(series) in rate_series
-            else series if asset_class in registries.ALL_PAYOUT_CLASSES else None)
+    paid = (own if (own := registries.yield_series(series, suffix)) in rate_series
+            else series if dividends and asset_class in registries.ALL_PAYOUT_CLASSES else None)
     if paid is None:
         return []
-    return [(registries.payout_character(asset_class) if asset_class else "ordinary", {"series": paid})]
+    return [(character_of(asset_class) if asset_class else ("ordinary" if dividends else fixed),
+             {"series": paid})]
 
 
 type AllocationBlend = list[list[Any]]
@@ -3975,6 +4091,45 @@ def _validate_state_social_security(
             issues.append(f"{where}: phaseout_rate must be more than 0%")
 
 
+def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str]) -> int:
+    """A ``min_age`` cell, an age in years (59.5), as months; 0 when blank
+    or not an age, which is reported."""
+    age = payload.get("min_age")
+    try:
+        years = 0.0 if age in (None, "") else float(age)
+        if not 0 <= years <= 150:  # also refuses nan and inf
+            raise ValueError(age)
+        return round(years * 12)
+    except (TypeError, ValueError):
+        issues.append(f"{where}: min_age {age!r} must be an age in years, such as 59.5")
+        return 0
+
+
+def _check_filing_status(where: str, payload: Mapping[str, Any], issues: list[str]) -> None:
+    status = payload.get("filing_status")
+    if status not in (None, "") and status not in registries.FILING_STATUSES:
+        issues.append(
+            f"{where}: filing_status {status!r} must be blank (every status) or one of "
+            f"{', '.join(registries.FILING_STATUSES)}"
+        )
+
+
+def _check_yes(where: str, payload: Mapping[str, Any], column: str, issues: list[str]) -> bool:
+    """A yes/no cell: whether it says yes; anything but yes, no, true,
+    false or blank is reported."""
+    value = str(payload.get(column) or "").strip().lower()
+    if value not in ("", "yes", "no", "true", "false"):
+        issues.append(f"{where}: {column} {payload.get(column)!r} must be yes or blank")
+    return value in ("yes", "true")
+
+
+def _check_not_negative(where: str, payload: Mapping[str, Any], columns: Iterable[str],
+                        issues: list[str]) -> None:
+    for column in columns:
+        if (payload.get(column) or 0) < 0:
+            issues.append(f"{where}: {column} must not be negative")
+
+
 def _validate_state_retirement_exclusions(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     issues: list[str],
@@ -4004,35 +4159,117 @@ def _validate_state_retirement_exclusions(
                 f"{where}: income {payload.get('income')!r} must list one or more of "
                 f"{', '.join(sorted(incomes))}, separated by ';'"
             )
-        age = payload.get("min_age")
-        try:
-            years = 0.0 if age in (None, "") else float(age)
-            if not 0 <= years <= 150:  # also refuses nan and inf
-                raise ValueError(age)
-            months = round(years * 12)
-        except (TypeError, ValueError):
-            issues.append(f"{where}: min_age {age!r} must be an age in years, such as 59.5")
-            months = 0
+        months = _check_min_age(where, payload, issues)
         status = payload.get("filing_status")
-        if status not in (None, "") and status not in registries.FILING_STATUSES:
-            issues.append(
-                f"{where}: filing_status {status!r} must be blank (every status) or one of "
-                f"{', '.join(registries.FILING_STATUSES)}"
-            )
-        for column in ("amount", "income_limit", "phaseout"):
-            if (payload.get(column) or 0) < 0:
-                issues.append(f"{where}: {column} must not be negative")
+        _check_filing_status(where, payload, issues)
+        _check_not_negative(where, payload, ("amount", "income_limit", "phaseout"), issues)
         if payload.get("phaseout") is not None and payload.get("income_limit") is None:
             issues.append(f"{where}: a phaseout needs the income_limit it starts at")
-        less_ss = str(payload.get("less_ss") or "").strip().lower()
-        if less_ss not in ("", "yes", "no", "true", "false"):
-            issues.append(f"{where}: less_ss {payload.get('less_ss')!r} must be yes or blank")
-        elif less_ss in ("yes", "true") and payload.get("amount") is None:
+        if _check_yes(where, payload, "less_ss", issues) and payload.get("amount") is None:
             issues.append(f"{where}: less_ss needs an amount for Social Security to reduce")
         tier = (state, effective, name, str(status or ""), str(months))
         if tier in tiers:
             issues.append(f"{where}: two rows for the same exclusion, filing status and min_age")
         tiers.add(tier)
+
+
+_STATE_LINES: frozenset[str] = frozenset({
+    "agi", "tax", "taxable_income", "ordinary_taxable", "ordinary_income", "ltcg_taxed",
+    "nol_used", "nol_carryover", "ss_taxable", "ss_benefits", "credits", "deduction",
+    "standard_deduction", "itemized_deduction", "capital_loss_used", "capital_loss_carryover",
+    "capital_loss_lapsed", "nol_lapsed", "business_net", "hobby_disallowed",
+    "dividends_as_ordinary", "hsa_addback", "hsa_dividends",
+    "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
+    "drawdown_tax", "drawdown_base", "tax_paid", "tax_due", "tax_overpaid",
+})
+"""The lines the built-in state calculator writes itself, and the buckets
+the engine's settlement adds beside them, which a ``state_adjustments``
+row can't be named (it would overwrite one, or be overwritten)."""
+
+_LINE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _validate_state_adjustments(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str], unused: list[str], *,
+    tax_rows: Sequence[Mapping[str, str]] = (),
+    residence_rows: Sequence[Mapping[str, str]] = (),
+    tags: frozenset[str] = frozenset(),
+) -> None:
+    """A ``state_adjustments__<state>.csv`` row (#511, #488) names a line,
+    its step and base, and the tag its base reads, in forms the run can
+    read. A tag that nothing in the scenario carries, in a state the
+    household lives in, is noted for ``sim check``: the line comes out zero,
+    which is right for a household that doesn't rent but wrong for a
+    misspelt tag."""
+    kind = registries.STATE_ADJUSTMENTS
+    lived = {r.get("state") for r in residence_rows}
+    has_state = any(r.get("name") == "state" for r in tax_rows)
+    seen: set[tuple[str | None, str, str, str]] = set()
+    noted: set[tuple[str | None, str, str]] = set()
+    for row_kind, state, payload, effective in aux_rows:
+        if row_kind != kind:
+            continue
+        name = str(payload.get("name") or "").strip()
+        where = f"aux/{kind}__{state}.csv ({effective}, {name})"
+        if not state:
+            issues.append(f"aux/{kind}.csv: name the state, as {kind}__CA.csv")
+            return
+        if not _LINE_NAME.match(name):
+            issues.append(f"{where}: name must be lower case letters, digits and _, "
+                          "as the return line it becomes (state_<name>)")
+        elif name in _STATE_LINES:
+            issues.append(f"{where}: name '{name}' is a line the state return already has")
+        step, base = payload.get("step"), payload.get("base")
+        if step not in registries.STATE_ADJUSTMENT_STEPS:
+            issues.append(f"{where}: step {step!r} must be one of "
+                          f"{', '.join(registries.STATE_ADJUSTMENT_STEPS)}")
+        if base not in registries.STATE_ADJUSTMENT_BASES:
+            issues.append(f"{where}: base {base!r} must be one of "
+                          f"{', '.join(registries.STATE_ADJUSTMENT_BASES)}")
+        tag = str(payload.get("tag") or "").strip()
+        if base in ("spending", "income"):
+            if not tag:
+                issues.append(f"{where}: base {base} needs the tag it reads, as tax:rent")
+            else:
+                try:
+                    well_formed = len(registries.parse_tags(tag)) == 1
+                except ValueError:
+                    well_formed = False
+                if not well_formed:
+                    issues.append(f"{where}: tag {tag!r} must be one role:name, as tax:rent")
+                elif tag not in tags and state in lived and has_state and (state, name, tag) not in noted:
+                    noted.add((state, name, tag))
+                    unused.append(
+                        f"{where}: no account, scheduled rule or calendar row carries tag "
+                        f"'{tag}', so this line comes out zero (right if the household has "
+                        "none; tag what it pays or receives otherwise)")
+        elif tag:
+            issues.append(f"{where}: base {base} reads no tag; leave tag blank")
+        if base == "filers" and payload.get("amount") is None:
+            issues.append(f"{where}: base filers needs the amount each filer gets")
+        if base == "filers" and payload.get("rate_micros") is not None:
+            issues.append(f"{where}: base filers takes no rate; amount is each filer's")
+        rate = payload.get("rate_micros")
+        if rate is not None and rate <= 0:
+            issues.append(f"{where}: rate must be more than 0%")
+        _check_not_negative(where, payload, ("amount", "income_limit", "phaseout"), issues)
+        if payload.get("phaseout") is not None and payload.get("phaseout_rate_micros") is not None:
+            issues.append(f"{where}: give phaseout or phaseout_rate, not both")
+        if (payload.get("phaseout") is not None or payload.get("phaseout_rate_micros") is not None) \
+                and payload.get("income_limit") is None:
+            issues.append(f"{where}: a phase-out needs the income_limit it starts at")
+        phaseout_rate = payload.get("phaseout_rate_micros")
+        if phaseout_rate is not None and phaseout_rate <= 0:
+            issues.append(f"{where}: phaseout_rate must be more than 0%")
+        _check_min_age(where, payload, issues)
+        _check_yes(where, payload, "per_person", issues)
+        _check_filing_status(where, payload, issues)
+        status = payload.get("filing_status")
+        key = (state, effective, name, str(status or ""))
+        if key in seen:
+            issues.append(f"{where}: two rows for the same line and filing status")
+        seen.add(key)
 
 
 def _validate_swap_aux_tables(
@@ -5134,19 +5371,51 @@ TAX_RETIRED_PARAMS: dict[str, str] = {
 """``tax_accumulator`` params a jurisdiction file doesn't take (#507), and why."""
 
 
-def tax_calculator_upstream(kind: str) -> tuple[str, ...]:
+def tax_calculator_upstream(kind: str, kinds: tax_code.TaxKinds | None = None) -> tuple[str, ...]:
     """The jurisdictions calculator ``kind`` builds on (#508); none for an
-    unknown kind, which is reported on its own."""
-    from analysis.sim import tax_api  # noqa: PLC0415  (the calculators load on first use)
-    try:
-        return tax_api.calculator(kind).upstream
-    except tax_api.TaxError:
-        return ()
+    unknown kind, which is reported on its own. ``kinds`` are the scenario's,
+    the data repo's included; the built-ins without it."""
+    cls = (kinds.kinds if kinds is not None else tax_code.builtin_kinds()).get(kind)
+    return cls.upstream if cls is not None else ()
+
+
+def _untagged_defaults(cls: type[Any], given: Mapping[str, Any], tags: frozenset[str]) -> list[str]:
+    """A calculator's ``Tag`` params left at their defaults that nothing in
+    the scenario carries (#510): a deduction the household meant to take
+    would otherwise come out zero. A given one was checked with the rest."""
+    units = param_units(cls.Params)
+    out = []
+    for f in dataclasses.fields(cls.Params):
+        unit = units.get(f.name)
+        if unit is None or unit.name != "tag" or f.name in given:
+            continue
+        if isinstance(f.default, str) and f.default not in tags:
+            out.append(f"the {cls.kind} calculator reads tag {f.default!r} (its {f.name!r}), "
+                       "and no account, scheduled rule or calendar row carries it; tag what it "
+                       f"counts, or name another tag in params_json ({f.name!r})")
+    return out
+
+
+def _scenario_tags(
+    accounts: Sequence[Mapping[str, str]], scheduled_rows: Sequence[Mapping[str, str]],
+    calendar_rows: Sequence[Mapping[str, str]],
+) -> frozenset[str]:
+    """Every tag an account, scheduled rule or calendar row carries, as
+    ``role:name``: what a calculator's ``Tag`` param may name (#510). A
+    malformed tag is reported with its row."""
+    out: set[str] = set()
+    for row in (*accounts, *scheduled_rows, *calendar_rows):
+        try:
+            out.update(f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", "")))
+        except ValueError:
+            continue
+    return frozenset(out)
 
 
 def _validate_taxes(
     tax_rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
-    accounts: list[dict[str, str]], scenario_row: Mapping[str, str], issues: list[str],
+    accounts: list[dict[str, str]], scenario_row: Mapping[str, str], issues: list[str], *,
+    kinds: tax_code.TaxKinds | None = None, tags: frozenset[str] = frozenset(),
 ) -> None:
     """``taxes/<jurisdiction>.csv`` (#507, ADR-003 §4.15): a calculator kind
     for the jurisdiction, upstream jurisdictions the scenario has and that
@@ -5154,9 +5423,13 @@ def _validate_taxes(
     pay into, a known schedule, and calculator params that are a JSON
     object. Resolves ``source_chain`` and ``destination`` to leaf names in
     place, and fills a blank ``start`` with the scenario's and a blank
-    ``schedule`` with ``april``."""
+    ``schedule`` with ``april``. The params are checked against the
+    calculator's ``Params`` (#510) and rewritten in stored units, a ``Tag``
+    param naming a tag some account, rule or calendar row in ``tags``
+    carries."""
+    calculators = kinds if kinds is not None else tax_code.TaxKinds({})
     defined = [row["name"] for row in tax_rows]
-    kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
+    account_kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
     by_name = {row["name"]: row for row in tax_rows}
     for row in tax_rows:
         # A jurisdiction paid with another's (local with the state's, #508)
@@ -5169,13 +5442,16 @@ def _validate_taxes(
         where = row.get(ORIGIN) or f"{registries.TAXES_DIR}/{row['name']}.csv"
         name = row["name"]
         kind = row.get("kind", "")
-        if registries.TAX_KINDS.get(kind) != name:
-            fits = [k for k, j in registries.TAX_KINDS.items() if j == name]
-            issues.append(f"{where}: kind {kind!r} doesn't compute the {name} tax "
-                          f"(it takes kind {', '.join(fits)})")
+        cls = calculators.kinds.get(kind)
+        if cls is None or cls.jurisdiction != name:
+            fits = sorted(k for k, c in calculators.kinds.items() if c.jurisdiction == name)
+            what = (f"kind {kind!r} computes the {cls.jurisdiction} tax" if cls is not None
+                    else f"no tax calculator kind {kind!r}" if kind else "no kind")
+            issues.append(f"{where}: {what}; the {name} tax takes kind {', '.join(fits)} "
+                          "(`sim tax kinds` lists them)")
         # A calculator declares the returns it builds on (#508); the column
         # may only spell that out, and blank takes it.
-        declared = tax_calculator_upstream(kind)
+        declared = tax_calculator_upstream(kind, calculators)
         given = (row.get("upstream") or "").split()
         if given and sorted(given) != sorted(declared):
             issues.append(
@@ -5205,8 +5481,8 @@ def _validate_taxes(
                           "into an account")
         elif problem := _resolve_ref(row, "destination", "", leaves, chain_names):
             issues.append(f"{where}: destination {problem}")
-        elif kinds.get(destination) not in (None, "expense"):
-            issues.append(f"{where}: destination '{destination}' is a {kinds[destination]} account; "
+        elif account_kinds.get(destination) not in (None, "expense"):
+            issues.append(f"{where}: destination '{destination}' is a {account_kinds[destination]} account; "
                           "the tax is paid into an expense account")
         schedule = row.get("schedule") or registries.TAX_SCHEDULES[0]
         if schedule not in registries.TAX_SCHEDULES:
@@ -5223,6 +5499,22 @@ def _validate_taxes(
         for key, why in TAX_RETIRED_PARAMS.items():
             if key in params:
                 issues.append(f"{where}: params_json takes no {key!r}: {why}")
+        if cls is None or (cls.jurisdiction != name):
+            continue
+        # The retired params have their own messages (and a state's
+        # bracket_series its own, with the residence).
+        retired = {*TAX_RETIRED_PARAMS, *(("bracket_series",) if name in ("state", "local") else ())}
+        converted, problems = strategy_load.convert_params(
+            cls, {k: v for k, v in params.items() if k not in retired},
+            tags=tags, target_sets=(), accounts={a.get("name", "") for a in accounts},
+            check_types=True, tag_carriers="account, scheduled rule or calendar row")
+        issues.extend(f"{where}: {problem}" for problem in problems)
+        if not problems:
+            problems = _untagged_defaults(cls, converted, tags)
+            issues.extend(f"{where}: {problem}" for problem in problems)
+        if not problems and not set(params) & retired:
+            row["params_json"] = json.dumps(converted, sort_keys=True, separators=(",", ":")) \
+                if converted else ""
 
 
 def _validate_local_tax(

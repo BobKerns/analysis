@@ -14,24 +14,37 @@ A calculator is a pure function of its :class:`TaxYear`: it reads no
 database and keeps nothing between years, which is what makes a run
 reproducible and a calculator testable on a year built by hand.
 
-The API is the built-in calculators' only, for now: until a data repo can
-bring its own (#510) it can change without ``API_VERSION`` moving.
+A data repo brings its own calculators as ``taxes/*.py`` modules (#510,
+ADR-011), imported as strategies are. A module may set ``API_VERSION`` to the
+version it was written for; one newer than the code provides is refused at
+load. The API is this module and the calculator classes and bases in
+:mod:`analysis.sim.taxes` (``federal``, ``state_base``, ``state_tables``,
+``local``), which a household's calculator may subclass;
+:mod:`analysis.sim.taxes.common` is their own helpers, which can change.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, ClassVar
 
+from analysis.sim import ownership, registries
+from analysis.sim.param_units import Dollars, Percent, Tag, percent
+
 __all__ = [
-    "API_VERSION", "Account", "CapitalLoss", "Extra", "IncomeItem", "KINDS", "Person",
-    "Prepared", "Residence", "Return", "TaxCalculator", "TaxError", "TaxYear", "calculator",
-    "register",
+    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "HsaGain", "IncomeItem", "Percent", "Person",
+    "Prepared", "Residence", "Return", "SpendingItem", "Tag", "TaxCalculator", "TaxError",
+    "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
-API_VERSION = 1
+API_VERSION = 2
+"""Bumped when a calculator written against the previous version could
+break, or one written for this version needs what the previous lacks. 1
+(#510) is the first a data repo can write to; 2 (#511) adds a state year's
+``other_deductions`` and ``credit_lines`` steps."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""
@@ -51,6 +64,15 @@ class Account:
     owner: str | None
     hobby: bool = False
     """A ``business`` account whose ``meta_json`` says ``"hobby": true`` (#231)."""
+    tags: frozenset[str] = frozenset()
+    """The account's own tags, ``role:name`` (#510)."""
+
+
+def _effective_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[str]:
+    """``rule``'s tags, and ``account``'s in each role the rule has none of:
+    a rule refines its account's tag, as in the reports' ``--by tag:ROLE``."""
+    roles = {tag.partition(":")[0] for tag in rule}
+    return rule | frozenset(tag for tag in account if tag.partition(":")[0] not in roles)
 
 
 @dataclass(frozen=True)
@@ -58,12 +80,50 @@ class IncomeItem:
     """The year's transfers of one ``character`` from one account to
     another, summed. ``year`` is the tax year they count in (a transfer's
     ``tax_year``, else its date's). Transfers of character ``none`` are
-    never income, so no item has it."""
+    never income, so no item has it.
+
+    ``rule_tags`` are the tags of the rule (or calendar row) that posted
+    them; :attr:`tags` adds the income account's (#510)."""
     year: int
     character: str
     payer: Account
     payee: Account
     amount: int
+    rule_tags: frozenset[str] = frozenset()
+
+    @property
+    def tags(self) -> frozenset[str]:
+        """The item's tags: its rule's, and in each role the rule has none
+        of, the income account's (the payer; the payee when the payer isn't
+        an income account)."""
+        account = self.payer if self.payer.kind == "income" or self.payee.kind != "income" else self.payee
+        return _effective_tags(self.rule_tags, account.tags)
+
+
+@dataclass(frozen=True)
+class SpendingItem:
+    """The year's payments from one account into an expense account (#510),
+    summed by the rule's tags and person: rent, property tax, a premium.
+    ``year`` is the tax year they count in, as for :class:`IncomeItem`, and
+    ``character`` theirs (``none`` for most spending).
+
+    ``rule_tags`` are the posting rule's (or calendar row's) tags, and
+    ``person`` its ``person``, if it names one; :attr:`tags` adds the
+    expense account's."""
+    year: int
+    character: str
+    payer: Account
+    payee: Account
+    amount: int
+    rule_tags: frozenset[str] = frozenset()
+    person: str | None = None
+
+    @property
+    def tags(self) -> frozenset[str]:
+        """The item's tags: its rule's, and in each role the rule has none
+        of, the expense account's. A rule tagged ``tax:repair`` paying into
+        an account tagged ``tax:rent`` is a repair, not rent."""
+        return _effective_tags(self.rule_tags, self.payee.tags)
 
 
 @dataclass(frozen=True)
@@ -77,11 +137,25 @@ class CapitalLoss:
 
 
 @dataclass(frozen=True)
+class HsaGain:
+    """An HSA withdrawal's gain over the lot's basis (``hsa_gain``, #497), a
+    loss negative, summed by tax year, character and the lot's owner: what a
+    state that doesn't recognize HSAs taxes, and the federal return never
+    sees."""
+    year: int
+    character: str
+    owner: str | None
+    amount: int
+
+
+@dataclass(frozen=True)
 class Person:
-    """One of the scenario's people."""
+    """One of the scenario's people, with the last month they're alive
+    (``YYYY-MM-DD``, the month's end) when the scenario gives a lifespan."""
     id: str
     birthdate: str | None
     role: str
+    final_month: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,12 +170,16 @@ class Residence:
 class TaxYear:
     """One tax year, as a calculator sees it.
 
-    ``items`` and ``losses`` cover every year up to ``year``: a capital loss
+    ``items``, ``losses`` and ``hsa_gains`` cover every year up to ``year``: a capital loss
     carries forward, so this year's netting reads the years before it.
-    Tables are read through the methods, as of the year's end."""
+    Tables are read through the methods, as of the year's end.
+    ``params`` is the jurisdiction's ``params_json`` as the calculator's
+    :attr:`TaxCalculator.Params`, in stored units (cents, millionths).
+    ``spending`` is the year's payments into expense accounts, and the years
+    before it."""
     year: int
     jurisdiction: str
-    params: Mapping[str, Any]
+    params: Any
     items: Sequence[IncomeItem]
     losses: Sequence[CapitalLoss]
     persons: Sequence[Person]
@@ -116,6 +194,11 @@ class TaxYear:
     _residences: Sequence[tuple[str, Residence]] = field(repr=False, default=())
     """Where the household lives, from each row's effective date (a month
     end), in date order."""
+    spending: Sequence[SpendingItem] = ()
+    _line_in: Callable[[str, int], int] = field(repr=False, default=lambda _line, _year: 0)
+    hsa_gains: Sequence[HsaGain] = ()
+    """Every year's HSA withdrawals' gains over basis up to ``year`` (#497),
+    for a state that taxes an HSA."""
 
     @property
     def filing_status(self) -> str:
@@ -179,6 +262,19 @@ class TaxYear:
         first year it computed."""
         return self._prior(line)
 
+    def line_in(self, line: str, year: int) -> int:
+        """This jurisdiction's ``line`` of an earlier year's return; 0 for a
+        year it didn't compute. A carryover's history (#277)."""
+        return self._line_in(line, year)
+
+    @cached_property
+    def household(self) -> ownership.Household:
+        """The household and its people's final months (#277): whose an
+        account's money was at a death."""
+        return ownership.Household.of(
+            ((p.id, p.role) for p in self.persons),
+            {p.id: p.final_month for p in self.persons if p.final_month})
+
     @cached_property
     def _this_year(self) -> list[IncomeItem]:
         return [i for i in self.items if i.year == self.year]
@@ -198,6 +294,24 @@ class TaxYear:
         """This year's total of one tax character."""
         return sum(i.amount for i in self._this_year if i.character == character)
 
+    def tagged(self, tag: str) -> list[IncomeItem]:
+        """This year's income items carrying ``tag`` (:attr:`IncomeItem.tags`)."""
+        return [i for i in self._this_year if tag in i.tags]
+
+    @cached_property
+    def _spent_this_year(self) -> list[SpendingItem]:
+        return [s for s in self.spending if s.year == self.year]
+
+    def year_spending(self, *tags: str) -> list[SpendingItem]:
+        """This year's spending items carrying any of ``tags`` (all of them
+        when none)."""
+        return [s for s in self._spent_this_year if not tags or s.tags & set(tags)]
+
+    def spent(self, tag: str) -> int:
+        """This year's spending carrying ``tag``, in cents: what a deduction
+        for rent or property tax starts from."""
+        return sum(s.amount for s in self._spent_this_year if tag in s.tags)
+
 
 @dataclass(frozen=True)
 class Extra:
@@ -216,11 +330,14 @@ class Return:
     ``tax_year_summary`` as ``<jurisdiction>_<line>``, and ``memo`` lines
     kept for the engine and not written.
 
-    The engine reads two memo lines, each 0 when left out: ``drawn_ordinary``,
+    The engine reads three memo lines, each 0 when left out: ``drawn_ordinary``,
     the year's ordinary income drawn from traditional money (an RMD), and
-    ``drawn_gain``, the long-term gain it realized. The after-tax drawdown's
-    share of a later year replaces them, so it isn't taxed twice. Any other
-    memo line is the calculator's own.
+    ``drawn_gain``, the long-term gain its sales realized (not a reinvested
+    gain distribution, #547), which the after-tax drawdown's share of a later
+    year replaces, so it isn't taxed twice; and ``hsa_taxed``, 1 when the
+    jurisdiction taxes an HSA like a brokerage account (#497), so the
+    drawdown prices an HSA's gain over basis rather than its whole balance.
+    Any other memo line is the calculator's own.
 
     Every calculator fills ``REQUIRED``. A what-if (:class:`Extra`) works
     out again the lines more income changes (the income lines, AGI,
@@ -272,37 +389,73 @@ def _no_upstream(name: str) -> Prepared:
     raise TaxError(f"no upstream jurisdiction {name!r}: the calculator doesn't build on it")
 
 
+@dataclass(frozen=True)
+class _NoParams:
+    """A calculator that takes no parameters."""
+
+
 class TaxCalculator:
     """A tax calculator: a ``kind`` a jurisdiction file names, and how it
-    turns a :class:`TaxYear` into returns."""
+    turns a :class:`TaxYear` into returns.
+
+    A subclass sets ``kind``, ``jurisdiction``, ``upstream`` if it builds on
+    another return, a frozen dataclass ``Params`` (fields typed with
+    :data:`Dollars`, :data:`Percent`, :data:`Tag` or plain JSON types, each
+    with a default or required), a docstring (shown by ``sim tax kinds``),
+    and :meth:`prepare`, and is marked with :func:`register`. A ``Tag``
+    param names a tag the calculator reads (:meth:`TaxYear.spent`); the
+    loader refuses a scenario where no account, rule or calendar row
+    carries it, so a deduction never silently comes out zero."""
     kind: ClassVar[str]
+    Params: type[Any] = _NoParams
+    """The calculator's parameters: a frozen dataclass nested in the class.
+    A subclass of a calculator may extend its ``Params``."""
     upstream: ClassVar[tuple[str, ...]] = ()
     """The jurisdictions whose return it builds on (:meth:`TaxYear.upstream`):
     each must have a file in the scenario, and settles before it."""
     jurisdiction: ClassVar[str]
-    """The jurisdiction it computes; until calculators are pluggable (#510)
-    each kind computes one, whose file has that name."""
+    """The jurisdiction it computes (``federal``, ``state`` or ``local``):
+    the file that names the kind is ``taxes/<jurisdiction>.csv``."""
 
     def prepare(self, year: TaxYear) -> Prepared:
         raise NotImplementedError
 
 
-KINDS: dict[str, type[TaxCalculator]] = {}
-"""The registered calculators, by kind."""
+_REGISTERED = "__tax_calculator_registered__"
 
 
 def register[C: type[TaxCalculator]](cls: C) -> C:
-    """Register a calculator under its ``kind``."""
-    if cls.kind in KINDS:
-        raise ValueError(f"tax calculator kind {cls.kind!r} is registered twice")
-    KINDS[cls.kind] = cls
+    """Class decorator: make ``cls`` a calculator kind."""
+    if not (isinstance(cls, type) and issubclass(cls, TaxCalculator)):
+        raise TaxError(f"@register needs a TaxCalculator subclass, not {cls!r}")
+    kind = cls.__dict__.get("kind")
+    if not isinstance(kind, str) or not kind.isidentifier():
+        raise TaxError(f"{cls.__name__}: kind must be set to an identifier, got {kind!r}")
+    if getattr(cls, "jurisdiction", None) not in registries.TAX_JURISDICTIONS:
+        raise TaxError(f"{cls.__name__}: jurisdiction must be one of "
+                       f"{', '.join(registries.TAX_JURISDICTIONS)}, "
+                       f"got {getattr(cls, 'jurisdiction', None)!r}")
+    if not dataclasses.is_dataclass(cls.Params):
+        raise TaxError(f"{cls.__name__}: Params must be a dataclass")
+    for up in cls.upstream:
+        if up not in registries.TAX_JURISDICTIONS or up == cls.jurisdiction:
+            raise TaxError(f"{cls.__name__}: upstream {up!r} must be another of "
+                           f"{', '.join(registries.TAX_JURISDICTIONS)}")
+    setattr(cls, _REGISTERED, True)
     return cls
 
 
+def is_registered(obj: object) -> bool:
+    """Whether ``obj`` is a class marked by :func:`register` itself (not one
+    inheriting the mark from a registered base)."""
+    return isinstance(obj, type) and _REGISTERED in obj.__dict__
+
+
 def calculator(kind: str) -> TaxCalculator:
-    """The calculator a jurisdiction's ``kind`` names."""
-    import analysis.sim.taxes  # noqa: F401, PLC0415  (registers the built-ins)
+    """The built-in calculator ``kind`` names. A scenario's kinds, the data
+    repo's included, are :class:`analysis.sim.tax_code.TaxKinds`."""
+    from analysis.sim import tax_code  # noqa: PLC0415  (imports the built-ins)
     try:
-        return KINDS[kind]()
+        return tax_code.builtin_kinds()[kind]()
     except KeyError:
         raise TaxError(f"unknown tax calculator kind {kind!r}") from None

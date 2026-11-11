@@ -389,9 +389,10 @@ def test_sim_compare_guard_rails_refuses_cpi_constant_without_a_cpi_index(
 
 
 class _Rules:
-    """A run's scheduled rules, enough for ``compare.rule_differences``."""
+    """A run's scheduled rules and its start, enough for ``compare.rule_differences``."""
 
-    def __init__(self, **ss_fields: object) -> None:
+    def __init__(self, scenario_start: str = "2025-01-31", **ss_fields: object) -> None:
+        self.scenario_start = scenario_start
         self.frame = pd.DataFrame([{
             "name": "ss_bill", "from_name": "Income_SS_Bill", "to_name": "Asset_Checking",
             "amount_rule_kind": "ss_benefit", "amount_cents": 320000.0, "claim_age": 70.0,
@@ -399,6 +400,8 @@ class _Rules:
         }])
 
     def items(self, kind: str) -> pd.DataFrame:
+        if kind == "scenario":
+            return pd.DataFrame([{"start": self.scenario_start}])
         assert kind == "scheduled"
         return self.frame
 
@@ -413,6 +416,33 @@ def test_rule_differences_show_every_field_as_it_reads() -> None:
         ("ss_bill", "claim_age"): {"base": "70", "early": "67"},
     }
     assert compare.rule_differences(runs, ["base", "base"], "base").empty
+
+
+def test_rule_starts_before_the_same_start_still_differ() -> None:
+    """#502: two annual rules that began before the same start fire in their
+    own months, so their starts are a difference, not both ``(start)``."""
+    runs = cast(Mapping[str, RunConnection], {
+        "base": _Rules("2026-05-31", start="2025-03-31"),
+        "variant": _Rules("2026-05-31", start="2026-05-31")})
+    rules = compare.rule_differences(runs, ["base", "variant"], "base")
+    assert rules.loc[("ss_bill", "start")].to_dict() == {"base": "2025-03-31", "variant": "(start)"}
+
+
+@pytest.mark.parametrize(("old", "new", "differs"), [
+    ("2026-05-31", "2027-01-31", False),  # each starts with its scenario
+    ("", "2027-01-31", False),  # blank begins with its scenario
+    ("2027-01-31", "2027-01-31", False),  # authored alike, new's first month
+    ("2026-08-31", "2026-08-31", False),  # authored alike, before new's start
+    ("2026-08-31", "2027-03-31", True),
+])
+def test_rule_starts_differ_only_where_authored_differently_across_starts(
+    old: str, new: str, differs: bool,
+) -> None:
+    """#502: last year's plan (start 2026-05) against the rolled one (2027-01)."""
+    runs = cast(Mapping[str, RunConnection], {
+        "plan": _Rules("2026-05-31", start=old), "rolled": _Rules("2027-01-31", start=new)})
+    rules = compare.rule_differences(runs, ["plan", "rolled"], "plan")
+    assert ("start" in rules.index.get_level_values("field")) is differs
 
 
 # ---------- Social Security and tax (#335, #336) ----------

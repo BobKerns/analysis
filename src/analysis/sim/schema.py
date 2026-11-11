@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 63
+SCHEMA_VERSION = 65
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -423,6 +423,15 @@ CREATE TABLE strategy_source (
     source  TEXT NOT NULL
 );
 
+-- Household tax calculators (#510, ADR-011): the data repo's taxes/*.py,
+-- verbatim, kept as strategy_source is, when a jurisdiction names a kind
+-- they define. Built-in kinds store nothing here.
+CREATE TABLE tax_source (
+    module  TEXT PRIMARY KEY,
+    sha256  TEXT NOT NULL,
+    source  TEXT NOT NULL
+);
+
 -- Where the household lives (residence.csv, merged by date over the lineage;
 -- #509): from effective_date (a month end) on, a state's postal code and
 -- optionally a county, the series of its state_local_tax table. A tax year
@@ -805,6 +814,22 @@ CREATE TABLE capital_loss (
     reason_id       INTEGER
 );
 
+-- #497: an HSA withdrawal's gain over the lot's basis (contributions and
+-- reinvested payouts), a loss negative. Only a state that doesn't recognize
+-- HSAs taxes it, so it is no transfer_event leg: the federal return never
+-- sees it, whatever the withdrawal's own tax_character.
+CREATE TABLE hsa_gain (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    amount          INTEGER NOT NULL CHECK (amount != 0),
+    tax_character   TEXT NOT NULL CHECK (tax_character IN ('ltcg','stcg')),
+    tax_year        INTEGER,
+    reason_kind     TEXT NOT NULL,
+    reason_id       INTEGER
+);
+
 -- #255: a lot's basis reset at a death (IRC §1014) to its value at the end
 -- of the person's final month: all of the gain or loss, or the decedent's
 -- half of a joint lot outside community property. No money moves.
@@ -975,6 +1000,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "scheduled_transaction_tag",
     "calendar_event_tag",
     "strategy_source",
+    "tax_source",
     "strategy",
     "strategy_trigger",
     "strategy_vary",

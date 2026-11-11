@@ -7,6 +7,7 @@ personal loss that isn't deductible."""
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -69,7 +70,7 @@ def _run(load_test_copy: Callable[[], LoadResult], runs_dir: Path, name: str = "
 
 
 def _legs_out_of(run: Path, account: str) -> dict[str, int]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return dict(con.execute(
             "SELECT te.tax_character, SUM(te.amount) FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account WHERE fa.name = ? "
@@ -81,7 +82,7 @@ def _legs_out_of(run: Path, account: str) -> dict[str, int]:
 def _last_state(run: Path, account: str, month: str = "9999-12-31") -> tuple[int, int | None]:
     """``account``'s balance and cost basis at the end of ``month`` (default:
     of the run)."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT ls.balance, ls.cost_basis FROM lot_state ls "
             "JOIN simulation_step s ON s.id = ls.step_id "
@@ -92,7 +93,7 @@ def _last_state(run: Path, account: str, month: str = "9999-12-31") -> tuple[int
 
 
 def _capital_losses(run: Path) -> list[tuple[str, int, str]]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT a.name, cl.amount, cl.tax_character FROM capital_loss cl "
             "JOIN account_lot m ON m.id = cl.lot_id JOIN account a ON a.id = m.account_id"
@@ -182,7 +183,7 @@ def test_a_capital_improvement_adds_to_the_basis(
                         description="new kitchen")
     run = _run(load_test_copy, runs_dir)
     assert _last_state(run, "Asset_Home") == (600_000_00, 415_000_00)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         assert con.execute(
             "SELECT tax_character FROM transfer_event te JOIN account ta ON ta.id = te.to_account "
             "WHERE ta.name = 'Expense_Housing' AND te.date = '2027-03-31' AND amount = 1500000"
@@ -311,7 +312,7 @@ def test_the_tax_summary_shows_the_deduction_and_the_carryover(
                         account_2="brokerage_sale", description="sell the brokerage lot")
     add_tax(start="2028-04")
     run = _run(load_test_copy, runs_dir)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         summary = dict(con.execute(
             "SELECT bucket, amount FROM tax_year_summary WHERE year = 2027 "
             "AND bucket LIKE 'federal_capital_loss_%'"
@@ -321,6 +322,37 @@ def test_the_tax_summary_shows_the_deduction_and_the_carryover(
         "federal_capital_loss_used": 3_000_00,
         "federal_capital_loss_carryover": loss - 3_000_00,
     }
+
+
+@pytest.mark.slow
+@pytest.mark.allow_negative_balance  # after both deaths, checking runs short in 2040
+def test_a_joint_carryover_ends_half_at_the_first_death_and_all_at_the_second(
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_tax: Callable[..., Path],
+    write_lifespans: Callable[..., None],
+) -> None:
+    """#277: the joint brokerage's loss is half Alice's while Bill lives."""
+    _set_value(retire_alice_csv, "Asset_Brokerage_Joint", opening_cost_basis="400000.00")
+    _chain(retire_alice_csv, "destination", "brokerage_sale", [
+        {"account_name": "Asset_Savings", "tax_character": "return_of_capital",
+         "basis_of": "Asset_Brokerage_Joint", "basis_of_lot": "default"},
+        {"account_name": "Asset_Savings", "tax_character": "ltcg"},
+    ])
+    append_calendar_row(date="2027-01-31", kind="transfer_balance",
+                        account_1="Asset_Brokerage_Joint", lot_1="default",
+                        account_2="brokerage_sale", description="sell the brokerage lot")
+    add_tax(start="2028-04")
+    write_lifespans("alice,70,,,,,,", "bill,72,,,,,,")  # final months 2035-03 and 2039-08
+    run = _run(load_test_copy, runs_dir)
+    with closing(sqlite3.connect(run)) as con:
+        lines = {(bucket, year): amount for bucket, year, amount in con.execute(
+            "SELECT bucket, year, amount FROM tax_year_summary "
+            "WHERE bucket IN ('federal_capital_loss_carryover', 'federal_capital_loss_lapsed')")}
+    carried, lapsed = "federal_capital_loss_carryover", "federal_capital_loss_lapsed"
+    assert abs(lines[lapsed, 2035] - lines[carried, 2035]) <= 1
+    assert lines[carried, 2039] == 0 < lines[lapsed, 2039]
+    assert lines[carried, 2038] - lines[lapsed, 2039] <= 3_000_00  # the final return used some
+    assert {year for (bucket, year) in lines if bucket == lapsed} == {2035, 2039}
 
 
 @pytest.mark.parametrize(("steps", "message"), [

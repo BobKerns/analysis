@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pandas as pd
@@ -29,7 +30,7 @@ def load_events_dataframe(state_dir: Path | str = "state") -> pd.DataFrame:
     if not db_path.exists():
         return pd.DataFrame()
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute("SELECT payload_json FROM events ORDER BY id").fetchall()
 
     if not rows:
@@ -53,7 +54,7 @@ def summarize_over_all_time(state_dir: Path | str = "state") -> pd.DataFrame:
         GROUP BY category
         ORDER BY amount_total_all_time DESC, category COLLATE NOCASE
     """
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         return pd.read_sql_query(query, conn)
 
 
@@ -73,7 +74,7 @@ def load_monthly_summaries(state_dir: Path | str = "state") -> pd.DataFrame:
         "FROM monthly_summaries "
         "ORDER BY summary_month_start, category"
     )
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         df = pd.read_sql_query(query, conn)
     if not df.empty:
         df["summary_month_start"] = pd.to_datetime(df["summary_month_start"])

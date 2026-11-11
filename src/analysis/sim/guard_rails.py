@@ -442,6 +442,7 @@ class _RunInputs:
     accounts: pd.DataFrame  # name -> kind, subkind, tags (frozenset)
     markers: dict[str, date]
     last_month: pd.Timestamp  # the household's last death, or the run's end
+    deflator_scale: float = 1.0  # RunPieces.deflator_scale
 
     def month_ends(self, events: pd.DataFrame) -> np.ndarray:
         """Each month's total of ``events``' amounts, over the run's months
@@ -481,6 +482,9 @@ class RunPieces:
     accounts: pd.DataFrame  # name -> kind, subkind, tags (space-separated)
     markers: dict[str, date]
     household_end: date | None
+    # What CPI-constant margins deflate by, over ``index``: a run rebased to
+    # another's dollars (#502); its thresholds stay in its own.
+    deflator_scale: float = 1.0
 
 
 def run_pieces(rc: RunConnection) -> RunPieces:
@@ -496,6 +500,7 @@ def run_pieces(rc: RunConnection) -> RunPieces:
         accounts=accounts,
         markers=rc.date_markers(),
         household_end=rc.household_end(),
+        deflator_scale=rc.cpi_scale,
     )
 
 
@@ -536,6 +541,7 @@ def _inputs(pieces: RunPieces) -> _RunInputs:
         balances=pieces.balances, accounts=accounts[["kind", "subkind", "tag_set"]],
         markers=pieces.markers,
         last_month=min(end, death) if death is not None else end,
+        deflator_scale=pieces.deflator_scale,
     )
 
 
@@ -628,7 +634,7 @@ def evaluate_run(
 
 
 def _evaluate(inputs: _RunInputs, rails: Sequence[GuardRail], mode: DollarMode) -> list[RailResult]:
-    factor = (1_000_000 / inputs.index if mode == DollarMode.CPI_CONSTANT
+    factor = (1_000_000 / (inputs.index * inputs.deflator_scale) if mode == DollarMode.CPI_CONSTANT
               else np.ones(len(inputs.months)))
     results: list[RailResult] = []
     # Rails often share a portfolio (the default one) or a selection.

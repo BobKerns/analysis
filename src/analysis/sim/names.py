@@ -99,6 +99,14 @@ def account_names(data_dir: Path, scenario: str) -> list[str]:
     return _column((d / "accounts.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
 
 
+def builtin_account_names() -> list[str]:
+    """The accounts the loader makes on demand (ADR-003 §2.2): growth's other
+    side, and where payouts come from. Not in any accounts.csv, but a
+    transfer or a year-to-date row may name one (``capital_gains``)."""
+    builtins = (*registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.builtin_payout_accounts())
+    return sorted({counterparty.name for counterparty in builtins})
+
+
 def lot_names(data_dir: Path, scenario: str, account: str, *, implicit: bool = True) -> list[str]:
     """``account``'s lots: the ones account_lots.csv names, a blank lot
     being the default one, or (when ``implicit``) just the default lot of an
@@ -260,6 +268,18 @@ def strategy_kind_names(data_dir: Path) -> list[str]:
     from analysis.sim import strategies
 
     folders = [Path(strategies.__file__).parent, data_dir / "strategies"]
+    return sorted({
+        kind for folder in folders if folder.is_dir()
+        for path in folder.glob("*.py") for kind in _KIND_RE.findall(path.read_text(encoding="utf-8"))
+    })
+
+
+def tax_kind_names(data_dir: Path) -> list[str]:
+    """The built-in tax calculator kinds and those the data repo's ``taxes/``
+    modules appear to define (read as text, as for strategy kinds)."""
+    from analysis.sim import taxes
+
+    folders = [Path(taxes.__file__).parent, data_dir / "taxes"]
     return sorted({
         kind for folder in folders if folder.is_dir()
         for path in folder.glob("*.py") for kind in _KIND_RE.findall(path.read_text(encoding="utf-8"))

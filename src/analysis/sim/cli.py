@@ -41,9 +41,10 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import (
     allocation, asset_classes, calendar_guide, chain_edit, chain_map, completion, deductions, drift, guard_rail_guide,
-    guard_rails, load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, scenario_guide,
+    guard_rails, load_warnings, lot_guide, names, prices, readme, registries, rename, reports, research, roll,
+    scenario_guide,
     scheduled_guide, sensitivity, series_files, setup_listings, shortfalls, strategy_code, strategy_files,
-    strategy_guide, symbols, states, tax_files, tax_guide, units, working_set, ytd_guide,
+    strategy_guide, symbols, states, tax_code, tax_files, tax_guide, units, working_set, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -128,6 +129,8 @@ from analysis.sim.loader import (
     latest_run_path,
     read_current_scenario,
     read_disabled_scenarios,
+    read_run_status,
+    run_files,
     scenario_run_path,
     set_scenario_enabled,
     write_current_scenario,
@@ -148,7 +151,7 @@ from analysis.sim.staging import (
 )
 from analysis.sim.life_table import equivalent_multiplier
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, is_full_date, is_marker_name, is_month_or_date, month_end_iso, parse_day,
+    MONTH_FORMAT_HINT, is_full_date, is_marker_name, is_month_or_date, month_before, month_end_iso, parse_day,
     parse_relative_date, parse_vary_date,
 )
 from analysis.sim.lineage import (
@@ -4523,7 +4526,7 @@ def _echo_after_tax_networth(rc: RunConnection, runfile: Path, period: str, mode
 
 
 COMPARE_SECTIONS = (
-    "runs", "differences", "net-worth", "break-even", "guard-rails", "strategies", "spending",
+    "runs", "differences", "start", "net-worth", "break-even", "guard-rails", "strategies", "spending",
     "social-security", "tax", "account",
 )
 """``sim compare``'s sections, in the order it prints them (#188)."""
@@ -4674,7 +4677,11 @@ def compare_command(
         # Every section clips on its own, and some (strategies, guard rails)
         # cover only part of a run: check the range against the runs once.
         _check_years_in_runs(connections.values(), years)
+        rebased = compare.align_cpi(connections, baseline)
         click.echo(f"{', '.join(variants)} vs {baseline}, {mode_label} dollars")
+        if rebased and mode == DollarMode.CPI_CONSTANT:
+            click.echo(f"  ({', '.join(rebased)} in {baseline}'s dollars: "
+                       f"{baseline} starts {connections[baseline].cpi_index().index[0]:%Y-%m})")
 
         if "runs" in shown:
             meta, warnings = compare.comparability(connections, scenarios)
@@ -4718,6 +4725,16 @@ def compare_command(
             else:
                 _echo_frame(ytd.map(_cell))
             _echo_strategy_differences(connections, scenarios, baseline)
+
+        if "start" in shown:
+            later = compare.later_starts(connections, baseline, variants)
+            if "start" in sections and not later:
+                click.echo(f"\nNo variant starts after {baseline}, so there is no start to compare.")
+            for name in later:
+                month, frame = compare.start_comparison(connections, baseline, name)
+                click.echo(f"\nWhere {name} starts: {baseline}'s projection for {month:%Y-%m} "
+                           f"against {name}'s opening balances (nominal):")
+                _echo_frame(frame.map(_cell))
 
         graphed = as_graph or graph_file is not None
         nw = pd.DataFrame()
@@ -10377,11 +10394,14 @@ def report_gains_command(
 @_scenario_argument
 @click.option("--reconciliation", is_flag=True, default=False,
               help="Each year's liability, what was paid during it, and the April balance due or refund.")
+@click.option("--return", "jurisdiction", type=completion.TAX_JURISDICTION, default=None,
+              help="Every line of one jurisdiction's return, a line per row and a year per column, "
+                   "its calculator's own lines included.")
 @_year_range_options
 @_report_graph_options
 @_report_options
 def report_tax_command(
-    reconciliation: bool, first_year: int | None, last_year: int | None,
+    reconciliation: bool, jurisdiction: str | None, first_year: int | None, last_year: int | None,
     as_graph: bool, graph_file: Path | None, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
@@ -10397,9 +10417,23 @@ def report_tax_command(
 
     --chart draws federal, state and local tax stacked by year with the
     effective rate; with --reconciliation, each April's balance due and refund.
+
+    --return JURISDICTION shows every line its calculator wrote, a household
+    calculator's own lines (taxes/*.py) included, a year per column.
     """
     years = _year_range(first_year, last_year)
     mode = DollarMode(dollars)
+    if jurisdiction is not None:
+        if reconciliation or as_graph or graph_file is not None:
+            raise click.UsageError("--return shows a table: no --reconciliation or chart with it")
+        with _report_run(scenario, data_dir, runfile) as (rc, described):
+            _hold_tables()
+            frame = _shown_years(reports.tax_return(rc, jurisdiction, mode), years)
+        if frame.empty:
+            click.echo(f"no {jurisdiction} tax was computed in this run ({described})")
+            return
+        _print_report(frame.T.rename_axis("line"), f"the {jurisdiction} return", described, mode)
+        return
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         _hold_tables()
         frame = _shown_years(reports.tax_reconciliation(rc, mode) if reconciliation
@@ -14014,8 +14048,9 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
     aux table names (an IRMAA tier's growth), is read by every scenario and
     isn't renamed here, nor is an asset class's series, or one
     named for a symbol (or <symbol>.<class>), which lots read by name.
-    A series' yield (<series>_yield, #468) is read by name too: it is renamed
-    with its series, never on its own.
+    A series' payout series (<series>_yield, _cg_yield and _stcg_yield,
+    #468, #547) are read by name too: they are renamed with their series,
+    never on their own.
 
     Either name left out is asked for."""
     data = _resolve_data_dir(data_dir)
@@ -14047,44 +14082,52 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
         raise click.ClickException(
             f"series {old!r} is named by the shared {', '.join(named_by)}, which every "
             "scenario reads; it can't be renamed")
-    old_yield, new_yield = registries.yield_series(old), registries.yield_series(new)
     with _scenario_edit(data, scenario) as edit:
         scenarios = edit.data_dir / "scenarios"
         affected = rename.scope(scenarios, edit.name, rename.series_mentioned(old))
         for name in (old, new):
             if of := _yield_of(data, edit, name, affected):
                 raise click.ClickException(
-                    f"{name!r} is {of}'s yield series (#468), which lots find by name; "
-                    f"rename {of} and its yield follows")
-        # Its yield (#468) goes with it, in every scenario the rename reaches
-        # that has one, or the lots growing at it would stop paying out. A
-        # yield from outside those scenarios can't follow, and an existing
-        # NEW_yield would start paying out where none was paid.
-        if shared := rename.shared_series_files(data, old_yield):
-            raise click.ClickException(
-                f"{old!r}'s yield {old_yield!r} has rates in the shared "
-                f"{', '.join(f'aux/{p.name}' for p in shared)}, which every scenario reads; "
-                f"{old!r} can't be renamed")
-        outside = {each: source for each, found in rename.sources(
-                       scenarios, affected, rename.series_mentioned(old_yield)).items()
-                   for source in found if source not in affected}
-        if outside:
-            raise click.ClickException(
-                f"{old!r}'s yield {old_yield!r} comes from scenarios the rename doesn't reach: "
-                f"{rename.describe_clashes(outside)}; rename or move it first")
-        if found := rename.clashes(scenarios, affected, rename.series_mentioned(new_yield)):
-            raise click.ClickException(
-                f"a series {new_yield!r} already applies in {rename.describe_clashes(found)}; "
-                "rename or delete it first")
-        if shared := rename.shared_series_files(data, new_yield):
-            raise click.ClickException(
-                f"series {new_yield!r} has rates in the shared {', '.join(f'aux/{p.name}' for p in shared)}, "
-                f"which every scenario reads; {new!r}'s lots would start paying it")
-        with_yield = [each for each in affected if rename.series_mentioned(old_yield)(scenarios / each)]
+                    f"{name!r} is one of {of}'s yield series (#468, #547), which lots find by name; "
+                    f"rename {of} and its yields follow")
+        # Its payout series (#468, #547) go with it, in every scenario the
+        # rename reaches that has one, or the lots growing at it would stop
+        # paying out. One from outside those scenarios can't follow, and an
+        # existing NEW_yield would start paying out where none was paid.
+        following: list[tuple[str, str, list[str]]] = []
+        for suffix in registries.PAYOUT_SUFFIXES:
+            old_yield, new_yield = registries.yield_series(old, suffix), registries.yield_series(new, suffix)
+            if (of := _yield_of(data, edit, old_yield, affected)) and of != old:
+                # `x_cg_yield` is x's gain distributions, not x_cg's yield (#547).
+                raise click.ClickException(
+                    f"{old_yield!r} is {of}'s yield series too; {old!r} can't take it along")
+            if shared := rename.shared_series_files(data, old_yield):
+                raise click.ClickException(
+                    f"{old!r}'s payout series {old_yield!r} has rates in the shared "
+                    f"{', '.join(f'aux/{p.name}' for p in shared)}, which every scenario reads; "
+                    f"{old!r} can't be renamed")
+            outside = {each: source for each, found in rename.sources(
+                           scenarios, affected, rename.series_mentioned(old_yield)).items()
+                       for source in found if source not in affected}
+            if outside:
+                raise click.ClickException(
+                    f"{old!r}'s payout series {old_yield!r} comes from scenarios the rename doesn't reach: "
+                    f"{rename.describe_clashes(outside)}; rename or move it first")
+            if found := rename.clashes(scenarios, affected, rename.series_mentioned(new_yield)):
+                raise click.ClickException(
+                    f"a series {new_yield!r} already applies in {rename.describe_clashes(found)}; "
+                    "rename or delete it first")
+            if shared := rename.shared_series_files(data, new_yield):
+                raise click.ClickException(
+                    f"series {new_yield!r} has rates in the shared {', '.join(f'aux/{p.name}' for p in shared)}, "
+                    f"which every scenario reads; {new!r}'s lots would start paying it")
+            following.append((old_yield, new_yield, [
+                each for each in affected if rename.series_mentioned(old_yield)(scenarios / each)]))
         changed = _rename_across(edit, "series", old, new, defines=rename.series_mentioned,
                                  rewrite=rename.rename_series)
         try:
-            changed += [f"{each}: {c}" for each in with_yield
+            changed += [f"{each}: {c}" for old_yield, new_yield, with_yield in following
+                        for each in with_yield
                         for c in rename.rename_series(scenarios / each, old_yield, new_yield)]
         except (OSError, ValueError) as exc:
             raise click.ClickException(str(exc)) from None
@@ -14657,16 +14700,19 @@ def series_revert(series: str | None, kind: str | None, scenario: str | None, da
 
 
 def _yield_of(data: Path, edit: StagedEdit, name: str, affected: list[str]) -> str | None:
-    """The series, asset class or symbol whose yield (#468) ``name`` is, if
-    any: ``<it>_yield`` where it names something lots grow at, in
+    """The series, asset class or symbol whose yield (#468, #547) ``name``
+    is, if any: ``<it>_yield``, ``_cg_yield`` or ``_stcg_yield`` where it
+    names something lots grow at, in
     ``edit``'s scenario's lineage or any scenario the rename reaches."""
-    if not name.endswith(registries.YIELD_SUFFIX):
-        return None
-    base = name.removesuffix(registries.YIELD_SUFFIX)
-    scenarios, mentioned = edit.data_dir / "scenarios", rename.series_mentioned(base)
-    if base in registries.ASSET_CLASSES or rename.symbol_series(data, base) \
-            or rename.scope(scenarios, edit.name, mentioned) or rename.clashes(scenarios, affected, mentioned):
-        return base
+    # The longest first: `x_cg_yield` is x's, not `x_cg`'s.
+    for suffix in sorted(registries.PAYOUT_SUFFIXES, key=len, reverse=True):
+        if not name.endswith(suffix):
+            continue
+        base = name.removesuffix(suffix)
+        scenarios, mentioned = edit.data_dir / "scenarios", rename.series_mentioned(base)
+        if base in registries.ASSET_CLASSES or rename.symbol_series(data, base) \
+                or rename.scope(scenarios, edit.name, mentioned) or rename.clashes(scenarios, affected, mentioned):
+            return base
     return None
 
 
@@ -14910,6 +14956,378 @@ def ensemble_copy(old: str | None, new: str | None, data_dir: Path | None) -> No
 
     Either name left out is asked for."""
     _copy_scenario(old, new, data_dir, what="ensemble")
+
+
+# ---------- rolling a scenario forward (#502) ----------
+
+
+def _money_text(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def _shares_text(value: float) -> str:
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def _accepted(prompt: str, shown: str | None) -> str:
+    """What ``--yes`` takes for ``prompt``: its default, or, with none to
+    take (an @itemization and no run), a refusal rather than a question."""
+    if shown is None:
+        raise click.ClickException(
+            f"{prompt}: no default to take with --yes (no run reaches the month, and the "
+            "current value isn't one number); run without --yes to answer it")
+    return shown
+
+
+def _ask_money(prompt: str, default: float | None, accept: bool) -> str:
+    """Dollars, asked for with ``default`` offered, as account_lots.csv
+    holds them (an ``@name`` itemization as typed)."""
+    shown = _money_text(default) if default is not None else None
+    if accept:
+        return _accepted(prompt, shown)
+    while True:
+        text = click.prompt(prompt, default=shown, show_default=True).strip()
+        try:
+            return _money_cell(text)
+        except click.ClickException as exc:
+            click.echo(f"  {exc.message}")
+
+
+def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
+    shown = _shares_text(default) if default is not None else None
+    if accept:
+        return _accepted(prompt, shown)
+    while True:
+        text = click.prompt(prompt, default=shown, show_default=True).strip()
+        try:
+            return _shares_text(float(_check_quantity(text)))
+        except click.ClickException as exc:
+            click.echo(f"  {exc.message}")
+
+
+@scenario_group_command.command("roll")
+@click.argument("name", required=False, type=completion.SCENARIO)
+@click.argument("start", required=False)
+@click.option("--keep", default=None,
+              help="Keep the scenario as it stands as this new scenario, a sibling copy "
+                   "(default name NAME-YEAR, the old start's year, or NAME-YEAR-MM when "
+                   "that is taken).")
+@click.option("--no-keep", is_flag=True, help="Don't keep a copy of the plan as it stands.")
+@click.option("--yes", "accept", is_flag=True,
+              help="Take every default without asking: the old plan's projections, and "
+                   "pinning the old first year's rows to that year.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep: bool,
+                  accept: bool, data_dir: Path | None) -> None:
+    """Bring scenario NAME up to date: start it again at START (YYYY-MM),
+    opening with what the accounts hold then (#502).
+
+    First it offers to keep the scenario as it stands, as a sibling copy
+    (--keep, default NAME-YEAR), so last year's plan can be compared with
+    this year's (`sim compare`). Then it asks, lot by lot, for what each
+    asset and liability holds at START: shares for a lot whose symbol has a
+    price by then (its balance is shares x price), dollars otherwise, and the
+    cost basis where the lot tracks one. Each question offers what the
+    scenario's newest run that reaches that far projected for the month
+    before START; --yes takes those. A lot's prior_year_end_balance, when it has one, follows.
+
+    Moving into a new year changes some rows' meaning, so it also asks
+    about them: a year-to-date row with no year belongs to the first year,
+    and is pinned to the old one; a rule's ytd_amount becomes a
+    year-to-date row of the old year. It lists the calendar rows before
+    START, which no longer happen, and the rules whose ytd_preroll now
+    counts the new year's months, and says what last year's tax needs.
+
+    Everything is written in one edit, only if NAME and every scenario
+    built on it still load. NAME stays current. START defaults to the
+    first January after the old start (and not before this year's)."""
+    if keep is not None and no_keep:
+        raise click.UsageError("--keep and --no-keep are exclusive")
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, name)
+    name = ref.name
+    if is_pool(data / "scenarios", name) or _is_template(data / "scenarios", name):
+        raise click.ClickException(f"{name} can't be rolled forward: only a scenario of this data repo can")
+    scenario_dir = data / "scenarios" / name
+    old = sc.scenario_span(data, name)[0]
+    if old is None:
+        raise click.ClickException(f"{name} has no start, so there is nothing to roll forward")
+    old_start = old.month
+    if start is None:
+        suggested = roll.default_start(old_start, date.today())
+        start = suggested if accept else click.prompt("new start (YYYY-MM)", default=suggested)
+    start = month_end_iso(_validate_month_date(start.strip()))[:7]
+    if start <= old_start:
+        raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
+    old_year, new_year = int(old_start[:4]), int(start[:4])
+    taken = set(names.scenario_names(data))
+    if keep is not None:
+        _check_keep_name(keep.strip(), taken)
+    if not no_keep and keep is None:
+        suggested = roll.keep_name(name, old_start, taken)
+        while True:
+            keep = suggested if accept else click.prompt(
+                "keep the plan as it stands as (blank: don't)", default=suggested).strip() or None
+            try:
+                if keep is not None:
+                    _check_keep_name(keep, taken)
+                break
+            except click.ClickException as exc:
+                click.echo(f"  {exc.message}")
+    if keep is not None:
+        keep = keep.strip()
+    click.echo(f"Rolling {name} forward: {old_start} -> {start}")
+
+    month = month_before(start)
+    # A run still being built in the background is the newest one; wait for it.
+    from analysis.sim import builder
+    builder.await_fresh(ref.runs_dir, name, echo=lambda text: click.echo(text, err=True))
+    projected: dict[tuple[str, str], roll.Projection] = {}
+    # The Dec 31 before a start that isn't a January: what a lot's
+    # prior_year_end_balance (an RMD's base) defaults to.
+    year_end: dict[tuple[str, str], roll.Projection] = {}
+    # The newest run that reaches the month: one made after an earlier roll
+    # (or a trial one) starts too late to say.
+    for run_path in reversed(run_files(ref.runs_dir, name)):
+        if read_run_status(run_path).status != "succeeded":
+            continue
+        with RunConnection(run_path, name) as rc:
+            projected = roll.projections(rc, month)
+            if projected and start[5:] != "01":
+                year_end = roll.projections(rc, month_before(f"{new_year}-01"))
+        if projected:
+            break
+    if projected:
+        click.echo(f"Each default is what {name}'s run {run_path.name} projected for "
+                   f"{month:%Y-%m} (--yes takes them all).")
+    else:
+        click.echo(f"No run of {name} reaches {month:%Y-%m}, so each default is the "
+                   "current opening value.")
+
+    # Read before anything is asked, to check nothing changed before writing.
+    own_files = {path: path.read_bytes() if path.exists() else None
+                 for path in (scenario_dir / file for file in (
+                     "scenario.csv", "accounts.csv", "account_lots.csv", "year_to_date.csv",
+                     "scheduled.csv"))}
+    accounts = _overlay_rows(scenario_dir, "accounts.csv")
+    every_lot = _scenario_lots(scenario_dir, name)
+    lots = [one for one in every_lot if not one.deleted]
+    rows: list[tuple[_Lot, dict[str, str]]] = []
+    # A deleted lot counts as seen: an older run may still project it.
+    seen = {(one.account, one.lot) for one in every_lot if one.deleted}
+    for one in lots:
+        account = accounts.get(one.account)
+        if account is None or account.row.get("kind") not in ("asset", "liability"):
+            continue
+        seen.add((one.account, one.lot))
+        rows.append((one, _rolled_lot(data, one, account.row, projected.get((one.account, one.lot)),
+                                      year_end.get((one.account, one.lot)), start, accept,
+                                      same_year=new_year == old_year)))
+    for (account_name, lot), projection in sorted(projected.items()):
+        # An account whose lot isn't in any file (one with no lot rows) that
+        # the old plan put money in.
+        if (account_name, lot) in seen or lot != registries.DEFAULT_LOT or not projection.balance:
+            continue
+        account = accounts.get(account_name)
+        if account is None:
+            continue
+        blank = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "") | {
+            "account_name": account_name, "lot": lot}
+        implicit = _Lot(blank, None, None, implicit=True)
+        rows.append((implicit, _rolled_lot(data, implicit, account.row, projection,
+                                           year_end.get((account_name, lot)), start, accept,
+                                           same_year=new_year == old_year)))
+
+    pins: list[_Overlaid] = []
+    converted: list[_Overlaid] = []
+    unconverted: list[tuple[_Overlaid, str]] = []
+    if new_year != old_year:
+        for found in roll.unpinned_year_to_date(scenario_dir):
+            label = (f"year-to-date row {found.row['name']} ({found.row.get('amount', '')}) "
+                     f"has no year, so it would move into {new_year}: pin it to {old_year}?")
+            if accept or click.confirm(label, default=True):
+                pins.append(found)
+        chains = set(names.chain_names(data, name))
+        for found in roll.ytd_amount_rules(scenario_dir):
+            rule = found.row
+            # A year-to-date row moves between accounts, with a character.
+            if why := ("it moves money through a chain"
+                       if {rule.get("from_account"), rule.get("to_account")} & chains
+                       else "it has no tax_character" if not rule.get("tax_character", "").strip()
+                       else None):
+                unconverted.append((found, why))
+                continue
+            label = (f"rule {rule['name']}'s ytd_amount ({rule['ytd_amount']}) was "
+                     f"{old_year}'s catch-up: make it a {old_year} year-to-date row?")
+            if accept or click.confirm(label, default=True):
+                converted.append(found)
+    # A rule with no start counts its cadence (a quarter, a biweekly payday,
+    # ytd_preroll's months) from the scenario's start, which is moving.
+    anchored: list[_Overlaid] = []
+    for found in roll.anchored_rules(scenario_dir):
+        label = (f"rule {found.row['name']} has no start, so its {found.row.get('cadence')} "
+                 f"schedule counts from the scenario's: keep counting from {old_start}?")
+        if accept or click.confirm(label, default=True):
+            anchored.append(found)
+
+    with _scenario_edit(data, name) as edit:
+        # The rows above were read before the questions, which may have taken
+        # a while: their indexes only hold if the files still read the same.
+        for path, before in own_files.items():
+            staged = edit.path(path)
+            if (staged.read_bytes() if staged.exists() else None) != before:
+                raise click.ClickException(
+                    f"{path} changed while {name} was being rolled forward. "
+                    "Nothing was written; start again.")
+        if keep is not None:
+            try:
+                rename.copy_scenario(edit.data_dir, name, keep, created_by=sc.current_user())
+            except (OSError, ValueError) as exc:
+                raise click.ClickException(str(exc).replace(str(edit.data_dir), str(data))) from None
+        staged_dir = edit.path(scenario_dir)
+        sc.edit_scenario_row(staged_dir, {"start": start}, {})
+        lots_path = edit.path(scenario_dir / "account_lots.csv")
+        for one, row in rows:
+            _append_csv_row(lots_path, registries.ACCOUNT_LOTS_CSV_HEADER, row, replace=one.index)
+        ytd_path = edit.path(scenario_dir / "year_to_date.csv")
+        if pins or converted:
+            _widen_ytd_header(ytd_path, scenario_dir)
+        for found in pins:
+            row = {column: found.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
+            _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
+                            replace=found.index)
+        scheduled_path = edit.path(scenario_dir / "scheduled.csv")
+        # Each rule changed once, whichever of the edits below it takes.
+        rule_rows = {found.row["name"]: (found, dict(found.row)) for found in [*converted, *anchored]}
+        anchor = month_end_iso(old_start)
+        for found in anchored:
+            rule_rows[found.row["name"]][1]["start"] = anchor
+        for found in converted:
+            rule = found.row
+            rule_rows[rule["name"]][1]["ytd_amount"] = ""
+            _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, {
+                "name": f"{rule['name']}_{old_year}", "from_account": rule.get("from_account", ""),
+                "from_lot": rule.get("from_lot", ""), "to_account": rule.get("to_account", ""),
+                "to_lot": rule.get("to_lot", ""), "amount": rule["ytd_amount"],
+                "tax_character": rule.get("tax_character", ""), "year": str(old_year),
+                "description": f"{rule['name']}: paid in {old_year} before {old_start}",
+            })
+        for found, rule in rule_rows.values():
+            _append_csv_row(scheduled_path, registries.SCHEDULED_CSV_HEADER, rule, replace=found.index)
+
+    click.echo(f"rolled {name} forward to {start}")
+    if keep is not None:
+        click.echo(f"  kept the plan as it stood as {keep}")
+    for one, row in rows:
+        click.echo(f"  {one.account} ({one.lot}): {row['opening_balance'] or row['quantity'] + ' sh'}"
+                   + (f", basis {row['opening_cost_basis']}" if row["opening_cost_basis"] else ""))
+    for found in pins:
+        click.echo(f"  year-to-date row {found.row['name']}: pinned to {old_year}")
+    for found in converted:
+        click.echo(f"  {found.row['name']}'s ytd_amount: now year-to-date row "
+                   f"{found.row['name']}_{old_year}")
+    for found, why in unconverted:
+        click.echo(f"  rule {found.row['name']}'s ytd_amount is {old_year}'s catch-up, but {why}: "
+                   f"record it with `sim ytd add ... --year {old_year}` and clear it "
+                   f"(`sim scheduled edit {found.row['name']} --ytd-amount ''`)")
+    for found in anchored:
+        click.echo(f"  rule {found.row['name']}: starts {old_start}, so its schedule keeps its months")
+    for entry in roll.calendar_before(scenario_dir, start):
+        click.echo(f"  calendar {entry.row.get('date')} {entry.row.get('kind')} "
+                   f"{entry.row.get('description') or entry.row.get('scheduled_name') or ''}"
+                   .rstrip() + f": before {start}, so it no longer happens")
+    for rule_name in roll.preroll_rules(scenario_dir):
+        if start[5:] != "01":
+            click.echo(f"  rule {rule_name}'s ytd_preroll now counts {new_year}'s months before {start}")
+    if new_year == old_year:
+        # Same year: the first year's catch-ups now cover fewer months
+        # than they should, and only the person knows the new totals.
+        before = f"{month_before(start):%Y-%m}"
+        for found in roll.unpinned_year_to_date(scenario_dir):
+            click.echo(f"  year-to-date row {found.row['name']} covers {new_year} before "
+                       f"{old_start}: update it through {before} (`sim ytd edit`)")
+        for found in roll.ytd_amount_rules(scenario_dir):
+            click.echo(f"  rule {found.row['name']}'s ytd_amount covers {new_year} before "
+                       f"{old_start}: update it through {before} (`sim scheduled edit`)")
+    if new_year != old_year and int(start[5:7]) <= 4:
+        # A start by April: the prior year's tax is still to be paid in it.
+        click.echo(
+            f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
+            f"record it with `sim ytd add NAME FROM TO AMOUNT --tax-character ... --year "
+            f"{new_year - 1}` (W-2s, 1099s, tax already withheld)")
+    click.echo(f"next: `sim run {name} --commit`"
+               + (f", `sim run {keep} --commit`, then `sim compare {keep} {name}`" if keep else ""))
+
+
+def _check_keep_name(keep: str, taken: set[str]) -> None:
+    """Refuse a name ``--keep`` can't copy the scenario to."""
+    if not registries.SCENARIO_NAME_RE.match(keep):
+        raise click.ClickException(
+            f"invalid scenario name: {keep!r} (lowercase letters, digits, '_' and '-', "
+            "starting with a letter or digit)")
+    if keep in taken:
+        raise click.ClickException(f"there is already a scenario {keep!r}; keep it as another name")
+
+
+def _rolled_lot(
+    data: Path, one: _Lot, account: dict[str, str], projection: roll.Projection | None,
+    year_end: roll.Projection | None, start: str, accept: bool, *, same_year: bool,
+) -> dict[str, str]:
+    """``one``'s row, opening at ``start`` with what is asked for (the
+    projection offered, and ``year_end``'s balance for the Dec 31 before
+    it), for ``sim scenario roll``."""
+    row = dict(one.row)
+    label = f"{one.account} ({one.lot})"
+    symbol = row.get("symbol", "").strip()
+    # A lot valued by its shares: one whose balance the loader derives. A
+    # given balance is the lot's own, with any shares only for reference.
+    by_shares = symbol and row.get("quantity", "").strip() and not row.get("opening_balance", "").strip()
+    # The loader's start: the month's end.
+    price = (prices.price_on(data / "prices", symbol, date.fromisoformat(month_end_iso(start)))
+             if by_shares else None)
+    balance: float | None
+    if price is not None:
+        current = float(row["quantity"].replace(",", ""))
+        shares = _ask_shares(f"{label} {symbol} shares",
+                             projection.quantity if projection and projection.quantity is not None
+                             else current, accept)
+        row["quantity"] = shares
+        row["opening_balance"] = ""
+        balance = float(Decimal(shares) * price[1])
+        click.echo(f"  = ${balance:,.2f} at {price[1]:,.2f} on {price[0]}")
+    else:
+        current = roll.cell_dollars(row.get("opening_balance", ""))
+        row["opening_balance"] = _ask_money(f"{label} balance",
+                                            projection.balance if projection else current, accept)
+        # None for an @itemization: no one number to offer below.
+        balance = roll.cell_dollars(row["opening_balance"])
+        if row.get("quantity", "").strip() and projection and projection.quantity is not None:
+            row["quantity"] = _shares_text(projection.quantity)
+    tracks_basis = row.get("opening_cost_basis", "").strip() or (
+        projection is not None and projection.basis is not None
+        and account.get("subkind", "") not in registries.CASH_SUBKINDS)
+    if tracks_basis:
+        authored = roll.cell_dollars(row.get("opening_cost_basis", ""))
+        current = balance if authored is None else authored
+        row["opening_cost_basis"] = _ask_money(
+            f"{label} cost basis", projection.basis if projection and projection.basis is not None
+            else current, accept)
+    if row.get("prior_year_end_balance", "").strip():
+        # The Dec 31 before the start: the opening balance itself when the
+        # start is a January. Otherwise the run's, or with none that reaches
+        # it, the lot's own when that Dec 31 hasn't changed (the same year).
+        authored = roll.cell_dollars(row["prior_year_end_balance"])
+        offered = (year_end.balance if year_end
+                   else authored if same_year and authored is not None else balance)
+        row["prior_year_end_balance"] = (
+            row["opening_balance"] or _money_text(balance or 0) if start[5:] == "01"
+            else _ask_money(f"{label} balance on Dec 31, {int(start[:4]) - 1}", offered, accept))
+    if one.implicit and account.get("subkind", "") not in INVESTMENT_ASSET_SUBKINDS:
+        # An implicit default lot stays blank; an investment account must
+        # name its lot (``default``), as the loader requires.
+        row["lot"] = ""
+    return row
 
 
 # ---------- editing and deleting a scenario (#190) ----------
@@ -16251,8 +16669,8 @@ def _ytd_summary(row: dict[str, str]) -> str:
 
 @ytd_group_command.command("add")
 @click.argument("name", required=False)
-@click.argument("from_account", required=False, type=completion.ACCOUNT)
-@click.argument("to_account", required=False, type=completion.ACCOUNT)
+@click.argument("from_account", required=False, type=completion.ACCOUNT_OR_BUILTIN)
+@click.argument("to_account", required=False, type=completion.ACCOUNT_OR_BUILTIN)
 @click.argument("amount", required=False)
 @click.option("--from-lot", type=completion.LotName("from_account"), default=None,
               help="Lot of the from account; asked for when a blank one would not say which.")
@@ -17994,14 +18412,21 @@ def strategy_kinds_command(kind: str | None, data_dir: Path | None) -> None:
     strategies/ modules, each with what it does and its parameters. With
     KIND, just that one."""
     kinds = _strategy_kinds(_resolve_data_dir(data_dir))
+    _echo_kinds(kinds, kind, "strategy",
+                lambda cls: f"hooks: {', '.join(sorted(cls.hooks))}")
+
+
+def _echo_kinds(kinds: Any, kind: str | None, what: str, about: Callable[[Any], str]) -> None:
+    """``sim strategy kinds`` and ``sim tax kinds``: each kind, where it
+    comes from, ``about`` it, its docstring and its parameters."""
     chosen = [kind] if kind else sorted(kinds.kinds)
     for i, name in enumerate(chosen):
         if name not in kinds.kinds:
-            raise click.ClickException(f"no strategy kind {name!r}; kinds: {', '.join(sorted(kinds.kinds))}")
+            raise click.ClickException(f"no {what} kind {name!r}; kinds: {', '.join(sorted(kinds.kinds))}")
         cls = kinds.kinds[name]
         if i:
             click.echo("")
-        click.echo(f"{name}  ({kinds.origin[name]}; hooks: {', '.join(sorted(cls.hooks))})")
+        click.echo(f"{name}  ({kinds.origin[name]}; {about(cls)})")
         for line in strategy_guide.describe_kind(cls).splitlines():
             click.echo(f"  {line}".rstrip())
         params = strategy_guide.kind_params(cls)
@@ -18593,14 +19018,14 @@ def target_delete_command(
 # ---------- tax: the scenario's tax jurisdictions (#507) and its state (#483) ----------
 
 
-def _tax_summary(row: Mapping[str, str]) -> str:
-    """One line for a tax jurisdiction file's row."""
+def _tax_summary(name: str, row: Mapping[str, str]) -> str:
+    """One line for jurisdiction ``name``'s file's row."""
     when = f" from {row.get('start') or 'the start'}" + (f" to {row['end']}" if row.get("end") else "")
     # A blank upstream is the calculator's own (#508).
     built_on = row.get("upstream") or " ".join(tax_calculator_upstream(row.get("kind", "")))
     upstream = f" on {built_on}" if built_on else ""
     params = f" {row['params_json']}" if row.get("params_json") else ""
-    paid_with = registries.TAX_PAID_WITH.get(registries.TAX_KINDS.get(row.get("kind", ""), ""))
+    paid_with = registries.TAX_PAID_WITH.get(name)
     with_tax = f"the {paid_with} tax's" if paid_with else "no"
     source = row.get("source_chain") or f"{with_tax} source"
     destination = row.get("destination") or f"{with_tax} destination"
@@ -18679,13 +19104,18 @@ def _tax_spec(
         if jurisdiction is not None:
             destination = next((n for n, a in accounts.items()
                                 if a.row.get("subkind") == f"taxes_{jurisdiction}"), None)
+    kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
                           expenses=expenses, jurisdictions=free, source=source,
                           destination=destination,
-                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""))
+                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""),
+                          kinds=sorted(k for k, c in kinds.items() if c.jurisdiction == jurisdiction),
+                          kind=registries.TAX_DEFAULT_KINDS.get(jurisdiction or ""))
 
 
 _TAX_OPTIONS = (
+    click.option("--kind", type=completion.TAX_KIND, default=None,
+                 help="The calculator that computes it (`sim tax kinds`; '' for the built-in one)."),
     click.option("--source-chain", "source_chain", type=completion.ENDPOINT, default=None,
                  help="The account or source chain the tax is paid from."),
     click.option("--destination", type=completion.ACCOUNT, default=None,
@@ -18730,14 +19160,79 @@ def tax_list_command(scenario: str | None, data_dir: Path | None) -> None:
     for name in (n for n in registries.TAX_JURISDICTIONS if n in rows):
         found = rows[name]
         where = f"  [from {found.inherited_from}]" if found.inherited_from and found.index is None else ""
-        click.echo(f"{name:<7}  {_tax_summary(found.row)}{where}")
+        click.echo(f"{name:<7}  {_tax_summary(name, found.row)}{where}")
+
+
+@tax_group_command.command("kinds")
+@click.argument("kind", required=False, type=completion.TAX_KIND)
+@_LISTING_DATA_DIR_OPTION
+def tax_kinds_command(kind: str | None, data_dir: Path | None) -> None:
+    """List the tax calculator kinds: the built-ins and the data repo's
+    taxes/ modules, each with the tax it computes, the returns it builds
+    on, what it does and its parameters. With KIND, just that one."""
+    kinds = tax_code.TaxKinds(tax_code.read_sources(_resolve_data_dir(data_dir)))
+    for problem in kinds.problems:
+        click.echo(f"WARN: {problem}", err=True)
+
+    def about(cls: Any) -> str:
+        built_on = f", on {', '.join(cls.upstream)}" if cls.upstream else ""
+        return f"the {cls.jurisdiction} tax{built_on}"
+
+    _echo_kinds(kinds, kind, "tax calculator", about)
+
+
+@tax_group_command.command("check")
+@click.argument("scenario", required=False, type=completion.SCENARIO)
+@_LISTING_DATA_DIR_OPTION
+def tax_check_command(scenario: str | None, data_dir: Path | None) -> None:
+    """Load the scenario and run it twice, comparing every line of every
+    tax return: a calculator must compute the same way every time (no
+    clock, files, network or unseeded randomness), or runs can't be
+    reproduced (ADR-004, ADR-011). Reports the first difference.
+
+    Each run is its own Python process with its own string-hash seed, as an
+    ensemble worker or the next `sim run` would be, so a calculator that
+    depends on set order or hash() is caught too."""
+    data = _resolve_data_dir(data_dir)
+    name = _resolve_scenario(data, scenario).name
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            result = load_scenario(data, name, intent_dir=Path(td), compute_stamps=False, allow_dirty_data=True)
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+        _echo_load_warnings(result, unused=True)
+        lines = []
+        for i, hash_seed in enumerate(("1", "2")):
+            run = Path(td) / f"check{i}.sqlite3"
+            _run_in_fresh_process(result.intent_path, run, hash_seed)
+            con = connect_sim_file(run)
+            try:
+                lines.append(con.execute(
+                    "SELECT year, bucket, amount FROM tax_year_summary ORDER BY year, bucket").fetchall())
+            finally:
+                con.close()
+    first, second = lines
+    if not first:
+        raise click.ClickException(f"{name} computed no tax returns (`sim tax list` shows its taxes)")
+    for a, b in zip(first, second, strict=False):
+        if a != b:
+            raise click.ClickException(
+                f"{a[0]}'s {a[1]} came out differently on a second run: {a[2]} then {b[2]}"
+                if a[:2] == b[:2] else f"the runs' {a[0]} returns have different lines: {a[1]}, {b[1]}")
+    if len(first) != len(second):
+        raise click.ClickException(f"the runs computed {len(first)} and {len(second)} return lines")
+    years = len({year for year, _bucket, _amount in first})
+    click.echo(f"ok: {len(first)} return lines over {years} year{'' if years == 1 else 's'}, "
+               "the same in both runs")
 
 
 @tax_group_command.command("add")
 @click.argument("jurisdiction", required=False, type=click.Choice(registries.TAX_JURISDICTIONS))
 @_tax_options
 def tax_add_command(
-    jurisdiction: str | None, source_chain: str | None, destination: str | None, start: str | None,
+    jurisdiction: str | None, kind: str | None, source_chain: str | None, destination: str | None, start: str | None,
     end: str | None, params_json: str | None, description: str | None, scenario: str | None,
     data_dir: Path | None,
 ) -> None:
@@ -18754,14 +19249,14 @@ def tax_add_command(
     existing = _tax_rows(ref.path)
     if jurisdiction in existing:
         raise click.ClickException(f"{ref.name} already has a {jurisdiction} tax (sim tax edit {jurisdiction})")
-    given = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
-             "params_json": params_json, "description": description}
+    given = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
+             "end": end, "params_json": params_json, "description": description}
 
     def write(answers: Mapping[str, str]) -> None:
         name = answers["jurisdiction"]
         row = tax_guide.row_of(name, answers)
         path = _write_tax(data, ref.name, name, row)
-        click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(row)}")
+        click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(name, row)}")
 
     def paid_with(name: str) -> bool:
         """A jurisdiction paid with another's (local, #508) needs nothing
@@ -18815,7 +19310,7 @@ def _pick_tax(data: Path, scenario: str | None, jurisdiction: str | None, prompt
 @click.argument("jurisdiction", required=False, type=completion.TAX_JURISDICTION)
 @_tax_options
 def tax_edit_command(
-    jurisdiction: str | None, source_chain: str | None, destination: str | None, start: str | None,
+    jurisdiction: str | None, kind: str | None, source_chain: str | None, destination: str | None, start: str | None,
     end: str | None, params_json: str | None, description: str | None, scenario: str | None,
     data_dir: Path | None,
 ) -> None:
@@ -18833,17 +19328,19 @@ def tax_edit_command(
             return
         _write_tax(data, scenario_name, name, new)
         inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
-        click.echo(f"changed {name} tax{inherited}: {_tax_summary(new)}")
+        click.echo(f"changed {name} tax{inherited}: {_tax_summary(name, new)}")
 
-    changes = {"source_chain": source_chain, "destination": destination, "start": start, "end": end,
-               "params_json": params_json, "description": description}
+    changes = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
+               "end": end, "params_json": params_json, "description": description}
     if any(v is not None for v in changes.values()):
-        write({**row, **{k: v.strip() for k, v in changes.items() if v is not None}})
+        new = {**row, **{k: v.strip() for k, v in changes.items() if v is not None}}
+        new["kind"] = new["kind"] or registries.TAX_DEFAULT_KINDS[name]
+        write(new)
         return
     folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
     spec = _tax_spec(data, folder, scenario_name, "edit", name)
     answers = tax_guide.answers_of(row)
-    click.echo(f"{name}: {_tax_summary(row)}")
+    click.echo(f"{name}: {_tax_summary(name, row)}")
     _tax_guide().review(spec, calendar_guide.GuideContext(), answers,
                         lambda _params: write(tax_guide.row_of(name, answers, row)), show_command=False)
 

@@ -7,6 +7,7 @@ steps up. Charts mark each death with a red line."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
@@ -39,7 +40,7 @@ ALICE_FINAL, BILL_FINAL = "2035-03-31", "2039-08-31"
 
 def _plan(load: Callable[[], LoadResult]) -> dict[str, set[tuple[str, str, int]]]:
     """The step-ups by final month, as (account, person, share)."""
-    with sqlite3.connect(load().intent_path) as con:
+    with closing(sqlite3.connect(load().intent_path)) as con:
         names = dict(con.execute(
             "SELECT m.id, a.name FROM account_lot m JOIN account a ON a.id = m.account_id"
         ).fetchall())
@@ -49,7 +50,7 @@ def _plan(load: Callable[[], LoadResult]) -> dict[str, set[tuple[str, str, int]]
 
 def _rules(load: Callable[[], LoadResult]) -> dict[str, dict[str, str]]:
     """The rule each step-up applied (#434), by final month and account."""
-    with sqlite3.connect(load().intent_path) as con:
+    with closing(sqlite3.connect(load().intent_path)) as con:
         names = dict(con.execute(
             "SELECT m.id, a.name FROM account_lot m JOIN account a ON a.id = m.account_id"
         ).fetchall())
@@ -150,7 +151,7 @@ def _run_step_up(load: Callable[[], LoadResult], runs_dir: Path) -> tuple[int, i
     basis_after, the lot's basis the month before), checked against lot_state."""
     run = run_scenario(load().intent_path, runs_dir / "step_up.sqlite3", run_by="T",
                        allow_dirty_data=True, allow_dirty_code=True)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         (balance, before, after), = con.execute(
             "SELECT b.balance, b.basis_before, b.basis_after FROM basis_step_up b "
             "JOIN account_lot m ON m.id = b.lot_id JOIN account a ON a.id = m.account_id "
@@ -404,7 +405,7 @@ def _living_months(load: Callable[[], LoadResult], runs_dir: Path) -> list[str]:
     """The months the `living` rule posted."""
     run = run_scenario(load().intent_path, runs_dir / "joint.sqlite3", run_by="T",
                        allow_dirty_data=True, allow_dirty_code=True)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return [r[0] for r in con.execute(
             "SELECT DISTINCT s.month FROM transfer_event e "
             "JOIN simulation_step s ON s.id = e.step_id "
@@ -432,6 +433,6 @@ def test_a_joint_rule_runs_on_while_anyone_has_no_lifespan(
     fund_asset_savings("500000.00")
     write_lifespans(ALICE_DIES)
     update_scheduled("living", person="joint")
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         end = con.execute('SELECT "end" FROM scenario').fetchone()[0]
     assert _living_months(load_test_copy, runs_dir)[-1] == end
