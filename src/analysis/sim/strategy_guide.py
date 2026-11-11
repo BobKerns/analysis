@@ -120,7 +120,8 @@ def parse_param_specs(cls: type[Strategy], specs: Sequence[str]) -> dict[str, An
     it); any other value is read as JSON when it parses, else kept as text.
     ``NAME=`` (nothing after the ``=``) drops the parameter, so its default
     applies."""
-    fields = {f.name for f in dataclasses.fields(cls.Params)}
+    # In declared order, as `sim strategy kinds` lists them.
+    fields = [f.name for f in dataclasses.fields(cls.Params)]
     unit_of = param_units(cls.Params)
     out: dict[str, Any] = {}
     for spec in specs:

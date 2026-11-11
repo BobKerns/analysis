@@ -4075,13 +4075,20 @@ def _scenario_argument(fn):
 def _run_target_options(fn):
     """The options ``sim explain``, ``sim networth`` and ``sim strategy log``
     share for finding a run. ``--scenario`` is the same as the TARGET argument
-    (#410), as reports take it."""
+    (#410), as reports take it. ``--member N`` reads member N of an
+    ensemble's latest batch instead of member 0 (#411)."""
     @functools.wraps(fn)
-    def wrapper(*args: Any, scenario_opt: str | None = None, **kwargs: Any) -> Any:
+    def wrapper(*args: Any, scenario_opt: str | None = None, member: int | None = None, **kwargs: Any) -> Any:
         if scenario_opt is not None:
             if kwargs.get(positional) not in (None, scenario_opt):
                 raise click.UsageError("give the scenario once, as SCENARIO or --scenario")
             kwargs[positional] = scenario_opt
+        if member is not None:
+            if kwargs.get("runfile") is not None:
+                raise click.UsageError("give --member or --runfile, not both")
+            kwargs["runfile"] = _ensemble_member_path(kwargs.get(positional), member, kwargs.get("data_dir"),
+                                                      kwargs.get("runs_dir"))
+            kwargs[positional] = None
         return fn(*args, **kwargs)
 
     positional = "target" if "target" in inspect.signature(fn).parameters else "scenario"
@@ -4091,6 +4098,8 @@ def _run_target_options(fn):
                      help="The same as SCENARIO: the scenario whose latest run to read."),
         click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
                      default=None, help="Run file (default: the scenario's latest run)."),
+        click.option("--member", type=click.IntRange(min=0), default=None,
+                     help="For an ensemble: this member of its latest batch (default: member 0)."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
         click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
@@ -4098,6 +4107,20 @@ def _run_target_options(fn):
     ]):
         decorated = option(decorated)
     return decorated
+
+
+def _ensemble_member_path(target: str | None, member: int, data_dir: Path | None, runs_dir: Path | None) -> Path:
+    """Member ``member``'s run file in the latest batch of the ensemble TARGET
+    names (the current scenario when it is omitted)."""
+    ref = _resolve_scenario(_resolve_data_dir(data_dir), target, runs_dir=runs_dir)
+    batch = latest_ensemble_batch(ref.runs_dir / ref.name, mode="monte_carlo")
+    if batch is None:
+        raise click.ClickException(f"no ensemble batch for {ref.name!r} in {ref.runs_dir}; run `sim run` first")
+    path = batch / f"member_{member:04d}.sqlite3"
+    if not path.exists():
+        count = len(list(batch.glob("member_*.sqlite3")))
+        raise click.ClickException(f"{ref.name}'s latest batch has no member {member} (it has 0 to {count - 1})")
+    return path
 
 
 def _checked_run_file(path: Path) -> Path:

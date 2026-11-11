@@ -42,9 +42,16 @@ A draw is decided from the month's state at the moment it is asked (Bob, 2026-10
 
 ### 3. The API (`analysis.sim.strategy_api`)
 
-This module is the only part of the simulator a strategy imports. Engine internals change behind it; `API_VERSION` (now 10: 2 added the spending hooks and context, 3 the year-end hook, its moves and `ctx.tax`, 4 `on_breach`, `month_start`, `ctx.history` and `ctx.rail`, 5 the life and RMD tables and more of `ScenarioView`, 6 `trailing_return`, 7 `ScenarioView.taxes` in place of `tax_rules`, 8 the renamed `ctx.tax.last_year` lines, 9 the local tax as its own scope, 10 `TaxEstimate.magi`) changes only when a strategy written for the previous version could break. A module may set `API_VERSION` to the version it was written for, and one newer than the code is refused at load.
+This module, and the built-in kinds' classes (below), are the only parts of the simulator a strategy imports. Engine internals change behind them; `API_VERSION` (now 11: 2 added the spending hooks and context, 3 the year-end hook, its moves and `ctx.tax`, 4 `on_breach`, `month_start`, `ctx.history` and `ctx.rail`, 5 the life and RMD tables and more of `ScenarioView`, 6 `trailing_return`, 7 `ScenarioView.taxes` in place of `tax_rules`, 8 the renamed `ctx.tax.last_year` lines, 9 the local tax as its own scope, 10 `TaxEstimate.magi`, 11 `ctx.rule_budgets`, `ctx.with_memory`, `Strategy.delegate` and the built-ins' classes as API) changes only when a strategy written for the previous version could break. A module may set `API_VERSION` to the version it was written for, and one newer than the code is refused at load.
 
 **Parameters.** `Params` fields are typed with units that follow the CSV rules: `Percent` (written `"5%"`, received as millionths), `Dollars` (`"1200.00"`, received as cents), `Tag` (an account tag `role:name` some account carries), `TargetSet` (a set in `targets.csv`), `Account` (an account the scenario defines); any other field is a plain JSON value. A field may be optional (`Dollars | None = None`), taking `null` for none. The loader converts and checks them against `Params`, so a strategy never parses a string, and a bad value is a load error naming the row.
+
+**Building on a built-in.** A household's kind may build on a built-in one, importing its class from `analysis.sim.strategies` (`Guardrail`, `Threshold`, `CeilingFloor`, `Amortize`, `CutOnBreach`, `Rebalance`, `DownMarket`, `Buckets`, `Harvest`, `Gift`) in either of two ways (Bob, 2026-11-11):
+
+- **Subclassing**: `class WholeTrips(Guardrail)` with a `kind` of its own (an inherited kind is refused, so a built-in is never shadowed), a `Params` that extends the built-in's, and hooks that call `super()` and change what they return or add to memory.
+- **Delegation**: `self.delegate(Guardrail, **params)` makes an instance of the built-in whose `Params` take the fields of the kind's own that share their names, then `params` (stored units). The kind calls its hooks with `ctx.with_memory(key)`, so each keeps its own memory, and decides what to answer. The delegate's `check` isn't run at load; the kind's own `check` may call it.
+
+Those classes' hooks, `Params` and memory keys are part of the API: changing them in a way that could break such a kind bumps `API_VERSION`. The modules' other names (`_Spending`, helpers) are not, and can change without notice. The loader snapshots only the data repo's modules; the built-in code a kind builds on is covered by the code version (§4).
 
 **The context** (`Context`) shows the run up to the current month and nothing after it:
 
@@ -60,6 +67,8 @@ This module is the only part of the simulator a strategy imports. Engine interna
 | `cpi(since)` | The CPI factor from a past month end to now, in millionths |
 | `people` | Each person's role, birthdate, age in whole years, whether alive, and the final month a lifespan gives |
 | `budget()` | The strategy's own rules' spending over the twelve months from this one, at this month's prices: each rule's amount indexed to now, times the times it posts in them (within its start, end and person's lifespan, and the run's end). Twelve months rather than the calendar year, so a run that starts in May sees a whole year's plan; a run ending mid-year budgets only the months it has left |
+| `rule_budgets()` | `budget()` rule by rule: each owned rule's name and its spending over the same twelve months, so a strategy can decide in January which rules a smaller budget keeps |
+| `with_memory(key)` | This context with `memory[key]` (a dict) as its memory, for a strategy it delegates to (below) |
 | `tax` | This year's income tax (§3.2) |
 | `history` | Month-end balances before this month: `months` (oldest first) and `balances(lots)`, their total at each, in cents (a NumPy array) |
 | `rail(name)` | A triggered rail's `RailYears` as last evaluated in January: its years through last year, CPI-constant dollars, one row; a rail no trigger names isn't evaluated, and asking for it is an error |
@@ -348,3 +357,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#508](https://github.com/BobKerns/analysis/issues/508): `API_VERSION` 9: the local tax is its own jurisdiction, so `ctx.tax` takes `scope="local"`, the state's estimate leaves it out, and `last_year`'s `state_local_tax` is refused, naming `local_tax` (§3.2).
 - [#410](https://github.com/BobKerns/analysis/issues/410): `sim strategy log` leaves a spending strategy's monthly `scale` lines out (counted; `--hook` selects hooks), and `threshold` and `guardrail` note every January (§6.2, §7).
 - [#265](https://github.com/BobKerns/analysis/issues/265): `API_VERSION` 10: `TaxEstimate.magi`, AGI plus tax-exempt interest; `agi` is no longer IRMAA's MAGI (§3).
+- [#411](https://github.com/BobKerns/analysis/issues/411): `API_VERSION` 11: `ctx.rule_budgets` and `ctx.with_memory`, `Strategy.delegate`, and the built-in kinds' classes are API, for a household's kind to subclass or delegate to (§3).

@@ -349,6 +349,7 @@ stcg
 stdlib
 steelblue
 Stooq
+subclassing
 subkey
 subkind
 subkinds
