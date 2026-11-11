@@ -11,11 +11,18 @@ resolved per scenario under ``scenarios/<name>/``, ADR-003 §4.1d; covered
 automatically since that whole folder is already in scope). ``series/`` has no
 shared root tier at all -- only the per-scenario ``scenarios/<name>/series/``
 folders, already covered the same way.
+
+A price file enters the tree with only the rows the load can read (#560):
+those dated on or before the scenario's start, the only prices a lot is
+valued at. So a fetch that adds closes after it, as the background
+builder's does each weekday, leaves every tree as it was.
 """
 
 from __future__ import annotations
 
 import csv
+import io
+import re
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,8 +31,9 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+from gitdb import IStream
 
-from analysis.sim.lineage import is_pool, load_order, pool_components
+from analysis.sim.lineage import is_pool, load_order, pool_components, scenario_start
 
 
 class DataDirtyRefused(RuntimeError):
@@ -85,7 +93,7 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
         scoped_abs.extend(_not_data(data_dir, [scenario_name]))
     status = repo.git.status("--porcelain", "--", *scoped_abs)
     dirty_paths = tuple(line[3:] for line in status.splitlines()) if status.strip() else ()
-    tree_id = _compute_tree_id(repo, scoped_abs)
+    tree_id = _compute_tree_id(repo, scoped_abs, _price_cutoff(data_dir, scenario_name))
     return DataStamps(
         version=repo.head.commit.hexsha,
         dirty=bool(dirty_paths),
@@ -227,12 +235,72 @@ def _scenario_lineage(data_dir: Path, scenario_name: str) -> list[str]:
     return names
 
 
-def _compute_tree_id(repo: Repo, scoped_abs: list[str]) -> str:
+def _price_cutoff(data_dir: Path, scenario_name: str) -> str | None:
+    """``scenario_name``'s start, the last date its load reads prices for,
+    or None when it can't be told (every row then counts). A pool's is its
+    latest component's: its scope holds all their prices."""
+    scenarios = data_dir / "scenarios"
+    if is_pool(scenarios, scenario_name):
+        starts = [scenario_start(scenarios, c) for c in pool_components(scenarios, scenario_name)]
+        return None if not starts or None in starts else max(s for s in starts if s)
+    return scenario_start(scenarios, scenario_name)
+
+
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_PRICE_FILE = re.compile(r"(?:^|/)prices/security_price__[^/]+\.csv$")
+
+
+def _rows_read(text: str, cutoff: str) -> str:
+    """A price file's text with only the rows the loader can value a lot
+    at: ``effective_date <= cutoff``, compared as text as the loader does
+    (``_derive_opening_balances``). A row it can't read is kept, so a
+    malformed edit still changes the tree."""
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return text
+    header = next(csv.reader([lines[0]]), [])
+    if "effective_date" not in header:
+        return text
+    at = header.index("effective_date")
+    kept = [lines[0]]
+    for line in lines[1:]:
+        fields = next(csv.reader([line]), [])
+        day = fields[at].strip() if len(fields) > at else ""
+        if not _DATE.fullmatch(day) or day <= cutoff:
+            kept.append(line)
+    return "".join(kept)
+
+
+def _compute_tree_id(repo: Repo, scoped_abs: list[str], price_cutoff: str | None = None) -> str:
     with tempfile.TemporaryDirectory() as td:
         index_path = str(Path(td) / "index")
         with repo.git.custom_environment(GIT_INDEX_FILE=index_path):
             repo.git.add("--", *scoped_abs)
+            if price_cutoff:
+                _filter_prices(repo, price_cutoff)
             return repo.git.write_tree()
+
+
+def _filter_prices(repo: Repo, cutoff: str) -> None:
+    """Swap each price file in the sidecar index for the rows the load
+    reads (:func:`_rows_read`), stored as a blob so the tree stays whole."""
+    for line in repo.git.ls_files("-s", "-z").split("\0"):
+        if not line:
+            continue
+        info, path = line.split("\t", 1)
+        if not _PRICE_FILE.search(path):
+            continue
+        mode, sha = info.split()[:2]
+        data = repo.odb.stream(bytes.fromhex(sha)).read()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue  # the loader reports it; the whole file counts
+        kept = _rows_read(text, cutoff).encode("utf-8")
+        if kept == data:
+            continue
+        blob = repo.odb.store(IStream(b"blob", len(kept), io.BytesIO(kept))).hexsha.decode()
+        repo.git.update_index("--cacheinfo", f"{mode},{blob},{path}")
 
 
 @dataclass(frozen=True)

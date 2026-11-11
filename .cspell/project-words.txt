@@ -40,11 +40,13 @@ blockifying
 blockquotes
 Bogleheads
 BONDX
+bootout
 boxstyle
 BPOS
 BUILDKIT
 businesswire
 cachedir
+cacheinfo
 calevt
 capex
 capitalizable
@@ -126,6 +128,7 @@ getbasetemp
 geteuid
 gethostname
 getpid
+getuid
 Ghostty
 globenewswire
 gmtoffset

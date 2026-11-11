@@ -33,6 +33,10 @@ every run first, then every series store, then every sensitivity batch; but
 once a reader has asked for one of a scenario's jobs, the rest of that
 scenario's follow it at once.
 
+It also fetches prices after each weekday's close, on a branch merged into
+the data repo's ``main`` when that is checked out and clean (#560: see
+``price_schedule``).
+
 Everything lives in the data repo's ``state/builder/`` (untracked, and one
 per data worktree): ``config.json`` (the opt-in and the pair),
 ``daemon.lock`` (held for the daemon's life), ``status.json``, ``requests/``
@@ -55,7 +59,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -226,6 +230,11 @@ class BuilderPaths:
     @property
     def log_dir(self) -> Path:
         return self.dir / "logs"
+
+    @property
+    def prices_worktree(self) -> Path:
+        """The sparse worktree scheduled price fetches work in (#560)."""
+        return self.dir / "prices"
 
     @property
     def working_set(self) -> Path:
@@ -617,6 +626,13 @@ class _Daemon:
         self.started_trees: tuple[str, ...] | None = None
         self.stopping = False
         self.restart = False
+        # A scheduled price fetch in progress (#560), its log copier, when
+        # prices were last looked at, and when a fetch last ended: none
+        # starts within the hour after one, whatever its child recorded.
+        self.fetcher: subprocess.Popen[bytes] | None = None
+        self.fetch_reader: threading.Thread | None = None
+        self.prices_looked = float("-inf")
+        self.fetch_ended = float("-inf")
 
     # The key a build is good for: the code trees and the scenario's data tree.
     def key(self, scenario: str, trees: tuple[str, ...]) -> list[Any]:
@@ -845,6 +861,50 @@ class _Daemon:
         self.cancelled.pop(job, None)
         self.state = "building"
 
+    def prices_tick(self, now: bool) -> None:
+        """#560: note a price fetch that ended; merge fetched prices that
+        wait for main; start a fetch when one is due. Looks on a rescan, or
+        once a minute, so a timer's poke or a commit is answered at once."""
+        from analysis.sim import price_schedule
+
+        if self.fetcher is not None:
+            if self.fetcher.poll() is None:
+                return
+            if self.fetch_reader is not None:
+                self.fetch_reader.join(timeout=5)
+            code = self.fetcher.returncode
+            self.fetcher = self.fetch_reader = None
+            self.fetch_ended = time.monotonic()
+            self.log("fetched prices" if code == 0 else f"price fetch failed (exit {code})")
+            now = True
+        if not now and time.monotonic() - self.prices_looked < 60:
+            return
+        self.prices_looked = time.monotonic()
+        if not price_schedule.enabled(read_config(self.paths)):
+            return
+        try:
+            merged = price_schedule.merge_pending(self.data_dir)
+        except (price_schedule.PriceScheduleError, OSError) as exc:
+            self.log(f"prices not merged: {exc}")
+            return
+        if merged:
+            self.log(merged)
+        if time.monotonic() - self.fetch_ended < price_schedule.RETRY_SECONDS:
+            return
+        if not price_schedule.due(price_schedule.read_state(self.data_dir), datetime.now(UTC)):
+            return
+        self.log("fetching prices")
+        env = {**os.environ, BUILDER_SWITCH_ENV: "off", BUILDER_CHILD_ENV: "1"}
+        self.fetcher = subprocess.Popen(
+            [*_sim_executable(), "builder", "prices", "--if-due", "--data-dir", str(self.data_dir)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            start_new_session=True, env=env, close_fds=True,
+        )
+        assert self.fetcher.stdout is not None
+        self.fetch_reader = threading.Thread(target=self.writer.copy, args=(self.fetcher.stdout,),
+                                             name="log prices", daemon=True)
+        self.fetch_reader.start()
+
     def finished(self) -> bool:
         """Note a build that ended; True if one did."""
         build = self.build
@@ -915,6 +975,7 @@ class _Daemon:
                     rescan = True
                 if held(self.paths) != self.held:  # one taken, or its command ended
                     rescan = True
+                looked_again = rescan
                 if rescan:
                     rescan = False
                     self.scan()
@@ -925,7 +986,8 @@ class _Daemon:
                 if self.build is None and self.queue and self.started_trees is not None:
                     self.start_next(self.started_trees)
                     self.write_status()
-                if self.build is None and not self.queue:
+                self.prices_tick(looked_again)
+                if self.build is None and not self.queue and self.fetcher is None:
                     idle_since = idle_since or time.monotonic()
                     if time.monotonic() - idle_since > IDLE_GRACE_SECONDS:
                         break
@@ -1240,11 +1302,13 @@ def _ours(hook: Path) -> bool:
     return hook.read_text(errors="replace").split("\n")[1:2] == [HOOK_MARKER]
 
 
-def install(data_dir: Path, branch: str | None = None) -> list[str]:
-    """Opt this workspace in: check the pair, record it and the branch its
-    code must match (``branch``, else the one recorded before, else main),
-    install the data repo's hooks (the code repo's are in ``.githooks/``).
-    Returns what it did."""
+def install(data_dir: Path, branch: str | None = None, prices: bool | None = None) -> list[str]:
+    """Opt this workspace in: check the pair, record it, the branch its
+    code must match (``branch``, else the one recorded before, else main)
+    and whether it fetches prices (``prices``, else as recorded, else yes:
+    #560), install the data repo's hooks (the code repo's are in
+    ``.githooks/``). Returns what it did. The price timer is the CLI's
+    (``price_schedule.install_timer``)."""
     data_dir = data_dir.resolve()
     code = code_dir()
     problems = pair_problems(code, data_dir)
@@ -1259,13 +1323,16 @@ def install(data_dir: Path, branch: str | None = None) -> list[str]:
             raise ValueError(f"{hook} and {chained.name} both exist and neither is the "
                              f"builder's; merge them into {name}, then install again")
     paths = BuilderPaths.for_data(data_dir)
-    branch = branch or config_branch(read_config(paths))
+    before = read_config(paths) or {}
+    branch = branch or config_branch(before)
+    prices = bool(before.get("prices", True)) if prices is None else prices
     _write_json(paths.config, {
         "data_dir": str(data_dir), "code_dir": str(code), "branch": branch,
-        "installed": time.time(),
+        "prices": prices, "installed": time.time(),
     })
     done = [f"recorded the pair in {paths.config}",
-            f"builds only from code matching the local {branch} branch"]
+            f"builds only from code matching the local {branch} branch",
+            "fetches prices after each weekday's close" if prices else "doesn't fetch prices"]
     hooks.mkdir(parents=True, exist_ok=True)
     for name in HOOK_NAMES:
         hook = hooks / name
@@ -1295,4 +1362,10 @@ def uninstall(data_dir: Path) -> list[str]:
             except ProcessLookupError:
                 pass
     paths.config.unlink(missing_ok=True)
-    return [f"removed {paths.config}"]
+    done = [f"removed {paths.config}"]
+    if paths.prices_worktree.exists():
+        # The price branch stays: it holds nothing main lacks once merged.
+        subprocess.run(["git", "-C", str(data_dir), "worktree", "remove", "--force",
+                        str(paths.prices_worktree)], capture_output=True, check=False)
+        done.append(f"removed the price worktree {paths.prices_worktree}")
+    return done

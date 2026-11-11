@@ -107,6 +107,9 @@ def _no_ambient_analysis_env(
     # turns the builder back on itself.
     monkeypatch.setenv("ANALYSIS_BUILDER", "off")
     monkeypatch.delenv("ANALYSIS_BUILDER_CHILD", raising=False)
+    # Nor fetches prices or installs a timer (#560), even with the builder on:
+    # a test that does turns this off and passes a fake provider.
+    monkeypatch.setenv("ANALYSIS_PRICE_FETCH", "off")
 
 
 _STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_REPO")
@@ -978,6 +981,27 @@ def load_test_scenario(test_data_dir: Path, intent_dir: Path) -> Callable[[str],
         return load_scenario(test_data_dir, name, intent_dir=intent_dir / name,
                              allow_dirty_data=True).intent_path
     return _load
+
+
+@pytest.fixture(scope="function")
+def data_repo_sim(tmp_path: Path, test_data_dir: Path) -> Path:
+    """The private data copy as a real data repo's ``sim/`` subtree: a git
+    repo on main, everything committed, ``state/`` and ``sim/.analysis``
+    ignored, as the builder (#300) and its price fetches (#560) expect.
+    Returns the ``sim`` dir."""
+    data_repo = tmp_path / "datarepo"
+    data_dir = data_repo / "sim"
+    data_repo.mkdir()
+    test_data_dir.rename(data_dir)
+    (data_repo / ".gitignore").write_text("sim/.analysis\nstate/\n")
+    repo = git.Repo.init(data_repo, b="main")
+    with repo.config_writer() as cw:
+        cw.set_value("commit", "gpgsign", "false")
+    repo.git.add(A=True)
+    actor = git.Actor("t", "t@t")
+    repo.index.commit("init", author=actor, committer=actor)
+    repo.close()
+    return data_dir
 
 
 @pytest.fixture(scope="function")

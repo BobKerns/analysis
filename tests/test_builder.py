@@ -53,17 +53,10 @@ def test_builds_only_from_committed_code_matching_main(
 
 
 @pytest.fixture
-def pair(tmp_path: Path, test_data_dir: Path, commit_test_data: Callable[[], Path],
+def pair(tmp_path: Path, data_repo_sim: Path,
          monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """A code worktree and data dir naming each other: (code dir, data dir)."""
-    data_repo = tmp_path / "datarepo"
-    data_dir = data_repo / "sim"
-    data_repo.mkdir()
-    test_data_dir.rename(data_dir)
-    repo = git.Repo.init(data_repo, b="main")
-    with repo.config_writer() as cw:
-        cw.set_value("commit", "gpgsign", "false")
-    _commit(repo, {".gitignore": "sim/.analysis\nstate/\n"}, "init")
+    data_dir, data_repo = data_repo_sim, data_repo_sim.parent
     code = tmp_path / "code"
     (code / "data").mkdir(parents=True, exist_ok=True)
     (code / "data" / "shared").symlink_to(data_repo)
@@ -835,3 +828,25 @@ def test_a_behind_main_is_noted_once_where_the_builder_builds_from_it(
     builder.note_behind(paths.state_dir, notes.append)
     builder.note_behind(paths.state_dir, notes.append)
     assert len(notes) == 1 and notes[0].startswith("NOTE: local main is 1 commit behind origin/main")
+
+
+def test_the_daemon_fetches_prices_when_due_and_waits_for_the_fetch(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import price_schedule
+
+    lines: list[str] = []
+    daemon.echo = lines.append
+    daemon.prices_tick(True)
+    assert daemon.fetcher is None  # not installed: no fetch
+
+    builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir), "prices": True})
+    daemon.prices_tick(True)
+    assert daemon.fetcher is None  # the tests' switch is on
+
+    monkeypatch.delenv(price_schedule.SWITCH_ENV)
+    daemon.prices_tick(True)
+    assert daemon.fetcher is not None and any("fetching prices" in line for line in lines)
+    daemon.fetcher.wait(timeout=10)
+    daemon.prices_tick(False)
+    assert daemon.fetcher is None and any(line.endswith("fetched prices") for line in lines)
