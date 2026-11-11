@@ -123,6 +123,11 @@ def _start_month(rc: RunConnection) -> str | None:
     return None if start.empty or _blank(start.iloc[0]) else str(start.iloc[0])[:7]
 
 
+def _same(a: Any, b: Any) -> bool:
+    """Whether two cells hold the same value, blanks alike."""
+    return (_blank(a) and _blank(b)) or (not _blank(a) and not _blank(b) and str(a) == str(b))
+
+
 def _at_start(value: Any, start: str | None, *, or_before: bool = False) -> Any:
     """``value``, or ``START`` when it is a date in the ``start`` month (or,
     ``or_before``, any earlier one: a rule that began before the scenario
@@ -162,6 +167,12 @@ def rule_differences(
     rows = []
     for rule in index:
         for column in columns:
+            raw = {name: rules[name].at[rule, column] for name in scenarios}
+            if column == "start" and all(
+                    _same(raw[name], raw[baseline]) for name in scenarios):
+                # The same authored date: not a difference, though one
+                # scenario's start makes it ``START`` there (#502).
+                continue
             values = {name: shown(name, rule, column) for name in scenarios}
             if any(values[name] != values[baseline] for name in scenarios):
                 rows.append({"rule": rule, "field": RULE_COMPARE_COLUMNS[column][0], **values})
@@ -187,16 +198,26 @@ def event_differences(
     for name in scenarios:
         frame = connections[name].items("calendar_event").assign(scenario=name)
         start = _start_month(connections[name])
-        frames.append(frame.assign(date=frame["date"].map(lambda d, s=start: _at_start(d, s))))
+        frames.append(frame.assign(
+            dated=frame["date"].map(lambda d, s=start: _at_start(d, s) != START)))
     events = pd.concat(frames, ignore_index=True)
     if events.empty:
         return pd.DataFrame(columns=["scenario", *_EVENT_COLUMNS])
     events["amount"] = (events["amount"].astype("Float64") / 100).map(
         lambda v: "" if pd.isna(v) else f"${v:,.2f}"
     )
+    # An event every scenario has as authored is no difference, though it
+    # falls in one scenario's first month (#502); of the rest, one each
+    # has in its first month (a growth rule's row) is START in each.
+    every = len(scenarios)
+    as_authored = events[_EVENT_COLUMNS].apply(tuple, axis=1)
+    events = events.loc[events.groupby(as_authored)["scenario"].transform("nunique") < every]
+    if events.empty:
+        return pd.DataFrame(columns=["scenario", *_EVENT_COLUMNS])
+    events = events.assign(date=events["date"].where(events["dated"], START))
     signature = events[_EVENT_COLUMNS].apply(tuple, axis=1)
     in_scenarios = events.groupby(signature)["scenario"].transform("nunique")
-    return events.loc[in_scenarios < len(scenarios), ["scenario", *_EVENT_COLUMNS]]
+    return events.loc[in_scenarios < every, ["scenario", *_EVENT_COLUMNS]]
 
 
 # ---------- what differs: accounts, lots and year-to-date rows ----------
@@ -366,12 +387,20 @@ def align_cpi(connections: Mapping[str, RunConnection], baseline: str) -> dict[s
     Returns the scale given each rebased variant; a variant with no month in
     common with the baseline, or no CPI index, is left as it is.
     """
-    base = connections[baseline].cpi_index().dropna()
+    def recorded(rc: RunConnection) -> pd.Series:
+        # The run's own index, whatever an earlier alignment (a notebook
+        # picking another baseline) scaled its deflator by.
+        return rc.net_worth_frame()["cumulative_index_micros"].dropna()
+
+    for rc in connections.values():
+        if rc.cpi_scale != 1.0:
+            rc.rebase_cpi(1.0)
+    base = recorded(connections[baseline])
     scales: dict[str, float] = {}
     if base.empty:
         return scales
     for name, rc in connections.items():
-        index = rc.cpi_index().dropna()
+        index = recorded(rc)
         if name == baseline or index.empty or index.index[0] == base.index[0]:
             continue
         month = max(index.index[0], base.index[0])

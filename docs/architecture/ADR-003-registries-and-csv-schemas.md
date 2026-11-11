@@ -1182,12 +1182,14 @@ starts a scenario again at a later month, opening with what its accounts
 hold then. It first offers to keep the scenario as it stands (`--keep`, as
 `scenario copy` would; default `NAME-<old start's year>`), then asks, for
 every asset and liability lot of the lineage, its balance (or its shares,
-for a lot with a symbol and quantity whose price is known by START, leaving
-the balance to be derived, §4.3) and, where the lot keeps one, its cost
-basis, offering what the scenario's latest run projected for the month
-before START (`--yes` takes those). An inherited lot gets an override. A
-lot's `prior_year_end_balance`, when set, becomes the opening balance for a
-January start and is asked for otherwise. When START is in a later year,
+for a lot valued by them: a symbol and quantity, a blank balance and a price
+known by START, the balance left to be derived, §4.3) and, where the lot
+keeps one, its cost basis, offering what the newest run reaching it
+projected for the month before START (`--yes` takes those). An inherited
+lot gets an override; a lot no file has (an account's implicit default)
+gets a row, named `default` in an investment account. A lot's
+`prior_year_end_balance`, when set, becomes the opening balance for a
+January start and is asked for otherwise, offering the run's Dec 31. When START is in a later year,
 each `year_to_date.csv` row with no `year` (§4.10) is offered to be pinned
 to the old start's year, and each rule's `ytd_amount` to become a
 year-to-date row of that year with the rule's accounts and character (the

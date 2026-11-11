@@ -1763,11 +1763,11 @@ sim scenario roll base 2027-01 --keep plan-2026
 `roll` first keeps the plan as it stands as a sibling copy (`--keep`; the
 default name is the scenario's name and the old start's year), so you can
 compare last year's plan with this year's. Then it moves the start, and
-asks, lot by lot, what each account holds now: shares for a lot whose symbol
-has a price by the new start (the balance is shares times that price),
-dollars otherwise, and the cost basis where the lot keeps one. A Roth's
+asks, lot by lot, what each account holds now: shares for a lot kept in
+shares (a symbol, shares and no balance) whose symbol has a price by the
+new start (the balance is shares times that price), dollars otherwise, and the cost basis where the lot keeps one. A Roth's
 basis is what was put in, so a year the market fell leaves it above the
-balance. Each question offers what the plan's latest run projected for the
+balance. Each question offers what the plan's newest run projected for the
 month before the new start; press Enter to take it, or `--yes` to take
 them all. A lot's Dec 31 balance (`prior_year_end_balance`), when it has
 one, follows.

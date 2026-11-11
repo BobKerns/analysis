@@ -804,19 +804,28 @@ class RunConnection(Connection):
             nw["month"] = pd.to_datetime(nw["month"])
             nw["nominal"] = nw["nominal_cents"] / 100
             nw["cpi_constant"] = nw["constant_cents"].astype("Float64") / 100
-            if (scale := getattr(self, "_cpi_scale", 1.0)) != 1.0:
-                nw["cumulative_index_micros"] = nw["cumulative_index_micros"].astype("Float64") * scale
+            # The run's own index stays as recorded (a rail's CPI-constant
+            # threshold is in this run's dollars); only what reports deflate
+            # with moves to a rebased baseline's.
+            if (scale := self.cpi_scale) != 1.0:
                 nw["cpi_constant"] = nw["cpi_constant"] / scale
             return nw.set_index("month")
 
         return self._cached("net_worth_frame", _build)
 
+    @property
+    def cpi_scale(self) -> float:
+        """What ``rebase_cpi`` scaled this run's deflator by (1 when not)."""
+        return getattr(self, "_cpi_scale", 1.0)
+
     def rebase_cpi(self, scale: float) -> None:
-        """Scale this run's CPI index by ``scale``, so its CPI-constant dollars
-        are another run's (#502): a comparison of runs that start in
-        different months deflates them all to the baseline's start. Every
-        CPI-constant figure this connection gives reads the index from
-        ``net_worth_frame``, so the derived caches are dropped."""
+        """Deflate this run's CPI-constant dollars by its index times
+        ``scale``, so they are another run's (#502): a comparison of runs
+        that start in different months deflates them all to the baseline's
+        start. ``cpi_index`` and the frames built on it change; the run's
+        recorded index (``net_worth_frame``'s ``cumulative_index_micros``)
+        doesn't, so nothing the run computed in its own dollars moves. The
+        derived caches are dropped."""
         self._cpi_scale = scale
         if getattr(self, "_derived_cache", None) is not None:
             self._derived_cache.clear()
@@ -915,10 +924,14 @@ class RunConnection(Connection):
         return unpaid
 
     def cpi_index(self) -> pd.Series:
-        """Month-indexed cumulative CPI index (micros), for CPI-constant conversion."""
-        return self._cached(
-            "cpi_index", lambda: self.net_worth_frame()["cumulative_index_micros"]
-        )
+        """Month-indexed cumulative CPI index (micros) that CPI-constant
+        conversion deflates by: the run's own, times any ``rebase_cpi`` scale."""
+
+        def _build() -> pd.Series:
+            index = self.net_worth_frame()["cumulative_index_micros"]
+            return index if self.cpi_scale == 1.0 else index.astype("Float64") * self.cpi_scale
+
+        return self._cached("cpi_index", _build)
 
     def to_cpi_constant(self, monthly: pd.DataFrame | pd.Series):
         """Convert a month-indexed dollar series/frame to this run's CPI-constant dollars.

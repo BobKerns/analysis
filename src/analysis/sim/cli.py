@@ -15063,6 +15063,9 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
 
     month = roll.month_before(start)
     projected: dict[tuple[str, str], roll.Projection] = {}
+    # The Dec 31 before a start that isn't a January: what a lot's
+    # prior_year_end_balance (an RMD's base) defaults to.
+    year_end: dict[tuple[str, str], roll.Projection] = {}
     # The newest run that reaches the month: one made after an earlier roll
     # (or a trial one) starts too late to say.
     for run_path in reversed(run_files(ref.runs_dir, name)):
@@ -15070,6 +15073,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             continue
         with RunConnection(run_path, name) as rc:
             projected = roll.projections(rc, month)
+            if projected and start[5:] != "01":
+                year_end = roll.projections(rc, roll.month_before(f"{new_year}-01"))
         if projected:
             break
     if projected:
@@ -15089,7 +15094,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             continue
         seen.add((one.account, one.lot))
         rows.append((one, _rolled_lot(data, one, account.row, projected.get((one.account, one.lot)),
-                                      start, accept)))
+                                      year_end.get((one.account, one.lot)), start, accept)))
     for (account_name, lot), projection in sorted(projected.items()):
         # An account whose lot isn't in any file (one with no lot rows) that
         # the old plan put money in.
@@ -15098,9 +15103,11 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         account = accounts.get(account_name)
         if account is None:
             continue
-        blank = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "") | {"account_name": account_name}
+        blank = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "") | {
+            "account_name": account_name, "lot": lot}
         implicit = _Lot(blank, None, None, implicit=True)
-        rows.append((implicit, _rolled_lot(data, implicit, account.row, projection, start, accept)))
+        rows.append((implicit, _rolled_lot(data, implicit, account.row, projection,
+                                           year_end.get((account_name, lot)), start, accept)))
 
     pins: list[_Overlaid] = []
     converted: list[_Overlaid] = []
@@ -15176,18 +15183,23 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
 
 def _rolled_lot(
     data: Path, one: _Lot, account: dict[str, str], projection: roll.Projection | None,
-    start: str, accept: bool,
+    year_end: roll.Projection | None, start: str, accept: bool,
 ) -> dict[str, str]:
     """``one``'s row, opening at ``start`` with what is asked for (the
-    projection offered), for ``sim scenario roll``."""
+    projection offered, and ``year_end``'s balance for the Dec 31 before
+    it), for ``sim scenario roll``."""
     row = dict(one.row)
     label = f"{one.account} ({one.lot})"
     symbol = row.get("symbol", "").strip()
-    price = _price_on(data, symbol, start) if symbol and row.get("quantity", "").strip() else None
+    # A lot valued by its shares: one whose balance the loader derives. A
+    # given balance is the lot's own, with any shares only for reference.
+    by_shares = symbol and row.get("quantity", "").strip() and not row.get("opening_balance", "").strip()
+    price = _price_on(data, symbol, start) if by_shares else None
     if price is not None:
         current = float(row["quantity"].replace(",", ""))
         shares = _ask_shares(f"{label} {symbol} shares",
-                             projection.quantity if projection and projection.quantity else current, accept)
+                             projection.quantity if projection and projection.quantity is not None
+                             else current, accept)
         row["quantity"] = shares
         row["opening_balance"] = ""
         balance = float(shares) * price[1]
@@ -15197,13 +15209,14 @@ def _rolled_lot(
         balance = float(_ask_money(f"{label} balance",
                                    projection.balance if projection else current, accept))
         row["opening_balance"] = _money_text(balance)
-        if row.get("quantity", "").strip() and projection and projection.quantity:
+        if row.get("quantity", "").strip() and projection and projection.quantity is not None:
             row["quantity"] = _shares_text(projection.quantity)
     tracks_basis = row.get("opening_cost_basis", "").strip() or (
         projection is not None and projection.basis is not None
         and account.get("subkind", "") not in registries.CASH_SUBKINDS)
     if tracks_basis:
-        current = _cell_float(row.get("opening_cost_basis", "")) or balance
+        authored = _cell_float(row.get("opening_cost_basis", ""))
+        current = balance if authored is None else authored
         row["opening_cost_basis"] = _ask_money(
             f"{label} cost basis", projection.basis if projection and projection.basis is not None
             else current, accept)
@@ -15212,8 +15225,11 @@ def _rolled_lot(
         # start is a January.
         row["prior_year_end_balance"] = (
             _money_text(balance) if start[5:] == "01"
-            else _ask_money(f"{label} balance on Dec 31, {int(start[:4]) - 1}", balance, accept))
-    if one.implicit:
+            else _ask_money(f"{label} balance on Dec 31, {int(start[:4]) - 1}",
+                            year_end.balance if year_end else balance, accept))
+    if one.implicit and account.get("subkind", "") not in INVESTMENT_ASSET_SUBKINDS:
+        # An implicit default lot stays blank; an investment account must
+        # name its lot (``default``), as the loader requires.
         row["lot"] = ""
     return row
 

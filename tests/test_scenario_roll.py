@@ -8,6 +8,7 @@ from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
@@ -105,6 +106,46 @@ def test_roll_asks_for_each_lot_offering_the_current_value_without_a_run(
     assert not (test_scenarios_dir / "retire_alice-2026").exists()
 
 
+@pytest.mark.uses_current_scenario_write
+def test_roll_to_a_later_month_offers_the_dec_31_balance_as_prior_year_end(
+    test_data_dir: Path, test_scenarios_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    run = _run(test_data_dir, intent_dir, runs_dir, "retire_alice")
+    with RunConnection(run, "retire_alice") as rc:
+        december = roll.projections(rc, roll.month_before("2027-01"))
+        june = roll.projections(rc, roll.month_before("2027-07"))
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-07", "--no-keep", "--yes")
+
+    assert result.exit_code == 0, result.output
+    ira = _rows(test_scenarios_dir / "retire_alice" / "account_lots.csv")[
+        "Asset_TraditionalIRA_Alice/default"]
+    key = ("Asset_TraditionalIRA_Alice", "default")
+    assert ira["opening_balance"] == f"{june[key].balance:.2f}"
+    assert ira["prior_year_end_balance"] == f"{december[key].balance:.2f}"
+
+
+def test_roll_keeps_an_authored_zero_cost_basis(
+    test_data_dir: Path, test_scenarios_dir: Path,
+) -> None:
+    path = test_scenarios_dir / "retire_alice" / "account_lots.csv"
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        header, lots = list(reader.fieldnames or []), list(reader)
+    lot = next(row for row in lots if row["account_name"] == "Asset_Brokerage_Joint")
+    lot["opening_cost_basis"] = "0"
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(lots)
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--no-keep", "--yes")
+
+    assert result.exit_code == 0, result.output
+    rolled = _rows(path)[f"Asset_Brokerage_Joint/{lot['lot'] or 'default'}"]
+    assert rolled["opening_cost_basis"] == "0.00"
+
+
 def test_roll_refuses_a_start_that_is_not_later(test_data_dir: Path) -> None:
     result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2026-05", "--no-keep", "--yes")
     assert result.exit_code != 0
@@ -149,7 +190,14 @@ def test_compare_across_starts_shares_one_dollar_and_shows_where_the_new_plan_st
 
     with RunConnection(old, "plan_2026") as before, RunConnection(new, "retire_alice") as after:
         connections = {"plan_2026": before, "retire_alice": after}
+        recorded = after.net_worth_frame()["cumulative_index_micros"].copy()
         assert set(compare.align_cpi(connections, "plan_2026")) == {"retire_alice"}
+        # Only the deflator moves: the run's own index (a rail's threshold
+        # reads it) stays as recorded, and aligning again changes nothing.
+        pd.testing.assert_series_equal(after.net_worth_frame()["cumulative_index_micros"], recorded)
+        scale = after.cpi_scale
+        compare.align_cpi(connections, "plan_2026")
+        assert after.cpi_scale == pytest.approx(scale)
         # The same inflation series: once rebased, a month's dollars convert alike.
         month = after.cpi_index().index[6]
         assert after.cpi_index()[month] == pytest.approx(before.cpi_index()[month])
