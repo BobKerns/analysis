@@ -255,6 +255,15 @@ ENSEMBLE = NameType(_ensembles, "ensemble")
 POOL = NameType(_pools, "pool")
 POOL_COMPONENT = PoolComponent(_pool_components, "ensemble", check=False)
 ACCOUNT = NameType(_in_scenario(names.account_names), "account")
+
+
+def _builtin_accounts(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
+    return names.builtin_account_names()
+
+
+# A year-to-date row's ends: an account, or one the loader makes on demand
+# (`capital_gains`, `dividends`), which TAB doesn't offer but isn't a typo.
+ACCOUNT_OR_BUILTIN = NameType(_in_scenario(names.account_names), "account", known=_builtin_accounts)
 # `sim invest` makes the account when it's new.
 ACCOUNT_OR_NEW = NameType(_in_scenario(names.account_names), "account", check=False)
 # A chain command given an account names its one-step leaf chain, which the
@@ -263,7 +272,7 @@ CHAIN = NameType(_in_scenario(names.chain_names), "chain",
                  known=_in_scenario(names.account_names))
 # Either end of a transfer, or a chain step: an account or a chain.
 ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=True)),
-                    "account or chain", plural="accounts and chains")
+                    "account or chain", plural="accounts and chains", known=_builtin_accounts)
 RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
 YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
 STRATEGY = NameType(_in_scenario(names.strategy_names), "strategy")
