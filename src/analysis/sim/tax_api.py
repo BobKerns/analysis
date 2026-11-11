@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, ClassVar
 
-from analysis.sim import registries
+from analysis.sim import ownership, registries
 from analysis.sim.param_units import Dollars, Percent, Tag, percent
 
 __all__ = [
@@ -138,10 +138,12 @@ class CapitalLoss:
 
 @dataclass(frozen=True)
 class Person:
-    """One of the scenario's people."""
+    """One of the scenario's people, with the last month they're alive
+    (``YYYY-MM-DD``, the month's end) when the scenario gives a lifespan."""
     id: str
     birthdate: str | None
     role: str
+    final_month: str | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,7 @@ class TaxYear:
     """Where the household lives, from each row's effective date (a month
     end), in date order."""
     spending: Sequence[SpendingItem] = ()
+    _line_in: Callable[[str, int], int] = field(repr=False, default=lambda _line, _year: 0)
 
     @property
     def filing_status(self) -> str:
@@ -243,6 +246,19 @@ class TaxYear:
         """This jurisdiction's ``line`` of last year's return; 0 before the
         first year it computed."""
         return self._prior(line)
+
+    def line_in(self, line: str, year: int) -> int:
+        """This jurisdiction's ``line`` of an earlier year's return; 0 for a
+        year it didn't compute. A carryover's history (#277)."""
+        return self._line_in(line, year)
+
+    @cached_property
+    def household(self) -> ownership.Household:
+        """The household and its people's final months (#277): whose an
+        account's money was at a death."""
+        return ownership.Household.of(
+            ((p.id, p.role) for p in self.persons),
+            {p.id: p.final_month for p in self.persons if p.final_month})
 
     @cached_property
     def _this_year(self) -> list[IncomeItem]:

@@ -628,8 +628,9 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     taxes = [c for c in ("fed_tax", "state_tax", "local_tax") if c in frame.columns]
     frame["total_tax"] = frame[taxes].sum(axis=1, min_count=1)
     # A business (#231) adds its federal Schedule C result, the expenses a
-    # hobby couldn't deduct, and the loss carried forward: each only when
-    # some year has one, since most scenarios have none of them.
+    # hobby couldn't deduct, and the loss carried forward or ended at a
+    # death (#277): each only when some year has one, since most scenarios
+    # have none of them.
     business = _tax_buckets(rc, list(_BUSINESS_COLUMNS)).rename(columns=_BUSINESS_COLUMNS)
     business = business.reindex(frame.index)
     frame = frame.join(business.loc[:, business.fillna(0).ne(0).any()])
@@ -693,6 +694,8 @@ _BUSINESS_COLUMNS = {
     "federal_business_net": "business_net",
     "federal_hobby_disallowed": "hobby_disallowed",
     "federal_nol_carryover": "nol_carryover",
+    # The decedent's share of the NOL, ended at a death (#277).
+    "federal_nol_lapsed": "nol_lapsed",
 }
 
 
