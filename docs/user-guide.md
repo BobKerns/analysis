@@ -2007,6 +2007,7 @@ asset-class mix; see Part 4.11.
 - [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
 - [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
 - [`docs/guides/century-of-rates.md`](guides/century-of-rates.md) — a century of inflation, interest rates and stock returns: what carries over from one year to the next.
+- [`docs/guides/historical-information.md`](guides/historical-information.md) — a compression test of the historical series: which carry memory, which are every year news, and what the models miss.
 - [`docs/guides/chains.md`](guides/chains.md) — chains step by step: drawing and sweeping, shares, chains inside chains, refill and overflow.
 - [`docs/guides/guard-rails.md`](guides/guard-rails.md) — guard rails: the 4% rule, Guyton-Klinger's rails and budgets, and reading their margins (Part 4.15).
 - [`docs/guides/ensembles.md`](guides/ensembles.md) — ranges of outcomes instead of one number (Part 4.10); [ADR-006](architecture/ADR-006-ensemble-scenarios.md) has the full design.
