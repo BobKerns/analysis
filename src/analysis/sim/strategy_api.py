@@ -45,7 +45,7 @@ __all__ = [
     "register", "sale_gain",
 ]
 
-API_VERSION = 9
+API_VERSION = 10
 """Bumped when a strategy written against the previous version could break,
 or one written for this version needs what the previous lacks. A module may
 set ``API_VERSION`` to the version it was written for; one newer than this
@@ -242,7 +242,9 @@ class TaxEstimate:
     ordinary_taxable: int
     """The part of ``taxable_income`` that isn't long-term gain."""
     agi: int
-    """Adjusted gross income, which is also IRMAA's MAGI (#253)."""
+    """Adjusted gross income."""
+    magi: int
+    """IRMAA's MAGI (#253): AGI plus tax-exempt interest (#265)."""
 
 
 _RENAMED_LINES = {
@@ -350,7 +352,7 @@ class TaxView:
         ret = self._est(scope).compute(tax_api.Extra(ordinary, ltcg))
         return TaxEstimate(
             tax=ret.tax, taxable_income=ret.taxable_income,
-            ordinary_taxable=ret.ordinary_taxable, agi=ret.agi,
+            ordinary_taxable=ret.ordinary_taxable, agi=ret.agi, magi=ret.magi,
         )
 
     def marginal(

@@ -10370,7 +10370,8 @@ def report_gains_command(
 
     taxable and non-taxable are income that reached cash (Social Security
     split by the year's computed taxable share), plus a taxable lot's
-    reinvested dividends and interest; unrealized is growth that stayed
+    reinvested dividends and interest (not municipal bond interest, federally
+    exempt but perhaps taxed by the state); unrealized is growth that stayed
     invested. distribution_coverage is the cash part of realized_total
     (less the reinvested payouts) minus expenses: a negative year spent
     principal. --chart draws the gains stacked by

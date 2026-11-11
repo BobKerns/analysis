@@ -2486,7 +2486,8 @@ def _lot_payouts(
     out = []
     for suffix, kinds in _PAYOUT_KINDS.items():
         for character, spec in _lot_payout_specs(suffix, symbol, series, blend, weight_sets, rate_series):
-            kind = kinds.get(character) or _muni_payout_kind(character)
+            kind = (_muni_payout_kind(character) if registries.muni_state(character) is not None
+                    else kinds[character])
             if symbol and kind[0] == "interest_":
                 # A fund's payout is a dividend on its 1099-DIV, whatever it
                 # holds: only a bond or cash held directly pays interest.
@@ -2503,6 +2504,35 @@ def _muni_payout_kind(asset_class: str) -> tuple[str, str, str]:
     if not state:
         return "tax_exempt_", "Tax-exempt interest", asset_class
     return f"tax_exempt_{state.lower()}_", f"Tax-exempt interest ({state} bonds)", asset_class
+
+
+def _muni_fund_payouts(
+    own: str, sets: list[tuple[str, dict[str, int]]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """A fund holding municipal bonds that pays at its own ``own`` yield
+    (#265). Where at least half of it is municipal bonds it pays
+    exempt-interest dividends (IRC §852(b)(5)): each municipal bond class's
+    share of the yield is exempt, by its weight, and the rest is ordinary.
+    Where less is, the fund can't pass the exemption through, so all of it
+    is ordinary. Weighed set by set, as a blend of the one series."""
+    def is_muni(asset_class: str) -> bool:
+        return registries.muni_state(asset_class) is not None
+
+    held = {c for _, weights in sets for c, w in weights.items() if w}
+    by_character: dict[str, AllocationBlend] = {}
+    for as_of, weights in sets:
+        total = sum(weights.values())
+        parts: dict[str, list[list[Any]]] = {}
+        if 2 * sum(w for c, w in weights.items() if is_muni(c)) >= total:
+            for c, w in sorted(weights.items()):
+                if w:
+                    parts.setdefault(c if is_muni(c) else "ordinary", []).append([own, w])
+        elif total:
+            parts["ordinary"] = [[own, total]]
+        for character in {c for c in held if is_muni(c)} | {"ordinary"}:
+            by_character.setdefault(character, []).append([as_of, parts.get(character, [])])
+    return [(character, {"blend": sets_}) for character, sets_ in sorted(by_character.items())
+            if any(slices for _, slices in sets_)]
 
 
 def _lot_payout_specs(
@@ -2538,8 +2568,8 @@ def _lot_payout_specs(
     if symbol and (own := registries.yield_series(symbol, suffix)) in rate_series:
         qualified = bool(held) and held <= registries.QUALIFIED_DIVIDEND_CLASSES
         character = (registries.QUALIFIED_DIVIDEND if qualified else "ordinary") if dividends else fixed
-        if dividends and len(held) == 1 and registries.muni_state(only := next(iter(held))) is not None:
-            character = only  # a muni fund's own yield is exempt interest (#265)
+        if dividends and sets and any(registries.muni_state(c) is not None for c in held):
+            return _muni_fund_payouts(own, sets)
         return [(character, {"series": own})]
     if blend and sets:
         slice_of = {c: f"{symbol}.{c}" if f"{symbol}.{c}" in rate_series else c for c in held}

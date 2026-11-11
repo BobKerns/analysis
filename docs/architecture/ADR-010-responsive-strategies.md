@@ -42,7 +42,7 @@ A draw is decided from the month's state at the moment it is asked (Bob, 2026-10
 
 ### 3. The API (`analysis.sim.strategy_api`)
 
-This module is the only part of the simulator a strategy imports. Engine internals change behind it; `API_VERSION` (now 9: 2 added the spending hooks and context, 3 the year-end hook, its moves and `ctx.tax`, 4 `on_breach`, `month_start`, `ctx.history` and `ctx.rail`, 5 the life and RMD tables and more of `ScenarioView`, 6 `trailing_return`, 7 `ScenarioView.taxes` in place of `tax_rules`, 8 the renamed `ctx.tax.last_year` lines, 9 the local tax as its own scope) changes only when a strategy written for the previous version could break. A module may set `API_VERSION` to the version it was written for, and one newer than the code is refused at load.
+This module is the only part of the simulator a strategy imports. Engine internals change behind it; `API_VERSION` (now 10: 2 added the spending hooks and context, 3 the year-end hook, its moves and `ctx.tax`, 4 `on_breach`, `month_start`, `ctx.history` and `ctx.rail`, 5 the life and RMD tables and more of `ScenarioView`, 6 `trailing_return`, 7 `ScenarioView.taxes` in place of `tax_rules`, 8 the renamed `ctx.tax.last_year` lines, 9 the local tax as its own scope, 10 `TaxEstimate.magi`) changes only when a strategy written for the previous version could break. A module may set `API_VERSION` to the version it was written for, and one newer than the code is refused at load.
 
 **Parameters.** `Params` fields are typed with units that follow the CSV rules: `Percent` (written `"5%"`, received as millionths), `Dollars` (`"1200.00"`, received as cents), `Tag` (an account tag `role:name` some account carries), `TargetSet` (a set in `targets.csv`), `Account` (an account the scenario defines); any other field is a plain JSON value. A field may be optional (`Dollars | None = None`), taking `null` for none. The loader converts and checks them against `Params`, so a strategy never parses a string, and a bad value is a load error naming the row.
 
@@ -115,7 +115,7 @@ A strategy must be a pure function of its context, parameters and memory: no clo
 | --- | --- |
 | `filing_status` | This year's federal filing status (it changes after a death) |
 | `ytd` | This year's income so far by tax character, in cents |
-| `estimate(ordinary=0, ltcg=0, scope="federal")` | A `TaxEstimate` with that much more ordinary income and long-term gain: `tax`, `taxable_income`, `ordinary_taxable`, `agi` (IRMAA's MAGI) |
+| `estimate(ordinary=0, ltcg=0, scope="federal")` | A `TaxEstimate` with that much more ordinary income and long-term gain: `tax`, `taxable_income`, `ordinary_taxable`, `agi`, `magi` (IRMAA's MAGI: AGI plus tax-exempt interest) |
 | `marginal(ordinary=0, ltcg=0, next="ordinary", scope=..., step=$100)` | The tax on the next `step` cents of `next` income as a rate: gains pushed into a higher band and Social Security made taxable included, as `fill_bracket`'s `max_marginal_rate` counts them |
 | `bracket_top(rate, scope=...)` | The ordinary taxable income where this year's bracket at `rate` ends |
 | `ltcg_band_top(rate)` | The taxable income where this year's long-term gains band at `rate` ends; `0%`'s is the most a gain can be realized under tax-free |
@@ -347,3 +347,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#410](https://github.com/BobKerns/analysis/issues/410): disabled strategies are stored (`strategy_disabled`) so drift views of a strategy-off run default to its targets and portfolio (§4 Stored).
 - [#508](https://github.com/BobKerns/analysis/issues/508): `API_VERSION` 9: the local tax is its own jurisdiction, so `ctx.tax` takes `scope="local"`, the state's estimate leaves it out, and `last_year`'s `state_local_tax` is refused, naming `local_tax` (§3.2).
 - [#410](https://github.com/BobKerns/analysis/issues/410): `sim strategy log` leaves a spending strategy's monthly `scale` lines out (counted; `--hook` selects hooks), and `threshold` and `guardrail` note every January (§6.2, §7).
+- [#265](https://github.com/BobKerns/analysis/issues/265): `API_VERSION` 10: `TaxEstimate.magi`, AGI plus tax-exempt interest; `agi` is no longer IRMAA's MAGI (§3).

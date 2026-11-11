@@ -428,7 +428,10 @@ files pays no income tax.
   sets Medicare's IRMAA surcharge, and `sim report tax` shows it as
   `fed_exempt_interest`. A state taxes every state's municipal bonds but its
   own: living in California, `muni` interest is taxed and `muni_CA` interest
-  isn't, and after a move away, both are.
+  isn't, and after a move away, both are. A territory's bonds (`muni_PR`)
+  are exempt in every state, and the District of Columbia taxes none. A
+  fund that pays at its own `_yield` series is exempt only when at least
+  half of it is municipal bonds, and then only for that share.
 - **Filing status** comes from the `filing_status` aux table for that tax
   year: your data repo's `aux/filing_status.csv`, one row per date such as
   `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
@@ -512,7 +515,7 @@ files pays no income tax.
   `tax:rent` (`sim scheduled edit housing --tags tax:rent`) for the
   renter's credit. `sim report tax --return state` shows each line.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
-  each year.
+  each year plus municipal bond interest.
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.

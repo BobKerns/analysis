@@ -665,11 +665,15 @@ def bracket_series(ty: TaxYear) -> str | None:
 def taxable_muni_interest(ty: TaxYear) -> int:
     """The year's municipal bond interest (#265) a state adds back to
     federal AGI: every state's but its own, by where the household lives on
-    December 31."""
+    December 31, and never a territory's. The District of Columbia adds
+    back none."""
     residence = ty.residence_in(ty.year)
     home = None if residence is None else residence.state
+    if home in states.TAXES_NO_MUNI_INTEREST:
+        return 0
     return sum(i.amount for i in ty.year_items(registries.TAX_EXEMPT)
-               if registries.MUNI_PAYER_STATE.get(i.payer.name) != home)
+               if (issuer := registries.MUNI_PAYER_STATE.get(i.payer.name)) != home
+               and issuer not in states.MUNI_EXEMPT_EVERYWHERE)
 
 
 def state_series(ty: TaxYear, year: int | None = None) -> str:

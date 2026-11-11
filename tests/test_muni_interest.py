@@ -3,6 +3,7 @@ income and IRMAA's MAGI; a state taxes every state's bonds but its own."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
@@ -100,3 +101,53 @@ def test_each_states_bonds_are_an_asset_class_with_its_own_payer() -> None:
     assert registries.muni_state("bond") is None
     assert registries.payout_account("muni_NY").name == "muni_interest__NY"
     assert "muni_<ST>" in registries.asset_class_list()
+
+
+def _payout_rules(intent: Path) -> dict[str, tuple[str, str]]:
+    """The brokerage's payout rules: name to (params_json, tax_character)."""
+    return {name: (params, character) for name, params, character in _query(intent, (
+        "SELECT s.name, s.params_json, s.tax_character FROM scheduled_transaction s "
+        "WHERE json_extract(s.params_json, '$.payout')"))}
+
+
+@pytest.mark.parametrize(("muni", "exempt"), [("97%", True), ("40%", False)])
+def test_a_fund_paying_its_own_yield_is_exempt_where_mostly_muni_bonds(
+    set_brokerage_lots: Callable[[list[dict[str, str]]], None], write_series: Callable[[str, str], Path],
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult], muni: str, exempt: bool,
+) -> None:
+    """IRC §852(b)(5): a fund at least half municipal bonds pays
+    exempt-interest dividends, its muni share's; a fund less than half pays
+    none."""
+    set_brokerage_lots([{"lot": "default", "symbol": "FND", "opening_balance": "100000.00",
+                         "opening_cost_basis": "100000.00"}])
+    rest = f"{100 - int(muni.rstrip('%'))}%"
+    (test_data_dir / "allocations.csv").write_text(
+        f"symbol,as_of,asset_class,weight\nFND,,muni,{muni}\nFND,,cash,{rest}\n")
+    for series, rate in (("muni", "4%"), ("cash", "3%"), ("FND_yield", "3%")):
+        write_series(series, f"2026-01-31,{rate}")
+    rules = _payout_rules(load_test_copy().intent_path)
+    characters = sorted(character for _, character in rules.values())
+    assert characters == (["ordinary", "tax_exempt"] if exempt else ["ordinary"])
+    if exempt:
+        [params] = [p for p, c in rules.values() if c == "tax_exempt"]
+        assert json.loads(params)["blend"] == [["", [["FND_yield", 970_000]]]]
+
+
+@pytest.mark.usefixtures("muni_funds")
+@pytest.mark.parametrize(("state", "taxed"), [("CA", "national"), ("DC", "none")])
+def test_territory_bonds_are_exempt_everywhere_and_dc_taxes_no_muni_bonds(
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_state_tax: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path], write_series: Callable[[str, str], Path],
+    state: str, taxed: str,
+) -> None:
+    add_state_tax(state)
+    with retire_alice_csv("account_lots.csv").open("a") as f:
+        f.write("Asset_Brokerage_Joint,pr,,,,,muni_PR,50000.00,50000.00" + "," * 9 + "\n")
+    write_series("muni_PR", "2026-01-31,4%")
+    write_series("muni_PR_yield", "2026-01-31,3%")
+    run = run_scenario(load_test_copy().intent_path, runs_dir / f"{state}.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    puerto_rico = _paid(run, growth_rule_name(BROKERAGE, "pr", prefix="tax_exempt_pr_"), 2027)
+    assert puerto_rico > 0
+    expected = _paid(run, NATIONAL, 2027) if taxed == "national" else 0
+    assert _summary(run, 2027).get("state_muni_interest", 0) == expected
