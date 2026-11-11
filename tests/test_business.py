@@ -97,6 +97,38 @@ def test_the_expense_report_has_a_business_category(run_file: Callable[[str], Pa
     assert "business" in result.output
 
 
+@pytest.mark.slow
+def test_the_proprietors_nol_ends_after_the_year_they_die(
+    business_scenarios: Path, run_file: Callable[[str], Path],
+) -> None:
+    """#277: Alice's business is hers alone, so the NOL she dies with in 2031
+    can be used on that year's return and then ends."""
+    scenario = business_scenarios / "alice_business"
+    one_off = {"cadence": "one_off", "amount_rule_kind": "fixed_amount", "amount": "250000.00",
+               "start": "2030-03-31", "end": "2030-03-31", "meta_json": "{}"}
+    _edit(scenario / "scheduled.csv", [{
+        **one_off, "name": "funding", "from_account": "Income_Inheritance",
+        "to_account": "Asset_Business_Alice", "tax_character": "none", "priority": "100",
+    }, {
+        **one_off, "name": "big_build", "from_account": "Asset_Business_Alice",
+        "to_account": "Expense_Business_Alice", "tax_character": "business_expense",
+        "priority": "200",
+    }])
+    (scenario / "lifespan.csv").write_text(
+        "person,age_at_death,vary_distribution,vary_low,vary_high,vary_mode,"
+        "vary_correlate_with,vary_correlation\nalice,66,,,,,,\n")  # final month 2031-03
+    run = run_file("alice_business")
+    with sqlite3.connect(run) as con:
+        lines = {(bucket.removeprefix("federal_"), year): amount for year, bucket, amount in con.execute(
+            "SELECT year, bucket, amount FROM tax_year_summary WHERE bucket LIKE 'federal_nol_%'")}
+    assert lines["nol_carryover", 2030] > 0
+    assert lines["nol_carryover", 2031] == 0 < lines["nol_lapsed", 2031]
+    assert lines["nol_used", 2032] == 0
+    result = CliRunner().invoke(main, ["sim", "report", "tax", "--runfile", str(run)])
+    assert result.exit_code == 0, result.output
+    assert "nol_lapsed" in result.output
+
+
 def test_a_loss_larger_than_the_years_income_carries_forward(
     business_scenarios: Path, run_business: Callable[[str], dict[int, dict[str, int]]],
 ) -> None:
