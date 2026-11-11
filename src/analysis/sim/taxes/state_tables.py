@@ -40,12 +40,12 @@ class StateTablesYear(FederalStateYear):
         # nothing coming out. Each year by the state it was filed in.
         taxed_years = [year for year in common.hsa_flow_years(ty)
                        if common.state_taxes_hsa(ty, common.state_series(ty, year), year)]
-        hsa_growth = common.hsa_growth_by_year(ty, taxed_years)
+        hsa_growth = common.hsa_growth_by_owner(ty, taxed_years)
         self._hsa_taxed = ty.year in taxed_years
-        self._hsa_growth = hsa_growth.get(ty.year, 0)
+        self._hsa_growth = sum(hsa_growth.get(ty.year, {}).values())
         # The state nets its own gains: an HSA's growth is gain to it.
         capital = self._capital = common.capital_gains(
-            ty, loss_limit=common.loss_limit(ty), extra_ltcg=hsa_growth)
+            ty, loss_limit=common.loss_limit(ty), hsa_growth=hsa_growth)
 
         # A state's retirement income exclusions (#486) come off before AGI,
         # as the states' own subtractions from income do, after its gain
@@ -178,11 +178,12 @@ class StateTablesYear(FederalStateYear):
         return taxable - common.state_ss_exclusion(self._state_ss, taxable, fed.agi)
 
     def fixed_lines(self, basis: Basis) -> Mapping[str, int]:
-        capital = self._capital
+        # The state nets its own gains, so its capital-loss lines replace
+        # the federal ones as a group.
         return {
-            **super().fixed_lines(basis),
-            "capital_loss_used": capital.loss_deduction,
-            "capital_loss_carryover": capital.carryover_st + capital.carryover_lt,
+            **{line: amount for line, amount in super().fixed_lines(basis).items()
+               if line not in common.CAPITAL_LINES},
+            **common.capital_lines(self._capital),
         }
 
     def tax(self, taxable: int, income: Income) -> int:

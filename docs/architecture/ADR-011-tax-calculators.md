@@ -28,9 +28,9 @@ A `TaxYear` is read-only:
 - **Income items** (`items`, `year_items`, `total`, `tagged`): the year's transfers of one tax character from one account to another, summed, and the years before it for carryovers. Each item's accounts carry their kind, subkind, owner and tags; the item carries the tags of the rule or calendar row that posted it.
 - **Spending items** (`spending`, `year_spending`, `spent`): the year's payments into expense accounts, summed by payer, expense account, character, and the posting rule's tags and `person`. `spent("tax:rent")` is the year's rent.
 - **Tags.** An item's `tags` are its rule's, and, in each role the rule has no tag of, its account's: the expense account for spending, the income account for income. So an account tagged `tax:rent` makes every payment into it rent, and a rule into that account tagged `tax:repair` is a repair instead, as the reports' `--by tag:ROLE` groups them.
-- **Capital losses**, **persons**, the **filing status**, and the **residence** (where the household lives on the year's December 31, `residence.csv`).
+- **Capital losses**, **persons** (each with the final month of their lifespan, if the scenario gives one) and the **household** (`ownership.Household`: who it is, and how much of an account was a decedent's, the rule the basis step-up uses too), the **filing status**, and the **residence** (where the household lives on the year's December 31, `residence.csv`).
 - **Tables**: `table`, `indexed` (grown to January by their series), `dated`, `keyed`, `has_table`, `series_of`, as of the year's end.
-- **Last year**: `prior(line)`, this jurisdiction's own return line from the year before, for carryovers.
+- **Earlier years**: `prior(line)`, this jurisdiction's own return line from the year before, for carryovers, and `line_in(line, year)` from any earlier year, for a carryover's history.
 - **Upstream returns**: `upstream("federal")`, the same year of a jurisdiction the calculator builds on, prepared on the same ledger. It takes the same `Extra`, so a what-if moves both returns.
 
 ### 3. What it returns: `Return`
@@ -99,3 +99,4 @@ A guide with a worked example is [docs/guides/tax-calculators.md](../guides/tax-
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
 
 - [#511](https://github.com/BobKerns/analysis/issues/511): API 2: a state year's `other_deductions` and `credit_lines` steps; a state's own deductions and credits are rows of the built-in's `state_adjustments` table (§5, deferred questions).
+- [#277](https://github.com/BobKerns/analysis/issues/277): a `Person` carries its `final_month`, and a `TaxYear` its `household` and any earlier year's line (`line_in`); the built-in calculators end a decedent's share of the loss carryovers after the year of the death (§2).
