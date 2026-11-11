@@ -1799,6 +1799,12 @@ growth when markets rise. The design is in
 
 ### 4.21 Bring the plan up to date each year
 
+**Video.** *Keeping the plan current* walks through this section with Alice
+and Bill: rolling the plan forward to January, last year's income for April's
+tax, this year's spending, and comparing the new plan with last year's:
+[English](https://www.youtube.com/watch?v=S18GvCz74zo),
+[Japanese (日本語)](https://www.youtube.com/watch?v=qJ6THMNtTto).
+
 A plan only knows what you told it when you wrote it. Once a year, or after
 a big change, start it again from what the accounts hold now:
 
