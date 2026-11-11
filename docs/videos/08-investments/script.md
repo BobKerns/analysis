@@ -16,6 +16,7 @@ contents = [
   "Lots: what an account holds, and its cost basis (sim account lot list, sim account holdings)",
   "Adding a fund: sim symbol add",
   "Buying it later: sim invest",
+  "Shares or dollars: prices are optional (sim prices show, sim prices check)",
   "How a lot grows: its series, its fund's asset classes",
   "What you own, by asset class (sim allocation)",
   "Where the tax falls: cash, brokerage, traditional, Roth",
@@ -182,6 +183,50 @@ balanced, holding the fund: thirty thousand dollars next January. One
 command writes the lot, bought in January, and the transfer that pays for
 it. A holding Alice and Bill already own would be sim account lot add
 instead.
+
+## Scene `prices`: Shares or dollars
+
+```tape
+Set FontSize 16
+Hide
+Type "export HOME=$PWD/home && unset ANALYSIS_DATA_DIR && source ~/retirement/data/sim/activate-analysis > /dev/null"
+Enter
+Type "git -C ~/retirement/data reset -q --hard stage/prices && cd ~/retirement/data/sim && sim switch base > /dev/null 2>&1; clear"
+Enter
+Sleep 2s
+Show
+Sleep 500ms
+Type "sim prices show BALX"
+Sleep 400ms
+Enter
+Wait
+Sleep 6s
+Type "clear && sim account lot add Asset_Brokerage_Joint fund --symbol BALX --quantity 400"
+Sleep 400ms
+Enter
+Wait
+Sleep 3s
+Type "clear && sim account holdings Asset_Brokerage_Joint --opening"
+Sleep 400ms
+Enter
+Wait
+Sleep 8s
+Type "clear && sim prices check"
+Sleep 400ms
+Enter
+Wait
+Sleep 9s
+```
+
+A lot can be dollars, or shares. Prices are optional. For a fund with a
+ticker, sim prices fetch saves its prices; this balanced fund is made up,
+so its prices were written in by hand. Given four hundred shares and no
+balance, the lot is worth shares times price: twenty thousand dollars at
+the start. Sim prices check compares each one with the latest price:
+nineteen thousand one hundred twenty now. Not every holding has a price to
+fetch: an employer plan's own fund, a CD, the house. Those stay in dollars.
+Where shares do work, next year's update is easier: copy the shares from
+the statement, fetch the prices, and the balances follow.
 
 ## Scene `growth`: How a lot grows
 
