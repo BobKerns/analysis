@@ -10,12 +10,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from analysis.sim.accounts import load_accounts_view
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadResult, growth_rule_name
+from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
 
 BROKERAGE = "Asset_Brokerage_Joint"
 GROWTH = growth_rule_name(BROKERAGE, "fund")
@@ -298,7 +299,7 @@ def test_gain_distributions_come_out_of_total_return_taxed_by_their_term(
         None, '{"blend":[["",[["stock_us_cg_yield",600000]]]],"payout":true}', "ltcg", "gain_distributions"]
     assert rules[ST_DISTRIBUTIONS] == [
         None, '{"blend":[["",[["stock_us_stcg_yield",600000]]]],"payout":true}', "ordinary",
-        "investment_interest"]
+        "ordinary_dividends"]
     assert len(json.loads(rules[GROWTH][1])["less"]) == 4
     run = run_scenario(result.intent_path, runs_dir / "distributions.sqlite3", run_by="TEST",
                        allow_dirty_data=True, allow_dirty_code=True)
@@ -349,6 +350,9 @@ def test_a_retirement_lot_holding_shares_reinvests_its_payouts_untaxed(
                         "Asset_TraditionalIRA_Alice,default,traditional_ira,FND,,5000,,500000.00,")
     _set_retirement_lot(retire_alice_csv, "Asset_Roth_Alice,default,roth_ira,,,,,100000.00,,",
                         "Asset_Roth_Alice,default,roth_ira,FND,,1000,,100000.00,50000.00,")
+    # Bill's Roth holds FND too, but in dollars: it grows at the blend, no payouts.
+    _set_retirement_lot(retire_alice_csv, "Asset_Roth_Bill,default,roth_ira,,,,,80000.00,",
+                        "Asset_Roth_Bill,default,roth_ira,FND,,,,80000.00,")
     result = load_test_copy()
     rules = {name: (character, payer) for name, character, payer in _query(
         result.intent_path,
@@ -358,8 +362,8 @@ def test_a_retirement_lot_holding_shares_reinvests_its_payouts_untaxed(
     roth_lt = growth_rule_name("Asset_Roth_Alice", "default", prefix="lt_distributions_")
     assert rules[ira_dividends] == ("deferred", "deferred_payouts")
     assert rules[roth_lt] == ("tax_free", "tax_free_payouts")
-    assert not [n for n in rules if n.endswith("_roth_bill")
-                and n.startswith(("dividends_", "interest_", "lt_", "st_"))]
+    bill = [n for n in rules if n.endswith("_roth_bill")]
+    assert bill == [growth_rule_name("Asset_Roth_Bill", "default")]
     run = run_scenario(result.intent_path, runs_dir / "sheltered.sqlite3", run_by="TEST",
                        allow_dirty_data=True, allow_dirty_code=True)
     month, growth = _first_month(run, growth_rule_name("Asset_TraditionalIRA_Alice", "default"))
@@ -377,3 +381,38 @@ def test_a_retirement_lot_holding_shares_reinvests_its_payouts_untaxed(
         "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
         "WHERE a.name = 'Asset_Roth_Alice' AND s.month = ?"), month)
     assert roth_basis == 5_000_000
+    # The run treats them as growth, and so does the loader's label.
+    labels = dict(_query(result.intent_path, (
+        "SELECT name, json_extract(meta_json, '$.builtin') FROM account "
+        "WHERE name IN ('deferred_payouts', 'tax_free_payouts')")))
+    assert labels == {"deferred_payouts": "sheltered_payout", "tax_free_payouts": "sheltered_payout"}
+    # Without shares the lots get no payouts, and nothing else changes:
+    # the same balances, and the same taxable and unrealized gains, since a
+    # sheltered payout is unrealized growth like the appreciation it replaces.
+    _set_retirement_lot(retire_alice_csv, ",traditional_ira,FND,,5000,", ",traditional_ira,FND,,,")
+    _set_retirement_lot(retire_alice_csv, ",roth_ira,FND,,1000,", ",roth_ira,FND,,,")
+    dollars = run_scenario(load_test_copy().intent_path, runs_dir / "dollars.sqlite3", run_by="TEST",
+                           allow_dirty_data=True, allow_dirty_code=True)
+    final = "SELECT SUM(balance) FROM lot_state WHERE step_id = (SELECT MAX(id) FROM simulation_step)"
+    assert _query(run, final) == _query(dollars, final)
+    with RunConnection(run) as ran, RunConnection(dollars) as plain:
+        pd.testing.assert_frame_equal(ran.gains_by_category(), plain.gains_by_category())
+
+
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund")
+def test_a_series_ending_in_cg_with_a_yield_is_refused(
+    test_data_dir: Path, write_series: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """``bond_cg_yield`` would be both a series ``bond_cg``'s yield and
+    ``bond``'s gain distributions (#547): a lot growing at ``bond_cg`` with
+    that file is refused."""
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nFND,,stock_us,100%\n")
+    write_series("stock_us_cg", "2026-01-31,5%")
+    write_series("stock_us_cg_yield", "2026-01-31,1%")
+    accounts = test_data_dir / "scenarios" / "retire_alice" / "accounts.csv"
+    accounts.write_text(accounts.read_text().replace(",brokerage_growth,", ",stock_us_cg,"))
+    lots = test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv"
+    lots.write_text(lots.read_text().replace(",FND,", ",,"))
+    with pytest.raises(LoadError, match=r"'stock_us_cg' ends in '_cg'"):
+        load_test_copy()

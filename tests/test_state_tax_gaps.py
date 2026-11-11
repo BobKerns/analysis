@@ -19,6 +19,7 @@ from analysis.sim.loader import LoadError, LoadResult
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
 
 CHECKING, HSA, DEFERRED_GAINS, SALARY, MEDICAL = 1, 2, 3, 4, 5
+TAX_FREE_PAYOUTS, GAIN_DISTRIBUTIONS, BROKERAGE = 6, 7, 8
 
 
 
@@ -56,7 +57,11 @@ def ledger(ledger_con: sqlite3.Connection,
          (DEFERRED_GAINS, registries.GROWTH_COUNTERPARTY_ACCOUNTS["deferred"].name,
           "income", "capital_gain"),
          (SALARY, "Income_Salary", "income", "salary"),
-         (MEDICAL, "Expense_Medical", "expense", "healthcare")],
+         (MEDICAL, "Expense_Medical", "expense", "healthcare"),
+         (TAX_FREE_PAYOUTS, registries.SHELTERED_PAYOUT_ACCOUNTS["tax_free"].name,
+          "income", "capital_gain"),
+         (GAIN_DISTRIBUTIONS, registries.PAYOUT_ACCOUNTS["ltcg"].name, "income", "dividend"),
+         (BROKERAGE, "Asset_Brokerage", "asset", "brokerage_taxable")],
     )
     return ledger_con
 
@@ -226,3 +231,30 @@ def test_the_old_states_later_surcharge_never_applies_after_a_move(
         "filing_status": "MFJ", "floor": 0, "marginal_rate_micros": 10_000, "floor_series": None})]
     set_residence(ledger, ("2026-01-31", "CA", None), ("2029-03-31", "WA", None))
     assert _estimate(ledger, aux, "state", 2031).tax == 100_000_00 // 10
+
+
+def test_a_state_that_taxes_an_hsa_taxes_its_reinvested_payouts(ledger: sqlite3.Connection) -> None:
+    """An HSA holding shares reinvests its dividends untaxed (#547): still
+    growth to a state that taxes the HSA, and nothing federally."""
+    _post(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
+    _post(ledger, 2026, DEFERRED_GAINS, HSA, 1_000_00, "tax_free")
+    _post(ledger, 2026, TAX_FREE_PAYOUTS, HSA, 300_00, "tax_free")
+    assert _estimate(ledger, _aux(hsa="taxable"), "federal")["ltcg_taxed"] == 0
+    state = _estimate(ledger, _aux(hsa="taxable"), "state")
+    assert (state["ltcg_taxed"], state.memo["hsa_growth"]) == (1_300_00, 1_300_00)
+
+
+@pytest.mark.parametrize("scope", ["federal", "state"])
+def test_a_reinvested_gain_distribution_is_no_gain_drawn_from_a_lot(
+    ledger: sqlite3.Connection, scope: str,
+) -> None:
+    """The after-tax drawdown replaces the gain a year's sales drew out of
+    its lots (``drawn_gain``). A long-term distribution (#547) is taxed as a
+    gain but adds basis, taking nothing out of a lot's embedded gain."""
+    _post(ledger, 2026, SALARY, CHECKING, 100_000_00, "ordinary")
+    _post(ledger, 2026, GAIN_DISTRIBUTIONS, BROKERAGE, 6_000_00, "ltcg")
+    _post(ledger, 2026, BROKERAGE, CHECKING, 4_000_00, "ltcg")
+    taxed = _estimate(ledger, _aux(), scope)
+    assert taxed["ltcg_taxed"] == 10_000_00
+    assert taxed.memo["drawn_gain"] == 4_000_00
+

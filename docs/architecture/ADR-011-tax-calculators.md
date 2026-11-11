@@ -35,7 +35,7 @@ A `TaxYear` is read-only:
 
 ### 3. What it returns: `Return`
 
-A `Return` has named lines in cents, each written to `tax_year_summary` as `<jurisdiction>_<line>`, and a memo kept for the engine and for jurisdictions built on it, not written. Every calculator fills `agi`, `taxable_income`, `ordinary_taxable`, `tax`, `nol_carryover` and `capital_loss_carryover`. The engine reads two memo lines, `drawn_ordinary` and `drawn_gain` (what the year drew from traditional money and the gain it realized), so the after-tax drawdown doesn't tax them twice.
+A `Return` has named lines in cents, each written to `tax_year_summary` as `<jurisdiction>_<line>`, and a memo kept for the engine and for jurisdictions built on it, not written. Every calculator fills `agi`, `taxable_income`, `ordinary_taxable`, `tax`, `nol_carryover` and `capital_loss_carryover`. The engine reads two memo lines, `drawn_ordinary` and `drawn_gain` (what the year drew from traditional money and the gain its sales realized, leaving out reinvested gain distributions, #547), so the after-tax drawdown doesn't tax them twice.
 
 ### 4. Purity
 
@@ -99,3 +99,4 @@ A guide with a worked example is [docs/guides/tax-calculators.md](../guides/tax-
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
 
 - [#511](https://github.com/BobKerns/analysis/issues/511): API 2: a state year's `other_deductions` and `credit_lines` steps; a state's own deductions and credits are rows of the built-in's `state_adjustments` table (§5, deferred questions).
+- [#547](https://github.com/BobKerns/analysis/issues/547): `drawn_gain` leaves out reinvested long-term gain distributions, which draw no gain out of a lot (§3).

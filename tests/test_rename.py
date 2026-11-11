@@ -390,6 +390,20 @@ def test_series_rename_takes_its_gain_distribution_series_along(
     loads("retire_alice")
 
 
+def test_series_rename_leaves_another_series_gain_distributions_alone(
+        test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    """``brokerage_growth_cg_yield`` is ``brokerage_growth``'s long-term
+    distributions (#547), so a series ``brokerage_growth_cg`` can't carry it
+    off as its own yield."""
+    series = test_scenarios_dir / "retire_alice" / "series"
+    for name in ("brokerage_growth_cg", "brokerage_growth_cg_yield"):
+        (series / f"rate__{name}.csv").write_text("effective_date,annual_rate\n2026-01-31,1%\n")
+    result = _sim(test_data_dir, "series", "rename", "brokerage_growth_cg", "other_growth")
+    assert result.exit_code != 0, result.output
+    assert "'brokerage_growth_cg_yield' is brokerage_growth's yield series too" in result.output, result.output
+    assert (series / "rate__brokerage_growth_cg_yield.csv").is_file()
+
+
 def test_series_rename_takes_a_yield_only_a_child_has(test_data_dir: Path, test_scenarios_dir: Path,
                                                       loads: Callable[[str], None]) -> None:
     """Renamed from the parent that defines the series, the yield a child

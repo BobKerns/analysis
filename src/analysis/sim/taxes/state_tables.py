@@ -196,9 +196,10 @@ class StateTablesYear(FederalStateYear):
             "hsa_growth": self._hsa_growth,
             # What the year drew from traditional money (an RMD), and the
             # gain it realized: a state that taxes an HSA counts its growth,
-            # or fall, as gain (#490), but nothing was sold.
+            # or fall, as gain (#490), but nothing was sold, and nor is a
+            # reinvested gain distribution (#547).
             "drawn_ordinary": memo.get("drawn_ordinary", 0) - withdrawn,
-            "drawn_gain": max(0, self._capital.ltcg - self._hsa_growth),
+            "drawn_gain": max(0, self._capital.ltcg - self._hsa_growth - common.gain_distributions(self.ty)),
         }
 
 

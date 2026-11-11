@@ -115,9 +115,10 @@ class FederalYear(Prepared):
         hsa_contributed, hsa_withdrawn = common.hsa_deferred_flows(ty)
         self._memo = {
             # What the year drew from traditional money (an RMD), and the
-            # gain it realized.
+            # gain it realized by selling: a reinvested gain distribution
+            # (#547) took nothing out of a lot's embedded gain.
             "drawn_ordinary": ty.total("tax_deferred_out"),
-            "drawn_gain": max(0, capital.ltcg),
+            "drawn_gain": max(0, capital.ltcg - common.gain_distributions(ty)),
             # The parts of AGI, for a state that taxes them its own way.
             "net_stcg": capital.stcg,
             "net_ltcg": capital.ltcg,

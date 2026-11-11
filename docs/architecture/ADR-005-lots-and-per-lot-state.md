@@ -115,7 +115,7 @@ The blend applies only when every class the symbol holds resolves to a series. W
 | `dividends_<account/lot>` | `dividends` | `qualified_dividend` | long-term gain rates, stacked on ordinary income |
 | `interest_<account/lot>` | `investment_interest` | `ordinary` | ordinary income |
 | `lt_distributions_<account/lot>` | `gain_distributions` | `ltcg` | a long-term gain (1099-DIV box 2a), netted with the year's other gains and losses |
-| `st_distributions_<account/lot>` | `investment_interest` | `ordinary` | ordinary income: a 1099-DIV counts short-term distributions as non-qualified dividends, which capital losses can't offset |
+| `st_distributions_<account/lot>` | `ordinary_dividends` | `ordinary` | ordinary income: a 1099-DIV counts short-term distributions as non-qualified dividends, which capital losses can't offset |
 
 What a lot pays comes from yield series, ordinary rate series named `<series>_yield` (`rate__stock_us_yield.csv`, `rate__bond_yield.csv`), so a yield varies and correlates through `set_rate` rows like any rate:
 
@@ -125,7 +125,7 @@ What a lot pays comes from yield series, ordinary rate series named `<series>_yi
 - Cash and CDs pay all of their rate as interest, so their growth rule is left with nothing, except below zero.
 - A class with no yield series pays nothing, as before: its whole return is appreciation.
 
-Gain distributions come from two more series found the same way: `<series>_cg_yield` (long-term) and `<series>_stcg_yield` (short-term), the symbol's own, else each class's at its weight, else the lot's one series'. Their taxation is fixed, whatever the class, and no class pays all of its rate as gains, so cash and CDs distribute none. A lot with neither series distributes nothing.
+Gain distributions come from two more series found the same way: `<series>_cg_yield` (long-term) and `<series>_stcg_yield` (short-term), the symbol's own, else each class's at its weight, else the lot's one series'. Their taxation is fixed, whatever the class, and no class pays all of its rate as gains, so cash and CDs distribute none. A lot with neither series distributes nothing. A long-term distribution adds basis instead of drawing gain out of the lot, so it is not part of the gain a year realized (`drawn_gain`, [ADR-011](ADR-011-tax-calculators.md)), which the after-tax drawdown leaves out of its own share.
 
 The growth rule then grows the lot at its total return less the payouts (`{"less": [spec, ...]}` in its `params_json`), so total return is unchanged and only its taxation moves. A payout is never negative (`{"payout": true}` in its rule's `params_json`): a yield below zero, even one slice of a blend's, pays nothing, and the growth rule carries the whole fall as an unrealized loss, so cash at a negative rate loses value without negative interest. Payouts are reinvested: they are money into the lot from an account that is not a growth counterparty, so they add to its basis (§7), and the gain left at a sale is the appreciation alone. Taking payouts as cash instead of reinvesting them is not modeled.
 

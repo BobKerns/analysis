@@ -14080,6 +14080,10 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
         following: list[tuple[str, str, list[str]]] = []
         for suffix in registries.PAYOUT_SUFFIXES:
             old_yield, new_yield = registries.yield_series(old, suffix), registries.yield_series(new, suffix)
+            if (of := _yield_of(data, edit, old_yield, affected)) and of != old:
+                # `x_cg_yield` is x's gain distributions, not x_cg's yield (#547).
+                raise click.ClickException(
+                    f"{old_yield!r} is {of}'s yield series too; {old!r} can't take it along")
             if shared := rename.shared_series_files(data, old_yield):
                 raise click.ClickException(
                     f"{old!r}'s payout series {old_yield!r} has rates in the shared "

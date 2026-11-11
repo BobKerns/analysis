@@ -122,6 +122,15 @@ def capital_gains(
     return result
 
 
+_GAIN_DISTRIBUTIONS = registries.PAYOUT_ACCOUNTS["ltcg"].name
+
+
+def gain_distributions(ty: TaxYear) -> int:
+    """The year's reinvested long-term gain distributions (#547): gain it
+    was paid, not gain it drew out of a lot, which they add basis to."""
+    return sum(i.amount for i in ty.year_items("ltcg") if i.payer.name == _GAIN_DISTRIBUTIONS)
+
+
 _HSA_GROWTH_ACCOUNTS = frozenset(
     accounts[character].name
     for accounts in (registries.GROWTH_COUNTERPARTY_ACCOUNTS, registries.SHELTERED_PAYOUT_ACCOUNTS)

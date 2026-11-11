@@ -401,6 +401,7 @@ GROWTH_COUNTERPARTY_ACCOUNTS: dict[str, GrowthCounterparty] = {
 # not growth counterparties: money from them is a purchase.
 YIELD_SUFFIX = "_yield"
 QUALIFIED_DIVIDEND = "qualified_dividend"
+NONQUALIFIED_DIVIDEND = "nonqualified_dividend"
 QUALIFIED_DIVIDEND_CLASSES: frozenset[str] = frozenset({"stock", "stock_us", "stock_intl"})
 ALL_PAYOUT_CLASSES: frozenset[str] = frozenset({"cash", "cd"})
 PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
@@ -411,6 +412,12 @@ PAYOUT_ACCOUNTS: dict[str, GrowthCounterparty] = {
     "ordinary": GrowthCounterparty(
         "investment_interest", "income", "interest", "taxable", "ordinary",
         "Built-in: interest and other dividends paid and reinvested in taxable lots",
+    ),
+    # Short-term gain distributions (#547): ordinary income, but a dividend,
+    # not interest, for a state that tells them apart.
+    NONQUALIFIED_DIVIDEND: GrowthCounterparty(
+        "ordinary_dividends", "income", "dividend", "taxable", "ordinary",
+        "Built-in: non-qualified dividends (short-term gain distributions) paid and reinvested in taxable lots",
     ),
     "ltcg": GrowthCounterparty(
         "gain_distributions", "income", "dividend", "taxable", "ltcg",

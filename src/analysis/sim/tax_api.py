@@ -301,7 +301,8 @@ class Return:
 
     The engine reads two memo lines, each 0 when left out: ``drawn_ordinary``,
     the year's ordinary income drawn from traditional money (an RMD), and
-    ``drawn_gain``, the long-term gain it realized. The after-tax drawdown's
+    ``drawn_gain``, the long-term gain its sales realized (not a reinvested
+    gain distribution, #547). The after-tax drawdown's
     share of a later year replaces them, so it isn't taxed twice. Any other
     memo line is the calculator's own.
 
