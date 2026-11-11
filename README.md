@@ -132,7 +132,7 @@ state's own revenue department before relying on a figure.
 | Utah | Partial | Taxpayer credit in place of a deduction |
 | Vermont | Tables needed | |
 | Virginia | Partial | Age deduction from 65 |
-| Washington | Partial | No income tax, but a capital gains tax (retirement accounts and homes exempt) |
+| Washington | Shipped | Charitable and family-business deductions; credits for other states' taxes |
 | West Virginia | Partial | Senior income exclusion |
 | Wisconsin | Partial | Retirement income exclusion |
 | Wyoming | No tax | |

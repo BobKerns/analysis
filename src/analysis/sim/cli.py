@@ -19516,7 +19516,7 @@ def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | N
     """The series of the tables a state tax reads for living in ``state``,
     or None (with why, echoed) for a territory the federal tax stands in for.
     Tables of its own in the data repo win, as they do in the engine
-    (``states.tax_series``): Washington's, say, for its gains tax."""
+    (``states.tax_series``)."""
     has_tables = state.code in names.series_names(data_dir, scenario, "state_brackets")
     if not has_tables:
         if state.status == states.NOT_SUPPORTED:
@@ -19527,9 +19527,6 @@ def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | N
             click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
                        "federal tax stands in for it: no state tax is needed.")
             return None
-        if state.code in states.GAINS_TAX_ONLY:
-            click.echo(f"{states.label(state.code)} has no income tax; its capital gains tax "
-                       "isn't modeled.")
     series = states.tax_series(state.code, has_tables=has_tables)
     if series == state.code and not has_tables:
         raise click.ClickException(

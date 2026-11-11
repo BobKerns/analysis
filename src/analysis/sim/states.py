@@ -32,7 +32,8 @@ class State(NamedTuple):
     @property
     def taxes_income(self) -> bool:
         """Whether it has a tax on wages and retirement income. Washington
-        has none, only a tax on large capital gains (not modeled, #489)."""
+        has none until its 2028 income tax over $1 million, only a tax on
+        capital gains (#489), so it's listed with the states without one."""
         return self.status != NO_TAX and self.code not in GAINS_TAX_ONLY
 
 
@@ -92,7 +93,7 @@ STATES: tuple[State, ...] = (
     State("UT", "Utah", PARTIAL),
     State("VT", "Vermont", TABLES_NEEDED),
     State("VA", "Virginia", PARTIAL),
-    State("WA", "Washington", PARTIAL),
+    State("WA", "Washington", SHIPPED),
     State("WV", "West Virginia", PARTIAL),
     State("WI", "Wisconsin", PARTIAL),
     State("WY", "Wyoming", NO_TAX),
@@ -120,10 +121,12 @@ def label(code: str) -> str:
 
 def tax_series(code: str, *, has_tables: bool = False) -> str:
     """The series of the tables a state tax reads for a household living in
-    ``code`` (#509): its own when it has them (``has_tables``) or taxes
-    income, else the 0% ``none`` tables, as for a state with no income tax
-    or a territory the federal tax stands in for."""
+    ``code`` (#509): its own when it has them (``has_tables``), ships them
+    (Washington's gains tax, #489) or taxes income, else the 0% ``none``
+    tables, as for a state with no income tax or a territory the federal
+    tax stands in for."""
     state = BY_CODE.get(code)
-    if has_tables or state is None or (state.taxes_income and state.status != FEDERAL_RULE):
+    if (has_tables or state is None or state.status == SHIPPED
+            or (state.taxes_income and state.status != FEDERAL_RULE)):
         return code
     return NO_TAX_SERIES

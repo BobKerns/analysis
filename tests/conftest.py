@@ -666,6 +666,22 @@ def ledger_con() -> Generator[sqlite3.Connection]:
 
 
 @pytest.fixture(scope="session")
+def post_transfer() -> Callable[..., None]:
+    """``post_transfer(con, year, frm, to, amount, character)``: a rule's
+    transfer of ``amount`` cents from account ``frm`` to ``to`` on June 30 of
+    ``year``, in ``ledger_con`` (whose lot ids are the account ids)."""
+    def post(con: sqlite3.Connection, year: int, frm: int, to: int, amount: int,
+             character: str) -> None:
+        con.execute(
+            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'rule')",
+            (f"{year}-06-30", frm, to, frm, to, amount, amount, character),
+        )
+    return post
+
+
+@pytest.fixture(scope="session")
 def set_residence() -> Callable[..., None]:
     """``set_residence(con, ("2026-01-31", "CA", None), ...)``: where the
     household lives in a run file or ``ledger_con`` (#509), replacing what it
