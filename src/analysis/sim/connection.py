@@ -79,6 +79,8 @@ TAXABLE_GAIN_CHARS = {
 PAYOUT_ACCOUNT_NAMES = frozenset(a.name for a in registries.PAYOUT_ACCOUNTS.values())
 GROWTH_ACCOUNT_NAMES = frozenset(
     a.name for a in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values() if a.kind == "income")
+# Municipal bond interest (#265) is in neither bucket: federally exempt,
+# but taxed by the state unless the bonds are its own.
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 

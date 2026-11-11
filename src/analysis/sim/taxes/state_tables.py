@@ -122,6 +122,10 @@ class StateTablesYear(FederalStateYear):
             Adjustment("hsa_addback", ordinary=contributed - withdrawn),
             # It taxes an HSA's dividends and interest the year they're paid (#497).
             Adjustment("hsa_dividends", ordinary=self._hsa_dividends),
+            # Other states' municipal bond interest (#265), as Schedule CA
+            # adds it: the state taxes other states' bonds, not its own.
+            Adjustment("muni_interest", ordinary=common.taxable_muni_interest(
+                memo, None if self.ty.residence is None else self.ty.residence.state)),
             # Its own netting of gains and losses, with an HSA's gains (#497),
             # less the federal result.
             Adjustment(

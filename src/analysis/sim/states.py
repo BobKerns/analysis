@@ -37,6 +37,11 @@ class State(NamedTuple):
 
 
 TERRITORIES = frozenset({"AS", "GU", "MP", "PR", "VI"})
+# Municipal bond interest (#265): a territory's bonds are exempt in every
+# state by federal law (48 U.S.C. §745 for Puerto Rico, and the like), and
+# the District of Columbia taxes no state's bonds.
+MUNI_EXEMPT_EVERYWHERE = TERRITORIES
+TAXES_NO_MUNI_INTEREST = frozenset({"DC"})
 GAINS_TAX_ONLY = frozenset({"WA"})
 
 STATES: tuple[State, ...] = (

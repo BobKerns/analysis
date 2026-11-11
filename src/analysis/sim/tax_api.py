@@ -362,6 +362,12 @@ class Return:
         return self.lines["agi"]
 
     @property
+    def magi(self) -> int:
+        """IRMAA's MAGI (#253): AGI plus tax-exempt interest (#265), the
+        ``magi`` line when the return has one, else AGI."""
+        return self.lines.get("magi", self.agi)
+
+    @property
     def taxable_income(self) -> int:
         return self.lines["taxable_income"]
 

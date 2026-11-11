@@ -146,7 +146,7 @@ def read_allocation(bundle: Path, symbol: str) -> Allocation | None:
         cls = (row.get("asset_class") or "").strip()
         if cls not in registries.ASSET_CLASSES:
             raise ResearchError(
-                f"{where}: unknown asset class {cls!r}; allowed: {', '.join(registries.ASSET_CLASSES)}"
+                f"{where}: unknown asset class {cls!r}; allowed: {registries.asset_class_list()}"
             )
         if cls in weights:
             raise ResearchError(f"{where}: {cls} is given twice")
