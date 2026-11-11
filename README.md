@@ -67,7 +67,9 @@ written for your own county or city, named for it in `residence.csv`; one with a
 only on wages, is left out. A state's retirement income exclusions, by age, kind of income
 and household income, go in another optional table,
 `state_retirement_exclusion__XX.csv`; a "Partial" row below whose gap is such
-an exclusion needs that table written. Many states have rules this leaves
+an exclusion needs that table written. A state's own deductions and credits (a renter's credit,
+personal exemptions, a deduction for federal tax paid) are rows of
+`state_adjustments__XX.csv`; California's ship. Many states have rules this leaves
 out; the table says which matter most for a retired household. It reflects
 state law as of 2026; check the
 state's own revenue department before relying on a figure.
@@ -87,7 +89,7 @@ state's own revenue department before relying on a figure.
 | Alaska | No tax | |
 | Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
 | Arkansas | Partial | Retirement income exclusion |
-| California | Shipped | Personal exemption credits |
+| California | Shipped | |
 | Colorado | Partial | Pension and annuity subtraction; Social Security taxed below 65 |
 | Connecticut | Partial | Social Security's 25% cap above the income limit; pension and IRA exemptions phased by income; exemption phase-outs |
 | Delaware | Partial | Pension exclusion |

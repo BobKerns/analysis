@@ -77,7 +77,7 @@ from analysis.sim.engine import _load_aux, _tax_year, run_scenario
 from analysis.sim.ensemble import resolve_member
 from analysis.sim.schema import apply_run_schema
 from analysis.sim.tax_api import TaxYear
-from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
+from analysis.sim.loader import LoadResult, ScenarioRef, latest_run_path, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
@@ -1519,6 +1519,19 @@ def sim_load_test_copy(test_data_dir: Path, intent_dir: Path, runs_dir: Path) ->
              "--allow-dirty-data", *extra)
         return runs_dir / scenario
     return _load
+
+
+@pytest.fixture(scope="function")
+def latest_test_run(sim_load_test_copy: Callable[..., Path], runs_dir: Path) -> Callable[[str], Path]:
+    """Callable running ``sim load`` (load and run) on a scenario of the
+    private data copy, as ``sim_load_test_copy`` does; returns its newest run
+    file, where ``sim`` commands looking for a scenario's runs find it."""
+    def _run(scenario: str) -> Path:
+        sim_load_test_copy(scenario=scenario)
+        found = latest_run_path(runs_dir, scenario)
+        assert found is not None, scenario
+        return found
+    return _run
 
 
 @pytest.fixture(scope="function")
