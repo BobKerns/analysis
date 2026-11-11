@@ -631,7 +631,10 @@ Asset_Brokerage_Joint,inherited_2029,,AAA,2029-03-15,500,,,50000.00
   instead. The balance is then calculated from a price. Run
   `sim prices fetch` to get prices; it saves them to
   `prices/security_price__<SYMBOL>.csv`, and `sim prices show` lists what
-  it saved. Run `sim prices check` to compare a
+  it saved. With the background builder installed, you don't need to: it
+  fetches them after each weekday's close and commits them to `main` when
+  `main` is checked out and has no uncommitted changes. New prices after a
+  scenario's start don't change its results, so they rerun nothing. Run `sim prices check` to compare a
   balance you typed in against quantity times price. Part 4.11 covers
   adding a symbol the data repo doesn't have yet.
 - Once you have a run, `sim account holdings <account>` shows every lot's

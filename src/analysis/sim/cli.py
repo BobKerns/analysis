@@ -12140,6 +12140,17 @@ def _fetch_prices(
     return failed
 
 
+def _note_stale_prices(data: Path) -> None:
+    """#560: say so when the builder's scheduled fetch of a held symbol has
+    failed for days, as its latest price above is then that old."""
+    from analysis.sim import price_schedule
+
+    stale = price_schedule.stale_held(price_schedule.read_state(data), datetime.now(UTC))
+    if stale:
+        click.echo(f"the background fetch of {', '.join(stale)} has failed for days; "
+                   "see sim builder status", err=True)
+
+
 @prices_group_command.command("show")
 @click.argument("symbols", type=completion.SYMBOL, nargs=-1)
 @click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
@@ -12192,6 +12203,7 @@ def prices_show_command(symbols: tuple[str, ...], since_text: str | None, data_d
                           prices.format_price(r.latest_price), change(r.month_change),
                           change(r.year_change))
         console.print(table)
+        _note_stale_prices(data)
         return
 
     try:
@@ -18170,7 +18182,10 @@ def builder_group() -> None:
     scenario whose results could have changed. Opening a scenario's run waits
     for a pending build of it. It builds only when the code is committed and
     matches the workspace's local branch (main, unless ``install BRANCH``
-    named another). ANALYSIS_BUILDER=off turns it off.
+    named another). It also fetches prices after each weekday's close, on a
+    branch merged into the data repo's main when that is checked out and
+    clean. ANALYSIS_BUILDER=off turns it off; ANALYSIS_PRICE_FETCH=off, or
+    ``install --no-prices``, turns off only the price fetches.
     """
 
 
@@ -18186,8 +18201,10 @@ _BUILDER_DATA_DIR = click.option(
 
 @builder_group.command(name="install")
 @click.argument("branch", required=False)
+@click.option("--prices/--no-prices", "fetch_prices", default=None,
+              help="Fetch prices after each weekday's close (default: as before, else yes).")
 @_BUILDER_DATA_DIR
-def builder_install(branch: str | None, data_dir: Path | None) -> None:
+def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Path | None) -> None:
     """Opt this workspace pair in: check the code worktree and the data repo
     name each other, record the pair, and install the data repo's hooks.
 
@@ -18195,25 +18212,50 @@ def builder_install(branch: str | None, data_dir: Path | None) -> None:
     recorded before, else main). Every shell, notebook and builder of the
     workspace reads it from there, so they all agree; run this again to
     change it.
-    """
-    from analysis.sim import builder
 
+    Unless --no-prices, it also installs an hourly timer (a launchd agent on
+    macOS, a crontab line elsewhere) that wakes the builder, so prices are
+    fetched after each weekday's close. They are committed on the data repo's
+    builder/prices branch and merged into main when main is checked out and
+    has no uncommitted changes.
+    """
+    from analysis.sim import builder, price_schedule
+
+    resolved = _builder_data_dir(data_dir)
     try:
-        done = builder.install(_builder_data_dir(data_dir), branch)
+        done = builder.install(resolved, branch, fetch_prices)
     except ValueError as exc:
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
         click.echo(line)
-    click.echo(builder.notify(_builder_data_dir(data_dir)))
+    # By the recorded choice alone: ANALYSIS_PRICE_FETCH=off is for one shell
+    # (an agent's, a test's), so install_timer then leaves the timer as it is.
+    if (builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}).get("prices", True):
+        click.echo(price_schedule.install_timer(resolved, _builder_sim(resolved)))
+    elif line := price_schedule.uninstall_timer(resolved):
+        click.echo(line)
+    click.echo(builder.notify(resolved))
+
+
+def _builder_sim(data_dir: Path) -> Path:
+    """The ``sim`` a timer runs: the pair's code worktree's, else this one."""
+    from analysis.sim import builder
+
+    code = (builder.read_config(builder.BuilderPaths.for_data(data_dir)) or {}).get("code_dir")
+    sim = Path(code) / ".venv" / "bin" / "sim" if code else None
+    return sim if sim is not None and sim.exists() else Path(sys.executable).parent / "sim"
 
 
 @builder_group.command(name="uninstall")
 @_BUILDER_DATA_DIR
 def builder_uninstall(data_dir: Path | None) -> None:
-    """Opt this workspace out and stop its builder."""
-    from analysis.sim import builder
+    """Opt this workspace out, stop its builder, and remove its price timer."""
+    from analysis.sim import builder, price_schedule
 
-    for line in builder.uninstall(_builder_data_dir(data_dir)):
+    resolved = _builder_data_dir(data_dir)
+    for line in builder.uninstall(resolved):
+        click.echo(line)
+    if line := price_schedule.uninstall_timer(resolved):
         click.echo(line)
 
 
@@ -18266,6 +18308,56 @@ def builder_run(data_dir: Path | None) -> None:
     raise SystemExit(builder.run_daemon(
         _builder_data_dir(data_dir), echo=lambda text: click.echo(text),
     ))
+
+
+@builder_group.command(name="prices")
+@click.option("--if-due", is_flag=True, default=False,
+              help="Only when a scheduled fetch is due (what the builder runs).")
+@_BUILDER_DATA_DIR
+def builder_prices(if_due: bool, data_dir: Path | None) -> None:
+    """Fetch prices on the builder's branch now, as the schedule does. The
+    builder merges them into the data repo's main, between builds, once main
+    is checked out with no uncommitted changes.
+
+    Every symbol `sim prices fetch` with none named would fetch. Unlike that
+    command, it never touches your checkout: it works in its own sparse
+    worktree, and a failing symbol is reported in `sim builder status`.
+    """
+    from analysis.sim import builder, price_schedule
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    config = builder.read_config(paths)
+    if config is None:
+        raise click.ClickException("background builds aren't installed here (sim builder install)")
+    if price_schedule.switched_off():
+        click.echo(f"price fetches are off ({price_schedule.SWITCH_ENV}=off)")
+        return
+    if if_due and not (price_schedule.enabled(config) and price_schedule.due(
+            price_schedule.read_state(resolved), datetime.now(UTC))):
+        click.echo("no fetch due")
+        return
+    from analysis.sim.builder_log import LogWriter
+    from analysis.sim.locks import BUILDER_CHILD_ENV
+
+    # The daemon copies its own child's output into the log; a fetch run by
+    # the timer or by hand writes its lines there itself.
+    writer = None if os.environ.get(BUILDER_CHILD_ENV) else LogWriter(paths.log_dir)
+    if writer is not None:
+        writer.event("fetching prices")
+    try:
+        outcome = price_schedule.fetch(resolved, paths.prices_worktree)
+    except price_schedule.PriceScheduleError as exc:
+        if writer is not None:
+            writer.event(f"price fetch failed: {exc}")
+        raise click.ClickException(str(exc)) from None
+    for line in outcome.lines:
+        click.echo(line)
+        if writer is not None:
+            writer.output(line)
+    if outcome.committed:
+        # The daemon merges, between builds; this starts it if need be.
+        click.echo(builder.notify(resolved))
 
 
 @builder_group.command(name="series", hidden=True)
@@ -18330,6 +18422,15 @@ def builder_status(data_dir: Path | None) -> None:
         click.echo(f"waiting: {name} ({why})")
     for name, failed in sorted((status.get("failed") or {}).items()):
         click.echo(f"failed: {name}: {failed.get('message')}")
+    from analysis.sim import price_schedule
+
+    if price_schedule.enabled(config):
+        for line in price_schedule.describe(price_schedule.read_state(resolved), datetime.now(UTC)):
+            click.echo(line)
+    elif price_schedule.switched_off():
+        click.echo(f"prices: not fetched ({price_schedule.SWITCH_ENV}=off)")
+    else:
+        click.echo("prices: not fetched (sim builder install --prices to start)")
     click.echo(f"log: {paths.log_dir} (sim builder log)")
 
 
