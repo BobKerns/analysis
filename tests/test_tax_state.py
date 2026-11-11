@@ -96,6 +96,8 @@ def test_without_a_state_it_lists_the_choices_and_asks(
     # Washington's tables ship (#489), but until 2028 it taxes only gains.
     assert "Washington (WA)" in result.output.split("No income tax:")[0]
     assert "Washington (WA)" in result.output.split("No income tax:")[1]
+    assert ("The federal tax alone: Guam (GU), Northern Mariana Islands (MP), "
+            "U.S. Virgin Islands (VI)") in result.output
     assert "a state's name or two-letter code" in result.output
     assert _residence(retire_alice_csv("")) == [("2026-05", "NC", "")]
 
@@ -204,6 +206,37 @@ def test_a_state_without_income_tax_needs_no_state_tax(
     assert _residence(retire_alice_csv("")) == [("2026-05", "TX", "")]
     assert not retire_alice_csv("taxes/state.csv").exists()
     load_test_copy()
+
+
+@pytest.mark.parametrize("territory", ["GU", "MP", "VI"])
+def test_a_mirror_code_territory_is_taxed_by_the_federal_tax_alone(
+    territory: str, test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """#491: the territory's tax is a copy of the federal one, so no state
+    tax is added and no tables are asked for."""
+    result = _tax(test_data_dir, "state", territory, "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "the federal tax stands in for it: no state tax is needed" in result.output
+    assert _residence(retire_alice_csv("")) == [("2026-05", territory, "")]
+    assert not retire_alice_csv("taxes/state.csv").exists()
+    load_test_copy()
+
+
+@pytest.mark.parametrize("command", [["state", "PR"], ["move", "2031-07", "PR"]])
+def test_puerto_rico_is_refused_naming_its_issue(
+    command: list[str], test_data_dir: Path, add_state_tax: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    add_state_tax()
+
+    result = _tax(test_data_dir, *command, "--yes")
+
+    assert result.exit_code != 0
+    assert "Puerto Rico (PR) has a tax code of its own" in result.output
+    assert states.OWN_TAX_CODE_ISSUE in result.output
+    assert _residence(retire_alice_csv("")) == [("2026-05", "CA", "")]
 
 
 def test_a_state_without_tables_says_which_to_write(

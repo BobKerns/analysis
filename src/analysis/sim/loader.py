@@ -4039,7 +4039,11 @@ def _validate_residence(
         if state not in states.BY_CODE:
             continue
         series = states.tax_series(state, has_tables=("state_brackets", state) in supplied)
-        if ("state_brackets", series) not in supplied:
+        if ("state_brackets", series) not in supplied and states.BY_CODE[state].status == states.NOT_SUPPORTED:
+            issues.append(
+                f"{where}: {states.label(state)} has a tax code of its own the simulator can't "
+                f"model yet ({states.OWN_TAX_CODE_ISSUE})")
+        elif ("state_brackets", series) not in supplied:
             issues.append(
                 f"{where}: no aux/state_brackets__{series}.csv for {states.label(state)}'s "
                 "income tax; the simulator doesn't ship its tables yet, so add them")

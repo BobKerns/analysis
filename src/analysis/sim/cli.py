@@ -19502,8 +19502,10 @@ def _ask_state(data_dir: Path, scenario: str, prompt: str) -> states.State:
     tables = set(names.series_names(data_dir, scenario, "state_brackets"))
     ready = [states.label(s.code) for s in states.STATES if s.code in tables]
     no_tax = [states.label(s.code) for s in states.STATES if not s.taxes_income]
+    federal = [states.label(s.code) for s in states.STATES if s.status == states.FEDERAL_RULE]
     click.echo(f"With tax tables: {', '.join(ready)}")
     click.echo(f"No income tax: {', '.join(no_tax)}")
+    click.echo(f"The federal tax alone: {', '.join(federal)}")
     click.echo("Any other state needs its tables written first (README, "
                "'State and territory income tax').")
     choices = [*(s.name for s in states.STATES), *(s.code for s in states.STATES)]
@@ -19522,7 +19524,7 @@ def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | N
         if state.status == states.NOT_SUPPORTED:
             raise click.ClickException(
                 f"{states.label(state.code)} has a tax code of its own the simulator can't "
-                "model; nothing was written")
+                f"model yet ({states.OWN_TAX_CODE_ISSUE}); nothing was written")
         if state.status == states.FEDERAL_RULE:
             click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
                        "federal tax stands in for it: no state tax is needed.")

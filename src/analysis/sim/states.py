@@ -12,8 +12,13 @@ SHIPPED = "Shipped"  # its tables come with the simulator
 NO_TAX = "No tax"  # no income tax: no state rule
 TABLES_NEEDED = "Tables needed"  # the model fits; its tables have to be written
 PARTIAL = "Partial"  # the tables work, but some of its rules aren't modeled
-FEDERAL_RULE = "Federal rule"  # a territory whose tax mirrors the federal one
+FEDERAL_RULE = "Federal rule"  # a territory whose tax mirrors the federal one (#491)
 NOT_SUPPORTED = "Not supported"  # a tax code of its own the model can't express
+
+# Puerto Rico and American Samoa: a code of their own, and the federal tax
+# reaches only the income from outside them, so neither the federal rule
+# nor state tables can stand in (#491).
+OWN_TAX_CODE_ISSUE = "https://github.com/BobKerns/analysis/issues/570"
 
 # The series a state tax reads while the household lives in a state with
 # no income tax: templates/aux/ ships it as a 0% table.
@@ -99,9 +104,9 @@ STATES: tuple[State, ...] = (
     State("WY", "Wyoming", NO_TAX),
     State("AS", "American Samoa", NOT_SUPPORTED),
     State("GU", "Guam", FEDERAL_RULE),
-    State("MP", "Northern Mariana Islands", PARTIAL),
+    State("MP", "Northern Mariana Islands", FEDERAL_RULE),
     State("PR", "Puerto Rico", NOT_SUPPORTED),
-    State("VI", "U.S. Virgin Islands", PARTIAL),
+    State("VI", "U.S. Virgin Islands", FEDERAL_RULE),
 )
 
 BY_CODE: dict[str, State] = {s.code: s for s in STATES}

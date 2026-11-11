@@ -91,6 +91,7 @@ def test_rows_merge_by_date_over_the_lineage(
     (("", "OR"), r"residence.csv line 3: effective_date is required"),
     (("2026-05", "OR"), r"residence.csv line 3: duplicate effective_date"),
     (("2028-01", "NY"), r"residence.csv line 3: no aux/state_brackets__NY.csv for New York \(NY\)"),
+    (("2028-01", "PR"), r"residence.csv line 3: Puerto Rico \(PR\) has a tax code of its own .*issues/570"),
 ])
 def test_the_loader_checks_each_row(
     row: tuple[str, str], message: str, add_state_tax: Callable[..., None],
@@ -102,16 +103,21 @@ def test_the_loader_checks_each_row(
         load_test_copy()
 
 
+@pytest.mark.parametrize("state", ["FL", "GU", "MP", "VI"])
 def test_a_state_without_income_tax_reads_the_none_tables(
-    add_state_tax: Callable[..., None], add_residence: Callable[..., Path],
+    state: str, add_state_tax: Callable[..., None], add_residence: Callable[..., Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:
     """Florida has no income tax and no tables: it reads the shipped 0%
-    ``none`` ones, and the state tax pays nothing."""
+    ``none`` ones, and the state tax pays nothing. So does a territory whose
+    tax is a copy of the federal one (#491): the federal tax goes on as
+    before."""
     add_state_tax("CA")
-    add_residence("2028-01", "FL")
-    tax = _buckets(_run(load_test_copy, runs_dir, "florida"), "state_tax")
+    add_residence("2028-01", state)
+    run = _run(load_test_copy, runs_dir, state)
+    tax, federal = _buckets(run, "state_tax"), _buckets(run, "federal_tax")
     assert tax[2027] > 0 and tax[2028] == 0
+    assert federal[2028] > 0
 
 
 def test_a_county_with_a_local_tax_of_its_own(
