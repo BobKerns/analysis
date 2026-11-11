@@ -1779,6 +1779,66 @@ allocation would, which helps after a crash that recovers slowly and costs
 growth when markets rise. The design is in
 [ADR-010 §6.5](architecture/ADR-010-responsive-strategies.md).
 
+### 4.21 Bring the plan up to date each year
+
+A plan only knows what you told it when you wrote it. Once a year, or after
+a big change, start it again from what the accounts hold now:
+
+```sh
+sim scenario roll base 2027-01 --keep plan-2026
+```
+
+`roll` first keeps the plan as it stands as a sibling copy (`--keep`; the
+default name is the scenario's name and the old start's year), so you can
+compare last year's plan with this year's. Then it moves the start, and
+asks, lot by lot, what each account holds now: shares for a lot kept in
+shares (a symbol, shares and no balance) whose symbol has a price by the
+new start (the balance is shares times that price), dollars otherwise,
+and the cost basis where the lot keeps one. A Roth's basis is what was put
+in, so a year the market fell leaves it above the
+balance. Each question offers what the plan's newest run projected for the
+month before the new start; press Enter to take it, or `--yes` to take
+them all (`--yes` stops instead when a question has nothing to offer). A
+lot's Dec 31 balance (`prior_year_end_balance`), when it has one, follows,
+offering the run's Dec 31.
+
+A new year changes what some rows mean, so `roll` deals with those too:
+
+- A year-to-date row (§4.13) with no year belongs to the first year,
+  whichever it is. `roll` offers to pin it to the old year, where it
+  happened.
+- A rule's `ytd_amount` was the old first year's catch-up. `roll` offers to
+  make it a year-to-date row of that year (one that goes through a chain
+  it lists, for you to record by hand).
+- A rule with no start counts a quarterly schedule, or `ytd_preroll`'s
+  months, from the scenario's start. `roll` offers to give it the old
+  start, so it keeps its months.
+- A calendar row dated before the new start no longer happens. `roll` lists
+  them.
+- Last year's income tax is paid in April from last year's income, which
+  a new plan starting by April never ran. Record that income with `sim ytd add ...
+  --year 2026` (§4.13), from the W-2s and 1099s, with any tax already
+  withheld.
+
+Rolled to a later month of the same year, the year-to-date rows and
+`ytd_amount`s still cover only the months before the old start. `roll`
+lists them, to update with `sim ytd edit` and `sim scheduled edit`.
+
+Everything is written in one edit, only if the scenario and everything
+built on it still load. What's built on it follows by itself: a what-if
+built on `base` starts when `base` does. Then run both and compare them:
+
+```sh
+sim run base --commit
+sim run plan-2026 --commit
+sim compare plan-2026 base
+```
+
+`sim compare` shows where the new plan starts: for each lot, what last
+year's plan expected it to hold, what it holds now, and the difference
+(the `start` section). Its other sections put both runs in the baseline's
+dollars, so a year's inflation doesn't show up as a difference.
+
 ## 5. Looking at your results
 
 **Video.** *Looking at the results* walks through this section with Alice
@@ -1875,9 +1935,12 @@ base scenario, runs them, and compares them with `sim compare` and
 `sim compare BASELINE VARIANT` puts two or more scenarios' latest runs side
 by side, as `scenario_compare.ipynb` does: whether the runs came from the same
 code and data, the rules, calendar events, accounts and lots each defines
-differently, net worth at each year end with each variant's difference, and
+differently, where a variant that starts later starts (what the baseline
+projected each lot to hold then, against what the variant opens with, §4.21),
+net worth at each year end with each variant's difference, and
 the month after which each variant stays ahead (break-even), and each
-scenario's guard rail margins when any has rails. When they differ, it adds
+scenario's guard rail margins when any has rails. Runs that start in
+different months are all shown in the baseline's dollars. When they differ, it adds
 gross Social Security by year and over the run (comparing claim ages), and
 total tax by year, the `total_tax` `sim report tax` prints, with each run's
 lifetime tax, Social Security and final net worth (what a Roth conversion
