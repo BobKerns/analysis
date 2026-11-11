@@ -18309,8 +18309,9 @@ def builder_run(data_dir: Path | None) -> None:
               help="Only when a scheduled fetch is due (what the builder runs).")
 @_BUILDER_DATA_DIR
 def builder_prices(if_due: bool, data_dir: Path | None) -> None:
-    """Fetch prices on the builder's branch now, as the schedule does, and
-    merge them into the data repo's main if it is checked out and clean.
+    """Fetch prices on the builder's branch now, as the schedule does. The
+    builder merges them into the data repo's main, between builds, once main
+    is checked out with no uncommitted changes.
 
     Every symbol `sim prices fetch` with none named would fetch. Unlike that
     command, it never touches your checkout: it works in its own sparse
@@ -18330,12 +18331,27 @@ def builder_prices(if_due: bool, data_dir: Path | None) -> None:
             price_schedule.read_state(resolved), datetime.now(UTC))):
         click.echo("no fetch due")
         return
+    from analysis.sim.builder_log import LogWriter
+    from analysis.sim.locks import BUILDER_CHILD_ENV
+
+    # The daemon copies its own child's output into the log; a fetch run by
+    # the timer or by hand writes its lines there itself.
+    writer = None if os.environ.get(BUILDER_CHILD_ENV) else LogWriter(paths.log_dir)
+    if writer is not None:
+        writer.event("fetching prices")
     try:
         outcome = price_schedule.fetch(resolved, paths.prices_worktree)
     except price_schedule.PriceScheduleError as exc:
+        if writer is not None:
+            writer.event(f"price fetch failed: {exc}")
         raise click.ClickException(str(exc)) from None
     for line in outcome.lines:
         click.echo(line)
+        if writer is not None:
+            writer.output(line)
+    if outcome.committed:
+        # The daemon merges, between builds; this starts it if need be.
+        click.echo(builder.notify(resolved))
 
 
 @builder_group.command(name="series", hidden=True)

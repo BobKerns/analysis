@@ -102,7 +102,8 @@ def test_a_fetch_commits_on_its_branch_and_fast_forwards_a_clean_main(
     outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
 
     assert outcome.committed is not None
-    assert "merged new prices into main" in outcome.lines
+    assert repo.head.commit.hexsha == before  # the fetch never merges: the daemon does
+    assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
     assert repo.head.commit.hexsha == outcome.committed
     assert repo.head.commit.parents[0].hexsha == before  # a fast-forward: no merge commit
     assert repo.head.commit.author.name == "sim builder"
@@ -126,21 +127,22 @@ def test_the_merge_waits_for_main_to_be_clean_and_checked_out(
     before = repo.head.commit.hexsha
     (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
     outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    assert price_schedule.merge_pending(data, _worktree(data)) is None
     assert outcome.committed and repo.head.commit.hexsha == before
     assert price_schedule.read_state(data)["waiting"] == "main has uncommitted changes"
 
     repo.git.checkout("sim/persons.csv")
     repo.git.checkout("-b", "edits")
-    assert price_schedule.merge_pending(data) is None
+    assert price_schedule.merge_pending(data, _worktree(data)) is None
     assert "has edits checked out" in price_schedule.read_state(data)["waiting"]
 
     repo.git.checkout("main")
-    assert price_schedule.merge_pending(data) == "merged new prices into main"
+    assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
     assert repo.head.commit.hexsha == outcome.committed
-    assert price_schedule.merge_pending(data) is None  # nothing left
+    assert price_schedule.merge_pending(data, _worktree(data)) is None  # nothing left
 
 
-def test_when_main_moves_first_the_next_fetch_starts_from_it(
+def test_when_main_moves_first_the_fetched_commit_moves_onto_it(
     priced: tuple[Path, git.Repo], fetching: None,
 ) -> None:
     data, repo = priced
@@ -149,16 +151,85 @@ def test_when_main_moves_first_the_next_fetch_starts_from_it(
     repo.git.checkout("sim/persons.csv")
     _commit(repo, {"sim/notes.txt": "an edit\n"}, "the user's commit")
 
-    assert price_schedule.merge_pending(data) is None
+    assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
+    assert repo.head.commit.hexsha != first.committed  # picked onto the user's commit
+    assert repo.head.commit.author.name == "sim builder"
+    assert repo.head.commit.parents[0].message.strip() == "the user's commit"
+    assert "2026-06-10,110.00" in (data / "prices" / "security_price__VTI.csv").read_text()
     state = price_schedule.read_state(data)
-    assert state["refetch"] and "moved" in state["waiting"]
+    assert not state.get("pending") and not state.get("refetch")
+
+
+def test_a_fetched_commit_that_no_longer_applies_is_fetched_again(
+    priced: tuple[Path, git.Repo], fetching: None,
+) -> None:
+    data, repo = priced
+    (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
+    price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    repo.git.checkout("sim/persons.csv")
+    _commit(repo, {"sim/prices/security_price__VTI.csv":
+                   "effective_date,price\n2025-12-31,301.00\n"}, "a correction by hand")
+
+    assert price_schedule.merge_pending(data, _worktree(data)) is None
+    state = price_schedule.read_state(data)
+    assert state["refetch"] and "didn't apply" in state["waiting"] and not state["pending"]
     later = NOW + timedelta(hours=2)
     assert price_schedule.due(state, later)
-
     second = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=later)
-    assert second.committed and second.committed != first.committed
-    assert repo.head.commit.hexsha == second.committed
-    assert repo.head.commit.parents[0].message.strip() == "the user's commit"
+    assert second.committed
+    assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
+    assert repo.head.commit.parents[0].message.strip() == "a correction by hand"
+
+
+def test_prices_merged_by_hand_are_no_longer_pending(
+    priced: tuple[Path, git.Repo], fetching: None,
+) -> None:
+    data, repo = priced
+    (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
+    price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    price_schedule.merge_pending(data, _worktree(data))
+    assert price_schedule.read_state(data)["pending"]
+    repo.git.checkout("sim/persons.csv")
+    repo.git.merge("--ff-only", price_schedule.PRICES_BRANCH)
+
+    assert price_schedule.merge_pending(data, _worktree(data)) is None
+    state = price_schedule.read_state(data)
+    assert not state["pending"] and not state["waiting"]
+    assert not any("waiting to merge" in line for line in price_schedule.describe(state, NOW))
+
+
+def test_a_repo_with_no_prices_folder_and_nothing_to_fetch_still_succeeds(
+    data_repo_sim: Path, fetching: None,
+) -> None:
+    import shutil
+
+    with git.Repo(data_repo_sim.parent) as repo:
+        shutil.rmtree(data_repo_sim / "prices")
+        _commit(repo, {}, "no prices folder")
+    outcome = price_schedule.fetch(data_repo_sim, _worktree(data_repo_sim),
+                                   provider=FakeProvider(), now=NOW)
+    assert outcome.lines == ["no symbols to fetch", "no new prices"]
+    assert price_schedule.read_state(data_repo_sim)["succeeded"] == NOW.timestamp()
+
+
+def test_state_writes_keep_each_others_keys_and_leave_no_temp_files(
+    priced: tuple[Path, git.Repo],
+) -> None:
+    import threading
+
+    data, _ = priced
+    top = data.parent
+    writers = [threading.Thread(target=lambda n=n: [
+        price_schedule._update_state(top, **{f"k{n}": i}) for i in range(20)])
+        for n in range(4)]
+    for w in writers:
+        w.start()
+    for w in writers:
+        w.join()
+    state = price_schedule.read_state(data)
+    assert {state[f"k{n}"] for n in range(4)} == {19}
+    common = price_schedule._common_dir(top)
+    assert not list(common.glob("*.tmp"))
 
 
 def test_a_failing_symbol_is_recorded_and_does_not_stop_the_others(
@@ -219,7 +290,7 @@ def test_install_adds_one_hourly_crontab_line_and_uninstall_removes_it(
     for _ in range(2):  # installing again replaces the line
         price_schedule.install_timer(tmp_path, sim, run=run, platform="linux")
     assert crontab[0] == "0 3 * * * backup" and len(crontab) == 2
-    assert crontab[1].startswith(f"7 * * * * {sim} builder notify --quiet --data-dir {tmp_path}")
+    assert crontab[1].startswith(f"7 * * * * {sim} builder prices --if-due --data-dir {tmp_path}")
 
     assert price_schedule.uninstall_timer(tmp_path, run=run, platform="linux")
     assert crontab == ["0 3 * * * backup"]
@@ -237,7 +308,7 @@ def test_install_on_macos_loads_an_hourly_launch_agent(
         f"{price_schedule.timer_label(tmp_path)}.plist"
     agent = plistlib.loads(plist.read_bytes())
     assert agent["StartInterval"] == 3600
-    assert agent["ProgramArguments"] == [str(sim), "builder", "notify", "--quiet",
+    assert agent["ProgramArguments"] == [str(sim), "builder", "prices", "--if-due",
                                          "--data-dir", str(tmp_path.resolve())]
     assert calls[-1][0][:2] == ["launchctl", "bootstrap"]
 

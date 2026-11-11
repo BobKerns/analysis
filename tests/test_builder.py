@@ -850,3 +850,34 @@ def test_the_daemon_fetches_prices_when_due_and_waits_for_the_fetch(
     daemon.fetcher.wait(timeout=10)
     daemon.prices_tick(False)
     assert daemon.fetcher is None and any(line.endswith("fetched prices") for line in lines)
+
+
+def test_the_daemon_merges_fetched_prices_only_between_builds(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from analysis.sim import price_schedule
+
+    class OneClose:
+        name = "one"
+
+        def closes(self, symbol: str, start: date, end: date) -> list[tuple[date, Decimal]]:
+            return [(end - timedelta(days=1), Decimal("101"))]
+
+    monkeypatch.delenv(price_schedule.SWITCH_ENV)
+    builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir), "prices": True})
+    (daemon.data_dir / "securities.csv").write_text("symbol,name\nVTI,Total market\n")
+    with git.Repo(daemon.data_dir.parent) as repo:
+        _commit(repo, {}, "VTI")
+        before = repo.head.commit.hexsha
+        price_schedule.fetch(daemon.data_dir, daemon.paths.prices_worktree, provider=OneClose())
+        daemon.fetch_ended = time.monotonic()  # no fetch of its own in this test
+        daemon.build = object()  # ty: ignore[invalid-assignment] -- any build in progress
+        daemon.prices_tick(True)
+        assert repo.head.commit.hexsha == before
+        daemon.build = None
+        daemon.prices_tick(True)
+        assert repo.head.commit.hexsha != before
+        assert repo.head.commit.author.name == "sim builder"

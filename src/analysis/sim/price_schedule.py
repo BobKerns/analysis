@@ -12,20 +12,24 @@ weekday's US market close, without touching the user's checkout (Bob):
   ever needs a conflict resolved: a fetch only adds rows, and the provider
   returns the history, so fetching again on a newer ``main`` loses nothing.
   That commit is ``builder/prices``.
-- ``builder/prices`` is merged into ``main`` only by a fast-forward, and
-  only when the data worktree has ``main`` checked out with no uncommitted
-  change to a tracked file and no merge, rebase or cherry-pick under way.
-  Otherwise it waits: the daemon tries again on every poke, so it lands soon
-  after the user commits or switches back. If ``main`` moved meanwhile, the
-  next fetch starts again from it. The merge runs the data repo's
+- ``builder/prices`` is merged into ``main`` only by the daemon, between
+  builds (so no build reads a price file mid-merge), only by a fast-forward,
+  and only when the data worktree has ``main`` checked out with no
+  uncommitted change to a tracked file and no merge, rebase or cherry-pick
+  under way. Otherwise it waits: the daemon tries again on every poke, so it
+  lands soon after the user commits or switches back. If ``main`` moved
+  meanwhile, the commit is cherry-picked onto it in the sparse worktree; only
+  if that conflicts is it dropped and fetched again. The merge runs the data repo's
   ``post-merge`` hook, which pokes the builder; a merge only changes runs
   whose start the new prices reach (``provenance``: a price file counts up to
   the scenario's start), so a daily fetch reruns nothing until a roll.
 - A fetch is due when the last good one came before the latest weekday
   17:30 in New York, after the close is final. Nothing keeps the builder
   running, so ``sim builder install`` adds an hourly OS timer (a launchd agent
-  on macOS, a crontab line elsewhere) that runs ``sim builder notify``; the
-  daemon checks on starting, and on each rescan.
+  on macOS, a crontab line elsewhere) that runs ``sim builder prices
+  --if-due``: a look at the state, and a fetch when one is due, which pokes
+  the builder when it commits. The daemon also checks on starting, and on
+  each rescan.
 - A symbol that fails is recorded, with when it first failed, and doesn't
   stop the others. A fetch where every symbol failed (no network, say) is
   tried again an hour later, not counted as done.
@@ -49,6 +53,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time as clock
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -74,6 +79,7 @@ AFTER_CLOSE = time(17, 30)
 RETRY_SECONDS = 3600.0
 STATE_FILE = "analysis-prices.json"
 LOCK_FILE = "analysis-prices.lock"
+STATE_LOCK_FILE = "analysis-prices-state.lock"
 IDENTITY = {"GIT_AUTHOR_NAME": "sim builder", "GIT_AUTHOR_EMAIL": "builder@analysis.local",
             "GIT_COMMITTER_NAME": "sim builder", "GIT_COMMITTER_EMAIL": "builder@analysis.local"}
 TIMER_MARKER = "# analysis sim builder prices (#560)"
@@ -171,21 +177,27 @@ def read_state(data_dir: Path) -> dict[str, Any]:
         return {}
 
 
-def _write_state(top: Path, state: dict[str, Any]) -> None:
-    path = _state_path(top)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
-    tmp.replace(path)
-
-
 def _update_state(top: Path, **changes: Any) -> dict[str, Any]:
+    """Change some of the state's keys, under its own lock: the daemon and
+    a fetch both write it, and neither may undo the other's keys. Each
+    writer replaces the file from a temp file of its own, so a reader never
+    sees half a file."""
+    path = _state_path(top)
+    fd = os.open(path.with_name(STATE_LOCK_FILE), os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        state = json.loads(_state_path(top).read_text())
-    except (OSError, ValueError):
-        state = {}
-    state.update(changes)
-    _write_state(top, state)
-    return state
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, ValueError):
+            state = {}
+        state.update(changes)
+        with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f"{STATE_FILE}.",
+                                         suffix=".tmp", delete=False) as tmp:
+            tmp.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp.name, path)
+        return state
+    finally:
+        os.close(fd)
 
 
 @contextlib.contextmanager
@@ -240,8 +252,9 @@ def fetch(
     data_dir: Path, worktree: Path, *, provider: Any = None, now: datetime | None = None,
 ) -> FetchOutcome:
     """Fetch every symbol's prices on ``builder/prices`` (in ``worktree``,
-    the builder's sparse worktree), then merge it if ``main`` allows. The
-    symbols are ``sim prices fetch``'s with none named: those held with a
+    the builder's sparse worktree). Merging it is the daemon's, between
+    builds (:func:`merge_pending`), so a build never reads a price file
+    while a merge rewrites it. The symbols are ``sim prices fetch``'s with none named: those held with a
     quantity, and those securities.csv, allocations.csv or a price file
     names; one no lot holds is noted, not counted as a failure."""
     from analysis.sim import prices
@@ -299,9 +312,6 @@ def fetch(
             lines.append("no new prices")
         else:
             lines.append("every symbol failed; trying again in an hour")
-    merged = merge_pending(data_dir)
-    if merged:
-        lines.append(merged)
     return FetchOutcome(lines, committed)
 
 
@@ -309,7 +319,8 @@ def _commit(top: Path, worktree: Path, rel: str, results: list[Any]) -> str | No
     """Commit the fetched files on ``builder/prices``; the commit, or None
     (the branch then points at ``main``: nothing to merge)."""
     path = f"{rel}/prices" if rel not in ("", ".") else "prices"
-    _git(worktree, "add", "-A", "--", path, check=True)
+    if (worktree / path).exists():  # none when no symbol was fetched into a repo without one
+        _git(worktree, "add", "-A", "--", path, check=True)
     if _git(worktree, "diff", "--cached", "--quiet").returncode == 0:
         _git(top, "update-ref", f"refs/heads/{PRICES_BRANCH}", DATA_BRANCH, check=True)
         return None
@@ -349,22 +360,33 @@ def _why_not(top: Path) -> str | None:
     return None
 
 
-def merge_pending(data_dir: Path) -> str | None:
+def merge_pending(data_dir: Path, worktree: Path) -> str | None:
     """Fast-forward ``main`` to ``builder/prices`` if it is ahead and this
-    worktree allows it. Returns a line when it merged; why it waits goes
-    in the state (:func:`read_state`'s ``waiting``)."""
+    worktree allows it; ``worktree`` is the builder's sparse one, where a
+    commit left behind by ``main`` moving is moved onto it. Returns a line
+    when it merged; why it waits goes in the state (:func:`read_state`'s
+    ``waiting``). Only the daemon calls this, between builds."""
     try:
         top = _top(data_dir)
     except PriceScheduleError:
         return None
     pending, main = _ref(top, f"refs/heads/{PRICES_BRANCH}"), _ref(top, DATA_BRANCH)
     if pending is None or main is None or _is_ancestor(top, pending, main):
-        return None  # nothing waiting
-    if not _is_ancestor(top, main, pending):
-        # main moved since the fetch: the next fetch starts from it.
-        _update_state(top, refetch=True, waiting=f"{DATA_BRANCH} moved since the fetch; "
-                                                 "fetching again from it")
+        # Nothing waiting, perhaps since someone merged it by hand.
+        if read_state(data_dir).get("pending"):
+            _update_state(top, pending=None, waiting=None)
         return None
+    if not _is_ancestor(top, main, pending):
+        # main moved since the fetch (a commit while the prices waited).
+        with _locked(top) as mine:
+            if not mine:
+                return None  # a fetch is running, and it starts from main
+            pending = _restack(top, worktree, pending)
+        if pending is None:
+            _update_state(top, pending=None, refetch=True,
+                          waiting=f"{DATA_BRANCH} moved and the prices didn't apply to it; "
+                                  "fetching again from it")
+            return None
     why = _why_not(top)
     if why is None:
         done = _git(top, "merge", "--ff-only", "-q", f"refs/heads/{PRICES_BRANCH}")
@@ -375,6 +397,27 @@ def merge_pending(data_dir: Path) -> str | None:
             else "git merge failed"
     _update_state(top, waiting=why)
     return None
+
+
+def _restack(top: Path, worktree: Path, pending: str) -> str | None:
+    """``pending``'s change again on ``main``'s tip, as ``builder/prices``.
+    It touches only price files, so this almost never conflicts; when it
+    does, or the worktree is gone, None (the next fetch starts over)."""
+    if not (worktree / ".git").exists():
+        return None
+    if _git(worktree, "reset", "--hard", "-q", DATA_BRANCH).returncode:
+        return None
+    picked = _git(worktree, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                  "cherry-pick", pending, env=IDENTITY)
+    if picked.returncode:
+        _git(worktree, "cherry-pick", "--abort")
+        _git(worktree, "reset", "--hard", "-q", DATA_BRANCH)
+        _git(top, "update-ref", f"refs/heads/{PRICES_BRANCH}", DATA_BRANCH)
+        return None
+    head = _git(worktree, "rev-parse", "HEAD", check=True).stdout.strip()
+    _git(top, "update-ref", f"refs/heads/{PRICES_BRANCH}", head, check=True)
+    _update_state(top, pending=head)
+    return head
 
 
 # -- the timer -----------------------------------------------------------------------------
@@ -395,8 +438,11 @@ def _plist_path(data_dir: Path) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{timer_label(data_dir)}.plist"
 
 
-def _notify_command(sim: Path, data_dir: Path) -> list[str]:
-    return [str(sim), "builder", "notify", "--quiet", "--data-dir", str(data_dir.resolve())]
+def _timer_command(sim: Path, data_dir: Path) -> list[str]:
+    """What the timer runs: only a look at the state unless a fetch is due,
+    so the hourly wake costs no scan; a fetch that commits pokes the builder,
+    which merges between builds."""
+    return [str(sim), "builder", "prices", "--if-due", "--data-dir", str(data_dir.resolve())]
 
 
 def _cron_marker(data_dir: Path) -> str:
@@ -413,12 +459,12 @@ def _crontab(run: Runner) -> list[str] | None:
 
 def install_timer(data_dir: Path, sim: Path, *, run: Runner = _run,
                   platform: str = sys.platform) -> str:
-    """Wake the builder hourly (``sim builder notify``), so a due fetch
-    happens whether or not anything else starts it. Replaces the timer of
+    """Run ``sim builder prices --if-due`` hourly, so a due fetch happens
+    whether or not anything starts the builder. Replaces the timer of
     this data dir if there is one. Returns a line saying what it did."""
     if switched_off():
         return f"price fetches are off ({SWITCH_ENV}=off): no timer installed"
-    command = _notify_command(sim, data_dir)
+    command = _timer_command(sim, data_dir)
     if platform == "darwin":
         plist = _plist_path(data_dir)
         plist.parent.mkdir(parents=True, exist_ok=True)

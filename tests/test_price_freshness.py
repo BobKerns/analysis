@@ -61,5 +61,19 @@ def test_a_scenario_starts_where_its_lineage_last_sets_it(test_data_dir: Path) -
     from analysis.sim.lineage import scenario_start
 
     assert scenario_start(test_data_dir / "scenarios", "retire_alice") == "2026-05-31"
-    assert provenance._rows_read("effective_date,price\n2026-05-31,1\n2026-06-01,2\nbad\n",
-                                 "2026-05-31") == "effective_date,price\n2026-05-31,1\nbad\n"
+    text = ("effective_date,price\n2026-05-31,1\n2026-06-01,2\nbad\n"
+            "2026-07-01,abc\n2026-02-30,5\n2026-08-01\n")
+    # Rows the loader rejects stay, wherever they are dated: they fail the load.
+    assert provenance._rows_read(text, "2026-05-31") == (
+        "effective_date,price\n2026-05-31,1\nbad\n2026-07-01,abc\n2026-02-30,5\n2026-08-01\n")
+
+
+def test_a_bad_row_after_the_start_changes_the_tree(
+    test_data_dir: Path, commit_test_data: Callable[[], Path],
+) -> None:
+    _prices(test_data_dir, "2026-04-30,300.00")
+    repo = git.Repo(commit_test_data())
+    before = provenance.data_stamps(test_data_dir, "retire_alice").tree_id
+    _prices(test_data_dir, "2026-04-30,300.00", "2026-07-01,abc")
+    _commit(repo, "a typo")
+    assert provenance.data_stamps(test_data_dir, "retire_alice").tree_id != before

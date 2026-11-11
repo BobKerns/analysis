@@ -863,7 +863,7 @@ class _Daemon:
 
     def prices_tick(self, now: bool) -> None:
         """#560: note a price fetch that ended; merge fetched prices that
-        wait for main; start a fetch when one is due. Looks on a rescan, or
+        wait for main, between builds; start a fetch when one is due. Looks on a rescan, or
         once a minute, so a timer's poke or a commit is answered at once."""
         from analysis.sim import price_schedule
 
@@ -882,13 +882,16 @@ class _Daemon:
         self.prices_looked = time.monotonic()
         if not price_schedule.enabled(read_config(self.paths)):
             return
-        try:
-            merged = price_schedule.merge_pending(self.data_dir)
-        except (price_schedule.PriceScheduleError, OSError) as exc:
-            self.log(f"prices not merged: {exc}")
-            return
-        if merged:
-            self.log(merged)
+        # Between builds only: a merge rewrites price files a build may be
+        # reading, and changes the data version it records.
+        if self.build is None and not self.held:
+            try:
+                merged = price_schedule.merge_pending(self.data_dir, self.paths.prices_worktree)
+            except (price_schedule.PriceScheduleError, OSError) as exc:
+                self.log(f"prices not merged: {exc}")
+                return
+            if merged:
+                self.log(merged)
         if time.monotonic() - self.fetch_ended < price_schedule.RETRY_SECONDS:
             return
         if not price_schedule.due(price_schedule.read_state(self.data_dir), datetime.now(UTC)):

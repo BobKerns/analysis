@@ -141,11 +141,11 @@ and `sim builder log` what it did in the last hour (`-v` adds build output).
 
 The builder also fetches prices after each weekday's US market close, so a lot
 held by shares stays current without `sim prices fetch`. `sim builder install`
-adds an hourly timer that wakes it (a launchd agent on macOS, a crontab line
-elsewhere; `uninstall` removes it). The fetch never touches your checkout: it
-commits on the data repo's `builder/prices` branch, in its own sparse
-worktree, and that branch is fast-forwarded into `main` only while `main` is
-checked out with no uncommitted changes. `sim builder status` shows the last
+adds an hourly timer that runs `sim builder prices --if-due` (a launchd agent
+on macOS, a crontab line elsewhere; `uninstall` removes it). The fetch never
+touches your checkout: it commits on the data repo's `builder/prices` branch,
+in its own sparse worktree, and the builder fast-forwards `main` to it between
+builds, only while `main` is checked out with no uncommitted changes. `sim builder status` shows the last
 fetch, prices waiting to merge and why, and any symbol that keeps failing;
 `sim builder prices` fetches now. `sim builder install --no-prices`, or
 `ANALYSIS_PRICE_FETCH=off`, turns the fetches off.
