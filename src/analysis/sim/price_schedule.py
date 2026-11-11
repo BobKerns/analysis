@@ -463,7 +463,7 @@ def install_timer(data_dir: Path, sim: Path, *, run: Runner = _run,
     whether or not anything starts the builder. Replaces the timer of
     this data dir if there is one. Returns a line saying what it did."""
     if switched_off():
-        return f"price fetches are off ({SWITCH_ENV}=off): no timer installed"
+        return f"price fetches are off here ({SWITCH_ENV}=off): the timer is left as it is"
     command = _timer_command(sim, data_dir)
     if platform == "darwin":
         plist = _plist_path(data_dir)

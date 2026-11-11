@@ -983,6 +983,30 @@ def load_test_scenario(test_data_dir: Path, intent_dir: Path) -> Callable[[str],
     return _load
 
 
+CommitFiles = Callable[..., str]
+
+
+def _commit_files(repo: git.Repo, files: Mapping[str, str] | None = None,
+                  message: str = "edit") -> str:
+    """Write ``files`` (paths relative to the repo's top) into ``repo``,
+    commit everything there as a test author, and return the commit."""
+    root = Path(str(repo.working_tree_dir))
+    for name, text in (files or {}).items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    repo.git.add(A=True)
+    actor = git.Actor("t", "t@t")
+    return repo.index.commit(message, author=actor, committer=actor).hexsha
+
+
+@pytest.fixture
+def commit_files() -> CommitFiles:
+    """``commit_files(repo, {path: text}, message)``: write the files into a
+    test's git repo (a ``code_repo``, ``data_repo_sim``'s, ``commit_test_data``'s)
+    and commit everything; returns the commit."""
+    return _commit_files
+
+
 @pytest.fixture(scope="function")
 def data_repo_sim(tmp_path: Path, test_data_dir: Path) -> Path:
     """The private data copy as a real data repo's ``sim/`` subtree: a git

@@ -15,14 +15,6 @@ from analysis.cli import main
 from analysis.sim import freshness
 
 
-def _commit(repo: git.Repo, files: dict[str, str], message: str) -> str:
-    root = Path(str(repo.working_tree_dir))
-    for name, text in files.items():
-        (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_text(text)
-    repo.git.add(A=True)
-    actor = git.Actor("t", "t@t")
-    return repo.index.commit(message, author=actor, committer=actor).hexsha
 
 
 @pytest.fixture
@@ -61,14 +53,15 @@ def test_sim_all_skips_scenarios_whose_runs_cannot_have_changed(
 
 
 def test_a_change_to_code_reruns_but_a_docs_commit_does_not(
+    commit_files: Callable[..., str],
     sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
 ) -> None:
     sim_all()
     stamp_runs(runs_dir)
-    _commit(code_repo, {"docs/guide.md": "two\n"}, "docs only")
+    commit_files(code_repo, {"docs/guide.md": "two\n"}, "docs only")
     assert _skipped(sim_all()) == ["base", "retire_alice"]
 
-    _commit(code_repo, {"src/engine.py": "v2\n"}, "engine change")
+    commit_files(code_repo, {"src/engine.py": "v2\n"}, "engine change")
     assert _skipped(sim_all()) == []
 
 
@@ -82,6 +75,7 @@ def test_uncommitted_code_always_reruns(
 
 
 def test_a_data_change_reruns_only_the_scenarios_that_read_it(
+    commit_files: Callable[..., str],
     sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None],
     runs_dir: Path, test_data_dir: Path,
 ) -> None:
@@ -92,7 +86,7 @@ def test_a_data_change_reruns_only_the_scenarios_that_read_it(
     readme.write_text("a note\n")
     assert _skipped(sim_all()) == ["base"]  # retire_alice's data is dirty
 
-    _commit(data, {}, "a note")
+    commit_files(data, {}, "a note")
     assert _skipped(sim_all()) == ["base"]  # changed since its run
     stamp_runs(runs_dir)
     assert _skipped(sim_all()) == ["base", "retire_alice"]
@@ -111,6 +105,7 @@ def test_a_run_made_from_dirty_code_is_never_trusted(
 
 @pytest.mark.slow
 def test_an_ensemble_batch_of_another_size_reruns(
+    commit_files: Callable[..., str],
     sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
     test_data_dir: Path, intent_dir: Path,
 ) -> None:
@@ -124,7 +119,7 @@ def test_an_ensemble_batch_of_another_size_reruns(
     sim("calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
         "--scenario", "recipe", "--name", "checking_rate_vary", "--vary-target", "amount",
         "--vary-distribution", "uniform", "--vary-low", "4.0", "--vary-high", "5.0")
-    _commit(git.Repo(test_data_dir), {}, "recipe")
+    commit_files(git.Repo(test_data_dir), {}, "recipe")
     result = CliRunner().invoke(main, [
         "sim", "run", "recipe", "--ensemble-size", "3", "--data-dir", str(test_data_dir),
         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir), "--allow-dirty-code"])
@@ -149,6 +144,7 @@ def test_a_batch_with_unreadable_state_reruns(
 
 
 def test_a_disabled_scenario_is_not_built_and_changes_no_child(
+    commit_files: Callable[..., str],
     sim_all: Callable[..., str], code_repo: git.Repo, stamp_runs: Callable[[Path], None],
     runs_dir: Path, test_data_dir: Path,
 ) -> None:
@@ -160,7 +156,7 @@ def test_a_disabled_scenario_is_not_built_and_changes_no_child(
     result = CliRunner().invoke(main, ["sim", "scenario", "disable", "base",
                                        "--data-dir", str(test_data_dir)])
     assert result.exit_code == 0, result.output
-    _commit(git.Repo(test_data_dir), {}, "disable base")
+    commit_files(git.Repo(test_data_dir), {}, "disable base")
     output = sim_all()
     assert "disabled, not built: base" in output
     assert "=== base ===" not in output
@@ -169,6 +165,7 @@ def test_a_disabled_scenario_is_not_built_and_changes_no_child(
 
 @pytest.mark.slow
 def test_a_sensitivity_batch_is_current_until_its_inputs_change(
+    commit_files: Callable[..., str],
     code_repo: git.Repo, stamp_runs: Callable[[Path], None], runs_dir: Path,
     commit_test_data: Callable[[], Path], intent_dir: Path,
 ) -> None:
@@ -183,7 +180,7 @@ def test_a_sensitivity_batch_is_current_until_its_inputs_change(
     sim("calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
         "--scenario", "recipe", "--name", "checking_rate_vary", "--vary-target", "amount",
         "--vary-distribution", "uniform", "--vary-low", "4.0", "--vary-high", "5.0")
-    _commit(git.Repo(data_dir), {}, "recipe")
+    commit_files(git.Repo(data_dir), {}, "recipe")
     code = freshness.code_tree_of(code_repo)
     assert freshness.unchanged_run(data_dir, runs_dir, "recipe", code, mode="sensitivity") is None
     sim("run", "recipe", "--sensitivity", "--intent-dir", str(intent_dir),
@@ -193,5 +190,5 @@ def test_a_sensitivity_batch_is_current_until_its_inputs_change(
     assert fresh is not None and fresh.path.parent == runs_dir / "recipe" / "sensitivity"
     # The Monte Carlo side has nothing yet.
     assert freshness.unchanged_run(data_dir, runs_dir, "recipe", code) is None
-    _commit(git.Repo(data_dir), {"scenarios/recipe/README.md": "changed\n"}, "edit")
+    commit_files(git.Repo(data_dir), {"scenarios/recipe/README.md": "changed\n"}, "edit")
     assert freshness.unchanged_run(data_dir, runs_dir, "recipe", code, mode="sensitivity") is None

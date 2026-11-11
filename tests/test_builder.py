@@ -17,14 +17,6 @@ from analysis.sim import builder, freshness, locks, provenance
 from analysis.sim.builder import BuilderPaths
 
 
-def _commit(repo: git.Repo, files: dict[str, str], message: str) -> None:
-    root = Path(str(repo.working_tree_dir))
-    for name, text in files.items():
-        (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_text(text)
-    repo.git.add(A=True)
-    actor = git.Actor("t", "t@t")
-    repo.index.commit(message, author=actor, committer=actor)
 
 
 @pytest.fixture
@@ -33,16 +25,17 @@ def builder_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_builds_only_from_committed_code_matching_main(
+    commit_files: Callable[..., str],
     code_repo: git.Repo, builder_on: None,
 ) -> None:
     trees, reason = builder.main_check()
     assert trees is not None and reason is None
 
     code_repo.git.checkout("-b", "feature")
-    _commit(code_repo, {"docs/guide.md": "two\n"}, "docs only")
+    commit_files(code_repo, {"docs/guide.md": "two\n"}, "docs only")
     assert builder.main_check()[0] == trees  # docs aren't code paths
 
-    _commit(code_repo, {"src/engine.py": "v2\n"}, "code")
+    commit_files(code_repo, {"src/engine.py": "v2\n"}, "code")
     assert builder.main_check() == (None, "code (src, templates, pyproject.toml, uv.lock) differs from main")
     assert builder.main_check("feature")[0] is not None  # the workspace's branch
     assert builder.main_check("nope") == (None, "no local nope branch")
@@ -107,6 +100,7 @@ def test_install_refuses_when_a_hook_has_nowhere_to_move(pair: tuple[Path, Path]
 
 
 def test_a_reader_asks_again_once_a_repo_changes(
+    commit_files: Callable[..., str],
     pair: tuple[Path, Path], builder_on: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _code, data_dir = pair
@@ -118,7 +112,7 @@ def test_a_reader_asks_again_once_a_repo_changes(
     builder.await_fresh(runs, "base")
     assert asked == ["base"]  # nothing changed in between
     time.sleep(0.01)
-    _commit(git.Repo(data_dir.parent), {"sim/notes.md": "x\n"}, "a data commit")
+    commit_files(git.Repo(data_dir.parent), {"sim/notes.md": "x\n"}, "a data commit")
     builder.await_fresh(runs, "base")
     assert asked == ["base", "base"]
     time.sleep(0.01)
@@ -418,6 +412,7 @@ def test_a_build_a_reader_asks_for_while_it_runs_is_not_preempted(
 
 @pytest.mark.slow
 def test_an_edit_cancels_the_build_and_its_dependents_wait_for_a_commit(
+    commit_files: Callable[..., str],
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Editing base makes its build, and retire_alice's (built on it), stale:
@@ -427,7 +422,7 @@ def test_an_edit_cancels_the_build_and_its_dependents_wait_for_a_commit(
     from analysis.cli import main
 
     data_repo = git.Repo(daemon.data_dir.parent)
-    _commit(data_repo, {}, "the scenarios")
+    commit_files(data_repo, {}, "the scenarios")
     monkeypatch.setenv("FAKE_BUILD", "30 0")
     daemon.first = ["base"]
     daemon.scan()
@@ -771,22 +766,22 @@ def test_a_sensitivity_reader_waits_only_for_the_sensitivity_batch(
 # -- #306: saying when local main is behind the last-fetched origin/main --------
 
 
-def _fetched_upstream(repo: git.Repo, files: dict[str, str]) -> None:
+def _fetched_upstream(commit_files: Callable[..., str], repo: git.Repo, files: dict[str, str]) -> None:
     """``origin/main`` as if a fetch had brought a commit with ``files``,
     leaving local main where it is."""
     fetched = "refs/remotes/origin/main" in [ref.path for ref in repo.refs]
     repo.git.checkout("-B", "upstream", "origin/main" if fetched else "main")
-    _commit(repo, files, "upstream")
+    commit_files(repo, files, "upstream")
     repo.git.update_ref("refs/remotes/origin/main", "upstream")
     repo.git.checkout("main")
     (Path(repo.git_dir) / "FETCH_HEAD").write_text("")
 
 
-def test_main_behind_counts_only_code_commits(code_repo: git.Repo) -> None:
+def test_main_behind_counts_only_code_commits(commit_files: Callable[..., str], code_repo: git.Repo) -> None:
     assert builder.behind_upstream() is None  # nothing fetched to compare with
-    _fetched_upstream(code_repo, {"docs/guide.md": "two\n"})
+    _fetched_upstream(commit_files, code_repo, {"docs/guide.md": "two\n"})
     assert builder.behind_upstream() is None  # docs don't change a build
-    _fetched_upstream(code_repo, {"src/engine.py": "v2\n"})
+    _fetched_upstream(commit_files, code_repo, {"src/engine.py": "v2\n"})
     behind = builder.behind_upstream()
     assert behind is not None and (behind.branch, behind.upstream, behind.commits) == ("main", "origin/main", 1)
     assert behind.describe() == ("local main is 1 commit behind origin/main in src, templates, "
@@ -795,8 +790,8 @@ def test_main_behind_counts_only_code_commits(code_repo: git.Repo) -> None:
     assert builder.behind_upstream() is None
 
 
-def test_main_behind_follows_the_tracking_branch(code_repo: git.Repo) -> None:
-    _fetched_upstream(code_repo, {"src/engine.py": "v2\n"})
+def test_main_behind_follows_the_tracking_branch(commit_files: Callable[..., str], code_repo: git.Repo) -> None:
+    _fetched_upstream(commit_files, code_repo, {"src/engine.py": "v2\n"})
     code_repo.git.update_ref("refs/remotes/mirror/main", "main")
     code_repo.git.config("branch.main.remote", "mirror")
     code_repo.git.config("branch.main.merge", "refs/heads/main")
@@ -804,13 +799,14 @@ def test_main_behind_follows_the_tracking_branch(code_repo: git.Repo) -> None:
 
 
 def test_a_behind_main_is_noted_once_where_the_builder_builds_from_it(
+    commit_files: Callable[..., str],
     pair: tuple[Path, Path], code_repo: git.Repo, builder_on: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _code, data_dir = pair
     paths = BuilderPaths.for_data(data_dir)
     monkeypatch.setattr(builder, "_noted_behind", set())
     notes: list[str] = []
-    _fetched_upstream(code_repo, {"src/engine.py": "v2\n"})
+    _fetched_upstream(commit_files, code_repo, {"src/engine.py": "v2\n"})
     builder.note_behind(paths.state_dir, notes.append)
     assert notes == []  # not installed: the builder isn't building from main
     builder.install(data_dir)
@@ -853,6 +849,7 @@ def test_the_daemon_fetches_prices_when_due_and_waits_for_the_fetch(
 
 
 def test_the_daemon_merges_fetched_prices_only_between_builds(
+    commit_files: Callable[..., str],
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from datetime import date, timedelta
@@ -870,7 +867,7 @@ def test_the_daemon_merges_fetched_prices_only_between_builds(
     builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir), "prices": True})
     (daemon.data_dir / "securities.csv").write_text("symbol,name\nVTI,Total market\n")
     with git.Repo(daemon.data_dir.parent) as repo:
-        _commit(repo, {}, "VTI")
+        commit_files(repo, {}, "VTI")
         before = repo.head.commit.hexsha
         price_schedule.fetch(daemon.data_dir, daemon.paths.prices_worktree, provider=OneClose())
         daemon.fetch_ended = time.monotonic()  # no fetch of its own in this test

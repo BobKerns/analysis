@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import plistlib
 import subprocess
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -45,21 +45,13 @@ def fetching(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(price_schedule.SWITCH_ENV, raising=False)
 
 
-def _commit(repo: git.Repo, files: dict[str, str], message: str) -> None:
-    root = Path(str(repo.working_tree_dir))
-    for name, text in files.items():
-        (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_text(text)
-    repo.git.add(A=True)
-    actor = git.Actor("t", "t@t")
-    repo.index.commit(message, author=actor, committer=actor)
 
 
 @pytest.fixture
-def priced(data_repo_sim: Path) -> Generator[tuple[Path, git.Repo]]:
+def priced(commit_files: Callable[..., str], data_repo_sim: Path) -> Generator[tuple[Path, git.Repo]]:
     """The data repo with one symbol already priced: (sim dir, repo)."""
     with git.Repo(data_repo_sim.parent) as repo:
-        _commit(repo, {"sim/prices/security_price__VTI.csv":
+        commit_files(repo, {"sim/prices/security_price__VTI.csv":
                        "effective_date,price\n2025-12-31,300.00\n"}, "VTI")
         yield data_repo_sim, repo
 
@@ -143,13 +135,14 @@ def test_the_merge_waits_for_main_to_be_clean_and_checked_out(
 
 
 def test_when_main_moves_first_the_fetched_commit_moves_onto_it(
+    commit_files: Callable[..., str],
     priced: tuple[Path, git.Repo], fetching: None,
 ) -> None:
     data, repo = priced
     (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
     first = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
     repo.git.checkout("sim/persons.csv")
-    _commit(repo, {"sim/notes.txt": "an edit\n"}, "the user's commit")
+    commit_files(repo, {"sim/notes.txt": "an edit\n"}, "the user's commit")
 
     assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
     assert repo.head.commit.hexsha != first.committed  # picked onto the user's commit
@@ -161,13 +154,14 @@ def test_when_main_moves_first_the_fetched_commit_moves_onto_it(
 
 
 def test_a_fetched_commit_that_no_longer_applies_is_fetched_again(
+    commit_files: Callable[..., str],
     priced: tuple[Path, git.Repo], fetching: None,
 ) -> None:
     data, repo = priced
     (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
     price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
     repo.git.checkout("sim/persons.csv")
-    _commit(repo, {"sim/prices/security_price__VTI.csv":
+    commit_files(repo, {"sim/prices/security_price__VTI.csv":
                    "effective_date,price\n2025-12-31,301.00\n"}, "a correction by hand")
 
     assert price_schedule.merge_pending(data, _worktree(data)) is None
@@ -199,13 +193,14 @@ def test_prices_merged_by_hand_are_no_longer_pending(
 
 
 def test_a_repo_with_no_prices_folder_and_nothing_to_fetch_still_succeeds(
+    commit_files: Callable[..., str],
     data_repo_sim: Path, fetching: None,
 ) -> None:
     import shutil
 
     with git.Repo(data_repo_sim.parent) as repo:
         shutil.rmtree(data_repo_sim / "prices")
-        _commit(repo, {}, "no prices folder")
+        commit_files(repo, {}, "no prices folder")
     outcome = price_schedule.fetch(data_repo_sim, _worktree(data_repo_sim),
                                    provider=FakeProvider(), now=NOW)
     assert outcome.lines == ["no symbols to fetch", "no new prices"]
@@ -233,10 +228,11 @@ def test_state_writes_keep_each_others_keys_and_leave_no_temp_files(
 
 
 def test_a_failing_symbol_is_recorded_and_does_not_stop_the_others(
+    commit_files: Callable[..., str],
     priced: tuple[Path, git.Repo], fetching: None,
 ) -> None:
     data, repo = priced
-    _commit(repo, {"sim/securities.csv": "symbol,name\nBAD,Gone fund\n"}, "BAD")
+    commit_files(repo, {"sim/securities.csv": "symbol,name\nBAD,Gone fund\n"}, "BAD")
     outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
     assert "BAD: no such symbol (no lot holds it)" in outcome.lines
     assert outcome.committed  # VTI still fetched
@@ -319,7 +315,7 @@ def test_install_on_macos_loads_an_hourly_launch_agent(
 def test_tests_never_fetch_or_install_a_timer(priced: tuple[Path, git.Repo]) -> None:
     data, _ = priced
     assert price_schedule.switched_off()
-    assert "no timer" in price_schedule.install_timer(data, Path("sim"), run=_fake_run([], []))
+    assert "left as it is" in price_schedule.install_timer(data, Path("sim"), run=_fake_run([], []))
     assert not price_schedule.enabled({"prices": True})
     out = CliRunner().invoke(sim_group_command, ["builder", "prices", "--data-dir", str(data)])
     assert "aren't installed" in out.output  # no builder config either

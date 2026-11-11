@@ -18228,7 +18228,9 @@ def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Pat
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
         click.echo(line)
-    if price_schedule.enabled(builder.read_config(builder.BuilderPaths.for_data(resolved))):
+    # By the recorded choice alone: ANALYSIS_PRICE_FETCH=off is for one shell
+    # (an agent's, a test's), so install_timer then leaves the timer as it is.
+    if (builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}).get("prices", True):
         click.echo(price_schedule.install_timer(resolved, _builder_sim(resolved)))
     elif line := price_schedule.uninstall_timer(resolved):
         click.echo(line)
