@@ -1512,6 +1512,13 @@ written against, are in
 
 ### 4.17 Spend less after bad years (spending strategies)
 
+**Video.** *Spending strategies* walks through this section with Alice
+and Bill: travel tagged as optional spending, the plan as written across
+eighty futures, and the threshold, guardrail, ceiling and floor, and VPW
+strategies side by side:
+[English](https://www.youtube.com/watch?v=Hv4B9sdu4PY),
+[Japanese (日本語)](https://www.youtube.com/watch?v=FgyPqniorvk).
+
 Your scheduled rules spend the same inflation-indexed amount every year,
 whatever the markets do. A **spending strategy** changes that: it owns the
 rules carrying a tag and decides, each January, how much of their budget to
