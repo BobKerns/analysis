@@ -1,12 +1,13 @@
 """The pieces the built-in tax calculators share (#507): the year's income
 summed from its items, capital-loss netting, a Schedule C, an HSA a state
-taxes, Social Security taxation, the brackets' tax, and a state's
-retirement income exclusions."""
+taxes, Social Security taxation, the brackets' tax, a state's retirement income
+exclusions, and its own deductions and credits."""
 
 from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, NamedTuple
 
@@ -422,8 +423,18 @@ def _exclusion_income(row: Mapping[str, Any]) -> list[str]:
     return kinds
 
 
+def _yes(value: Any) -> bool:
+    """A yes/no cell (``less_ss``, ``per_person``): ``yes`` or ``true``."""
+    return str(value or "").strip().lower() in ("yes", "true")
+
+
 def _exclusion_less_ss(row: Mapping[str, Any]) -> bool:
-    return str(row.get("less_ss") or "").strip().lower() in ("yes", "true")
+    return _yes(row.get("less_ss"))
+
+
+def age_months(born: date | None, year: int) -> int | None:
+    """Whole months of age on December 31 of ``year``; None without a birthdate."""
+    return None if born is None else (year - born.year) * 12 + 12 - born.month
 
 
 def household(ty: TaxYear) -> dict[str, date | None]:
@@ -470,7 +481,7 @@ def retirement_exclusion(
         for person in people:
             born = birthdates[person]
             # Whole months of age on December 31.
-            months = None if born is None else (ty.year - born.year) * 12 + 12 - born.month
+            months = age_months(born, ty.year)
             reached = [
                 r for r in name_rows
                 if months is not None and months >= _exclusion_age_months(r)
@@ -650,3 +661,107 @@ def ordinary_taxable(taxable: int, ltcg: int, stcg: int, separate_stcg: bool) ->
 
 def band_tax(low: int, high: int, table: Sequence[tuple[int, int]]) -> int:
     return progressive_tax(high, table) - progressive_tax(low, table)
+
+
+# -- A state's own deductions and credits (#511, #488) ------------------------
+
+_ADJUSTMENT_INCOME_CHARACTERS: tuple[str, ...] = (
+    "ordinary", "tax_deferred_out", "roth_nonqualified", registries.BUSINESS_INCOME,
+)
+"""The characters of the tagged income a ``state_adjustments`` row with
+base ``income`` counts: what a state taxes as ordinary income (a pension,
+a retirement account's distribution, an early Roth one, business
+receipts)."""
+
+
+@dataclass(frozen=True)
+class StateAdjustment:
+    """One ``state_adjustments`` line for the year (#511): its figure before
+    the household income test, which :meth:`after_income_test` applies."""
+    name: str
+    step: str
+    base: str
+    figure: int
+    """What the row grants before the income test, from its fixed base
+    (spending, income, filers); for a federal base, its rate and cap
+    applied by :meth:`from_federal`."""
+    rate_micros: int | None
+    cap: int | None
+    income_limit: int | None
+    phaseout: int | None
+    phaseout_rate_micros: int | None
+    units: int = 1
+    """How many exemptions a ``filers`` line is: ``phaseout_rate`` takes its
+    share of each dollar over from each, as California's does."""
+
+    def from_federal(self, amount: int) -> int:
+        """The figure for a ``federal_tax`` or ``federal_deduction`` base."""
+        value = max(0, amount)
+        if self.rate_micros is not None:
+            value = value * self.rate_micros // 1_000_000
+        return value if self.cap is None else min(value, self.cap)
+
+    def after_income_test(self, figure: int, income: int) -> int:
+        """``figure`` less what the household's ``income`` takes away: all of
+        it over ``income_limit``, in a straight line to nothing over
+        ``phaseout`` dollars, or ``phaseout_rate`` of each dollar over."""
+        if self.income_limit is None or income <= self.income_limit:
+            return figure
+        over = income - self.income_limit
+        if self.phaseout_rate_micros is not None:
+            return max(0, figure - over * self.phaseout_rate_micros * self.units // 1_000_000)
+        if self.phaseout:
+            return max(0, figure - figure * over // self.phaseout)
+        return 0
+
+
+def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustment]:
+    """``state``'s own deductions and credits for the year (#511, #488),
+    from the ``kind`` table in force (``state_adjustments__<state>``): one
+    per ``name``, the row for the year's filing status (or a blank one).
+    Each row's base is figured here, except a federal one, which needs the
+    federal return of a what-if."""
+    rows = [r for r in ty.indexed(kind, state)
+            if not r.get("filing_status") or r.get("filing_status") == ty.filing_status]
+    # A row for the filing status wins over a blank one of the same name.
+    chosen: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row["name"])
+        if name not in chosen or (row.get("filing_status") and not chosen[name].get("filing_status")):
+            chosen[name] = row
+    birthdates = household(ty)
+    # A return has two filers only when joint: after a death the survivor
+    # files alone (which of the two the model can't tell, so their ages
+    # count as the household's).
+    filers = 2 if ty.filing_status == "MFJ" else 1
+    out = []
+    for name, row in chosen.items():
+        min_months = _exclusion_age_months(row)
+        eligible = min(filers, sum(
+            1 for born in birthdates.values()
+            if min_months == 0
+            or (age_months(born, ty.year) or 0) >= min_months))
+        amount = None if row.get("amount") is None else int(row["amount"])
+        base, rate = str(row["base"]), row.get("rate_micros")
+        cap = amount if amount is None or not _yes(row.get("per_person")) else amount * eligible
+        if base == "filers":
+            figure = (amount or 0) * eligible
+        elif base in ("spending", "income"):
+            tag = str(row.get("tag") or "")
+            raw = ty.spent(tag) if base == "spending" else sum(
+                i.amount for i in ty.tagged(tag) if i.character in _ADJUSTMENT_INCOME_CHARACTERS)
+            figure = max(0, raw) if rate is None else max(0, raw) * int(rate) // 1_000_000
+            figure = figure if cap is None else min(figure, cap)
+        else:
+            figure = 0
+        if eligible == 0 and birthdates:
+            figure, cap = 0, 0  # no filer has reached its age
+        limit, phaseout, phaseout_rate = (row.get("income_limit"), row.get("phaseout"),
+                                          row.get("phaseout_rate_micros"))
+        out.append(StateAdjustment(
+            name, str(row["step"]), base, figure,
+            None if rate is None else int(rate), cap,
+            None if limit is None else int(limit), None if phaseout is None else int(phaseout),
+            None if phaseout_rate is None else int(phaseout_rate),
+            units=eligible if base == "filers" else 1))
+    return out

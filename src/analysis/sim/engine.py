@@ -4215,6 +4215,7 @@ def _indexed_tax_rows(
         for column, money in by_kind.items()
     }
     effective = _parse_date(max(e for e, _ in aux[(kind, series)] if e <= as_of))
+    step = registries.TAX_INDEX_ROUNDING.get(kind, _TAX_INDEX_ROUNDING)
     january = date(tax_year, 1, 31)
     out = []
     for row in rows:
@@ -4227,7 +4228,7 @@ def _indexed_tax_rows(
                 continue
             factor = _cumulative_inflation_factor(aux, str(growth), base, january, cache)
             amount = int(row[money]) * factor // 1_000_000
-            grown = {**grown, money: amount // _TAX_INDEX_ROUNDING * _TAX_INDEX_ROUNDING}
+            grown = {**grown, money: amount // step * step}
         out.append(grown)
     return out
 

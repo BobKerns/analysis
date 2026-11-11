@@ -2154,8 +2154,11 @@ def test_state_social_security_table_taxes_it(
             years = [r[0] for r in con.execute(
                 "SELECT year FROM tax_year_summary "
                 "WHERE bucket = 'state_ss_benefits' AND amount > 0 ORDER BY year")]
+            # Before credits (California's exemption credits, #488), which
+            # can take a small tax to nothing either way.
             return {y: (_summary(con, y, "state_ss_taxable"),
-                        _summary(con, y, "state_tax")) for y in years}
+                        _summary(con, y, "state_tax") + _summary(con, y, "state_credits"))
+                    for y in years}
         finally:
             con.close()
             run.unlink()  # run_test_copy writes the same file each time

@@ -3,7 +3,8 @@ from federal AGI (#508) and adjusts it by tables keyed by the state
 the household lives in that year (``residence.csv``, #509): qualified dividends as ordinary income, an HSA it
 taxes, its own capital-gain netting and exclusion, retirement exclusions and
 a Social Security exclusion; then its deduction, brackets, gain tables
-and surcharge. A local tax on it is :mod:`analysis.sim.taxes.local`."""
+and surcharge; and its own deductions and credits (``state_adjustments``,
+#511). A local tax on it is :mod:`analysis.sim.taxes.local`."""
 
 from __future__ import annotations
 
@@ -74,6 +75,11 @@ class StateTablesYear(FederalStateYear):
         # is its own jurisdiction (local_bands, #508).
         self._surcharge = common.rate_table(ty, registries.STATE_SURCHARGE, series)
 
+        # The state's own deductions and credits (#511, #488): a renter's
+        # deduction, an exemption, a deduction for federal tax paid. Each is
+        # a named line at its step.
+        self._adjustments = common.state_adjustments(ty, params.adjustments_aux, series)
+
     def deductions(self) -> Mapping[str, int]:
         ty, params = self.ty, self.ty.params
         standard_aux = params.standard_deduction_aux
@@ -128,7 +134,38 @@ class StateTablesYear(FederalStateYear):
         off_ordinary, off_ltcg, off_short = self._exclusion.split(ordinary, ltcg, net_gain)
         retirement = Adjustment(
             "retirement_exclusion", ordinary=off_ordinary - off_short, stcg=off_short, ltcg=off_ltcg)
-        return exclusion, retirement, Adjustment("ss_difference", ss=income.ss - self._taxable_ss(basis))
+        ss = Adjustment("ss_difference", ss=income.ss - self._taxable_ss(basis))
+        # The table's subtractions come off ordinary income, tested against
+        # the income before them, and never take it below zero.
+        left = income.ordinary - exclusion.ordinary - retirement.ordinary - retirement.stcg
+        test = income.agi - exclusion.value - retirement.value - ss.value
+        own = []
+        for line, amount in self._adjusted("subtraction", test, basis).items():
+            amount = min(amount, max(0, left))
+            left -= amount
+            own.append(Adjustment(line, ordinary=amount))
+        return (exclusion, retirement, ss, *own)
+
+    def _adjusted(self, step: str, income: int, basis: Basis) -> dict[str, int]:
+        """The table's lines at ``step``, after the household income test on
+        ``income``."""
+        out = {}
+        for a in self._adjustments:
+            if a.step != step:
+                continue
+            figure = a.figure
+            if a.base == "federal_tax":
+                figure = a.from_federal(basis.federal["tax"])
+            elif a.base == "federal_deduction":
+                figure = a.from_federal(basis.federal["deduction"])
+            out[a.name] = a.after_income_test(figure, income)
+        return out
+
+    def other_deductions(self, income: Income, basis: Basis) -> Mapping[str, int]:
+        return self._adjusted("deduction", income.agi, basis)
+
+    def credit_lines(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
+        return self._adjusted("credit", income.agi, basis)
 
     def _taxable_ss(self, basis: Basis) -> int:
         """The state's taxable Social Security: none, or by its table the
@@ -187,5 +224,6 @@ class StateTables(StateFromFederal):
         ltcg_bracket_aux: str = registries.STATE_LTCG_BRACKETS
         stcg_bracket_aux: str = registries.STATE_STCG_BRACKETS
         ltcg_exclusion_aux: str = registries.STATE_LTCG_EXCLUSION
+        adjustments_aux: str = registries.STATE_ADJUSTMENTS
         nol_limit_percent: int | None = None
         """How much of taxable income a carried-in NOL may offset; 100 by default."""
