@@ -6,6 +6,7 @@ a Roth step that would pay taxed earnings unless no later step can pay."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
@@ -66,7 +67,7 @@ def _run(load: Callable[[], LoadResult], runs_dir: Path) -> Path:
 
 def _legs(run: Path, account: str = ROTH) -> list[tuple[str, str, int, str]]:
     """Every leg out of ``account`` that isn't a growth or tax flow."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT te.date, ta.name, te.amount, te.tax_character FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account JOIN account ta ON ta.id = te.to_account "
@@ -82,7 +83,7 @@ def test_each_owner_has_one_clock_from_their_earliest_roth_year(
     young_roth()
     # A conversion lot of 2026 doesn't restart the clock that began in 2024.
     add_account_value(ROTH, lot="conv_2026", acquired="2026-03-01", opening_balance="1000.00")
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         lots = engine._roth_lots(con, {"alice": date(1965, 3, 15), "bill": date(1967, 8, 20)})
         names = dict(con.execute(
             "SELECT m.id, a.name || ':' || m.lot FROM account_lot m JOIN account a ON a.id = m.account_id"
@@ -119,7 +120,7 @@ def test_nonqualified_earnings_are_ordinary_income(
     append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1=ROTH, lot_1="default",
                         account_2="Asset_Checking", amount="70000.00")
     run = _run(load_test_copy, runs_dir)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con, con:
         ordinary, _ss, _qualified = income_buckets(tax_year_of(con, 2027))
         con.execute("DELETE FROM transfer_event WHERE tax_character = 'roth_nonqualified'")
         without, _ss, _qualified = income_buckets(tax_year_of(con, 2027))
@@ -250,7 +251,7 @@ def test_the_basis_in_a_roth_draw_never_exceeds_the_draw(
 
 def _bases(run: Path, month: str) -> dict[str, int]:
     """Each Roth lot's basis at ``month``'s end, by lot name."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return dict(con.execute(
             "SELECT m.lot, ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
             "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
@@ -354,7 +355,7 @@ def roth_survivor(set_scenario_meta: Callable[..., None]) -> Callable[[str], Non
 
 def _qualified(load: Callable[[], LoadResult], account: str, on: str) -> bool:
     """Whether a distribution from ``account``'s default lot on ``on`` is qualified."""
-    with sqlite3.connect(load().intent_path) as con:
+    with closing(sqlite3.connect(load().intent_path)) as con:
         birthdates = {p: date.fromisoformat(b) for p, b in con.execute(
             "SELECT id, birthdate FROM person WHERE birthdate != ''")}
         (lot,) = con.execute(

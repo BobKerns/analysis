@@ -6,6 +6,7 @@ its brackets, so a year reads those of the state it is filed in (#509)."""
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -42,7 +43,7 @@ def state_gains(
             "name,from_account,to_account,amount,tax_character\n" + "\n".join(rows) + "\n")
         run = run_scenario(load_test_copy().intent_path, runs_dir / f"r{next(runs)}.sqlite3",
                            run_by="test", allow_dirty_data=True, allow_dirty_code=True)
-        with sqlite3.connect(run) as con:
+        with closing(sqlite3.connect(run)) as con:
             return dict(con.execute(
                 "SELECT bucket, amount FROM tax_year_summary WHERE year = 2026").fetchall())
     return _run
@@ -185,7 +186,7 @@ def test_a_move_to_another_state_takes_its_gain_rules(
             account_2="Asset_Checking", amount="10000.00", tax_character="ltcg")
     run = runs_dir / "move.sqlite3"
     run_scenario(load_test_copy().intent_path, run, run_by="test", allow_dirty_data=True)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         exclusion = dict(con.execute(
             "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_ltcg_exclusion'"
         ).fetchall())
@@ -215,7 +216,7 @@ def test_a_move_to_a_state_whose_gain_rule_starts_later_applies_it_from_then(
             account_2="Asset_Checking", amount="10000.00", tax_character="ltcg")
     run = runs_dir / "later.sqlite3"
     run_scenario(load_test_copy().intent_path, run, run_by="test", allow_dirty_data=True)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         exclusion = dict(con.execute(
             "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_ltcg_exclusion'"
         ).fetchall())

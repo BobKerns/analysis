@@ -5,6 +5,7 @@ person's retirement income off the state's taxable income."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -274,11 +275,13 @@ def test_tax_report_shows_the_exclusion(state_ira: Path, tmp_path: Path) -> None
 
     con, _ = _run(state_ira, tmp_path / "without")
     con.close()
-    assert "state_exclusion" not in tax_by_year(RunConnection(tmp_path / "without" / "r.sqlite3"))
+    with RunConnection(tmp_path / "without" / "r.sqlite3") as rc:
+        assert "state_exclusion" not in tax_by_year(rc)
     _exclusions(state_ira, "2025-01,retirement,retirement_account,,,,,,\n")
     con, _ = _run(state_ira, tmp_path / "with")
     con.close()
-    frame = tax_by_year(RunConnection(tmp_path / "with" / "r.sqlite3"))
+    with RunConnection(tmp_path / "with" / "r.sqlite3") as rc:
+        frame = tax_by_year(rc)
     columns = list(frame.columns)
     assert columns.index("state_exclusion") == columns.index("state_agi") - 1
     assert frame.loc[2026, "state_exclusion"] == 30_000
@@ -297,7 +300,7 @@ def test_hobby_receipts_stay_income_an_exclusion_covers(
                              loaded_by="test", allow_dirty_data=True)
         run_path = tmp_path / f"{scenario}.sqlite3"
         run_scenario(load.intent_path, run_path, run_by="test", allow_dirty_data=True)
-        with sqlite3.connect(run_path) as con:
+        with closing(sqlite3.connect(run_path)) as con:
             receipts = con.execute(
                 "SELECT SUM(amount) FROM transfer_event WHERE tax_character = 'business_income' "
                 "AND substr(date, 1, 4) = '2032'").fetchone()[0]

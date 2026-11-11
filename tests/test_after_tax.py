@@ -5,6 +5,7 @@ the ``--after-tax`` options."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -77,7 +78,7 @@ def test_unpaid_tax_is_owed_from_year_end_until_its_april_payment(
 def test_the_drawdown_taxes_every_cent_of_its_base(report_run_file: Path) -> None:
     """The yearly shares carry the remainder, so a tax of 100% on every
     share is the whole base, to the cent."""
-    with sqlite3.connect(report_run_file) as con:
+    with closing(sqlite3.connect(report_run_file)) as con:
         base, extra = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains: ordinary + gains)
     assert base and base % 10  # a remainder to carry
     assert extra == base
@@ -86,7 +87,7 @@ def test_the_drawdown_taxes_every_cent_of_its_base(report_run_file: Path) -> Non
 def test_each_share_is_priced_in_the_year_it_would_be_drawn(report_run_file: Path) -> None:
     """#404: 2030's year-end money is drawn over 2031-2040, each share on
     that year's income, not on top of 2030's own (a last paycheck)."""
-    with sqlite3.connect(report_run_file) as con:
+    with closing(sqlite3.connect(report_run_file)) as con:
         base, every_year = _drawdown_tax(con, 2030, lambda _year: lambda ordinary, gains: ordinary + gains)
         _, only_2031 = _drawdown_tax(
             con, 2030, lambda year: (lambda ordinary, gains: ordinary + gains) if year == 2031
@@ -105,7 +106,7 @@ def test_the_drawdown_waits_for_the_paychecks_to_end(report_run_file: Path) -> N
     def only(priced: int) -> Callable[[int], Callable[[int, int], int]]:
         return lambda year: (lambda ordinary, gains: ordinary + gains) if year == priced \
             else (lambda ordinary, gains: 0)
-    with sqlite3.connect(report_run_file) as con:
+    with closing(sqlite3.connect(report_run_file)) as con:
         base, in_2031 = _drawdown_tax(con, 2030, only(2031), paycheck_years={2031, 2032})
         _, in_2033 = _drawdown_tax(con, 2030, only(2033), paycheck_years={2031, 2032})
     assert base

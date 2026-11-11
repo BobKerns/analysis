@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -209,9 +210,10 @@ def test_a_named_life_table_is_read_for_that_person(
     recipe = load_test_copy().intent_path
     jp, bill = _distribution(recipe, "alice"), _distribution(recipe, "bill")
 
-    assert sqlite3.connect(recipe).execute(
-        "SELECT person, life_table FROM person_lifespan ORDER BY person").fetchall() == [
-        ("alice", "jp"), ("bill", None)]
+    with closing(sqlite3.connect(recipe)) as con:
+        assert con.execute(
+            "SELECT person, life_table FROM person_lifespan ORDER BY person").fetchall() == [
+            ("alice", "jp"), ("bill", None)]
     assert jp.central() == us.central() == 90
     # Japan's own table has a thinner tail than the US one read younger.
     assert jp.quantile(0.95) < us.quantile(0.95) - 1
@@ -258,7 +260,8 @@ def test_member_zero_dies_at_the_median_and_members_spread_around_it(
 ) -> None:
     write_lifespans("alice,80,life_table,,,,,")
     recipe = load_test_copy().intent_path
-    assert varying_names(sqlite3.connect(recipe)) == ["lifespan:alice"]
+    with closing(sqlite3.connect(recipe)) as con:
+        assert varying_names(con) == ["lifespan:alice"]
 
     assert _lifespan(_member(recipe, tmp_path, 0), "alice")[:3] == (80.0, "2045-03-31", None)
     ages = []
@@ -293,8 +296,9 @@ def test_an_oat_member_moves_a_life_table_lifespan_to_its_quantile(
 ) -> None:
     write_lifespans("alice,80,life_table,,,,,")
     recipe = load_test_copy().intent_path
-    assert oat_plan(varying_names(sqlite3.connect(recipe)), (0.1, 0.9))[1:] == [
-        {"lifespan:alice": 0.1}, {"lifespan:alice": 0.9}]
+    with closing(sqlite3.connect(recipe)) as con:
+        assert oat_plan(varying_names(con), (0.1, 0.9))[1:] == [
+            {"lifespan:alice": 0.1}, {"lifespan:alice": 0.9}]
 
     member = _member(recipe, tmp_path, 1, seed=None, overrides={"lifespan:alice": 0.9},
                      mode="sensitivity")

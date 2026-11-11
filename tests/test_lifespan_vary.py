@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -198,7 +199,8 @@ def test_members_draw_whole_month_ages_within_the_bounds(
 ) -> None:
     write_lifespans("alice,84,uniform,75,95,,,")
     recipe = load_test_copy().intent_path
-    assert varying_names(sqlite3.connect(recipe)) == ["lifespan:alice"]
+    with closing(sqlite3.connect(recipe)) as con:
+        assert varying_names(con) == ["lifespan:alice"]
 
     ages = []
     for index in range(1, 21):
@@ -232,7 +234,8 @@ def test_an_oat_member_moves_a_lifespan_to_its_quantile(
 ) -> None:
     write_lifespans("alice,84,uniform,75,95,,,", "bill,86,uniform,78,97,,,")
     recipe = load_test_copy().intent_path
-    plan = oat_plan(varying_names(sqlite3.connect(recipe)), (0.1, 0.9))
+    with closing(sqlite3.connect(recipe)) as con:
+        plan = oat_plan(varying_names(con), (0.1, 0.9))
     assert plan[1:] == [{"lifespan:alice": 0.1}, {"lifespan:alice": 0.9},
                         {"lifespan:bill": 0.1}, {"lifespan:bill": 0.9}]
 

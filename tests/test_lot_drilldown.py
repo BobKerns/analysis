@@ -5,6 +5,7 @@ controls and default recipe."""
 from __future__ import annotations
 
 import shutil
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -228,7 +229,7 @@ def _copy_recipe(runs_dir: Path, name: str, rename_lot: str | None = None) -> No
     if rename_lot is None:
         return
     for member in (runs_dir / name).glob("*/*/member_*.sqlite3"):
-        with sqlite3.connect(member) as con:
+        with closing(sqlite3.connect(member)) as con, con:
             con.execute("UPDATE account_lot SET lot = 'renamed' WHERE lot = ?", (rename_lot,))
 
 

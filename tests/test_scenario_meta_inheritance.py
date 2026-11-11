@@ -6,6 +6,7 @@ does, making the child a plain scenario (#169)."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -20,7 +21,7 @@ ROOT = "retire_alice"
 
 
 def _meta(intent_path: Path) -> dict[str, object]:
-    with sqlite3.connect(intent_path) as con:
+    with closing(sqlite3.connect(intent_path)) as con:
         (meta_json,) = con.execute("SELECT meta_json FROM scenario").fetchone()
     return json.loads(meta_json)
 
@@ -129,11 +130,11 @@ def test_sim_run_on_a_recipes_child_sized_zero_runs_its_base_case(
     assert not (runs_dir / "what_if").exists()
     query = ("SELECT amount, vary_distribution FROM calendar_event "
              "WHERE name = 'checking_rate_vary'")
-    with sqlite3.connect(intent_dir / "what_if.sqlite3") as con:
+    with closing(sqlite3.connect(intent_dir / "what_if.sqlite3")) as con:
         (authored, vary) = con.execute(query).fetchone()
     assert vary == "uniform"  # the load's own intent keeps the varying row
     # Resolved to the uniform's midpoint, 4.5%: the authored amount.
-    with sqlite3.connect(run_files[0]) as con:
+    with closing(sqlite3.connect(run_files[0])) as con:
         assert con.execute(query).fetchone() == (authored, None)
 
 

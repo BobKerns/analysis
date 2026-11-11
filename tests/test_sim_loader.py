@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import shutil
 import sqlite3
 from collections.abc import Callable
@@ -143,7 +144,7 @@ def test_scenario_csv_with_the_retired_account_model_column_still_loads(
         encoding="utf-8",
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    with sqlite3.connect(result.intent_path) as con:
+    with closing(sqlite3.connect(result.intent_path)) as con:
         assert con.execute('SELECT start, "end" FROM scenario').fetchone() == (
             "2026-05-31", "2040-12-31",
         )
@@ -177,8 +178,8 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
         "account", "account_lot", "scheduled_transaction",
         "calendar_event", "year_to_date",
     )
-    with sqlite3.connect(current.intent_path) as current_con, \
-            sqlite3.connect(tight.intent_path) as tight_con:
+    with closing(sqlite3.connect(current.intent_path)) as current_con, \
+            closing(sqlite3.connect(tight.intent_path)) as tight_con:
         for table in tables:
             current_count = current_con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             tight_count = tight_con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -480,7 +481,7 @@ def test_each_retirement_lot_grows_from_its_own_shelter(
                 opening_balance="0.00")
     pd.concat([lots, pd.DataFrame([lot])]).to_csv(lots_path, index=False)
 
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         rules = dict(con.execute(
             "SELECT s.name, c.name || ':' || s.tax_character FROM scheduled_transaction s "
             "JOIN chain c ON c.id = s.from_account WHERE s.name IN (?, ?)",
@@ -2061,17 +2062,17 @@ def test_month_columns_accept_year_month_and_land_on_month_end(
     write_aux("inflation__cpi.csv", "effective_date,annual_rate\n2021-01,1.4%\n")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(result.intent_path)
-    assert con.execute('SELECT start, "end" FROM scenario').fetchone() == ("2026-05-31", "2040-12-31")
-    assert con.execute(
-        "SELECT start, base_date FROM scheduled_transaction WHERE name = 'salary_alice'"
-    ).fetchone() == ("2026-05-31", "2026-05-31")
-    assert ("2029-03-31",) in con.execute(
-        "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bill'"
-    ).fetchall()
-    assert con.execute(
-        "SELECT effective_date FROM aux_table WHERE kind = 'inflation' AND series = 'cpi'"
-    ).fetchall() == [("2021-01-31",)]
+    with closing(sqlite3.connect(result.intent_path)) as con:
+        assert con.execute('SELECT start, "end" FROM scenario').fetchone() == ("2026-05-31", "2040-12-31")
+        assert con.execute(
+            "SELECT start, base_date FROM scheduled_transaction WHERE name = 'salary_alice'"
+        ).fetchone() == ("2026-05-31", "2026-05-31")
+        assert ("2029-03-31",) in con.execute(
+            "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bill'"
+        ).fetchall()
+        assert con.execute(
+            "SELECT effective_date FROM aux_table WHERE kind = 'inflation' AND series = 'cpi'"
+        ).fetchall() == [("2021-01-31",)]
 
 
 def test_month_column_that_is_not_a_month_is_reported(
@@ -2096,11 +2097,11 @@ def test_vary_date_bounds_bare_month_spans_the_month_full_date_is_exact(
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(result.intent_path)
-    assert con.execute(
-        "SELECT date, vary_low, vary_mode, vary_high FROM calendar_event "
-        "WHERE name = 'retire_bill_vary'"
-    ).fetchone() == ("2029-06-30", "2029-01-01", "2029-06-15", "2029-12-10")
+    with closing(sqlite3.connect(result.intent_path)) as con:
+        assert con.execute(
+            "SELECT date, vary_low, vary_mode, vary_high FROM calendar_event "
+            "WHERE name = 'retire_bill_vary'"
+        ).fetchone() == ("2029-06-30", "2029-01-01", "2029-06-15", "2029-12-10")
 
 
 def test_malformed_month_is_a_load_error_not_a_crash(
@@ -2136,16 +2137,16 @@ def test_biweekly_dates_keep_their_day(
                    cadence="biweekly", start="2026-05-08", end="2030-06-12")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(result.intent_path)
-    assert dict(
-        (name, (start, end)) for name, start, end in con.execute(
-            'SELECT name, start, "end" FROM scheduled_transaction '
-            "WHERE name IN ('salary_alice', 'salary_bill')"
-        )
-    ) == {
-        "salary_alice": ("2026-05-15", "2030-06-30"),
-        "salary_bill": ("2026-05-08", "2030-06-12"),
-    }
+    with closing(sqlite3.connect(result.intent_path)) as con:
+        assert dict(
+            (name, (start, end)) for name, start, end in con.execute(
+                'SELECT name, start, "end" FROM scheduled_transaction '
+                "WHERE name IN ('salary_alice', 'salary_bill')"
+            )
+        ) == {
+            "salary_alice": ("2026-05-15", "2030-06-30"),
+            "salary_bill": ("2026-05-08", "2030-06-12"),
+        }
 
 
 def test_biweekly_start_needs_a_full_date(
@@ -2164,10 +2165,10 @@ def test_retire_scheduled_date_keeps_its_day(
     append_calendar_row(date="2029-03-12", kind="retire_scheduled", scheduled_name="salary_bill")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(result.intent_path)
-    assert ("2029-03-12",) in con.execute(
-        "SELECT date FROM calendar_event WHERE kind = 'retire_scheduled'"
-    ).fetchall()
+    with closing(sqlite3.connect(result.intent_path)) as con:
+        assert ("2029-03-12",) in con.execute(
+            "SELECT date FROM calendar_event WHERE kind = 'retire_scheduled'"
+        ).fetchall()
 
 
 def test_vary_date_bound_rejects_iso_week_date(

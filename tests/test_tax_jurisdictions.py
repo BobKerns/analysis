@@ -6,6 +6,7 @@ in its month."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -109,7 +110,7 @@ def test_a_child_scenarios_tax_file_replaces_its_parents_whole(
     write_tax(test_child_scenario, start="2030-04")
     run = run_scenario(load_test_scenario("child"), runs_dir / "child.sqlite3", run_by="T",
                        allow_dirty_data=True, allow_dirty_code=True)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         [(start,)] = con.execute("SELECT start FROM tax_jurisdiction WHERE name = 'federal'")
         paid = [d for (d,) in con.execute(
             "SELECT DISTINCT date FROM transfer_event WHERE reason_kind = 'tax' ORDER BY date")]

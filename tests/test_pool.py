@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import json
 import sqlite3
 from collections import Counter
@@ -267,7 +268,7 @@ def test_a_pools_meta_is_its_base_components_when_member_0_failed(fake_batch: Ca
 
     # member 1 is e_b's and comes first; member 2 is the base component's
     write_series_db(batch, [member(1, 2), member(2, 1)])
-    with sqlite3.connect(series_db_path(batch)) as con:
+    with closing(sqlite3.connect(series_db_path(batch))) as con:
         assert json.loads(con.execute("SELECT meta_json FROM batch").fetchone()[0]) == {"reserve": 1}
 
 
@@ -289,7 +290,7 @@ def test_a_pool_batch_links_each_member_from_its_component(pool_batch: Path, sta
     e_b = component_frames(frames, "e_b")
     assert set(e_b["member"]["member_index"]) == {1, 2, 3}
     assert set(e_b["draw_check"]["node"]) >= {"gift", "checking_rate_vary"}
-    with sqlite3.connect(pool_batch / "draws.sqlite3") as con:
+    with closing(sqlite3.connect(pool_batch / "draws.sqlite3")) as con:
         assert con.execute("SELECT ensemble_name, master_seed FROM batch").fetchone() == ("mix", 7)
 
 

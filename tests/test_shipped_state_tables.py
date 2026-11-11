@@ -4,6 +4,7 @@ reading those of the state the household lives in (residence.csv, #509)."""
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -69,7 +70,7 @@ def test_living_in_a_shipped_state_taxes_by_its_tables(
     add_state_tax(state="FL" if state == "none" else state)
     run = run_scenario(load_test_copy().intent_path, runs_dir / f"{state}.sqlite3",
                        run_by="test", allow_dirty_data=True, allow_dirty_code=True)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         summary = dict(con.execute(
             "SELECT bucket, amount FROM tax_year_summary WHERE year = 2026").fetchall())
 

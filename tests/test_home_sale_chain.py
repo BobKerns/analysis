@@ -7,6 +7,7 @@ personal loss that isn't deductible."""
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -69,7 +70,7 @@ def _run(load_test_copy: Callable[[], LoadResult], runs_dir: Path, name: str = "
 
 
 def _legs_out_of(run: Path, account: str) -> dict[str, int]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return dict(con.execute(
             "SELECT te.tax_character, SUM(te.amount) FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account WHERE fa.name = ? "
@@ -81,7 +82,7 @@ def _legs_out_of(run: Path, account: str) -> dict[str, int]:
 def _last_state(run: Path, account: str, month: str = "9999-12-31") -> tuple[int, int | None]:
     """``account``'s balance and cost basis at the end of ``month`` (default:
     of the run)."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT ls.balance, ls.cost_basis FROM lot_state ls "
             "JOIN simulation_step s ON s.id = ls.step_id "
@@ -92,7 +93,7 @@ def _last_state(run: Path, account: str, month: str = "9999-12-31") -> tuple[int
 
 
 def _capital_losses(run: Path) -> list[tuple[str, int, str]]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT a.name, cl.amount, cl.tax_character FROM capital_loss cl "
             "JOIN account_lot m ON m.id = cl.lot_id JOIN account a ON a.id = m.account_id"
@@ -182,7 +183,7 @@ def test_a_capital_improvement_adds_to_the_basis(
                         description="new kitchen")
     run = _run(load_test_copy, runs_dir)
     assert _last_state(run, "Asset_Home") == (600_000_00, 415_000_00)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         assert con.execute(
             "SELECT tax_character FROM transfer_event te JOIN account ta ON ta.id = te.to_account "
             "WHERE ta.name = 'Expense_Housing' AND te.date = '2027-03-31' AND amount = 1500000"
@@ -311,7 +312,7 @@ def test_the_tax_summary_shows_the_deduction_and_the_carryover(
                         account_2="brokerage_sale", description="sell the brokerage lot")
     add_tax(start="2028-04")
     run = _run(load_test_copy, runs_dir)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         summary = dict(con.execute(
             "SELECT bucket, amount FROM tax_year_summary WHERE year = 2027 "
             "AND bucket LIKE 'federal_capital_loss_%'"

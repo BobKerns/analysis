@@ -4,6 +4,7 @@ account, and symbol, if new) and the transfer that buys it."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def _rows(path: Path, **match: str) -> list[dict[str, str]]:
 
 
 def _legs_into(run: Path, account: str, lot: str) -> list[tuple[str, str, int, str]]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT te.date, fa.name, te.amount, te.tax_character FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account JOIN account_lot tm ON tm.id = te.to_lot_id "
@@ -66,7 +67,7 @@ def test_invest_writes_the_lot_and_the_transfer_that_buys_it(
         "2027-03", "Asset_Savings", "bonds", "10000.00")
     run = _run(load_test_copy, runs_dir)
     assert _legs_into(run, BROKERAGE, "bonds") == [("2027-03-31", "Asset_Savings", 1_000_000, "none")]
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         basis = con.execute(
             "SELECT ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
             "JOIN account_lot m ON m.id = ls.lot_id WHERE m.lot = 'bonds' AND s.month = '2027-03-31'"
@@ -91,7 +92,7 @@ def test_a_roth_conversion_is_one_command(
 
 
 def _basis(run: Path, lot: str, month: str) -> int:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
             "JOIN account_lot m ON m.id = ls.lot_id WHERE m.lot = ? AND s.month = ?", (lot, month),
@@ -112,7 +113,7 @@ def test_investing_a_growing_symbol_sets_an_existing_accounts_growth_character(
     [account] = _rows(retire_alice_csv("accounts.csv"), name="Asset_Roth_Bill")
     assert account["tax_character"] == "tax_free"
     run = _run(load_test_copy, runs_dir)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         grown = con.execute(
             "SELECT count(*) FROM transfer_event te JOIN account_lot m ON m.id = te.to_lot_id "
             "JOIN account a ON a.id = m.account_id JOIN account fa ON fa.id = te.from_account "
@@ -177,7 +178,7 @@ def test_invest_with_a_series_grows_the_lot_at_it(
     assert "nothing to grow by" not in result.output
     [lot] = _rows(retire_alice_csv("account_lots.csv"), account_name="Asset_Roth_Alice", lot="converted")
     assert lot["series"] == "stock_us"
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         assert con.execute(
             "SELECT s.series FROM scheduled_transaction s JOIN chain c ON c.id = s.to_account "
             "JOIN account_lot m ON m.id = c.lot_id JOIN account a ON a.id = m.account_id "

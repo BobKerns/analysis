@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -40,7 +41,7 @@ def _set_account(path: Path, name: str, **columns: str) -> None:
 
 
 def test_a_lots_subkind_sets_its_tax_treatment(load_test_copy: Callable[[], LoadResult]) -> None:
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         lots = dict(con.execute(
             "SELECT a.name, m.subkind || ' ' || m.tax_treatment FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.subkind = 'retirement'"
@@ -106,7 +107,7 @@ def test_only_retirement_money_rolls_over_untaxed() -> None:
 
 def _calendar_legs(run: Path, account: str) -> list[tuple[str, str, str, str]]:
     """The legs calendar events moved out of ``account``."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT ce.kind, fm.lot, tm.lot, te.tax_character FROM transfer_event te "
             "JOIN scheduled_transaction s ON s.id = te.reason_id AND te.reason_kind = 'rule' "
@@ -150,7 +151,7 @@ def test_blank_traditional_money_is_taxed_by_where_each_leg_lands(
                         lot_1="default", account_2="convert", amount="20000.00")
     append_calendar_row(date="2029-02-28", kind="one_off_transfer", account_1=IRA,
                         lot_1="default", account_2="Asset_Checking", amount="1000.00")
-    with sqlite3.connect(_run(load_test_copy, runs_dir)) as con:
+    with closing(sqlite3.connect(_run(load_test_copy, runs_dir))) as con:
         legs = con.execute(
             "SELECT ta.name, te.amount, te.tax_character FROM transfer_event te "
             "JOIN scheduled_transaction s ON s.id = te.reason_id AND te.reason_kind = 'rule' "
@@ -185,7 +186,7 @@ def test_an_rmd_counts_and_draws_only_traditional_lots(
     scheduled.to_csv(scheduled_path, index=False)
     (retire_alice_csv("chains/source") / "ira_rmd.csv").write_text(
         f"account_name,lot,maximum,percent,series,cadence\n{IRA},default,,,,\n")
-    with sqlite3.connect(_run(load_test_copy, runs_dir)) as con:
+    with closing(sqlite3.connect(_run(load_test_copy, runs_dir))) as con:
         amounts = [amount for (amount,) in con.execute(
             "SELECT te.amount FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id AND te.reason_kind = 'rule' "
@@ -237,7 +238,7 @@ def test_account_add_takes_a_retirement_series_without_a_tax_character(
     assert result.exit_code == 0, result.output
     accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
     assert accounts.loc[accounts["name"] == "Asset_Roth401k_Bill", "tax_character"].item() == ""
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         source = con.execute(
             "SELECT c.name FROM scheduled_transaction s JOIN chain c ON c.id = s.from_account "
             "WHERE s.name = ?", (growth_rule_name("Asset_Roth401k_Bill", "default"),),

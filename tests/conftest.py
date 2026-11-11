@@ -58,6 +58,7 @@ own data, that setup belongs in a fixture instead.
 from __future__ import annotations
 from collections.abc import Callable, Generator, Mapping, Sequence
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import shutil
@@ -208,14 +209,17 @@ def _negative_balance_is_an_error(request: pytest.FixtureRequest) -> Generator[N
     exercising, not a deliberate outcome -- better to fail loudly at the
     test that caused it than let it slip into the warnings summary at the
     end of the run, one of a pile easy to stop reading closely. A test that
-    genuinely wants the old warn-and-continue behavior (verifying the
-    warning itself, or deliberately modeling a shortfall) opts back in with
-    ``@pytest.mark.allow_negative_balance``. This is a test-suite-only
-    policy -- ``engine.py`` itself is untouched, so a real ``sim run``
-    still only warns.
+    deliberately models a shortfall marks itself
+    ``@pytest.mark.allow_negative_balance``: the warning is then expected,
+    so it is captured and must fire (a marker on a test that no longer
+    runs short fails, rather than going stale). A test checking the
+    warning's own text uses ``pytest.warns`` and needs no marker. This is a
+    test-suite-only policy -- ``engine.py`` itself is untouched, so a real
+    ``sim run`` still only warns.
     """
     if request.node.get_closest_marker("allow_negative_balance"):
-        yield
+        with pytest.warns(RuntimeWarning, match="went negative"):
+            yield
         return
     with warnings.catch_warnings():
         warnings.filterwarnings("error", category=RuntimeWarning, message=".*went negative.*")
@@ -1472,16 +1476,6 @@ def close_plots():
     plt.close("all")
 
 
-@pytest.fixture(scope="function", autouse=True)
-def no_FigureCanvasAgg_warning():
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore",
-                                category=UserWarning,
-                                message=".*FigureCanvasAgg.*"
-                                )
-        yield
-
-
 # --- ADR-007 sensitivity batches -------------------------------------------
 
 
@@ -1616,7 +1610,7 @@ def stamp_runs(code_repo: git.Repo) -> Callable[[Path], None]:
             run_file.rename(run_file.with_name(
                 f"2000-01-01T{n:06d}Z_{run_file.name.split('_', 1)[1]}"))
         for run_file in runs_dir.rglob("*.sqlite3"):
-            with sqlite3.connect(run_file) as con:
+            with closing(sqlite3.connect(run_file)) as con, con:
                 if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'simulation_run'").fetchone():
                     con.execute("UPDATE simulation_run SET code_version = ?, code_dirty = 0",
                                 (code_repo.head.commit.hexsha,))

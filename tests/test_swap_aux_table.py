@@ -6,6 +6,7 @@ state is a residence row (#509), not a swap: ``tests/test_residence.py``."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -36,7 +37,7 @@ def _run(load_test_copy: Callable[[], LoadResult], runs_dir: Path, name: str) ->
 
 def _salary(run: Path) -> dict[str, int]:
     """salary_alice's posting by month; it inflates with cpi."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return dict(con.execute(
             "SELECT te.date, te.amount FROM transfer_event te "
             "JOIN scheduled_transaction s ON s.id = te.reason_id AND te.reason_kind = 'rule' "
@@ -45,7 +46,7 @@ def _salary(run: Path) -> dict[str, int]:
 
 
 def _aux_rows(run: Path, kind: str, series: str) -> list[tuple[str, dict]]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return [
             (effective, json.loads(payload))
             for effective, payload in con.execute(
@@ -57,7 +58,7 @@ def _aux_rows(run: Path, kind: str, series: str) -> list[tuple[str, dict]]:
 
 
 def _cpi_index(run: Path) -> dict[str, int]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return dict(con.execute(
             "SELECT st.month, i.cumulative_index_micros FROM inflation_index_state i "
             "JOIN simulation_step st ON st.id = i.step_id WHERE i.series = 'cpi'"
@@ -193,7 +194,7 @@ def test_two_swaps_on_one_date_are_two_events(
               "effective_date,filing_status,amount\n2026-01-31,MFJ,15000.00\n")
     _swap(append_calendar_row, "2027-01", "federal_brackets", "", "sunset")
     _swap(append_calendar_row, "2027-01", "standard_deduction", "", "sunset")
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         kinds = sorted(
             json.loads(payload)["aux_kind"] for (payload,) in con.execute(
                 "SELECT payload_json FROM calendar_event WHERE kind = 'swap_aux_table'"

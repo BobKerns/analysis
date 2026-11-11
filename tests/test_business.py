@@ -9,6 +9,7 @@ The ``business_scenarios`` fixture's ``alice_business`` is the example, and
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def run_file(
 def run_business(run_file: Callable[[str], Path]) -> Callable[[str], dict[int, dict[str, int]]]:
     """Run a scenario of the private data copy; its federal tax summary by year."""
     def _run(name: str) -> dict[int, dict[str, int]]:
-        with sqlite3.connect(run_file(name)) as con:
+        with closing(sqlite3.connect(run_file(name))) as con:
             summary: dict[int, dict[str, int]] = {}
             for year, bucket, amount in con.execute(
                 "SELECT year, bucket, amount FROM tax_year_summary WHERE bucket LIKE 'federal_%'"
