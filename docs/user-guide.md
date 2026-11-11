@@ -1030,6 +1030,17 @@ income tax (it then reads a 0% table, `state_brackets__none.csv`). A move to ano
 `aux/state_local_tax__CA-county.csv` from then on. A child scenario adds its
 own rows to its parent's, and one of the same month replaces the parent's.
 
+A move to a territory works the same way. Guam, the Northern Mariana Islands
+and the U.S. Virgin Islands tax their residents under a copy of the federal
+tax law, paid to the territory instead of the IRS, so the federal tax is the
+whole tax there and the state tax pays nothing. Tables of your own for one
+are refused, since they would tax the same income twice. Each has local breaks for
+income earned there, such as the Northern Mariana Islands' rebate, which a
+household retiring from the mainland seldom has. Puerto Rico and American
+Samoa have tax codes of their own, which the simulator can't model yet
+([#570](https://github.com/BobKerns/analysis/issues/570)), so a move to
+either is refused.
+
 Any other aux table can be swapped with a calendar row, `swap_aux_table`: a
 new federal bracket table on the date a law takes effect, or another
 inflation series. A state's tables can't be: they follow where you live.

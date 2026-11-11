@@ -19500,10 +19500,14 @@ def _ask_state(data_dir: Path, scenario: str, prompt: str) -> states.State:
     """A state or territory, asked for by name or postal code with completion,
     after listing which ones this data repo has tax tables for."""
     tables = set(names.series_names(data_dir, scenario, "state_brackets"))
-    ready = [states.label(s.code) for s in states.STATES if s.code in tables]
+    # A territory the federal tax stands in for never reads tables (#491).
+    federal = [states.label(s.code) for s in states.STATES if s.status == states.FEDERAL_RULE]
+    ready = [states.label(s.code) for s in states.STATES
+             if s.code in tables and s.status != states.FEDERAL_RULE]
     no_tax = [states.label(s.code) for s in states.STATES if not s.taxes_income]
     click.echo(f"With tax tables: {', '.join(ready)}")
     click.echo(f"No income tax: {', '.join(no_tax)}")
+    click.echo(f"The federal tax alone: {', '.join(federal)}")
     click.echo("Any other state needs its tables written first (README, "
                "'State and territory income tax').")
     choices = [*(s.name for s in states.STATES), *(s.code for s in states.STATES)]
@@ -19515,18 +19519,17 @@ def _ask_state(data_dir: Path, scenario: str, prompt: str) -> states.State:
 def _state_series(data_dir: Path, scenario: str, state: states.State) -> str | None:
     """The series of the tables a state tax reads for living in ``state``,
     or None (with why, echoed) for a territory the federal tax stands in for.
-    Tables of its own in the data repo win, as they do in the engine
-    (``states.tax_series``)."""
+    A state's tables of its own in the data repo win, as they do in the
+    engine (``states.tax_series``); a territory's never do."""
+    # Tables of its own don't change either territory rule: the loader
+    # refuses them for a mirror territory, which they would tax twice (#491).
+    if state.status == states.NOT_SUPPORTED:
+        raise click.ClickException(f"{states.own_tax_code(state.code)}; nothing was written")
+    if state.status == states.FEDERAL_RULE:
+        click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
+                   "federal tax stands in for it: no state tax is needed.")
+        return None
     has_tables = state.code in names.series_names(data_dir, scenario, "state_brackets")
-    if not has_tables:
-        if state.status == states.NOT_SUPPORTED:
-            raise click.ClickException(
-                f"{states.label(state.code)} has a tax code of its own the simulator can't "
-                "model; nothing was written")
-        if state.status == states.FEDERAL_RULE:
-            click.echo(f"{states.label(state.code)}'s income tax mirrors the federal one, so the "
-                       "federal tax stands in for it: no state tax is needed.")
-            return None
     series = states.tax_series(state.code, has_tables=has_tables)
     if series == state.code and not has_tables:
         raise click.ClickException(
