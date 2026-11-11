@@ -269,3 +269,63 @@ def test_roll_lists_calendar_rows_it_leaves_behind(
     assert ("  calendar 2026-08 one_off_transfer roof repair: before 2027-01, "
             "so it no longer happens") in result.output
     assert "new car" not in result.output
+
+
+def test_keep_name_is_the_old_year_then_its_month_then_numbered() -> None:
+    assert roll.keep_name("plan", "2026-05", set()) == "plan-2026"
+    assert roll.keep_name("plan", "2026-05", {"plan-2026"}) == "plan-2026-05"
+    assert roll.keep_name("plan", "2026-05", {"plan-2026", "plan-2026-05", "plan-2026-05-2"}) \
+        == "plan-2026-05-3"
+
+
+def test_roll_refuses_a_keep_name_that_is_not_a_scenario_name(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    before = retire_alice_csv("scenario.csv").read_bytes()
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--keep", "Old Plan",
+                  "--yes")
+
+    assert result.exit_code != 0
+    assert "invalid scenario name: 'Old Plan'" in result.output
+    assert "Rolling" not in result.output
+    assert retire_alice_csv("scenario.csv").read_bytes() == before
+
+
+def test_a_second_roll_in_a_year_keeps_the_plan_under_its_month(
+    test_data_dir: Path, test_scenarios_dir: Path,
+) -> None:
+    first = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2026-09", "--yes")
+    assert first.exit_code == 0, first.output
+
+    second = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2026-11", "--yes")
+
+    assert second.exit_code == 0, second.output
+    assert "kept the plan as it stood as retire_alice-2026-09" in second.output
+    assert (test_scenarios_dir / "retire_alice-2026").exists()
+
+
+def test_roll_writes_nothing_when_a_file_changed_while_it_asked(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import cli
+
+    lots = retire_alice_csv("account_lots.csv")
+    asked = cli._ask_money
+    edited: list[str] = []
+
+    def ask_while_someone_edits(prompt: str, default: float | None, accept: bool) -> str:
+        # Another edit lands between the questions: the rows change places.
+        if not edited:
+            frame = pd.read_csv(lots, dtype=str, keep_default_na=False)
+            frame.iloc[::-1].to_csv(lots, index=False)
+            edited.append(prompt)
+        return asked(prompt, default, accept)
+
+    monkeypatch.setattr(cli, "_ask_money", ask_while_someone_edits)
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--no-keep", "--yes")
+
+    assert result.exit_code != 0
+    assert "changed while retire_alice was being rolled forward" in result.output
+    with retire_alice_csv("scenario.csv").open(newline="", encoding="utf-8") as fh:
+        assert next(csv.DictReader(fh))["start"].startswith("2026-05")

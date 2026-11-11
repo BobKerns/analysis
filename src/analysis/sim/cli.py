@@ -14968,14 +14968,15 @@ def _accepted(prompt: str, shown: str | None) -> str:
 
 
 def _ask_money(prompt: str, default: float | None, accept: bool) -> str:
-    """Dollars, asked for with ``default`` offered, as a CSV cell."""
+    """Dollars, asked for with ``default`` offered, as account_lots.csv
+    holds them (an ``@name`` itemization as typed)."""
     shown = _money_text(default) if default is not None else None
     if accept:
         return _accepted(prompt, shown)
     while True:
         text = click.prompt(prompt, default=shown, show_default=True).strip()
         try:
-            return _money_text(_parse_amount_cents(text) / 100)
+            return _money_cell(text)
         except click.ClickException as exc:
             click.echo(f"  {exc.message}")
 
@@ -14992,26 +14993,13 @@ def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
             click.echo(f"  {exc.message}")
 
 
-def _price_on(data: Path, symbol: str, start: str) -> tuple[str, float] | None:
-    """The latest stored price of ``symbol`` on or before ``start`` (its
-    month's end, as the loader reads a start), as the loader values a lot
-    with shares and no balance: (date, price)."""
-    history = prices.price_history(data / "prices", symbol)
-    if history is None or history.empty:
-        return None
-    known = history[history["effective_date"].astype(str) <= month_end_iso(start)]
-    if known.empty:
-        return None
-    last = known.iloc[-1]
-    return str(last["effective_date"]), float(last["price"])
-
-
 @scenario_group_command.command("roll")
 @click.argument("name", required=False, type=completion.SCENARIO)
 @click.argument("start", required=False)
 @click.option("--keep", default=None,
               help="Keep the scenario as it stands as this new scenario, a sibling copy "
-                   "(default name NAME-YEAR, the old start's year).")
+                   "(default name NAME-YEAR, the old start's year, or NAME-YEAR-MM when "
+                   "that is taken).")
 @click.option("--no-keep", is_flag=True, help="Don't keep a copy of the plan as it stands.")
 @click.option("--yes", "accept", is_flag=True,
               help="Take every default without asking: the old plan's projections, and "
@@ -15061,17 +15049,28 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     if start <= old_start:
         raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
     old_year, new_year = int(old_start[:4]), int(start[:4])
+    taken = set(names.scenario_names(data))
+    if keep is not None:
+        _check_keep_name(keep.strip(), taken)
     if not no_keep and keep is None:
-        suggested = f"{name}-{old_year}"
-        keep = suggested if accept else click.prompt(
-            "keep the plan as it stands as (blank: don't)", default=suggested).strip() or None
+        suggested = roll.keep_name(name, old_start, taken)
+        while True:
+            keep = suggested if accept else click.prompt(
+                "keep the plan as it stands as (blank: don't)", default=suggested).strip() or None
+            try:
+                if keep is not None:
+                    _check_keep_name(keep, taken)
+                break
+            except click.ClickException as exc:
+                click.echo(f"  {exc.message}")
     if keep is not None:
         keep = keep.strip()
-        if keep in names.scenario_names(data):
-            raise click.ClickException(f"there is already a scenario {keep!r}; --keep another name")
     click.echo(f"Rolling {name} forward: {old_start} -> {start}")
 
     month = month_before(start)
+    # A run still being built in the background is the newest one; wait for it.
+    from analysis.sim import builder
+    builder.await_fresh(ref.runs_dir, name, echo=lambda text: click.echo(text, err=True))
     projected: dict[tuple[str, str], roll.Projection] = {}
     # The Dec 31 before a start that isn't a January: what a lot's
     # prior_year_end_balance (an RMD's base) defaults to.
@@ -15094,6 +15093,11 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         click.echo(f"No run of {name} reaches {month:%Y-%m}, so each default is the "
                    "current opening value.")
 
+    # Read before anything is asked, to check nothing changed before writing.
+    own_files = {path: path.read_bytes() if path.exists() else None
+                 for path in (scenario_dir / file for file in (
+                     "scenario.csv", "accounts.csv", "account_lots.csv", "year_to_date.csv",
+                     "scheduled.csv"))}
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
     every_lot = _scenario_lots(scenario_dir, name)
     lots = [one for one in every_lot if not one.deleted]
@@ -15156,6 +15160,14 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             anchored.append(found)
 
     with _scenario_edit(data, name) as edit:
+        # The rows above were read before the questions, which may have taken
+        # a while: their indexes only hold if the files still read the same.
+        for path, before in own_files.items():
+            staged = edit.path(path)
+            if (staged.read_bytes() if staged.exists() else None) != before:
+                raise click.ClickException(
+                    f"{path} changed while {name} was being rolled forward. "
+                    "Nothing was written; start again.")
         if keep is not None:
             try:
                 rename.copy_scenario(edit.data_dir, name, keep, created_by=sc.current_user())
@@ -15236,6 +15248,16 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                + (f", `sim run {keep} --commit`, then `sim compare {keep} {name}`" if keep else ""))
 
 
+def _check_keep_name(keep: str, taken: set[str]) -> None:
+    """Refuse a name ``--keep`` can't copy the scenario to."""
+    if not registries.SCENARIO_NAME_RE.match(keep):
+        raise click.ClickException(
+            f"invalid scenario name: {keep!r} (lowercase letters, digits, '_' and '-', "
+            "starting with a letter or digit)")
+    if keep in taken:
+        raise click.ClickException(f"there is already a scenario {keep!r}; keep it as another name")
+
+
 def _rolled_lot(
     data: Path, one: _Lot, account: dict[str, str], projection: roll.Projection | None,
     year_end: roll.Projection | None, start: str, accept: bool, *, same_year: bool,
@@ -15249,7 +15271,10 @@ def _rolled_lot(
     # A lot valued by its shares: one whose balance the loader derives. A
     # given balance is the lot's own, with any shares only for reference.
     by_shares = symbol and row.get("quantity", "").strip() and not row.get("opening_balance", "").strip()
-    price = _price_on(data, symbol, start) if by_shares else None
+    # The loader's start: the month's end.
+    price = (prices.price_on(data / "prices", symbol, date.fromisoformat(month_end_iso(start)))
+             if by_shares else None)
+    balance: float | None
     if price is not None:
         current = float(row["quantity"].replace(",", ""))
         shares = _ask_shares(f"{label} {symbol} shares",
@@ -15257,13 +15282,14 @@ def _rolled_lot(
                              else current, accept)
         row["quantity"] = shares
         row["opening_balance"] = ""
-        balance = float(shares) * price[1]
+        balance = float(Decimal(shares) * price[1])
         click.echo(f"  = ${balance:,.2f} at {price[1]:,.2f} on {price[0]}")
     else:
         current = roll.cell_dollars(row.get("opening_balance", ""))
-        balance = float(_ask_money(f"{label} balance",
-                                   projection.balance if projection else current, accept))
-        row["opening_balance"] = _money_text(balance)
+        row["opening_balance"] = _ask_money(f"{label} balance",
+                                            projection.balance if projection else current, accept)
+        # None for an @itemization: no one number to offer below.
+        balance = roll.cell_dollars(row["opening_balance"])
         if row.get("quantity", "").strip() and projection and projection.quantity is not None:
             row["quantity"] = _shares_text(projection.quantity)
     tracks_basis = row.get("opening_cost_basis", "").strip() or (
@@ -15283,7 +15309,7 @@ def _rolled_lot(
         offered = (year_end.balance if year_end
                    else authored if same_year and authored is not None else balance)
         row["prior_year_end_balance"] = (
-            _money_text(balance) if start[5:] == "01"
+            row["opening_balance"] or _money_text(balance or 0) if start[5:] == "01"
             else _ask_money(f"{label} balance on Dec 31, {int(start[:4]) - 1}", offered, accept))
     if one.implicit and account.get("subkind", "") not in INVESTMENT_ASSET_SUBKINDS:
         # An implicit default lot stays blank; an investment account must

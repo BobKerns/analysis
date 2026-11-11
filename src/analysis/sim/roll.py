@@ -46,6 +46,20 @@ class Projection:
     quantity: float | None
 
 
+def keep_name(name: str, old_start: str, taken: set[str]) -> str:
+    """The name to keep ``name``'s plan as, before a roll from ``old_start``
+    (``YYYY-MM``): ``NAME-YEAR``, or when a scenario has that already (a
+    second roll in a year), ``NAME-YEAR-MM``, then ``-2``, ``-3``... on that."""
+    year, month = old_start.split("-")
+    for candidate in (f"{name}-{year}", f"{name}-{year}-{month}"):
+        if candidate not in taken:
+            return candidate
+    count = 2
+    while f"{name}-{year}-{month}-{count}" in taken:
+        count += 1
+    return f"{name}-{year}-{month}-{count}"
+
+
 def default_start(old_start: str, today: date) -> str:
     """The start to suggest, ``YYYY-MM``: the first January after
     ``old_start`` (``YYYY-MM``) that isn't before this year's, so an update
@@ -59,10 +73,9 @@ def projections(rc: RunConnection, month: date) -> dict[tuple[str, str], Project
     """Every asset and liability lot's balance, basis and shares in the run
     at the end of ``month``, by (account, lot); empty when the run doesn't
     reach that month. A liability's balance is what is owed, as authored."""
-    lots = rc.items("lot_balance")
-    if lots.empty:
-        return {}
-    lots = lots[pd.to_datetime(lots["month"]).dt.date == month]
+    # One month's rows, not the whole view.
+    lots = rc._read_sql("SELECT account, lot, balance, cost_basis, quantity_micros "
+                        "FROM balance_by_lot WHERE month = ?", (month.isoformat(),))
     found = {}
     for row in named_rows(lots):
         found[(str(row.account), str(row.lot))] = Projection(
@@ -130,11 +143,6 @@ def preroll_rules(scenario_dir: Path) -> list[str]:
             if _preroll(found.row)]
 
 
-# A latent factor or a date marker is a definition, not something that
-# happens: its date only places it.
-_NOT_EVENTS = frozenset({registries.LATENT_FACTOR_KIND, "date_marker"})
-
-
 def calendar_before(scenario_dir: Path, start: str) -> list[CalendarRow]:
     """The calendar rows dated before ``start`` (``YYYY-MM``), own and
     inherited, which a run from ``start`` no longer reaches. A row dated by
@@ -147,6 +155,8 @@ def calendar_before(scenario_dir: Path, start: str) -> list[CalendarRow]:
             month = month_end_iso(when)
         except ValueError:
             continue
-        if month < first and entry.row.get("kind") not in _NOT_EVENTS:
+        # A latent factor or a date marker is a definition, not something
+        # that happens: its date only places it.
+        if month < first and entry.row.get("kind") not in registries.INERT_CALENDAR_KINDS:
             before.append(entry)
     return before

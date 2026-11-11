@@ -343,6 +343,19 @@ def price_history(prices_dir: Path, symbol: str, since: date | None = None) -> p
     return pd.DataFrame(rows, columns=["effective_date", "price", "change"])
 
 
+def price_on(prices_dir: Path, symbol: str, day: date) -> tuple[date, Decimal] | None:
+    """``symbol``'s latest stored price on or before ``day``: (date, price);
+    None without one. The loader values a lot with shares and no balance the
+    same way, but over the security_price rows it has loaded; this reads the
+    price file, for a question asked before anything is loaded (``sim
+    scenario roll``)."""
+    path = prices_dir / f"{PRICE_FILE_PREFIX}{symbol}.csv"
+    if not path.exists():
+        return None
+    known = [row for row in _stored(path) if row[0] <= day]
+    return known[-1] if known else None
+
+
 CHECK_COLUMNS = (
     "account", "lot", "symbol", "quantity", "balance", "price_date", "price",
     "value", "difference", "latest_date", "latest_price", "latest_value", "flag",
