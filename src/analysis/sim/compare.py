@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
 
 from analysis.frames import index_years, named_rows
 from analysis.sim.connection import RunConnection, year_end_values
+from analysis.sim.dates import month_before, month_end_iso
 from analysis.sim.types import Death, DollarMode
 
 __all__ = [
@@ -109,6 +110,33 @@ def _blank(value: Any) -> bool:
     return value is None or (not isinstance(value, str) and pd.isna(value)) or value == ""
 
 
+START = "(start)"
+"""How a date in a scenario's first month shows in the differences (#502):
+growth rules and latent factors begin with the scenario, so two scenarios
+that start in different months (last year's plan and this year's) would
+otherwise list every one of them."""
+
+
+def _start_month(rc: RunConnection) -> str | None:
+    """The run's scenario start as ``YYYY-MM``, or ``None`` without one."""
+    start = rc.items("scenario")["start"]
+    return None if start.empty or _blank(start.iloc[0]) else str(start.iloc[0])[:7]
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Whether two cells hold the same value, blanks alike."""
+    return (_blank(a) and _blank(b)) or (not _blank(a) and not _blank(b) and str(a) == str(b))
+
+
+def _at_start(value: Any, start: str | None) -> Any:
+    """``value``, or ``START`` when it is a date in the ``start`` month. An
+    earlier date stays: a quarterly or annual rule's start sets its months,
+    so two that began before their scenarios can still differ."""
+    if start is None or not isinstance(value, str):
+        return value
+    return START if value[:7] == start else value
+
+
 def rule_differences(
     connections: Mapping[str, RunConnection], scenarios: Sequence[str], baseline: str,
 ) -> pd.DataFrame:
@@ -123,19 +151,37 @@ def rule_differences(
             .set_index("name").reindex(columns=columns)
         for name in scenarios
     }
+    present = {name: set(frame.index) for name, frame in rules.items()}
     index = sorted(set().union(*(frame.index for frame in rules.values())))
     rules = {name: frame.reindex(index) for name, frame in rules.items()}
+    starts = {name: _start_month(connections[name]) for name in scenarios}
+
+    def raw(name: str, rule: str, column: str) -> Any:
+        value = rules[name].at[rule, column]
+        start = starts[name]
+        if column == "start" and _blank(value) and rule in present[name] and start:
+            # A rule with no start begins with its scenario, as the loader reads it.
+            return month_end_iso(start)
+        return value
 
     def shown(name: str, rule: str, column: str) -> Any:
-        value = rules[name].at[rule, column]
+        value = raw(name, rule, column)
         if _blank(value):
             return None
+        if column == "start":
+            return _at_start(value, starts[name])
         formatter = RULE_COMPARE_COLUMNS[column][1]
         return formatter(value) if formatter else str(value)
 
     rows = []
     for rule in index:
         for column in columns:
+            authored = {name: raw(name, rule, column) for name in scenarios}
+            if column == "start" and all(
+                    _same(authored[name], authored[baseline]) for name in scenarios):
+                # The same date: not a difference, though one scenario's
+                # start makes it ``START`` there (#502).
+                continue
             values = {name: shown(name, rule, column) for name in scenarios}
             if any(values[name] != values[baseline] for name in scenarios):
                 rows.append({"rule": rule, "field": RULE_COMPARE_COLUMNS[column][0], **values})
@@ -156,19 +202,31 @@ def event_differences(
     """Calendar events not identical in every scenario, by (date, kind,
     rule, amount, description), with the scenario each belongs to and the
     amount in dollars; empty when every scenario has the same events (or
-    none)."""
-    events = pd.concat(
-        [connections[name].items("calendar_event").assign(scenario=name) for name in scenarios],
-        ignore_index=True,
-    )
+    none). An event in its scenario's first month is dated ``START``."""
+    frames = []
+    for name in scenarios:
+        frame = connections[name].items("calendar_event").assign(scenario=name)
+        start = _start_month(connections[name])
+        frames.append(frame.assign(
+            dated=frame["date"].map(lambda d, s=start: _at_start(d, s) != START)))
+    events = pd.concat(frames, ignore_index=True)
     if events.empty:
         return pd.DataFrame(columns=["scenario", *_EVENT_COLUMNS])
     events["amount"] = (events["amount"].astype("Float64") / 100).map(
         lambda v: "" if pd.isna(v) else f"${v:,.2f}"
     )
+    # An event every scenario has as authored is no difference, though it
+    # falls in one scenario's first month (#502); of the rest, one each
+    # has in its first month (a growth rule's row) is START in each.
+    every = len(scenarios)
+    as_authored = events[_EVENT_COLUMNS].apply(tuple, axis=1)
+    events = events.loc[events.groupby(as_authored)["scenario"].transform("nunique") < every]
+    if events.empty:
+        return pd.DataFrame(columns=["scenario", *_EVENT_COLUMNS])
+    events = events.assign(date=events["date"].where(events["dated"], START))
     signature = events[_EVENT_COLUMNS].apply(tuple, axis=1)
     in_scenarios = events.groupby(signature)["scenario"].transform("nunique")
-    return events.loc[in_scenarios < len(scenarios), ["scenario", *_EVENT_COLUMNS]]
+    return events.loc[in_scenarios < every, ["scenario", *_EVENT_COLUMNS]]
 
 
 # ---------- what differs: accounts, lots and year-to-date rows ----------
@@ -322,6 +380,91 @@ def year_to_date_differences(
     rank = {field: i for i, field in enumerate(_YEAR_TO_DATE_FIELDS)}
     order = sorted(range(len(frame)), key=lambda i: (frame.index[i][0], rank[frame.index[i][1]]))
     return frame.iloc[order]
+
+
+# ---------- one dollar for every run (#502) ----------
+
+
+def align_cpi(connections: Mapping[str, RunConnection], baseline: str) -> dict[str, float]:
+    """Put every run's CPI-constant dollars in the baseline's (#502).
+
+    Each run deflates to its own start, so a variant that starts a year
+    later (last year's plan against this year's) would be in that year's
+    dollars. Each variant whose index starts in another month than the
+    baseline's is rebased so that, in the first month both runs cover, its
+    index equals the baseline's. Runs with the same start are left alone.
+    Returns the scale given each rebased variant; a variant with no month in
+    common with the baseline, or no CPI index, is left as it is.
+    """
+    def recorded(rc: RunConnection) -> pd.Series:
+        # The run's own index, whatever an earlier alignment (a notebook
+        # picking another baseline) scaled its deflator by.
+        return rc.net_worth_frame()["cumulative_index_micros"].dropna()
+
+    for rc in connections.values():
+        if rc.cpi_scale != 1.0:
+            rc.rebase_cpi(1.0)
+    base = recorded(connections[baseline])
+    scales: dict[str, float] = {}
+    if base.empty:
+        return scales
+    for name, rc in connections.items():
+        index = recorded(rc)
+        if name == baseline or index.empty or index.index[0] == base.index[0]:
+            continue
+        month = max(index.index[0], base.index[0])
+        if month not in base.index or month not in index.index:
+            continue
+        scales[name] = float(base[month]) / float(index[month])
+        rc.rebase_cpi(scales[name])
+    return scales
+
+
+# ---------- where a later start begins (#502) ----------
+
+
+def later_starts(connections: Mapping[str, RunConnection], baseline: str,
+                 variants: Sequence[str]) -> list[str]:
+    """The variants whose scenario starts after the baseline's, while the
+    baseline's run still covers the month before: this year's plan against
+    last year's."""
+    base_start = _start_month(connections[baseline])
+    months = connections[baseline].lot_balance_pivot().index
+    later = []
+    for name in variants:
+        start = _start_month(connections[name])
+        if base_start is None or start is None or start <= base_start:
+            continue
+        if pd.Timestamp(month_before(start)) in months:
+            later.append(name)
+    return later
+
+
+def start_comparison(
+    connections: Mapping[str, RunConnection], baseline: str, variant: str,
+) -> tuple[date, pd.DataFrame]:
+    """What the baseline's run projected each asset lot to hold at the end
+    of the month before ``variant`` starts, against what the variant opens
+    with, in nominal dollars (both are that month's dollars): last year's
+    plan against this year's statements. Rows (account, lot) for every lot
+    either has, then a ``total``; columns ``baseline``, ``variant`` and ``Δ``
+    (the variant's opening less the projection). A lot one of them lacks is
+    zero there."""
+    start = _start_month(connections[variant])
+    assert start is not None
+    month = month_before(start)
+    projected = connections[baseline].lot_balance_pivot().loc[pd.Timestamp(month)].dropna()
+    projected.index = pd.MultiIndex.from_tuples(
+        [tuple(label.split("/", 1)) for label in projected.index], names=["account", "lot"])
+    lots = connections[variant].items("account_lot")
+    lots = lots[lots["kind"] == "asset"]
+    opening = pd.Series(
+        lots["opening_balance"].astype("Float64").fillna(0).to_numpy() / 100,
+        index=pd.MultiIndex.from_frame(lots[["account", "lot"]]), dtype=float)
+    frame = pd.DataFrame({baseline: projected, variant: opening}).fillna(0.0).sort_index()
+    frame["Δ"] = frame[variant] - frame[baseline]
+    frame.loc[("total", ""), :] = frame.sum()
+    return month, frame
 
 
 # ---------- net worth and break-even ----------

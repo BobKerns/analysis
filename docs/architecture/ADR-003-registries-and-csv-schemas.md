@@ -1178,6 +1178,34 @@ ensemble) copies a scenario's folder, a template's included, to a new
 sibling: the copy's `scenario.csv` name and `created_by`, its README title
 (as above) and its own markdown's links to itself change; nothing else in the
 data repo does, and the seed and ensemble size carry over.
+`scenario roll [NAME] [START]` ([#502](https://github.com/BobKerns/analysis/issues/502))
+starts a scenario again at a later month, opening with what its accounts
+hold then. It first offers to keep the scenario as it stands (`--keep`, as
+`scenario copy` would; default `NAME-<old start's year>`), then asks, for
+every asset and liability lot of the lineage, its balance (or its shares,
+for a lot valued by them: a symbol and quantity, a blank balance and a price
+known by START, the balance left to be derived, §4.3) and, where the lot
+keeps one, its cost basis, offering what the newest run reaching it
+projected for the month before START (`--yes` takes those). An inherited
+lot gets an override; a lot no file has (an account's implicit default)
+gets a row, named `default` in an investment account. A lot's
+`prior_year_end_balance`, when set, becomes the opening balance for a
+January start and is asked for otherwise, offering the run's Dec 31. When START is in a later year,
+each `year_to_date.csv` row with no `year` (§4.10) is offered to be pinned
+to the old start's year, and each rule's `ytd_amount` to become a
+year-to-date row of that year with the rule's accounts and character (the
+rule's `ytd_amount` cleared); a rule through a chain, or with no character,
+is listed to record by hand instead. A rule with no `start` whose schedule
+counts from it (quarterly, biweekly, `ytd_preroll`) is offered the old
+start, so its months don't move with the scenario's. It lists the calendar rows dated before START
+(not latent factors or date markers), and the rules whose `ytd_preroll` now
+counts the new year's months; within the same year, the year-to-date rows
+and `ytd_amount`s that now cover too few months. For a start in a later
+year by April, it names what the prior year's April tax needs. `--yes`
+fails, rather than asks, at a question with no default (an
+`@itemization` balance and no run). A lot deleted in the scenario isn't
+brought back by an older run's projection. The whole edit is one staged edit, the kept copy
+included.
 
 `calendar edit` chooses its row before its prompts, which can stay open a
 long time, and stages only when the answer is submitted. So inside the staged
@@ -1434,3 +1462,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#509](https://github.com/BobKerns/analysis/issues/509): where the household lives is `residence.csv` (new §4.16), dated rows of a state and a county; a tax year reads the tables of the state it lives in on its December 31 ([#498](https://github.com/BobKerns/analysis/issues/498)); a swap of a state-keyed table, and `bracket_series` in the state or local file, are refused (§2.6, §2.10, §3.5, §4.4, §4.15).
 - [#510](https://github.com/BobKerns/analysis/issues/510): a jurisdiction's `kind` may be a household calculator from the data repo's `taxes/*.py`, and every calculator's `params_json` is checked against its typed `Params`, tags included; `sim tax add|edit --kind` (§2.6, §4.15, §4.0).
 - [#511](https://github.com/BobKerns/analysis/issues/511), [#488](https://github.com/BobKerns/analysis/issues/488): aux kind `state_adjustments`, a state's own deductions and credits as named lines from tagged spending or income, the filers or the federal return; param `adjustments_aux`; its indexed figures round to the dollar (§2.6, §4.4).
+- [#502](https://github.com/BobKerns/analysis/issues/502): `scenario roll` starts a scenario again later, with the old plan's projections as defaults, pinning the old first year's year-to-date rows and `ytd_amount`s to it (§7).

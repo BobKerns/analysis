@@ -79,6 +79,13 @@ def add_month_ends(d: date, months: int) -> date:
     return _month_end(year, month0 + 1)
 
 
+def month_before(month: str) -> date:
+    """The last day of the month before ``month`` (``YYYY-MM``, or a date in
+    it): the last month an earlier plan says about before one starting
+    then."""
+    return add_month_ends(date(int(month[:4]), int(month[5:7]), 1), -1)
+
+
 def parse_month(s: str) -> date:
     """``YYYY-MM`` or ``YYYY-MM-DD`` as the last day of its month.
 
