@@ -1381,6 +1381,9 @@ def load_scenario(
     _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
+    _validate_state_adjustments(
+        aux_rows, issues, unused, tax_rows=tax_rows, residence_rows=residence_rows,
+        tags=_scenario_tags(accounts, scheduled_rows, calendar_rows))
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -4044,6 +4047,114 @@ def _validate_state_retirement_exclusions(
         if tier in tiers:
             issues.append(f"{where}: two rows for the same exclusion, filing status and min_age")
         tiers.add(tier)
+
+
+_STATE_LINES: frozenset[str] = frozenset({
+    "agi", "tax", "taxable_income", "ordinary_taxable", "ordinary_income", "ltcg_taxed",
+    "nol_used", "nol_carryover", "ss_taxable", "ss_benefits", "credits", "deduction",
+    "standard_deduction", "itemized_deduction", "capital_loss_used", "capital_loss_carryover",
+    "business_net", "hobby_disallowed", "dividends_as_ordinary", "hsa_addback",
+    "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
+    "drawdown_tax", "drawdown_base",
+})
+"""The lines the built-in state calculator writes itself, which a
+``state_adjustments`` row can't be named (it would overwrite one)."""
+
+_LINE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _validate_state_adjustments(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str], unused: list[str], *,
+    tax_rows: Sequence[Mapping[str, str]] = (),
+    residence_rows: Sequence[Mapping[str, str]] = (),
+    tags: frozenset[str] = frozenset(),
+) -> None:
+    """A ``state_adjustments__<state>.csv`` row (#511, #488) names a line,
+    its step and base, and the tag its base reads, in forms the run can
+    read. A tag that nothing in the scenario carries, in a state the
+    household lives in, is noted for ``sim check``: the line comes out zero,
+    which is right for a household that doesn't rent but wrong for a
+    misspelt tag."""
+    kind = registries.STATE_ADJUSTMENTS
+    lived = {r.get("state") for r in residence_rows}
+    has_state = any(r.get("name") == "state" for r in tax_rows)
+    seen: set[tuple[str | None, str, str, str]] = set()
+    noted: set[tuple[str | None, str, str]] = set()
+    for row_kind, state, payload, effective in aux_rows:
+        if row_kind != kind:
+            continue
+        name = str(payload.get("name") or "").strip()
+        where = f"aux/{kind}__{state}.csv ({effective}, {name})"
+        if not state:
+            issues.append(f"aux/{kind}.csv: name the state, as {kind}__CA.csv")
+            return
+        if not _LINE_NAME.match(name):
+            issues.append(f"{where}: name must be lower case letters, digits and _, "
+                          "as the return line it becomes (state_<name>)")
+        elif name in _STATE_LINES:
+            issues.append(f"{where}: name '{name}' is a line the state return already has")
+        step, base = payload.get("step"), payload.get("base")
+        if step not in registries.STATE_ADJUSTMENT_STEPS:
+            issues.append(f"{where}: step {step!r} must be one of "
+                          f"{', '.join(registries.STATE_ADJUSTMENT_STEPS)}")
+        if base not in registries.STATE_ADJUSTMENT_BASES:
+            issues.append(f"{where}: base {base!r} must be one of "
+                          f"{', '.join(registries.STATE_ADJUSTMENT_BASES)}")
+        tag = str(payload.get("tag") or "").strip()
+        if base in ("spending", "income"):
+            if not tag:
+                issues.append(f"{where}: base {base} needs the tag it reads, as tax:rent")
+            else:
+                try:
+                    well_formed = len(registries.parse_tags(tag)) == 1
+                except ValueError:
+                    well_formed = False
+                if not well_formed:
+                    issues.append(f"{where}: tag {tag!r} must be one role:name, as tax:rent")
+                elif tag not in tags and state in lived and has_state and (state, name, tag) not in noted:
+                    noted.add((state, name, tag))
+                    unused.append(
+                        f"{where}: no account, scheduled rule or calendar row carries tag "
+                        f"'{tag}', so this line comes out zero (right if the household has "
+                        "none; tag what it pays or receives otherwise)")
+        elif tag:
+            issues.append(f"{where}: base {base} reads no tag; leave tag blank")
+        if base == "filers" and payload.get("amount") is None:
+            issues.append(f"{where}: base filers needs the amount each filer gets")
+        if base == "filers" and payload.get("rate_micros") is not None:
+            issues.append(f"{where}: base filers takes no rate; amount is each filer's")
+        rate = payload.get("rate_micros")
+        if rate is not None and rate <= 0:
+            issues.append(f"{where}: rate must be more than 0%")
+        for column in ("amount", "income_limit", "phaseout"):
+            if (payload.get(column) or 0) < 0:
+                issues.append(f"{where}: {column} must not be negative")
+        if payload.get("phaseout") is not None and payload.get("phaseout_rate_micros") is not None:
+            issues.append(f"{where}: give phaseout or phaseout_rate, not both")
+        if (payload.get("phaseout") is not None or payload.get("phaseout_rate_micros") is not None) \
+                and payload.get("income_limit") is None:
+            issues.append(f"{where}: a phase-out needs the income_limit it starts at")
+        if (payload.get("phaseout_rate_micros") or 1) <= 0:
+            issues.append(f"{where}: phaseout_rate must be more than 0%")
+        age = payload.get("min_age")
+        try:
+            years = 0.0 if age in (None, "") else float(age)
+            if not 0 <= years <= 150:
+                raise ValueError(age)
+        except (TypeError, ValueError):
+            issues.append(f"{where}: min_age {age!r} must be an age in years, such as 65")
+        if str(payload.get("per_person") or "").strip().lower() not in ("", "yes", "no", "true", "false"):
+            issues.append(f"{where}: per_person {payload.get('per_person')!r} must be yes or blank")
+        status = payload.get("filing_status")
+        if status not in (None, "") and status not in registries.FILING_STATUSES:
+            issues.append(
+                f"{where}: filing_status {status!r} must be blank (every status) or one of "
+                f"{', '.join(registries.FILING_STATUSES)}")
+        key = (state, effective, name, str(status or ""))
+        if key in seen:
+            issues.append(f"{where}: two rows for the same line and filing status")
+        seen.add(key)
 
 
 def _validate_swap_aux_tables(

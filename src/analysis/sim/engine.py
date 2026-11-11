@@ -4190,6 +4190,8 @@ def _lookup_aux(
 
 
 _TAX_INDEX_ROUNDING = 5_000
+_TAX_INDEX_SMALL = 100_000
+"""Below $1,000 an indexed figure rounds to the dollar instead (#488)."""
 """Indexed tax figures round down to a multiple of $50, as IRC §1(f)(7)
 rounds the brackets and standard deduction (#467)."""
 
@@ -4227,7 +4229,10 @@ def _indexed_tax_rows(
                 continue
             factor = _cumulative_inflation_factor(aux, str(growth), base, january, cache)
             amount = int(row[money]) * factor // 1_000_000
-            grown = {**grown, money: amount // _TAX_INDEX_ROUNDING * _TAX_INDEX_ROUNDING}
+            # Small figures (an exemption credit, #488) round to the dollar,
+            # as the law rounds them; $50 would swallow most of their growth.
+            step = _TAX_INDEX_ROUNDING if abs(int(row[money])) >= _TAX_INDEX_SMALL else 100
+            grown = {**grown, money: amount // step * step}
         out.append(grown)
     return out
 

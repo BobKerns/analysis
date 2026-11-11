@@ -10,7 +10,9 @@ override on its :class:`StateYear`:
 2. :meth:`~StateYear.additions` and :meth:`~StateYear.subtractions`: named
    lines of the return, each changing income of one or more kinds;
 3. state AGI, the start plus the additions less the subtractions;
-4. :meth:`~StateYear.deductions`, then a carried-in NOL, then taxable income;
+4. :meth:`~StateYear.deductions`, then :meth:`~StateYear.other_deductions`
+   (lines that depend on the year's income), then a carried-in NOL, then
+   taxable income;
 5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits`.
 """
 
@@ -136,14 +138,22 @@ class StateYear(Prepared):
         """The deduction lines; ``deduction`` is the one taken."""
         raise NotImplementedError
 
+    def other_deductions(self, income: Income, basis: Basis) -> Mapping[str, int]:
+        """Named deductions taken after AGI besides :meth:`deductions`'
+        ``deduction``, which may depend on the year's income (a renter's
+        deduction with an income limit, #511); none by default."""
+        return {}
+
     def tax(self, taxable: int, income: Income) -> int:
         """The tax on ``taxable`` income, with long- and short-term gain
         stacked as the brackets say."""
         return common.stacked_tax(
             taxable, income.ltcg, income.stcg, self.brackets, self.ltcg_brackets, self.stcg_brackets)
 
-    def credits(self, tax: int, income: Income, basis: Basis) -> int:
-        """Credits against ``tax``; none by default."""
+    def credits(self, tax: int, income: Income, basis: Basis) -> int | Mapping[str, int]:
+        """Credits against ``tax``: a total, or named lines (#511) each
+        written to the return. Together they never take the tax below zero.
+        None by default."""
         return 0
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
@@ -166,11 +176,17 @@ class StateYear(Prepared):
     def compute(self, extra: Extra = NO_EXTRA) -> Return:
         basis = self.basis(extra)
         income, adjustments = self._income(basis)
-        before_nol = income.agi - self._deductions["deduction"]
+        others = dict(self.other_deductions(income, basis))
+        # A NOL is figured without these (#511): a nonbusiness deduction
+        # offsets only nonbusiness income, as the federal rule says.
+        before_nol = income.agi - self._deductions["deduction"] - sum(others.values())
         nol_used = common.nol_used(self._nol_in, before_nol, self._nol_limit)
         taxable = max(0, before_nol - nol_used)
         tax = self.tax(taxable, income)
-        credits = min(tax, self.credits(tax, income, basis))
+        credited = self.credits(tax, income, basis)
+        credit_lines = {} if isinstance(credited, int) else dict(credited)
+        total = credited if isinstance(credited, int) else sum(credit_lines.values())
+        credits = max(0, min(tax, total))
         lines = {
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,
@@ -181,6 +197,8 @@ class StateYear(Prepared):
             **self.fixed_lines(basis),
             **adjustments,
             **self._deductions,
+            **others,
+            **credit_lines,
             "taxable_income": taxable,
             "ordinary_taxable": common.ordinary_taxable(
                 taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),

@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim import provenance, tax_code
+from analysis.sim import provenance, tax_api, tax_code
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.tax_api import Account, IncomeItem, SpendingItem
 
@@ -165,7 +165,7 @@ def test_a_household_kind_cant_take_a_built_in_name_or_compute_another_tax(
 def test_a_newer_api_version_is_refused() -> None:
     kinds = tax_code.TaxKinds({"future": "API_VERSION = 99\n"})
     assert kinds.problems == [
-        "taxes/future.py is written for tax calculator API 99; this code provides 1"]
+        f"taxes/future.py is written for tax calculator API 99; this code provides {tax_api.API_VERSION}"]
 
 
 def test_the_taxes_folder_is_in_the_provenance_scope(
