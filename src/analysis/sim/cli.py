@@ -129,6 +129,8 @@ from analysis.sim.loader import (
     latest_run_path,
     read_current_scenario,
     read_disabled_scenarios,
+    read_run_status,
+    run_files,
     scenario_run_path,
     set_scenario_enabled,
     write_current_scenario,
@@ -14981,12 +14983,13 @@ def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
 
 
 def _price_on(data: Path, symbol: str, start: str) -> tuple[str, float] | None:
-    """The latest stored price of ``symbol`` on or before ``start``'s first
-    day, as the loader values a lot with shares and no balance: (date, price)."""
+    """The latest stored price of ``symbol`` on or before ``start`` (its
+    month's end, as the loader reads a start), as the loader values a lot
+    with shares and no balance: (date, price)."""
     history = prices.price_history(data / "prices", symbol)
     if history is None or history.empty:
         return None
-    known = history[history["effective_date"].astype(str) <= f"{start}-01"]
+    known = history[history["effective_date"].astype(str) <= month_end_iso(start)]
     if known.empty:
         return None
     last = known.iloc[-1]
@@ -15016,8 +15019,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     asset and liability holds at START: shares for a lot whose symbol has a
     price by then (its balance is shares x price), dollars otherwise, and the
     cost basis where the lot tracks one. Each question offers what the
-    scenario's latest run projected for the month before START; --yes takes
-    those. A lot's prior_year_end_balance, when it has one, follows.
+    scenario's newest run that reaches that far projected for the month
+    before START; --yes takes those. A lot's prior_year_end_balance, when it has one, follows.
 
     Moving into a new year changes some rows' meaning, so it also asks
     about them: a year-to-date row with no year belongs to the first year,
@@ -15060,13 +15063,18 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
 
     month = roll.month_before(start)
     projected: dict[tuple[str, str], roll.Projection] = {}
-    run_path = scenario_run_path(ref.runs_dir, name, wait=False)
-    if run_path is not None:
+    # The newest run that reaches the month: one made after an earlier roll
+    # (or a trial one) starts too late to say.
+    for run_path in reversed(run_files(ref.runs_dir, name)):
+        if read_run_status(run_path).status != "succeeded":
+            continue
         with RunConnection(run_path, name) as rc:
             projected = roll.projections(rc, month)
+        if projected:
+            break
     if projected:
-        click.echo(f"Each default is what {name}'s latest run projected for {month:%Y-%m} "
-                   "(--yes takes them all).")
+        click.echo(f"Each default is what {name}'s run {run_path.name} projected for "
+                   f"{month:%Y-%m} (--yes takes them all).")
     else:
         click.echo(f"No run of {name} reaches {month:%Y-%m}, so each default is the "
                    "current opening value.")
