@@ -4,9 +4,10 @@ for the year they die, and then lapses. The survivor's share carries on."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from analysis.sim.tax_api import NO_EXTRA, Account, CapitalLoss, IncomeItem, Person, Return, TaxYear
+from analysis.sim import registries
 from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import Basis
 from analysis.sim.taxes.state_tables import StateTablesYear
@@ -20,18 +21,22 @@ BILL_DIES = "2034-08-31"
 
 
 def _year(year: int, items: Sequence[IncomeItem] = (), losses: Sequence[CapitalLoss] = (), *,
-          alice: str | None = ALICE_DIES, bill: str | None = None) -> TaxYear:
-    """A tax year with only what the carryovers read: the items, the losses
-    and the people, with Alice's and Bill's final months."""
+          alice: str | None = ALICE_DIES, bill: str | None = None,
+          persons: Sequence[Person] | None = None, nol: Mapping[int, int] | None = None) -> TaxYear:
+    """A tax year with only what the carryovers read: the items, the losses,
+    the people (Alice and Bill with their final months, unless ``persons``),
+    and ``nol``, the NOL carried out of earlier years."""
     def unused(*_args: object) -> list:
         return []
 
     return TaxYear(
         year=year, jurisdiction="federal", params=None, items=list(items), losses=list(losses),
-        persons=[Person("alice", "1965-03-15", "primary", alice),
-                 Person("bill", "1967-08-20", "primary", bill)],
+        persons=list(persons) if persons is not None else [
+            Person("alice", "1965-03-15", "primary", alice),
+            Person("bill", "1967-08-20", "primary", bill)],
         _table=unused, _indexed=unused, _dated=unused, _keyed=lambda *_a: None,
         _filing_status_in=lambda _y: "MFJ", _prior=lambda _line: 0, _series_of=unused,
+        _line_in=lambda line, y: (nol or {}).get(y, 0) if line == "nol_carryover" else 0,
     )
 
 
@@ -109,13 +114,14 @@ def _business_loss(year: int, shop: Account, amount: int) -> IncomeItem:
 
 
 def test_a_proprietors_operating_loss_ends_with_them() -> None:
-    ty = _year(2030, [_business_loss(2029, SHOP, 10_000_00)])
+    ty = _year(2030, [_business_loss(2029, SHOP, 10_000_00)], nol={2029: 10_000_00})
     assert common.nol_lapse_share(ty) == 1
     assert common.nol_carried(8_000_00, 1.0) == {"nol_carryover": 0, "nol_lapsed": 8_000_00}
 
 
 def test_the_survivors_business_loss_carries_on() -> None:
-    ty = _year(2030, [_business_loss(2029, SHOP, 3_000_00), _business_loss(2029, BILL_SHOP, 1_000_00)])
+    ty = _year(2030, [_business_loss(2029, SHOP, 3_000_00), _business_loss(2029, BILL_SHOP, 1_000_00)],
+               nol={2029: 4_000_00})
     assert common.nol_lapse_share(ty) == 0.75
     assert common.nol_carried(8_000_00, 0.75) == {"nol_carryover": 2_000_00, "nol_lapsed": 6_000_00}
 
@@ -134,3 +140,54 @@ def test_the_state_reports_its_own_lapse_not_the_federal_one() -> None:
     assert "capital_loss_lapsed" not in year.fixed_lines(Basis(NO_EXTRA, federal))
     year._capital = common.CapitalGains(0, 0, 3_000_00, 0, 0, lapsed=4_000_00)
     assert year.fixed_lines(Basis(NO_EXTRA, federal))["capital_loss_lapsed"] == 4_000_00
+
+
+def test_business_losses_from_before_the_nol_last_ran_out_dont_count() -> None:
+    # Alice's 2015 loss was used up by 2018; Bill's 2029 loss is the NOL she dies with.
+    ty = _year(2030, [_business_loss(2015, SHOP, 50_000_00), _business_loss(2029, BILL_SHOP, 10_000_00)],
+               nol={2015: 40_000_00, 2016: 20_000_00, 2017: 5_000_00, 2029: 8_000_00})
+    assert common.nol_lapse_share(ty) == 0
+
+
+def test_hobby_receipts_offset_its_owners_business_loss() -> None:
+    """As in business_result: a hobby's receipts are income, its expenses
+    aren't deducted."""
+    hobby = Account("Asset_Pottery", "asset", "business", "bill", hobby=True)
+    items = [_business_loss(2029, SHOP, 10_000_00), _business_loss(2029, BILL_SHOP, 5_000_00),
+             IncomeItem(2029, "business_income", SUPPLIES, hobby, 5_000_00),
+             _business_loss(2029, hobby, 2_000_00)]
+    ty = _year(2030, items, alice=None, bill="2030-06-30", nol={2029: 10_000_00})
+    assert common.nol_lapse_share(ty) == 0  # Bill's businesses netted to nothing
+
+
+INCOME = Account("Income_Other", "income", "other", None)
+
+
+def test_a_loss_is_the_receiving_accounts_owners_when_the_payer_has_none() -> None:
+    loss = IncomeItem(2029, "ltcg", INCOME, ALICE_OWN, -10_000_00)
+    assert _carry(2030, loss).lapsed == 10_000_00 - 2 * 3_000_00
+
+
+def test_a_fall_in_an_hsa_is_its_owners_loss_where_the_state_taxes_it() -> None:
+    hsa = Account("Asset_HSA_Alice", "asset", "hsa", "alice")
+    growth = registries.GROWTH_COUNTERPARTY_ACCOUNTS["deferred"].name
+    fall = IncomeItem(2029, "deferred", hsa, Account(growth, "income", "", None), 10_000_00)
+    result = common.capital_gains(_year(2030, [fall]), loss_limit=lambda _y: 3_000_00, hsa_years={2029})
+    assert (result.carryover_lt, result.lapsed) == (0, 4_000_00)
+
+
+def test_a_later_death_shares_only_what_the_earlier_one_left() -> None:
+    """With no primary persons the household is everyone with a role, so a
+    joint loss is half Alice's at her death and half Bill's at his, while
+    Carol lives on; Carol's own loss never lapses."""
+    persons = [Person("alice", None, "member", ALICE_DIES), Person("bill", None, "member", "2031-05-31"),
+               Person("carol", None, "member", None)]
+    carols = Account("Asset_Brokerage_Carol", "asset", "brokerage", "carol")
+    items = (_sold_at_a_loss(2029, JOINT, 10_000_00), _sold_at_a_loss(2029, carols, 10_000_00))
+
+    def carry(year: int) -> common.CapitalGains:
+        return common.capital_gains(_year(year, items, persons=persons), loss_limit=lambda _y: 0)
+
+    assert (carry(2030).carryover_lt, carry(2030).lapsed) == (15_000_00, 5_000_00)
+    # Bill's half of the joint loss Alice's death left: 2,500 of the 15,000.
+    assert (carry(2031).carryover_lt, carry(2031).lapsed) == (12_500_00, 2_500_00)

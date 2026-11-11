@@ -188,6 +188,7 @@ class TaxYear:
     """Where the household lives, from each row's effective date (a month
     end), in date order."""
     spending: Sequence[SpendingItem] = ()
+    _line_in: Callable[[str, int], int] = field(repr=False, default=lambda _line, _year: 0)
 
     @property
     def filing_status(self) -> str:
@@ -250,6 +251,11 @@ class TaxYear:
         """This jurisdiction's ``line`` of last year's return; 0 before the
         first year it computed."""
         return self._prior(line)
+
+    def line_in(self, line: str, year: int) -> int:
+        """This jurisdiction's ``line`` of an earlier year's return; 0 for a
+        year it didn't compute. A carryover's history (#277)."""
+        return self._line_in(line, year)
 
     @cached_property
     def _this_year(self) -> list[IncomeItem]:

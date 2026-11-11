@@ -45,7 +45,7 @@ class StateTablesYear(FederalStateYear):
         self._hsa_growth = hsa_growth.get(ty.year, 0)
         # The state nets its own gains: an HSA's growth is gain to it.
         capital = self._capital = common.capital_gains(
-            ty, loss_limit=common.loss_limit(ty), extra_ltcg=hsa_growth)
+            ty, loss_limit=common.loss_limit(ty), hsa_years=taxed_years)
 
         # A state's retirement income exclusions (#486) come off before AGI,
         # as the states' own subtractions from income do, after its gain

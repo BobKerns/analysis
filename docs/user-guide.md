@@ -823,7 +823,9 @@ A death also ends the decedent's own tax losses. Their share of a capital-loss
 carryover, and of a business's net operating loss, can still be used on the
 return for the year they die, and then it's gone. Losses on their own
 accounts are theirs, and half of a joint account's while the spouse lives.
-The survivor keeps their own share. `sim report tax --return federal` shows
+The survivor keeps their own share. A loss counts by its year, so one
+taken from the decedent's account later in the year of the death still
+counts as theirs. `sim report tax --return federal` shows
 what ended as `capital_loss_lapsed` and `nol_lapsed`.
 
 In an ensemble the age can vary from member to member. Give
