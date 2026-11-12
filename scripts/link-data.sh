@@ -114,6 +114,13 @@ target="$(cd "$target" && pwd -P)"
 ln -s "$target" "$SHARED"
 printf '%s\n' "$REPO" > "$SHARED/sim/.analysis"
 
+# cspell.json loads the household's words from here; `sim init` makes the file,
+# but an older data repo may not have it, and cspell fails without it.
+if [ ! -f "$SHARED/.cspell/data-words.txt" ]; then
+    mkdir -p "$SHARED/.cspell"
+    : > "$SHARED/.cspell/data-words.txt"
+fi
+
 # Keep the per-machine files out of the data repo, as activate-analysis does.
 for ignored in .analysis .current_scenario .analysis_user; do
     if [ ! -f "$SHARED/sim/.gitignore" ] || ! grep -qxF "$ignored" "$SHARED/sim/.gitignore"; then

@@ -8,6 +8,7 @@ contains a keyword itself.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -30,8 +31,10 @@ def _keywords() -> list[str]:
     return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
 
 
-def _check(repo: Path, *args: str, allow: bool = False) -> subprocess.CompletedProcess[str]:
-    env = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}
+def _check(
+    repo: Path, *args: str, allow: bool = False, **extra_env: str,
+) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", **extra_env}
     if allow:
         env["ALLOW_BLOCKED_KEYWORDS"] = "1"
     return subprocess.run(
@@ -57,7 +60,13 @@ def _stage(repo: Path, name: str, text: str) -> None:
 
 @pytest.mark.slow
 def test_no_tracked_file_contains_a_blocked_keyword() -> None:
-    result = _check(REPO, "--all")
+    # The private list too, wherever this run can see it.
+    private = {
+        name: os.environ[name]
+        for name in ("BLOCKED_KEYWORDS_PRIVATE", "ANALYSIS_DATA_DIR")
+        if name in os.environ
+    }
+    result = _check(REPO, "--all", **private)
 
     assert result.returncode == 0, result.stderr
 
@@ -174,3 +183,58 @@ def test_the_override_lets_a_deliberate_use_through(scratch_repo: Path) -> None:
 
     assert result.returncode == 0
     assert "notes.txt:1:" in result.stderr
+
+
+# A made-up private keyword; the real private list never reaches this repo.
+PRIVATE = "zq" + "xvault"  # cspell:disable-line
+
+
+def test_a_private_keyword_from_the_environment_is_blocked_but_not_shown(
+    scratch_repo: Path,
+) -> None:
+    _stage(scratch_repo, "notes.txt", f"plain\nthe {PRIVATE.upper()} account\n")
+
+    result = _check(
+        scratch_repo, "--staged", BLOCKED_KEYWORDS_PRIVATE=f"# private\nother, {PRIVATE}\n",
+    )
+
+    assert result.returncode == 1
+    assert "notes.txt:2" in result.stderr
+    assert PRIVATE not in result.stderr.lower()
+
+
+def test_private_text_hits_report_line_numbers_only(scratch_repo: Path) -> None:
+    text = scratch_repo / "pr.txt"
+    text.write_text(f"Fix import\n\nAbout {PRIVATE}\n", encoding="utf-8")
+
+    result = _check(scratch_repo, "--text", str(text), BLOCKED_KEYWORDS_PRIVATE=PRIVATE)
+
+    assert result.returncode == 1
+    assert "line 3" in result.stderr
+    assert PRIVATE not in result.stderr.lower()
+
+
+def test_the_private_list_file_is_read_from_the_data_repo(
+    scratch_repo: Path, tmp_path: Path,
+) -> None:
+    data = tmp_path / "data-repo"
+    (data / "sim").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(data)], check=True)
+    (data / "blocked-keywords.txt").write_text(f"{PRIVATE}\n", encoding="utf-8")
+    _stage(scratch_repo, "notes.txt", f"{PRIVATE}\n")
+
+    assert _check(scratch_repo, "--staged").returncode == 0
+
+    result = _check(scratch_repo, "--staged", ANALYSIS_DATA_DIR=str(data / "sim"))
+
+    assert result.returncode == 1
+    assert "notes.txt:1" in result.stderr
+
+
+def test_the_private_list_file_is_found_through_data_shared(scratch_repo: Path) -> None:
+    shared = scratch_repo / "data" / "shared"
+    shared.mkdir(parents=True)
+    (shared / "blocked-keywords.txt").write_text(f"{PRIVATE}\n", encoding="utf-8")
+    _stage(scratch_repo, "notes.txt", f"{PRIVATE}\n")
+
+    assert _check(scratch_repo, "--staged").returncode == 1
