@@ -66,75 +66,81 @@ Maryland county's or New York City's, goes in a `state_local_tax` table
 written for your own county or city, named for it in `residence.csv`; one with a base of its own, or one
 only on wages, is left out. A state's retirement income exclusions, by age, kind of income
 and household income, go in another optional table,
-`state_retirement_exclusion__XX.csv`; a "Partial" row below whose gap is such
-an exclusion needs that table written. A state's own deductions and credits (a renter's credit,
+`state_retirement_exclusion__XX.csv`. A state's own deductions and credits (a renter's credit,
 personal exemptions, a deduction for federal tax paid) are rows of
-`state_adjustments__XX.csv`; California's ship. Many states have rules this leaves
-out; the table says which matter most for a retired household. It reflects
-state law as of 2026; check the
-state's own revenue department before relying on a figure.
+`state_adjustments__XX.csv`; California's ship. A rule that turns on the kind of
+pension or plan (a public pension, an employer plan but not an IRA) is a
+`state_adjustments` row on income from accounts you tag. Many states have rules
+this leaves out; the table says which matter most for a retired household, and
+[State income tax, state by state](./docs/guides/state-income-tax.md) lists each
+state's rules and the tables that express them. It reflects state law as of
+2026 (surveyed in November 2026); check the state's own revenue department
+before relying on a figure.
 
 | Status | Meaning |
 | --- | --- |
 | **Shipped** | The tables come with the simulator. |
 | **No tax** | No income tax: leave out the state rule. |
-| **Tables needed** | The model fits; write the state's tables. |
+| **Tables needed** | The model fits; write the state's tables ([which ones](./docs/guides/state-income-tax.md)). |
 | **Partial** | The tables work, but the rules listed are not modeled, so the estimate is rough. |
 | **Federal rule** | The territory's tax mirrors the federal one and is paid to the territory rather than the IRS; the federal tax stands in for it. |
 | **Not supported** | A tax system of its own that the model can't express. |
 
+For a shipped state, "Not modeled" lists what its shipped tables leave out:
+an issue to close, or a row you write yourself.
+
 | State | Status | Not modeled |
 | --- | --- | --- |
-| Alabama | Partial | Deduction for federal income tax paid; pension exclusion |
+| Alabama | Partial | Standard deduction that shrinks with income ([#578](https://github.com/BobKerns/analysis/issues/578)) |
 | Alaska | No tax | |
 | Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
-| Arkansas | Partial | Retirement income exclusion |
+| Arkansas | Partial | Low-income tax tables; spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
 | California | Shipped | |
-| Colorado | Partial | Pension and annuity subtraction; Social Security taxed below 65 |
-| Connecticut | Partial | Social Security's 25% cap above the income limit; pension and IRA exemptions phased by income; exemption phase-outs |
-| Delaware | Partial | Pension exclusion |
-| District of Columbia | Shipped | Extra deduction at 65 |
+| Colorado | Partial | Social Security subtraction's age test ([#581](https://github.com/BobKerns/analysis/issues/581)) |
+| Connecticut | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); personal tax credit; Social Security's 25% cap |
+| Delaware | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| District of Columbia | Shipped | Extra deduction at 65 ([#582](https://github.com/BobKerns/analysis/issues/582)); spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
 | Florida | No tax | |
-| Georgia | Partial | Retirement income exclusion from age 62 |
-| Hawaii | Partial | Pension exemption |
-| Idaho | Shipped | Public pension deduction from 65; grocery credit |
-| Illinois | Partial | Retirement income and IRA distributions exempt |
-| Indiana | Partial | Age exemptions; county tax needs `state_local_tax__IN.csv` |
-| Iowa | Partial | Retirement income exempt from age 55 |
-| Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing |
-| Kentucky | Partial | Pension exclusion; local occupational taxes (mostly on wages) |
-| Louisiana | Partial | Retirement income exclusion from age 65 |
-| Maine | Partial | Pension deduction |
-| Maryland | Partial | Pension exclusion; capital gains surtax; county tax needs `state_local_tax__MD.csv` |
-| Massachusetts | Partial | Personal exemptions |
-| Michigan | Partial | City income taxes (a base of their own); retirement deduction |
-| Minnesota | Partial | Social Security subtraction phases out in $4,000 steps (modeled as a straight line) |
-| Mississippi | Partial | Retirement income and IRA distributions exempt |
-| Missouri | Partial | Short-term gain exemption; pension exemptions |
+| Georgia | Tables needed | |
+| Hawaii | Tables needed | |
+| Idaho | Shipped | Public pension deduction, reduced by Social Security; refundable grocery credit ([#579](https://github.com/BobKerns/analysis/issues/579)) |
+| Illinois | Tables needed | |
+| Indiana | Tables needed | |
+| Iowa | Partial | School district surtax (a share of state tax) |
+| Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing ([#582](https://github.com/BobKerns/analysis/issues/582)) |
+| Kentucky | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Louisiana | Tables needed | |
+| Maine | Partial | Standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| Maryland | Partial | Pension exclusion reduced by Social Security ([#579](https://github.com/BobKerns/analysis/issues/579)); capital gains surtax above $350,000 of income |
+| Massachusetts | Tables needed | |
+| Michigan | Partial | City income taxes (a base of their own) |
+| Minnesota | Partial | Standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)); 1% surtax on investment income over $1 million; Social Security subtraction's $4,000 steps (modeled as a straight line) |
+| Mississippi | Tables needed | |
+| Missouri | Tables needed | |
 | Montana | Tables needed | |
-| Nebraska | Shipped | Personal exemption credit |
+| Nebraska | Shipped | Personal exemption credit ([#582](https://github.com/BobKerns/analysis/issues/582)) |
 | Nevada | No tax | |
 | New Hampshire | No tax | |
-| New Jersey | Partial | Pension and IRA exclusion with an income cliff; personal exemptions |
+| New Jersey | Tables needed | |
 | New Mexico | Tables needed | |
-| New York | Partial | Pension and IRA exclusion from age 59½; Yonkers surcharge (a share of state tax); New York City tax needs `state_local_tax__NY.csv` |
-| North Carolina | Shipped | Exclusion for government pensions vested before August 1989 |
+| New York | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); Yonkers surcharge (a share of state tax) |
+| North Carolina | Shipped | Exclusion for government pensions vested before August 1989 (a row you write) |
 | North Dakota | Tables needed | |
-| Ohio | Partial | Municipal and earned-income school district taxes; retirement credits; a traditional school district tax needs `state_local_tax__OH.csv` |
-| Oklahoma | Partial | Retirement income exclusion |
-| Oregon | Partial | Federal tax subtraction; retirement credit; Portland-area taxes need `state_local_tax__OR.csv` |
-| Pennsylvania | Partial | Retirement income exempt; separate income classes; local wage taxes; Philadelphia's tax on investment income |
-| Rhode Island | Partial | Social Security exemption's full-retirement-age test; pension modification |
-| South Carolina | Partial | Retirement and age deductions |
+| Ohio | Tables needed | |
+| Oklahoma | Tables needed | |
+| Oregon | Tables needed | |
+| Pennsylvania | Partial | Separate income classes; Philadelphia's tax on investment income |
+| Rhode Island | Partial | Social Security exemption's full-retirement-age test ([#581](https://github.com/BobKerns/analysis/issues/581)); standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| South Carolina | Partial | Deduction that phases down with income, from 2026 ([#578](https://github.com/BobKerns/analysis/issues/578)) |
 | South Dakota | No tax | |
 | Tennessee | No tax | |
 | Texas | No tax | |
-| Utah | Partial | Taxpayer credit in place of a deduction |
-| Vermont | Tables needed | |
-| Virginia | Partial | Age deduction from 65 |
+| Utah | Tables needed | |
+| Vermont | Partial | Minimum tax of 3% of AGI over $150,000; capital gain exclusion's holding period |
+| Virginia | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
 | Washington | Shipped | Charitable and family-business deductions; credits for other states' taxes |
-| West Virginia | Partial | Senior income exclusion |
-| Wisconsin | Partial | Retirement income exclusion |
+| West Virginia | Tables needed | |
+| Wisconsin | Partial | Standard deduction that shrinks with income ([#578](https://github.com/BobKerns/analysis/issues/578)) |
 | Wyoming | No tax | |
 
 | Territory | Status | Not modeled |

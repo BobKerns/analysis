@@ -22,7 +22,7 @@ from typing import Any, get_type_hints
 from analysis.sim import registries, units
 from analysis.sim.distributions import DistributionError, rewrite_outcomes
 from analysis.sim.asset_classes import UNCLASSIFIED, class_weights
-from analysis.sim.param_units import param_types
+from analysis.sim.param_units import optional_params, param_types
 from analysis.sim.strategy_api import ScenarioView, Strategy, param_units
 from analysis.sim.strategy_code import StrategyKinds
 
@@ -175,6 +175,7 @@ def convert_params(
     fields = {f.name: f for f in dataclasses.fields(cls.Params)}
     unit_of = param_units(cls.Params)
     plain_of = param_types(cls.Params) if check_types else {}
+    optional = optional_params(cls.Params)
     for key in raw:
         if key not in fields:
             problems.append(f"unknown parameter '{key}' (known: {', '.join(fields) or 'none'})")
@@ -185,8 +186,8 @@ def convert_params(
                 problems.append(f"parameter '{key}' is required")
             continue
         unit = unit_of[key]
-        if raw[key] is None and f.default is None:
-            out[key] = None  # an optional parameter left unset
+        if raw[key] is None and (f.default is None or key in optional):
+            out[key] = None  # an optional parameter set to none
             continue
         try:
             out[key] = _convert_param(

@@ -40,12 +40,13 @@ __all__ = [
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
-API_VERSION = 3
+API_VERSION = 4
 """Bumped when a calculator written against the previous version could
 break, or one written for this version needs what the previous lacks. 1
 (#510) is the first a data repo can write to; 2 (#511) adds a state year's
 ``other_deductions`` and ``credit_lines`` steps; 3 (#489) its ``excise``
-step and :attr:`Extra.real_estate_ltcg`."""
+step and :attr:`Extra.real_estate_ltcg`; 4 (#568) its
+``refundable_credits`` step and :meth:`TaxYear.grown`."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""
@@ -248,6 +249,8 @@ class TaxYear:
     """What was paid toward each state and local jurisdiction in a calendar
     year (#542), the SALT deduction's income taxes; the engine gives this
     year's only."""
+    _grown: Callable[[int, str, int], int] = field(
+        repr=False, default=lambda amount, _series, _since: amount)
 
     @property
     def filing_status(self) -> str:
@@ -283,6 +286,17 @@ class TaxYear:
         """:meth:`table`, with each figure that has a growth series grown to
         January of the year, as the law indexes them (#467)."""
         return self._indexed(kind, series)
+
+    def grown(self, amount: int, series: str, since: int) -> int:
+        """``amount`` (cents), a figure the law set for year ``since``, grown
+        by inflation ``series`` (``cpi``) to January of this year, as an
+        indexed table's figures are (#568): a plugin's own dollar amounts
+        keep their worth over a long run. The year ``since`` and those
+        before it get ``amount`` as it is. Rounding is the calculator's: the
+        law usually rounds an indexed figure down to the dollar or more."""
+        if self.year <= since:
+            return amount
+        return self._grown(amount, series, since)
 
     def dated(self, kind: str, series: str | None = None) -> list[tuple[str, Row]]:
         """Every row of table ``kind`` with its effective date, in date order."""
