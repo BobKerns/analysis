@@ -471,7 +471,7 @@ Set DataDir "home/retirement/data/sim"
 Hide
 Open "net_worth.ipynb"
 RunAll
-Scroll "Federal and state tax by year"
+Scroll "Tax"
 Show
 Sleep 3s
 ScrollBy 450
