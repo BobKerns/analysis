@@ -18440,7 +18440,8 @@ def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Pat
     macOS, a crontab line elsewhere) that wakes the builder, so prices are
     fetched after each weekday's close. They are committed on the data repo's
     builder/prices branch and merged into main when main is checked out and
-    has no uncommitted changes.
+    has no uncommitted changes; main is then pushed if it is strictly ahead of
+    its upstream.
     """
     from analysis.sim import builder, price_schedule
 
@@ -18578,7 +18579,7 @@ def builder_prices(if_due: bool, data_dir: Path | None) -> None:
         click.echo(line)
         if writer is not None:
             writer.output(line)
-    if outcome.committed:
+    if outcome.pending:
         # The daemon merges, between builds; this starts it if need be.
         click.echo(builder.notify(resolved))
 

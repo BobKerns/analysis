@@ -1045,6 +1045,19 @@ def data_repo_sim(tmp_path: Path, test_data_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="function")
+def data_repo_origin(tmp_path: Path, data_repo_sim: Path) -> Path:
+    """``data_repo_sim``'s repo with a bare ``origin`` (``tmp_path/origin.git``)
+    holding its ``main``, which tracks ``origin/main``, for the builder's
+    pushes (#588). Returns the bare repo."""
+    origin = tmp_path / "origin.git"
+    git.Repo.init(origin, bare=True, initial_branch="main").close()
+    with git.Repo(data_repo_sim.parent) as repo:
+        repo.create_remote("origin", str(origin))
+        repo.git.push("-q", "-u", "origin", "main")
+    return origin
+
+
+@pytest.fixture(scope="function")
 def commit_test_data(test_data_dir: Path) -> Callable[[], Path]:
     """Make the private data copy a git repo with everything committed, for
     provenance tests; call it once the test's scenarios are in place."""
