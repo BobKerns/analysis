@@ -401,7 +401,7 @@ notebook scenes record. It builds for amd64
 and arm64 (Docker Desktop on Apple silicon).
 
 ```sh
-analysis video build 00-pilot [--lang ja] [--silent] [--rerecord] [--jobs N]
+analysis video build 00-pilot [--lang ja] [--silent] [--rerecord] [--jobs N] [--publish]
 analysis video check                 # every video, or name some
 analysis video shell 01-intro        # bash, with the video's data repo
 ```
@@ -465,7 +465,17 @@ analysis video publish --refresh     # every published video's title and descrip
 ```
 
 It works from the build in `out/videos` (`--out` for another), so build
-first. Each language is its own video. An upload:
+first, or build and publish in one step (#562):
+
+```sh
+analysis video build 03-base-scenario --publish [--new-upload] [--dry-run]
+```
+
+`build --publish` takes publish's `--dry-run`, `--refresh` and
+`--new-upload`, and publishes only after a build that succeeds, always on
+this machine (the build itself may run in the container). It says so when a
+language is already up and `--new-upload` is missing, since then the rebuilt
+picture doesn't reach YouTube. Each language is its own video. An upload:
 
 - sends the MP4, as **private**, so you can look it over and make it public
   in Studio;
