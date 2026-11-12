@@ -4,7 +4,7 @@
             "path": "."
         },
         {
-            "path": "../../../kerns-ono/.finance"
+            "path": "./data/shared"
         }
     ],
     "settings": {
@@ -13,7 +13,8 @@
         "explorerExclude.backup": {},
         "explorerExcludeManager.backup": {},
         "chat.mcp.discovery.enabled": {
-            "cursor-workspace": true
+            "cursor-workspace": true,
+            "claude-desktop": true
         },
         "explorer.fileNesting.patterns": {
             "AGENTS.MD": "CLAUDE.MD,CONVENTIONS.MD,.mcp.json",
@@ -89,5 +90,6 @@
             ".env.*": "dotenv",
             ".env": "dotenv"
         },
+        "chat.customizations.mcpServerMigration.enabled": true,
     }
 }
