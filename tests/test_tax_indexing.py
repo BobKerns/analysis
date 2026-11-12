@@ -142,3 +142,15 @@ def test_a_growth_series_must_have_a_rate_from_the_tables_date(
                                         "but grows the table from 2027-02"):
         _run(tmp_path, test_data_dir, fund_asset_savings, write_tax)
 
+
+
+def test_a_calculators_own_figure_grows_like_a_tables() -> None:
+    """``TaxYear.grown`` (#568): from January of the year the figure was set
+    to January of the tax year, unrounded; an unknown series is a TaxError."""
+    cache: dict = {}
+    factor = engine._cumulative_inflation_factor(
+        _cpi_2_5(), "cpi", date(2025, 1, 31), date(2030, 1, 31), cache)
+    assert engine._grown_amount(_cpi_2_5(), 1_425_00, "cpi", 2025, 2030, cache) \
+        == 1_425_00 * factor // 1_000_000 > 1_425_00
+    with pytest.raises(engine.tax_api.TaxError, match="no inflation series 'wages'"):
+        engine._grown_amount(_cpi_2_5(), 1_425_00, "wages", 2025, 2030, cache)

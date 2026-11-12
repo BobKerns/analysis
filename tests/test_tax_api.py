@@ -4,6 +4,7 @@ scenario behind it, is enough to test one."""
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -21,6 +22,7 @@ from analysis.sim.tax_api import (
     TaxYear,
     calculator,
 )
+from analysis.sim.taxes.state_tables import StateTablesYear
 
 YEAR = 2030
 SALARY = Account("Income_Salary", "income", "salary", "alice")
@@ -124,6 +126,43 @@ def test_the_state_calculator_reads_the_states_brackets() -> None:
     assert ret.tax == 70_000_00 * 5 // 100
     # A local tax is its own jurisdiction (#508), not a line of the state's.
     assert "magi" not in ret.lines and "local_tax" not in ret.lines
+
+
+class _Credits(StateTablesYear):
+    """A state year with a $5,000 credit of each kind (#568)."""
+
+    def credit_lines(self, tax, income, basis):  # noqa: ANN001, ANN201
+        return {"kept": 5_000_00}
+
+    def refundable_credits(self, tax, income, basis):  # noqa: ANN001, ANN201
+        return {"paid_back": 5_000_00}
+
+
+def test_a_refundable_credit_can_take_the_tax_below_zero() -> None:
+    year = _year([_item("ordinary", 40_000_00)], jurisdiction="state")
+    ret = _Credits(calculator("state_tables"), year).compute()
+    # $10,000 taxable at 5% is $500: the ordinary credit takes only that,
+    # and the refundable one all of it, which DC (say) pays back.
+    assert ret.lines["kept"] == 500_00
+    assert ret.lines["paid_back"] == 5_000_00
+    assert ret.tax == -5_000_00
+
+
+def test_a_figure_grows_only_after_its_year() -> None:
+    year = dataclasses.replace(_year([]), _grown=lambda amount, _series, _since: amount * 2)
+    assert year.grown(1_000_00, "cpi", YEAR - 1) == 2_000_00
+    assert year.grown(1_000_00, "cpi", YEAR) == 1_000_00
+    assert year.grown(1_000_00, "cpi", YEAR + 1) == 1_000_00
+
+
+def test_a_refundable_credit_cannot_take_a_returns_line_name() -> None:
+    class Clash(StateTablesYear):
+        def refundable_credits(self, tax, income, basis):  # noqa: ANN001, ANN201
+            return {"credits": 300_00}
+
+    year = _year([_item("ordinary", 40_000_00)], jurisdiction="state")
+    with pytest.raises(TaxError, match="refundable credit line credits names a line"):
+        Clash(calculator("state_tables"), year).compute()
 
 
 def test_a_missing_table_is_a_tax_error() -> None:
