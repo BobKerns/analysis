@@ -3038,13 +3038,24 @@ principal pays down a liability, which isn't spending) and an IRMAA
 surcharge."""
 
 
-def _implied_tags(rule_tags: frozenset[str], payee: tax_api.Account, implied: str | None) -> frozenset[str]:
+def _implied_tags(
+    rule_tags: frozenset[str], payer: tax_api.Account, payee: tax_api.Account,
+    character: str, implied: str | None,
+) -> frozenset[str]:
     """``rule_tags``, with the rule kind's ``implied`` tag when the item
-    would otherwise carry no ``tax:`` tag."""
-    if implied is None or any(
-            t.startswith("tax:") for t in tax_api._effective_tags(rule_tags, payee.tags)):
+    would otherwise carry no ``tax:`` tag. A business's spending (paid from
+    a business account, or of the business_expense character) gets none:
+    it's deducted on Schedule C, not itemized."""
+    if implied is None or character == registries.BUSINESS_EXPENSE \
+            or payer.subkind == registries.BUSINESS_SUBKIND or any(
+                t.startswith("tax:") for t in tax_api._effective_tags(rule_tags, payee.tags)):
         return rule_tags
     return rule_tags | {implied}
+
+
+_TAX_YEAR_OF = "COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER))"
+"""The tax year a transfer counts in: its own ``tax_year`` (a payment made
+for the year before), else the year it was made."""
 
 
 def _mortgage_months(
@@ -3056,7 +3067,8 @@ def _mortgage_months(
     rule pays down the same debt. A month's balance is its interest over
     the monthly rate, as ``_apply_mortgage_payment`` figured it; two rules
     posting for one debt in a month (an overlap at a rate change) share
-    that balance, so the larger is taken rather than the sum."""
+    that balance, so the larger is taken rather than the sum. The year is
+    the one the interest counts in as spending."""
     rules = {
         tid: (liability, rate) for tid, liability, rate in con.execute(
             "SELECT s.id, c.account_id, s.rate_micros FROM scheduled_transaction s "
@@ -3065,58 +3077,86 @@ def _mortgage_months(
     }
     if not rules or not expense_ids:
         return []
-    # (year, month, liability) -> [interest, balance], and the tags.
-    months: dict[tuple[int, int, int], list[int]] = {}
+    # (year, month, rule) -> interest; (year, month, liability) -> tags.
+    interest: dict[tuple[int, int, int], int] = defaultdict(int)
     tags: dict[tuple[int, int, int], frozenset[str]] = {}
-    for year, month, tid, to, interest in con.execute(
-            "SELECT CAST(substr(date, 1, 4) AS INTEGER) AS y, CAST(substr(date, 6, 2) AS INTEGER), reason_id, "
-            "to_account, SUM(amount) FROM transfer_event "
+    for year, month, tid, frm, to, character, amount in con.execute(
+            f"SELECT {_TAX_YEAR_OF} AS y, CAST(substr(date, 6, 2) AS INTEGER), reason_id, "
+            "from_account, to_account, tax_character, SUM(amount) FROM transfer_event "
             f"WHERE reason_kind IN ('rule', 'ytd_rule') AND reason_id IN ({', '.join(map(str, rules))}) "
             f"AND to_account IN ({', '.join(map(str, expense_ids))}) AND y = ? "
-            "GROUP BY y, substr(date, 1, 7), reason_id, to_account",
+            "GROUP BY y, substr(date, 1, 7), reason_id, from_account, to_account, tax_character",
             (tax_year,)):
-        liability, rate = rules[tid]
-        key = (int(year), int(month), int(liability))
-        found = months.setdefault(key, [0, 0])
-        found[0] += int(interest)
-        found[1] = max(found[1], int(interest) * 12 * 1_000_000 // int(rate))
+        year, month, tid = int(year), int(month), int(tid)
+        interest[(year, month, tid)] += int(amount)
+        payer = accounts.get(frm) or tax_api.Account(f"#{frm}", "", "", None)
         payee = accounts.get(to) or tax_api.Account(f"#{to}", "expense", "", None)
-        tags[key] = tax_api._effective_tags(
-            _implied_tags(rule_tags.get(tid, frozenset()), payee, _IMPLIED_TAX_TAGS["mortgage_payment"]),
+        tags[(year, month, rules[tid][0])] = tax_api._effective_tags(
+            _implied_tags(rule_tags.get(tid, frozenset()), payer, payee, str(character),
+                          _IMPLIED_TAX_TAGS["mortgage_payment"]),
             payee.tags)
+    months: dict[tuple[int, int, int], list[int]] = {}
+    for (year, month, tid), paid in interest.items():
+        liability, rate = rules[tid]
+        found = months.setdefault((year, month, int(liability)), [0, 0])
+        found[0] += paid
+        found[1] = max(found[1], paid * 12 * 1_000_000 // int(rate))
     return [
         tax_api.Mortgage(
             year, month, accounts[liability].name if liability in accounts else f"#{liability}",
-            interest, balance, tags[(year, month, liability)])
-        for (year, month, liability), (interest, balance) in sorted(months.items())
+            paid, balance, tags[(year, month, liability)])
+        for (year, month, liability), (paid, balance) in sorted(months.items())
     ]
 
 
-def _taxes_paid(con, tax_year: int) -> list[tax_api.TaxPaid]:
-    """What was paid into each state and local jurisdiction's destination
-    account in calendar ``tax_year`` (#542): the SALT deduction's
-    income taxes, on a cash basis. An account the federal tax is paid into
-    too is left out: its payments can't be told apart."""
-    destinations: dict[int, list[str]] = defaultdict(list)
-    for name, account_id in con.execute(
-            "SELECT j.name, c.account_id FROM tax_jurisdiction j "
-            "JOIN chain c ON c.id = j.destination_chain_id WHERE c.account_id IS NOT NULL"):
-        destinations[int(account_id)].append(str(name))
-    order = {name: i for i, name in enumerate(registries.TAX_JURISDICTIONS)}
-    paid_to = {
-        account_id: min(names, key=lambda n: (order.get(n, len(order)), n))
-        for account_id, names in destinations.items() if "federal" not in names
-    }
-    if not paid_to:
+def _taxes_paid(
+    con, tax_year: int, rule_tags: Mapping[int, frozenset[str]],
+    accounts: Mapping[int, tax_api.Account],
+) -> list[tax_api.TaxPaid]:
+    """The state and local income tax paid in calendar ``tax_year`` (#542),
+    the SALT deduction's income taxes on a cash basis: each such
+    jurisdiction's settlements, wherever they were paid, and what else was
+    paid into its destination account. Spending there that carries a
+    ``tax:`` tag or the ``property_tax`` character is left out: the itemized
+    lines count it by that. So is anything else paid into an account the
+    federal tax is paid into too, which can't be told apart (the loader
+    warns)."""
+    jurisdictions = list(con.execute(
+        "SELECT j.id, j.name, c.account_id FROM tax_jurisdiction j "
+        "JOIN chain c ON c.id = j.destination_chain_id"))
+    federal = {account_id for _, name, account_id in jurisdictions if name == "federal"}
+    settled = {int(jid): str(name) for jid, name, _ in jurisdictions if name != "federal"}
+    if not settled:
         return []
-    return [
-        tax_api.TaxPaid(int(year), paid_to[int(to)], int(amount))
-        for year, to, amount in con.execute(
-            "SELECT CAST(substr(date, 1, 4) AS INTEGER) AS y, to_account, SUM(amount) "
-            f"FROM transfer_event WHERE to_account IN ({', '.join(map(str, paid_to))}) "
-            "AND reason_kind != 'initial' AND y = ? GROUP BY y, to_account",
-            (tax_year,))
-    ]
+    order = {name: i for i, name in enumerate(registries.TAX_JURISDICTIONS)}
+    destinations: dict[int, list[str]] = defaultdict(list)
+    for _, name, account_id in jurisdictions:
+        if name != "federal" and account_id is not None and account_id not in federal:
+            destinations[int(account_id)].append(str(name))
+    paid_to = {account_id: min(names, key=lambda n: (order.get(n, len(order)), n))
+               for account_id, names in destinations.items()}
+    paid: dict[str, int] = defaultdict(int)
+    for to, kind, reason, character, amount in con.execute(
+            "SELECT to_account, reason_kind, reason_id, tax_character, SUM(amount) FROM transfer_event "
+            "WHERE date >= ? AND date < ? AND reason_kind != 'initial' AND ("
+            f"(reason_kind = 'tax' AND reason_id IN ({', '.join(map(str, settled))}))"
+            + (f" OR to_account IN ({', '.join(map(str, paid_to))})" if paid_to else "")
+            + ") GROUP BY to_account, reason_kind, reason_id, tax_character",
+            (f"{tax_year:04d}-01-01", f"{tax_year + 1:04d}-01-01")):
+        if kind == "tax":
+            # Another jurisdiction's settlement in the account is its own.
+            if reason not in settled:
+                continue
+            jurisdiction, tags = settled[reason], frozenset[str]()
+        else:
+            jurisdiction = paid_to[to]
+            tags = rule_tags.get(reason, frozenset()) if kind in ("rule", "ytd_rule") else frozenset()
+        payee = accounts.get(to) or tax_api.Account(f"#{to}", "expense", "", None)
+        if character == "property_tax" or any(
+                t.startswith("tax:") for t in tax_api._effective_tags(tags, payee.tags)):
+            continue
+        paid[jurisdiction] += int(amount)
+    return [tax_api.TaxPaid(tax_year, name, amount) for name, amount in sorted(paid.items())]
 
 
 def _tax_ledger(con, tax_year: int) -> _TaxLedger:
@@ -3150,7 +3190,7 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
     keyed = sorted(set(rule_tags) | set(rule_person) | set(implied))
     rule = (f"CASE WHEN reason_kind IN ('rule', 'ytd_rule') AND reason_id IN "
             f"({', '.join(str(int(tid)) for tid in keyed)}) THEN reason_id END" if keyed else "NULL")
-    year_of = "COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER))"
+    year_of = _TAX_YEAR_OF
     items = [
         tax_api.IncomeItem(int(year), character, account(frm), account(to), int(amount),
                            rule_tags.get(tid, frozenset()) if tid is not None else frozenset())
@@ -3167,7 +3207,8 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
     spending = [
         tax_api.SpendingItem(
             int(year), character, account(frm), account(to), int(amount),
-            _implied_tags(rule_tags.get(tid, frozenset()), account(to), implied.get(tid))
+            _implied_tags(rule_tags.get(tid, frozenset()), account(frm), account(to), character,
+                          implied.get(tid))
             if tid is not None else frozenset(),
             rule_person.get(tid) if tid is not None else None)
         for year, character, frm, to, tid, amount in con.execute(
@@ -3204,7 +3245,7 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
                    "LEFT JOIN person_lifespan l ON l.person = p.id")]
     return _TaxLedger(items, losses, persons, spending, hsa_gains,
                       _mortgage_months(con, tax_year, rule_tags, accounts, expense_ids),
-                      _taxes_paid(con, tax_year))
+                      _taxes_paid(con, tax_year, rule_tags, accounts))
 
 
 def _tax_year(

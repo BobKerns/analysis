@@ -1381,6 +1381,7 @@ def load_scenario(
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
+    _warn_shared_tax_destination(tax_rows, scheduled_rows, aux_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_state_adjustments(
@@ -4114,6 +4115,33 @@ def _warn_state_standard_deduction(
             )
 
 
+def _warn_shared_tax_destination(
+    tax_rows: list[dict[str, str]],
+    scheduled_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    warnings: list[str],
+) -> None:
+    """A state or local tax paid into the federal tax's destination account
+    (#542): the federal SALT deduction counts that jurisdiction's
+    settlements there, but can't tell its estimated payments from the
+    federal ones, so a scheduled rule paying into the account counts for
+    neither."""
+    if not any(kind == registries.ITEMIZED_LIMITS for kind, *_ in aux_rows):
+        return
+    federal = {row.get("destination", "") for row in tax_rows if row["name"] == "federal"}
+    for where, row in _located(tax_rows, registries.TAXES_DIR):
+        destination = row.get("destination", "")
+        if row["name"] == "federal" or destination not in federal:
+            continue
+        payers = sorted({r["name"] for r in scheduled_rows if r.get("to_account") == destination})
+        if payers:
+            warnings.append(
+                f"{where}: the {row['name']} tax is paid into {destination}, the federal tax's "
+                f"destination too, so the federal SALT deduction can't count what "
+                f"{', '.join(payers)} pays into it as {row['name']} tax; pay it into an account "
+                "of its own")
+
+
 def _validate_state_social_security(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     issues: list[str],
@@ -4227,8 +4255,8 @@ def _validate_state_retirement_exclusions(
 _STATE_LINES: frozenset[str] = frozenset({
     "agi", "tax", "taxable_income", "ordinary_taxable", "ordinary_income", "ltcg_taxed",
     "nol_used", "nol_carryover", "ss_taxable", "ss_benefits", "credits", "deduction",
-    "standard_deduction", "itemized_deduction", "itemized_salt", "itemized_mortgage_interest",
-    "itemized_charity", "itemized_medical", "itemized_other", "capital_loss_used", "capital_loss_carryover",
+    "standard_deduction", "itemized_deduction", *registries.ITEMIZED_LINES,
+    "capital_loss_used", "capital_loss_carryover",
     "capital_loss_lapsed", "nol_lapsed", "business_net", "hobby_disallowed",
     "dividends_as_ordinary", "hsa_addback", "hsa_dividends", "muni_interest",
     "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",

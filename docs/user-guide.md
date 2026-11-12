@@ -1069,7 +1069,11 @@ sim account tag add Expense_Donations tax:charity
 ```
 
 A mortgage or property tax on a rental isn't a personal deduction: tag its
-rule with another `tax:` tag and it stays out. Married filing separately
+rule with another `tax:` tag and it stays out. A mortgage your business
+pays (from a `business` account) stays out by itself: Schedule C deducts
+it. Pay estimated state tax into an account of its own, not the federal
+tax's: the state tax paid into the federal account can't be told apart,
+and only the April settlement there counts. Married filing separately
 halves each dollar limit. The limits are in `aux/itemized_limits.csv`; a
 scenario that wants none of this, federal or state, puts an
 `itemized_limits.csv` with only its header line in its `aux/`.
@@ -1100,9 +1104,11 @@ scenario its own copy, and the parent keeps its own.
 State tax uses the same idea, with `--state` on each command. If you don't
 add any, the state figure uses the federal one; most states don't need
 their own. The state figures its own lines from the same spending, but
-never deducts state income tax, and takes its own limits where it has them
-(California: no SALT cap, $1,000,000 of mortgage debt, charity up to half of
-AGI). A state that taxes an HSA, as California does, counts the medical
+never deducts state income tax. It figures them only under its own limits,
+`aux/state_itemized_limits__<state>.csv` (California's ship: no SALT cap,
+$1,000,000 of mortgage debt, charity up to half of AGI); a state without
+them gets only the hand-typed total, since its rules may differ from the
+federal ones. A state that taxes an HSA, as California does, counts the medical
 bills the HSA paid.
 
 Not modeled: the 2026 law's limit on itemized deductions in the 37%

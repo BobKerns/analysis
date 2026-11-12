@@ -668,7 +668,14 @@ one, itemized deductions are only the hand-typed ``federal_deductions``."""
 STATE_ITEMIZED_LIMITS = "state_itemized_limits"
 """A state's own ``itemized_limits`` (#542), keyed by state like its
 brackets (California's: no SALT cap, a $1 million mortgage limit). A state
-without one uses the federal table."""
+without one figures no lines from spending."""
+
+ITEMIZED_LINES: tuple[str, ...] = (
+    "itemized_salt", "itemized_mortgage_interest", "itemized_charity", "itemized_medical",
+    "itemized_other",
+)
+"""The lines of an itemized deduction figured from the year's spending
+(#542), and the hand-typed rest, which add up to ``itemized_deduction``."""
 
 ITEMIZED_TAGS: dict[str, str] = {
     "property_tax": "tax:property",
@@ -698,7 +705,7 @@ OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset({
 })
 """The state tables a state may lack (#490, #487, #489, #542): then it has
 no surcharge, local tax or gains tax, its HSA follows the federal rules, and
-its itemized deductions the federal limits."""
+it figures no itemized lines from spending."""
 
 STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX, STATE_GAINS_TAX})
 """The state tables of bands (#490, #487, #489): a surcharge's and a local

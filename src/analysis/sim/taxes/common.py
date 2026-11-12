@@ -764,12 +764,7 @@ def itemized_deduction(ty: TaxYear, kind: str) -> int:
     return int(rows[-1]["amount"]) if rows else 0
 
 
-ITEMIZED_LINES: tuple[str, ...] = (
-    "itemized_salt", "itemized_mortgage_interest", "itemized_charity", "itemized_medical",
-    "itemized_other",
-)
-"""The lines of an itemized deduction figured from the year's spending
-(#542), and the hand-typed rest, which add up to ``itemized_deduction``."""
+ITEMIZED_LINES = registries.ITEMIZED_LINES
 
 
 @dataclass(frozen=True)

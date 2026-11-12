@@ -128,9 +128,10 @@ class StateTablesYear(FederalStateYear):
 
     def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
         """:meth:`deductions`, with the itemized lines figured from spending
-        (#542) at the year's income added to its ``itemized_deduction``,
-        whatever a subclass's :meth:`deductions` returned: the deduction
-        taken is the larger of its and the new itemized total."""
+        (#542) at the year's income added to its ``itemized_deduction``:
+        the deduction taken is the larger of the two totals. A subclass
+        that overrides :meth:`deductions` figures its own itemized
+        deduction, so gets no lines unless it overrides this too."""
         base = self._deductions
         itemized = self._itemized
         if itemized is None:
@@ -140,22 +141,27 @@ class StateTablesYear(FederalStateYear):
 
     @cached_property
     def _itemized(self) -> common.Itemized | None:
-        """The year's itemized deductions from spending, with the state's
-        own limits or else the federal ones; None without the federal
-        ``itemized_limits`` table, which turns the lines off for every
-        jurisdiction. A state never deducts an income tax: not its own,
-        and few another's. An HSA's medical payments count where the state
-        taxes the HSA (#490): it never excluded that money."""
+        """The year's itemized deductions from spending, under the state's
+        own limits (``state_itemized_limits__<state>``); None for a state
+        without them, whose rules the federal ones may not match, for a
+        subclass with its own :meth:`deductions`, and without the federal
+        ``itemized_limits`` table, which turns the lines off everywhere.
+        ``itemized_limits_aux`` set to ``itemized_limits`` takes the
+        federal limits for the state. A state never deducts an income tax:
+        not its own, and few another's. An HSA's medical payments count
+        where the state taxes the HSA (#490): it never excluded that money."""
         ty, params = self.ty, self.ty.params
-        if not ty.has_table(registries.ITEMIZED_LIMITS):
+        if type(self).deductions is not StateTablesYear.deductions \
+                or not ty.has_table(registries.ITEMIZED_LIMITS):
             return None
-        limits_aux, limits_series = params.itemized_limits_aux, self.series
-        if not ty.has_table(limits_aux, limits_series):
-            limits_aux, limits_series = registries.ITEMIZED_LIMITS, None
+        limits_aux = params.itemized_limits_aux
+        series = self.series if limits_aux == registries.STATE_ITEMIZED_LIMITS else None
+        if not ty.has_table(limits_aux, series):
+            return None
         return common.itemized(
-            ty, common.itemized_limits(ty, limits_aux, limits_series),
+            ty, common.itemized_limits(ty, limits_aux, series),
             other=self._deductions.get("itemized_deduction", 0), income_taxes=0,
-            hsa_paid_counts=getattr(self, "_hsa_taxed", False))
+            hsa_paid_counts=self._hsa_taxed)
 
     def additions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:
         fed, capital = basis.federal, self._capital
@@ -329,7 +335,8 @@ class StateTables(StateFromFederal):
         itemized_deduction_aux: str = "state_deductions"
         itemized_limits_aux: str = registries.STATE_ITEMIZED_LIMITS
         """The state's limits on its itemized lines from spending (#542),
-        keyed by state; without them, the federal ``itemized_limits``."""
+        keyed by state; a state without them figures none (``itemized_limits``
+        takes the federal limits)."""
         retirement_exclusion_aux: str = registries.STATE_RETIREMENT_EXCLUSION
         ltcg_bracket_aux: str = registries.STATE_LTCG_BRACKETS
         stcg_bracket_aux: str = registries.STATE_STCG_BRACKETS
