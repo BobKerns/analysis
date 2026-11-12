@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from analysis.sim import provenance, tax_api, tax_code
+from analysis.sim.connection import open_run
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.tax_api import Account, IncomeItem, SpendingItem
 
@@ -285,6 +286,7 @@ def property_credit(add_state_tax: Callable[..., None], add_tax: Callable[..., P
 @pytest.mark.slow
 def test_a_refundable_credit_takes_the_tax_below_zero(
     property_credit: Callable[..., Path], run_test_copy: Callable[[], Path],
+    test_data_dir: Path, test_scenarios_dir: Path,
 ) -> None:
     property_credit()
     run = run_test_copy()
@@ -308,3 +310,27 @@ def test_a_refundable_credit_takes_the_tax_below_zero(
     finally:
         con.close()
     assert paid_back == {year: amount for year, amount in credit.items() if year < max(credit)}
+    # Until it's paid back, the refund is money DC owes them: after-tax net
+    # worth counts it, less the federal tax due, from December 31 to April,
+    # and the run's last year's, never paid, to the end.
+    federal = _summary(run, "federal_tax_due")
+    first, last = min(credit), max(credit)
+    with open_run(run, "retire_alice", data_dir=test_data_dir,
+                  scenarios_dir=test_scenarios_dir) as rc:
+        unpaid = rc.after_tax_net_worth_frame()["unpaid_tax"]
+    assert unpaid[f"{first}-12"].iloc[0] == pytest.approx((federal.get(first, 0) - credit[first]) / 100)
+    assert unpaid[f"{first + 1}-04"].iloc[0] == 0
+    assert unpaid.iloc[-1] == pytest.approx((federal.get(last, 0) - credit[last]) / 100)
+
+
+def test_a_renter_names_no_property_tax(
+    property_credit: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """A renter counts a fifth of the rent, with no property tax tag to carry."""
+    _tag_rule(retire_alice_csv, "housing", "tax:rent")
+    property_credit(property_tax=None, rent="tax:rent")
+    load_test_copy()
+    property_credit(rent="tax:rent")  # the default property tax tag, carried by nothing
+    with pytest.raises(LoadError, match="reads tag 'tax:property'"):
+        load_test_copy()

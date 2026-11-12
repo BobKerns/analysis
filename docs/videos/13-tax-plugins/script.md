@@ -237,8 +237,8 @@ heading = "Building on the state tax"
 title = "taxes/property_credit.py"
 status = "Python"
 code_file = "property_credit.py"
-code_lines = [45, 53]
-marks = [45, 46, 50, 51, 52]
+code_lines = [50, 58]
+marks = [50, 51, 55, 56, 57]
 speaker = "alice"
 ```
 
@@ -257,15 +257,15 @@ heading = "Its parameters, with their units"
 title = "taxes/property_credit.py"
 status = "Python"
 code_file = "property_credit.py"
-code_lines = [54, 63]
-marks = [55, 56, 58, 60, 62]
+code_lines = [59, 68]
+marks = [60, 61, 63, 65, 67]
 speaker = "bill"
 ```
 
 Its parameters are state tables', plus four, each with a unit, so a
 mistyped one is caught before anything runs: the tag on the property tax
-paid, a tag on rent for a renter, the largest credit, in dollars, and the
-inflation series its 2025 figures grow by.
+paid, a tag on rent instead for a renter, the largest credit, in dollars,
+and the inflation series its 2025 figures grow by.
 
 ## Scene `year`: Each year's credit
 
@@ -276,8 +276,8 @@ heading = "Each year: the credit"
 title = "taxes/property_credit.py"
 status = "Python"
 code_file = "property_credit.py"
-code_lines = [24, 37]
-marks = [24, 26, 27, 28, 32, 35, 36, 37]
+code_lines = [24, 38]
+marks = [24, 26, 27, 28, 32, 34, 36, 37, 38]
 speaker = "alice"
 ```
 
@@ -285,7 +285,7 @@ The year class adds one step to the state's: refundable credits, which
 come off last and may take the tax below zero. It reads federal AGI from
 the federal return the state starts from. The worksheet's rows, at the top
 of the file, pick the share: the rows for seventy or older if either of
-them is, and the first row their AGI fits under, grown from 2025 with
+them is, counting only a spouse still living, and the first row their AGI fits under, grown from 2025 with
 inflation. Past the last row, there's no credit. Then what was spent with
 the property tax tag, and a fifth of rent if there's a rent tag, less the
 share of AGI, up to the grown cap.

@@ -29,7 +29,8 @@ class PropertyCreditYear(StateTablesYear):
                       if agi <= self.ty.grown(top, params.series, 2025)), None)
         if share is None:
             return {}
-        paid = self.ty.spent(params.property_tax)
+        paid = (0 if params.property_tax is None
+                else self.ty.spent(params.property_tax))
         if params.rent is not None:
             paid += self.ty.spent(params.rent) // 5  # 20% of rent counts
         credit = paid - agi * share // 1_000_000
@@ -37,9 +38,13 @@ class PropertyCreditYear(StateTablesYear):
         return {"property_credit": max(0, min(credit, most))}
 
     def oldest(self):
-        """The older filer's age on December 31."""
-        return max((self.ty.year - int(p.birthdate[:4]) for p in self.ty.persons
-                    if p.birthdate and p.role == "primary"), default=0)
+        """The older filer's age on December 31: the primary and secondary
+        people, less one who died before the year."""
+        year = self.ty.year
+        return max((year - int(p.birthdate[:4]) for p in self.ty.persons
+                    if p.birthdate and p.role in ("primary", "secondary")
+                    and (p.final_month is None
+                         or int(p.final_month[:4]) >= year)), default=0)
 
 
 @register
@@ -53,8 +58,8 @@ class PropertyCredit(StateTables):
 
     @dataclass(frozen=True)
     class Params(StateTables.Params):
-        property_tax: Tag = "tax:property"
-        """The tag on the property tax paid."""
+        property_tax: Tag | None = "tax:property"
+        """The tag on the property tax paid; none for a renter."""
         rent: Tag | None = None
         """The tag on rent paid, for a renter."""
         most: Dollars = 1425_00

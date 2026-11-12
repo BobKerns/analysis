@@ -91,7 +91,8 @@ class PropertyCreditYear(StateTablesYear):
                       if agi <= self.ty.grown(top, params.series, 2025)), None)
         if share is None:
             return {}
-        paid = self.ty.spent(params.property_tax)
+        paid = (0 if params.property_tax is None
+                else self.ty.spent(params.property_tax))
         if params.rent is not None:
             paid += self.ty.spent(params.rent) // 5  # 20% of rent counts
         credit = paid - agi * share // 1_000_000
@@ -99,9 +100,13 @@ class PropertyCreditYear(StateTablesYear):
         return {"property_credit": max(0, min(credit, most))}
 
     def oldest(self):
-        """The older filer's age on December 31."""
-        return max((self.ty.year - int(p.birthdate[:4]) for p in self.ty.persons
-                    if p.birthdate and p.role == "primary"), default=0)
+        """The older filer's age on December 31: the primary and secondary
+        people, less one who died before the year."""
+        year = self.ty.year
+        return max((year - int(p.birthdate[:4]) for p in self.ty.persons
+                    if p.birthdate and p.role in ("primary", "secondary")
+                    and (p.final_month is None
+                         or int(p.final_month[:4]) >= year)), default=0)
 
 
 @register
@@ -115,8 +120,8 @@ class PropertyCredit(StateTables):
 
     @dataclass(frozen=True)
     class Params(StateTables.Params):
-        property_tax: Tag = "tax:property"
-        """The tag on the property tax paid."""
+        property_tax: Tag | None = "tax:property"
+        """The tag on the property tax paid; none for a renter."""
         rent: Tag | None = None
         """The tag on rent paid, for a renter."""
         most: Dollars = 1425_00
@@ -139,7 +144,7 @@ What it does:
   the year's spending carrying a tag; `ty.grown(amount, series, year)` a
   figure the law set for `year`, grown with inflation to this one, as DC
   indexes its limits and cap; `ty.persons` the household, with their
-  birthdates; `ty.params` the calculator's parameters.
+  birthdates, roles and, for one who died, the last month alive; `ty.params` the calculator's parameters.
 - `basis.federal` is the federal return for the same year, which DC's
   credit reads its AGI from. A what-if (more income on top, such as a
   Roth conversion being priced) moves both returns, so the credit
@@ -156,16 +161,25 @@ defaults.
 
 ## 3. Use it
 
-Tell the scenario's state tax to use the new kind, with any parameters:
+Tell the scenario's state tax to use the new kind. Its defaults fit a
+homeowner, whose property tax carries `tax:property`:
 
 ```sh
-sim tax edit state --kind property_credit --params-json '{"rent": "tax:rent"}'
+sim tax edit state --kind property_credit
+```
+
+A renter counts a fifth of the rent instead, and pays no property tax of
+its own, so it names its rent's tag and none for property tax:
+
+```sh
+sim tax edit state --kind property_credit --params-json '{"property_tax": null, "rent": "tax:rent"}'
 ```
 
 Loading the scenario checks it: the kind exists and computes the state
 tax, each parameter is one it takes, in its unit, and some account, rule
-or calendar row carries each tag it reads, `tax:property` here. Without
-the tag, the load stops, rather than letting the credit come out zero.
+or calendar row carries each tag it reads, `tax:property` for the
+homeowner. Without the tag, the load stops, rather than letting the
+credit come out zero.
 `sim tax edit state --kind ''` goes back to the built-in one.
 
 Run the scenario, and see the state's return, its new line included:
