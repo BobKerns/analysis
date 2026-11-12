@@ -318,9 +318,16 @@ def test_a_refundable_credit_takes_the_tax_below_zero(
     with open_run(run, "retire_alice", data_dir=test_data_dir,
                   scenarios_dir=test_scenarios_dir) as rc:
         unpaid = rc.after_tax_net_worth_frame()["unpaid_tax"]
+        # The reports net the refund against the tax paid into the account.
+        state = rc.expense_events()
+        state = state[(state["to_name"] == "Expense_Taxes_State")
+                      & (state["date"].str[:4] == str(first + 1))]
+        into = rc.items("transfer_event", to_name="Expense_Taxes_State")
+        into = into[into["date"].str[:4] == str(first + 1)]
     assert unpaid[f"{first}-12"].iloc[0] == pytest.approx((federal.get(first, 0) - credit[first]) / 100)
     assert unpaid[f"{first + 1}-04"].iloc[0] == 0
     assert unpaid.iloc[-1] == pytest.approx((federal.get(last, 0) - credit[last]) / 100)
+    assert state["amount"].sum() == into["amount"].sum() - credit[first]
 
 
 def test_a_renter_names_no_property_tax(

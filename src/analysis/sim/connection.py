@@ -1224,6 +1224,21 @@ class RunConnection(Connection):
 
         return self._cached("income_by_category", _build)
 
+    def expense_events(self) -> pd.DataFrame:
+        """Transfers into expense accounts, and a tax refund out of one
+        (#568) as a negative transfer into it, so a tax expense nets to what
+        the year cost."""
+        into = self.items("transfer_event", to_kind="expense")
+        back = self.items("transfer_event", from_kind="expense", reason_kind="tax")
+        back = back[back["to_kind"] != "expense"]
+        if back.empty:
+            return into
+        back = back.copy()
+        for side in ("account", "name", "kind", "subkind", "lot"):
+            back[f"from_{side}"], back[f"to_{side}"] = back[f"to_{side}"], back[f"from_{side}"]
+        back["amount"] = -back["amount"]
+        return pd.concat([into, back], ignore_index=True)
+
     def expenses_by_category(
         self,
         subkind_to_category: dict[str, str] = EXPENSE_SUBKIND_TO_CATEGORY,
@@ -1232,7 +1247,7 @@ class RunConnection(Connection):
         """Monthly expenses by category, plus a ``total`` column, in dollars."""
 
         def _build() -> pd.DataFrame:
-            xfer_exp = self.items("transfer_event", to_kind="expense").copy()
+            xfer_exp = self.expense_events().copy()
             xfer_exp = xfer_exp[~xfer_exp["to_name"].isin(non_cash_accounts)]
             xfer_exp["month"] = event_month(xfer_exp)
             xfer_exp["category"] = (

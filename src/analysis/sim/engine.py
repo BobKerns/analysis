@@ -29,7 +29,7 @@ import itertools
 import warnings
 from collections import defaultdict
 from contextvars import ContextVar
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -1423,6 +1423,17 @@ def _first_chain_leaf_lot(graph: ChainGraph, chain_id: int) -> int | None:
         if account_id is not None:
             return account_id
     return None
+
+
+def _chain_leaf_lots(graph: ChainGraph | None, chain_id: int | None) -> Iterator[int]:
+    """A chain's lots, depth first through its steps, in the order it draws."""
+    if graph is None or chain_id is None:
+        return
+    if (lot := graph.leaf_lot.get(chain_id)) is not None:
+        yield lot
+        return
+    for next_chain_id, *_allocation in graph.members.get(chain_id, []):
+        yield from _chain_leaf_lots(graph, next_chain_id)
 
 
 def _mortgage_interest(outstanding: int, annual_micros: int) -> int:
@@ -3460,15 +3471,17 @@ def _settle_tax(
         # More was paid than the year owes (withholding past the tax, or a
         # refundable credit taking it below zero, #568): the jurisdiction
         # pays it back, into the account the tax is paid from.
-        assert step_id is not None
-        refund_to = from_id
-        if refund_to is None:
-            assert graph is not None and source_chain_id is not None
-            refund_to = _first_chain_leaf_lot(graph, source_chain_id)
+        # It goes into cash: a deposit into a retirement, HSA or brokerage
+        # lot would be a contribution nobody made, and a liability caps it.
+        assert step_id is not None and account_subkind is not None
+        refund_to = next((lot for lot in (
+            [from_id] if from_id is not None else _chain_leaf_lots(graph, source_chain_id))
+            if account_kinds.get(lot) == "asset"
+            and account_subkind.get(lot) in registries.CASH_SUBKINDS), None)
         if refund_to is None:
             raise EngineError(
-                f"tax jurisdiction id={tid}: its source chain has no account to pay "
-                f"the {tax_year} refund back into")
+                f"tax jurisdiction id={tid}: the {tax_year} refund is paid back into "
+                "the first cash account its source draws from, and it has none")
         _post_transfer(
             con, balances, account_kinds, step_id, month_s,
             to_id, refund_to, tax_overpaid, tax_char, tid, tax_year=tax_year,
