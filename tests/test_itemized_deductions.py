@@ -440,10 +440,15 @@ def test_state_tax_paid_counts_once_wherever_it_is_paid(
             "SELECT CAST(substr(date, 1, 4) AS INTEGER), SUM(amount) FROM transfer_event "
             "WHERE reason_kind = 'rule' AND reason_id = "
             "  (SELECT id FROM scheduled_transaction WHERE name = 'housing') GROUP BY 1"))
-        state_paid = dict(con.execute(
-            "SELECT CAST(substr(date, 1, 4) AS INTEGER), SUM(amount) FROM transfer_event "
-            "WHERE reason_kind = 'tax' AND reason_id = "
-            "  (SELECT id FROM tax_jurisdiction WHERE name = 'state') GROUP BY 1"))
+        # A settlement out of the state's account is a refund (#568): when
+        # property tax is routed there, the state counts it as paid and
+        # gives the excess back.
+        state_paid = {year: max(0, paid) for year, paid in con.execute(
+            "SELECT CAST(substr(t.date, 1, 4) AS INTEGER), "
+            "       SUM(CASE WHEN t.from_account = c.account_id THEN -t.amount ELSE t.amount END) "
+            "FROM transfer_event t JOIN tax_jurisdiction j ON j.id = t.reason_id "
+            "JOIN chain c ON c.id = j.destination_chain_id "
+            "WHERE t.reason_kind = 'tax' AND j.name = 'state' GROUP BY 1")}
         interest = dict(con.execute(
             "SELECT CAST(substr(t.date, 1, 4) AS INTEGER), SUM(t.amount) FROM transfer_event t "
             "JOIN account a ON a.id = t.to_account WHERE a.name = 'Expense_Interest_Mortgage' "
@@ -564,3 +569,62 @@ def test_a_year_to_date_catch_up_is_not_read_as_a_larger_debt(
     assert catchup > 0
     assert _lines(run, "federal_itemized_mortgage_interest")["federal_itemized_mortgage_interest"][2026] \
         == interest
+
+
+def test_a_business_mortgage_stays_out_of_the_debt_limit() -> None:
+    """An office's mortgage paid from a business account is Schedule C's,
+    even when its interest goes into the home's tagged account: its debt
+    doesn't shrink the home's deductible interest."""
+    business = Account("Asset_Business_Alice", "asset", "business", "alice")
+    spending = [_paid(INTEREST, 36_000_00, tags="tax:mortgage_interest"),
+                _paid(INTEREST, 54_000_00, tags="tax:mortgage_interest", payer=business)]
+    mortgages = [*_months("Liability_Mortgage", range(1, 13), 3_000_00, 600_000_00),
+                 *[replace(m, payer=business) for m in
+                   _months("Liability_Office", range(1, 13), 4_500_00, 900_000_00)]]
+    ret = _federal(300_000_00, spending, mortgages=mortgages)
+    assert ret["itemized_mortgage_interest"] == 36_000_00
+
+
+def test_an_implied_tag_keeps_the_accounts_own_tax_tag() -> None:
+    """An IRMAA surcharge into an account tagged ``tax:premiums`` (for a
+    state's premium adjustment) is both a premium and a medical expense."""
+    premiums = Account("Expense_Medicare", "expense", "", None, tags=frozenset({"tax:premiums"}))
+    item = SpendingItem(YEAR, "none", CHECKING, premiums, 1_00,
+                        implied_tags=frozenset({"tax:medical"}))
+    assert item.tags == {"tax:premiums", "tax:medical"}
+
+
+def test_a_state_refund_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connection) -> None:
+    """A refund (#568) posts from the state's account under its id, as a
+    settlement does; it takes back what was paid rather than adding to it."""
+    from analysis.sim.engine import _taxes_paid
+    checking, state, federal = 1, 2, 3
+    con = ledger_con
+    con.executemany("INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)", [
+        (checking, "Asset_Checking", "asset", "cash"),
+        (state, "Expense_Tax_State", "expense", "taxes_state"),
+        (federal, "Expense_Tax_Federal", "expense", "taxes_federal")])
+    con.executemany("INSERT INTO chain(id, name, account_id) VALUES (?, ?, ?)", [
+        (checking, "Asset_Checking", checking), (state, "Expense_Tax_State", state),
+        (federal, "Expense_Tax_Federal", federal)])
+    con.executemany(
+        "INSERT INTO tax_jurisdiction(id, name, kind, source_chain_id, destination_chain_id, "
+        "schedule, start) VALUES (?, ?, ?, ?, ?, 'april', '2026-01')",
+        [(1, "federal", "federal", checking, federal), (2, "state", "state_tables", checking, state)])
+
+    def post(date: str, frm: int, to: int, amount: int, kind: str, reason: int | None,
+             tax_year: int | None = None) -> None:
+        con.execute(
+            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind, "
+            "reason_id, tax_year) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, 'none', ?, ?, ?)",
+            (date, frm, to, frm, to, amount, amount, kind, reason, tax_year))
+
+    post("2028-06-30", checking, state, 5_000_00, "rule", None)
+    post("2028-04-30", state, checking, 1_000_00, "tax", 2, 2027)
+    paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None))
+    assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 4_000_00)]
+    # A refund larger than the year's payments deducts nothing.
+    post("2028-05-31", state, checking, 9_000_00, "tax", 2, 2027)
+    paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None))
+    assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 0)]

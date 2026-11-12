@@ -3053,17 +3053,18 @@ def _implied_tags(
     rule_tags: frozenset[str], payer: tax_api.Account, payee: tax_api.Account,
     character: str, implied: str | None,
 ) -> frozenset[str]:
-    """``rule_tags``, with the rule kind's ``implied`` tag when the item
-    would otherwise carry no itemized tag (``registries.ITEMIZED_TAGS``) or
-    ``tax:rental``; another ``tax:`` tag, one for a report, doesn't stop it.
-    A business's spending (paid from a business account, or of the
-    business_expense character) gets none: it's deducted on Schedule C, not
-    itemized."""
+    """The rule kind's ``implied`` tag, when the item would otherwise carry
+    no itemized tag (``registries.ITEMIZED_TAGS``) or ``tax:rental``;
+    another ``tax:`` tag, one for a report, doesn't stop it. It goes beside
+    the item's own tags, not into the rule's, which would hide the expense
+    account's ``tax:`` tag. A business's spending (paid from a business
+    account, or of the business_expense character) gets none: it's
+    deducted on Schedule C, not itemized."""
     if implied is None or character == registries.BUSINESS_EXPENSE \
             or payer.subkind == registries.BUSINESS_SUBKIND \
             or tax_api.itemizing(tax_api._effective_tags(rule_tags, payee.tags)):
-        return rule_tags
-    return rule_tags | {implied}
+        return frozenset()
+    return frozenset({implied})
 
 
 
@@ -3093,11 +3094,14 @@ def _mortgage_months(
     }
     if not rules or not expense_ids:
         return []
-    # (year, month, rule) -> interest, a catch-up's apart; (year, month,
-    # liability) -> tags.
-    interest: dict[tuple[int, int, int], int] = defaultdict(int)
-    catchup: dict[tuple[int, int, int], int] = defaultdict(int)
-    tags: dict[tuple[int, int, int], frozenset[str]] = {}
+    # (year, month, rule, payer, character) -> interest, a catch-up's
+    # apart, and tags. The payer and character say whether it's the
+    # household's own (common.personal), so a business's mortgage stays out
+    # of the debt limit's months.
+    Key = tuple[int, int, int, int, str]
+    interest: dict[Key, int] = defaultdict(int)
+    catchup: dict[Key, int] = defaultdict(int)
+    tags: dict[Key, frozenset[str]] = {}
     for kind, year, month, tid, frm, to, character, amount in con.execute(
             f"SELECT reason_kind, {_TAX_YEAR_OF} AS y, CAST(substr(date, 6, 2) AS INTEGER), reason_id, "
             "from_account, to_account, tax_character, SUM(amount) FROM transfer_event "
@@ -3105,32 +3109,38 @@ def _mortgage_months(
             f"AND to_account IN ({', '.join(map(str, expense_ids))}) AND y = ? "
             "GROUP BY reason_kind, y, substr(date, 1, 7), reason_id, from_account, to_account, tax_character",
             (tax_year,)):
-        year, month, tid = int(year), int(month), int(tid)
-        (catchup if kind == "ytd_rule" else interest)[(year, month, tid)] += int(amount)
+        year, month, tid, frm, character = int(year), int(month), int(tid), int(frm), str(character)
+        key = (year, month, tid, frm, character)
+        (catchup if kind == "ytd_rule" else interest)[key] += int(amount)
         payer, payee = account(frm), account(to)
-        tags[(year, month, rules[tid][0])] = tax_api._effective_tags(
-            _implied_tags(rule_tags.get(tid, frozenset()), payer, payee, str(character),
-                          _IMPLIED_TAX_TAGS["mortgage_payment"]),
-            payee.tags)
-    months: dict[tuple[int, int, int], list[int]] = {}
-    for (year, month, tid), paid in interest.items():
+        own = rule_tags.get(tid, frozenset())
+        tags[key] = tax_api._effective_tags(own, payee.tags) | _implied_tags(
+            own, payer, payee, character, _IMPLIED_TAX_TAGS["mortgage_payment"])
+    # (year, month, liability, payer, character) -> [interest, balance, tags]
+    months: dict[Key, list] = {}
+    for key, paid in interest.items():
+        year, month, tid, frm, character = key
         liability, rate = rules[tid]
-        found = months.setdefault((year, month, int(liability)), [0, 0])
+        found = months.setdefault((year, month, int(liability), frm, character), [0, 0, frozenset()])
         found[0] += paid
         found[1] = max(found[1], paid * 12 * 1_000_000 // int(rate))
+        found[2] |= tags[key]
     first: dict[tuple[int, int], int] = {}
-    for (year, _month, liability), (_, balance) in sorted(months.items()):
+    for (year, _month, liability, _frm, _character), (_, balance, _tags) in sorted(months.items()):
         first.setdefault((year, liability), balance)
-    for (year, month, tid), paid in catchup.items():
+    for key, paid in catchup.items():
+        year, month, tid, frm, character = key
         liability = int(rules[tid][0])
-        found = months.setdefault((year, month, liability), [0, 0])
+        found = months.setdefault((year, month, liability, frm, character), [0, 0, frozenset()])
         found[0] += paid
         found[1] = max(found[1], first.get((year, liability), 0))
+        found[2] |= tags[key]
     return [
         tax_api.Mortgage(
             year, month, account(liability).name,
-            paid, balance, tags[(year, month, liability)])
-        for (year, month, liability), (paid, balance) in sorted(months.items())
+            paid, balance, found_tags, account(frm), character)
+        for (year, month, liability, frm, character), (paid, balance, found_tags)
+        in sorted(months.items())
     ]
 
 
@@ -3141,7 +3151,7 @@ def _taxes_paid(
     """The state and local income tax paid in calendar ``tax_year`` (#542),
     the SALT deduction's income taxes on a cash basis: each such
     jurisdiction's settlements, wherever they were paid, and what else was
-    paid into its destination account. Spending there that carries an
+    paid into its destination account, less its refunds. Spending there that carries an
     itemized tag (``tax:property``, say) or the ``property_tax`` character
     is left out: the itemized lines count it by that. So is anything else paid into an account the
     federal tax is paid into too, which can't be told apart (the loader
@@ -3151,6 +3161,8 @@ def _taxes_paid(
         "JOIN chain c ON c.id = j.destination_chain_id"))
     federal = {account_id for _, name, account_id in jurisdictions if name == "federal"}
     settled = {int(jid): str(name) for jid, name, _ in jurisdictions if name != "federal"}
+    settled_from = {int(jid): account_id for jid, name, account_id in jurisdictions
+                    if name != "federal"}
     if not settled:
         return []
     order = {name: i for i, name in enumerate(registries.TAX_JURISDICTIONS)}
@@ -3161,25 +3173,31 @@ def _taxes_paid(
     paid_to = {account_id: min(names, key=lambda n: (order.get(n, len(order)), n))
                for account_id, names in destinations.items()}
     paid: dict[str, int] = defaultdict(int)
-    for to, kind, reason, character, amount in con.execute(
-            "SELECT to_account, reason_kind, reason_id, tax_character, SUM(amount) FROM transfer_event "
+    for frm, to, kind, reason, character, amount in con.execute(
+            "SELECT from_account, to_account, reason_kind, reason_id, tax_character, SUM(amount) "
+            "FROM transfer_event "
             "WHERE date >= ? AND date < ? AND reason_kind != 'initial' AND ("
             f"(reason_kind = 'tax' AND reason_id IN ({', '.join(map(str, settled))}))"
             + (f" OR to_account IN ({', '.join(map(str, paid_to))})" if paid_to else "")
-            + ") GROUP BY to_account, reason_kind, reason_id, tax_character",
+            + ") GROUP BY from_account, to_account, reason_kind, reason_id, tax_character",
             (f"{tax_year:04d}-01-01", f"{tax_year + 1:04d}-01-01")):
         if kind == "tax":
             # A jurisdiction's own settlement always counts, whatever the
-            # account's tags; another's in the account is that one's.
+            # account's tags; another's in the account is that one's. One
+            # out of its destination is a refund (#568), which takes back
+            # what was paid.
             if reason in settled:
-                paid[settled[reason]] += int(amount)
+                refund = frm is not None and frm == settled_from[reason]
+                paid[settled[reason]] += -int(amount) if refund else int(amount)
             continue
         tags = rule_tags.get(reason, frozenset()) if kind in ("rule", "ytd_rule") else frozenset()
         payee = account(to)
         if character == "property_tax" or tax_api.itemizing(tax_api._effective_tags(tags, payee.tags)):
             continue
         paid[paid_to[to]] += int(amount)
-    return [tax_api.TaxPaid(tax_year, name, amount) for name, amount in sorted(paid.items())]
+    # A refund larger than the year's payments deducts nothing; it isn't
+    # taken off another year.
+    return [tax_api.TaxPaid(tax_year, name, max(0, amount)) for name, amount in sorted(paid.items())]
 
 
 def _tax_ledger(con, tax_year: int) -> _TaxLedger:
@@ -3230,10 +3248,11 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
     spending = [
         tax_api.SpendingItem(
             int(year), character, account(frm), account(to), int(amount),
+            rule_tags.get(tid, frozenset()) if tid is not None else frozenset(),
+            rule_person.get(tid) if tid is not None else None,
             _implied_tags(rule_tags.get(tid, frozenset()), account(frm), account(to), character,
                           implied.get(tid))
-            if tid is not None else frozenset(),
-            rule_person.get(tid) if tid is not None else None)
+            if tid is not None else frozenset())
         for year, character, frm, to, tid, amount in con.execute(
             f"SELECT {year_of} AS y, tax_character, from_account, to_account, {rule} AS r, SUM(amount) "
             f"FROM transfer_event WHERE to_account IN ({', '.join(map(str, expense_ids))}) AND y <= ? "

@@ -12,7 +12,7 @@ from datetime import date
 from typing import Any, NamedTuple
 
 from analysis.sim import ownership, registries, states
-from analysis.sim.tax_api import Account, IncomeItem, SpendingItem, TaxError, TaxYear, itemizing
+from analysis.sim.tax_api import Account, IncomeItem, Mortgage, SpendingItem, TaxError, TaxYear, itemizing
 
 
 def income_buckets(ty: TaxYear) -> tuple[int, int, int]:
@@ -891,7 +891,7 @@ def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, incom
     if limit is not None:
         by_month: dict[int, list[int]] = {}
         for m in ty.year_mortgages():
-            if tags["mortgage_interest"] in m.tags and registries.RENTAL_TAG not in m.tags:
+            if tags["mortgage_interest"] in m.tags and personal(m):
                 month = by_month.setdefault(m.month, [0, 0])
                 month[0] += m.interest
                 month[1] += m.balance
@@ -905,7 +905,7 @@ def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, incom
         charity=tagged(tags["charity"]), medical=medical, income_taxes=income_taxes)
 
 
-def personal(item: SpendingItem) -> bool:
+def personal(item: SpendingItem | Mortgage) -> bool:
     """Whether ``item`` is the household's own, which Schedule A can
     deduct: not a business's (the ``business_expense`` character, or paid
     from a ``business`` account: Schedule C deducts it, #231) or a

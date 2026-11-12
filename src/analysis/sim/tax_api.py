@@ -130,13 +130,18 @@ class SpendingItem:
     amount: int
     rule_tags: frozenset[str] = frozenset()
     person: str | None = None
+    implied_tags: frozenset[str] = frozenset()
+    """The tag the rule's kind implies when nothing says which itemized
+    line the item is on (#542): a mortgage payment's interest is
+    ``tax:mortgage_interest``, an IRMAA surcharge ``tax:medical``."""
 
     @property
     def tags(self) -> frozenset[str]:
         """The item's tags: its rule's, and in each role the rule has none
-        of, the expense account's. A rule tagged ``tax:repair`` paying into
-        an account tagged ``tax:rent`` is a repair, not rent."""
-        return _effective_tags(self.rule_tags, self.payee.tags)
+        of, the expense account's, with :attr:`implied_tags` beside them. A
+        rule tagged ``tax:repair`` paying into an account tagged
+        ``tax:rent`` is a repair, not rent."""
+        return _effective_tags(self.rule_tags, self.payee.tags) | self.implied_tags
 
 
 @dataclass(frozen=True)
@@ -171,13 +176,17 @@ class Mortgage:
     deductible interest is tested against. ``name`` is the liability
     account. ``tags`` are its interest's, as a :class:`SpendingItem`'s: a
     home's carries ``tax:mortgage_interest``, a rental's another ``tax:``
-    tag."""
+    tag. ``payer`` and ``character`` are its payments', which say whether
+    it's the household's own or a business's; a debt paid from two
+    accounts has a month for each."""
     year: int
     month: int
     name: str
     interest: int
     balance: int
     tags: frozenset[str] = frozenset()
+    payer: Account = Account("", "", "", None)
+    character: str = "none"
 
 
 @dataclass(frozen=True)
