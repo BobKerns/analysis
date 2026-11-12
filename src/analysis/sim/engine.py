@@ -3905,9 +3905,8 @@ class IrmaaContext:
         def grown(amount: int, series: object) -> tuple[int, bool]:
             if not series:
                 return amount, False
-            factor = _cumulative_inflation_factor(
-                self.aux, str(series), effective, january, self.inflation_factor_cache)
-            return amount * factor // 1_000_000, True
+            return _grow(self.aux, amount, str(series), effective, january,
+                         self.inflation_factor_cache), True
 
         tiers = []
         for row in rows:
@@ -4343,11 +4342,23 @@ def _grown_amount(
     if ("inflation", series) not in aux:
         raise tax_api.TaxError(f"no inflation series {series!r} to grow an amount by")
     try:
-        factor = _cumulative_inflation_factor(
-            aux, series, date(since, 1, 31), date(tax_year, 1, 31), cache)
+        return _grow(aux, amount, series, date(since, 1, 31), date(tax_year, 1, 31), cache)
     except EngineError as e:
         raise tax_api.TaxError(str(e)) from None
-    return amount * factor // 1_000_000
+
+
+def _grow(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    amount: int, series: str, start: date, end: date,
+    cache: dict[tuple[str, date, date, str], int],
+) -> int:
+    """``amount`` grown by ``series`` from ``start`` to ``end``, unrounded;
+    as it is when ``end`` doesn't come after ``start``. The one growth rule
+    an indexed tax table, an IRMAA tier and a calculator's own figure share,
+    so their base dates can't drift apart; each rounds as its law does."""
+    if end <= start:
+        return amount
+    return amount * _cumulative_inflation_factor(aux, series, start, end, cache) // 1_000_000
 
 
 def _indexed_tax_rows(
@@ -4382,8 +4393,7 @@ def _indexed_tax_rows(
             growth = row.get(column)
             if not growth or january <= base or row.get(money) is None:
                 continue
-            factor = _cumulative_inflation_factor(aux, str(growth), base, january, cache)
-            amount = int(row[money]) * factor // 1_000_000
+            amount = _grow(aux, int(row[money]), str(growth), base, january, cache)
             grown = {**grown, money: amount // step * step}
         out.append(grown)
     return out
