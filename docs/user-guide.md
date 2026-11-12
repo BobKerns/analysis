@@ -538,7 +538,9 @@ files pays no income tax.
   `sim tax check` runs a scenario twice to make sure its results don't
   change, and `sim report tax --return state` shows every line of a return.
   [The tax calculators guide](guides/tax-calculators.md) works an example
-  through.
+  through, and the video *Tax plugins* walks through it with Alice and
+  Bill: [English](https://www.youtube.com/watch?v=rWfsNvoNnVI),
+  [Japanese (日本語)](https://www.youtube.com/watch?v=tckwO18axvw).
 
 **One important thing to know before you model a sale (Part 4.5):** the
 simulator can automatically split a withdrawal into "return of capital" and
