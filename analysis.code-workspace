@@ -4,7 +4,7 @@
             "path": "."
         },
         {
-            "path": "data/shared"
+            "path": "./data/shared"
         }
     ],
     "settings": {
