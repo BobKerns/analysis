@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from analysis.sim import provenance, tax_api, tax_code
+from analysis.sim.connection import open_run
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.tax_api import Account, IncomeItem, SpendingItem
 
@@ -256,11 +257,87 @@ def test_sim_tax_edit_chooses_the_calculator(
     assert kind() == "state_tables"
 
 
-def test_the_guides_example_is_the_tested_calculator() -> None:
-    """docs/guides/tax-calculators.md shows renters.py whole, so the guide's
-    code is the code these tests run."""
+def test_the_guides_and_videos_example_is_the_tested_calculator() -> None:
+    """docs/guides/tax-calculators.md shows property_credit.py whole, and
+    video 13 shows (and its setup copies) its own copy, so the code both
+    show is the code these tests run."""
     root = Path(__file__).parent.parent
     guide = (root / "docs" / "guides" / "tax-calculators.md").read_text(encoding="utf-8")
-    module = (root / "tests" / "data" / "sim" / "tax_calculators" / "taxes" / "renters.py").read_text(
+    module = (root / "tests" / "data" / "sim" / "tax_calculators" / "taxes" / "property_credit.py").read_text(
         encoding="utf-8")
     assert f"```python\n{module}```" in guide
+    video = root / "docs" / "videos" / "13-tax-plugins" / "property_credit.py"
+    assert video.read_text(encoding="utf-8") == module
+
+
+@pytest.fixture
+def property_credit(add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
+                    tax_module: Callable[..., Path],
+                    retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """The private retire_alice copy, living in DC and taxed through the
+    ``property_credit`` example calculator (#568), its housing tagged as
+    property tax; ``property_credit(**params)`` sets its params."""
+    add_state_tax("DC")
+    tax_module("property_credit")
+    _tag_rule(retire_alice_csv, "housing", "tax:property")
+    return lambda **params: add_tax("state", kind="property_credit", params_json=params)
+
+
+@pytest.mark.slow
+def test_a_refundable_credit_takes_the_tax_below_zero(
+    property_credit: Callable[..., Path], run_test_copy: Callable[[], Path],
+    test_data_dir: Path, test_scenarios_dir: Path,
+) -> None:
+    property_credit()
+    run = run_test_copy()
+    credit, tax = _summary(run, "state_property_credit"), _summary(run, "state_tax")
+    # Working, Alice and Bill earn too much; once retired, their $800 a
+    # month of housing is far past the cap, which grows with inflation.
+    assert 2030 not in credit
+    assert 1425_00 < credit[2031] < credit[2032] < 1425_00 * 2
+    # They owe DC nothing then, so DC pays the whole credit back in April.
+    refund = _summary(run, "state_tax_overpaid")
+    assert all(tax[year] == -amount and refund[year] == amount for year, amount in credit.items())
+    # And the refund is money: each April, out of the state tax account back
+    # into checking, which pays the tax.
+    con = sqlite3.connect(run)
+    try:
+        paid_back = dict(con.execute(
+            "SELECT e.tax_year, e.amount FROM transfer_event e "
+            "JOIN account a ON a.id = e.from_account JOIN account b ON b.id = e.to_account "
+            "WHERE a.name = 'Expense_Taxes_State' AND b.name = 'Asset_Checking' "
+            "AND e.reason_kind = 'tax'"))
+    finally:
+        con.close()
+    assert paid_back == {year: amount for year, amount in credit.items() if year < max(credit)}
+    # Until it's paid back, the refund is money DC owes them: after-tax net
+    # worth counts it, less the federal tax due, from December 31 to April,
+    # and the run's last year's, never paid, to the end.
+    federal = _summary(run, "federal_tax_due")
+    first, last = min(credit), max(credit)
+    with open_run(run, "retire_alice", data_dir=test_data_dir,
+                  scenarios_dir=test_scenarios_dir) as rc:
+        unpaid = rc.after_tax_net_worth_frame()["unpaid_tax"]
+        # The reports net the refund against the tax paid into the account.
+        state = rc.expense_events()
+        state = state[(state["to_name"] == "Expense_Taxes_State")
+                      & (state["date"].str[:4] == str(first + 1))]
+        into = rc.items("transfer_event", to_name="Expense_Taxes_State")
+        into = into[into["date"].str[:4] == str(first + 1)]
+    assert unpaid[f"{first}-12"].iloc[0] == pytest.approx((federal.get(first, 0) - credit[first]) / 100)
+    assert unpaid[f"{first + 1}-04"].iloc[0] == 0
+    assert unpaid.iloc[-1] == pytest.approx((federal.get(last, 0) - credit[last]) / 100)
+    assert state["amount"].sum() == into["amount"].sum() - credit[first]
+
+
+def test_a_renter_names_no_property_tax(
+    property_credit: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """A renter counts a fifth of the rent, with no property tax tag to carry."""
+    _tag_rule(retire_alice_csv, "housing", "tax:rent")
+    property_credit(property_tax=None, rent="tax:rent")
+    load_test_copy()
+    property_credit(rent="tax:rent")  # the default property tax tag, carried by nothing
+    with pytest.raises(LoadError, match="reads tag 'tax:property'"):
+        load_test_copy()

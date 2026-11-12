@@ -449,7 +449,8 @@ CREATE TABLE residence (
 -- kind is the calculator; upstream the jurisdictions its return builds on,
 -- space-separated: its calculator's own, filled in by the loader (#508).
 -- Each April (schedule) it pays what is still due for the year before from
--- source_chain into destination, between start and end.
+-- source_chain into destination, or pays back what was paid past it (#568),
+-- between start and end.
 CREATE TABLE tax_jurisdiction (
     id                   INTEGER PRIMARY KEY,
     name                 TEXT NOT NULL UNIQUE,

@@ -1030,6 +1030,17 @@ income tax (it then reads a 0% table, `state_brackets__none.csv`). A move to ano
 `aux/state_local_tax__CA-county.csv` from then on. A child scenario adds its
 own rows to its parent's, and one of the same month replaces the parent's.
 
+A move to a territory works the same way. Guam, the Northern Mariana Islands
+and the U.S. Virgin Islands tax their residents under a copy of the federal
+tax law, paid to the territory instead of the IRS, so the federal tax is the
+whole tax there and the state tax pays nothing. Tables of your own for one
+are refused, since they would tax the same income twice. Each has local breaks for
+income earned there, such as the Northern Mariana Islands' rebate, which a
+household retiring from the mainland seldom has. Puerto Rico and American
+Samoa have tax codes of their own, which the simulator can't model yet
+([#570](https://github.com/BobKerns/analysis/issues/570)), so a move to
+either is refused.
+
 Any other aux table can be swapped with a calendar row, `swap_aux_table`: a
 new federal bracket table on the date a law takes effect, or another
 inflation series. A state's tables can't be: they follow where you live.
@@ -1583,10 +1594,14 @@ sweeps it like the rest. See
 [ADR-006 §3b](architecture/ADR-006-ensemble-scenarios.md).
 
 **Strategy plugins.** You can write your own kind in Python, in your data
-repo's `sim/strategies/` folder: a strategy plugin. It can build on a
-built-in by subclassing it or by delegating to it. For example, Alice and
-Bill want guardrail to decide how much travel a year can afford, while
-their own code decides which trips fit, taken whole:
+repo's `sim/strategies/` folder: a strategy plugin. The video *Strategy
+plugins* walks through the example below with Alice and Bill: writing it,
+checking it, and what it does across eighty futures:
+[English](https://www.youtube.com/watch?v=WeRm1pjYMT4),
+[Japanese (日本語)](https://www.youtube.com/watch?v=rs4Ya5Dq6-Q).
+A plugin can build on a built-in by subclassing it or by delegating to
+it. For example, Alice and Bill want guardrail to decide how much travel
+a year can afford, while their own code decides which trips fit, taken whole:
 
 ```python
 from dataclasses import dataclass
@@ -1900,8 +1915,8 @@ growth when markets rise. The design is in
 **Video.** *Keeping the plan current* walks through this section with Alice
 and Bill: rolling the plan forward to January, last year's income for April's
 tax, this year's spending, and comparing the new plan with last year's:
-[English](https://www.youtube.com/watch?v=S18GvCz74zo),
-[Japanese (日本語)](https://www.youtube.com/watch?v=qJ6THMNtTto).
+[English](https://www.youtube.com/watch?v=8db_avIPyaA),
+[Japanese (日本語)](https://www.youtube.com/watch?v=G8olwcX-Udw).
 
 A plan only knows what you told it when you wrote it. Once a year, or after
 a big change, start it again from what the accounts hold now:

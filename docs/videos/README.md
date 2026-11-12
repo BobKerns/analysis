@@ -228,7 +228,7 @@ which inlines the SVG so the theme's CSS can restyle it.
 | `title` | `series`, `episode`, `title`, `subtitle`, `cast` (assets to show; default home, Alice, Bill) |
 | `card` | `series`, `heading`, `body` (text, or a list shown one item per line), `speaker` (one asset, optional) |
 | `figure` | `series`, `heading` (the command, shown as typed), `demo_image` (a picture `setup.sh` made) |
-| `window` | `series`, `heading`, `title` (the title bar), `look` (`terminal`, `light`, `files` or `editor`), `lines`, `address` (`files`), `status` (`editor`), `note` (below the window) |
+| `window` | `series`, `heading`, `title` (the title bar), `look` (`terminal`, `light`, `files`, `editor` or `code`), `lines`, `address` (`files`), `status` (`editor`, `code`), `code`, `language`, `first`, `marks` (`code`), `note` (below the window) |
 
 A `demo_image` is a path under the demo root (`home/chart.png` would be
 the file `setup.sh` wrote to `~/chart.png`); the builder runs the
@@ -251,6 +251,12 @@ part in the accent color, and `secret = true` puts a cursor after the
 prompt. It draws what the screen says, not a copy of it, so it rebuilds and
 translates like any slide; a translation can override `heading` and `note`
 and leave the screen's own text as it is.
+
+The `code` look shows source code, highlighted. Rather than copy the code
+into the slide, `code_file` names a file beside the script and
+`code_lines = [first, last]` the lines to show, so the slide and the file
+can't drift apart (video 12 shows its plugin this way). `marks` lists the
+line numbers to pick out; the rest are dimmed.
 
 A new template extends `base.html`, which supplies the background, the
 ground, the theme's CSS variables (`--bg`, `--accent`, `--font-heading`, ...)
@@ -395,7 +401,7 @@ notebook scenes record. It builds for amd64
 and arm64 (Docker Desktop on Apple silicon).
 
 ```sh
-analysis video build 00-pilot [--lang ja] [--silent] [--rerecord] [--jobs N]
+analysis video build 00-pilot [--lang ja] [--silent] [--rerecord] [--jobs N] [--publish]
 analysis video check                 # every video, or name some
 analysis video shell 01-intro        # bash, with the video's data repo
 ```
@@ -459,7 +465,17 @@ analysis video publish --refresh     # every published video's title and descrip
 ```
 
 It works from the build in `out/videos` (`--out` for another), so build
-first. Each language is its own video. An upload:
+first, or build and publish in one step (#562):
+
+```sh
+analysis video build 03-base-scenario --publish [--new-upload] [--dry-run]
+```
+
+`build --publish` takes publish's `--dry-run`, `--refresh` and
+`--new-upload`, and publishes only after a build that succeeds, always on
+this machine (the build itself may run in the container). It says so when a
+language is already up and `--new-upload` is missing, since then the rebuilt
+picture doesn't reach YouTube. Each language is its own video. An upload:
 
 - sends the MP4, as **private**, so you can look it over and make it public
   in Studio;

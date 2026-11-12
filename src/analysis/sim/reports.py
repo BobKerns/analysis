@@ -264,7 +264,7 @@ def net_worth_change_by_year(
     the run figures no deferred tax before its first step. Years before that
     (a prior year's carried-forward record) have no row.
     """
-    expenses = rc.items("transfer_event", to_kind="expense").copy()
+    expenses = rc.expense_events().copy()
     expenses["month"] = event_month(expenses)
     is_depreciation = expenses["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS)
     category = expenses["to_subkind"].map(EXPENSE_SUBKIND_TO_CATEGORY)

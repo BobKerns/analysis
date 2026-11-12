@@ -109,7 +109,7 @@ def flow_events(rc: RunConnection, side: FlowSide) -> pd.DataFrame:
                             for frame in (received, returned, lost, costs)],
                            ignore_index=True)
     else:
-        events = rc.items("transfer_event", to_kind="expense")
+        events = rc.expense_events()
         events = _side(events[~events["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS)], "to")[columns]
     events = events.copy()
     events["month"] = event_month(events)

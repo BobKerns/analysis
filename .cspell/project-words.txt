@@ -61,6 +61,7 @@ chunksize
 CLAUDECODE
 clsname
 cmap
+CNMI
 collinearity
 colorbar
 colormaps
@@ -312,6 +313,7 @@ rollups
 rootdir
 Roths
 roundtrips
+rowhouse
 RRGGBB
 rtol
 runfile

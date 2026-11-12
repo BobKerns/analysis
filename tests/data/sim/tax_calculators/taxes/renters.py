@@ -1,7 +1,8 @@
-"""A state income tax with a renter deduction (the worked example in
-docs/guides/tax-calculators.md): the built-in ``state_tables`` state, which
-starts from federal AGI, less part of the rent the household paid, up to a
-cap, and, if asked, the pension a public employer paid."""
+"""A state income tax with a renter deduction, a test calculator (since
+#511 a row of ``state_adjustments`` can say the deduction itself): the
+built-in ``state_tables`` state, which starts from federal AGI, less part
+of the rent the household paid, up to a cap, and, if asked, the pension a
+public employer paid."""
 
 from dataclasses import dataclass
 
