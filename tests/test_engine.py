@@ -14,6 +14,7 @@ import pytest
 from analysis.sim.engine import EngineError, run_scenario
 from analysis.sim.taxes.common import state_ss_exclusion
 from analysis.sim.loader import LoadError, growth_rule_name, load_scenario
+from analysis.sim import registries
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -1389,6 +1390,11 @@ def _run_federal_tax(
 ) -> sqlite3.Connection:
     fund_asset_savings()
     write_tax(repo / "scenarios" / "retire_alice")
+    # These test the hand-typed totals alone: a header-only itemized_limits
+    # turns off the lines figured from spending (#542), here the mortgage's
+    # interest.
+    (repo / "aux" / "itemized_limits.csv").write_text(
+        ",".join(registries.ITEMIZED_LIMITS_COLUMNS) + "\n", encoding="utf-8")
     intent_path = load_scenario(
         repo, "retire_alice",
         intent_dir=tmp_path / "intent", loaded_by="test",
@@ -1544,7 +1550,7 @@ def test_state_itemized_deduction_falls_back_to_federal_when_absent(
     )
     con, _ = _run_state_tax(repo, tmp_path, add_state_tax)
     try:
-        assert _summary(con, 2026, "state_itemized_deduction") == 40_000_00
+        assert _summary(con, 2026, "state_itemized_other") == 40_000_00
     finally:
         con.close()
 

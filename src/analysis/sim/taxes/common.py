@@ -764,6 +764,108 @@ def itemized_deduction(ty: TaxYear, kind: str) -> int:
     return int(rows[-1]["amount"]) if rows else 0
 
 
+ITEMIZED_LINES: tuple[str, ...] = (
+    "itemized_salt", "itemized_mortgage_interest", "itemized_charity", "itemized_medical",
+    "itemized_other",
+)
+"""The lines of an itemized deduction figured from the year's spending
+(#542), and the hand-typed rest, which add up to ``itemized_deduction``."""
+
+
+@dataclass(frozen=True)
+class Itemized:
+    """A year's itemized deductions before the limits that move with AGI
+    (#542): the SALT cap's phase-down and the charity and medical floors.
+    ``limits`` is the ``itemized_limits`` row in force; None without the
+    table, when only ``other`` (the hand-typed total) counts."""
+    limits: Mapping[str, Any] | None
+    other: int
+    salt: int = 0
+    mortgage_interest: int = 0
+    charity: int = 0
+    medical: int = 0
+
+    def lines(self, agi: int) -> dict[str, int]:
+        """The itemized lines at ``agi``, and their total,
+        ``itemized_deduction``. Federal MAGI for the SALT phase-down is AGI:
+        the model has no foreign income to add back."""
+        if self.limits is None:
+            return {"itemized_deduction": self.other}
+        limits, base = self.limits, max(0, agi)
+
+        def share(key: str) -> int | None:
+            rate = limits.get(f"{key}_micros")
+            return None if rate is None else base * int(rate) // 1_000_000
+
+        salt = self.salt
+        cap = limits.get("salt_cap")
+        if cap is not None:
+            cap = int(cap)
+            start, rate = limits.get("salt_phaseout_start"), limits.get("salt_phaseout_rate_micros")
+            if start is not None and rate is not None and agi > int(start):
+                cap -= (agi - int(start)) * int(rate) // 1_000_000
+            cap = max(cap, int(limits.get("salt_floor") or 0))
+            salt = min(salt, max(0, cap))
+        charity = self.charity
+        floor = share("charity_floor")
+        if floor is not None:
+            charity = max(0, charity - floor)
+        cap_share = share("charity_limit")
+        if cap_share is not None:
+            charity = min(charity, cap_share)
+        floor = share("medical_floor")
+        medical = self.medical if floor is None else max(0, self.medical - floor)
+        lines = dict(zip(ITEMIZED_LINES, (salt, self.mortgage_interest, charity, medical, self.other),
+                         strict=True))
+        return {**lines, "itemized_deduction": sum(lines.values())}
+
+
+def itemized_limits(ty: TaxYear, kind: str, series: str | None = None) -> Mapping[str, Any] | None:
+    """The year's ``kind`` (``itemized_limits``) row for its filing status;
+    None when the scenario has no such table at all."""
+    if not ty.has_table(kind, series):
+        return None
+    rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == ty.filing_status]
+    if not rows:
+        name = f"{kind}__{series}" if series else kind
+        raise TaxError(
+            f"{where(ty)}: aux/{name}.csv has no row for filing_status={ty.filing_status!r} "
+            f"in force in {ty.year}")
+    return rows[0]
+
+
+def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, income_taxes: int) -> Itemized:
+    """The year's itemized deductions from its spending (#542), under
+    ``limits`` (:func:`itemized_limits`), with ``other`` (the hand-typed
+    total) and ``income_taxes`` (state and local income tax paid, which a
+    state doesn't deduct from its own return) added in.
+
+    - State and local taxes: property tax (``tax:property`` or the
+      ``property_tax`` character) and ``income_taxes``.
+    - Mortgage interest (``tax:mortgage_interest``), on no more than
+      ``mortgage_limit`` of the debt: a ``mortgage_payment`` rule's interest
+      times the limit over the year's average balance of every such
+      mortgage (IRS Pub. 936). Other spending of the tag counts in full.
+    - Charity (``tax:charity``) and medical expenses (``tax:medical``), less
+      what an HSA paid, which was never taxed."""
+    if limits is None:
+        return Itemized(None, other)
+    tags = registries.ITEMIZED_TAGS
+    spent = ty.year_spending()
+    property_tax = sum(s.amount for s in spent
+                       if tags["property_tax"] in s.tags or s.character == "property_tax")
+    interest = ty.spent(tags["mortgage_interest"])
+    mortgages = [m for m in ty.year_mortgages() if tags["mortgage_interest"] in m.tags]
+    debt, limit = sum(m.average_balance for m in mortgages), limits.get("mortgage_limit")
+    if limit is not None and debt > int(limit):
+        paid = sum(m.interest for m in mortgages)
+        interest -= paid - paid * int(limit) // debt
+    medical = sum(s.amount for s in spent if tags["medical"] in s.tags and s.payer.subkind != "hsa")
+    return Itemized(
+        limits, other, salt=property_tax + income_taxes, mortgage_interest=max(0, interest),
+        charity=ty.spent(tags["charity"]), medical=medical)
+
+
 def ltcg_exclusion(ty: TaxYear, kind: str | None, series: str | None) -> Callable[[int], int]:
     """A function giving a long-term gain less what the ``kind`` table
     (a state's gain exclusion, #485) leaves out of it."""

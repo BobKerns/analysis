@@ -1045,23 +1045,47 @@ Any other aux table can be swapped with a calendar row, `swap_aux_table`: a
 new federal bracket table on the date a law takes effect, or another
 inflation series. A state's tables can't be: they follow where you live.
 
-### 4.9 Modeling itemized deductions (for example, a big medical year)
+### 4.9 Itemized deductions
 
-By default, tax is calculated using the standard deduction — a flat amount
-that depends only on filing status (Part 3). If a year has enough deductible
-expenses (a large medical bill is the usual case), give that year its
-itemized deductions with `sim deduction add`, listing the expenses:
+By default, tax is calculated using the standard deduction, a flat amount
+that depends only on filing status (Part 3). The simulator also adds up your
+itemized deductions from the year's spending, and uses whichever is greater.
+You do not need to compare them yourself. Each line shows in
+`sim report tax --return federal`:
+
+| Line | Comes from | Limited by |
+| --- | --- | --- |
+| `itemized_salt` | Property tax (spending tagged `tax:property`), and the state and local income tax you paid during the year, the April payment for the year before included | The SALT cap: $40,400 in 2026, rising 1% a year through 2029, less 30% of income over $505,000 but not below $10,000; $10,000 from 2030 |
+| `itemized_mortgage_interest` | A `mortgage_payment` rule's interest, automatically | Interest on up to $750,000 of mortgage debt |
+| `itemized_charity` | Spending tagged `tax:charity` | Only the part over 0.5% of AGI, at most 60% of AGI |
+| `itemized_medical` | Spending tagged `tax:medical`, and IRMAA's Medicare surcharges, automatically; not what an HSA paid | Only the part over 7.5% of AGI |
+| `itemized_other` | Anything else you add by hand (below) | None |
+
+Tag the expense account (or the rule paying into it) to say what it is:
 
 ```sh
-sim deduction add 2028 --item surgery=38000 --item hospital=9000 --item prescriptions=3000
+sim account tag add Expense_Property_Tax tax:property
+sim account tag add Expense_Donations tax:charity
 ```
 
-For that tax year, the simulator uses whichever is greater: the expenses'
-total, or the standard deduction. You do not need to compare them yourself.
-A year's itemized deductions count for that year only; the years around it
-keep the standard deduction. Leave the `--item` options off and the command
-asks for the expenses one by one, or give a total instead
-(`sim deduction add 2029 12500`).
+A mortgage on a rental isn't a personal deduction: tag its rule with
+another `tax:` tag and its interest stays out. Married filing separately
+halves each dollar limit. The limits are in `aux/itemized_limits.csv`; a
+scenario that wants none of this puts an `itemized_limits.csv` with only its
+header line in its `aux/`.
+
+For deductions the ledger doesn't hold, add a year's total with
+`sim deduction add`, listing the expenses:
+
+```sh
+sim deduction add 2028 --item casualty_loss=38000 --item gambling_losses=2000
+```
+
+That total is added to the lines above for that tax year only; the years
+around it don't get it. Leave the `--item` options off and the command asks
+for the expenses one by one, or give a total instead
+(`sim deduction add 2029 12500`). Don't add anything the lines above already
+count, such as property tax: it would count twice.
 
 `sim deduction list` shows each year's total, `sim deduction edit 2028`
 changes a year (it asks for each expense in turn), and
@@ -1074,12 +1098,15 @@ A scenario built on this one inherits them; changing them there gives that
 scenario its own copy, and the parent keeps its own.
 
 State tax uses the same idea, with `--state` on each command. If you don't
-add any, the state figure uses the federal one — most states don't need
-their own.
+add any, the state figure uses the federal one; most states don't need
+their own. The state figures its own lines from the same spending, but
+never deducts state income tax, and takes its own limits where it has them
+(California: no SALT cap, $1,000,000 of mortgage debt, charity up to half of
+AGI).
 
-This is a simple, whole-dollar comparison. It does not model anything more
-detailed, such as medical expenses only counting above a share of your
-income.
+Not modeled: the 2026 law's limit on itemized deductions in the 37%
+bracket, its charity deduction for people who don't itemize, and
+California's phase-out of itemized deductions at high incomes.
 
 ### 4.10 Running an ensemble (a range of outcomes, not one number)
 

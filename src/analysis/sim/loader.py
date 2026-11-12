@@ -1363,6 +1363,7 @@ def load_scenario(
     )
     life_tables_ok = _validate_life_tables(aux_rows, issues)
     _validate_state_gain_tables(aux_rows, issues)
+    _validate_itemized_limits(aux_rows, issues)
     life_tables: dict[str | None, list[tuple[str, dict[str, Any]]]] = {}
     for kind, name, payload, eff in aux_rows:
         if kind == life_table.LIFE_TABLE_KIND:
@@ -4226,7 +4227,8 @@ def _validate_state_retirement_exclusions(
 _STATE_LINES: frozenset[str] = frozenset({
     "agi", "tax", "taxable_income", "ordinary_taxable", "ordinary_income", "ltcg_taxed",
     "nol_used", "nol_carryover", "ss_taxable", "ss_benefits", "credits", "deduction",
-    "standard_deduction", "itemized_deduction", "capital_loss_used", "capital_loss_carryover",
+    "standard_deduction", "itemized_deduction", "itemized_salt", "itemized_mortgage_interest",
+    "itemized_charity", "itemized_medical", "itemized_other", "capital_loss_used", "capital_loss_carryover",
     "capital_loss_lapsed", "nol_lapsed", "business_net", "hobby_disallowed",
     "dividends_as_ordinary", "hsa_addback", "hsa_dividends", "muni_interest",
     "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
@@ -6156,6 +6158,35 @@ def _solve_life_table(
         issues.append(f"{where}: life_table age_at_death {row['age_at_death']}: {e}")
     except ValueError:
         return  # the bad birthdate or start is reported where it's read
+
+
+def _validate_itemized_limits(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """An ``itemized_limits`` table (#542) is the federal one, not keyed by state, and
+    each row's figures make sense: no negative dollars, rates of 0% to
+    100%, and a SALT phase-down with both its start and its rate."""
+    keyed: set[str] = set()
+    for kind, series, payload, effective in aux_rows:
+        if kind not in (registries.ITEMIZED_LIMITS, registries.STATE_ITEMIZED_LIMITS):
+            continue
+        if kind == registries.ITEMIZED_LIMITS and series is not None:
+            if series not in keyed:
+                keyed.add(series)
+                issues.append(
+                    f"aux/{kind}__{series}.csv: the federal limits aren't keyed by state; a state's "
+                    f"are aux/{registries.STATE_ITEMIZED_LIMITS}__{series}.csv")
+            continue
+        name = f"{kind}__{series}" if series else kind
+        where = f"aux/{name}.csv ({effective[:7]}, {payload.get('filing_status')})"
+        _check_not_negative(
+            where, payload, ("salt_cap", "salt_floor", "salt_phaseout_start", "mortgage_limit"), issues)
+        for column in ("salt_phaseout_rate", "charity_floor", "charity_limit", "medical_floor"):
+            rate = payload.get(f"{column}_micros")
+            if rate is not None and not 0 <= rate <= 1_000_000:
+                issues.append(f"{where}: {column} must be 0% to 100%")
+        if (payload.get("salt_phaseout_start") is None) != (payload.get("salt_phaseout_rate_micros") is None):
+            issues.append(f"{where}: a SALT phase-down needs both salt_phaseout_start and salt_phaseout_rate")
 
 
 def _validate_state_gain_tables(

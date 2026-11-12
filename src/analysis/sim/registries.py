@@ -659,8 +659,31 @@ STATE_SOCIAL_SECURITY = "state_social_security"
 """The aux kind of how a state taxes Social Security (#484). Without one a
 state taxes none of it."""
 
+ITEMIZED_LIMITS = "itemized_limits"
+"""The aux kind of the limits on itemized deductions figured from the
+year's spending (#542): the SALT cap and its phase-down, the mortgage debt
+limit, and the AGI floors and cap on charity and medical expenses. Without
+one, itemized deductions are only the hand-typed ``federal_deductions``."""
+
+STATE_ITEMIZED_LIMITS = "state_itemized_limits"
+"""A state's own ``itemized_limits`` (#542), keyed by state like its
+brackets (California's: no SALT cap, a $1 million mortgage limit). A state
+without one uses the federal table."""
+
+ITEMIZED_TAGS: dict[str, str] = {
+    "property_tax": "tax:property",
+    "mortgage_interest": "tax:mortgage_interest",
+    "charity": "tax:charity",
+    "medical": "tax:medical",
+}
+"""The spending tags an itemized line is figured from (#542), by line.
+Property tax is also spending of the ``property_tax`` character; a
+``mortgage_payment`` rule's interest carries ``tax:mortgage_interest``, and
+an ``irmaa`` rule's surcharges ``tax:medical``, unless the rule has a
+``tax:`` tag of its own."""
+
 STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
-    "state_brackets", STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
+    "state_brackets", STATE_ITEMIZED_LIMITS, STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
     STATE_LTCG_EXCLUSION, STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA,
     STATE_RETIREMENT_EXCLUSION, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
     STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
@@ -670,11 +693,12 @@ a tax year reads the series where the household lives that year
 (``residence.csv``, #509), so none of them is swapped by a move."""
 
 OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset({
-    STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
+    STATE_ITEMIZED_LIMITS, STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
     STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
 })
-"""The state tables a state may lack (#490, #487, #489): then it has no
-surcharge, local tax or gains tax, and its HSA follows the federal rules."""
+"""The state tables a state may lack (#490, #487, #489, #542): then it has
+no surcharge, local tax or gains tax, its HSA follows the federal rules, and
+its itemized deductions the federal limits."""
 
 STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX, STATE_GAINS_TAX})
 """The state tables of bands (#490, #487, #489): a surcharge's and a local
@@ -725,6 +749,11 @@ AUX_SERIES_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 """The aux table columns, by kind, that name an inflation series, which a
 series rename rewrites (#467)."""
+
+ITEMIZED_LIMITS_COLUMNS: tuple[str, ...] = (
+    "effective_date", "filing_status", "salt_cap", "salt_floor", "salt_phaseout_start",
+    "salt_phaseout_rate", "mortgage_limit", "charity_floor", "charity_limit", "medical_floor",
+)
 
 AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "federal_brackets":
@@ -814,6 +843,16 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # value when no `state_deductions` rows exist at all.
     "federal_deductions": ("effective_date", "amount"),
     "state_deductions": ("effective_date", "amount"),
+    # The limits on the itemized lines figured from the year's spending
+    # (#542), by filing status: state and local taxes (SALT) up to
+    # `salt_cap`, which falls by `salt_phaseout_rate` of MAGI over
+    # `salt_phaseout_start` but not below `salt_floor`; mortgage interest on
+    # up to `mortgage_limit` of debt; charity over `charity_floor` and at
+    # most `charity_limit` of AGI; medical expenses over `medical_floor` of
+    # AGI. A blank cell is no limit. Every column after filing_status may be
+    # left out.
+    ITEMIZED_LIMITS: ITEMIZED_LIMITS_COLUMNS,
+    STATE_ITEMIZED_LIMITS: ITEMIZED_LIMITS_COLUMNS,
     "ss_taxation_thresholds":
         ("effective_date", "filing_status", "tier1_floor", "tier2_floor"),
     "rmd_factors": ("effective_date", "age", "factor"),
@@ -893,6 +932,12 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
         "rate": ("rate_micros", "percent"),
         "phaseout_rate": ("phaseout_rate_micros", "percent"),
     },
+    **{kind: {
+        "salt_phaseout_rate": ("salt_phaseout_rate_micros", "percent"),
+        "charity_floor": ("charity_floor_micros", "percent"),
+        "charity_limit": ("charity_limit_micros", "percent"),
+        "medical_floor": ("medical_floor_micros", "percent"),
+    } for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
     "life_table": {"q_female": ("q_female_micros", "number"),
                    "q_male": ("q_male_micros", "number")},
 }
@@ -924,6 +969,8 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     STATE_ADJUSTMENTS: frozenset({"amount", "income_limit", "phaseout"}),
     "federal_deductions": frozenset({"amount"}),
     "state_deductions": frozenset({"amount"}),
+    **{kind: frozenset({"salt_cap", "salt_floor", "salt_phaseout_start", "mortgage_limit"})
+       for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
     "energy_credits": frozenset({"cap"}),
     "capital_loss_limit": frozenset({"amount"}),
@@ -932,6 +979,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
 }
 
 AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
+    **{kind: frozenset(ITEMIZED_LIMITS_COLUMNS[2:]) for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
     STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
     STATE_ADJUSTMENTS: frozenset({
         "tag", "rate", "amount", "per_person", "min_age", "filing_status", "income_limit",

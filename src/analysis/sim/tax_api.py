@@ -35,8 +35,8 @@ from analysis.sim import ownership, registries
 from analysis.sim.param_units import Dollars, Percent, Tag, percent
 
 __all__ = [
-    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "HsaGain", "IncomeItem", "Percent", "Person",
-    "Prepared", "Residence", "Return", "SpendingItem", "Tag", "TaxCalculator", "TaxError",
+    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "HsaGain", "IncomeItem", "Mortgage", "Percent",
+    "Person", "Prepared", "Residence", "Return", "SpendingItem", "Tag", "TaxCalculator", "TaxError", "TaxPaid",
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
@@ -153,6 +153,31 @@ class HsaGain:
 
 
 @dataclass(frozen=True)
+class Mortgage:
+    """One ``mortgage_payment`` rule's year (#542): the interest it paid and
+    the debt's average balance over the months it paid, which the debt
+    limit on deductible interest is figured from (IRS Pub. 936). ``tags`` are
+    its interest's, as a :class:`SpendingItem`'s: a home's carries
+    ``tax:mortgage_interest``, a rental's another ``tax:`` tag."""
+    year: int
+    name: str
+    interest: int
+    average_balance: int
+    tags: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class TaxPaid:
+    """What the household paid in one calendar year toward a jurisdiction's
+    income tax (#542), by the payments' dates (a cash-basis taxpayer's
+    deduction): the year's estimated payments and the April settlement of
+    the year before."""
+    year: int
+    jurisdiction: str
+    amount: int
+
+
+@dataclass(frozen=True)
 class Person:
     """One of the scenario's people, with the last month they're alive
     (``YYYY-MM-DD``, the month's end) when the scenario gives a lifespan."""
@@ -203,6 +228,11 @@ class TaxYear:
     hsa_gains: Sequence[HsaGain] = ()
     """Every year's HSA withdrawals' gains over basis up to ``year`` (#497),
     for a state that taxes an HSA."""
+    mortgages: Sequence[Mortgage] = ()
+    """Each mortgage's interest and average balance, by year (#542)."""
+    taxes_paid: Sequence[TaxPaid] = ()
+    """What was paid toward each state and local jurisdiction, by calendar
+    year (#542): the SALT deduction's income taxes."""
 
     @property
     def filing_status(self) -> str:
@@ -315,6 +345,16 @@ class TaxYear:
         """This year's spending carrying ``tag``, in cents: what a deduction
         for rent or property tax starts from."""
         return sum(s.amount for s in self._spent_this_year if tag in s.tags)
+
+    def year_mortgages(self) -> list[Mortgage]:
+        """This year's :class:`Mortgage` years."""
+        return [m for m in self.mortgages if m.year == self.year]
+
+    def tax_paid(self, *jurisdictions: str) -> int:
+        """What was paid this calendar year toward the ``jurisdictions``'
+        income taxes (every state and local one when none are named)."""
+        return sum(t.amount for t in self.taxes_paid
+                   if t.year == self.year and (not jurisdictions or t.jurisdiction in jurisdictions))
 
 
 @dataclass(frozen=True)

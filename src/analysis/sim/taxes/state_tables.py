@@ -121,9 +121,23 @@ class StateTablesYear(FederalStateYear):
         itemized_aux = params.itemized_deduction_aux
         if not ty.has_table(itemized_aux):
             itemized_aux = "federal_deductions"
-        itemized = common.itemized_deduction(ty, itemized_aux)
-        return {"standard_deduction": standard, "itemized_deduction": itemized,
-                "deduction": max(standard, itemized)}
+        other = common.itemized_deduction(ty, itemized_aux)
+        # Its itemized lines from spending (#542) take the state's own
+        # limits, or the federal ones, and never deduct an income tax: a
+        # state doesn't deduct its own, and few another's.
+        limits_aux, limits_series = params.itemized_limits_aux, self.series
+        if not ty.has_table(limits_aux, limits_series):
+            limits_aux, limits_series = registries.ITEMIZED_LIMITS, None
+        self._itemized = common.itemized(
+            ty, common.itemized_limits(ty, limits_aux, limits_series), other=other, income_taxes=0)
+        self._standard = standard
+        return {"standard_deduction": standard, "itemized_deduction": other,
+                "deduction": max(standard, other)}
+
+    def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
+        itemized = self._itemized.lines(income.agi)
+        return {"standard_deduction": self._standard, **itemized,
+                "deduction": max(self._standard, itemized["itemized_deduction"])}
 
     def additions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:
         fed, capital = basis.federal, self._capital
@@ -295,6 +309,9 @@ class StateTables(StateFromFederal):
         bracket_aux: str = "state_brackets"
         standard_deduction_aux: str = registries.STATE_STANDARD_DEDUCTION
         itemized_deduction_aux: str = "state_deductions"
+        itemized_limits_aux: str = registries.STATE_ITEMIZED_LIMITS
+        """The state's limits on its itemized lines from spending (#542),
+        keyed by state; without them, the federal ``itemized_limits``."""
         retirement_exclusion_aux: str = registries.STATE_RETIREMENT_EXCLUSION
         ltcg_bracket_aux: str = registries.STATE_LTCG_BRACKETS
         stcg_bracket_aux: str = registries.STATE_STCG_BRACKETS

@@ -10,7 +10,8 @@ override on its :class:`StateYear`:
 2. :meth:`~StateYear.additions` and :meth:`~StateYear.subtractions`: named
    lines of the return, each changing income of one or more kinds;
 3. state AGI, the start plus the additions less the subtractions;
-4. :meth:`~StateYear.deductions`, then :meth:`~StateYear.other_deductions`
+4. :meth:`~StateYear.deductions` (at the year's income,
+   :meth:`~StateYear.deductions_at`), then :meth:`~StateYear.other_deductions`
    (lines that depend on the year's income), then a carried-in NOL, then
    taxable income;
 5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits` and
@@ -108,10 +109,11 @@ class StateYear(Prepared):
         self._nol_lapse = common.nol_lapse_share(ty)
         basis = self.basis(NO_EXTRA)
         fixed = self.fixed_lines(basis)
+        income = self._income(basis)[0]
         self._nol_new = common.nol_new(
-            agi=self._income(basis)[0].agi, business_net=fixed.get("business_net", 0),
+            agi=income.agi, business_net=fixed.get("business_net", 0),
             capital_loss_used=fixed.get("capital_loss_used", 0),
-            deduction=self._deductions["deduction"])
+            deduction=self.deductions_at(income, basis)["deduction"])
 
     # -- The steps ------------------------------------------------------------
 
@@ -141,6 +143,12 @@ class StateYear(Prepared):
     def deductions(self) -> Mapping[str, int]:
         """The deduction lines; ``deduction`` is the one taken."""
         raise NotImplementedError
+
+    def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
+        """:meth:`deductions` at the year's ``income``: itemized lines whose
+        limits move with AGI (#542) are figured here. :meth:`deductions` by
+        default."""
+        return self._deductions
 
     def other_deductions(self, income: Income, basis: Basis) -> Mapping[str, int]:
         """Named deductions taken after AGI besides :meth:`deductions`'
@@ -190,10 +198,11 @@ class StateYear(Prepared):
     def compute(self, extra: Extra = NO_EXTRA) -> Return:
         basis = self.basis(extra)
         income, adjustments = self._income(basis)
+        deductions = self.deductions_at(income, basis)
         others = dict(self.other_deductions(income, basis))
         # A NOL is figured without these (#511): a nonbusiness deduction
         # offsets only nonbusiness income, as the federal rule says.
-        before_nol = income.agi - self._deductions["deduction"] - sum(others.values())
+        before_nol = income.agi - deductions["deduction"] - sum(others.values())
         nol_used = common.nol_used(self._nol_in, before_nol, self._nol_limit)
         taxable = max(0, before_nol - nol_used)
         tax = self.tax(taxable, income)
@@ -214,7 +223,7 @@ class StateYear(Prepared):
             "agi": income.agi,
             **self.fixed_lines(basis),
             **adjustments,
-            **self._deductions,
+            **deductions,
             **others,
             **credit_lines,
             "taxable_income": taxable,

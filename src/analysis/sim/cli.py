@@ -17436,12 +17436,15 @@ def itemization_show(name: str | None, scenario: str | None, data_dir: Path | No
 
 @sim_group_command.group(name="deduction")
 def deduction_group_command() -> None:
-    """See and change the scenario's itemized deductions: one total per tax
-    year, federal (aux/federal_deductions.csv) or, with --state, the state's
-    (aux/state_deductions.csv). ADR-003 §4.4.
+    """See and change the scenario's hand-typed itemized deductions: one
+    total per tax year, federal (aux/federal_deductions.csv) or, with
+    --state, the state's (aux/state_deductions.csv). ADR-003 §4.4.
 
-    A year's deduction is the larger of its itemized total and the standard
-    deduction. A total counts for its own tax year only.
+    The total adds to the itemized lines figured from the year's spending
+    (property and income taxes, mortgage interest, charity, medical; see
+    aux/itemized_limits.csv), so leave those out of it. A year's deduction
+    is the larger of the itemized total and the standard deduction. A total
+    counts for its own tax year only.
     """
 
 
@@ -19568,7 +19571,7 @@ def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[st
     # bracket_series names the federal tables' series; a state's are where
     # the household lives (residence.csv), and state.csv refuses it.
     for key in ("bracket_aux", "bracket_series", "standard_deduction_aux", "itemized_deduction_aux",
-                "ltcg_bracket_aux", "filing_status_aux"):
+                "itemized_limits_aux", "ltcg_bracket_aux", "filing_status_aux"):
         params.pop(key, None)
     row = {
         **{column: federal.row.get(column, "") for column in registries.TAX_CSV_HEADER},
