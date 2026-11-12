@@ -147,7 +147,9 @@ touches your checkout: it commits on the data repo's `builder/prices` branch,
 in its own sparse worktree, and the builder merges it into `main` between
 builds, only while `main` is checked out with no uncommitted changes. Then, if
 `main` is strictly ahead of `origin/main`, it pushes; otherwise `sim builder
-log` says why it didn't (run `git pull` on `main` when it lacks commits). `sim builder status` shows the last
+log` says why it didn't (run `git pull` on `main` when it lacks commits).
+[A private remote for the data repo](guides/data-repo-remote.md) covers where
+that `origin` should live; never make the data repo public. `sim builder status` shows the last
 fetch, prices waiting to merge and why, and any symbol that keeps failing;
 `sim builder prices` fetches now. `sim builder install --no-prices`, or
 `ANALYSIS_PRICE_FETCH=off`, turns the fetches off.
