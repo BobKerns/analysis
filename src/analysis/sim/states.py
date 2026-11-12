@@ -2,7 +2,8 @@
 state a state tax reads (#483): each one's postal code, name and how
 far the simulator models its income tax. The README's "State and territory
 income tax" tables say the same; ``tests/test_tax_state.py`` keeps the two
-in step."""
+in step. docs/guides/state-income-tax.md gives the reasons, state by state
+(#543)."""
 
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from typing import NamedTuple
 SHIPPED = "Shipped"  # its tables come with the simulator
 NO_TAX = "No tax"  # no income tax: no state rule
 TABLES_NEEDED = "Tables needed"  # the model fits; its tables have to be written
-PARTIAL = "Partial"  # the tables work, but some of its rules aren't modeled
+PARTIAL = "Partial"  # the tables work, but some of its rules no table can say
 FEDERAL_RULE = "Federal rule"  # a territory whose tax mirrors the federal one (#491)
 NOT_SUPPORTED = "Not supported"  # a tax code of its own the model can't express
 
@@ -61,45 +62,45 @@ STATES: tuple[State, ...] = (
     State("DE", "Delaware", PARTIAL),
     State("DC", "District of Columbia", SHIPPED),
     State("FL", "Florida", NO_TAX),
-    State("GA", "Georgia", PARTIAL),
-    State("HI", "Hawaii", PARTIAL),
+    State("GA", "Georgia", TABLES_NEEDED),
+    State("HI", "Hawaii", TABLES_NEEDED),
     State("ID", "Idaho", SHIPPED),
-    State("IL", "Illinois", PARTIAL),
-    State("IN", "Indiana", PARTIAL),
+    State("IL", "Illinois", TABLES_NEEDED),
+    State("IN", "Indiana", TABLES_NEEDED),
     State("IA", "Iowa", PARTIAL),
     State("KS", "Kansas", SHIPPED),
     State("KY", "Kentucky", PARTIAL),
-    State("LA", "Louisiana", PARTIAL),
+    State("LA", "Louisiana", TABLES_NEEDED),
     State("ME", "Maine", PARTIAL),
     State("MD", "Maryland", PARTIAL),
-    State("MA", "Massachusetts", PARTIAL),
+    State("MA", "Massachusetts", TABLES_NEEDED),
     State("MI", "Michigan", PARTIAL),
     State("MN", "Minnesota", PARTIAL),
-    State("MS", "Mississippi", PARTIAL),
-    State("MO", "Missouri", PARTIAL),
+    State("MS", "Mississippi", TABLES_NEEDED),
+    State("MO", "Missouri", TABLES_NEEDED),
     State("MT", "Montana", TABLES_NEEDED),
     State("NE", "Nebraska", SHIPPED),
     State("NV", "Nevada", NO_TAX),
     State("NH", "New Hampshire", NO_TAX),
-    State("NJ", "New Jersey", PARTIAL),
+    State("NJ", "New Jersey", TABLES_NEEDED),
     State("NM", "New Mexico", TABLES_NEEDED),
     State("NY", "New York", PARTIAL),
     State("NC", "North Carolina", SHIPPED),
     State("ND", "North Dakota", TABLES_NEEDED),
-    State("OH", "Ohio", PARTIAL),
-    State("OK", "Oklahoma", PARTIAL),
-    State("OR", "Oregon", PARTIAL),
+    State("OH", "Ohio", TABLES_NEEDED),
+    State("OK", "Oklahoma", TABLES_NEEDED),
+    State("OR", "Oregon", TABLES_NEEDED),
     State("PA", "Pennsylvania", PARTIAL),
     State("RI", "Rhode Island", PARTIAL),
     State("SC", "South Carolina", PARTIAL),
     State("SD", "South Dakota", NO_TAX),
     State("TN", "Tennessee", NO_TAX),
     State("TX", "Texas", NO_TAX),
-    State("UT", "Utah", PARTIAL),
-    State("VT", "Vermont", TABLES_NEEDED),
+    State("UT", "Utah", TABLES_NEEDED),
+    State("VT", "Vermont", PARTIAL),
     State("VA", "Virginia", PARTIAL),
     State("WA", "Washington", SHIPPED),
-    State("WV", "West Virginia", PARTIAL),
+    State("WV", "West Virginia", TABLES_NEEDED),
     State("WI", "Wisconsin", PARTIAL),
     State("WY", "Wyoming", NO_TAX),
     State("AS", "American Samoa", NOT_SUPPORTED),
