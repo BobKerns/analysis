@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import types
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
@@ -402,6 +403,35 @@ def test_a_subclass_without_a_standard_deduction_keeps_its_exemption_beside_the_
     assert ret["deduction"] == 32_000_00
 
 
+class _Capped(StateTablesYear):
+    """A state that caps the deduction taken at $1,000."""
+
+    def deductions(self) -> Mapping[str, int]:
+        base = super().deductions()
+        return {**base, "deduction": min(base["deduction"], 1_000_00)}
+
+
+def test_a_cap_in_deductions_holds_with_the_lines() -> None:
+    """A deductions() that takes less than its own standard or itemized
+    total caps the deduction; $50,000 of property tax doesn't lift it."""
+    year = _Capped(calculator("state_tables"), _year(
+        200_000_00, [_paid(PROPERTY_TAX, 50_000_00, tags="tax:property")],
+        jurisdiction="state", tables={**TABLES, **CA_LIMITS}))
+    ret = year.compute()
+    assert ret["itemized_salt"] == 50_000_00
+    assert ret["deduction"] == 1_000_00
+
+
+def test_a_report_tag_on_a_rule_keeps_the_accounts_itemizing_tag() -> None:
+    """A rule tagged tax:itemized for a report still pays charity into an
+    account tagged tax:charity; a rule's own itemizing tag does move it."""
+    report = _paid(GIFTS, 20_000_00, tags="tax:itemized")
+    assert "tax:charity" in report.tags
+    assert _federal(200_000_00, [report])["itemized_charity"] == 19_000_00
+    moved = _paid(GIFTS, 20_000_00, tags="tax:medical")
+    assert "tax:charity" not in moved.tags
+
+
 def test_a_subclass_extending_deductions_keeps_the_lines() -> None:
     calc = calculator("state_tables")
     year = _MoreStandard(calc, _year(
@@ -598,6 +628,101 @@ def test_a_hand_typed_total_warns_only_in_a_year_a_rule_adds_lines(
     assert any("federal_deductions.csv (2030)" in w for w in warnings) == warns, warnings
 
 
+def _set_cells(path: Path, name: str, **cells: str) -> None:
+    """Set cells of the row ``name`` in one of the copy's CSVs."""
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    for column, value in cells.items():
+        rows.loc[rows["name"] == name, column] = value
+    rows.to_csv(path, index=False)
+
+
+@pytest.mark.parametrize("change", ["heloc", "retired"])
+def test_a_rule_that_itemizes_nothing_then_is_no_warning(
+    retire_alice_csv: Callable[[str], Path], write_aux: Callable[[str, str], Path],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], Any], change: str,
+) -> None:
+    """A mortgage_payment amortizing a HELOC implies no mortgage interest,
+    and one a calendar row retires before 2027 has none in 2027."""
+    if change == "heloc":
+        _set_cells(retire_alice_csv("accounts.csv"), "Liability_Mortgage", subkind="heloc")
+    else:
+        append_calendar_row(date="2026-12-31", kind="retire_scheduled", scheduled_name="mortgage_pmt")
+    write_aux("federal_deductions.csv", "effective_date,amount\n2027-01-31,30000.00\n")
+    warnings = load_test_copy().warnings
+    assert not any("the hand-typed total adds" in w for w in warnings), warnings
+
+
+def test_a_federal_total_beside_a_state_income_tax_is_a_warning(
+    retire_alice_csv: Callable[[str], Path], write_aux: Callable[[str, str], Path],
+    add_state_tax: Callable[..., None], load_test_copy: Callable[[], Any],
+) -> None:
+    """The federal SALT line adds the state income tax paid, which a total
+    written as a whole Schedule A already counted."""
+    _set_cells(retire_alice_csv("scheduled.csv"), "mortgage_pmt", end="2027-12-31")
+    add_state_tax()
+    write_aux("federal_deductions.csv", "effective_date,amount\n2028-01-31,30000.00\n")
+    warnings = load_test_copy().warnings
+    assert any("federal_deductions.csv (2028): the hand-typed total adds" in w
+               and "state and local income tax" in w for w in warnings), warnings
+
+
+@pytest.mark.parametrize(("state", "warns"), [("ID", True), ("CA", False)])
+def test_a_state_without_lines_falling_back_to_the_federal_total_is_a_warning(
+    write_aux: Callable[[str, str], Path], add_state_tax: Callable[..., None],
+    load_test_copy: Callable[[], Any], state: str, warns: bool,
+) -> None:
+    """Idaho figures no lines and takes federal_deductions, now only the
+    hand-typed rest, so its return loses the mortgage interest the federal
+    lines count. California figures its own."""
+    add_state_tax(state)
+    write_aux("federal_deductions.csv", "effective_date,amount\n2027-01-31,2000.00\n")
+    warnings = load_test_copy().warnings
+    assert any("figures no itemized lines" in w for w in warnings) == warns, warnings
+
+
+def test_property_tax_by_its_character_from_a_chain_is_refused(
+    append_scheduled_row: Callable[..., None], load_test_copy: Callable[[], Any],
+) -> None:
+    """A chain's legs carry their source's character, so the rule's
+    property_tax would never reach the ledger."""
+    append_scheduled_row(name="county_tax", from_account="asset_checking_liquidity",
+                         to_account="Expense_Housing", amount_rule_kind="fixed_amount",
+                         amount="500.00", tax_character="property_tax", start="2026-05-31")
+    with pytest.raises(LoadError, match="property_tax must be paid out of an account named directly"):
+        load_test_copy()
+
+
+def test_a_year_to_date_row_into_two_home_mortgages_interest_is_refused(
+    retire_alice_csv: Callable[[str], Path], append_scheduled_row: Callable[..., None],
+    load_test_copy: Callable[[], Any],
+) -> None:
+    """Whose debt the row's interest was on decides the debt limit."""
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    second = accounts[accounts["name"] == "Liability_Mortgage"].iloc[0].to_dict()
+    accounts.loc[len(accounts)] = {**second, "name": "Liability_Second"}
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    append_scheduled_row(name="second_pmt", from_account="Asset_Checking", to_account="Liability_Second",
+                         amount_rule_kind="mortgage_payment", interest_account="Expense_Interest_Mortgage",
+                         rate="6%", amount="1000.00", tax_character="none", start="2026-05-31")
+    with open(retire_alice_csv("year_to_date.csv"), "a") as f:
+        f.write("prior_interest,Asset_Checking,,Expense_Interest_Mortgage,,4000.00,none,,\n")
+    with pytest.raises(LoadError, match="interest account of several home mortgages"):
+        load_test_copy()
+
+
+def test_the_tags_a_rule_kind_implies_are_the_scenarios() -> None:
+    """A calculator's Tag param may name tax:mortgage_interest when only a
+    home mortgage's rule carries it, and tax:medical when only IRMAA does."""
+    from analysis.sim.loader import _scenario_tags
+    accounts = [{"name": "Liability_Mortgage", "subkind": "mortgage"},
+                {"name": "Liability_Car", "subkind": "other_liability"}]
+    rules = [{"amount_rule_kind": "mortgage_payment", "to_account": "Liability_Mortgage"},
+             {"amount_rule_kind": "irmaa", "to_account": "Expense_Healthcare"}]
+    assert _scenario_tags(accounts, rules, []) == {"tax:mortgage_interest", "tax:medical"}
+    car = [{"amount_rule_kind": "mortgage_payment", "to_account": "Liability_Car"}]
+    assert _scenario_tags(accounts, car, []) == frozenset()
+
+
 @pytest.mark.parametrize(("state", "warns"), [("CA", True), ("WA", False)])
 def test_a_state_total_warns_only_where_the_state_figures_lines(
     write_aux: Callable[[str, str], Path], add_state_tax: Callable[..., None],
@@ -659,19 +784,21 @@ def test_business_expenses_and_rental_spending_are_never_itemized() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(("start", "ytd", "first"), [("2026-01-31", "7400.00", 1), ("2026-03-31", "3700.00", 3)])
 def test_a_year_to_date_catch_up_is_not_read_as_a_larger_debt(
     add_state_tax: Callable[..., None], retire_alice_csv: Callable[[str], Path],
-    run_test_copy: Callable[[], Path],
+    run_test_copy: Callable[[], Path], start: str, ytd: str, first: int,
 ) -> None:
     """The months before the start come as one catch-up transfer; its
-    interest is on the debt of the months after, not on several times it,
-    so a mortgage well under the limit keeps all its interest."""
+    interest is on the debt of the months it replays, from the loan's
+    start that year, not on several times it, so a mortgage well under
+    the limit keeps all its interest."""
     add_state_tax()
     path = retire_alice_csv("scheduled.csv")
     rows = pd.read_csv(path, dtype=str, keep_default_na=False)
     mortgage = rows["amount_rule_kind"] == "mortgage_payment"
-    rows.loc[mortgage, "ytd_amount"] = "7400.00"
-    rows.loc[mortgage, "start"] = "2026-01-31"
+    rows.loc[mortgage, "ytd_amount"] = ytd
+    rows.loc[mortgage, "start"] = start
     rows.to_csv(path, index=False)
     run = run_test_copy()
     with closing(sqlite3.connect(run)) as con:
@@ -680,11 +807,11 @@ def test_a_year_to_date_catch_up_is_not_read_as_a_larger_debt(
             "FROM transfer_event t JOIN account a ON a.id = t.to_account "
             "WHERE a.name = 'Expense_Interest_Mortgage' AND substr(t.date, 1, 4) = '2026'").fetchone()
         # Each month's balance is recorded as the interest was figured: the
-        # catch-up's four months replayed from January, then each payment.
+        # catch-up's months replayed from the loan's start, then each payment.
         balances = con.execute(
             "SELECT month, balance FROM mortgage_balance WHERE month LIKE '2026-%' ORDER BY month").fetchall()
     assert catchup > 0
-    assert [month for month, _ in balances] == [f"2026-{m:02d}" for m in range(1, 13)]
+    assert [month for month, _ in balances] == [f"2026-{m:02d}" for m in range(first, 13)]
     assert all(a[1] > b[1] for a, b in zip(balances, balances[1:], strict=False))
     assert _lines(run, "federal_itemized_mortgage_interest")["federal_itemized_mortgage_interest"][2026] \
         == interest
@@ -699,7 +826,7 @@ def test_a_business_mortgage_stays_out_of_the_debt_limit() -> None:
                 _paid(INTEREST, 54_000_00, tags="tax:mortgage_interest", payer=business,
                       character="business_expense")]
     mortgages = [*_months("Liability_Mortgage", range(1, 13), 3_000_00, 600_000_00),
-                 *[replace(m, payer=business, character="business_expense") for m in
+                 *[replace(m, character="business_expense") for m in
                    _months("Liability_Office", range(1, 13), 4_500_00, 900_000_00)]]
     ret = _federal(300_000_00, spending, mortgages=mortgages)
     assert ret["itemized_mortgage_interest"] == 36_000_00
@@ -714,9 +841,12 @@ def test_an_implied_tag_keeps_the_accounts_own_tax_tag() -> None:
     assert item.tags == {"tax:premiums", "tax:medical"}
 
 
-def test_only_a_same_year_state_refund_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connection) -> None:
+def test_a_state_refund_never_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connection) -> None:
     """A refund (#568) posts from the state's account under its id, as a
-    settlement does; it takes back what was paid rather than adding to it."""
+    settlement does, the April after the year it's for. Under the
+    tax-benefit rule it is income of the year received, to the extent the
+    earlier deduction saved tax, which isn't modeled; it isn't less paid,
+    nor a payment."""
     from analysis.sim.engine import _implied_rules, _taxes_paid
     checking, state, federal = 1, 2, 3
     con = ledger_con
@@ -753,17 +883,9 @@ def test_only_a_same_year_state_refund_comes_off_the_state_tax_paid(ledger_con: 
         "'Expense_Tax_State')", (checking,))
     post("2028-07-31", checking, state, 2_000_00, "rule", 7)
     post("2028-08-31", checking, state, 3_000_00, "rule", None, character="business_expense")
-    # A refund of 2027's tax is 2027's business, not less paid in 2028.
     post("2028-04-30", state, checking, 1_000_00, "tax", 2, 2027)
     paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None), _implied_rules(con)[0])
     assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 5_000_00)]
-    # One of 2028's own takes back what was paid, and never below zero.
-    post("2028-12-31", state, checking, 1_000_00, "tax", 2, 2028)
-    paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None), _implied_rules(con)[0])
-    assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 4_000_00)]
-    post("2028-12-31", state, checking, 9_000_00, "tax", 2, 2028)
-    paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None), _implied_rules(con)[0])
-    assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 0)]
 
 
 class _InheritedOwnDeductions(_OlderOwnDeductions):
@@ -775,6 +897,11 @@ _InheritedOwnDeductions.__module__ = "household_later"
 
 
 def test_an_inherited_older_schedule_a_keeps_its_api_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The subclass's own module says API 5, but its deductions() is the
+    API-4 module's, which decides."""
+    later = types.ModuleType("household_later")
+    vars(later)["API_VERSION"] = 5
+    monkeypatch.setitem(sys.modules, "household_later", later)
     monkeypatch.setattr(sys.modules[__name__], "API_VERSION", 4, raising=False)
     year = _InheritedOwnDeductions(calculator("state_tables"), _year(
         200_000_00, [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")],
@@ -835,8 +962,7 @@ def test_a_catch_up_with_no_regular_month_still_meets_the_debt_limit(
     its catch-up that year. A ``ytd_amount`` posts its payments' interest
     at once in May, but each month it replays is tested on its own balance;
     a ``ytd_preroll`` posts each month on its own. A year_to_date.csv row,
-    which no rule figured, is read as the average debt its interest
-    implies over the months to its own."""
+    which no rule figured, is spread evenly over the months to its own."""
     con = ledger_con
     interest = _mortgage_ledger(con, preroll=kind == "ytd_preroll",
                                 ytd=payments * 10_000_00 if kind == "ytd_amount" else None)
@@ -853,7 +979,7 @@ def test_a_catch_up_with_no_regular_month_still_meets_the_debt_limit(
     months = _months_of(con, interest)
     assert {m.balance for m in months} == {2_000_000_00}
     assert sum(m.interest for m in months) == payments * 10_000_00
-    assert len(months) == (1 if kind == "year_to_date" else payments)
+    assert len(months) == payments
 
 
 def test_a_catch_up_and_a_preroll_are_one_debt_in_each_month(ledger_con: sqlite3.Connection) -> None:
@@ -881,6 +1007,55 @@ def test_a_catch_up_and_a_preroll_are_one_debt_in_each_month(ledger_con: sqlite3
     assert debt == dict.fromkeys(range(1, 6), 1_200_000_00)
 
 
+@pytest.mark.parametrize("rows", [[15_000_00], [4_000_00, 11_000_00], [11_000_00, 4_000_00]])
+def test_a_year_to_date_row_is_spread_and_summed_beside_a_preroll(
+    ledger_con: sqlite3.Connection, rows: list[int],
+) -> None:
+    """Two $600,000 mortgages at 6% from a June start: one's January to May
+    interest is a year_to_date.csv row (or two, Alice's and Bill's), the
+    other's posts month by month. The rows are spread over January to May
+    and summed before their debt is read, so each month is $1.2M however
+    the rows are split."""
+    con = ledger_con
+    interest = _mortgage_ledger(con)
+    con.execute("UPDATE scheduled_transaction SET interest_account = 'Expense_Interest_Mortgage'")
+    con.execute("INSERT INTO account(id, name, kind, subkind) "
+                "VALUES (4, 'Liability_Second', 'liability', 'mortgage')")
+    con.execute("INSERT INTO chain(id, name, account_id) VALUES (4, 'Liability_Second', 4)")
+    con.execute(
+        "INSERT INTO scheduled_transaction(id, name, from_account, to_account, cadence, "
+        "amount_rule_kind, tax_character, start, rate_micros, amount_cents, ytd_preroll) "
+        "VALUES (2, 'second', 1, 4, 'monthly', 'mortgage_payment', 'none', '2025-01-31', 60000, "
+        "500000, 1)")
+    for amount in rows:
+        _post_interest(con, "2026-05-31", amount, "ytd")
+    for month in range(1, 6):
+        _post_interest(con, f"2026-{month:02d}-28", 3_000_00, "ytd_rule", rule=2)
+        _record_balance(con, f"2026-{month:02d}-28", [month], 600_000_00, 3_000_00, rule=2)
+    debt: dict[int, int] = defaultdict(int)
+    for m in _months_of(con, interest):
+        debt[m.month] += m.balance
+    assert debt == dict.fromkeys(range(1, 6), 1_200_000_00)
+
+
+def test_a_year_to_date_row_carries_its_mortgage_rules_tags(ledger_con: sqlite3.Connection) -> None:
+    """A rental's pre-start interest, a year_to_date.csv row into its
+    rule's interest account, is the rental's as the rule's own interest
+    is: tagged tax:rental, never home mortgage interest."""
+    from analysis.sim.engine import _tax_ledger
+    con = ledger_con
+    _mortgage_ledger(con)
+    con.execute("UPDATE scheduled_transaction SET interest_account = 'Expense_Interest_Mortgage'")
+    con.execute("INSERT INTO tag(id, role, name) VALUES (1, 'tax', 'rental')")
+    con.execute("INSERT INTO scheduled_transaction_tag VALUES (1, 1)")
+    _post_interest(con, "2026-04-30", 4_000_00, "ytd")
+    ledger = _tax_ledger(con, 2026)
+    (item,) = [s for s in ledger.spending if s.payee.name == "Expense_Interest_Mortgage"]
+    assert item.tags == {"tax:rental"}
+    assert {m.character for m in ledger.mortgages} == {"none"}
+    assert all("tax:rental" in m.tags for m in ledger.mortgages)
+
+
 def test_one_payment_drawn_as_two_characters_is_one_debt(ledger_con: sqlite3.Connection) -> None:
     """A $3,000 interest payment on $600,000 at 6%, drawn as two legs of
     different characters, is still on $600,000, shared by its legs."""
@@ -889,6 +1064,5 @@ def test_one_payment_drawn_as_two_characters_is_one_debt(ledger_con: sqlite3.Con
     _post_interest(con, "2026-03-31", 4_000_00, "rule", "return_of_capital")
     _post_interest(con, "2026-03-31", -1_000_00, "rule", "ltcg")
     _record_balance(con, "2026-03-31", [3], 600_000_00, 3_000_00)
-    months = _months_of(con, interest)
-    assert sum(m.interest for m in months) == 3_000_00
-    assert sum(m.balance for m in months) == 600_000_00
+    # One debt-month, not a leg each with a share (one of them negative).
+    assert [(m.interest, m.balance) for m in _months_of(con, interest)] == [(3_000_00, 600_000_00)]

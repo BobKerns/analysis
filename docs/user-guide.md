@@ -1071,8 +1071,13 @@ sim account tag add Expense_Donations tax:charity
 ```
 
 A mortgage or property tax on a rental isn't a personal deduction: tag its
-rule `tax:rental` and it stays out. Spending your business pays (from a
-`business` account) stays out by itself: Schedule C deducts it. Pay estimated state tax into an account of its own, not the federal
+rule `tax:rental` and it stays out. A business expense (the
+`business_expense` character) stays out by itself: Schedule C deducts it.
+Other spending paid from a business account, a gift say, still counts. A
+tag a rule carries for a report (`tax:itemized`) doesn't move spending off
+its account's line. Pay property tax by its `property_tax` character only
+from an account named directly; through a chain, tag it `tax:property`.
+Pay estimated state tax into an account of its own, not the federal
 tax's: the state tax paid into the federal account can't be told apart,
 and only the April settlement there counts. Married filing separately
 halves each dollar limit. The limits are in `aux/itemized_limits.csv`; a
@@ -1091,8 +1096,17 @@ around it don't get it. Leave the `--item` options off and the command asks
 for the expenses one by one, or give a total instead
 (`sim deduction add 2029 12500`). Don't add anything the lines above already
 count, such as property tax or mortgage interest: it would count twice.
+Medical bills, too, go in tagged spending, where the 7.5% floor applies.
 A total typed in before these lines existed may hold them; `sim check`
-warns of a year's total beside a mortgage, IRMAA or tagged spending.
+warns of a year's total beside a mortgage, IRMAA, tagged spending or a
+state income tax.
+
+A state with its own limits (California's ship) figures its lines the same
+way. Another state figures none, and without its own total
+(`sim deduction add --state`) takes the federal one, which now holds only
+the rest; `sim check` warns. Give it its own total, or set
+`itemized_limits_aux` to `itemized_limits` in `taxes/state.csv`'s params to
+figure the federal lines for it.
 
 `sim deduction list` shows each year's total, `sim deduction edit 2028`
 changes a year (it asks for each expense in turn), and

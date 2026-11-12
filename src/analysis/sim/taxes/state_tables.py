@@ -136,14 +136,22 @@ class StateTablesYear(FederalStateYear):
         income added to its ``itemized_deduction`` (#542): the deduction
         taken is the larger of the standard deduction and the itemized
         total, and on top what :meth:`deductions` takes beyond either of
-        its own (a subclass's exemption, which itemizing doesn't replace)."""
+        its own (a subclass's exemption, which itemizing doesn't replace).
+        A :meth:`deductions` that takes less than the larger of its own two
+        caps the deduction there, which the lines don't raise. A subclass
+        whose limit depends on the deduction with the lines (a proration)
+        applies it by overriding this step. A new mapping each call, so an
+        override may change what it's given."""
         base = self._deductions
         itemized = self._itemized
         if itemized is None:
-            return base
+            return dict(base)
         standard = base.get("standard_deduction")
-        beside = max(0, base["deduction"] - max(standard or 0, base.get("itemized_deduction", 0)))
-        return {**base, **itemized.deduction_lines(income.agi, standard, beside=beside)}
+        own = max(standard or 0, base.get("itemized_deduction", 0))
+        lines = itemized.deduction_lines(income.agi, standard, beside=max(0, base["deduction"] - own))
+        if base["deduction"] < own:
+            lines["deduction"] = min(lines["deduction"], base["deduction"])
+        return {**base, **lines}
 
     def itemized_lines(self) -> common.Itemized | None:
         """The year's itemized deductions from spending (#542), under the

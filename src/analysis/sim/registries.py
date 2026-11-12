@@ -693,6 +693,15 @@ Property tax is also spending of the ``property_tax`` character; a
 an ``irmaa`` rule's surcharges ``tax:medical``, unless the rule or its
 account has one of these or ``tax:rental`` already."""
 
+IMPLIED_TAX_TAGS: dict[str, str] = {
+    "mortgage_payment": ITEMIZED_TAGS["mortgage_interest"],
+    "irmaa": ITEMIZED_TAGS["medical"],
+}
+"""The ``tax:`` tag a rule kind's spending carries when neither the rule nor
+the expense account has an itemizing one (#542): a home mortgage's
+interest (a ``mortgage_payment`` on a ``mortgage`` liability; its principal
+pays down the debt, which isn't spending) and an IRMAA surcharge."""
+
 STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
     "state_brackets", STATE_ITEMIZED_LIMITS, STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
     STATE_LTCG_EXCLUSION, STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA,

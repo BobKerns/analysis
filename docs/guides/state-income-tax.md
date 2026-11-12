@@ -80,10 +80,14 @@ every state's list.
   brackets or the deduction aren't doubled for a joint return. The
   simulator taxes a couple jointly: **not supported**
   ([#580](https://github.com/BobKerns/analysis/issues/580)).
-- **Itemized deductions that differ from the federal ones** (no SALT cap,
-  no deduction for state income tax, a different mortgage limit): see
-  [#542](https://github.com/BobKerns/analysis/issues/542). Until then a
-  state's itemized deductions are typed by year into `state_deductions.csv`.
+- **Itemized deductions** ([#542](https://github.com/BobKerns/analysis/issues/542)):
+  a state with its own `state_itemized_limits__<state>.csv` (California's
+  ships) figures them from spending as the federal return does, under its
+  own limits, never deducting an income tax. Another state figures none:
+  type its whole itemized total by year into `state_deductions.csv`, or set
+  `itemized_limits_aux` to `itemized_limits` in its `taxes/state.csv`
+  params to figure the federal lines for it. Without either it takes
+  `federal_deductions.csv`, which holds only what the lines don't figure.
 - **Local income taxes on wages only** (Ohio's municipal and earned income
   school district taxes, Pennsylvania's earned income tax, Kentucky's
   occupational taxes): a retired household's pensions and investments
@@ -129,7 +133,9 @@ on interest and dividends ended with 2024.
 - Brackets, standard deduction, the 1% surcharge over $1 million, the HSA
   rules, the personal and senior exemption credits and the renter's credit:
   **shipped**. Social Security is exempt.
-- No SALT cap and no deduction for state income tax: #542.
+- No SALT cap, no deduction for state income tax, $1 million of mortgage
+  debt and half of AGI for charity (`state_itemized_limits__CA.csv`):
+  **shipped** (#542).
 
 ### Colorado
 

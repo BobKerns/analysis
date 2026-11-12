@@ -148,9 +148,10 @@ class StateYear(Prepared):
 
     def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
         """:meth:`deductions` at the year's ``income``: itemized lines whose
-        limits move with AGI (#542) are figured here. :meth:`deductions` by
-        default."""
-        return self._deductions
+        limits move with AGI (#542) are figured here, and a limit on the
+        deduction taken that depends on them. A copy of :meth:`deductions`
+        by default, so an override may change what it's given."""
+        return dict(self._deductions)
 
     def other_deductions(self, income: Income, basis: Basis) -> Mapping[str, int]:
         """Named deductions taken after AGI besides :meth:`deductions`'

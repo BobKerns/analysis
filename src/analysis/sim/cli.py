@@ -17849,10 +17849,11 @@ def _deduction_origin(target: _DeductionEdit) -> str:
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def deduction_list(state: bool, scenario: str | None, data_dir: Path | None) -> None:
-    """List the itemized deductions, one row per tax year, with the total
-    each counts (an @itemization summed).
+    """List the hand-typed itemized deductions, one row per tax year, with
+    the total each counts (an @itemization summed).
 
-    Without any rows, every year takes the standard deduction.
+    Without any rows, a year itemizes only what it figures from spending
+    (aux/itemized_limits.csv), when that beats the standard deduction.
     """
     from rich.markup import escape
     from rich.table import Table
@@ -17867,7 +17868,8 @@ def deduction_list(state: bool, scenario: str | None, data_dir: Path | None) -> 
             click.echo(f"no state itemized deductions in {ref.name}; the state uses the "
                        "federal ones (`sim deduction list`)")
         else:
-            click.echo(f"no federal itemized deductions in {ref.name}; every year takes the "
+            click.echo(f"no hand-typed federal itemized deductions in {ref.name}; a year "
+                       "itemizes only what it figures from spending, when that beats the "
                        "standard deduction")
         return
     table = Table(title=f"{which} itemized deductions ({ref.name})", header_style="bold")
@@ -17904,8 +17906,10 @@ def deduction_add(
 
     The items go in itemizations/deductions_<YEAR>.csv
     (state_deductions_<YEAR> with --state), and the year's total is that
-    list's sum: `sim deduction add 2028 --item surgery=38000 --item
-    hospital=9000`. Whatever is left out is asked for, items first.
+    list's sum: `sim deduction add 2028 --item casualty_loss=38000 --item
+    investment_interest=9000`. Medical bills, charity, property tax and
+    mortgage interest belong in tagged spending instead, where their floors
+    and limits apply. Whatever is left out is asked for, items first.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
@@ -18033,8 +18037,9 @@ def deduction_edit(
 def deduction_delete(
     year: str | None, yes: bool, state: bool, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Delete tax YEAR's itemized deductions, so it takes the standard
-    deduction. Its itemization in this scenario, when it has one of its own,
+    """Delete tax YEAR's hand-typed itemized deductions, so it itemizes only
+    what it figures from spending, or takes the standard deduction. Its
+    itemization in this scenario, when it has one of its own,
     goes too.
 
     Without YEAR, it is asked for.

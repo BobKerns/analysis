@@ -15,6 +15,7 @@ import re
 import socket
 import sqlite3
 import tempfile
+from collections import defaultdict
 from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -1381,7 +1382,8 @@ def load_scenario(
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
-    _warn_hand_typed_deductions(aux_rows, scheduled_rows, accounts, tax_rows, residence_rows, warnings)
+    _warn_hand_typed_deductions(
+        aux_rows, scheduled_rows, accounts, calendar_rows, tax_rows, residence_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_state_adjustments(
@@ -1427,6 +1429,7 @@ def load_scenario(
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
+    _validate_itemizing_rows(accounts, scheduled_rows, ytd_rows, leaves, issues)
     rail_rows = _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
                                       calendar_rows, issues)
     disabled_strategies: list[strategy_load.PreparedStrategy] = []
@@ -3746,6 +3749,53 @@ def _validate_business(
                 )
 
 
+def _implying_rules(
+    scheduled_rows: Sequence[Mapping[str, str]], accounts: Sequence[Mapping[str, str]],
+) -> list[Mapping[str, str]]:
+    """The rules whose kind implies an itemized tag (#542,
+    ``registries.IMPLIED_TAX_TAGS``), as the engine reads them: an ``irmaa``
+    rule, and a ``mortgage_payment`` on a ``mortgage`` liability (one
+    amortizing a car loan or a HELOC implies nothing)."""
+    subkind = {a.get("name", ""): a.get("subkind", "") for a in accounts}
+    return [row for row in scheduled_rows
+            if row.get("amount_rule_kind") == "irmaa"
+            or (row.get("amount_rule_kind") == "mortgage_payment"
+                and subkind.get(row.get("to_account", "")) == "mortgage")]
+
+
+def _validate_itemizing_rows(
+    accounts: list[dict[str, str]], scheduled_rows: list[dict[str, str]],
+    ytd_rows: list[dict[str, str]], leaves: _LeafIndex, issues: list[str],
+) -> None:
+    """Spending an itemized line can't read right (#542). A rule paying
+    property tax by its ``property_tax`` character pays from an account
+    named directly: a chain's legs carry each source's withdrawal
+    character, not the rule's. A year_to_date.csv row into an interest
+    account two home mortgages share can't say whose debt its interest was
+    on, which the mortgage debt limit needs."""
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        ref = row.get("from_account", "")
+        if row.get("tax_character") == "property_tax" and leaves.account_of.get(ref) is None:
+            issues.append(
+                f"{where} ({row.get('name', '')}): tax_character property_tax must be paid out of "
+                f"an account named directly (from: '{ref}'), as a chain's legs carry their "
+                "source's character; or tag the rule tax:property instead")
+    # Interest account -> its home mortgages' liabilities. Two rules on one
+    # liability (a rate change) are one debt.
+    sharing: dict[str, set[str]] = defaultdict(set)
+    for row in _implying_rules(scheduled_rows, accounts):
+        if row.get("amount_rule_kind") == "mortgage_payment" and row.get("interest_account"):
+            sharing[row["interest_account"]].add(row.get("to_account", ""))
+    for where, row in _located(ytd_rows, "year_to_date.csv"):
+        rules = sorted(sharing.get(row.get("to_account", ""), ()))
+        if len(rules) > 1:
+            issues.append(
+                f"{where} ({row.get('name', '')}): {row.get('to_account')} is the interest account "
+                f"of several home mortgages ({', '.join(rules)}), so the row can't say whose debt "
+                "its interest was on; give each mortgage its own interest account, or use its "
+                "rule's ytd_amount")
+
+
 def _validate_guard_rails(
     scenarios_dir: Path, scenario_name: str, accounts: list[dict[str, str]],
     scheduled_rows: list[dict[str, str]], calendar_rows: list[dict[str, str]],
@@ -4133,6 +4183,7 @@ def _warn_hand_typed_deductions(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     scheduled_rows: list[dict[str, str]],
     accounts: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
     tax_rows: list[dict[str, str]],
     residence_rows: list[dict[str, str]],
     warnings: list[str],
@@ -4140,11 +4191,14 @@ def _warn_hand_typed_deductions(
     """A hand-typed itemized total (``federal_deductions``,
     ``state_deductions``) for a year whose itemized lines are figured from
     spending too (#542): one written before they were, a whole Schedule A,
-    counts its mortgage interest, property tax or IRMAA twice. Only years
-    the lines are figured in: from the federal limits' first date, and for
-    ``state_deductions`` only where the state lived in that year has limits
-    of its own (or its tax takes the federal ones); a zero total adds
-    nothing. One warning for all such rows."""
+    counts its mortgage interest, property tax, IRMAA or, federally, state
+    and local income tax twice. Only years the lines are figured in: from
+    the federal limits' first date, and for ``state_deductions`` only where
+    the state lived in that year has limits of its own (or its tax takes
+    the federal ones); a zero total adds nothing. One warning for all such
+    rows. And a state that figures no lines falls back to
+    ``federal_deductions`` when it has no total of its own, which now
+    leaves out what the federal lines figure: one more warning for that."""
     def first_year(kind: str, series: str | None) -> str | None:
         dates = [effective for k, s, _payload, effective in aux_rows if k == kind and s == series]
         return min(dates)[:4] if dates else None
@@ -4155,6 +4209,7 @@ def _warn_hand_typed_deductions(
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
     state_aux = [tax_files.params(row).get("itemized_limits_aux", registries.STATE_ITEMIZED_LIMITS)
                  for row in tax_rows if row.get("name") == "state"]
+    income_taxed = any(row.get("name") in ("state", "local") for row in tax_rows)
 
     def state_from(year: int) -> str | None:
         """The first year the state lived in in ``year`` figures lines."""
@@ -4177,11 +4232,21 @@ def _warn_hand_typed_deductions(
             return False  # reported where the tags are checked
         return bool(tags & itemized) or row.get("tax_character") == "property_tax"
 
-    def active(kind: str, year: str) -> bool:
-        return any(row.get("amount_rule_kind") == kind
-                   and row.get("start", "")[:7] <= f"{year}-12"
-                   and (not row.get("end") or row["end"][:7] >= f"{year}-01")
-                   for row in scheduled_rows)
+    # A retire_scheduled event ends its rule early; the earliest one, as a
+    # warning needn't follow every reopening.
+    retired: dict[str, str] = {}
+    for row in calendar_rows:
+        if row.get("kind") == "retire_scheduled" and (name := row.get("scheduled_name")) and row.get("date"):
+            retired[name] = min(retired.get(name, row["date"]), row["date"])
+    implying = _implying_rules(scheduled_rows, accounts)
+
+    def active(year: str) -> bool:
+        """Whether a rule implying an itemized tag runs in ``year``."""
+        for row in implying:
+            end = min(filter(None, (row.get("end"), retired.get(row.get("name", "")))), default="")
+            if row.get("start", "")[:7] <= f"{year}-12" and (not end or end[:7] >= f"{year}-01"):
+                return True
+        return False
 
     figured_always = any(tagged(row) for row in (*accounts, *scheduled_rows))
     found: dict[str, list[str]] = {}
@@ -4189,19 +4254,39 @@ def _warn_hand_typed_deductions(
         if kind not in ("federal_deductions", "state_deductions") or series is not None:
             continue
         year = effective[:4]
-        lines_from = federal_from if kind == "federal_deductions" else state_from(int(year))
+        federal = kind == "federal_deductions"
+        lines_from = federal_from if federal else state_from(int(year))
         if lines_from is None or year < max(lines_from, federal_from) \
                 or payload.get("amount") == 0:
             continue
-        if figured_always or active("mortgage_payment", year) or active("irmaa", year):
+        if figured_always or active(year) or (federal and income_taxed):
             found.setdefault(kind, []).append(year)
     if found:
         where = "; ".join(f"aux/{kind}.csv ({', '.join(sorted(set(years)))})"
                           for kind, years in sorted(found.items()))
         warnings.append(
             f"{where}: the hand-typed total adds to the itemized lines figured from spending "
-            "(a mortgage's interest, IRMAA's surcharges, and spending tagged tax:property, "
-            "tax:charity or tax:medical); leave those out of it, or they count twice")
+            "(a mortgage's interest, IRMAA's surcharges, spending tagged tax:property, "
+            "tax:charity or tax:medical, and federally the state and local income tax paid); "
+            "leave those out of it, or they count twice")
+    # The state's fallback: with no state_deductions rows at all, a state
+    # that figures no lines takes federal_deductions, the rest only.
+    if not state_aux or any(kind == "state_deductions" and series is None
+                            for kind, series, *_ in aux_rows):
+        return
+    falls_back = sorted({
+        effective[:4] for kind, series, payload, effective in aux_rows
+        if kind == "federal_deductions" and series is None and effective[:4] >= federal_from
+        and payload.get("amount") != 0
+        and ((lines := state_from(int(effective[:4]))) is None or effective[:4] < lines)
+        and (figured_always or active(effective[:4]))})
+    if falls_back:
+        warnings.append(
+            f"aux/federal_deductions.csv ({', '.join(falls_back)}): the state lived in then "
+            "figures no itemized lines and takes this total, which leaves out what the federal "
+            "lines figure from spending; add aux/state_deductions.csv rows with the state's "
+            "whole itemized total, or give taxes/state.csv itemized_limits_aux "
+            "\"itemized_limits\" to figure the federal lines for it")
 
 
 def _validate_state_social_security(
@@ -5544,14 +5629,18 @@ def _scenario_tags(
     calendar_rows: Sequence[Mapping[str, str]],
 ) -> frozenset[str]:
     """Every tag an account, scheduled rule or calendar row carries, as
-    ``role:name``: what a calculator's ``Tag`` param may name (#510). A
-    malformed tag is reported with its row."""
+    ``role:name``, and the tags a rule kind implies (#542): what a
+    calculator's ``Tag`` param may name (#510). A malformed tag is reported
+    with its row."""
     out: set[str] = set()
     for row in (*accounts, *scheduled_rows, *calendar_rows):
         try:
             out.update(f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", "")))
         except ValueError:
             continue
+    # The tags a rule kind implies (#542) are carried as surely.
+    out.update(registries.IMPLIED_TAX_TAGS[row["amount_rule_kind"]]
+               for row in _implying_rules(scheduled_rows, accounts))
     return frozenset(out)
 
 

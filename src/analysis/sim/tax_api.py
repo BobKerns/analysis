@@ -84,6 +84,16 @@ def _effective_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[
 _ITEMIZING_TAGS = frozenset({*registries.ITEMIZED_TAGS.values(), registries.RENTAL_TAG})
 
 
+def spending_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[str]:
+    """A spending item's tags (#542): :func:`_effective_tags`, except that
+    the expense account's itemizing tag (``tax:charity``, ``tax:rental``)
+    stays unless the rule has one of its own. A rule's report tag
+    (``tax:itemized``, ``tax:repair``) refines the account's for a report,
+    but doesn't move the spending off its itemized line."""
+    tags = _effective_tags(rule, account)
+    return tags if rule & _ITEMIZING_TAGS else tags | (account & _ITEMIZING_TAGS)
+
+
 def itemizing(tags: frozenset[str]) -> bool:
     """Whether ``tags`` say which itemized line spending is on, or that it's
     on none (``tax:rental``, #542). Another ``tax:`` tag, one for a report,
@@ -144,8 +154,9 @@ class SpendingItem:
         """The item's tags: its rule's, and in each role the rule has none
         of, the expense account's, with :attr:`implied_tags` beside them. A
         rule tagged ``tax:repair`` paying into an account tagged
-        ``tax:rent`` is a repair, not rent."""
-        return _effective_tags(self.rule_tags, self.payee.tags) | self.implied_tags
+        ``tax:rent`` is a repair, not rent; but the account's itemizing tag
+        stays unless the rule has one (:func:`spending_tags`)."""
+        return spending_tags(self.rule_tags, self.payee.tags) | self.implied_tags
 
 
 @dataclass(frozen=True)
@@ -180,16 +191,16 @@ class Mortgage:
     deductible interest is tested against. ``name`` is the liability
     account. ``tags`` are its interest's, as a :class:`SpendingItem`'s: a
     home's carries ``tax:mortgage_interest``, a rental's another ``tax:``
-    tag. ``payer`` and ``character`` are its payments', which say whether
-    it's the household's own or a business's; a debt paid from two
-    accounts has a month for each."""
+    tag. ``character`` is ``business_expense`` for a business's payments
+    on the debt, which stay out of the limit, and ``none`` for the
+    household's; a debt both pay in a month has a month for each, each
+    with its share of the balance."""
     year: int
     month: int
     name: str
     interest: int
     balance: int
     tags: frozenset[str] = frozenset()
-    payer: Account = Account("", "", "", None)
     character: str = "none"
 
 
