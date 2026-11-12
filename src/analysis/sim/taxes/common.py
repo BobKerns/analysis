@@ -12,7 +12,7 @@ from datetime import date
 from typing import Any, NamedTuple
 
 from analysis.sim import ownership, registries, states
-from analysis.sim.tax_api import Account, IncomeItem, TaxError, TaxYear
+from analysis.sim.tax_api import Account, IncomeItem, SpendingItem, TaxError, TaxYear, itemizing
 
 
 def income_buckets(ty: TaxYear) -> tuple[int, int, int]:
@@ -779,6 +779,29 @@ class Itemized:
     mortgage_interest: int = 0
     charity: int = 0
     medical: int = 0
+    income_taxes: int = 0
+    """The part of ``salt`` that is state and local income tax."""
+
+    def _salt(self, agi: int) -> int:
+        """SALT under the cap, as it stands at ``agi``."""
+        salt, limits = self.salt, self.limits
+        if limits is None or limits.get("salt_cap") is None:
+            return salt
+        cap = limits["salt_cap"]
+        cap = int(cap)
+        start, rate = limits.get("salt_phaseout_start"), limits.get("salt_phaseout_rate_micros")
+        if start is not None and rate is not None and agi > int(start):
+            cap -= (agi - int(start)) * int(rate) // 1_000_000
+        cap = max(cap, int(limits.get("salt_floor") or 0))
+        return min(salt, max(0, cap))
+
+    def income_tax_deducted(self, agi: int) -> int:
+        """The state and local income tax among the SALT deducted at
+        ``agi``, its share of the capped total: what Utah's taxpayer credit
+        takes off the federal deduction."""
+        if self.limits is None or self.salt <= 0:
+            return 0
+        return self._salt(agi) * self.income_taxes // self.salt
 
     def lines(self, agi: int) -> dict[str, int]:
         """The itemized lines at ``agi``, and their total,
@@ -792,15 +815,7 @@ class Itemized:
             rate = limits.get(f"{key}_micros")
             return None if rate is None else base * int(rate) // 1_000_000
 
-        salt = self.salt
-        cap = limits.get("salt_cap")
-        if cap is not None:
-            cap = int(cap)
-            start, rate = limits.get("salt_phaseout_start"), limits.get("salt_phaseout_rate_micros")
-            if start is not None and rate is not None and agi > int(start):
-                cap -= (agi - int(start)) * int(rate) // 1_000_000
-            cap = max(cap, int(limits.get("salt_floor") or 0))
-            salt = min(salt, max(0, cap))
+        salt = self._salt(agi)
         charity = self.charity
         floor = share("charity_floor")
         if floor is not None:
@@ -810,8 +825,8 @@ class Itemized:
             charity = min(charity, cap_share)
         floor = share("medical_floor")
         medical = self.medical if floor is None else max(0, self.medical - floor)
-        lines = dict(zip(ITEMIZED_LINES, (salt, self.mortgage_interest, charity, medical, self.other),
-                         strict=True))
+        lines = {"itemized_salt": salt, "itemized_mortgage_interest": self.mortgage_interest,
+                 "itemized_charity": charity, "itemized_medical": medical, "itemized_other": self.other}
         return {**lines, "itemized_deduction": sum(lines.values())}
 
     def deduction_lines(self, agi: int, standard: int, *, taken: int | None = None) -> dict[str, int]:
@@ -847,11 +862,12 @@ def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, incom
     """The year's itemized deductions from its spending (#542), under
     ``limits`` (:func:`itemized_limits`), with ``other`` (the hand-typed
     total) and ``income_taxes`` (state and local income tax paid, which a
-    state doesn't deduct from its own return) added in.
+    state doesn't deduct from its own return) added in. Only the
+    household's own spending counts (:func:`personal`).
 
     - State and local taxes: property tax (``tax:property``, or the
-      ``property_tax`` character on spending with no other ``tax:`` tag: a
-      rental's is its own) and ``income_taxes``.
+      ``property_tax`` character on spending with no other itemized tag)
+      and ``income_taxes``.
     - Mortgage interest (``tax:mortgage_interest``), on no more than
       ``mortgage_limit`` of the debt: each month, a ``mortgage_payment``
       rule's interest times the limit over that month's balance of every
@@ -863,15 +879,19 @@ def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, incom
     if limits is None:
         return Itemized(None, other)
     tags = registries.ITEMIZED_TAGS
-    spent = ty.year_spending()
+    spent = [s for s in ty.year_spending() if personal(s)]
+
+    def tagged(tag: str) -> int:
+        return sum(s.amount for s in spent if tag in s.tags)
+
     property_tax = sum(s.amount for s in spent if tags["property_tax"] in s.tags or (
-        s.character == "property_tax" and not any(t.startswith("tax:") for t in s.tags)))
-    interest = ty.spent(tags["mortgage_interest"])
+        s.character == "property_tax" and not itemizing(s.tags)))
+    interest = tagged(tags["mortgage_interest"])
     limit = limits.get("mortgage_limit")
     if limit is not None:
         by_month: dict[int, list[int]] = {}
         for m in ty.year_mortgages():
-            if tags["mortgage_interest"] in m.tags:
+            if tags["mortgage_interest"] in m.tags and registries.RENTAL_TAG not in m.tags:
                 month = by_month.setdefault(m.month, [0, 0])
                 month[0] += m.interest
                 month[1] += m.balance
@@ -882,7 +902,17 @@ def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, incom
                   and (hsa_paid_counts or s.payer.subkind != "hsa"))
     return Itemized(
         limits, other, salt=property_tax + income_taxes, mortgage_interest=max(0, interest),
-        charity=ty.spent(tags["charity"]), medical=medical)
+        charity=tagged(tags["charity"]), medical=medical, income_taxes=income_taxes)
+
+
+def personal(item: SpendingItem) -> bool:
+    """Whether ``item`` is the household's own, which Schedule A can
+    deduct: not a business's (the ``business_expense`` character, or paid
+    from a ``business`` account: Schedule C deducts it, #231) or a
+    rental's (``tax:rental``: Schedule E's)."""
+    return not (item.character == registries.BUSINESS_EXPENSE
+                or item.payer.subkind == registries.BUSINESS_SUBKIND
+                or registries.RENTAL_TAG in item.tags)
 
 
 def ltcg_exclusion(ty: TaxYear, kind: str | None, series: str | None) -> Callable[[int], int]:

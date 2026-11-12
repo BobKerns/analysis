@@ -127,32 +127,30 @@ class StateTablesYear(FederalStateYear):
                 "deduction": max(standard, itemized)}
 
     def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
-        """:meth:`deductions`, with the itemized lines figured from spending
-        (#542) at the year's income added to its ``itemized_deduction``:
-        the deduction taken is the larger of the two totals. A subclass
-        that overrides :meth:`deductions` figures its own itemized
-        deduction, so gets no lines unless it overrides this too."""
+        """:meth:`deductions`, with :meth:`itemized_lines` at the year's
+        income added to its ``itemized_deduction`` (#542): the deduction
+        taken is the larger of the two totals."""
         base = self._deductions
         itemized = self._itemized
         if itemized is None:
             return base
         return {**base, **itemized.deduction_lines(
-            income.agi, base["standard_deduction"], taken=base["deduction"])}
+            income.agi, base.get("standard_deduction", 0), taken=base["deduction"])}
 
-    @cached_property
-    def _itemized(self) -> common.Itemized | None:
-        """The year's itemized deductions from spending, under the state's
-        own limits (``state_itemized_limits__<state>``); None for a state
-        without them, whose rules the federal ones may not match, for a
-        subclass with its own :meth:`deductions`, and without the federal
-        ``itemized_limits`` table, which turns the lines off everywhere.
-        ``itemized_limits_aux`` set to ``itemized_limits`` takes the
-        federal limits for the state. A state never deducts an income tax:
-        not its own, and few another's. An HSA's medical payments count
-        where the state taxes the HSA (#490): it never excluded that money."""
+    def itemized_lines(self) -> common.Itemized | None:
+        """The year's itemized deductions from spending (#542), under the
+        state's own limits (``state_itemized_limits__<state>``), which
+        :meth:`deductions_at` adds to :meth:`deductions`'. None for a state
+        without them, whose rules the federal ones may not match, and
+        without the federal ``itemized_limits`` table, which turns the lines
+        off everywhere. ``itemized_limits_aux`` set to ``itemized_limits``
+        takes the federal limits for the state. A subclass whose
+        :meth:`deductions` figures its own Schedule A overrides this to
+        return None. A state never deducts an income tax: not its own, and
+        few another's. An HSA's medical payments count where the state taxes
+        the HSA (#490): it never excluded that money."""
         ty, params = self.ty, self.ty.params
-        if type(self).deductions is not StateTablesYear.deductions \
-                or not ty.has_table(registries.ITEMIZED_LIMITS):
+        if not ty.has_table(registries.ITEMIZED_LIMITS):
             return None
         limits_aux = params.itemized_limits_aux
         series = self.series if limits_aux == registries.STATE_ITEMIZED_LIMITS else None
@@ -162,6 +160,10 @@ class StateTablesYear(FederalStateYear):
             ty, common.itemized_limits(ty, limits_aux, series),
             other=self._deductions.get("itemized_deduction", 0), income_taxes=0,
             hsa_paid_counts=self._hsa_taxed)
+
+    @cached_property
+    def _itemized(self) -> common.Itemized | None:
+        return self.itemized_lines()
 
     def additions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:
         fed, capital = basis.federal, self._capital
@@ -236,7 +238,10 @@ class StateTablesYear(FederalStateYear):
             if a.base == "federal_tax":
                 figure = a.from_base(basis.federal["tax"])
             elif a.base == "federal_deduction":
-                figure = a.from_base(basis.federal["deduction"])
+                # Less the state income tax it deducted (#542): the
+                # state's own tax mustn't grow its own credit.
+                figure = a.from_base(
+                    basis.federal["deduction"] - basis.federal.memo.get("income_tax_deducted", 0))
             elif a.base == "gains_tax":
                 figure = a.from_base(self.excise(basis)[1])
             out[a.name] = a.after_income_test(figure, income)

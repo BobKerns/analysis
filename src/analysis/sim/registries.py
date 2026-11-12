@@ -677,6 +677,10 @@ ITEMIZED_LINES: tuple[str, ...] = (
 """The lines of an itemized deduction figured from the year's spending
 (#542), and the hand-typed rest, which add up to ``itemized_deduction``."""
 
+RENTAL_TAG = "tax:rental"
+"""Spending of a rental property (#542): Schedule E deducts it, so no
+itemized line counts it, whatever its character, account or rule kind."""
+
 ITEMIZED_TAGS: dict[str, str] = {
     "property_tax": "tax:property",
     "mortgage_interest": "tax:mortgage_interest",
@@ -686,8 +690,8 @@ ITEMIZED_TAGS: dict[str, str] = {
 """The spending tags an itemized line is figured from (#542), by line.
 Property tax is also spending of the ``property_tax`` character; a
 ``mortgage_payment`` rule's interest carries ``tax:mortgage_interest``, and
-an ``irmaa`` rule's surcharges ``tax:medical``, unless the rule has a
-``tax:`` tag of its own."""
+an ``irmaa`` rule's surcharges ``tax:medical``, unless the rule or its
+account has one of these or ``tax:rental`` already."""
 
 STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
     "state_brackets", STATE_ITEMIZED_LIMITS, STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,

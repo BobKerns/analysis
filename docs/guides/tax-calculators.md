@@ -112,8 +112,12 @@ What it does:
 
 - `StateTables` is the built-in state calculator; `RentersYear` is one year
   of it, and overrides `subtractions`, one of the steps a state year goes
-  through (`additions`, `subtractions`, `deductions`, `other_deductions`,
-  `tax`, `credits`, `credit_lines`).
+  through (`additions`, `subtractions`, `deductions`, `itemized_lines`,
+  `other_deductions`, `tax`, `credits`, `credit_lines`). The built-in
+  `itemized_lines` figures property tax, mortgage interest, charity and
+  medical from tagged spending and adds them to what `deductions` returns;
+  a year whose `deductions` figures its own itemized total overrides
+  `itemized_lines` to return `None`, or those count twice.
   Each `Adjustment` is a line of the return, written to the run as
   `state_<line>`.
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is

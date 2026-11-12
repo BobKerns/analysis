@@ -1382,6 +1382,7 @@ def load_scenario(
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
     _warn_shared_tax_destination(tax_rows, scheduled_rows, aux_rows, warnings)
+    _warn_hand_typed_deductions(aux_rows, scheduled_rows, accounts, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_state_adjustments(
@@ -4142,6 +4143,44 @@ def _warn_shared_tax_destination(
                 "of its own")
 
 
+def _warn_hand_typed_deductions(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scheduled_rows: list[dict[str, str]],
+    accounts: list[dict[str, str]],
+    warnings: list[str],
+) -> None:
+    """A hand-typed itemized total (``federal_deductions``,
+    ``state_deductions``) for a year whose itemized lines are figured from
+    spending too (#542): one written before they were, a whole Schedule A,
+    counts its mortgage interest or property tax twice."""
+    if not any(kind == registries.ITEMIZED_LIMITS for kind, *_ in aux_rows):
+        return
+    itemized = frozenset(registries.ITEMIZED_TAGS.values())
+
+    def tagged(row: Mapping[str, str]) -> bool:
+        try:
+            tags = {f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", ""))}
+        except ValueError:
+            return False  # reported where the tags are checked
+        return bool(tags & itemized) or row.get("tax_character") == "property_tax"
+
+    figured_always = any(tagged(row) for row in (*accounts, *scheduled_rows))
+    for kind, series, _payload, effective in aux_rows:
+        if kind not in ("federal_deductions", "state_deductions") or series is not None:
+            continue
+        year = effective[:4]
+        mortgage = any(
+            row.get("amount_rule_kind") == "mortgage_payment"
+            and row.get("start", "")[:7] <= f"{year}-12"
+            and (not row.get("end") or row["end"][:7] >= f"{year}-01")
+            for row in scheduled_rows)
+        if mortgage or figured_always:
+            warnings.append(
+                f"aux/{kind}.csv ({year}): the hand-typed total adds to the itemized lines figured "
+                "from spending (a mortgage's interest, and spending tagged tax:property, "
+                "tax:charity or tax:medical); leave those out of it, or they count twice")
+
+
 def _validate_state_social_security(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     issues: list[str],
@@ -6191,7 +6230,8 @@ def _solve_life_table(
 def _validate_itemized_limits(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
 ) -> None:
-    """An ``itemized_limits`` table (#542) is the federal one, not keyed by state, and
+    """An ``itemized_limits`` table (#542) is the federal one, not keyed by a
+    state (another series is one a ``swap_aux_table`` row reads), and
     each row's figures make sense: no negative dollars, rates of 0% to
     100%, and a SALT phase-down with both its start and its rate. Each of
     its dates has a row for every filing status the standard deduction
@@ -6204,7 +6244,7 @@ def _validate_itemized_limits(
     for kind, series, payload, effective in aux_rows:
         if kind not in (registries.ITEMIZED_LIMITS, registries.STATE_ITEMIZED_LIMITS):
             continue
-        if kind == registries.ITEMIZED_LIMITS and series is not None:
+        if kind == registries.ITEMIZED_LIMITS and series in states.BY_CODE:
             if series not in keyed:
                 keyed.add(series)
                 issues.append(

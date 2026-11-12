@@ -1069,9 +1069,8 @@ sim account tag add Expense_Donations tax:charity
 ```
 
 A mortgage or property tax on a rental isn't a personal deduction: tag its
-rule with another `tax:` tag and it stays out. A mortgage your business
-pays (from a `business` account) stays out by itself: Schedule C deducts
-it. Pay estimated state tax into an account of its own, not the federal
+rule `tax:rental` and it stays out. Spending your business pays (from a
+`business` account) stays out by itself: Schedule C deducts it. Pay estimated state tax into an account of its own, not the federal
 tax's: the state tax paid into the federal account can't be told apart,
 and only the April settlement there counts. Married filing separately
 halves each dollar limit. The limits are in `aux/itemized_limits.csv`; a
@@ -1089,7 +1088,9 @@ That total is added to the lines above for that tax year only; the years
 around it don't get it. Leave the `--item` options off and the command asks
 for the expenses one by one, or give a total instead
 (`sim deduction add 2029 12500`). Don't add anything the lines above already
-count, such as property tax: it would count twice.
+count, such as property tax or mortgage interest: it would count twice.
+A total typed in before these lines existed may hold them; `sim check`
+warns of a year's total beside a mortgage or tagged spending.
 
 `sim deduction list` shows each year's total, `sim deduction edit 2028`
 changes a year (it asks for each expense in turn), and

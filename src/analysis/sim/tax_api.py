@@ -76,6 +76,17 @@ def _effective_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[
     return rule | frozenset(tag for tag in account if tag.partition(":")[0] not in roles)
 
 
+_ITEMIZING_TAGS = frozenset({*registries.ITEMIZED_TAGS.values(), registries.RENTAL_TAG})
+
+
+def itemizing(tags: frozenset[str]) -> bool:
+    """Whether ``tags`` say which itemized line spending is on, or that it's
+    on none (``tax:rental``, #542). Another ``tax:`` tag, one for a report,
+    says neither: an implied tag or the ``property_tax`` character still
+    applies."""
+    return bool(tags & _ITEMIZING_TAGS)
+
+
 @dataclass(frozen=True)
 class IncomeItem:
     """The year's transfers of one ``character`` from one account to

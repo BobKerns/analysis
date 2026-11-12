@@ -6,6 +6,7 @@ loader's checks on them."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
@@ -307,8 +308,20 @@ class _OwnDeductions(StateTablesYear):
         own = self.ty.spent("tax:property")
         return {"itemized_deduction": own, "deduction": max(12_000_00, own)}
 
+    def itemized_lines(self) -> None:
+        return None
 
-def test_a_subclass_overriding_deductions_figures_its_own_itemized_deduction() -> None:
+
+class _MoreStandard(StateTablesYear):
+    """A household's state that only adds to the standard deduction."""
+
+    def deductions(self) -> Mapping[str, int]:
+        base = super().deductions()
+        standard = base["standard_deduction"] + 1_000_00
+        return {**base, "standard_deduction": standard, "deduction": max(standard, base["deduction"])}
+
+
+def test_a_subclass_figuring_its_own_schedule_a_turns_the_lines_off() -> None:
     """No lines are added to it, so the property tax it already counted
     doesn't count twice, and it needn't return a standard deduction."""
     calc = calculator("state_tables")
@@ -318,6 +331,17 @@ def test_a_subclass_overriding_deductions_figures_its_own_itemized_deduction() -
     ret = year.compute()
     assert "itemized_salt" not in ret.lines
     assert ret["deduction"] == 20_000_00
+
+
+def test_a_subclass_extending_deductions_keeps_the_lines() -> None:
+    calc = calculator("state_tables")
+    year = _MoreStandard(calc, _year(
+        200_000_00, [_paid(PROPERTY_TAX, 50_000_00, tags="tax:property")],
+        jurisdiction="state", tables={**TABLES, **CA_LIMITS}))
+    ret = year.compute()
+    assert ret["itemized_salt"] == 50_000_00
+    assert ret["standard_deduction"] == 31_000_00
+    assert ret["deduction"] == 50_000_00
 
 
 def test_a_year_before_the_limits_take_effect_itemizes_the_hand_typed_total() -> None:
@@ -375,8 +399,9 @@ def test_a_business_mortgage_is_not_itemized(
 
 def _route(retire_alice_csv: Callable[[str], Path], variant: str) -> None:
     """Tag the housing rule ``tax:property``; ``shared`` pays the state tax
-    into the federal tax's account, and ``routed`` pays the housing rule
-    into the state tax's."""
+    into the federal tax's account, ``routed`` pays the housing rule into
+    the state tax's, and ``report_tag`` tags the state tax's account and
+    the mortgage interest's ``tax:itemized``, a tag for a report."""
     path = retire_alice_csv("scheduled.csv")
     rows = pd.read_csv(path, dtype=str, keep_default_na=False)
     housing = rows["name"] == "housing"
@@ -384,6 +409,11 @@ def _route(retire_alice_csv: Callable[[str], Path], variant: str) -> None:
     if variant == "routed":
         rows.loc[housing, "to_account"] = "Expense_Taxes_State"
     rows.to_csv(path, index=False)
+    if variant == "report_tag":
+        accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+        accounts.loc[accounts["name"].isin(["Expense_Taxes_State", "Expense_Interest_Mortgage"]),
+                     "tags"] = "tax:itemized"
+        accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
     if variant == "shared":
         state = retire_alice_csv("") / "taxes" / "state.csv"
         rows = pd.read_csv(state, dtype=str, keep_default_na=False)
@@ -392,17 +422,19 @@ def _route(retire_alice_csv: Callable[[str], Path], variant: str) -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("variant", ["shared", "routed"])
+@pytest.mark.parametrize("variant", ["shared", "routed", "report_tag"])
 def test_state_tax_paid_counts_once_wherever_it_is_paid(
     add_state_tax: Callable[..., None], retire_alice_csv: Callable[[str], Path],
     run_test_copy: Callable[[], Path], variant: str,
 ) -> None:
     """Its settlements count though the federal tax is paid into the same
-    account, and property tax paid into the state's account counts once."""
+    account or the account has a tax: tag for a report, and property tax
+    paid into the state's account counts once."""
     add_state_tax()
     _route(retire_alice_csv, variant)
     run = run_test_copy()
-    salt = _lines(run, "federal_itemized_salt")["federal_itemized_salt"]
+    lines = _lines(run, "federal_itemized_salt", "federal_itemized_mortgage_interest")
+    salt = lines["federal_itemized_salt"]
     with closing(sqlite3.connect(run)) as con:
         housing = dict(con.execute(
             "SELECT CAST(substr(date, 1, 4) AS INTEGER), SUM(amount) FROM transfer_event "
@@ -412,9 +444,14 @@ def test_state_tax_paid_counts_once_wherever_it_is_paid(
             "SELECT CAST(substr(date, 1, 4) AS INTEGER), SUM(amount) FROM transfer_event "
             "WHERE reason_kind = 'tax' AND reason_id = "
             "  (SELECT id FROM tax_jurisdiction WHERE name = 'state') GROUP BY 1"))
-    if variant == "shared":
+        interest = dict(con.execute(
+            "SELECT CAST(substr(t.date, 1, 4) AS INTEGER), SUM(t.amount) FROM transfer_event t "
+            "JOIN account a ON a.id = t.to_account WHERE a.name = 'Expense_Interest_Mortgage' "
+            "GROUP BY 1"))
+    if variant != "routed":
         assert state_paid[2028] > 0
     for year in (2028, 2029):
+        assert lines["federal_itemized_mortgage_interest"][year] == interest[year] > 0
         assert salt[year] == housing[year] + state_paid.get(year, 0), year
 
 
@@ -430,3 +467,100 @@ def test_a_rule_paying_into_a_shared_tax_account_is_a_warning(
     rows.to_csv(path, index=False)
     warnings = load_test_copy().warnings
     assert any("housing pays into it as state tax" in w for w in warnings), warnings
+
+
+LIMITS_HEADER = ("effective_date,filing_status,salt_cap,salt_floor,salt_phaseout_start,salt_phaseout_rate,"
+                 "mortgage_limit,charity_floor,charity_limit,medical_floor\n")
+
+
+@pytest.mark.parametrize(("cap", "message"), [("40400.00", None), ("-1.00", "salt_cap must not be negative")])
+def test_a_swap_can_read_another_series_of_the_federal_limits(
+    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], Any], cap: str, message: str | None,
+) -> None:
+    """What if the SALT cap is extended past 2029: a series that isn't a
+    state's is a swap's source, and its rows are checked like the table's."""
+    write_aux("itemized_limits__extended.csv", LIMITS_HEADER + "".join(
+        f"2026-01-31,{status},{cap},10000.00,,,750000.00,,,\n" for status in ("MFJ", "Single", "MFS")))
+    append_calendar_row(date="2030-01", kind="swap_aux_table", params_json=json.dumps(
+        {"aux_kind": "itemized_limits", "source_series": "extended"}))
+    if message is None:
+        load_test_copy()
+    else:
+        with pytest.raises(LoadError, match=message):
+            load_test_copy()
+
+
+def test_a_hand_typed_total_beside_a_mortgage_is_a_warning(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], Any],
+) -> None:
+    """retire_alice's mortgage interest is itemized by itself; a Schedule A
+    typed in before #542 would count it again."""
+    write_aux("federal_deductions.csv", "effective_date,amount\n2027-01-31,30000.00\n")
+    warnings = load_test_copy().warnings
+    assert any("federal_deductions.csv (2027): the hand-typed total adds" in w for w in warnings), warnings
+
+
+@pytest.mark.parametrize(("state_tax", "credit"), [
+    # 20,000 of property tax and 15,000 of state tax, under the cap: the
+    # deduction is 35,000, of which 15,000 is state tax.
+    (15_000_00, (35_000_00 - 15_000_00) * 6 // 100),
+    # 30,000 of state tax: 50,000 capped to 40,000, three fifths of it state tax.
+    (30_000_00, (40_000_00 - 24_000_00) * 6 // 100),
+])
+def test_a_federal_deduction_base_leaves_out_the_state_tax_deducted(state_tax: int, credit: int) -> None:
+    """Utah's taxpayer credit is figured on the federal deduction less the
+    state income tax in it, or a state's own tax would grow its credit."""
+    tables = {**TABLES, ("state_adjustments", "CA"): [
+        {"name": "taxpayer_credit", "step": "credit", "base": "federal_deduction", "rate_micros": 60_000}]}
+    spending = [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")]
+    paid = [TaxPaid(YEAR, "state", state_tax)]
+    federal = _federal(200_000_00, spending, taxes_paid=paid, tables=tables)
+    assert federal.memo["income_tax_deducted"] == state_tax * federal["itemized_salt"] // (
+        20_000_00 + state_tax)
+    state = calculator("state_tables").prepare(
+        _year(200_000_00, spending, jurisdiction="state", taxes_paid=paid, tables=tables)).compute()
+    assert state["taxpayer_credit"] == credit
+
+
+def test_business_and_rental_spending_is_never_itemized() -> None:
+    """Schedule C deducts a business's (the business_expense character, or
+    paid from a business account) and Schedule E a rental's (tax:rental),
+    whatever the expense account's tag."""
+    business = Account("Asset_Business_Alice", "asset", "business", "alice")
+    spending = [
+        _paid(PROPERTY_TAX, 10_000_00, tags="tax:property", payer=business),
+        _paid(PROPERTY_TAX, 10_000_00, tags="tax:property", character="business_expense"),
+        _paid(PROPERTY_TAX, 10_000_00, tags="tax:property tax:rental"),
+        _paid(GIFTS, 10_000_00, payer=business),
+        _paid(PROPERTY_TAX, 3_000_00, tags="tax:property"),
+    ]
+    ret = _federal(200_000_00, spending)
+    assert ret["itemized_salt"] == 3_000_00
+    assert ret["itemized_charity"] == 0
+
+
+@pytest.mark.slow
+def test_a_year_to_date_catch_up_is_not_read_as_a_larger_debt(
+    add_state_tax: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    run_test_copy: Callable[[], Path],
+) -> None:
+    """The months before the start come as one catch-up transfer; its
+    interest is on the debt of the months after, not on several times it,
+    so a mortgage well under the limit keeps all its interest."""
+    add_state_tax()
+    path = retire_alice_csv("scheduled.csv")
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    mortgage = rows["amount_rule_kind"] == "mortgage_payment"
+    rows.loc[mortgage, "ytd_amount"] = "7400.00"
+    rows.loc[mortgage, "start"] = "2026-01-31"
+    rows.to_csv(path, index=False)
+    run = run_test_copy()
+    with closing(sqlite3.connect(run)) as con:
+        catchup, interest = con.execute(
+            "SELECT SUM(CASE WHEN t.reason_kind = 'ytd_rule' THEN t.amount ELSE 0 END), SUM(t.amount) "
+            "FROM transfer_event t JOIN account a ON a.id = t.to_account "
+            "WHERE a.name = 'Expense_Interest_Mortgage' AND substr(t.date, 1, 4) = '2026'").fetchone()
+    assert catchup > 0
+    assert _lines(run, "federal_itemized_mortgage_interest")["federal_itemized_mortgage_interest"][2026] \
+        == interest
