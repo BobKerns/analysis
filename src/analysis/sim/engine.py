@@ -29,7 +29,7 @@ import itertools
 import warnings
 from collections import defaultdict
 from contextvars import ContextVar
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -1423,6 +1423,17 @@ def _first_chain_leaf_lot(graph: ChainGraph, chain_id: int) -> int | None:
         if account_id is not None:
             return account_id
     return None
+
+
+def _chain_leaf_lots(graph: ChainGraph | None, chain_id: int | None) -> Iterator[int]:
+    """A chain's lots, depth first through its steps, in the order it draws."""
+    if graph is None or chain_id is None:
+        return
+    if (lot := graph.leaf_lot.get(chain_id)) is not None:
+        yield lot
+        return
+    for next_chain_id, *_allocation in graph.members.get(chain_id, []):
+        yield from _chain_leaf_lots(graph, next_chain_id)
 
 
 def _mortgage_interest(outstanding: int, annual_micros: int) -> int:
@@ -3154,6 +3165,8 @@ def _tax_year(
         _series_of=lambda kind: sorted(
             series for (k, series) in aux if k == kind and series is not None),
         _residences=_residences(con),
+        _grown=lambda amount, series, since: _grown_amount(
+            aux, amount, series, since, tax_year, growth_cache),
         **({"_upstream": upstream} if upstream is not None else {}),
     )
 
@@ -3454,6 +3467,26 @@ def _settle_tax(
                 source_chain_id, tax_due, to_id, reason_kind="tax", reason_id=tid,
                 tax_year=tax_year, refill_ctx=refill_ctx,
             )
+    elif post_transfer and tax_overpaid > 0:
+        # More was paid than the year owes (withholding past the tax, or a
+        # refundable credit taking it below zero, #568): the jurisdiction
+        # pays it back, into the account the tax is paid from.
+        # It goes into cash: a deposit into a retirement, HSA or brokerage
+        # lot would be a contribution nobody made, and a liability caps it.
+        assert step_id is not None and account_subkind is not None
+        refund_to = next((lot for lot in (
+            [from_id] if from_id is not None else _chain_leaf_lots(graph, source_chain_id))
+            if account_kinds.get(lot) == "asset"
+            and account_subkind.get(lot) in registries.CASH_SUBKINDS), None)
+        if refund_to is None:
+            raise EngineError(
+                f"tax jurisdiction id={tid}: the {tax_year} refund is paid back into "
+                "the first cash account its source draws from, and it has none")
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            to_id, refund_to, tax_overpaid, tax_char, tid, tax_year=tax_year,
+            refill_ctx=refill_ctx, reason_kind="tax",
+        )
 
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     summary_rows = {
@@ -3872,9 +3905,8 @@ class IrmaaContext:
         def grown(amount: int, series: object) -> tuple[int, bool]:
             if not series:
                 return amount, False
-            factor = _cumulative_inflation_factor(
-                self.aux, str(series), effective, january, self.inflation_factor_cache)
-            return amount * factor // 1_000_000, True
+            return _grow(self.aux, amount, str(series), effective, january,
+                         self.inflation_factor_cache), True
 
         tiers = []
         for row in rows:
@@ -4299,6 +4331,36 @@ _TAX_INDEX_ROUNDING = 5_000
 rounds the brackets and standard deduction (#467)."""
 
 
+def _grown_amount(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    amount: int, series: str, since: int, tax_year: int,
+    cache: dict[tuple[str, date, date, str], int],
+) -> int:
+    """:meth:`tax_api.TaxYear.grown`: ``amount`` grown from January of
+    ``since`` to January of ``tax_year`` by ``series``, as
+    :func:`_indexed_tax_rows` grows a table's figures (#568)."""
+    if ("inflation", series) not in aux:
+        raise tax_api.TaxError(f"no inflation series {series!r} to grow an amount by")
+    try:
+        return _grow(aux, amount, series, date(since, 1, 31), date(tax_year, 1, 31), cache)
+    except EngineError as e:
+        raise tax_api.TaxError(str(e)) from None
+
+
+def _grow(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    amount: int, series: str, start: date, end: date,
+    cache: dict[tuple[str, date, date, str], int],
+) -> int:
+    """``amount`` grown by ``series`` from ``start`` to ``end``, unrounded;
+    as it is when ``end`` doesn't come after ``start``. The one growth rule
+    an indexed tax table, an IRMAA tier and a calculator's own figure share,
+    so their base dates can't drift apart; each rounds as its law does."""
+    if end <= start:
+        return amount
+    return amount * _cumulative_inflation_factor(aux, series, start, end, cache) // 1_000_000
+
+
 def _indexed_tax_rows(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     kind: str, series: str | None, tax_year: int,
@@ -4331,8 +4393,7 @@ def _indexed_tax_rows(
             growth = row.get(column)
             if not growth or january <= base or row.get(money) is None:
                 continue
-            factor = _cumulative_inflation_factor(aux, str(growth), base, january, cache)
-            amount = int(row[money]) * factor // 1_000_000
+            amount = _grow(aux, int(row[money]), str(growth), base, january, cache)
             grown = {**grown, money: amount // step * step}
         out.append(grown)
     return out

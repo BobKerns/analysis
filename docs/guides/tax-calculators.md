@@ -14,139 +14,190 @@ long-term care premiums), first see whether a row of the state's
 income, up to a cap, for filers from an age, below an income, as a
 subtraction, deduction or credit (the code repository's
 `templates/aux/README.md` lists the columns). Most renter's, 529 and
-premium rules fit. When one doesn't (a circuit breaker figured from
-property value, say), you can write a calculator of your own, a small
+premium rules fit. When one doesn't (a circuit breaker, figured from
+property tax above a share of income, say), you can write a calculator of your own, a small
 Python class in your data repo, and have a scenario use it. A calculator
 reads what the year's money did and returns the lines of a return; it
 never touches the ledger, and a run records the exact code it ran.
 
 This guide works one example through for Alice and Bill, the prototype
-scenario's household: a state that takes part of the rent they pay off
-their income. The design and its rules are in
-[ADR-011](../architecture/ADR-011-tax-calculators.md).
+scenario's household: the District of Columbia's property tax credit
+(Schedule H), as if they retired to a DC rowhouse. It is a "circuit
+breaker": the property tax above a share of federal AGI, up to a cap, for a
+household below an income limit, and refundable, so DC pays it even when
+no tax is due. The share, the limits that depend on age, and the refund
+are what a row can't say. The design and its rules are in
+[ADR-011](../architecture/ADR-011-tax-calculators.md), and
+video 13, *Tax plugins*, walks through it.
 
 ## 1. Say what counts: a tag
 
-A calculator can't tell rent from a repair by itself: both are payments
-into `Expense_Housing`. A **tag** says which is which. Tag the rule that
-pays the rent (in the prototype scenario, `housing`):
+A calculator can't tell property tax from a repair by itself. A **tag**
+says which is which. Tag the account the property tax is paid into:
 
 ```sh
-sim scheduled edit housing --tags tax:rent
+sim account tag add Expense_Property_Tax tax:property
 ```
 
-or, when everything paid into an account counts, the account:
+or, when other things are paid into the account too, the rule that pays
+the tax:
 
 ```sh
-sim account tag add Expense_Housing tax:rent
+sim scheduled edit property_tax --tags tax:property
 ```
 
-A rule's tag refines its account's: in an account tagged `tax:rent`, a
+A rule's tag refines its account's: in an account tagged `tax:property`, a
 rule tagged `tax:repair` is a repair. Income works the same way: tag the
 income account a public pension pays from `tax:pension:public`.
 
 ## 2. Write the calculator
 
 A calculator lives in the data repo's top-level `taxes/` folder, one
-module or more (`taxes/renters.py`), shared by every scenario. (A
+module or more (`taxes/property_credit.py`), shared by every scenario. (A
 scenario's own `taxes/` folder holds its `federal.csv`, `state.csv` and
 `local.csv`, which say which calculator each tax uses.) This one builds on
-the built-in state, `state_tables`, and adds two subtractions:
+the built-in state, `state_tables`, which already has DC's brackets and
+standard deduction, and adds the credit:
 
 ```python
-"""A state income tax with a renter deduction (the worked example in
-docs/guides/tax-calculators.md): the built-in ``state_tables`` state, which
-starts from federal AGI, less part of the rent the household paid, up to a
-cap, and, if asked, the pension a public employer paid."""
+"""DC's income tax with its property tax credit (Schedule H), the worked
+example in docs/guides/tax-calculators.md and video 13: the built-in
+``state_tables``, less a refundable credit for property tax above a share
+of federal AGI."""
 
 from dataclasses import dataclass
 
-from analysis.sim.tax_api import Dollars, Percent, Tag, percent, register
-from analysis.sim.taxes.state_base import Adjustment
+from analysis.sim.tax_api import Dollars, Tag, percent, register
 from analysis.sim.taxes.state_tables import StateTables, StateTablesYear
 
-API_VERSION = 1
+API_VERSION = 4
+
+# Schedule H's worksheet for 2025: up to each federal AGI, the share of it
+# the property tax must exceed. Past the last row, no credit.
+UNDER_70 = [(24_999_00, percent("3%")),
+            (51_999_00, percent("4%")),
+            (66_000_00, percent("5%"))]
+AGE_70 = [(90_000_00, percent("3%"))]
 
 
-class RentersYear(StateTablesYear):
-    """One year of the state: the built-in state's, with two more
-    subtractions."""
+class PropertyCreditYear(StateTablesYear):
+    """One year of DC's tax, with the credit."""
 
-    def subtractions(self, income, basis):
-        params = self.ty.params
-        # The year's spending carrying the rent tag: a rule tagged tax:rent,
-        # or any payment into an expense account tagged so.
-        rent = self.ty.spent(params.rent)
-        deduction = min(rent * params.rent_share // 1_000_000, params.rent_cap)
-        lines = [*super().subtractions(income, basis),
-                 Adjustment("renter_deduction", ordinary=min(deduction, max(0, income.ordinary)))]
-        if params.public_pension is not None:
-            # Income out of an account (or by a rule) tagged as a public pension.
-            pension = sum(item.amount for item in self.ty.tagged(params.public_pension))
-            lines.append(Adjustment("public_pension", ordinary=min(pension, max(0, income.ordinary))))
-        return lines
+    def setup(self):
+        # Once a year: what a what-if's extra income doesn't change.
+        super().setup()
+        ty, params = self.ty, self.ty.params
+        bands = AGE_70 if self.oldest() >= 70 else UNDER_70
+        self.bands = [(ty.grown(top, params.series, 2025), share)
+                      for top, share in bands]
+        self.most = ty.grown(params.most, params.series, 2025)
+        self.paid = (0 if params.property_tax is None
+                     else ty.spent(params.property_tax))
+        if params.rent is not None:
+            self.paid += ty.spent(params.rent) // 5  # 20% of rent counts
+
+    def refundable_credits(self, tax, income, basis):
+        # Each return, with the federal AGI it builds on.
+        agi = basis.federal.lines["agi"]
+        share = next((s for top, s in self.bands if agi <= top), None)
+        if share is None:
+            return {}
+        credit = self.paid - agi * share // 1_000_000
+        return {"property_credit": max(0, min(credit, self.most))}
+
+    def oldest(self):
+        """The older filer's age on December 31: the primary and secondary
+        people, less one who died before the year."""
+        year = self.ty.year
+        return max((year - int(p.birthdate[:4]) for p in self.ty.persons
+                    if p.birthdate and p.role in ("primary", "secondary")
+                    and (p.final_month is None
+                         or int(p.final_month[:4]) >= year)), default=0)
 
 
 @register
-class Renters(StateTables):
-    """A state like ``state_tables``, less a renter deduction: ``rent_share``
-    of the year's rent (spending tagged ``rent``), up to ``rent_cap``; and,
-    with ``public_pension``, the pension income tagged so."""
-    kind = "state_renters"
+class PropertyCredit(StateTables):
+    """``state_tables`` with DC's property tax credit: the year's property
+    tax, or 20% of its rent, above a share of federal AGI, up to ``most``,
+    paid even when no tax is due. Its 2025 figures grow with ``series``."""
+    kind = "property_credit"
     jurisdiction = "state"
-    year_class = RentersYear
+    year_class = PropertyCreditYear
 
     @dataclass(frozen=True)
     class Params(StateTables.Params):
-        rent: Tag = "tax:rent"
-        """The tag on the rent the deduction counts."""
-        rent_share: Percent = percent("50%")
-        """How much of the rent comes off."""
-        rent_cap: Dollars = 4000_00
-        """The most the deduction takes off."""
-        public_pension: Tag | None = None
-        """The tag on a public pension's income, which the state doesn't tax."""
+        property_tax: Tag | None = "tax:property"
+        """The tag on the property tax paid; none for a renter."""
+        rent: Tag | None = None
+        """The tag on rent paid, for a renter."""
+        most: Dollars = 1425_00
+        """The largest credit, in 2025."""
+        series: str = "cpi"
+        """The inflation series the 2025 figures grow by."""
 ```
 
 What it does:
 
-- `StateTables` is the built-in state calculator; `RentersYear` is one year
-  of it, and overrides `subtractions`, one of the steps a state year goes
-  through (`additions`, `subtractions`, `deductions`, `other_deductions`,
-  `tax`, `credits`, `credit_lines`).
-  Each `Adjustment` is a line of the return, written to the run as
-  `state_<line>`.
+- `StateTables` is the built-in state calculator; `PropertyCreditYear` is
+  one year of it. Its `setup` runs once for the year, for what a what-if's
+  extra income can't change (the spending, the age band, the grown
+  figures), since a return may be asked for thousands of times a year
+  (`fill_bracket` steps, the after-tax drawdown). It overrides
+  `refundable_credits`, run for each return, one of the steps a
+  state year goes through (`additions`, `subtractions`, `deductions`,
+  `other_deductions`, `tax`, `credits`, `credit_lines`, `excise`,
+  `refundable_credits`). Each line it returns is a line of the return,
+  written to the run as `state_<line>`. A refundable credit comes off
+  last and can take the tax below zero; the April settlement pays it
+  back. A credit that can't, like most, goes in `credit_lines` instead.
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is
-  the year's spending carrying a tag; `ty.tagged(tag)` the year's income
-  items carrying one; `ty.params` the calculator's parameters.
+  the year's spending carrying a tag; `ty.grown(amount, series, since)` a
+  figure the law set for year `since`, grown with inflation to this one,
+  as DC indexes its limits and cap; `ty.persons` the household, with
+  their birthdates, roles and, for one who died, the last month alive;
+  `ty.params` the calculator's parameters.
+- `basis.federal` is the federal return for the same year, which DC's
+  credit reads its AGI from. A what-if (more income on top, such as a
+  Roth conversion being priced) moves both returns, so the credit
+  follows it, the income limit included.
 - `Params` extends the built-in state's. Each field has a unit: `Tag`, a
-  tag; `Percent`, written `"50%"` and received as millionths; `Dollars`,
-  written `"4000.00"` and received as cents; or a plain string or number.
+  tag; `Dollars`, written `"1425.00"` and received as cents; `Percent`,
+  written `"3%"` and received as millionths; or a plain string or number.
 - `@register` makes the class a kind a scenario can name.
   `API_VERSION` says which version of the calculator API it was written
   for.
 
-`sim tax kinds state_renters` shows it, its parameters and their defaults.
+`sim tax kinds property_credit` shows it, its parameters and their
+defaults.
 
 ## 3. Use it
 
-Tell the scenario's state tax to use the new kind, with any parameters:
+Tell the scenario's state tax to use the new kind. Its defaults fit a
+homeowner, whose property tax carries `tax:property`:
 
 ```sh
-sim tax edit state --kind state_renters --params-json '{"rent_cap": "3000.00"}'
+sim tax edit state --kind property_credit
+```
+
+A renter counts a fifth of the rent instead, and pays no property tax of
+its own, so it names its rent's tag and none for property tax:
+
+```sh
+sim tax edit state --kind property_credit --params-json '{"property_tax": null, "rent": "tax:rent"}'
 ```
 
 Loading the scenario checks it: the kind exists and computes the state
 tax, each parameter is one it takes, in its unit, and some account, rule
-or calendar row carries each tag it reads, `tax:rent` here. Without the
-tag, the load stops, rather than letting the deduction come out zero.
+or calendar row carries each tag it reads, `tax:property` for the
+homeowner. Without the tag, the load stops, rather than letting the
+credit come out zero.
 `sim tax edit state --kind ''` goes back to the built-in one.
 
-Run the scenario, and see the state's return, its new lines included:
+Run the scenario, and see the state's return, its new line included:
 
 ```sh
 sim run
-sim report tax --return state --start 2027 --end 2029
+sim report tax --return state --start 2030 --end 2036
 ```
 
 ## 4. Check it
@@ -178,6 +229,7 @@ traceback.
 | `year_spending(*tags)`, `spent(tag)` | the year's payments into expense accounts, item by item or summed |
 | `filing_status`, `persons`, `residence` | the household, and where it lives on December 31 |
 | `table(kind)`, `indexed(kind)` | an aux table as of the year's end, or grown to January by its series |
+| `grown(amount, series, since)` | a figure set for year `since`, grown by an inflation series to January of this one |
 | `prior(line)` | this tax's line from last year's return |
 | `upstream("federal")` | the federal return for the same year and the same what-if |
 

@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from types import UnionType
 from typing import Annotated, Any, Union, get_args, get_origin, get_type_hints
 
-__all__ = ["Account", "Dollars", "Percent", "Tag", "TargetSet", "Unit", "param_types",
-           "param_units", "percent"]
+__all__ = ["Account", "Dollars", "Percent", "Tag", "TargetSet", "Unit", "optional_params",
+           "param_types", "param_units", "percent"]
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,17 @@ def param_units(params: type[Any]) -> dict[str, Unit | None]:
             unit = next((a for a in get_args(hint)[1:] if isinstance(a, Unit)), None)
         out[f.name] = unit
     return out
+
+
+def optional_params(params: type[Any]) -> frozenset[str]:
+    """The ``Params`` fields that take ``null`` for "none" (``Tag | None``),
+    whatever their default (#568: a renter's ``property_tax``)."""
+    hints = _hints(params)
+    return frozenset(
+        f.name for f in dataclasses.fields(params)
+        if get_origin(hints.get(f.name)) in (Union, UnionType)
+        and type(None) in get_args(hints.get(f.name))
+    )
 
 
 def param_types(params: type[Any]) -> dict[str, type | None]:

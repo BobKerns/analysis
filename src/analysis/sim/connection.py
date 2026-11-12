@@ -914,7 +914,8 @@ class RunConnection(Connection):
 
     def _unpaid_tax_by_month(self, months: pd.Index) -> pd.Series:
         """A finished tax year's balance due, from its year-end until the
-        month its payment posts (the April after), in dollars."""
+        month its payment posts (the April after), in dollars; a refund the
+        year is owed counts negative until it's paid back (#568)."""
         due = self.outstanding_tax_by_year()
         unpaid = pd.Series(0.0, index=months)
         if due.empty:
@@ -929,7 +930,7 @@ class RunConnection(Connection):
         )
         settled = dict(zip(paid["tax_year"].astype(int),
                            pd.to_datetime(paid["date"]) + pd.offsets.MonthEnd(0), strict=True))
-        for year, amount in due[due > 0].items():
+        for year, amount in due[due != 0].items():
             start = pd.Timestamp(f"{int(year)}-12-31")
             end = settled.get(int(year))
             owed = (months >= start) & ((months < end) if end is not None else True)
@@ -1223,6 +1224,21 @@ class RunConnection(Connection):
 
         return self._cached("income_by_category", _build)
 
+    def expense_events(self) -> pd.DataFrame:
+        """Transfers into expense accounts, and a tax refund out of one
+        (#568) as a negative transfer into it, so a tax expense nets to what
+        the year cost."""
+        into = self.items("transfer_event", to_kind="expense")
+        back = self.items("transfer_event", from_kind="expense", reason_kind="tax")
+        back = back[back["to_kind"] != "expense"]
+        if back.empty:
+            return into
+        back = back.copy()
+        for side in ("account", "name", "kind", "subkind", "lot"):
+            back[f"from_{side}"], back[f"to_{side}"] = back[f"to_{side}"], back[f"from_{side}"]
+        back["amount"] = -back["amount"]
+        return pd.concat([into, back], ignore_index=True)
+
     def expenses_by_category(
         self,
         subkind_to_category: dict[str, str] = EXPENSE_SUBKIND_TO_CATEGORY,
@@ -1231,7 +1247,7 @@ class RunConnection(Connection):
         """Monthly expenses by category, plus a ``total`` column, in dollars."""
 
         def _build() -> pd.DataFrame:
-            xfer_exp = self.items("transfer_event", to_kind="expense").copy()
+            xfer_exp = self.expense_events().copy()
             xfer_exp = xfer_exp[~xfer_exp["to_name"].isin(non_cash_accounts)]
             xfer_exp["month"] = event_month(xfer_exp)
             xfer_exp["category"] = (
@@ -1396,20 +1412,21 @@ class RunConnection(Connection):
     ) -> pd.Series:
         """Year X's tax liability still unpaid at year end; it settles the April after.
 
-        Only ``*_tax_due`` buckets are used. ``*_tax_overpaid`` looks like a
-        refund but also fires when the *previous* April's settlement lands in
-        a zero-liability year, so crediting it here would double-count that
-        payment.
+        Each ``*_tax_due`` bucket less its ``*_tax_overpaid``: a year paid
+        past its tax (withholding, or a refundable credit, #568) is owed that
+        back, so it counts negative. A settlement carries the tax year it
+        settles, so the April payment of one year is never another's.
         """
+        overpaid = [b.removesuffix("_tax_due") + "_tax_overpaid" for b in buckets]
         df = self.items("tax_year_summary")
-        df = df[df["bucket"].isin(buckets)]
+        df = df[df["bucket"].isin([*buckets, *overpaid])]
         wide = (
             df.pivot(index="year", columns="bucket", values="amount")
-            .reindex(columns=buckets)
+            .reindex(columns=[*buckets, *overpaid])
             .fillna(0)
             / 100
         )
-        return wide.sum(axis=1)
+        return wide[buckets].sum(axis=1) - wide[overpaid].sum(axis=1)
 
     def tax_summary_by_year(
         self, buckets: dict[str, str] = DEFAULT_TAX_SUMMARY_BUCKETS,

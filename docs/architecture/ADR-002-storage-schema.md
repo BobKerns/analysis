@@ -187,7 +187,8 @@ CREATE TABLE residence (
 -- kind is the calculator; upstream the jurisdictions its return builds on,
 -- space-separated: its calculator's own, filled in by the loader (#508).
 -- Each April (schedule) it pays what is still due for the year before from
--- source_chain into destination, between start and end.
+-- source_chain into destination, or pays back what was paid past it (#568),
+-- between start and end.
 CREATE TABLE tax_jurisdiction (
     id                   INTEGER PRIMARY KEY,
     name                 TEXT NOT NULL UNIQUE,
@@ -1230,3 +1231,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#547](https://github.com/BobKerns/analysis/issues/547): the reserved account names include the payout accounts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`) (Conventions).
 - [#497](https://github.com/BobKerns/analysis/issues/497): run table `hsa_gain` (an HSA withdrawal's gain over its basis, for a state that taxes HSAs); the reserved account names include `hsa_dividends` and `hsa_gain_distributions` (Placement summary, Ledger DDL, glossary, Conventions; schema 65).
 - [#265](https://github.com/BobKerns/analysis/issues/265): tax character `tax_exempt` (municipal bond interest); the reserved account names include `muni_interest` and `muni_interest__<ST>` (Intent layer DDL, Conventions; schema 66).
+- [#568](https://github.com/BobKerns/analysis/issues/568): a tax jurisdiction also pays back what was paid past the year's tax (Intent layer DDL).
