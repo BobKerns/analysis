@@ -28,7 +28,9 @@ household below an income limit, and refundable, so DC pays it even when
 no tax is due. The share, the limits that depend on age, and the refund
 are what a row can't say. The design and its rules are in
 [ADR-011](../architecture/ADR-011-tax-calculators.md), and
-video 13, *Tax plugins*, walks through it.
+video 13, *Tax plugins*, walks through it:
+[English](https://www.youtube.com/watch?v=rWfsNvoNnVI),
+[Japanese (日本語)](https://www.youtube.com/watch?v=tckwO18axvw).
 
 ## 1. Say what counts: a tag
 
