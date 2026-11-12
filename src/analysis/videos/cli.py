@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import click
@@ -105,6 +106,21 @@ def _where_option(fn: click.decorators.FC) -> click.decorators.FC:
                         help="Run in the container; fail if Docker isn't running.")(fn)
 
 
+def _publish_options(with_publish: bool = False) -> Callable[[click.decorators.FC], click.decorators.FC]:
+    """publish's own options, shared with `build --publish` (#562)."""
+    def text(words: str) -> str:
+        return f"With --publish: {words[0].lower()}{words[1:]}" if with_publish else words
+
+    def add(fn: click.decorators.FC) -> click.decorators.FC:
+        fn = click.option("--new-upload", is_flag=True,
+                          help=text("Upload again as a new video (YouTube can't replace a video's picture)."))(fn)
+        fn = click.option("--refresh", is_flag=True,
+                          help=text("Only update titles and descriptions of videos already up"
+                                    + ("." if with_publish else " (no VIDEOS: every published one).")))(fn)
+        return click.option("--dry-run", is_flag=True, help=text("Show what would be sent; send nothing."))(fn)
+    return add
+
+
 @click.group(name="video")
 def video_group_command() -> None:
     """The instructional videos (docs/videos): build, check, publish."""
@@ -120,11 +136,24 @@ def video_group_command() -> None:
 @click.option("--jobs", type=click.IntRange(min=1), default=None,
               help="Tasks at once, besides recordings (default: CPUs less 4, at least 2, and what memory holds).")
 @_where_option
+@click.option("--publish", is_flag=True,
+              help="Then publish what was built, as `analysis video publish` would (on this machine).")
+@_publish_options(with_publish=True)
 def build_command(video: str, lang: str | None, out: Path | None, silent: bool, rerecord: bool,
-                  jobs: int | None, where: str | None) -> None:
+                  jobs: int | None, where: str | None, publish: bool, dry_run: bool, refresh: bool,
+                  new_upload: bool) -> None:
     """Build VIDEO (a name like 04-results, or its folder): only what
-    changed since the last build. In the container when Docker is running."""
+    changed since the last build. In the container when Docker is running.
+    With --publish, then upload it to YouTube, or update what's there."""
     folder = _video_folder(video)
+    # Checked before building: a build can take an hour, and a typo
+    # shouldn't surface only at its end.
+    used = [name for name, on in (("--dry-run", dry_run), ("--refresh", refresh), ("--new-upload", new_upload))
+            if on]
+    if used and not publish:
+        raise click.UsageError(f"{', '.join(used)} only go{'es' if len(used) == 1 else ''} with --publish")
+    if refresh and new_upload:
+        raise click.UsageError("--refresh and --new-upload don't go together")
     flags = [*(["--lang", lang] if lang else []), *(["--silent"] if silent else []),
              *(["--rerecord"] if rerecord else []), *(["--jobs", str(jobs)] if jobs else [])]
     if _use_docker(where):
@@ -133,7 +162,28 @@ def build_command(video: str, lang: str | None, out: Path | None, silent: bool, 
         from analysis.videos import commands
 
         code = commands.build(folder, lang=lang, out=out, silent=silent, rerecord=rerecord, jobs=jobs)
+    if code == 0 and publish:
+        from analysis.videos import commands
+
+        _note_already_up(folder, lang, refresh=refresh, new_upload=new_upload)
+        code = commands.publish([folder], lang=lang, out=out, dry_run=dry_run, refresh=refresh,
+                                new_upload=new_upload)
     raise SystemExit(code)
+
+
+def _note_already_up(folder: Path, lang: str | None, *, refresh: bool, new_upload: bool) -> None:
+    """Say so when a rebuilt language is already on YouTube: publish then
+    updates only its title and description, since YouTube can't replace
+    the picture (the build may have changed it)."""
+    if refresh or new_upload:
+        return
+    from analysis.videos import script as scripts
+    from analysis.videos import youtube
+
+    up = [la for la in ([lang] if lang else scripts.languages(folder)) if youtube.load_published(folder).video(la)]
+    if up:
+        click.echo(f"{folder.name} [{', '.join(up)}] is already on YouTube: publishing updates its title and "
+                   "description, not the picture (--new-upload to upload this build as a new video).", err=True)
 
 
 @video_group_command.command(name="check")
@@ -169,11 +219,7 @@ def shell_command(video: str) -> None:
 @click.option("--lang", default=None, help="One language (default: every language the script has).")
 @click.option("--out", type=click.Path(file_okay=False, path_type=Path), default=None,
               help="Where the builds are (default: out/videos).")
-@click.option("--dry-run", is_flag=True, help="Show what would be sent; send nothing.")
-@click.option("--refresh", is_flag=True,
-              help="Only update titles and descriptions of videos already up (no VIDEOS: every published one).")
-@click.option("--new-upload", is_flag=True,
-              help="Upload again as a new video (YouTube can't replace a video's picture).")
+@_publish_options()
 def publish_command(videos: tuple[str, ...], lang: str | None, out: Path | None, dry_run: bool,
                     refresh: bool, new_upload: bool) -> None:
     """Upload built VIDEOS to YouTube, or update what's there."""
