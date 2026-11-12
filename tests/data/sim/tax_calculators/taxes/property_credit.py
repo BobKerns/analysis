@@ -21,21 +21,27 @@ AGE_70 = [(90_000_00, percent("3%"))]
 class PropertyCreditYear(StateTablesYear):
     """One year of DC's tax, with the credit."""
 
-    def refundable_credits(self, tax, income, basis):
-        params = self.ty.params
-        agi = basis.federal.lines["agi"]
+    def setup(self):
+        # Once a year: what a what-if's extra income doesn't change.
+        super().setup()
+        ty, params = self.ty, self.ty.params
         bands = AGE_70 if self.oldest() >= 70 else UNDER_70
-        share = next((share for top, share in bands
-                      if agi <= self.ty.grown(top, params.series, 2025)), None)
+        self.bands = [(ty.grown(top, params.series, 2025), share)
+                      for top, share in bands]
+        self.most = ty.grown(params.most, params.series, 2025)
+        self.paid = (0 if params.property_tax is None
+                     else ty.spent(params.property_tax))
+        if params.rent is not None:
+            self.paid += ty.spent(params.rent) // 5  # 20% of rent counts
+
+    def refundable_credits(self, tax, income, basis):
+        # Each return, with the federal AGI it builds on.
+        agi = basis.federal.lines["agi"]
+        share = next((s for top, s in self.bands if agi <= top), None)
         if share is None:
             return {}
-        paid = (0 if params.property_tax is None
-                else self.ty.spent(params.property_tax))
-        if params.rent is not None:
-            paid += self.ty.spent(params.rent) // 5  # 20% of rent counts
-        credit = paid - agi * share // 1_000_000
-        most = self.ty.grown(params.most, params.series, 2025)
-        return {"property_credit": max(0, min(credit, most))}
+        credit = self.paid - agi * share // 1_000_000
+        return {"property_credit": max(0, min(credit, self.most))}
 
     def oldest(self):
         """The older filer's age on December 31: the primary and secondary

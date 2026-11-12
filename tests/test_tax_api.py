@@ -4,6 +4,7 @@ scenario behind it, is enough to test one."""
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -148,9 +149,20 @@ def test_a_refundable_credit_can_take_the_tax_below_zero() -> None:
 
 
 def test_a_figure_grows_only_after_its_year() -> None:
-    grown = _year([]).grown
-    assert grown(1_000_00, "cpi", YEAR) == 1_000_00
-    assert grown(1_000_00, "cpi", YEAR + 1) == 1_000_00
+    year = dataclasses.replace(_year([]), _grown=lambda amount, _series, _since: amount * 2)
+    assert year.grown(1_000_00, "cpi", YEAR - 1) == 2_000_00
+    assert year.grown(1_000_00, "cpi", YEAR) == 1_000_00
+    assert year.grown(1_000_00, "cpi", YEAR + 1) == 1_000_00
+
+
+def test_a_refundable_credit_cannot_take_a_returns_line_name() -> None:
+    class Clash(StateTablesYear):
+        def refundable_credits(self, tax, income, basis):  # noqa: ANN001, ANN201
+            return {"credits": 300_00}
+
+    year = _year([_item("ordinary", 40_000_00)], jurisdiction="state")
+    with pytest.raises(TaxError, match="refundable credit line credits names a line"):
+        Clash(calculator("state_tables"), year).compute()
 
 
 def test_a_missing_table_is_a_tax_error() -> None:

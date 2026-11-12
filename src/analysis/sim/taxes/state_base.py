@@ -233,9 +233,12 @@ class StateYear(Prepared):
                 taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),
             "credits": credits,
             **excise_lines,
-            **refundable,
-            "tax": tax - credits + excise - sum(refundable.values()),
         }
+        if clash := sorted(set(refundable) & {*lines, "tax"}):
+            raise TaxError(f"refundable credit line {', '.join(clash)} names a line the "
+                           "return already has; name it apart (#568)")
+        lines.update(refundable)
+        lines["tax"] = tax - credits + excise - sum(refundable.values())
         return Return(lines, MappingProxyType(dict(self.memo(basis))))
 
 

@@ -83,21 +83,27 @@ AGE_70 = [(90_000_00, percent("3%"))]
 class PropertyCreditYear(StateTablesYear):
     """One year of DC's tax, with the credit."""
 
-    def refundable_credits(self, tax, income, basis):
-        params = self.ty.params
-        agi = basis.federal.lines["agi"]
+    def setup(self):
+        # Once a year: what a what-if's extra income doesn't change.
+        super().setup()
+        ty, params = self.ty, self.ty.params
         bands = AGE_70 if self.oldest() >= 70 else UNDER_70
-        share = next((share for top, share in bands
-                      if agi <= self.ty.grown(top, params.series, 2025)), None)
+        self.bands = [(ty.grown(top, params.series, 2025), share)
+                      for top, share in bands]
+        self.most = ty.grown(params.most, params.series, 2025)
+        self.paid = (0 if params.property_tax is None
+                     else ty.spent(params.property_tax))
+        if params.rent is not None:
+            self.paid += ty.spent(params.rent) // 5  # 20% of rent counts
+
+    def refundable_credits(self, tax, income, basis):
+        # Each return, with the federal AGI it builds on.
+        agi = basis.federal.lines["agi"]
+        share = next((s for top, s in self.bands if agi <= top), None)
         if share is None:
             return {}
-        paid = (0 if params.property_tax is None
-                else self.ty.spent(params.property_tax))
-        if params.rent is not None:
-            paid += self.ty.spent(params.rent) // 5  # 20% of rent counts
-        credit = paid - agi * share // 1_000_000
-        most = self.ty.grown(params.most, params.series, 2025)
-        return {"property_credit": max(0, min(credit, most))}
+        credit = self.paid - agi * share // 1_000_000
+        return {"property_credit": max(0, min(credit, self.most))}
 
     def oldest(self):
         """The older filer's age on December 31: the primary and secondary
@@ -133,7 +139,11 @@ class PropertyCredit(StateTables):
 What it does:
 
 - `StateTables` is the built-in state calculator; `PropertyCreditYear` is
-  one year of it, and overrides `refundable_credits`, one of the steps a
+  one year of it. Its `setup` runs once for the year, for what a what-if's
+  extra income can't change (the spending, the age band, the grown
+  figures), since a return may be asked for thousands of times a year
+  (`fill_bracket` steps, the after-tax drawdown). It overrides
+  `refundable_credits`, run for each return, one of the steps a
   state year goes through (`additions`, `subtractions`, `deductions`,
   `other_deductions`, `tax`, `credits`, `credit_lines`, `excise`,
   `refundable_credits`). Each line it returns is a line of the return,
@@ -141,10 +151,11 @@ What it does:
   last and can take the tax below zero; the April settlement pays it
   back. A credit that can't, like most, goes in `credit_lines` instead.
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is
-  the year's spending carrying a tag; `ty.grown(amount, series, year)` a
-  figure the law set for `year`, grown with inflation to this one, as DC
-  indexes its limits and cap; `ty.persons` the household, with their
-  birthdates, roles and, for one who died, the last month alive; `ty.params` the calculator's parameters.
+  the year's spending carrying a tag; `ty.grown(amount, series, since)` a
+  figure the law set for year `since`, grown with inflation to this one,
+  as DC indexes its limits and cap; `ty.persons` the household, with
+  their birthdates, roles and, for one who died, the last month alive;
+  `ty.params` the calculator's parameters.
 - `basis.federal` is the federal return for the same year, which DC's
   credit reads its AGI from. A what-if (more income on top, such as a
   Roth conversion being priced) moves both returns, so the credit
@@ -218,7 +229,7 @@ traceback.
 | `year_spending(*tags)`, `spent(tag)` | the year's payments into expense accounts, item by item or summed |
 | `filing_status`, `persons`, `residence` | the household, and where it lives on December 31 |
 | `table(kind)`, `indexed(kind)` | an aux table as of the year's end, or grown to January by its series |
-| `grown(amount, series, year)` | a figure set for `year`, grown by an inflation series to January of this one |
+| `grown(amount, series, since)` | a figure set for year `since`, grown by an inflation series to January of this one |
 | `prior(line)` | this tax's line from last year's return |
 | `upstream("federal")` | the federal return for the same year and the same what-if |
 

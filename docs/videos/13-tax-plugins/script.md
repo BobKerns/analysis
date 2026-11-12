@@ -237,8 +237,8 @@ heading = "Building on the state tax"
 title = "taxes/property_credit.py"
 status = "Python"
 code_file = "property_credit.py"
-code_lines = [50, 58]
-marks = [50, 51, 55, 56, 57]
+code_lines = [56, 64]
+marks = [56, 57, 61, 62, 63]
 speaker = "alice"
 ```
 
@@ -257,8 +257,8 @@ heading = "Its parameters, with their units"
 title = "taxes/property_credit.py"
 status = "Python"
 code_file = "property_credit.py"
-code_lines = [59, 68]
-marks = [60, 61, 63, 65, 67]
+code_lines = [65, 74]
+marks = [66, 67, 69, 71, 73]
 speaker = "bill"
 ```
 
@@ -267,28 +267,48 @@ mistyped one is caught before anything runs: the tag on the property tax
 paid, a tag on rent instead for a renter, the largest credit, in dollars,
 and the inflation series its 2025 figures grow by.
 
-## Scene `year`: Each year's credit
+## Scene `setup`: Once a year
 
 ```slide
 template = "window"
 look = "code"
-heading = "Each year: the credit"
+heading = "Once a year: what doesn't change"
 title = "taxes/property_credit.py"
 status = "Python"
 code_file = "property_credit.py"
-code_lines = [24, 38]
-marks = [24, 26, 27, 28, 32, 34, 36, 37, 38]
+code_lines = [21, 35]
+marks = [24, 26, 28, 29, 31, 32, 34, 35]
 speaker = "alice"
 ```
 
-The year class adds one step to the state's: refundable credits, which
-come off last and may take the tax below zero. It reads federal AGI from
-the federal return the state starts from. The worksheet's rows, at the top
-of the file, pick the share: the rows for seventy or older if either of
-them is, counting only a spouse still living, and the first row their AGI fits under, grown from 2025 with
-inflation. Past the last row, there's no credit. Then what was spent with
-the property tax tag, and a fifth of rent if there's a rent tag, less the
-share of AGI, up to the grown cap.
+The year class is one tax year of the state's tax. Its setup runs once
+for the year, before any return. It picks the worksheet's rows, from the
+top of the file: the rows for seventy or older if either of them is,
+counting only a spouse still living. It grows each row's limit, and the
+cap, from 2025 with inflation. And it adds up what was spent with the
+property tax tag, or a fifth of the rent with a rent tag. None of that
+changes with a what-if's extra income, so it's worked out once.
+
+## Scene `year`: Each return
+
+```slide
+template = "window"
+look = "code"
+heading = "Each return: the credit"
+title = "taxes/property_credit.py"
+status = "Python"
+code_file = "property_credit.py"
+code_lines = [37, 44]
+marks = [37, 39, 40, 43, 44]
+speaker = "bill"
+```
+
+Then, for each return, one step added to the state's: refundable credits,
+which come off last and may take the tax below zero. It reads federal AGI
+from the federal return the state starts from, and finds the first row
+it fits under. Past the last row, there's no credit. The credit is what
+was paid less that share of AGI, up to the cap. A strategy may ask for a
+return thousands of times a year, so this part is kept small.
 
 ## Scene `rules`: What a calculator may read
 
@@ -301,7 +321,7 @@ body = [
   "The return it builds on: the state reads the federal one",
   "Quick and pure: same year, same return, nothing kept between years",
 ]
-speaker = "bill"
+speaker = "alice"
 ```
 
 A calculator sees one tax year: its income by character, like wages,
