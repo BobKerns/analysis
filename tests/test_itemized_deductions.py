@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ import pandas as pd
 import pytest
 
 from analysis.sim.loader import LoadError
+from analysis.sim.taxes.state_tables import StateTablesYear
 from analysis.sim.tax_api import (
     Account, Extra, IncomeItem, Mortgage, Residence, Return, SpendingItem, TaxPaid, TaxYear, calculator,
 )
@@ -130,21 +132,46 @@ def test_a_state_deducts_no_income_tax_and_takes_its_own_limits() -> None:
     assert ret["deduction"] == 50_000_00
 
 
-def test_mortgage_interest_is_limited_by_the_average_debt() -> None:
+HOME = frozenset({"tax:mortgage_interest"})
+
+
+def _months(name: str, months: range, interest: int, balance: int,
+            tags: frozenset[str] = HOME) -> list[Mortgage]:
+    return [Mortgage(YEAR, month, name, interest, balance, tags) for month in months]
+
+
+def test_mortgage_interest_is_limited_by_each_months_debt() -> None:
     spending = [_paid(INTEREST, 60_000_00, tags="tax:mortgage_interest")]
-    home = Mortgage(YEAR, "Liability_Mortgage", 60_000_00, 1_000_000_00,
-                    frozenset({"tax:mortgage_interest"}))
-    ret = _federal(300_000_00, spending, mortgages=[home])
-    # 750,000 of a 1,000,000 average balance.
-    assert ret["itemized_mortgage_interest"] == 45_000_00
+    home = _months("Liability_Mortgage", range(1, 13), 5_000_00, 1_000_000_00)
+    # 750,000 of a 1,000,000 balance.
+    assert _federal(300_000_00, spending, mortgages=home)["itemized_mortgage_interest"] == 45_000_00
     # Under the limit, all of it.
-    small = Mortgage(YEAR, "Liability_Mortgage", 60_000_00, 700_000_00,
-                     frozenset({"tax:mortgage_interest"}))
-    assert _federal(300_000_00, spending, mortgages=[small])["itemized_mortgage_interest"] == 60_000_00
+    small = _months("Liability_Mortgage", range(1, 13), 5_000_00, 700_000_00)
+    assert _federal(300_000_00, spending, mortgages=small)["itemized_mortgage_interest"] == 60_000_00
     # A rental's mortgage carries another tag and counts neither way.
-    rental = Mortgage(YEAR, "Liability_Rental", 30_000_00, 500_000_00, frozenset({"tax:rental"}))
-    ret = _federal(300_000_00, spending, mortgages=[small, rental])
+    rental = _months("Liability_Rental", range(1, 13), 2_500_00, 500_000_00, frozenset({"tax:rental"}))
+    ret = _federal(300_000_00, spending, mortgages=small + rental)
     assert ret["itemized_mortgage_interest"] == 60_000_00
+
+
+def test_mortgages_held_one_after_another_dont_add_up() -> None:
+    """A home sold in June and another bought: $600,000 owed at any time,
+    under the limit, though the two debts' balances sum past it."""
+    spending = [_paid(INTEREST, 60_000_00, tags="tax:mortgage_interest")]
+    mortgages = (_months("Liability_Old", range(1, 7), 5_000_00, 600_000_00)
+                 + _months("Liability_New", range(7, 13), 5_000_00, 600_000_00))
+    assert _federal(300_000_00, spending, mortgages=mortgages)["itemized_mortgage_interest"] == 60_000_00
+    # Held together, they are over it in every month they overlap.
+    both = mortgages + _months("Liability_Old", range(7, 8), 5_000_00, 600_000_00)
+    spending = [_paid(INTEREST, 65_000_00, tags="tax:mortgage_interest")]
+    # July: 10,000 of interest on 1,200,000, of which 750/1200 counts.
+    assert _federal(300_000_00, spending, mortgages=both)["itemized_mortgage_interest"] == 65_000_00 - 3_750_00
+
+
+def test_a_rentals_property_tax_stays_out_of_salt() -> None:
+    spending = [_paid(PROPERTY_TAX, 8_000_00, character="property_tax"),
+                _paid(PROPERTY_TAX, 5_000_00, character="property_tax", tags="tax:rental")]
+    assert _federal(200_000_00, spending)["itemized_salt"] == 8_000_00
 
 
 def test_charity_and_medical_count_past_their_floors() -> None:
@@ -233,4 +260,69 @@ def test_the_federal_limits_are_not_keyed_by_state(
 ) -> None:
     write_aux("itemized_limits__CA.csv", "effective_date,filing_status,salt_cap\n2026-01-31,MFJ,1.00\n")
     with pytest.raises(LoadError, match="state_itemized_limits__CA.csv"):
+        load_test_copy()
+
+
+def test_a_state_that_taxes_an_hsa_counts_the_medical_it_paid() -> None:
+    spending = [_paid(DOCTOR, 20_000_00), _paid(DOCTOR, 10_000_00, payer=HSA)]
+    taxed = {**TABLES, ("state_hsa", "CA"): [{"treatment": "taxable"}]}
+    federal = _federal(100_000_00, spending, tables=taxed)
+    state = calculator("state_tables").prepare(
+        _year(100_000_00, spending, jurisdiction="state", tables=taxed)).compute()
+    # 7.5% of 100,000 is 7,500.
+    assert federal["itemized_medical"] == 12_500_00
+    assert state["itemized_medical"] == 22_500_00
+
+
+def test_without_the_federal_table_the_state_figures_no_lines_either() -> None:
+    """The documented off switch, a header-only itemized_limits.csv, turns
+    off a state that has a table of its own too."""
+    tables = {k: v for k, v in TABLES.items() if k != ("itemized_limits", None)}
+    tables[("state_itemized_limits", "CA")] = [{"filing_status": "MFJ", "salt_cap": None}]
+    tables[("federal_deductions", None)] = [{"amount": 35_000_00}]
+    spending = [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")]
+    state = calculator("state_tables").prepare(
+        _year(200_000_00, spending, jurisdiction="state", tables=tables)).compute()
+    assert state["itemized_deduction"] == state["deduction"] == 35_000_00
+    assert "itemized_salt" not in state.lines
+
+
+class _OwnDeductions(StateTablesYear):
+    """A household's state that overrides ``deductions`` without calling
+    the built-in's."""
+
+    def deductions(self) -> Mapping[str, int]:
+        return {"standard_deduction": 1_000_00, "itemized_deduction": 0, "deduction": 50_000_00}
+
+
+def test_a_subclass_overriding_deductions_keeps_its_deduction() -> None:
+    calc = calculator("state_tables")
+    year = _OwnDeductions(calc, _year(200_000_00, [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")],
+                                      jurisdiction="state"))
+    ret = year.compute()
+    assert ret["itemized_salt"] == 20_000_00
+    # Its own deduction, larger than the itemized total, stands.
+    assert ret["deduction"] == 50_000_00
+    assert ret["standard_deduction"] == 1_000_00
+
+
+def test_a_year_before_the_limits_take_effect_itemizes_the_hand_typed_total() -> None:
+    tables = {**TABLES, ("federal_deductions", None): [{"amount": 35_000_00}]}
+
+    year = _year(200_000_00, [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")], tables=tables)
+    # No row in force yet: the table's first date is after the year.
+    early = replace(year, _indexed=lambda kind, series: (
+        [] if kind == "itemized_limits" else list(tables.get((kind, series), []))))
+    ret = calculator("federal").prepare(early).compute()
+    assert ret["itemized_deduction"] == 35_000_00
+    assert "itemized_salt" not in ret.lines
+
+
+def test_the_loader_wants_every_filing_status_at_each_date(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], object],
+) -> None:
+    header = ("effective_date,filing_status,salt_cap,salt_floor,salt_phaseout_start,salt_phaseout_rate,"
+              "mortgage_limit,charity_floor,charity_limit,medical_floor\n")
+    write_aux("itemized_limits.csv", header + "2026-01-31,MFJ,40000.00,,,,,,,\n")
+    with pytest.raises(LoadError, match=r"itemized_limits.csv \(2026-01\): no rows for filing status MFS, Single"):
         load_test_copy()

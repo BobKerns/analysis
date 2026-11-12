@@ -819,13 +819,26 @@ class Itemized:
                          strict=True))
         return {**lines, "itemized_deduction": sum(lines.values())}
 
+    def deduction_lines(self, agi: int, standard: int, *, taken: int | None = None) -> dict[str, int]:
+        """The deduction lines at ``agi``: the ``standard`` deduction, the
+        itemized lines, and the ``deduction`` taken, the larger of the
+        itemized total and ``taken`` (the standard deduction, unless a
+        calculator figured its own)."""
+        lines = self.lines(agi)
+        return {"standard_deduction": standard, **lines,
+                "deduction": max(standard if taken is None else taken, lines["itemized_deduction"])}
+
 
 def itemized_limits(ty: TaxYear, kind: str, series: str | None = None) -> Mapping[str, Any] | None:
     """The year's ``kind`` (``itemized_limits``) row for its filing status;
-    None when the scenario has no such table at all."""
+    None when the scenario has no such table at all, or none in force yet
+    (a year before its first date itemizes only the hand-typed total)."""
     if not ty.has_table(kind, series):
         return None
-    rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == ty.filing_status]
+    in_force = ty.indexed(kind, series)
+    if not in_force:
+        return None
+    rows = [r for r in in_force if r.get("filing_status") == ty.filing_status]
     if not rows:
         name = f"{kind}__{series}" if series else kind
         raise TaxError(
@@ -834,33 +847,44 @@ def itemized_limits(ty: TaxYear, kind: str, series: str | None = None) -> Mappin
     return rows[0]
 
 
-def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, income_taxes: int) -> Itemized:
+def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, income_taxes: int,
+             hsa_paid_counts: bool = False) -> Itemized:
     """The year's itemized deductions from its spending (#542), under
     ``limits`` (:func:`itemized_limits`), with ``other`` (the hand-typed
     total) and ``income_taxes`` (state and local income tax paid, which a
     state doesn't deduct from its own return) added in.
 
-    - State and local taxes: property tax (``tax:property`` or the
-      ``property_tax`` character) and ``income_taxes``.
+    - State and local taxes: property tax (``tax:property``, or the
+      ``property_tax`` character on spending with no other ``tax:`` tag: a
+      rental's is its own) and ``income_taxes``.
     - Mortgage interest (``tax:mortgage_interest``), on no more than
-      ``mortgage_limit`` of the debt: a ``mortgage_payment`` rule's interest
-      times the limit over the year's average balance of every such
-      mortgage (IRS Pub. 936). Other spending of the tag counts in full.
+      ``mortgage_limit`` of the debt: each month, a ``mortgage_payment``
+      rule's interest times the limit over that month's balance of every
+      such mortgage, so mortgages held one after another in a year don't
+      add up. Other spending of the tag counts in full.
     - Charity (``tax:charity``) and medical expenses (``tax:medical``), less
-      what an HSA paid, which was never taxed."""
+      what an HSA paid, which was never taxed, unless ``hsa_paid_counts``
+      (a state that taxes an HSA, #490)."""
     if limits is None:
         return Itemized(None, other)
     tags = registries.ITEMIZED_TAGS
     spent = ty.year_spending()
-    property_tax = sum(s.amount for s in spent
-                       if tags["property_tax"] in s.tags or s.character == "property_tax")
+    property_tax = sum(s.amount for s in spent if tags["property_tax"] in s.tags or (
+        s.character == "property_tax" and not any(t.startswith("tax:") for t in s.tags)))
     interest = ty.spent(tags["mortgage_interest"])
-    mortgages = [m for m in ty.year_mortgages() if tags["mortgage_interest"] in m.tags]
-    debt, limit = sum(m.average_balance for m in mortgages), limits.get("mortgage_limit")
-    if limit is not None and debt > int(limit):
-        paid = sum(m.interest for m in mortgages)
-        interest -= paid - paid * int(limit) // debt
-    medical = sum(s.amount for s in spent if tags["medical"] in s.tags and s.payer.subkind != "hsa")
+    limit = limits.get("mortgage_limit")
+    if limit is not None:
+        by_month: dict[int, list[int]] = {}
+        for m in ty.year_mortgages():
+            if tags["mortgage_interest"] in m.tags:
+                month = by_month.setdefault(m.month, [0, 0])
+                month[0] += m.interest
+                month[1] += m.balance
+        for paid, debt in by_month.values():
+            if debt > int(limit):
+                interest -= paid - paid * int(limit) // debt
+    medical = sum(s.amount for s in spent if tags["medical"] in s.tags
+                  and (hsa_paid_counts or s.payer.subkind != "hsa"))
     return Itemized(
         limits, other, salt=property_tax + income_taxes, mortgage_interest=max(0, interest),
         charity=ty.spent(tags["charity"]), medical=medical)

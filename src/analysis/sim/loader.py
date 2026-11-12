@@ -6165,8 +6165,14 @@ def _validate_itemized_limits(
 ) -> None:
     """An ``itemized_limits`` table (#542) is the federal one, not keyed by state, and
     each row's figures make sense: no negative dollars, rates of 0% to
-    100%, and a SALT phase-down with both its start and its rate."""
+    100%, and a SALT phase-down with both its start and its rate. Each of
+    its dates has a row for every filing status the standard deduction
+    has, since only the latest date's rows are in force and a year filed
+    under a missing one (the survivor's Single, §4.9) couldn't be taxed."""
     keyed: set[str] = set()
+    standard_statuses = {str(payload.get("filing_status")) for kind, _s, payload, _e in aux_rows
+                         if kind == "standard_deduction"}
+    statuses: dict[tuple[str, str | None, str], set[str]] = {}
     for kind, series, payload, effective in aux_rows:
         if kind not in (registries.ITEMIZED_LIMITS, registries.STATE_ITEMIZED_LIMITS):
             continue
@@ -6178,6 +6184,7 @@ def _validate_itemized_limits(
                     f"are aux/{registries.STATE_ITEMIZED_LIMITS}__{series}.csv")
             continue
         name = f"{kind}__{series}" if series else kind
+        statuses.setdefault((name, series, effective), set()).add(str(payload.get("filing_status")))
         where = f"aux/{name}.csv ({effective[:7]}, {payload.get('filing_status')})"
         _check_not_negative(
             where, payload, ("salt_cap", "salt_floor", "salt_phaseout_start", "mortgage_limit"), issues)
@@ -6187,6 +6194,12 @@ def _validate_itemized_limits(
                 issues.append(f"{where}: {column} must be 0% to 100%")
         if (payload.get("salt_phaseout_start") is None) != (payload.get("salt_phaseout_rate_micros") is None):
             issues.append(f"{where}: a SALT phase-down needs both salt_phaseout_start and salt_phaseout_rate")
+    for (name, _series, effective), found in sorted(statuses.items()):
+        missing = sorted(standard_statuses - found)
+        if missing:
+            issues.append(
+                f"aux/{name}.csv ({effective[:7]}): no rows for filing status {', '.join(missing)}, "
+                "which the standard deduction has; a year filed that way couldn't be taxed")
 
 
 def _validate_state_gain_tables(

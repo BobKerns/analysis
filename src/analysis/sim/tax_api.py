@@ -154,15 +154,17 @@ class HsaGain:
 
 @dataclass(frozen=True)
 class Mortgage:
-    """One ``mortgage_payment`` rule's year (#542): the interest it paid and
-    the debt's average balance over the months it paid, which the debt
-    limit on deductible interest is figured from (IRS Pub. 936). ``tags`` are
-    its interest's, as a :class:`SpendingItem`'s: a home's carries
-    ``tax:mortgage_interest``, a rental's another ``tax:`` tag."""
+    """One mortgage debt's month (#542): the interest its ``mortgage_payment``
+    rules paid and the balance it was figured on, which the debt limit on
+    deductible interest is tested against. ``name`` is the liability
+    account. ``tags`` are its interest's, as a :class:`SpendingItem`'s: a
+    home's carries ``tax:mortgage_interest``, a rental's another ``tax:``
+    tag."""
     year: int
+    month: int
     name: str
     interest: int
-    average_balance: int
+    balance: int
     tags: frozenset[str] = frozenset()
 
 
@@ -229,10 +231,12 @@ class TaxYear:
     """Every year's HSA withdrawals' gains over basis up to ``year`` (#497),
     for a state that taxes an HSA."""
     mortgages: Sequence[Mortgage] = ()
-    """Each mortgage's interest and average balance, by year (#542)."""
+    """Each mortgage's interest and balance by month (#542); the engine
+    gives this year's only."""
     taxes_paid: Sequence[TaxPaid] = ()
-    """What was paid toward each state and local jurisdiction, by calendar
-    year (#542): the SALT deduction's income taxes."""
+    """What was paid toward each state and local jurisdiction in a calendar
+    year (#542), the SALT deduction's income taxes; the engine gives this
+    year's only."""
 
     @property
     def filing_status(self) -> str:
@@ -347,7 +351,7 @@ class TaxYear:
         return sum(s.amount for s in self._spent_this_year if tag in s.tags)
 
     def year_mortgages(self) -> list[Mortgage]:
-        """This year's :class:`Mortgage` years."""
+        """This year's :class:`Mortgage` months."""
         return [m for m in self.mortgages if m.year == self.year]
 
     def tax_paid(self, *jurisdictions: str) -> int:

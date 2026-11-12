@@ -1056,7 +1056,7 @@ You do not need to compare them yourself. Each line shows in
 | Line | Comes from | Limited by |
 | --- | --- | --- |
 | `itemized_salt` | Property tax (spending tagged `tax:property`), and the state and local income tax you paid during the year, the April payment for the year before included | The SALT cap: $40,400 in 2026, rising 1% a year through 2029, less 30% of income over $505,000 but not below $10,000; $10,000 from 2030 |
-| `itemized_mortgage_interest` | A `mortgage_payment` rule's interest, automatically | Interest on up to $750,000 of mortgage debt |
+| `itemized_mortgage_interest` | A `mortgage_payment` rule's interest, automatically | Interest on up to $750,000 of mortgage debt, tested month by month |
 | `itemized_charity` | Spending tagged `tax:charity` | Only the part over 0.5% of AGI, at most 60% of AGI |
 | `itemized_medical` | Spending tagged `tax:medical`, and IRMAA's Medicare surcharges, automatically; not what an HSA paid | Only the part over 7.5% of AGI |
 | `itemized_other` | Anything else you add by hand (below) | None |
@@ -1068,11 +1068,11 @@ sim account tag add Expense_Property_Tax tax:property
 sim account tag add Expense_Donations tax:charity
 ```
 
-A mortgage on a rental isn't a personal deduction: tag its rule with
-another `tax:` tag and its interest stays out. Married filing separately
+A mortgage or property tax on a rental isn't a personal deduction: tag its
+rule with another `tax:` tag and it stays out. Married filing separately
 halves each dollar limit. The limits are in `aux/itemized_limits.csv`; a
-scenario that wants none of this puts an `itemized_limits.csv` with only its
-header line in its `aux/`.
+scenario that wants none of this, federal or state, puts an
+`itemized_limits.csv` with only its header line in its `aux/`.
 
 For deductions the ledger doesn't hold, add a year's total with
 `sim deduction add`, listing the expenses:
@@ -1102,7 +1102,8 @@ add any, the state figure uses the federal one; most states don't need
 their own. The state figures its own lines from the same spending, but
 never deducts state income tax, and takes its own limits where it has them
 (California: no SALT cap, $1,000,000 of mortgage debt, charity up to half of
-AGI).
+AGI). A state that taxes an HSA, as California does, counts the medical
+bills the HSA paid.
 
 Not modeled: the 2026 law's limit on itemized deductions in the 37%
 bracket, its charity deduction for people who don't itemize, and

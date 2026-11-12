@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from analysis.sim import registries
@@ -121,23 +122,40 @@ class StateTablesYear(FederalStateYear):
         itemized_aux = params.itemized_deduction_aux
         if not ty.has_table(itemized_aux):
             itemized_aux = "federal_deductions"
-        other = common.itemized_deduction(ty, itemized_aux)
-        # Its itemized lines from spending (#542) take the state's own
-        # limits, or the federal ones, and never deduct an income tax: a
-        # state doesn't deduct its own, and few another's.
+        itemized = common.itemized_deduction(ty, itemized_aux)
+        return {"standard_deduction": standard, "itemized_deduction": itemized,
+                "deduction": max(standard, itemized)}
+
+    def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
+        """:meth:`deductions`, with the itemized lines figured from spending
+        (#542) at the year's income added to its ``itemized_deduction``,
+        whatever a subclass's :meth:`deductions` returned: the deduction
+        taken is the larger of its and the new itemized total."""
+        base = self._deductions
+        itemized = self._itemized
+        if itemized is None:
+            return base
+        return {**base, **itemized.deduction_lines(
+            income.agi, base["standard_deduction"], taken=base["deduction"])}
+
+    @cached_property
+    def _itemized(self) -> common.Itemized | None:
+        """The year's itemized deductions from spending, with the state's
+        own limits or else the federal ones; None without the federal
+        ``itemized_limits`` table, which turns the lines off for every
+        jurisdiction. A state never deducts an income tax: not its own,
+        and few another's. An HSA's medical payments count where the state
+        taxes the HSA (#490): it never excluded that money."""
+        ty, params = self.ty, self.ty.params
+        if not ty.has_table(registries.ITEMIZED_LIMITS):
+            return None
         limits_aux, limits_series = params.itemized_limits_aux, self.series
         if not ty.has_table(limits_aux, limits_series):
             limits_aux, limits_series = registries.ITEMIZED_LIMITS, None
-        self._itemized = common.itemized(
-            ty, common.itemized_limits(ty, limits_aux, limits_series), other=other, income_taxes=0)
-        self._standard = standard
-        return {"standard_deduction": standard, "itemized_deduction": other,
-                "deduction": max(standard, other)}
-
-    def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
-        itemized = self._itemized.lines(income.agi)
-        return {"standard_deduction": self._standard, **itemized,
-                "deduction": max(self._standard, itemized["itemized_deduction"])}
+        return common.itemized(
+            ty, common.itemized_limits(ty, limits_aux, limits_series),
+            other=self._deductions.get("itemized_deduction", 0), income_taxes=0,
+            hsa_paid_counts=getattr(self, "_hsa_taxed", False))
 
     def additions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:
         fed, capital = basis.federal, self._capital

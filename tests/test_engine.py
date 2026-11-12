@@ -1386,15 +1386,14 @@ def _summary(con: sqlite3.Connection, year: int, bucket: str) -> int:
 
 def _run_federal_tax(
     tmp_path: Path, repo: Path, fund_asset_savings: Callable[..., None],
-    write_tax: Callable[..., Path],
+    write_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
 ) -> sqlite3.Connection:
     fund_asset_savings()
     write_tax(repo / "scenarios" / "retire_alice")
     # These test the hand-typed totals alone: a header-only itemized_limits
     # turns off the lines figured from spending (#542), here the mortgage's
     # interest.
-    (repo / "aux" / "itemized_limits.csv").write_text(
-        ",".join(registries.ITEMIZED_LIMITS_COLUMNS) + "\n", encoding="utf-8")
+    write_aux("itemized_limits.csv", ",".join(registries.ITEMIZED_LIMITS_COLUMNS) + "\n")
     intent_path = load_scenario(
         repo, "retire_alice",
         intent_dir=tmp_path / "intent", loaded_by="test",
@@ -1409,14 +1408,14 @@ def _run_federal_tax(
 
 def test_itemized_deduction_is_used_when_greater_than_standard(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
-    write_tax: Callable[..., Path],
+    write_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
 ) -> None:
     repo = test_data_dir
     # 2026 MFJ standard deduction is $31,500 (prototype_data/aux/standard_deduction.csv).
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
     )
-    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax, write_aux)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 40_000_00
         assert _summary(con, 2026, "federal_standard_deduction") == 31_500_00
@@ -1427,14 +1426,14 @@ def test_itemized_deduction_is_used_when_greater_than_standard(
 
 def test_an_itemized_deduction_counts_only_in_its_own_year(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
-    write_tax: Callable[..., Path],
+    write_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
 ) -> None:
     """A big medical year is that year's deduction, not every later year's (#370)."""
     repo = test_data_dir
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
     )
-    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax, write_aux)
     try:
         assert _summary(con, 2026, "federal_deduction") == 40_000_00
         assert _summary(con, 2027, "federal_itemized_deduction") == 0
@@ -1445,26 +1444,26 @@ def test_an_itemized_deduction_counts_only_in_its_own_year(
 
 def test_a_year_takes_one_itemized_row(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
-    write_tax: Callable[..., Path],
+    write_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
 ) -> None:
     repo = test_data_dir
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,40000.00\n2026-06-30,5000.00\n", encoding="utf-8",
     )
     with pytest.raises(LoadError, match="2026 has 2 rows .* a tax year takes one itemized total"):
-        _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+        _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax, write_aux)
 
 
 def test_each_deduction_table_takes_its_own_row_for_a_year(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
-    write_tax: Callable[..., Path],
+    write_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
 ) -> None:
     # A series is another table (for a swap_aux_table), with its own years.
     repo = test_data_dir
     for name, amount in (("federal_deductions", "40000.00"), ("federal_deductions__sunset", "5000.00")):
         (repo / "aux" / f"{name}.csv").write_text(
             f"effective_date,amount\n2026-01-31,{amount}\n", encoding="utf-8")
-    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax, write_aux)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 40_000_00
     finally:
@@ -1473,13 +1472,13 @@ def test_each_deduction_table_takes_its_own_row_for_a_year(
 
 def test_standard_deduction_is_used_when_greater_than_itemized(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
-    write_tax: Callable[..., Path],
+    write_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
 ) -> None:
     repo = test_data_dir
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,10000.00\n", encoding="utf-8",
     )
-    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax, write_aux)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 10_000_00
         assert _summary(con, 2026, "federal_deduction") == 31_500_00
@@ -1489,10 +1488,10 @@ def test_standard_deduction_is_used_when_greater_than_itemized(
 
 def test_no_itemized_deductions_file_behaves_as_before(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
-    write_tax: Callable[..., Path],
+    write_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
 ) -> None:
     repo = test_data_dir
-    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax, write_aux)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 0
         assert _summary(con, 2026, "federal_deduction") == 31_500_00
@@ -1502,7 +1501,7 @@ def test_no_itemized_deductions_file_behaves_as_before(
 
 def test_itemized_deduction_amount_can_reference_an_itemization(
     test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
-    write_tax: Callable[..., Path],
+    write_tax: Callable[..., Path], write_aux: Callable[[str, str], Path],
 ) -> None:
     repo = test_data_dir
     (repo / "itemizations").mkdir(exist_ok=True)
@@ -1512,7 +1511,7 @@ def test_itemized_deduction_amount_can_reference_an_itemization(
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,@medical_2026\n", encoding="utf-8",
     )
-    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax)
+    con = _run_federal_tax(tmp_path, repo, fund_asset_savings, write_tax, write_aux)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 35_000_00
         assert _summary(con, 2026, "federal_deduction") == 35_000_00

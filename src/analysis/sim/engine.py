@@ -3047,57 +3047,54 @@ def _implied_tags(rule_tags: frozenset[str], payee: tax_api.Account, implied: st
     return rule_tags | {implied}
 
 
-def _mortgage_years(
+def _mortgage_months(
     con, tax_year: int, rule_tags: Mapping[int, frozenset[str]],
-    accounts: Mapping[int, tax_api.Account],
+    accounts: Mapping[int, tax_api.Account], expense_ids: Sequence[int],
 ) -> list[tax_api.Mortgage]:
-    """Each mortgage's interest and average balance by year (#542), one per
+    """Each mortgage's interest and balance by month of ``tax_year`` (#542), one per
     liability account: a refinance or a rate change that starts another
     rule pays down the same debt. A month's balance is its interest over
-    the monthly rate, as ``_apply_mortgage_payment`` figured it; the
-    average is over the months the debt paid interest (IRS Pub. 936)."""
+    the monthly rate, as ``_apply_mortgage_payment`` figured it; two rules
+    posting for one debt in a month (an overlap at a rate change) share
+    that balance, so the larger is taken rather than the sum."""
     rules = {
         tid: (liability, rate) for tid, liability, rate in con.execute(
             "SELECT s.id, c.account_id, s.rate_micros FROM scheduled_transaction s "
             "JOIN chain c ON c.id = s.to_account "
             "WHERE s.amount_rule_kind = 'mortgage_payment' AND s.rate_micros > 0")
     }
-    if not rules:
+    if not rules or not expense_ids:
         return []
-    expense_ids = [aid for aid, a in accounts.items() if a.kind == "expense"]
-    if not expense_ids:
-        return []
-    # (year, liability) -> month -> (interest, balance), and the tags.
-    months: dict[tuple[int, int], dict[str, list[int]]] = defaultdict(dict)
-    tags: dict[tuple[int, int], frozenset[str]] = {}
+    # (year, month, liability) -> [interest, balance], and the tags.
+    months: dict[tuple[int, int, int], list[int]] = {}
+    tags: dict[tuple[int, int, int], frozenset[str]] = {}
     for year, month, tid, to, interest in con.execute(
-            "SELECT CAST(substr(date, 1, 4) AS INTEGER) AS y, substr(date, 1, 7), reason_id, "
+            "SELECT CAST(substr(date, 1, 4) AS INTEGER) AS y, CAST(substr(date, 6, 2) AS INTEGER), reason_id, "
             "to_account, SUM(amount) FROM transfer_event "
             f"WHERE reason_kind IN ('rule', 'ytd_rule') AND reason_id IN ({', '.join(map(str, rules))}) "
-            f"AND to_account IN ({', '.join(map(str, expense_ids))}) AND y <= ? "
+            f"AND to_account IN ({', '.join(map(str, expense_ids))}) AND y = ? "
             "GROUP BY y, substr(date, 1, 7), reason_id, to_account",
             (tax_year,)):
         liability, rate = rules[tid]
-        key = (int(year), int(liability))
-        found = months[key].setdefault(month, [0, 0])
+        key = (int(year), int(month), int(liability))
+        found = months.setdefault(key, [0, 0])
         found[0] += int(interest)
-        found[1] += int(interest) * 12 * 1_000_000 // int(rate)
+        found[1] = max(found[1], int(interest) * 12 * 1_000_000 // int(rate))
         payee = accounts.get(to) or tax_api.Account(f"#{to}", "expense", "", None)
         tags[key] = tax_api._effective_tags(
             _implied_tags(rule_tags.get(tid, frozenset()), payee, _IMPLIED_TAX_TAGS["mortgage_payment"]),
             payee.tags)
     return [
         tax_api.Mortgage(
-            year, accounts[liability].name if liability in accounts else f"#{liability}",
-            sum(i for i, _b in by_month.values()),
-            sum(b for _i, b in by_month.values()) // len(by_month), tags[(year, liability)])
-        for (year, liability), by_month in sorted(months.items())
+            year, month, accounts[liability].name if liability in accounts else f"#{liability}",
+            interest, balance, tags[(year, month, liability)])
+        for (year, month, liability), (interest, balance) in sorted(months.items())
     ]
 
 
 def _taxes_paid(con, tax_year: int) -> list[tax_api.TaxPaid]:
     """What was paid into each state and local jurisdiction's destination
-    account, by the payments' calendar year (#542): the SALT deduction's
+    account in calendar ``tax_year`` (#542): the SALT deduction's
     income taxes, on a cash basis. An account the federal tax is paid into
     too is left out: its payments can't be told apart."""
     destinations: dict[int, list[str]] = defaultdict(list)
@@ -3117,7 +3114,7 @@ def _taxes_paid(con, tax_year: int) -> list[tax_api.TaxPaid]:
         for year, to, amount in con.execute(
             "SELECT CAST(substr(date, 1, 4) AS INTEGER) AS y, to_account, SUM(amount) "
             f"FROM transfer_event WHERE to_account IN ({', '.join(map(str, paid_to))}) "
-            "AND reason_kind != 'initial' AND y <= ? GROUP BY y, to_account",
+            "AND reason_kind != 'initial' AND y = ? GROUP BY y, to_account",
             (tax_year,))
     ]
 
@@ -3206,7 +3203,8 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
                    "SELECT p.id, p.birthdate, p.role, l.final_month FROM person p "
                    "LEFT JOIN person_lifespan l ON l.person = p.id")]
     return _TaxLedger(items, losses, persons, spending, hsa_gains,
-                      _mortgage_years(con, tax_year, rule_tags, accounts), _taxes_paid(con, tax_year))
+                      _mortgage_months(con, tax_year, rule_tags, accounts, expense_ids),
+                      _taxes_paid(con, tax_year))
 
 
 def _tax_year(

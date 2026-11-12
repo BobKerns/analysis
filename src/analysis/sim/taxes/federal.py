@@ -160,9 +160,7 @@ class FederalYear(Prepared):
     def _deduction_lines(self, agi: int) -> dict[str, int]:
         """The standard deduction, the itemized lines at ``agi``, and the
         ``deduction`` taken, the larger."""
-        itemized = self._itemized.lines(agi)
-        return {"standard_deduction": self._standard, **itemized,
-                "deduction": max(self._standard, itemized["itemized_deduction"])}
+        return self._itemized.deduction_lines(agi, self._standard)
 
     def _agi(self, extra: Extra) -> int:
         ordinary, ltcg = self._ordinary + extra.ordinary, self._taxed_ltcg(extra.ltcg)
