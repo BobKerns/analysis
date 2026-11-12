@@ -7,6 +7,7 @@ data = "prototype_data"
 
 [youtube]
 title = "Strategy plugins"
+previous = "11-update"  # not 11a, the importing side trip
 summary = """
 Alice and Bill would rather skip a trip than shorten every one, and no \
 built-in strategy does that. So they write their own, a strategy plugin: \
