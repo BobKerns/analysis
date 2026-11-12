@@ -76,7 +76,7 @@ You can ask in English or Japanese. These are English examples.
 ### Activity/history questions
 
 - "Show the last 50 run-complete events."
-- "Show events for user rwk in the last 7 days."
+- "Show events for user alice in the last 7 days."
 - "Show any errors or interrupted runs."
 
 ## How To Ask Better Questions

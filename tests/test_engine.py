@@ -1062,7 +1062,7 @@ def test_ytd_preroll_expands_interior_chain_month_by_month(ledger_con: sqlite3.C
     )
     txn = [
         8, "social_security", 1, 100, "monthly", None, "fixed_amount",
-        None, "rwk", None, None, None, 100_000, None, "ss_benefit",
+        None, "alice", None, None, None, 100_000, None, "ss_benefit",
         None, "2026-01-31", None, 200, None, None, 1, None,
     ]
     _apply_ytd_catchups(ledger_con, 1, date(2026, 5, 31), [txn], [], graph)

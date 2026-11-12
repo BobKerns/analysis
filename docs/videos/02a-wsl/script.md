@@ -8,7 +8,8 @@ data = "prototype_data"
 [youtube]
 title = "WSL for Windows"
 summary = """
-For Windows only: Alice turns on WSL, the Linux built into Windows, and \
+For Windows only. Not on Windows? Press Next to skip ahead to video 2. \
+Alice turns on WSL, the Linux built into Windows, and \
 gets the terminal that video 2 starts from. Setup guide: \
 https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md#windows-set-up-wsl-first"""
 contents = [
@@ -41,14 +42,33 @@ a real tape, since the Ubuntu terminal is a Linux terminal.
 
 ```slide
 template = "title"
+notice = "Not on Windows? Skip ahead:\npress Next ⏭ for video 2."
 ```
 
 Planning with the simulator. Video two A: getting Windows ready.
 
-This one is for Windows. The simulator runs on Linux and on a Mac. Windows
-can run Linux too, built in, with a part of Windows called WSL. In a few
-minutes, Alice turns it on, and gets the terminal that video two starts
-from.
+This one is only for Windows. On a Mac or on Linux, press Next in the
+player, and go on to video two.
+
+## Scene `skip`: Windows only
+
+```slide
+template = "card"
+heading = "For Windows only"
+body = [
+  "On a Mac or Linux? Skip ahead to video 2, setup and install",
+  "Press Next ⏭ in the player: the course keeps your place",
+  "On Windows? Stay for the terminal video 2 starts from",
+]
+speaker = "alice"
+```
+
+If you're on a Mac or on Linux, you don't need this one: skip ahead to
+video two, setup and install. Press Next in the player, and the course
+keeps your place. On Windows, stay with us. The simulator runs on Linux and
+on a Mac. Windows can run Linux too, built in, with a part of Windows called
+WSL. In a few minutes, Alice turns it on, and gets the terminal that video
+two starts from.
 
 ## Scene `why`: Why WSL
 
