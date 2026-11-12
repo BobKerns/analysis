@@ -6,6 +6,10 @@
 # One keyword per line. Matching ignores case and needs a non-alphanumeric
 # character (or the line's edge) on each side, so `WF` matches `Joint_WF_Checking`
 # but not `swf`. A space matches any run of spaces, underscores and hyphens.
+#
+# This list is public. A word that would itself give something away goes on
+# the private list instead, which is never committed here: see "Blocked
+# keywords" in docs/SETUP.md.
 Hiromi
 FECU
 Fidelity
@@ -22,3 +26,5 @@ Marin
 State Farm
 WF
 Wells Fargo
+rwk
+Kerns

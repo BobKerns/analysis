@@ -75,8 +75,8 @@ The engine performs these checks in order, before any simulation work:
 
    ```csv
    id,display,birthdate,role,meta_json
-   rwk,RWK,1965-03-15,primary,{}
-   mwk,MWK,1967-08-20,primary,{}
+   alice,Alice,1965-03-15,primary,{}
+   bill,Bill,1967-08-20,primary,{}
    ```
 
    Future ADRs may gate write operations by `role`.

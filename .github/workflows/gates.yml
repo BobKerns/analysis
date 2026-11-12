@@ -31,11 +31,20 @@ jobs:
     name: Blocked keywords
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    env:
+      # The private keyword list (docs/SETUP.md). The check never prints it.
+      BLOCKED_KEYWORDS_PRIVATE: ${{ secrets.BLOCKED_KEYWORDS_PRIVATE }}
     steps:
       - uses: actions/checkout@v7
         with:
           # Every commit in the range, for its message.
           fetch-depth: 0
+
+      - name: Private keyword list
+        run: |
+          if [ -z "$BLOCKED_KEYWORDS_PRIVATE" ]; then
+              echo "::warning::The BLOCKED_KEYWORDS_PRIVATE secret is not set; only the public keyword list is checked."
+          fi
 
       - name: Tracked files
         run: scripts/check-blocked-keywords.sh --all
