@@ -721,6 +721,80 @@ def test_analysis_video_build_runs_in_docker_when_it_can(monkeypatch: pytest.Mon
     assert ("running locally" in result.output) == (not running and not where)
 
 
+@pytest.mark.parametrize("running", [True, False])
+def test_analysis_video_build_publish_publishes_what_it_built(monkeypatch: pytest.MonkeyPatch,
+                                                              video_runs: dict[str, list[Any]],
+                                                              running: bool) -> None:
+    """`build --publish` (#562) publishes after the build, always on this
+    machine, with publish's own options; the build's flags stay its own."""
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.videos import cli as video_cli
+
+    monkeypatch.setattr(video_cli, "docker_running", lambda: running)
+    result = CliRunner().invoke(main, ["video", "build", "01-intro", "--lang", "ja", "--silent", "--publish",
+                                         "--new-upload", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    folder = Path.cwd() / "docs" / "videos" / "01-intro"
+    built = ["build", "01-intro", "--lang", "ja", "--silent"]
+    assert video_runs["docker"] == ([built] if running else [])
+    assert video_runs["local"] == [
+        *([] if running else [("build", folder, {"lang": "ja", "out": None, "silent": True, "rerecord": False,
+                                                 "jobs": None})]),
+        ("publish", [folder], {"lang": "ja", "out": None, "dry_run": True, "refresh": False, "new_upload": True})]
+
+
+def test_analysis_video_build_publishes_only_a_good_build(monkeypatch: pytest.MonkeyPatch,
+                                                         video_runs: dict[str, list[Any]]) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.videos import cli as video_cli
+
+    monkeypatch.setattr(video_cli, "docker_running", lambda: True)
+    monkeypatch.setattr(video_cli, "_docker", lambda args, out=None: video_runs["docker"].append(args) or 1)
+    result = CliRunner().invoke(main, ["video", "build", "01-intro", "--publish"])
+    assert result.exit_code == 1
+    assert video_runs["local"] == []
+
+
+def test_analysis_video_build_says_when_publish_wont_send_the_picture(
+        monkeypatch: pytest.MonkeyPatch, video_runs: dict[str, list[Any]]) -> None:
+    """A language already up gets only its title and description; say so,
+    since the rebuild's picture won't reach YouTube without --new-upload."""
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.videos import cli as video_cli
+
+    monkeypatch.setattr(video_cli, "docker_running", lambda: False)
+    runner = CliRunner()
+    result = runner.invoke(main, ["video", "build", "01-intro", "--lang", "en", "--publish"])
+    assert result.exit_code == 0, result.output
+    assert "01-intro [en] is already on YouTube" in result.output and "--new-upload" in result.output
+    result = runner.invoke(main, ["video", "build", "01-intro", "--lang", "en", "--publish", "--new-upload"])
+    assert result.exit_code == 0 and "already on YouTube" not in result.output
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (["--dry-run"], "--dry-run only goes with --publish"),
+    (["--refresh", "--new-upload"], "--refresh, --new-upload only go with --publish"),
+    (["--publish", "--refresh", "--new-upload"], "--refresh and --new-upload don't go together"),
+])
+def test_analysis_video_build_checks_publish_options_before_building(
+        monkeypatch: pytest.MonkeyPatch, video_runs: dict[str, list[Any]], args: list[str], message: str) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.videos import cli as video_cli
+
+    monkeypatch.setattr(video_cli, "docker_running", lambda: False)
+    result = CliRunner().invoke(main, ["video", "build", "01-intro", *args])
+    assert result.exit_code == 2 and message in result.output
+    assert video_runs == {"docker": [], "local": []}
+
+
 def test_analysis_video_docker_needs_docker(monkeypatch: pytest.MonkeyPatch,
                                             video_runs: dict[str, list[Any]]) -> None:
     from click.testing import CliRunner
@@ -760,20 +834,22 @@ def test_analysis_video_names_a_video_by_folder_name(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 2 and "no video elsewhere/01-intro" in result.output
 
 
-def test_analysis_video_publish_shows_its_options() -> None:
-    """publish's options are the command's own (#456): --help lists them,
-    and TAB completes them."""
+def test_analysis_video_publish_options_show_on_publish_and_build() -> None:
+    """publish's options are the command's own (#456), and build's too with
+    --publish (#562): --help lists them, and TAB completes them."""
     from click.shell_completion import ShellComplete
     from click.testing import CliRunner
 
     from analysis.cli import main
 
-    result = CliRunner().invoke(main, ["video", "publish", "--help"])
-    assert result.exit_code == 0
-    for option in ("--refresh", "--new-upload", "--dry-run", "--lang", "--out"):
-        assert option in result.output
-    completions = ShellComplete(main, {}, "analysis", "_ANALYSIS_COMPLETE").get_completions(["video", "publish"], "--")
-    assert {"--refresh", "--new-upload"} <= {c.value for c in completions}
+    for command in ("publish", "build"):
+        result = CliRunner().invoke(main, ["video", command, "--help"])
+        assert result.exit_code == 0
+        for option in ("--refresh", "--new-upload", "--dry-run", "--lang", "--out"):
+            assert option in result.output
+        completions = ShellComplete(main, {}, "analysis", "_ANALYSIS_COMPLETE").get_completions(["video", command],
+                                                                                                 "--")
+        assert {"--refresh", "--new-upload"} <= {c.value for c in completions}
 
 
 def test_python_m_analysis_videos_runs_locally(monkeypatch: pytest.MonkeyPatch,
