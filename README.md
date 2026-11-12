@@ -338,6 +338,9 @@ it is added, changed, removed or unchanged. Generated rows are tagged
 `generated:expense_baseline` and carry provenance in `meta_json`, so rerunning
 removes stale generated categories after the private category maps change
 while preserving manually authored scheduled rows.
+A generated rule a parent scenario has, which a rerun in a derived scenario no
+longer produces, is listed as `kept`: it stays in force until it is ended
+there with `sim scheduled delete`.
 
 The export to read is an argument (`sim import transactions export.csv`).
 With none, and `ANALYSIS_DATA_DIR` pointing to the simulator data directory,

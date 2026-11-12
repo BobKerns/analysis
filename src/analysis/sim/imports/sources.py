@@ -8,6 +8,7 @@ flows, or both, each with a test of whether a file is in its layout so
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,9 +146,24 @@ def read_holdings(paths: Sequence[Path], name: str | None = None) -> Snapshot:
 
 def read_flows(paths: Sequence[Path], name: str | None = None) -> Flows:
     """Every file's transactions, in order, read with source ``name`` (or the
-    one their layout says)."""
+    one their layout says). Two files may not cover the same days of one
+    outside account: their transactions would be counted twice."""
     source = _resolve(paths, name, "transactions")
     assert source.transactions is not None
     frames = [source.transactions.read(path).transactions for path in paths]
+    spans: dict[str, list[tuple[dt.date, dt.date, int]]] = {}
+    for number, frame in enumerate(frames):
+        days: dict[str, list[dt.date]] = {}
+        for account, stamp in zip(frame["account"], frame["date"], strict=True):
+            days.setdefault(str(account), []).append(stamp.date())
+        for account, dates in days.items():
+            first, last = min(dates), max(dates)
+            for start, end, other in spans.setdefault(account, []):
+                if first <= end and start <= last:
+                    raise SourceError(
+                        f"{paths[other]} and {paths[number]} both have transactions of "
+                        f"{account!r} between {max(first, start)} and {min(last, end)}; "
+                        "import each period of an outside account from one file")
+            spans[account].append((first, last, number))
     return Flows(source=source.name,
                  transactions=frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True))

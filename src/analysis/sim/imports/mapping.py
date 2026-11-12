@@ -257,17 +257,31 @@ def load_expense_accounts(path: Path | str) -> ExpenseAccounts:
 def _retarget(data_dir: Path, moved: Callable[[AccountTarget], AccountTarget | None]) -> list[str]:
     """Rewrite every source's account map, each ``map`` row's target replaced
     by ``moved``'s answer where it gives one; the files changed, relative to
-    the data dir."""
+    the data dir. Every map is read before any is written, so one that
+    doesn't read leaves them all as they were."""
+    maps = [load_account_map(path) for path in sorted(imports_dir(data_dir).glob(f"*/{ACCOUNTS}"))]
     changed: list[str] = []
-    for path in sorted(imports_dir(data_dir).glob(f"*/{ACCOUNTS}")):
-        found = load_account_map(path)
+    for found in maps:
         renamed = {key: new for key, target in found.entries.items()
                    if target.action == "map" and (new := moved(target)) is not None}
         if renamed:
             found.entries.update(renamed)
             found.save()
-            changed.append(str(path.relative_to(data_dir)))
+            changed.append(str(found.path.relative_to(data_dir)))
     return changed
+
+
+def _categories(data_dir: Path) -> set[str]:
+    """Every category the saved maps can produce: what an outside category
+    is merged into, and what a split sends it on to."""
+    found: set[str] = set()
+    root = imports_dir(data_dir)
+    for path in root.glob(f"*/{CATEGORIES}"):
+        found.update(load_category_map(path)[0].values())
+    for path in root.glob(f"*/{SPLITS}"):
+        for targets in load_category_splits(path).values():
+            found.update(targets.values())
+    return found
 
 
 def rename_lot(data_dir: Path, account: str, old: str, new: str) -> list[str]:
@@ -279,13 +293,18 @@ def rename_lot(data_dir: Path, account: str, old: str, new: str) -> list[str]:
 
 def rename_account(data_dir: Path, old: str, new: str) -> list[str]:
     """Follow a renamed scenario account in every saved mapping; the files
-    changed, relative to the data dir."""
+    changed, relative to the data dir. A category that had no row because
+    the account had its name gets one, so its rule still finds the account."""
     root = imports_dir(data_dir)
+    # Read, and so checked, before anything is rewritten.
+    expenses = load_expense_accounts(root / EXPENSE_ACCOUNTS)
+    implicit = old not in expenses.accounts and old in _categories(data_dir)
     changed = _retarget(data_dir, lambda t: AccountTarget(t.action, new, t.lot, t.note)
                         if t.account == old else None)
-    expenses = load_expense_accounts(root / EXPENSE_ACCOUNTS)
-    if old in expenses.accounts.values():
+    if implicit or old in expenses.accounts.values():
         expenses.accounts = {c: new if a == old else a for c, a in expenses.accounts.items()}
+        if implicit:
+            expenses.accounts[old] = new
         expenses.save()
         changed.append(str(expenses.path.relative_to(data_dir)))
     return changed

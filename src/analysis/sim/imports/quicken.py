@@ -67,6 +67,9 @@ def is_account_tree(path: Path) -> bool:
 
 def _dollars_to_cents(s: str) -> int:
     raw = s.strip().replace(",", "").replace("$", "")
+    # An accountant's negative: (300.00).
+    if raw.startswith("(") and raw.endswith(")"):
+        raw = "-" + raw[1:-1]
     cents = Decimal(raw) * 100
     if cents != cents.to_integral_value():
         raise InvalidOperation(f"sub-cent amount: {s!r}")
@@ -154,6 +157,11 @@ def read_transactions(path: Path) -> Flows:
         amount_raw = str(record.get("Amount", "")).strip().replace(",", "")
         if not amount_raw:
             continue
+        try:
+            amount_cents = _dollars_to_cents(amount_raw)
+        except InvalidOperation:
+            raise ValueError(
+                f"{path} row {source_row}: {amount_raw!r} is not an amount") from None
         rows.append(
             {
                 "source_row": source_row,
@@ -167,7 +175,7 @@ def read_transactions(path: Path) -> Flows:
                 "tags": str(record.get("Tags", "")).strip(),
                 "transfer": str(record.get("Transfer", "")).strip(),
                 "memo": str(record.get("Memo/Notes", "")).strip(),
-                "amount_cents": int(Decimal(amount_raw) * 100),
+                "amount_cents": amount_cents,
             }
         )
 

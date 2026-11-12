@@ -209,7 +209,9 @@ def test_plan_sets_balances_sums_shared_lots_and_negates_debts() -> None:
         ("Liability_Card", "", "opening_balance", "0.00", "42.00", ""),
     ]
     assert (result.lots_changed, result.lots_unchanged, result.skipped) == (2, 1, ["Old"])
-    assert result.changed_rows == [0, 1, 3]
+    assert result.cells == {
+        0: {"opening_balance": "3.50"}, 1: {"prior_year_end_balance": "100.00"},
+        3: {"opening_balance": "42.00"}}
     assert result.rows[2] == _lots()[2]
 
 
@@ -230,15 +232,51 @@ def test_plan_nets_a_credit_against_the_debt_it_shares_a_lot_with() -> None:
 def test_plan_year_end_overwrites_investment_accounts_only() -> None:
     account_map = _map(
         Bank=mapping.AccountTarget("map", "Asset_Checking"),
+        Funds=mapping.AccountTarget("map", "Asset_Brokerage_Joint", "vti"),
         Bonds=mapping.AccountTarget("map", "Asset_Brokerage_Joint", "bnd"),
     )
-    result = holdings.plan(_snapshot(Bank=100, Bonds=6000), account_map, _ACCOUNTS, _lots(),
-                           year_end=True)
+    result = holdings.plan(_snapshot(Bank=100, Funds=9000, Bonds=6000), account_map, _ACCOUNTS,
+                           _lots(), year_end=True)
 
     assert result.ineligible == ["Asset_Checking"]
     assert [(c.lot, c.column, c.before, c.after) for c in result.changes] == [
+        ("vti", "prior_year_end_balance", "", "90.00"),
         ("bnd", "prior_year_end_balance", "40.00", "60.00")]
     assert result.rows[2]["opening_balance"] == "50.00"
+
+
+def test_plan_leaves_an_account_whole_in_its_prior_year_balances() -> None:
+    """The loader wants the prior-year balance on every lot of an account or
+    on none, so one lot alone is neither seeded nor set."""
+    account_map = _map(Bonds=mapping.AccountTarget("map", "Asset_Brokerage_Joint", "bnd"))
+    lots = _lots()
+    lots[2]["prior_year_end_balance"] = ""
+
+    seeded = holdings.plan(_snapshot(Bonds=6000), account_map, _ACCOUNTS, lots)
+    assert seeded.cells == {2: {"opening_balance": "60.00"}}
+
+    year_end = holdings.plan(_snapshot(Bonds=6000), account_map, _ACCOUNTS, lots, year_end=True)
+    assert year_end.cells == {} and year_end.changes == []
+    assert len(year_end.warnings) == 1 and "every lot of an account or on none" in year_end.warnings[0]
+
+    # A Roth lot beside it needn't have one.
+    lots[1]["subkind"] = "roth_ira"
+    assert holdings.plan(_snapshot(Bonds=6000), account_map, _ACCOUNTS, lots, year_end=True).cells == {
+        2: {"prior_year_end_balance": "60.00"}}
+
+
+def test_plan_compares_balances_as_money() -> None:
+    account_map = _map(Bank=mapping.AccountTarget("map", "Asset_Checking"))
+    lots = _lots()
+    lots[0]["opening_balance"] = "5"
+
+    same = holdings.plan(_snapshot(Bank=500), account_map, _ACCOUNTS, lots)
+    assert same.cells == {} and same.lots_unchanged == 1
+    assert same.rows[0]["opening_balance"] == "5"
+
+    lots[0]["opening_balance"] = ""
+    assert holdings.plan(_snapshot(Bank=0), account_map, _ACCOUNTS, lots).cells == {
+        0: {"opening_balance": "0.00"}}
 
 
 def test_plan_reports_what_the_mapping_leaves_open() -> None:
@@ -254,37 +292,67 @@ def test_plan_reports_what_the_mapping_leaves_open() -> None:
 
     assert not result.complete
     assert [h.account for h in result.unmapped] == ["New"]
+    assert [h.account for h, _ in result.unknown] == ["Gone"]
     # An account with no lot at all has nowhere to hold a balance either.
-    assert [h.account for h, _ in result.unknown] == ["Gone", "NoLot", "Card"]
+    assert [h.account for h, _ in result.no_lot] == ["NoLot", "Card"]
     assert len(result.warnings) == 1 and "has 2 lots" in result.warnings[0]
-    assert result.changes == [] and result.changed_rows == []
+    assert result.changes == [] and result.cells == {}
 
 
 # ---------- the flows applier ----------
 
-def test_flow_plan_classifies_each_generated_rule(test_data_dir: Path) -> None:
-    scheduled = test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv"
-    header = scheduled.read_text(encoding="utf-8").splitlines()[0].split(",")
+def test_flow_plan_classifies_each_generated_rule() -> None:
+    def row(name: str, amount: str, tags: str = "generated:x", **more: str) -> dict[str, str]:
+        return {"name": name, "from_account": "Asset_Checking", "to_account": "Expense_Living",
+                "amount": amount, "series": "cpi", "start": "2026-05-31", "cadence": "monthly",
+                "end": "", "tags": tags, "meta_json": "{}", **more}
 
-    def row(name: str, amount: str, tags: str = "generated:x") -> dict[str, str]:
-        return dict.fromkeys(header, "") | {
-            "name": name, "from_account": "Asset_Checking", "to_account": "Expense_Living",
-            "amount": amount, "series": "cpi", "start": "2026-05-31", "cadence": "monthly",
-            "tags": tags}
+    existing = {each["name"]: each for each in (
+        row("same", "1.00", meta_json='{"files_sha256": "old"}'), row("differs", "2.00"),
+        row("ended", "5.00", end="2030-01-31"), row("stale", "3.00"), row("parents", "6.00"),
+        row("manual", "4.00", ""))}
 
-    with scheduled.open("a", encoding="utf-8") as fh:
-        for each in (row("same", "1.00"), row("differs", "2.00"), row("stale", "3.00"),
-                     row("manual", "4.00", "")):
-            fh.write(",".join(each.values()) + "\n")
-
-    changes = flows.plan(scheduled, [row("same", "1.00"), row("differs", "2.50"), row("new", "9.00")],
-                         "generated:x")
+    changes = flows.plan(
+        existing,
+        [row("same", "1.00"), row("differs", "2.50"), row("ended", "5.00"), row("new", "9.00")],
+        "generated:x", inherited={"parents"})
 
     assert [(c.name, c.before, c.after, c.status) for c in changes] == [
         ("same", "1.00", "1.00", "unchanged"),
         ("differs", "2.00", "2.50", "changed"),
+        # Edited by hand since: the write puts the generated row back.
+        ("ended", "5.00", "5.00", "changed"),
         ("new", "", "9.00", "added"),
         ("stale", "3.00", "", "removed"),
+        # A parent scenario's rule stays in force whatever this one writes.
+        ("parents", "6.00", "6.00", "kept"),
     ]
-    missing = test_data_dir / "scenarios" / "none" / "scheduled.csv"
-    assert [c.status for c in flows.plan(missing, [row("new", "9.00")], "generated:x")] == ["added"]
+    assert [c.status for c in flows.plan({}, [row("new", "9.00")], "generated:x")] == ["added"]
+
+
+def test_read_flows_refuses_files_that_cover_the_same_days_of_an_account(
+    quicken_transaction_export: Path,
+) -> None:
+    text = quicken_transaction_export.read_text(encoding="utf-8")
+    later = quicken_transaction_export.with_name("later.csv")
+    later.write_text(text.replace("2026-01", "2026-03").replace("2026-02", "2026-04"), encoding="utf-8")
+    assert len(sources.read_flows([quicken_transaction_export, later]).transactions) == 8
+
+    # The same file twice, and a file that overlaps another by a month.
+    with pytest.raises(sources.SourceError, match="both have transactions of 'Checking'"):
+        sources.read_flows([quicken_transaction_export, quicken_transaction_export])
+    later.write_text(text.replace("2026-01", "2026-03"), encoding="utf-8")
+    with pytest.raises(sources.SourceError, match="between 2026-02-02 and 2026-02-14"):
+        sources.read_flows([quicken_transaction_export, later])
+
+
+def test_read_transactions_reads_a_signed_dollar_amount_and_names_a_bad_one(
+    quicken_transaction_export: Path,
+) -> None:
+    text = quicken_transaction_export.read_text(encoding="utf-8")
+    quicken_transaction_export.write_text(text.replace('"-300.00"', '"-$300.00"'), encoding="utf-8")
+    assert quicken.read_transactions(quicken_transaction_export).transactions["amount_cents"][0] == -30000
+
+    quicken_transaction_export.write_text(text.replace('"-300.00"', '"n/a"'), encoding="utf-8")
+    with pytest.raises(ValueError, match="row 3: 'n/a' is not an amount"):
+        quicken.read_transactions(quicken_transaction_export)

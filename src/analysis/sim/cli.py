@@ -5706,6 +5706,20 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
     df.to_csv(path, index=False)
 
 
+def _set_csv_cells(path: Path, index: int, cells: Mapping[str, str]) -> None:
+    """Set some cells of one data row (0-based) of a CSV, leaving every
+    other cell, and any column the caller doesn't know of, as it is."""
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    if missing := [column for column in cells if column not in df.columns]:
+        raise click.ClickException(
+            f"CSV header mismatch in {path}\n"
+            f"  found:    {list(df.columns)}\n"
+            f"  missing:  {missing}"
+        )
+    df.loc[index, list(cells)] = list(cells.values())
+    df.to_csv(path, index=False)
+
+
 @contextmanager
 def _scenario_edit(
     data_dir: Path, scenario: str | None, *, remember: bool = True, template_parent: bool = False,
@@ -8646,10 +8660,11 @@ def _import_target_lots(
     scenario_dir: Path, scenario: str, accounts: Mapping[str, tuple[str, str]],
 ) -> list[_Lot]:
     """The lots an import can set: every lot the scenario has, its own and
-    inherited (less the deleted ones), and the empty default lot the loader
-    gives an account that holds a balance but has no lot rows. An investment
-    account's lots are named, so it gets no such lot."""
-    lots = [lot for lot in _scenario_lots(scenario_dir, scenario) if not lot.deleted]
+    inherited, and the empty default lot the loader gives an account that
+    holds a balance but has no lot rows. An investment account's lots are
+    named, so it gets no such lot. A deleted lot is a zeroed row, which
+    counts: a balance imported into it is written there, as it always was."""
+    lots = _scenario_lots(scenario_dir, scenario)
     have = {lot.account for lot in lots}
     for name, (kind, subkind) in accounts.items():
         if name not in have and kind in ("asset", "liability") \
@@ -8749,12 +8764,6 @@ def import_transactions(
             f"category map not found: {category_map_path} "
             f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
 
-    if start is None:
-        scenario_path = scenario_dir / "scenario.csv"
-        with scenario_path.open(newline="", encoding="utf-8-sig") as handle:
-            start = next(_csv.DictReader(handle))["start"]
-    start = _validate_month_date(start)
-
     try:
         merges, exclusions = import_mapping.load_category_map(category_map_path)
         baseline = build_expense_baseline(
@@ -8777,6 +8786,10 @@ def import_transactions(
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     with _intent_db(data_dir_p, scenario_name) as (con, _):
+        if start is None:
+            # As loaded: a derived scenario's own scenario.csv may leave it
+            # to its parent.
+            start = con.execute("SELECT start FROM scenario").fetchone()[0]
         scenario_accounts = {row[0] for row in con.execute("SELECT name FROM account")}
         expense_names = [row[0] for row in con.execute(
             "SELECT name FROM account WHERE kind = 'expense' ORDER BY name")]
@@ -8785,6 +8798,7 @@ def import_transactions(
         }
     if from_account not in scenario_sources:
         raise click.ClickException(f"unknown from account or chain: {from_account!r}")
+    start = _validate_month_date(start)
     totals = {str(r["category"]): float(r["amount_total"])
               for r in baseline.category_totals.to_dict("records")}
     months = max(baseline.monthly["summary_month_start"].nunique(), 1)
@@ -8802,7 +8816,15 @@ def import_transactions(
 
     to_save = False
     if _interactive():
+        # An account named like a category needs no row, so a scenario may
+        # rely on having one: a row saved from here would override that.
+        named_elsewhere = {name for each in names.scenario_names(data_dir_p)
+                           for name in names.account_names(data_dir_p, each)}
         for category in sorted(totals):
+            # No file can name the blank category, so an answer couldn't be
+            # saved or read back: it is warned about below instead.
+            if not category:
+                continue
             target = target_of(category)
             if target is not None and (target == import_mapping.NO_RULE or target in scenario_accounts):
                 continue
@@ -8814,9 +8836,16 @@ def import_transactions(
             chosen[category] = import_mapping.NO_RULE if answer == "skip" else answer
             # A saved account may be right for another scenario, which would
             # then silently lose the category's rule, or pay the wrong account.
-            if target is None or click.confirm(
+            if target is None and category in named_elsewhere:
+                everywhere = click.confirm(
+                    f"Another scenario has an account named {category}, which it uses for "
+                    f"this category. Save {chosen[category]} instead, for every scenario? "
+                    "(No uses your answer for this import only)", default=False)
+            else:
+                everywhere = target is None or click.confirm(
                     f"Replace the saved account {target}, for every scenario? "
-                    "(No uses your answer for this import only)", default=False):
+                    "(No uses your answer for this import only)", default=False)
+            if everywhere:
                 expense_accounts.accounts[category] = chosen[category]
                 to_save = True
 
@@ -8845,7 +8874,12 @@ def import_transactions(
         provenance={"source": flows.source, "files_sha256": import_flows_.file_digest(files)},
     )
     scheduled_path = scenario_dir / "scheduled.csv"
-    changes = import_flows_.plan(scheduled_path, rows, BASELINE_GENERATED_TAG)
+    # Against every rule the scenario loads: one a parent scenario has is not
+    # new here, and is not removed by replacing this scenario's own rows.
+    loaded = _overlay_rows(scenario_dir, "scheduled.csv")
+    changes = import_flows_.plan(
+        {name: found.row for name, found in loaded.items()}, rows, BASELINE_GENERATED_TAG,
+        inherited={name for name, found in loaded.items() if found.inherited_from is not None})
     if changes:
         _echo_table(
             ["rule", "to account", "before", "after", ""],
@@ -8853,19 +8887,26 @@ def import_transactions(
             left=2,
         )
     counts = ", ".join(
-        f"{count} {status}" for status in ("added", "changed", "removed", "unchanged")
+        f"{count} {status}" for status in ("added", "changed", "removed", "unchanged", "kept")
         if (count := sum(c.status == status for c in changes)))
+    for change in changes:
+        if change.status == "kept":
+            click.echo(
+                f"warning: {change.name} is no longer generated, but {scenario_name} inherits "
+                f"it from {loaded[change.name].inherited_from}, so it stays in force; end it "
+                f"here with 'sim scheduled delete {change.name}'", err=True)
     if dry_run:
         click.echo(f"(dry run) would replace the generated row(s) in {_shown(scheduled_path)} "
                    f"with {len(rows)}: {counts or 'none'}")
         if to_save:
             click.echo("(dry run) the expense accounts you gave were not saved")
         return
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        replace_generated_scheduled_rows(edit.path(scheduled_path), rows)
+    # Once the rules are written: an edit that is refused saves nothing.
     if to_save:
         expense_accounts.save()
         click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
-    with _scenario_edit(data_dir_p, scenario_name) as edit:
-        replace_generated_scheduled_rows(edit.path(scheduled_path), rows)
     click.echo(
         f"replaced {len(rows)} generated baseline row(s) in {scheduled_path} "
         f"for scenario {scenario_name} ({counts or 'none'})"
@@ -11920,14 +11961,18 @@ def import_holdings(
     scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
     _refuse_unmigrated_imports(data_dir_p)
     values_path = scenario_dir / "account_lots.csv"
-    accounts = {
-        row["name"]: (row.get("kind", ""), row.get("subkind", ""))
-        for row in names.lineage_rows(data_dir_p, scen_name, "accounts.csv") if row.get("name")
-    }
+    # Before any question: a scenario that doesn't load can't take the answers.
+    with _intent_db(data_dir_p, scen_name) as (con, _):
+        accounts = {name: (kind, subkind or "") for name, kind, subkind in con.execute(
+            "SELECT name, kind, subkind FROM account")}
     lots = _import_target_lots(scenario_dir, scen_name, accounts)
     rows = [lot.row for lot in lots]
     try:
         snapshot = import_sources_.read_holdings(files, layout)
+        if not snapshot.holdings:
+            raise click.ClickException(
+                "no account balances in " + ", ".join(map(str, files))
+                + f": is it a {snapshot.source} holdings report?")
         map_path = import_mapping.source_dir(data_dir_p, snapshot.source) / import_mapping.ACCOUNTS
         saved_map = import_mapping.load_account_map(map_path)
         # What this run uses: the saved map, and any answer given for this
@@ -11941,7 +11986,7 @@ def import_holdings(
                 account_map.set(holding.account, holding.asset, target)
                 saved_map.set(holding.account, holding.asset, target)
                 to_save = True
-            for holding, old in result.unknown:
+            for holding, old in (*result.unknown, *result.no_lot):
                 target = _ask_holding_target(
                     holding, snapshot.source, rows,
                     f"is mapped to {old.label}, which {scen_name} doesn't have")
@@ -11966,9 +12011,16 @@ def import_holdings(
         )
     if result.unknown:
         raise click.ClickException(
-            f"mapping target(s) not found in {scen_name} (an account needs a lot to hold a "
-            "balance: 'sim account lot add'):\n  "
+            f"{map_path} maps to account(s) {scen_name} doesn't have (deleted or renamed?); "
+            "change the rows, or run at a terminal to be asked:\n  "
             + "\n  ".join(sorted(f"{h.label} -> {t.label}" for h, t in result.unknown))
+        )
+    if result.no_lot:
+        raise click.ClickException(
+            f"{map_path} maps to lot(s) {scen_name} doesn't have (an account needs a lot to "
+            "hold a balance: 'sim account lot add'); add the lot, change the rows, or run at "
+            "a terminal to be asked:\n  "
+            + "\n  ".join(sorted(f"{h.label} -> {t.label}" for h, t in result.no_lot))
         )
     for warning in result.warnings:
         click.echo(f"warning: {warning}", err=True)
@@ -11989,19 +12041,34 @@ def import_holdings(
             click.echo("(dry run) the mappings you gave were not saved")
         return
 
-    if to_save:
-        saved_map.save()
-        click.echo(f"saved mappings to {_shown(map_path)}")
     overrides = 0
     with _scenario_edit(data_dir_p, scen_name) as edit:
         staged = edit.path(values_path)
-        for index in result.changed_rows:
-            # In place for the scenario's own row; a whole-row override of an
-            # inherited lot, or the first row of an account that had none.
-            own = lots[index].index
-            overrides += own is None and not lots[index].implicit
-            _append_csv_row(staged, registries.ACCOUNT_LOTS_CSV_HEADER, result.rows[index],
-                            replace=own)
+        # Read again inside the staged edit: the questions may have taken a
+        # while, and a lot edited or deleted meanwhile must not be written
+        # over, nor its old row index written to.
+        now = {(lot.account, lot.lot): lot
+               for lot in _import_target_lots(scenario_dir, scen_name, accounts)}
+        for index, cells in result.cells.items():
+            lot = lots[index]
+            if (current := now.get((lot.account, lot.lot))) is None \
+                    or (current.row, current.index) != (lot.row, lot.index):
+                raise click.ClickException(
+                    f"lot {lot.lot!r} of {lot.account} changed while this import was being "
+                    "answered. Nothing was written; start again.")
+            if lot.index is not None:
+                # Only the cells the import sets: the row's other columns,
+                # any the file has beyond the standard ones included, stay.
+                _set_csv_cells(staged, lot.index, cells)
+            else:
+                # A whole-row override of an inherited lot, or the first row
+                # of an account that had none.
+                overrides += not lot.implicit
+                _append_csv_row(staged, registries.ACCOUNT_LOTS_CSV_HEADER, result.rows[index])
+    # Once the lots are written: an edit that is refused saves nothing.
+    if to_save:
+        saved_map.save()
+        click.echo(f"saved mappings to {_shown(map_path)}")
     inherited = f"; {overrides} as override(s) of inherited lots" if overrides else ""
     click.echo(f"updated {result.lots_changed} lot(s) in {values_path} ({counts}){inherited}")
 
@@ -14066,7 +14133,10 @@ def _rename_in_imports(data_dir: Path, old: str, new: str) -> list[str]:
     still = rename.account_defined(old)
     if any(still(scenarios / each) for each in rename.scenario_folders(scenarios)):
         return []
-    return import_mapping.rename_account(data_dir, old, new)
+    try:
+        return import_mapping.rename_account(data_dir, old, new)
+    except (ValueError, OSError) as e:
+        return _imports_not_followed(old, new, e)
 
 
 def _rename_lot_in_imports(data_dir: Path, account: str, old: str, new: str) -> list[str]:
@@ -14077,7 +14147,20 @@ def _rename_lot_in_imports(data_dir: Path, account: str, old: str, new: str) -> 
     still = _lot_defined(account, old)
     if any(still(scenarios / each) for each in rename.scenario_folders(scenarios)):
         return []
-    return import_mapping.rename_lot(data_dir, account, old, new)
+    try:
+        return import_mapping.rename_lot(data_dir, account, old, new)
+    except (ValueError, OSError) as e:
+        return _imports_not_followed(f"{account}:{old}", f"{account}:{new}", e)
+
+
+def _imports_not_followed(old: str, new: str, error: Exception) -> list[str]:
+    """Say that a rename, already written, was not followed in imports/: a
+    mapping file there doesn't read. The mappings are read whole before any
+    is rewritten, so none was changed."""
+    click.echo(
+        f"warning: the saved import mappings still name {old}, not {new}: {error}\n"
+        "  fix that file, then change the name in imports/ by hand", err=True)
+    return []
 
 
 def _echo_followed_in_imports(changed: list[str]) -> None:

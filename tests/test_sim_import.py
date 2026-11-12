@@ -486,3 +486,254 @@ def test_migrate_527_stops_when_two_scenarios_map_an_account_differently(
     assert "'Savings' is mapped differently: base: map Asset_Checking; " \
         "retire_alice: map Asset_Brokerage_Joint" in capsys.readouterr().err
     assert old.exists() and not (test_data_dir / "imports").exists()
+
+
+def test_migrate_527_lets_two_scenarios_skip_an_account_their_own_way(
+    test_data_dir: Path, write_old_import_map: MapWriter,
+) -> None:
+    write_old_import_map("base", "Old Card,,skip,closed\n")
+    write_old_import_map("retire_alice", "Old Card,Liability_Mortgage,skip,closed in 2024\n")
+
+    assert _migration().main([str(test_data_dir), "--write"]) == 0
+
+    saved = test_data_dir / "imports" / "quicken" / "accounts.csv"
+    assert saved.read_text(encoding="utf-8").splitlines()[1:] == ["Old Card,,skip,,,closed"]
+
+
+# ---------- what a second review found ----------
+
+def _export_with(export: Path, old: str, new: str) -> Path:
+    export.write_text(export.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    return export
+
+
+@pytest.mark.usefixtures("test_child_scenario")
+def test_sim_import_holdings_writes_into_a_lot_it_zeroed_before(
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,map,Asset_Savings,,\nAsset_Brokerage_Joint,,skip,,,\n"
+        "Asset_TraditionalIRA_Alice,,skip,,,\nLiability_Mortgage,,skip,,,\n")
+    lots = test_data_dir / "scenarios" / "child" / "account_lots.csv"
+
+    # A zero balance in an inherited lot is the override `lot delete` writes.
+    _export_with(quicken_net_worth_export, '"1,234.56"', '"0.00"')
+    first = _import(test_data_dir, "holdings", str(quicken_net_worth_export), scenario="child")
+    assert first.exit_code == 0, first.output
+    assert _lots(test_data_dir, "child")["Asset_Savings"]["opening_balance"] == "0.00"
+
+    _export_with(quicken_net_worth_export, '"0.00"', '"1,234.56"')
+    again = _import(test_data_dir, "holdings", str(quicken_net_worth_export), scenario="child")
+    assert again.exit_code == 0, again.output
+    assert "override" not in again.output
+    assert lots.read_text(encoding="utf-8").count("Asset_Savings") == 1
+    assert _lots(test_data_dir, "child")["Asset_Savings"]["opening_balance"] == "1234.56"
+
+
+@pytest.mark.usefixtures("quicken_account_map")
+def test_sim_import_holdings_keeps_a_lots_other_columns(
+    test_data_dir: Path, quicken_net_worth_export: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("account_lots.csv")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join([lines[0] + ",note", *(line + ",mine" for line in lines[1:])]) + "\n",
+                    encoding="utf-8")
+
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export))
+
+    assert result.exit_code == 0, result.output
+    rows = _lots(test_data_dir)
+    assert rows["Asset_Checking"]["opening_balance"] == "1234.56"
+    assert {row["note"] for row in rows.values()} == {"mine"}
+    assert rows["Asset_Checking"]["minimum_balance"] == "2000.00"
+
+
+@pytest.mark.usefixtures("quicken_account_map", "test_child_scenario")
+def test_sim_import_holdings_takes_an_accounts_kind_as_the_scenario_loads_it(
+    test_data_dir: Path, quicken_net_worth_export: Path,
+) -> None:
+    # An override that leaves kind and subkind to the parent (ADR-003 §4.5).
+    (test_data_dir / "scenarios" / "child" / "accounts.csv").write_text(
+        "name,owner\nLiability_Mortgage,joint\n", encoding="utf-8")
+
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), scenario="child")
+
+    assert result.exit_code == 0, result.output
+    assert _lots(test_data_dir, "child")["Liability_Mortgage"]["opening_balance"] == "240000.00"
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_asks_nothing_of_a_scenario_that_does_not_load(
+    test_data_dir: Path, quicken_net_worth_export: Path,
+    append_scheduled_row: Callable[..., None],
+) -> None:
+    append_scheduled_row(name="broken", from_account="No_Such_Account", to_account="Expense_Living",
+                         amount_rule_kind="fixed_amount", amount="1.00", start="2026-01")
+
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input="skip\n" * 4)
+
+    assert result.exit_code != 0
+    assert "already fails to load" in result.output
+    assert "has no saved mapping" not in result.output
+    assert not (test_data_dir / "imports").exists()
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_refuses_a_lot_that_changed_while_it_asked(
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
+    retire_alice_csv: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\n"
+        "Asset_TraditionalIRA_Alice,,skip,,,\n")
+    before = saved.read_text(encoding="utf-8")
+    lots = retire_alice_csv("account_lots.csv")
+    ask = cli._ask_holding_target
+
+    def edited_meanwhile(*args, **kwargs):
+        lots.write_text(lots.read_text(encoding="utf-8").replace("2000.00", "3000.00"),
+                        encoding="utf-8")
+        return ask(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_ask_holding_target", edited_meanwhile)
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input="skip\n")
+
+    assert result.exit_code != 0
+    assert "changed while this import was being answered" in result.output
+    row = _lots(test_data_dir)["Asset_Checking"]
+    assert (row["opening_balance"], row["minimum_balance"]) == ("5000.00", "3000.00")
+    # The edit was refused, so the answer wasn't saved either.
+    assert saved.read_text(encoding="utf-8") == before
+
+
+def test_sim_import_holdings_tells_a_missing_account_from_a_missing_lot(
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
+) -> None:
+    rest = "Asset_TraditionalIRA_Alice,,skip,,,\nLiability_Mortgage,,skip,,,\n"
+    saved = write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,map,Asset_Gone,,\nAsset_Brokerage_Joint,,skip,,,\n" + rest)
+    gone = _import(test_data_dir, "holdings", str(quicken_net_worth_export))
+    assert gone.exit_code != 0
+    assert f"{saved} maps to account(s) retire_alice doesn't have" in gone.output
+    assert "Asset_Checking -> Asset_Gone" in gone.output and "lot add" not in gone.output
+
+    write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,skip,,,\nAsset_Brokerage_Joint,,map,Asset_Brokerage_Joint,vti,\n" + rest)
+    no_lot = _import(test_data_dir, "holdings", str(quicken_net_worth_export))
+    assert no_lot.exit_code != 0
+    assert "sim account lot add" in no_lot.output
+    assert "Asset_Brokerage_Joint -> Asset_Brokerage_Joint:vti" in no_lot.output
+
+
+def test_sim_import_holdings_says_when_a_report_has_no_balances(
+    test_data_dir: Path, quicken_transaction_export: Path,
+) -> None:
+    result = _import(test_data_dir, "holdings", str(quicken_transaction_export),
+                     "--source", "quicken")
+    assert result.exit_code != 0
+    assert "no account balances in" in result.output
+
+
+@pytest.mark.usefixtures("quicken_category_map", "test_child_scenario")
+def test_sim_import_transactions_shows_the_rules_a_scenario_inherits(
+    test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,Expense_Living\n")
+    assert _transactions(test_data_dir, quicken_transaction_export).exit_code == 0
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
+
+    result = _import(test_data_dir, "transactions", str(quicken_transaction_export),
+                     "--from-account", "Asset_Checking", "--dry-run", scenario="child")
+
+    assert result.exit_code == 0, result.output
+    lines = {line.split()[0]: line.split()[1:] for line in result.output.splitlines()
+             if line.strip().startswith("baseline_expense_")}
+    assert lines == {
+        "baseline_expense_food": ["Expense_Living", "420.00", "420.00", "unchanged"],
+        "baseline_expense_gifts": ["Expense_Living", "30.00", "30.00", "kept"],
+    }
+    assert "baseline_expense_gifts is no longer generated, but child inherits it from " \
+        "retire_alice" in result.output
+    assert "sim scheduled delete baseline_expense_gifts" in result.output
+
+
+@pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
+def test_sim_import_transactions_does_not_ask_about_the_blank_category(
+    test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
+) -> None:
+    saved = write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
+    before = saved.read_text(encoding="utf-8")
+    _export_with(quicken_transaction_export, '"Florist","Gifts"', '"Florist",""')
+
+    result = _transactions(test_data_dir, quicken_transaction_export, input="Expense_Living\n")
+
+    assert result.exit_code == 0, result.output
+    assert "expense account for" not in result.output
+    assert "ignoring category ''" in result.output
+    assert saved.read_text(encoding="utf-8") == before
+    assert list(_generated(test_data_dir)) == ["baseline_expense_food"]
+
+
+@pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
+def test_sim_import_transactions_asks_before_overriding_an_account_named_like_the_category(
+    test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
+    test_child_scenario: Path,
+) -> None:
+    saved = write_import_map("expense_accounts.csv", "Food,Expense_Living\n")
+    before = saved.read_text(encoding="utf-8")
+    header = (test_data_dir / "scenarios" / "retire_alice" / "accounts.csv").read_text(
+        encoding="utf-8").splitlines()[0]
+    row = dict.fromkeys(header.split(","), "") | {
+        "name": "Gifts", "kind": "expense", "subkind": "living", "owner": "joint"}
+    (test_child_scenario / "accounts.csv").write_text(
+        header + "\n" + ",".join(row.values()) + "\n", encoding="utf-8")
+
+    # In retire_alice, which has no Gifts account: N keeps the answer to this run.
+    result = _transactions(test_data_dir, quicken_transaction_export, input="skip\nn\n")
+    assert result.exit_code == 0, result.output
+    assert "Another scenario has an account named Gifts" in result.output
+    assert saved.read_text(encoding="utf-8") == before
+
+    result = _transactions(test_data_dir, quicken_transaction_export, input="skip\ny\n")
+    assert result.exit_code == 0, result.output
+    assert saved.read_text(encoding="utf-8") == before + "Gifts,-\n"
+
+
+def test_a_rename_warns_when_a_mapping_file_does_not_read(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    saved = write_import_map("quicken/accounts.csv", "Old Card,,Skip,,,\nBank,,map,Asset_Checking,,\n")
+    before = saved.read_text(encoding="utf-8")
+
+    result = CliRunner().invoke(main, [
+        "sim", "account", "rename", "Asset_Checking", "Asset_Bank",
+        "--scenario", "retire_alice", "--data-dir", str(test_data_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "warning: the saved import mappings still name Asset_Checking, not Asset_Bank" \
+        in result.output
+    assert "action must be 'map' or 'skip'" in result.output
+    assert saved.read_text(encoding="utf-8") == before
+    assert "Asset_Bank" in _lots(test_data_dir)
+
+
+def test_a_rename_follows_a_map_not_yet_migrated_and_a_category_named_like_the_account(
+    test_data_dir: Path, write_import_map: MapWriter, write_old_import_map: MapWriter,
+) -> None:
+    old = write_old_import_map("retire_alice", "Checking,Asset_Checking,map,\n")
+    write_import_map("quicken/categories.csv", "Groceries,Expense_Living\n")
+    where = ["--scenario", "retire_alice", "--data-dir", str(test_data_dir)]
+
+    result = CliRunner().invoke(main, ["sim", "account", "rename", "Asset_Checking", "Asset_Bank", *where])
+    assert result.exit_code == 0, result.output
+    assert old.read_text(encoding="utf-8").splitlines()[1] == "Checking,Asset_Bank,map,"
+
+    # The category found the account by its name; now it needs a row to.
+    result = CliRunner().invoke(main, ["sim", "account", "rename", "Expense_Living", "Expense_Life", *where])
+    assert result.exit_code == 0, result.output
+    assert (test_data_dir / "imports" / "expense_accounts.csv").read_text(encoding="utf-8") == \
+        "category,account\nExpense_Living,Expense_Life\n"

@@ -112,7 +112,9 @@ def plan_migration(data_dir: Path) -> Plan:
                 continue
             row = [quicken_name, "", action, account, "", note]
             earlier = merged.setdefault(quicken_name, (row, scenario))
-            if (earlier[0][2], earlier[0][3]) != (action, account):
+            # A skip row's account is never read, so it can't conflict.
+            if (earlier[0][2], earlier[0][3] if earlier[0][2] == "map" else "") \
+                    != (action, account if action == "map" else ""):
                 conflicts.setdefault(quicken_name, {
                     f"{earlier[1]}: {earlier[0][2]} {earlier[0][3]}".rstrip()
                 }).add(f"{scenario}: {action} {account}".rstrip())

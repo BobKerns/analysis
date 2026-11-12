@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 
 from analysis.sim.imports.forms import Holding, Snapshot
 from analysis.sim.imports.mapping import AccountMap, AccountTarget
-from analysis.sim.registries import DEFAULT_LOT
+from analysis.sim.registries import DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+from analysis.sim.units import dollars_to_cents
 
 __all__ = ["Change", "HoldingsPlan", "format_dollars", "is_investment_asset", "plan"]
 
@@ -46,8 +47,8 @@ class Change:
 class HoldingsPlan:
     rows: list[dict[str, str]]
     """The scenario's lots as the import would leave them, in the order given."""
-    changed_rows: list[int] = field(default_factory=list)
-    """Indexes into ``rows`` of the lots to write."""
+    cells: dict[int, dict[str, str]] = field(default_factory=dict)
+    """The cells to write, by index into ``rows``: only what the import sets."""
     changes: list[Change] = field(default_factory=list)
     lots_changed: int = 0
     """Lots whose balance differs (a seeded prior-year balance alone doesn't count)."""
@@ -55,7 +56,9 @@ class HoldingsPlan:
     unmapped: list[Holding] = field(default_factory=list)
     """Holdings the map has no row for."""
     unknown: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
-    """Holdings mapped to an account or lot the scenario doesn't have."""
+    """Holdings mapped to an account the scenario doesn't have."""
+    no_lot: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
+    """Holdings mapped to an account the scenario has, but not to a lot of it."""
     skipped: list[str] = field(default_factory=list)
     ineligible: list[str] = field(default_factory=list)
     """Accounts ``--year-end`` doesn't apply to."""
@@ -64,7 +67,7 @@ class HoldingsPlan:
     @property
     def complete(self) -> bool:
         """Whether every holding found a place (or was skipped on purpose)."""
-        return not self.unmapped and not self.unknown
+        return not self.unmapped and not self.unknown and not self.no_lot
 
 
 def plan(
@@ -80,7 +83,10 @@ def plan(
     ``prior_year_end_balance`` only when it's still blank, and only for
     investment asset accounts). With it, the snapshot is the prior year's
     end: ``prior_year_end_balance`` is always overwritten, for investment
-    asset accounts only, and ``opening_balance`` is left alone.
+    asset accounts only, and ``opening_balance`` is left alone. The loader
+    wants that balance on every lot of an account (Roth lots aside) or on
+    none, so a lot is seeded, or set with ``year_end``, only when that leaves
+    the account whole.
 
     Two holdings mapped to one lot are added together, as the source signs
     them. A liability is stored as a non-negative debt, so its total is then
@@ -109,7 +115,7 @@ def plan(
             wanted = {target.lot, "" if target.lot == DEFAULT_LOT else target.lot}
             indexes = [i for i in indexes if result.rows[i].get("lot", "") in wanted]
         if not indexes:
-            result.unknown.append((holding, target))
+            result.no_lot.append((holding, target))
             continue
         if len(indexes) > 1:
             result.warnings.append(
@@ -134,20 +140,44 @@ def plan(
                 cents = abs(cents)
         dollars = format_dollars(cents)
         column = "prior_year_end_balance" if year_end else "opening_balance"
+        # The account's other lots that must agree with this one on having a
+        # prior-year balance: those this run doesn't set too.
+        others = [
+            other for i, other in enumerate(result.rows)
+            if i not in totals and other.get("account_name") == name
+            and RETIREMENT_LOT_SUBKINDS.get(other.get("subkind", "")) != "tax_free"
+        ]
+        whole = all(other.get("prior_year_end_balance", "") for other in others)
+        if year_end and not whole:
+            result.warnings.append(
+                f"{name!r} has other lots with no prior_year_end_balance, which must be on "
+                f"every lot of an account or on none, so lot {lot or DEFAULT_LOT!r} was "
+                "skipped; import every lot of the account in one run")
+            continue
         before = row.get(column, "")
-        changed = before != dollars
-        if changed:
+        cells: dict[str, str] = {}
+        # Compared as money: '20000' and '20000.00' are the same balance, and
+        # rewriting one as the other would override an inherited lot for nothing.
+        if _cents(before) != cents:
             result.changes.append(Change(name, lot, column, before, dollars))
             result.lots_changed += 1
+            cells[column] = dollars
         else:
             result.lots_unchanged += 1
-        row[column] = dollars
-        if not year_end and is_investment_asset(kind, subkind) \
+        if not year_end and is_investment_asset(kind, subkind) and whole \
                 and not row.get("prior_year_end_balance", ""):
-            row["prior_year_end_balance"] = dollars
+            cells["prior_year_end_balance"] = dollars
             result.changes.append(
                 Change(name, lot, "prior_year_end_balance", "", dollars, "seeded from opening"))
-            changed = True
-        if changed:
-            result.changed_rows.append(index)
+        if cells:
+            row |= cells
+            result.cells[index] = cells
     return result
+
+
+def _cents(text: str) -> int | None:
+    """A balance cell as cents; None for a blank or malformed one."""
+    try:
+        return dollars_to_cents(text)
+    except ValueError:
+        return None
