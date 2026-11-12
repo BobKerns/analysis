@@ -154,6 +154,8 @@ What it does:
   charity and medical from tagged spending and adds them to what
   `deductions` returns; a year whose `deductions` figures its own itemized
   total overrides `itemized_lines` to return `None`, or those count twice.
+  (A module still saying `API_VERSION = 4` that overrides `deductions`
+  gets no lines, as before they existed.)
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is
   the year's spending carrying a tag; `ty.grown(amount, series, since)` a
   figure the law set for year `since`, grown with inflation to this one,

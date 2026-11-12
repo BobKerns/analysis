@@ -764,9 +764,6 @@ def itemized_deduction(ty: TaxYear, kind: str) -> int:
     return int(rows[-1]["amount"]) if rows else 0
 
 
-ITEMIZED_LINES = registries.ITEMIZED_LINES
-
-
 @dataclass(frozen=True)
 class Itemized:
     """A year's itemized deductions before the limits that move with AGI
@@ -825,18 +822,21 @@ class Itemized:
             charity = min(charity, cap_share)
         floor = share("medical_floor")
         medical = self.medical if floor is None else max(0, self.medical - floor)
-        lines = {"itemized_salt": salt, "itemized_mortgage_interest": self.mortgage_interest,
-                 "itemized_charity": charity, "itemized_medical": medical, "itemized_other": self.other}
+        # In registries.ITEMIZED_LINES' order, the one list of their names.
+        lines = dict(zip(registries.ITEMIZED_LINES,
+                         (salt, self.mortgage_interest, charity, medical, self.other), strict=True))
         return {**lines, "itemized_deduction": sum(lines.values())}
 
-    def deduction_lines(self, agi: int, standard: int, *, taken: int | None = None) -> dict[str, int]:
-        """The deduction lines at ``agi``: the ``standard`` deduction, the
-        itemized lines, and the ``deduction`` taken, the larger of the
-        itemized total and ``taken`` (the standard deduction, unless a
-        calculator figured its own)."""
+    def deduction_lines(self, agi: int, standard: int | None, *,
+                        taken: int | None = None) -> dict[str, int]:
+        """The deduction lines at ``agi``: the ``standard`` deduction (none
+        when None: a calculator without one), the itemized lines, and the
+        ``deduction`` taken, the larger of the itemized total and ``taken``
+        (the standard deduction, unless a calculator figured its own)."""
         lines = self.lines(agi)
-        return {"standard_deduction": standard, **lines,
-                "deduction": max(standard if taken is None else taken, lines["itemized_deduction"])}
+        floor = taken if taken is not None else standard or 0
+        return {**({} if standard is None else {"standard_deduction": standard}), **lines,
+                "deduction": max(floor, lines["itemized_deduction"])}
 
 
 def itemized_limits(ty: TaxYear, kind: str, series: str | None = None) -> Mapping[str, Any] | None:

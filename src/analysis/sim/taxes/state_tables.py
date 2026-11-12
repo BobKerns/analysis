@@ -10,17 +10,22 @@ and surcharge; its own deductions and credits (``state_adjustments``,
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
-from analysis.sim import registries
+from analysis.sim import registries, tax_api
 from analysis.sim.tax_api import NO_EXTRA, Extra, TaxError, register
 from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import (
     Adjustment, Basis, FederalStateYear, Income, StateFromFederal,
 )
+
+
+ITEMIZED_LINES_API = 5
+"""The API version that added :meth:`StateTablesYear.itemized_lines` (#542)."""
 
 
 class StateTablesYear(FederalStateYear):
@@ -135,7 +140,7 @@ class StateTablesYear(FederalStateYear):
         if itemized is None:
             return base
         return {**base, **itemized.deduction_lines(
-            income.agi, base.get("standard_deduction", 0), taken=base["deduction"])}
+            income.agi, base.get("standard_deduction"), taken=base["deduction"])}
 
     def itemized_lines(self) -> common.Itemized | None:
         """The year's itemized deductions from spending (#542), under the
@@ -150,7 +155,7 @@ class StateTablesYear(FederalStateYear):
         few another's. An HSA's medical payments count where the state taxes
         the HSA (#490): it never excluded that money."""
         ty, params = self.ty, self.ty.params
-        if not ty.has_table(registries.ITEMIZED_LIMITS):
+        if not ty.has_table(registries.ITEMIZED_LIMITS) or self._deductions_before_lines():
             return None
         limits_aux = params.itemized_limits_aux
         series = self.series if limits_aux == registries.STATE_ITEMIZED_LIMITS else None
@@ -164,6 +169,16 @@ class StateTablesYear(FederalStateYear):
     @cached_property
     def _itemized(self) -> common.Itemized | None:
         return self.itemized_lines()
+
+    def _deductions_before_lines(self) -> bool:
+        """Whether a subclass's :meth:`deductions` was written for an API
+        before the lines (5, #542): it may figure its own Schedule A, which
+        the lines would count again, so it keeps the deduction it figures."""
+        cls = type(self)
+        if cls.deductions is StateTablesYear.deductions:
+            return False
+        module = sys.modules.get(cls.__module__)
+        return getattr(module, "API_VERSION", tax_api.API_VERSION) < ITEMIZED_LINES_API
 
     def additions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:
         fed, capital = basis.federal, self._capital

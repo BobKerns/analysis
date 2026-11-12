@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import replace
@@ -257,6 +258,8 @@ def test_a_run_itemizes_mortgage_interest_property_tax_and_state_tax(
     ("2026-01-31,MFJ,-1.00,,,,,,,", "salt_cap must not be negative"),
     ("2026-01-31,MFJ,,,,,,,120%,", "charity_limit must be 0% to 100%"),
     ("2026-01-31,MFJ,40000.00,,500000.00,,,,,", "needs both salt_phaseout_start and salt_phaseout_rate"),
+    # An MFS row halved from MFJ's but for its floor would double its cap.
+    ("2026-01-31,MFJ,5000.00,10000.00,,,,,,", "salt_floor can't be above salt_cap"),
 ])
 def test_the_loader_checks_an_itemized_limits_row(
     write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], object], row: str, message: str,
@@ -331,6 +334,48 @@ def test_a_subclass_figuring_its_own_schedule_a_turns_the_lines_off() -> None:
     ret = year.compute()
     assert "itemized_salt" not in ret.lines
     assert ret["deduction"] == 20_000_00
+
+
+class _OlderOwnDeductions(StateTablesYear):
+    """:class:`_OwnDeductions` as written for API 4, before the lines."""
+
+    def deductions(self) -> Mapping[str, int]:
+        own = self.ty.spent("tax:property")
+        return {"itemized_deduction": own, "deduction": max(12_000_00, own)}
+
+
+def test_a_subclass_written_before_the_lines_keeps_its_own_schedule_a(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its module says API 4, from before itemized_lines existed, so its
+    deductions() is taken to figure the whole Schedule A."""
+    monkeypatch.setattr(sys.modules[__name__], "API_VERSION", 4, raising=False)
+    year = _OlderOwnDeductions(calculator("state_tables"), _year(
+        200_000_00, [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")],
+        jurisdiction="state", tables={**TABLES, **CA_LIMITS}))
+    ret = year.compute()
+    assert "itemized_salt" not in ret.lines
+    assert ret["deduction"] == 20_000_00
+    monkeypatch.setattr(sys.modules[__name__], "API_VERSION", 5)
+    assert _OlderOwnDeductions(calculator("state_tables"), year.ty).compute()["itemized_salt"] \
+        == 20_000_00
+
+
+class _NoStandard(StateTablesYear):
+    """A state with an exemption and no standard deduction, which leaves
+    the itemized lines to the built-in."""
+
+    def deductions(self) -> Mapping[str, int]:
+        return {"itemized_deduction": 0, "deduction": 12_000_00}
+
+
+def test_a_subclass_without_a_standard_deduction_gets_no_such_line() -> None:
+    year = _NoStandard(calculator("state_tables"), _year(
+        200_000_00, [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")],
+        jurisdiction="state", tables={**TABLES, **CA_LIMITS}))
+    ret = year.compute()
+    assert "standard_deduction" not in ret.lines
+    assert ret["itemized_salt"] == ret["deduction"] == 20_000_00
 
 
 def test_a_subclass_extending_deductions_keeps_the_lines() -> None:
@@ -460,20 +505,6 @@ def test_state_tax_paid_counts_once_wherever_it_is_paid(
         assert salt[year] == housing[year] + state_paid.get(year, 0), year
 
 
-def test_a_rule_paying_into_a_shared_tax_account_is_a_warning(
-    add_state_tax: Callable[..., None], retire_alice_csv: Callable[[str], Path],
-    load_test_copy: Callable[[], Any],
-) -> None:
-    add_state_tax()
-    _route(retire_alice_csv, "shared")
-    path = retire_alice_csv("scheduled.csv")
-    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    rows.loc[rows["name"] == "housing", "to_account"] = "Expense_Taxes_Federal"
-    rows.to_csv(path, index=False)
-    warnings = load_test_copy().warnings
-    assert any("housing pays into it as state tax" in w for w in warnings), warnings
-
-
 LIMITS_HEADER = ("effective_date,filing_status,salt_cap,salt_floor,salt_phaseout_start,salt_phaseout_rate,"
                  "mortgage_limit,charity_floor,charity_limit,medical_floor\n")
 
@@ -504,6 +535,17 @@ def test_a_hand_typed_total_beside_a_mortgage_is_a_warning(
     write_aux("federal_deductions.csv", "effective_date,amount\n2027-01-31,30000.00\n")
     warnings = load_test_copy().warnings
     assert any("federal_deductions.csv (2027): the hand-typed total adds" in w for w in warnings), warnings
+
+
+@pytest.mark.parametrize("row", ["2025-01-31,30000.00", "2027-01-31,0.00"])
+def test_a_hand_typed_total_nothing_adds_to_is_no_warning(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], Any], row: str,
+) -> None:
+    """A year before the limits' first date (2026) itemizes only its
+    hand-typed total, and a zero adds nothing to the lines."""
+    write_aux("federal_deductions.csv", f"effective_date,amount\n{row}\n")
+    warnings = load_test_copy().warnings
+    assert not any("the hand-typed total adds" in w for w in warnings), warnings
 
 
 @pytest.mark.parametrize(("state_tax", "credit"), [
@@ -628,3 +670,39 @@ def test_a_state_refund_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connect
     post("2028-05-31", state, checking, 9_000_00, "tax", 2, 2027)
     paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None))
     assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 0)]
+
+
+@pytest.mark.parametrize("preroll", [False, True])
+def test_a_catch_up_with_no_regular_month_still_meets_the_debt_limit(
+    ledger_con: sqlite3.Connection, preroll: bool,
+) -> None:
+    """A $2M mortgage paid off before the run starts has only its catch-up
+    that year: five months' interest at once (``ytd_amount``) is on the
+    months' average debt, and a ``ytd_preroll``'s each month on its own."""
+    from analysis.sim.engine import _mortgage_months
+    checking, liability, interest = 1, 2, 3
+    con = ledger_con
+    con.executemany("INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)", [
+        (checking, "Asset_Checking", "asset", "cash"),
+        (liability, "Liability_Mortgage", "liability", "mortgage"),
+        (interest, "Expense_Interest_Mortgage", "expense", "interest_expense")])
+    con.executemany("INSERT INTO chain(id, name, account_id) VALUES (?, ?, ?)", [
+        (checking, "Asset_Checking", checking), (liability, "Liability_Mortgage", liability)])
+    con.execute(
+        "INSERT INTO scheduled_transaction(id, name, from_account, to_account, cadence, "
+        "amount_rule_kind, tax_character, start, rate_micros, ytd_preroll) "
+        "VALUES (1, 'mortgage', ?, ?, 'monthly', 'mortgage_payment', 'none', '2025-01-31', 60000, ?)",
+        (checking, liability, int(preroll)))
+    posts = ([(f"2026-{m:02d}-28", 10_000_00) for m in range(1, 6)] if preroll
+             else [("2026-05-31", 50_000_00)])
+    for date, amount in posts:
+        con.execute(
+            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind, "
+            "reason_id) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, 'none', 'ytd_rule', 1)",
+            (date, checking, interest, checking, interest, amount, amount))
+    months = _mortgage_months(con, 2026, {}, lambda aid: Account(f"#{aid}", "expense", "", None),
+                              [interest])
+    assert {m.balance for m in months} == {2_000_000_00}
+    assert sum(m.interest for m in months) == 50_000_00
+    assert len(months) == (5 if preroll else 1)

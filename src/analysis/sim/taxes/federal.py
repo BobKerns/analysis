@@ -193,11 +193,11 @@ class FederalYear(Prepared):
         }
         if self._exempt:
             lines["tax_exempt_interest"] = self._exempt
-        # A Return shares the memo, so it must not be writable.
         # The state income tax among the deduction taken, which Utah's
         # taxpayer credit leaves out of its federal_deduction base (#542).
         income_tax = (self._itemized.income_tax_deducted(agi)
                       if deductions["deduction"] == deductions["itemized_deduction"] else 0)
+        # A Return shares the memo, so it must not be writable.
         return Return(lines, MappingProxyType(
             {**self._memo, "ss_untaxed": self._ss_income - taxable_ss,
              "income_tax_deducted": income_tax}))

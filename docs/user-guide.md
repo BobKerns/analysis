@@ -1090,7 +1090,7 @@ for the expenses one by one, or give a total instead
 (`sim deduction add 2029 12500`). Don't add anything the lines above already
 count, such as property tax or mortgage interest: it would count twice.
 A total typed in before these lines existed may hold them; `sim check`
-warns of a year's total beside a mortgage or tagged spending.
+warns of a year's total beside a mortgage, IRMAA or tagged spending.
 
 `sim deduction list` shows each year's total, `sim deduction edit 2028`
 changes a year (it asks for each expense in turn), and

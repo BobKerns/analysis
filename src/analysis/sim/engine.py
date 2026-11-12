@@ -3082,16 +3082,23 @@ def _mortgage_months(
     rule pays down the same debt. A month's balance is its interest over
     the monthly rate, as ``_apply_mortgage_payment`` figured it; two rules
     posting for one debt in a month (an overlap at a rate change) share
-    that balance, so the larger is taken rather than the sum. A year-to-date
-    catch-up posts several months' interest at once, so its balance is the
-    debt's in its first month of regular payments that year instead. The
-    year is the one the interest counts in as spending."""
+    that balance, so the larger is taken rather than the sum. A
+    ``ytd_amount`` catch-up posts several months' interest at once, so its
+    balance is the debt's in its first month of regular payments that year
+    instead, or with none, the average its interest implies; a
+    ``ytd_preroll`` posts month by month, as the rule does. The year is the
+    one the interest counts in as spending."""
     rules = {
         tid: (liability, rate) for tid, liability, rate in con.execute(
             "SELECT s.id, c.account_id, s.rate_micros FROM scheduled_transaction s "
             "JOIN chain c ON c.id = s.to_account "
             "WHERE s.amount_rule_kind = 'mortgage_payment' AND s.rate_micros > 0")
     }
+    # A ytd_preroll catch-up posts each month's own interest, so it's read
+    # as a regular month; a ytd_amount posts them all at once.
+    preroll = {int(tid) for (tid,) in con.execute(
+        "SELECT id FROM scheduled_transaction WHERE amount_rule_kind = 'mortgage_payment' "
+        "AND ytd_preroll <> 0")}
     if not rules or not expense_ids:
         return []
     # (year, month, rule, payer, character) -> interest, a catch-up's
@@ -3111,7 +3118,7 @@ def _mortgage_months(
             (tax_year,)):
         year, month, tid, frm, character = int(year), int(month), int(tid), int(frm), str(character)
         key = (year, month, tid, frm, character)
-        (catchup if kind == "ytd_rule" else interest)[key] += int(amount)
+        (catchup if kind == "ytd_rule" and tid not in preroll else interest)[key] += int(amount)
         payer, payee = account(frm), account(to)
         own = rule_tags.get(tid, frozenset())
         tags[key] = tax_api._effective_tags(own, payee.tags) | _implied_tags(
@@ -3131,9 +3138,13 @@ def _mortgage_months(
     for key, paid in catchup.items():
         year, month, tid, frm, character = key
         liability = int(rules[tid][0])
+        # With no regular month that year (the debt was paid off before the
+        # run starts), the balance is the months' average: the catch-up
+        # covers January through its own month.
+        balance = first.get((year, liability)) or paid * 12 * 1_000_000 // int(rules[tid][1]) // month
         found = months.setdefault((year, month, liability, frm, character), [0, 0, frozenset()])
         found[0] += paid
-        found[1] = max(found[1], first.get((year, liability), 0))
+        found[1] = max(found[1], balance)
         found[2] |= tags[key]
     return [
         tax_api.Mortgage(

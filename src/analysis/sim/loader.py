@@ -1381,7 +1381,6 @@ def load_scenario(
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
-    _warn_shared_tax_destination(tax_rows, scheduled_rows, aux_rows, warnings)
     _warn_hand_typed_deductions(aux_rows, scheduled_rows, accounts, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
@@ -3100,14 +3099,28 @@ def _validate_optional_state_tables(
         if kind in registries.STATE_BAND_KINDS:
             band_statuses.setdefault((kind, state, effective), set()).add(
                 str(payload.get("filing_status")))
-    for (kind, state, effective), statuses in sorted(band_statuses.items()):
-        missing = sorted(bracket_statuses - statuses)
+    _check_filing_statuses(
+        {(f"aux/{kind}__{state}.csv", effective): found
+         for (kind, state, effective), found in band_statuses.items()},
+        bracket_statuses, "the state brackets have",
+        "a year filed that way would tax nothing here (add a 0% band for a status it doesn't tax)",
+        issues)
+
+
+def _check_filing_statuses(
+    dated: Mapping[tuple[str, str], set[str]], reference: set[str], having: str,
+    consequence: str, issues: list[str],
+) -> None:
+    """Each ``(file, date)`` in ``dated`` has a row for every filing status
+    in ``reference`` (the ones ``having`` names): only the latest date's
+    rows are in force, so a year filed under a missing status (the
+    survivor's Single, ADR-003 §4.9) would find none."""
+    for (file, effective), found in sorted(dated.items()):
+        missing = sorted(reference - found)
         if missing:
             issues.append(
-                f"aux/{kind}__{state}.csv ({effective}): no rows for filing status "
-                f"{', '.join(missing)}, "
-                "which the state brackets have; a year filed that way would tax nothing "
-                "here (add a 0% band for a status it doesn't tax)")
+                f"{file} ({effective}): no rows for filing status {', '.join(missing)}, "
+                f"which {having}; {consequence}")
 
 
 def _validate_filing_status(
@@ -4116,33 +4129,6 @@ def _warn_state_standard_deduction(
             )
 
 
-def _warn_shared_tax_destination(
-    tax_rows: list[dict[str, str]],
-    scheduled_rows: list[dict[str, str]],
-    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
-    warnings: list[str],
-) -> None:
-    """A state or local tax paid into the federal tax's destination account
-    (#542): the federal SALT deduction counts that jurisdiction's
-    settlements there, but can't tell its estimated payments from the
-    federal ones, so a scheduled rule paying into the account counts for
-    neither."""
-    if not any(kind == registries.ITEMIZED_LIMITS for kind, *_ in aux_rows):
-        return
-    federal = {row.get("destination", "") for row in tax_rows if row["name"] == "federal"}
-    for where, row in _located(tax_rows, registries.TAXES_DIR):
-        destination = row.get("destination", "")
-        if row["name"] == "federal" or destination not in federal:
-            continue
-        payers = sorted({r["name"] for r in scheduled_rows if r.get("to_account") == destination})
-        if payers:
-            warnings.append(
-                f"{where}: the {row['name']} tax is paid into {destination}, the federal tax's "
-                f"destination too, so the federal SALT deduction can't count what "
-                f"{', '.join(payers)} pays into it as {row['name']} tax; pay it into an account "
-                "of its own")
-
-
 def _warn_hand_typed_deductions(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     scheduled_rows: list[dict[str, str]],
@@ -4152,9 +4138,19 @@ def _warn_hand_typed_deductions(
     """A hand-typed itemized total (``federal_deductions``,
     ``state_deductions``) for a year whose itemized lines are figured from
     spending too (#542): one written before they were, a whole Schedule A,
-    counts its mortgage interest or property tax twice."""
-    if not any(kind == registries.ITEMIZED_LIMITS for kind, *_ in aux_rows):
+    counts its mortgage interest, property tax or IRMAA twice. Only years
+    the lines are figured in: from the federal limits' first date, and for
+    ``state_deductions`` only where some state has limits of its own; a
+    zero total adds nothing. One warning for all such rows."""
+    def first_year(kind: str, *, keyed: bool) -> str | None:
+        dates = [effective for k, series, _payload, effective in aux_rows
+                 if k == kind and (series is not None) == keyed]
+        return min(dates)[:4] if dates else None
+
+    federal_from = first_year(registries.ITEMIZED_LIMITS, keyed=False)
+    if federal_from is None:
         return
+    state_from = first_year(registries.STATE_ITEMIZED_LIMITS, keyed=True)
     itemized = frozenset(registries.ITEMIZED_TAGS.values())
 
     def tagged(row: Mapping[str, str]) -> bool:
@@ -4164,21 +4160,31 @@ def _warn_hand_typed_deductions(
             return False  # reported where the tags are checked
         return bool(tags & itemized) or row.get("tax_character") == "property_tax"
 
-    figured_always = any(tagged(row) for row in (*accounts, *scheduled_rows))
-    for kind, series, _payload, effective in aux_rows:
+    figured_always = any(tagged(row) for row in (*accounts, *scheduled_rows)) or any(
+        row.get("amount_rule_kind") == "irmaa" for row in scheduled_rows)
+    found: dict[str, list[str]] = {}
+    for kind, series, payload, effective in aux_rows:
         if kind not in ("federal_deductions", "state_deductions") or series is not None:
             continue
         year = effective[:4]
+        lines_from = federal_from if kind == "federal_deductions" else state_from
+        if lines_from is None or year < max(lines_from, federal_from) \
+                or payload.get("amount") == 0:
+            continue
         mortgage = any(
             row.get("amount_rule_kind") == "mortgage_payment"
             and row.get("start", "")[:7] <= f"{year}-12"
             and (not row.get("end") or row["end"][:7] >= f"{year}-01")
             for row in scheduled_rows)
         if mortgage or figured_always:
-            warnings.append(
-                f"aux/{kind}.csv ({year}): the hand-typed total adds to the itemized lines figured "
-                "from spending (a mortgage's interest, and spending tagged tax:property, "
-                "tax:charity or tax:medical); leave those out of it, or they count twice")
+            found.setdefault(kind, []).append(year)
+    if found:
+        where = "; ".join(f"aux/{kind}.csv ({', '.join(sorted(set(years)))})"
+                          for kind, years in sorted(found.items()))
+        warnings.append(
+            f"{where}: the hand-typed total adds to the itemized lines figured from spending "
+            "(a mortgage's interest, IRMAA's surcharges, and spending tagged tax:property, "
+            "tax:charity or tax:medical); leave those out of it, or they count twice")
 
 
 def _validate_state_social_security(
@@ -6233,7 +6239,8 @@ def _validate_itemized_limits(
     """An ``itemized_limits`` table (#542) is the federal one, not keyed by a
     state (another series is one a ``swap_aux_table`` row reads), and
     each row's figures make sense: no negative dollars, rates of 0% to
-    100%, and a SALT phase-down with both its start and its rate. Each of
+    100%, a SALT floor no higher than its cap, and a SALT phase-down with
+    both its start and its rate. Each of
     its dates has a row for every filing status the standard deduction
     has, since only the latest date's rows are in force and a year filed
     under a missing one (the survivor's Single, §4.9) couldn't be taxed."""
@@ -6262,12 +6269,16 @@ def _validate_itemized_limits(
                 issues.append(f"{where}: {column} must be 0% to 100%")
         if (payload.get("salt_phaseout_start") is None) != (payload.get("salt_phaseout_rate_micros") is None):
             issues.append(f"{where}: a SALT phase-down needs both salt_phaseout_start and salt_phaseout_rate")
-    for (name, _series, effective), found in sorted(statuses.items()):
-        missing = sorted(standard_statuses - found)
-        if missing:
-            issues.append(
-                f"aux/{name}.csv ({effective[:7]}): no rows for filing status {', '.join(missing)}, "
-                "which the standard deduction has; a year filed that way couldn't be taxed")
+        cap, floor = payload.get("salt_cap"), payload.get("salt_floor")
+        if cap is not None and floor is not None and floor > cap:
+            # The phase-down stops at the floor, so a floor above the cap
+            # would raise the cap itself.
+            issues.append(f"{where}: salt_floor can't be above salt_cap")
+    _check_filing_statuses(
+        {(f"aux/{name}.csv", effective[:7]): found
+         for (name, _series, effective), found in statuses.items()},
+        standard_statuses, "the standard deduction has", "a year filed that way couldn't be taxed",
+        issues)
 
 
 def _validate_state_gain_tables(
