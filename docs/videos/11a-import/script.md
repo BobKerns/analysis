@@ -134,7 +134,7 @@ Type "sim import sources ~/Downloads/*.csv"
 Sleep 400ms
 Enter
 Wait
-Sleep 9s
+Sleep 6s
 ```
 
 Sim import sources lists the layouts the simulator can read: today,
@@ -165,11 +165,11 @@ Sleep 2s
 Type "Asset_Savings"
 Sleep 600ms
 Enter
-Sleep 4s
+Sleep 3s
 Type "skip"
 Sleep 600ms
 Enter
-Sleep 14s
+Sleep 4s
 Type "Asset_TraditionalIRA_Alice"
 Sleep 600ms
 Enter
@@ -177,16 +177,16 @@ Sleep 2s
 Type "Asset_Roth_Bill"
 Sleep 600ms
 Enter
-Sleep 3s
+Sleep 2s
 Type "skip"
 Sleep 600ms
 Enter
-Sleep 4s
+Sleep 2s
 Type "skip"
 Sleep 600ms
 Enter
 Wait
-Sleep 30s
+Sleep 20s
 ```
 
 Sim import holdings reads the net worth report. It hasn't seen any of
@@ -225,7 +225,7 @@ Type "sim import holdings ~/Downloads/net-worth.csv --dry-run"
 Sleep 400ms
 Enter
 Wait
-Sleep 14s
+Sleep 10s
 ```
 
 The answers are an ordinary file, one row for each outside account: map,
@@ -252,7 +252,7 @@ Type "cat imports/quicken/categories.csv"
 Sleep 400ms
 Enter
 Wait
-Sleep 22s
+Sleep 18s
 ```
 
 Spending takes one file that Alice writes herself. Quicken has dozens of
@@ -282,7 +282,7 @@ Type "sim scheduled delete healthcare --yes"
 Sleep 400ms
 Enter
 Wait
-Sleep 12s
+Sleep 6s
 ```
 
 In video three, Alice and Bill typed two estimates: living, at seventy
@@ -305,38 +305,39 @@ Sleep 500ms
 Type "sim import transactions ~/Downloads/transactions-2025.csv --from-account Asset_Checking"
 Sleep 400ms
 Enter
-Sleep 12s
+Sleep 7s
 Type "Expense_Living"
-Sleep 600ms
+Sleep 200ms
 Enter
-Sleep 2s
+Sleep 1s
 Type "Expense_Living"
-Sleep 600ms
+Sleep 200ms
 Enter
-Sleep 2s
+Sleep 1s
 Type "Expense_Living"
-Sleep 600ms
+Sleep 200ms
 Enter
-Sleep 2s
+Sleep 1s
 Type "Expense_Healthcare"
-Sleep 600ms
+Sleep 200ms
 Enter
-Sleep 2s
+Sleep 1s
 Type "Expense_Living"
-Sleep 600ms
+Sleep 200ms
 Enter
-Sleep 2s
+Sleep 1s
 Type "Expense_Living"
 Sleep 600ms
 Enter
 Wait
-Sleep 30s
+Sleep 22s
 ```
 
 Sim import transactions reads the year, and works out what each category
 cost in an average month. From account says where the money comes from:
 checking. Then, for each category, it asks which expense account the
-spending belongs to. Health goes to healthcare, and the rest to living.
+spending belongs to. Alice and Bill keep two, living and healthcare.
+Health goes to healthcare, and the rest to living.
 It writes one rule for each category, every month, rising with
 inflation. Everyday spending is forty three hundred dollars a month, and
 food a thousand and fifty. Together they come to about seventy seven
