@@ -205,29 +205,36 @@ report export, without ever renaming Quicken's own account names. It has two mod
 Steps:
 
 1. Export the appropriate report from Quicken as CSV.
-2. `scenarios/<name>/quicken_account_map.csv` maps `quicken_name -> account_name`
-   (columns: `quicken_name, account_name, action, note`; `action` is `map` or `skip`).
-   Every account row present in the Quicken export must appear here — new or renamed
-   Quicken accounts are reported as errors instead of silently skipped. Both reports
-   share the same account list, so one map file covers both.
-3. Run:
+2. Run:
 
    ```sh
-   sim import holdings export.csv> --scenario <name> --dry-run              # preview
-   sim import holdings export.csv> --scenario <name>                        # apply
-   sim import holdings year_end.csv> --scenario <name> --year-end --dry-run # preview
-   sim import holdings year_end.csv> --scenario <name> --year-end           # apply
+   sim import holdings export.csv --scenario <name> --dry-run              # preview
+   sim import holdings export.csv --scenario <name>                        # apply
+   sim import holdings year_end.csv --scenario <name> --year-end --dry-run # preview
+   sim import holdings year_end.csv --scenario <name> --year-end           # apply
    ```
+
+   The preview lists each lot's balance before and after.
+3. The first time, and whenever Quicken has an account the import hasn't seen, it
+   asks which of the scenario's accounts that is (TAB completes; `skip` leaves it
+   out for good), and which lot when the account has several. The answers are saved
+   in `imports/quicken/accounts.csv` (columns `outside_account, asset, action,
+   account, lot, note`; `action` is `map` or `skip`), shared by every scenario, so
+   each Quicken account is asked about once. Run from a script, the import stops and
+   lists the accounts with no row instead — new or renamed Quicken accounts are
+   never silently left out. Both reports share the same account list, so one map
+   covers both. Edit the file to change an answer.
 
 Liability balances are stored as a non-negative debt magnitude (per the engine's sign
 convention), so the importer negates Quicken's signed liability values automatically.
 `prior_year_end_balance` is only meaningful for the RMD rule ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §2.3), hence the
 investment-asset restriction.
 
-**Bookkeeping:** `sim account rename` and `sim account edit --new-name` already update
-`quicken_account_map.csv`'s `account_name` column alongside `accounts.csv`,
-`account_lots.csv`, `scheduled.csv`, `calendar.csv`, `year_to_date.csv` and chain
-files, in every scenario that shares the account — no manual edit of the map is needed
-after a rename. If you add a new account, add its
-`quicken_account_map.csv` row (or a `skip` row with a `note` explaining why) before the
-next import.
+**Bookkeeping:** `sim account rename` and `sim account edit --new-name` update the
+saved mappings alongside `accounts.csv`, `account_lots.csv`, `scheduled.csv`,
+`calendar.csv`, `year_to_date.csv` and chain files, in every scenario that shares the
+account — no manual edit of the map is needed after a rename.
+
+A data repo with mappings from before the `imports/` folder (a
+`quicken_account_map.csv` in each scenario, `quicken/expense_*.csv` at its top
+level) moves them with `scripts/migrate_527.py` (it reports first; `--write` does it).

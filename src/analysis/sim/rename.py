@@ -140,7 +140,6 @@ ACCOUNT_COLUMNS: dict[str, tuple[str, ...]] = {
     "account_lots.csv": ("account_name", "refill_chain", "overflow_chain"),
     "scheduled.csv": ("from_account", "to_account", "interest_account"),
     "calendar.csv": ("account_1", "account_2"),
-    "quicken_account_map.csv": ("account_name",),
     "year_to_date.csv": ("from_account", "to_account"),
 }
 """The columns, per scenario file, that may name an account. A refill or

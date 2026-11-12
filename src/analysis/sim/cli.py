@@ -33,10 +33,7 @@ from analysis.amazon.notebook import load_monthly_summaries
 from analysis.expenses.baseline import (
     build_expense_baseline,
     build_scheduled_baseline_rows,
-    load_category_map,
-    load_category_splits,
-    load_excluded_payees,
-    load_expense_account_map,
+    BASELINE_GENERATED_TAG,
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
@@ -135,12 +132,12 @@ from analysis.sim.loader import (
     set_scenario_enabled,
     write_current_scenario,
 )
-from analysis.sim.quicken import (
-    format_dollars,
-    is_investment_asset,
-    load_account_map,
-    parse_net_worth_export,
-)
+from analysis.sim.imports import flows as import_flows_
+from analysis.sim.imports import forms as import_forms
+from analysis.sim.imports import holdings as import_holdings_
+from analysis.sim.imports import mapping as import_mapping
+from analysis.sim.imports import sources as import_sources_
+from analysis.sim.imports.holdings import format_dollars
 import analysis.sim.scenario as sc
 from analysis.sim.staging import (
     ConcurrentEdit,
@@ -8590,38 +8587,88 @@ def scheduled_add(
 def import_group_command() -> None:
     """Bring data from outside sources into a scenario.
 
-    `holdings` sets account balances from a Quicken account-tree report;
-    `transactions` turns Quicken transactions (with the Amazon categorizer's
-    monthly summaries) into expense rules. More sources are planned (#527).
+    `holdings` sets account balances from a snapshot of what each outside
+    account holds; `transactions` turns a period's transactions (with the
+    Amazon categorizer's monthly summaries) into expense rules. `sources`
+    lists the outside layouts that can be read.
+
+    Which of the scenario's names each outside name means is saved in the
+    data dir's imports/ folder, shared by every scenario. At a terminal an
+    outside name with no saved answer is asked for; otherwise the command
+    stops and lists them. More sources and kinds are planned (#527).
     """
 
 
+_MIGRATE_527 = ("{old} is a mapping from before the imports/ folder (#527); "
+                "move the data repo's mappings there with scripts/migrate_527.py")
+_SOURCE_OPTION_HELP = "Outside layout to read FILE as (default: the one the file is in; see 'sim import sources')."
+
+
+@import_group_command.command("sources")
+@click.argument("files", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def import_sources(files: tuple[Path, ...]) -> None:
+    """List the outside layouts `sim import` reads; with FILEs, say which
+    one each file is in."""
+    for path in files:
+        found = import_sources_.detect(path)
+        click.echo(f"{path}: " + (", ".join(f"{source.name} {form}" for source, form in found)
+                                  or "no source recognizes it"))
+    if files:
+        return
+    rows = [
+        (source.name, form, reader.layout)
+        for source in import_sources_.sources() for form in import_sources_.FORMS
+        if (reader := source.reader(form)) is not None
+    ]
+    _echo_table(["source", "reads", "from"], rows, left=3)
+
+
+def _own_lot_rows(scenario_dir: Path) -> tuple[Path, list[dict[str, str]], list[str]]:
+    """The scenario's own account_lots.csv: its path, rows and header."""
+    path = scenario_dir / "account_lots.csv"
+    if not path.exists():
+        raise click.ClickException(f"account_lots.csv not found: {path}")
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = _csv.DictReader(fh)
+        header = list(reader.fieldnames or [])
+        rows = list(reader)
+    if "account_name" not in header:
+        raise click.ClickException(f"account_lots.csv missing 'account_name' column: {path}")
+    return path, rows, header
+
+
+def _ask_holding_target(
+    holding: import_forms.Holding, source: str, lots: Sequence[Mapping[str, str]], why: str,
+) -> import_mapping.AccountTarget:
+    """Where one outside account goes, asked for: one of the scenario's
+    accounts with a lot of its own here (and which lot, if several), or
+    ``skip``."""
+    label = " / ".join(filter(None, (holding.account, holding.asset)))
+    click.echo(f"{source} account {label!r} ({format_dollars(holding.value_cents)}) {why}.")
+    own = list(dict.fromkeys(row["account_name"] for row in lots if row.get("account_name")))
+    answer = _ask_name("account", [*own, "skip"], prompt=f"account for {label} (or skip)")
+    if answer == "skip":
+        return import_mapping.AccountTarget("skip")
+    own_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
+    lot = ""
+    if len(own_lots) > 1:
+        lot = _ask_name("lot", [each or registries.DEFAULT_LOT for each in own_lots],
+                        prompt=f"lot of {answer}")
+    return import_mapping.AccountTarget("map", answer, lot)
+
+
 @import_group_command.command("transactions")
+@click.argument("files", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--source", "layout", type=click.Choice(import_sources_.names("transactions")), default=None,
+              help=_SOURCE_OPTION_HELP)
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-@click.option("--quicken-file", type=click.Path(exists=True, dir_okay=False, path_type=Path),
-              default=None,
-              help="Quicken export (default: sibling data-repo/quicken/Transaction Export.csv).")
 @click.option("--amazon-state-dir", type=click.Path(file_okay=False, path_type=Path),
               default=None,
               help="Amazon state directory (default: sibling data-repo/state).")
-@click.option("--category-map", type=click.Path(exists=True, dir_okay=False, path_type=Path),
-              default=None,
-              help="Category map (default: sibling data-repo/quicken/expense_category_map.csv).")
-@click.option("--category-split", type=click.Path(exists=True, dir_okay=False, path_type=Path),
-              default=None,
-              help="Optional splits of a category by paying Quicken account "
-                   "(default: sibling data-repo/quicken/expense_category_split.csv).")
-@click.option("--excluded-payees", type=click.Path(exists=True, dir_okay=False, path_type=Path),
-              default=None,
-              help="Optional payee patterns modeled separately in the scenario "
-                   "(default: sibling data-repo/quicken/expense_excluded_payees.csv).")
-@click.option("--account-map", type=click.Path(dir_okay=False, path_type=Path),
-              default=None,
-              help="Optional category account map (default: sibling data-repo/quicken/expense_account_map.csv).")
 @click.option("--from-account", type=completion.ENDPOINT, required=True,
               help="Scenario account that funds all generated expense rows.")
 @click.option("--from-lot", type=completion.LotName("from_account"), default="",
@@ -8631,43 +8678,51 @@ def import_group_command() -> None:
 @click.option("--series", type=completion.SCHEDULED_SERIES, default="cpi", show_default=True,
               help="Inflation series applied to generated rows ('fixed' for none).")
 @click.option("--dry-run", is_flag=True, default=False,
-              help="Show generated rows without rewriting scheduled.csv.")
+              help="Show how the generated rows would change without rewriting scheduled.csv.")
 def import_transactions(
+    files: tuple[Path, ...],
+    layout: str | None,
     scenario: str | None,
     data_dir: Path | None,
-    quicken_file: Path | None,
     amazon_state_dir: Path | None,
-    category_map: Path | None,
-    category_split: Path | None,
-    excluded_payees: Path | None,
-    account_map: Path | None,
     from_account: str,
     from_lot: str,
     start: str | None,
     series: str,
     dry_run: bool,
 ) -> None:
-    """Expense rules from Quicken transactions: replace the generated baseline rows in scheduled.csv."""
+    """Expense rules from a period's transactions: replace the generated baseline rows in scheduled.csv.
+
+    FILE is the transactions export; left out, it is the data repo's
+    quicken/Transaction Export.csv. The category maps are read from the data
+    dir's imports/<source>/ (categories.csv, and optionally splits.csv and
+    excluded_payees.csv), and each category's expense account from
+    imports/expense_accounts.csv; at a terminal a category with no account
+    there is asked for and saved.
+    """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     data_repo_root = data_dir_p.parent
-    quicken_path = quicken_file or data_repo_root / "quicken" / "Transaction Export.csv"
+    if not files:
+        default_file = data_repo_root / "quicken" / "Transaction Export.csv"
+        if not default_file.exists():
+            raise click.ClickException(f"no FILE given, and no export at {default_file}")
+        files = (default_file,)
     amazon_state_path = amazon_state_dir or data_repo_root / "state"
-    category_map_path = category_map or data_repo_root / "quicken" / "expense_category_map.csv"
-    account_map_path = account_map or data_repo_root / "quicken" / "expense_account_map.csv"
-    category_split_path = (
-        category_split or data_repo_root / "quicken" / "expense_category_split.csv"
-    )
-    excluded_payees_path = (
-        excluded_payees or data_repo_root / "quicken" / "expense_excluded_payees.csv"
-    )
-
-    for path, label in (
-        (quicken_path, "Quicken export"),
-        (category_map_path, "category map"),
-    ):
-        if not path.exists():
-            raise click.ClickException(f"{label} not found: {path}")
+    try:
+        flows = import_sources_.read_flows(files, layout)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    maps_dir = import_mapping.source_dir(data_dir_p, flows.source)
+    category_map_path = maps_dir / import_mapping.CATEGORIES
+    category_split_path = maps_dir / import_mapping.SPLITS
+    excluded_payees_path = maps_dir / import_mapping.EXCLUDED_PAYEES
+    if not category_map_path.exists():
+        if (old_map := data_repo_root / "quicken" / "expense_category_map.csv").exists():
+            raise click.ClickException(_MIGRATE_527.format(old=old_map))
+        raise click.ClickException(
+            f"category map not found: {category_map_path} "
+            f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
 
     if start is None:
         scenario_path = scenario_dir / "scenario.csv"
@@ -8675,85 +8730,111 @@ def import_transactions(
             start = next(_csv.DictReader(handle))["start"]
     start = _validate_month_date(start)
 
-    merges, exclusions = load_category_map(category_map_path)
-    baseline = build_expense_baseline(
-        quicken_path,
-        load_monthly_summaries(amazon_state_path),
-        category_merges=merges,
-        excluded_categories=exclusions,
-        default_category="Other",
-        category_splits=(
-            load_category_splits(category_split_path) if category_split_path.exists() else None
-        ),
-        excluded_payee_patterns=(
-            load_excluded_payees(excluded_payees_path) if excluded_payees_path.exists() else ()
-        ),
-    )
-    mappings = (
-        load_expense_account_map(account_map_path)
-        if account_map_path.exists()
-        else {}
-    )
+    try:
+        merges, exclusions = import_mapping.load_category_map(category_map_path)
+        baseline = build_expense_baseline(
+            flows,
+            load_monthly_summaries(amazon_state_path),
+            category_merges=merges,
+            excluded_categories=exclusions,
+            default_category="Other",
+            category_splits=(
+                import_mapping.load_category_splits(category_split_path)
+                if category_split_path.exists() else None
+            ),
+            excluded_payee_patterns=(
+                import_mapping.load_excluded_payees(excluded_payees_path)
+                if excluded_payees_path.exists() else ()
+            ),
+        )
+        expense_accounts = import_mapping.load_expense_accounts(
+            import_mapping.expense_accounts_path(data_dir_p))
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
     with _intent_db(data_dir_p, scenario_name) as (con, _):
         scenario_accounts = {row[0] for row in con.execute("SELECT name FROM account")}
+        expense_names = [row[0] for row in con.execute(
+            "SELECT name FROM account WHERE kind = 'expense' ORDER BY name")]
         scenario_sources = scenario_accounts | {
             row[0] for row in con.execute("SELECT name FROM chain")
         }
     if from_account not in scenario_sources:
         raise click.ClickException(f"unknown from account or chain: {from_account!r}")
-    baseline_categories = set(baseline.category_totals["category"])
-    mappings = {
-        category: target for category, target in mappings.items()
-        if category in baseline_categories
-    }
-    invalid_targets = {
-        category: target for category, target in mappings.items()
-        if target not in scenario_accounts
-    }
-    for category, target in sorted(invalid_targets.items()):
-        click.echo(
-            f"warning: ignoring category {category!r}; "
-            f"target account {target!r} does not exist",
-            err=True,
-        )
-    mappings = {
-        category: target for category, target in mappings.items()
-        if target in scenario_accounts
-    }
-    mappings.update({
-        category: category for category in baseline.category_totals["category"]
-        if category in scenario_accounts and category not in mappings
-    })
-    missing_mappings = {
-        category for category in baseline_categories
-        if category not in mappings and category not in invalid_targets
-    }
-    for category in sorted(missing_mappings):
-        click.echo(
-            f"warning: ignoring category {category!r}; "
-            "no target expense account mapping exists",
-            err=True,
-        )
+    totals = {str(r["category"]): float(r["amount_total"])
+              for r in baseline.category_totals.to_dict("records")}
+    months = max(baseline.monthly["summary_month_start"].nunique(), 1)
+
+    def target_of(category: str) -> str | None:
+        """The saved account, else the scenario account of the same name."""
+        saved = expense_accounts.accounts.get(category)
+        if saved is None and category in scenario_accounts:
+            return category
+        return saved
+
+    asked = False
+    if _interactive():
+        for category in sorted(totals):
+            target = target_of(category)
+            if target is not None and (target == import_mapping.NO_RULE or target in scenario_accounts):
+                continue
+            why = "has no expense account" if target is None else \
+                f"is mapped to {target}, which {scenario_name} doesn't have"
+            click.echo(f"category {category!r} (about {totals[category] / months:,.2f} a month) {why}.")
+            answer = _ask_name("expense account", [*expense_names, "skip"],
+                               prompt=f"expense account for {category} (or skip)")
+            expense_accounts.accounts[category] = \
+                import_mapping.NO_RULE if answer == "skip" else answer
+            asked = True
+
+    mappings: dict[str, str] = {}
+    ignored: set[str] = set()
+    for category in sorted(totals):
+        target = target_of(category)
+        if target is not None and target in scenario_accounts:
+            mappings[category] = target
+            continue
+        ignored.add(category)
+        if target is None:
+            click.echo(f"warning: ignoring category {category!r}; "
+                       "no target expense account mapping exists", err=True)
+        elif target != import_mapping.NO_RULE:
+            click.echo(f"warning: ignoring category {category!r}; "
+                       f"target account {target!r} does not exist", err=True)
     rows = build_scheduled_baseline_rows(
         baseline,
         mappings,
         start,
         from_account,
-        ignored_categories=set(invalid_targets) | missing_mappings,
+        ignored_categories=ignored,
         from_lot=from_lot,
         series=series,
+        provenance={"source": flows.source, "files_sha256": import_flows_.file_digest(files)},
     )
     scheduled_path = scenario_dir / "scheduled.csv"
+    changes = import_flows_.plan(scheduled_path, rows, BASELINE_GENERATED_TAG)
+    if changes:
+        _echo_table(
+            ["rule", "to account", "before", "after", ""],
+            ((c.name, c.to_account, c.before, c.after, c.status) for c in changes),
+            left=2,
+        )
+    counts = ", ".join(
+        f"{count} {status}" for status in ("added", "changed", "removed", "unchanged")
+        if (count := sum(c.status == status for c in changes)))
     if dry_run:
-        click.echo(f"(dry run) would replace {len(rows)} generated row(s) in {_shown(scheduled_path)}")
-        for row in rows:
-            click.echo(f"  {row['name']}: {row['amount']} -> {row['to_account']}")
+        click.echo(f"(dry run) would replace the generated row(s) in {_shown(scheduled_path)} "
+                   f"with {len(rows)}: {counts or 'none'}")
+        if asked:
+            click.echo("(dry run) the expense accounts you gave were not saved")
         return
+    if asked:
+        expense_accounts.save()
+        click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
     with _scenario_edit(data_dir_p, scenario_name) as edit:
         replace_generated_scheduled_rows(edit.path(scheduled_path), rows)
     click.echo(
         f"replaced {len(rows)} generated baseline row(s) in {scheduled_path} "
-        f"for scenario {scenario_name}"
+        f"for scenario {scenario_name} ({counts or 'none'})"
     )
 
 
@@ -9293,7 +9374,6 @@ _ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("account_lots.csv", ("account_name",)),
     ("scheduled.csv", ("from_account", "to_account", "interest_account")),
     ("calendar.csv", ("account_1", "account_2")),
-    ("quicken_account_map.csv", ("account_name",)),
     ("year_to_date.csv", ("from_account", "to_account")),
 )
 
@@ -9667,6 +9747,7 @@ def edit_account(
                 _rename_account(edit, name, new_name)
             if override:
                 _append_csv_row(edit.path(accounts_path), tuple(df.columns), row)
+        _rename_in_imports(data_dir_p, name, new_name)
         if override:
             click.echo(
                 f"wrote an override of account '{new_name}' "
@@ -9685,6 +9766,7 @@ def edit_account(
             # write below then carries this scenario's other changes.
             _rename_account(edit, name, new_name)
         df.to_csv(edit.path(accounts_path), index=False)
+    _rename_in_imports(data_dir_p, name, new_name)
 
     click.echo(f"updated account '{new_name}' in {_shown(accounts_path)}")
 
@@ -9724,6 +9806,7 @@ def rename_account(
 
     with _scenario_edit(data_dir_p, scenario) as edit:
         changed = _rename_account(edit, old_name, new_name)
+    changed += _rename_in_imports(data_dir_p, old_name, new_name)
     _echo_renamed("account", old_name, new_name, changed)
 
 
@@ -11754,16 +11837,13 @@ def sync_account_lots(
 
 
 @import_group_command.command("holdings")
-@click.argument("quicken_file",
+@click.argument("files", nargs=-1, required=True,
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--map-file", "map_file",
-              type=click.Path(exists=True, dir_okay=False, path_type=Path),
-              default=None,
-              help="quicken_name -> account_name mapping CSV "
-                   "(default: <scenario>/quicken_account_map.csv).")
+@click.option("--source", "layout", type=click.Choice(import_sources_.names("holdings")), default=None,
+              help=_SOURCE_OPTION_HELP)
 @click.option("--year-end", is_flag=True, default=False,
-              help="Treat quicken_file as a Quicken \"Year End Export\" and write "
-                   "prior_year_end_balance instead of opening_balance, for "
+              help="Treat FILE as the prior year's end (Quicken's \"Year End Export\") and "
+                   "write prior_year_end_balance instead of opening_balance, for "
                    "investment asset accounts only.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
@@ -11773,153 +11853,99 @@ def sync_account_lots(
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show what would change without writing.")
 def import_holdings(
-    quicken_file: Path,
-    map_file: Path | None,
+    files: tuple[Path, ...],
+    layout: str | None,
     year_end: bool,
     scenario: str | None,
     data_dir: Path | None,
     dry_run: bool,
 ) -> None:
-    """Update account_lots.csv from a Quicken account-tree report export.
+    """Update account_lots.csv from a snapshot of outside account balances.
 
-    Without ``--year-end``, sets ``opening_balance`` from a "Net Worth Export"
-    (and seeds ``prior_year_end_balance`` only when it's still blank, and only
-    for investment asset accounts). With ``--year-end``, treats the file as a
-    "Year End Export" and always overwrites ``prior_year_end_balance`` for
+    Without ``--year-end``, sets ``opening_balance`` (and seeds
+    ``prior_year_end_balance`` only when it's still blank, and only for
+    investment asset accounts). With ``--year-end``, treats the snapshot as
+    the prior year's end and always overwrites ``prior_year_end_balance`` for
     investment asset accounts, leaving ``opening_balance`` untouched.
 
-    Every account in ``quicken_file`` must appear in the mapping CSV, either
-    mapped to an ``account_name`` or marked ``skip`` -- this catches
-    new/renamed Quicken accounts instead of silently ignoring them.
+    Every outside account in FILE must be in imports/<source>/accounts.csv,
+    either mapped to an account (and a lot, when the account has several) or
+    marked ``skip`` -- this catches new or renamed outside accounts instead
+    of silently ignoring them. At a terminal the missing ones are asked for
+    and saved.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
-
-    map_path = map_file or (scenario_dir / "quicken_account_map.csv")
-    if not map_path.exists():
-        raise click.ClickException(f"mapping file not found: {map_path}")
-
-    accounts_path = scenario_dir / "accounts.csv"
-    values_path = scenario_dir / "account_lots.csv"
-    if not accounts_path.exists():
-        raise click.ClickException(f"accounts.csv not found: {accounts_path}")
-    if not values_path.exists():
-        raise click.ClickException(f"account_lots.csv not found: {values_path}")
-
-    account_info: dict[str, tuple[str, str]] = {}
-    with accounts_path.open(newline="", encoding="utf-8") as f:
-        for row in _csv.DictReader(f):
-            if row.get("name"):
-                account_info[row["name"]] = (row.get("kind", ""), row.get("subkind", ""))
-
+    values_path, lots, header = _own_lot_rows(scenario_dir)
+    accounts = {
+        row["name"]: (row.get("kind", ""), row.get("subkind", ""))
+        for row in names.lineage_rows(data_dir_p, scen_name, "accounts.csv") if row.get("name")
+    }
     try:
-        balances = parse_net_worth_export(quicken_file)
-        account_map = load_account_map(map_path)
+        snapshot = import_sources_.read_holdings(files, layout)
+        map_path = import_mapping.source_dir(data_dir_p, snapshot.source) / import_mapping.ACCOUNTS
+        if not map_path.exists() and (scenario_dir / "quicken_account_map.csv").exists():
+            raise click.ClickException(_MIGRATE_527.format(old=scenario_dir / "quicken_account_map.csv"))
+        account_map = import_mapping.load_account_map(map_path)
+        result = import_holdings_.plan(snapshot, account_map, accounts, lots, year_end=year_end)
+        asked = False
+        while not result.complete and _interactive():
+            for holding in result.unmapped:
+                account_map.set(holding.account, holding.asset, _ask_holding_target(
+                    holding, snapshot.source, lots, "has no saved mapping"))
+            for holding, target in result.unknown:
+                missing = f"{target.account}:{target.lot}" if target.lot else target.account
+                account_map.set(holding.account, holding.asset, _ask_holding_target(
+                    holding, snapshot.source, lots,
+                    f"is mapped to {missing}, which {scen_name} doesn't have"))
+            asked = True
+            result = import_holdings_.plan(snapshot, account_map, accounts, lots, year_end=year_end)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
 
-    unmapped: list[str] = []
-    unknown_target: list[str] = []
-    skipped: list[str] = []
-    ineligible: list[str] = []
-    updates: dict[str, int] = {}
-
-    for bal in balances:
-        entry = account_map.get(bal.quicken_name)
-        if entry is None:
-            unmapped.append(bal.quicken_name)
-            continue
-        if entry.action == "skip":
-            skipped.append(bal.quicken_name)
-            continue
-        info = account_info.get(entry.account_name)
-        if info is None:
-            unknown_target.append(f"{bal.quicken_name} -> {entry.account_name}")
-            continue
-        kind, subkind = info
-
-        if year_end:
-            if not is_investment_asset(kind, subkind):
-                ineligible.append(entry.account_name)
-                continue
-            updates[entry.account_name] = bal.cents
-            continue
-
-        magnitude = -bal.cents if kind == "liability" else bal.cents
-        if kind == "liability" and magnitude < 0:
-            click.echo(
-                f"warning: {entry.account_name!r} has an unusual credit balance "
-                "in Quicken; storing magnitude only", err=True,
-            )
-            magnitude = abs(magnitude)
-        updates[entry.account_name] = magnitude
-
-    if unmapped:
+    if result.unmapped:
         raise click.ClickException(
-            f"unmapped Quicken account(s); add to {map_path}:\n  "
-            + "\n  ".join(sorted(unmapped))
+            f"unmapped {snapshot.source} account(s); add to {map_path} "
+            f"(columns {', '.join(import_mapping.ACCOUNTS_HEADER)}), or run at a terminal "
+            "to be asked:\n  "
+            + "\n  ".join(sorted({" / ".join(filter(None, (h.account, h.asset)))
+                                  for h in result.unmapped}))
         )
-    if unknown_target:
+    if result.unknown:
         raise click.ClickException(
-            "mapping target(s) not found in accounts.csv:\n  "
-            + "\n  ".join(sorted(unknown_target))
+            f"mapping target(s) not found in {scen_name}:\n  "
+            + "\n  ".join(sorted(
+                f"{h.account} -> {t.account}{':' + t.lot if t.lot else ''}"
+                for h, t in result.unknown))
         )
-
-    df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
-    if "account_name" not in df.columns:
-        raise click.ClickException(f"account_lots.csv missing 'account_name' column: {values_path}")
-    known = set(df["account_name"])
-
-    changed = 0
-    for name, cents in updates.items():
-        if name not in known:
-            raise click.ClickException(
-                f"mapped account not found in account_lots.csv: {name!r}"
-            )
-        dollars = format_dollars(cents)
-        rows = df.index[df["account_name"] == name]
-        if len(rows) > 1:
-            click.echo(
-                f"warning: {name!r} has {len(rows)} lots; `sim import holdings` only "
-                "updates single-lot accounts, so it was skipped", err=True,
-            )
-            continue
-        idx = rows[0]
-
-        if year_end:
-            old = df.at[idx, "prior_year_end_balance"]
-            if old != dollars:
-                click.echo(f"  {name}: prior_year_end_balance {old or '(none)'} -> {dollars}")
-                changed += 1
-            df.at[idx, "prior_year_end_balance"] = dollars
-            continue
-
-        old = df.at[idx, "opening_balance"]
-        if old != dollars:
-            click.echo(f"  {name}: opening_balance {old or '(none)'} -> {dollars}")
-            changed += 1
-        df.at[idx, "opening_balance"] = dollars
-
-        kind, subkind = account_info[name]
-        if is_investment_asset(kind, subkind) and not df.at[idx, "prior_year_end_balance"]:
-            df.at[idx, "prior_year_end_balance"] = dollars
-            click.echo(f"  {name}: prior_year_end_balance (none) -> {dollars} [seeded from opening]")
-
+    for warning in result.warnings:
+        click.echo(f"warning: {warning}", err=True)
+    if snapshot.as_of is not None:
+        click.echo(f"{snapshot.source} snapshot as of {snapshot.as_of}")
+    if result.changes:
+        _echo_table(
+            ["account", "lot", "column", "before", "after", ""],
+            ((c.account, c.lot, c.column, c.before or "(none)", c.after,
+              f"[{c.note}]" if c.note else "") for c in result.changes),
+            left=3,
+        )
+    counts = (f"{len(result.skipped)} skipped, {len(result.ineligible)} ineligible, "
+              f"{result.lots_unchanged} unchanged")
     if dry_run:
-        click.echo(
-            f"(dry run) {changed} account(s) would change, "
-            f"{len(skipped)} skipped, {len(ineligible)} ineligible, "
-            f"{len(updates) - changed} unchanged"
-        )
+        click.echo(f"(dry run) {result.lots_changed} lot(s) would change, {counts}")
+        if asked:
+            click.echo("(dry run) the mappings you gave were not saved")
         return
 
+    if asked:
+        account_map.save()
+        click.echo(f"saved mappings to {_shown(map_path)}")
     with _scenario_edit(data_dir_p, scen_name) as edit:
-        df.to_csv(edit.path(values_path), index=False)
-    click.echo(
-        f"updated {changed} account(s) in {values_path} "
-        f"({len(skipped)} skipped, {len(ineligible)} ineligible, "
-        f"{len(updates) - changed} unchanged)"
-    )
+        with edit.path(values_path).open("w", newline="", encoding="utf-8") as fh:
+            writer = _csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(result.rows)
+    click.echo(f"updated {result.lots_changed} lot(s) in {values_path} ({counts})")
 
 
 @transfer_group_command.command("list")
@@ -13969,6 +13995,20 @@ def _rename_account(edit: StagedEdit, old: str, new: str) -> list[str]:
         edit, "account", old, new, defines=rename.account_defined, taken=_account_or_chain_defined,
         rewrite=rename.rename_account, moved=moved)
     return changed + rename.rename_lot_keys(edit.data_dir, moved, keep_old=keep_old)
+
+
+def _rename_in_imports(data_dir: Path, old: str, new: str) -> list[str]:
+    """Follow an account rename, once it is written, in the saved import
+    mappings (#527); the files changed. They are shared by every scenario,
+    and one outside account has one target, so they keep the old name while
+    any scenario the rename didn't reach still has it."""
+    if old == new:
+        return []
+    scenarios = data_dir / "scenarios"
+    still = rename.account_defined(old)
+    if any(still(scenarios / each) for each in rename.scenario_folders(scenarios)):
+        return []
+    return import_mapping.rename_account(data_dir, old, new)
 
 
 def _defined_outside_scope(edit: StagedEdit, defines: rename.Defines) -> bool:

@@ -1063,6 +1063,45 @@ Where the household lives ([#509](https://github.com/BobKerns/analysis/issues/50
 
 Rows merge by `effective_date` down the lineage (§4.5): a child adds a move without restating where the household starts, and a row of the same month replaces its parent's. The loader stores them in the `residence` table (ADR-002), which the run file keeps. It refuses an unknown state, a missing or repeated date, a county without its table, a state tax with no residence, a territory with a tax code of its own (Puerto Rico, American Samoa; [#570](https://github.com/BobKerns/analysis/issues/570)), and a `state_brackets__<code>.csv` of a territory the federal tax stands in for, which would tax the same income twice; with a state tax, a state that taxes income needs its `state_brackets__<state>.csv`, a state with no income tax and no tables of its own reads the shipped 0% `none` tables, and one without its own standard deduction loads with a warning (§4.4). `sim tax state [STATE] [--county COUNTY] [--here]` writes the first row, where it is defined, and `sim tax move DATE STATE [--county COUNTY]` adds a later one to the current scenario (with a state tax, modeled on the federal one, when it moves into a state with income tax and the scenario has none). A row of a later scenario replaces an earlier one's whole: a column its file leaves out is blank. Rows have no `vary_*` columns, so an ensemble can't vary when a move happens.
 
+#### 4.17 Shared: `data_repo/imports/` (optional): saved import mappings
+
+`sim import` ([#527](https://github.com/BobKerns/analysis/issues/527)) reads an outside file with a *source* (one outside layout; `sim import sources` lists them), into one of two common forms: *holdings*, a snapshot of what each outside account holds, or *flows*, a period's transactions. Which of a scenario's names each outside name means is saved here, once, for every scenario: the outside world's names don't change from one scenario to the next, and a target is checked against the scenario being written. The loader never reads this folder.
+
+```text
+imports/
+  expense_accounts.csv     category -> expense account
+  <source>/
+    accounts.csv           (outside account, asset) -> (account, lot), or skip
+    categories.csv         outside category -> category
+    splits.csv             a category divided by the outside account that paid
+    excluded_payees.csv    payees whose expenses the scenario models itself
+```
+
+`<source>/accounts.csv`, read by `sim import holdings`:
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `outside_account` | text | ✓ | the account as the source spells it |
+| `asset` | text | | a symbol or asset name within the outside account; blank covers everything in it that has no row of its own. Unique with `outside_account` |
+| `action` | `map` \| `skip` | ✓ | `skip`: acknowledged, deliberately not imported |
+| `account` | text | for `map` | the scenario account |
+| `lot` | text | | the lot of `account`; blank is its only lot. An account with several lots is skipped, with a warning, unless the row names one |
+| `note` | text | | |
+
+Every outside account in a file must have a row: a new or renamed one is an error naming it, never a balance quietly left out. At a terminal the command asks instead (completing the scenario's accounts, plus `skip`), as it does for a row whose account or lot the scenario doesn't have, and saves the answers. Two outside accounts mapped to one lot are added together.
+
+`<source>/categories.csv` (required by `sim import transactions`), `splits.csv` and `excluded_payees.csv` (both optional):
+
+| file | columns | meaning |
+| --- | --- | --- |
+| `categories.csv` | `outside_category`, `category` | merges an outside category into `category`; a blank or `-` `category` excludes it. A category with no row becomes `Other` |
+| `splits.csv` | `category`, `outside_account`, `target_category` | sends `category` expenses paid from `outside_account` to `target_category`; a blank `outside_account` is the category's default |
+| `excluded_payees.csv` | `payee_pattern` | a case-insensitive regular expression; a matching payee's expenses are left out, the scenario modeling them itself |
+
+`expense_accounts.csv` (`category`, `account`) names the expense account each category's generated rule pays into, or `-` for no rule. It belongs to no source, since a budget and a year of transactions name the same categories. A category with the name of one of the scenario's accounts needs no row. A category with no account gets no rule and a warning, or at a terminal a question whose answer is saved.
+
+`sim account rename` follows an account into these files once no scenario still has the old name. Generated rules carry the tag `generated:expense_baseline` (§6) and, in `meta_json`, `source` and a hash of the imported files.
+
 ### 5. Default priorities
 
 When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule kind's band:
@@ -1480,3 +1519,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#489](https://github.com/BobKerns/analysis/issues/489): aux kinds `state_gains_tax` and `state_gains_deduction`, a state's tax on long-term gains apart from its income tax, whose base replaces the net long-term gain in its income; `state_adjustments` base `gains_tax`; Washington's tables ship (§4.4).
 - [#491](https://github.com/BobKerns/analysis/issues/491): the mirror-code territories (Guam, the Northern Mariana Islands, the U.S. Virgin Islands) always read the `none` tables; the loader refuses a residence in Puerto Rico or American Samoa, and a mirror territory's own `state_brackets` table (§2.6, §4.16).
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax settlement pays an overpayment back, and after-tax net worth counts a refund owed (§2.6).
+- [#527](https://github.com/BobKerns/analysis/issues/527): import mappings move to the shared `imports/` folder, one subfolder per source, replacing each scenario's `quicken_account_map.csv` and the data repo's `quicken/expense_*.csv`; an account mapping can name a lot (§4.17).

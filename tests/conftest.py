@@ -2161,3 +2161,79 @@ emit({{"type": "result", "subtype": "error" if fail else "success", "is_error": 
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     return calls
+
+
+# ---------- outside files for `sim import` (#527) ----------
+
+@pytest.fixture
+def quicken_net_worth_export(tmp_path: Path) -> Path:
+    """A Quicken "Net Worth Export" naming four of retire_alice's accounts by
+    their own names, as of 2026-08-18."""
+    path = tmp_path / "net_worth_export.csv"
+    path.write_text(
+        '"",,"2026-08-18"\n'
+        '"Assets",,\n'
+        ',"Checking",\n'
+        ',"  - Asset_Checking","1,234.56"\n'
+        ',"  - Total Checking","1,234.56"\n'
+        ',"Investments",\n'
+        ',"  - Asset_Brokerage_Joint","310,000.00"\n'
+        ',"  - Asset_TraditionalIRA_Alice","510,000.00"\n'
+        '"Liabilities",,\n'
+        ',"Loan",\n'
+        ',"  - Liability_Mortgage","-240,000.00"\n'
+        'Net Worth,,"0.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_account_map(test_data_dir: Path) -> Path:
+    """``imports/quicken/accounts.csv`` in the test data dir, mapping each
+    account of ``quicken_net_worth_export`` to the account of the same name."""
+    path = test_data_dir / "imports" / "quicken" / "accounts.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "outside_account,asset,action,account,lot,note\n"
+        "Asset_Checking,,map,Asset_Checking,,\n"
+        "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,,\n"
+        "Asset_TraditionalIRA_Alice,,map,Asset_TraditionalIRA_Alice,,\n"
+        "Liability_Mortgage,,map,Liability_Mortgage,,\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_transaction_export(tmp_path: Path) -> Path:
+    """A Quicken "Transaction Export": two months of groceries and dining,
+    and one gift, paid from one account."""
+    path = tmp_path / "transaction_export.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n'
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Market","Groceries","","","","-300.00"\n'
+        ',,"2026-01-09","2026-01-10","2026-01-09","","Cafe","Coffee Shops","","","","-40.00"\n'
+        ',,"2026-02-02","2026-02-03","2026-02-02","","Market","Groceries","","","","-500.00"\n'
+        ',,"2026-02-14","2026-02-15","2026-02-14","","Florist","Gifts","","","","-60.00"\n'
+        '"Total Checking",,,,,,,,,,,"-900.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_category_map(test_data_dir: Path) -> Path:
+    """``imports/quicken/categories.csv`` for ``quicken_transaction_export``:
+    both food categories merge into Food, Gifts stays as it is."""
+    path = test_data_dir / "imports" / "quicken" / "categories.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "outside_category,category\n"
+        "Groceries,Food\n"
+        "Coffee Shops,Food\n"
+        "Gifts,Gifts\n",
+        encoding="utf-8",
+    )
+    return path
