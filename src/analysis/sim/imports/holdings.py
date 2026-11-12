@@ -1,8 +1,8 @@
-"""Applying a holdings snapshot to a scenario's ``account_lots.csv`` (issue #527).
+"""Applying a holdings snapshot to a scenario's lots (issue #527).
 
 ``plan`` works out the change without writing anything: the CLI shows it as a
 before/after diff, asks about whatever the mapping left open, and writes the
-planned rows through a staged edit.
+changed lots through a staged edit.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def format_dollars(cents: int) -> str:
 
 @dataclass(frozen=True)
 class Change:
-    """One cell of ``account_lots.csv`` the import sets."""
+    """One cell of a lot the import sets."""
 
     account: str
     lot: str
@@ -45,7 +45,9 @@ class Change:
 @dataclass
 class HoldingsPlan:
     rows: list[dict[str, str]]
-    """``account_lots.csv`` as the import would leave it."""
+    """The scenario's lots as the import would leave them, in the order given."""
+    changed_rows: list[int] = field(default_factory=list)
+    """Indexes into ``rows`` of the lots to write."""
     changes: list[Change] = field(default_factory=list)
     lots_changed: int = 0
     """Lots whose balance differs (a seeded prior-year balance alone doesn't count)."""
@@ -65,18 +67,14 @@ class HoldingsPlan:
         return not self.unmapped and not self.unknown
 
 
-def _target_label(target: AccountTarget) -> str:
-    return f"{target.account}:{target.lot}" if target.lot else target.account
-
-
 def plan(
     snapshot: Snapshot, account_map: AccountMap, accounts: Mapping[str, tuple[str, str]],
     lots: Sequence[Mapping[str, str]], *, year_end: bool = False,
 ) -> HoldingsPlan:
     """What importing ``snapshot`` would change.
 
-    ``accounts`` is each scenario account's (kind, subkind); ``lots`` the
-    rows of the scenario's own ``account_lots.csv``.
+    ``accounts`` is each scenario account's (kind, subkind); ``lots`` every
+    lot the scenario has, its own and inherited, one whole row each.
 
     Without ``year_end``, sets ``opening_balance`` (and seeds
     ``prior_year_end_balance`` only when it's still blank, and only for
@@ -84,8 +82,9 @@ def plan(
     end: ``prior_year_end_balance`` is always overwritten, for investment
     asset accounts only, and ``opening_balance`` is left alone.
 
-    A liability is stored as a non-negative debt, so its signed outside value
-    is negated. Two holdings mapped to one lot are added together.
+    Two holdings mapped to one lot are added together, as the source signs
+    them. A liability is stored as a non-negative debt, so its total is then
+    negated.
     """
     result = HoldingsPlan(rows=[dict(row) for row in lots])
     totals: dict[int, int] = {}
@@ -101,8 +100,7 @@ def plan(
         if info is None:
             result.unknown.append((holding, target))
             continue
-        kind, subkind = info
-        if year_end and not is_investment_asset(kind, subkind):
+        if year_end and not is_investment_asset(*info):
             result.ineligible.append(target.account)
             continue
         indexes = [i for i, row in enumerate(result.rows) if row.get("account_name") == target.account]
@@ -110,44 +108,46 @@ def plan(
             # The default lot is a blank cell, whichever way the map spells it.
             wanted = {target.lot, "" if target.lot == DEFAULT_LOT else target.lot}
             indexes = [i for i in indexes if result.rows[i].get("lot", "") in wanted]
-            if not indexes:
-                result.unknown.append((holding, target))
-                continue
-        elif not indexes:
-            raise ValueError(f"mapped account not found in account_lots.csv: {target.account!r}")
-        elif len(indexes) > 1:
+        if not indexes:
+            result.unknown.append((holding, target))
+            continue
+        if len(indexes) > 1:
             result.warnings.append(
                 f"{target.account!r} has {len(indexes)} lots and the mapping of "
                 f"{holding.account!r} names none, so it was skipped; set its 'lot' in "
                 f"{account_map.path}"
             )
             continue
-        cents = holding.value_cents
-        if not year_end and kind == "liability":
-            cents = -cents
-            if cents < 0:
-                result.warnings.append(
-                    f"{_target_label(target)!r} has an unusual credit balance in "
-                    f"{snapshot.source}; storing magnitude only"
-                )
-                cents = abs(cents)
-        totals[indexes[0]] = totals.get(indexes[0], 0) + cents
+        totals[indexes[0]] = totals.get(indexes[0], 0) + holding.value_cents
 
     for index, cents in totals.items():
         row = result.rows[index]
         name, lot = row["account_name"], row.get("lot", "")
+        kind, subkind = accounts[name]
+        if not year_end and kind == "liability":
+            cents = -cents
+            if cents < 0:
+                result.warnings.append(
+                    f"{name!r} has an unusual credit balance in {snapshot.source}; "
+                    "storing magnitude only"
+                )
+                cents = abs(cents)
         dollars = format_dollars(cents)
         column = "prior_year_end_balance" if year_end else "opening_balance"
         before = row.get(column, "")
-        if before != dollars:
+        changed = before != dollars
+        if changed:
             result.changes.append(Change(name, lot, column, before, dollars))
             result.lots_changed += 1
         else:
             result.lots_unchanged += 1
         row[column] = dollars
-        if not year_end and is_investment_asset(*accounts[name]) \
+        if not year_end and is_investment_asset(kind, subkind) \
                 and not row.get("prior_year_end_balance", ""):
             row["prior_year_end_balance"] = dollars
             result.changes.append(
                 Change(name, lot, "prior_year_end_balance", "", dollars, "seeded from opening"))
+            changed = True
+        if changed:
+            result.changed_rows.append(index)
     return result

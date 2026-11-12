@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -13,15 +14,19 @@ from analysis.cli import main
 from analysis.sim import cli
 
 
-def _import(data: Path, *args: str, input: str | None = None):  # noqa: A002
+MapWriter = Callable[[str, str], Path]
+
+
+def _import(data: Path, *args: str, input: str | None = None,  # noqa: A002
+            scenario: str = "retire_alice"):
     return CliRunner().invoke(
-        main, ["sim", "import", *args, "--scenario", "retire_alice", "--data-dir", str(data)],
+        main, ["sim", "import", *args, "--scenario", scenario, "--data-dir", str(data)],
         input=input,
     )
 
 
-def _lots(data: Path) -> dict[str, dict[str, str]]:
-    path = data / "scenarios" / "retire_alice" / "account_lots.csv"
+def _lots(data: Path, scenario: str = "retire_alice") -> dict[str, dict[str, str]]:
+    path = data / "scenarios" / scenario / "account_lots.csv"
     with path.open(newline="", encoding="utf-8") as f:
         return {r["account_name"]: r for r in csv.DictReader(f)}
 
@@ -106,13 +111,9 @@ def test_sim_import_holdings_year_end_sets_prior_year_only(
 
 
 def test_sim_import_holdings_rejects_unmapped_account(
-    test_data_dir: Path, quicken_net_worth_export: Path, quicken_account_map: Path,
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
 ) -> None:
-    quicken_account_map.write_text(
-        "outside_account,asset,action,account,lot,note\n"
-        "Asset_Checking,,map,Asset_Checking,,\n",
-        encoding="utf-8",
-    )
+    write_import_map("quicken/accounts.csv", "Asset_Checking,,map,Asset_Checking,,\n")
     before = _lots(test_data_dir)
 
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export))
@@ -149,30 +150,27 @@ def test_sim_import_holdings_refuses_a_file_no_source_recognizes(
 
 @pytest.mark.usefixtures("at_a_terminal")
 def test_sim_import_holdings_asks_for_unmapped_accounts_and_saves_the_answers(
-    test_data_dir: Path, quicken_net_worth_export: Path, quicken_account_map: Path,
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
 ) -> None:
-    quicken_account_map.write_text(
-        "outside_account,asset,action,account,lot,note\n"
+    saved = write_import_map(
+        "quicken/accounts.csv",
         "Asset_Checking,,map,Asset_Checking,,\n"
-        "Asset_Brokerage_Joint,,map,Asset_Brokerage,,\n",  # not an account
-        encoding="utf-8",
-    )
-    # Unmapped first, in the file's order (the IRA, the mortgage), then the
-    # mapping whose target is missing; a name that isn't a choice is re-asked.
-    answers = "Asset_TraditionalIRA_Alice\nskip\nnope\nAsset_Brokerage_Joint\n"
+        "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,,\n")
+    # In the file's order: the IRA, then the mortgage; a name that isn't a
+    # choice is asked for again.
+    answers = "nope\nAsset_TraditionalIRA_Alice\nskip\n"
 
     dry = _import(test_data_dir, "holdings", str(quicken_net_worth_export), "--dry-run",
                   input=answers)
     assert dry.exit_code == 0, dry.output
     assert "were not saved" in dry.output
-    assert "Asset_TraditionalIRA_Alice" not in quicken_account_map.read_text(encoding="utf-8")
+    assert "Asset_TraditionalIRA_Alice" not in saved.read_text(encoding="utf-8")
 
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
     assert result.exit_code == 0, result.output
-    assert "which retire_alice doesn't have" in result.output
     assert "1 skipped" in result.output
 
-    assert quicken_account_map.read_text(encoding="utf-8").splitlines() == [
+    assert saved.read_text(encoding="utf-8").splitlines() == [
         "outside_account,asset,action,account,lot,note",
         "Asset_Checking,,map,Asset_Checking,,",
         "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,,",
@@ -180,7 +178,7 @@ def test_sim_import_holdings_asks_for_unmapped_accounts_and_saves_the_answers(
         "Liability_Mortgage,,skip,,,",
     ]
     rows = _lots(test_data_dir)
-    assert rows["Asset_Brokerage_Joint"]["opening_balance"] == "310000.00"
+    assert rows["Asset_TraditionalIRA_Alice"]["opening_balance"] == "510000.00"
     assert rows["Liability_Mortgage"]["opening_balance"] == "250000.00"
 
     # Nothing is left to ask the second time.
@@ -189,15 +187,95 @@ def test_sim_import_holdings_asks_for_unmapped_accounts_and_saves_the_answers(
     assert "0 lot(s)" in again.output
 
 
-def test_account_rename_follows_into_the_saved_mappings(
-    test_data_dir: Path, quicken_account_map: Path,
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_keeps_a_saved_mapping_another_scenario_may_use(
+    test_data_dir: Path, quicken_net_worth_export: Path, quicken_account_map: Path,
+    write_import_map: MapWriter,
 ) -> None:
+    rows = quicken_account_map.read_text(encoding="utf-8").split("\n", 1)[1].replace(
+        "map,Asset_Brokerage_Joint", "map,Asset_Brokerage")  # not an account here
+    write_import_map("quicken/accounts.csv", rows)
+    before = quicken_account_map.read_text(encoding="utf-8")
+
+    # The answer is used, and the shared row is left as it was: N to replacing it.
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export),
+                     input="Asset_Brokerage_Joint\nn\n")
+    assert result.exit_code == 0, result.output
+    assert "is mapped to Asset_Brokerage, which retire_alice doesn't have" in result.output
+    assert "saved mappings" not in result.output
+    assert quicken_account_map.read_text(encoding="utf-8") == before
+    assert _lots(test_data_dir)["Asset_Brokerage_Joint"]["opening_balance"] == "310000.00"
+
+    # Y replaces it for every scenario.
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export),
+                     input="Asset_Brokerage_Joint\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,," in \
+        quicken_account_map.read_text(encoding="utf-8")
+
+
+@pytest.mark.usefixtures("quicken_account_map", "test_child_scenario")
+def test_sim_import_holdings_overrides_the_lots_a_scenario_inherits(
+    test_data_dir: Path, quicken_net_worth_export: Path,
+) -> None:
+    parent = _lots(test_data_dir)
+    assert _lots(test_data_dir, "child") == {}
+
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), scenario="child")
+
+    assert result.exit_code == 0, result.output
+    assert "4 as override(s) of inherited lots" in result.output
+    assert _lots(test_data_dir) == parent
+    child = _lots(test_data_dir, "child")
+    assert child["Asset_Checking"] == {**parent["Asset_Checking"], "opening_balance": "1234.56"}
+    # The inherited prior-year balance is kept, not seeded over.
+    assert child["Asset_TraditionalIRA_Alice"] == {
+        **parent["Asset_TraditionalIRA_Alice"], "opening_balance": "510000.00"}
+
+    # The second time the rows are the child's own, and nothing differs.
+    again = _import(test_data_dir, "holdings", str(quicken_net_worth_export), scenario="child")
+    assert again.exit_code == 0, again.output
+    assert "0 lot(s)" in again.output and "override" not in again.output
+    assert _lots(test_data_dir, "child") == child
+
+
+@pytest.mark.usefixtures("quicken_account_map")
+def test_sim_import_holdings_refuses_the_same_file_twice(
+    test_data_dir: Path, quicken_net_worth_export: Path,
+) -> None:
+    before = _lots(test_data_dir)
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export),
+                     str(quicken_net_worth_export))
+    assert result.exit_code != 0
+    assert "is in more than one file" in result.output
+    assert _lots(test_data_dir) == before
+
+
+def test_renames_follow_into_the_saved_mappings_and_say_so(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    saved = write_import_map(
+        "quicken/accounts.csv",
+        "Checking,,map,Asset_Checking,,\nFunds,,map,Asset_Brokerage_Joint,default,\n")
+    where = ["--scenario", "retire_alice", "--data-dir", str(test_data_dir)]
+
     result = CliRunner().invoke(main, [
-        "sim", "account", "rename", "Asset_Checking", "Asset_Bank",
-        "--scenario", "retire_alice", "--data-dir", str(test_data_dir)])
+        "sim", "account", "rename", "Asset_Checking", "Asset_Bank", *where])
     assert result.exit_code == 0, result.output
     assert "imports/quicken/accounts.csv" in result.output
-    assert "Asset_Checking,,map,Asset_Bank,," in quicken_account_map.read_text(encoding="utf-8")
+
+    result = CliRunner().invoke(main, [
+        "sim", "account", "edit", "Asset_Bank", "--new-name", "Asset_Cash", *where])
+    assert result.exit_code == 0, result.output
+    assert "also renamed in imports/quicken/accounts.csv" in result.output
+
+    result = CliRunner().invoke(main, [
+        "sim", "account", "lot", "rename", "Asset_Brokerage_Joint", "default", "funds", *where])
+    assert result.exit_code == 0, result.output
+    assert "imports/quicken/accounts.csv" in result.output
+
+    assert saved.read_text(encoding="utf-8").splitlines()[1:] == [
+        "Checking,,map,Asset_Cash,,", "Funds,,map,Asset_Brokerage_Joint,funds,"]
 
 
 # ---------- transactions ----------
@@ -207,17 +285,11 @@ def _transactions(data: Path, export: Path, *args: str, input: str | None = None
                    input=input)
 
 
-def _expense_accounts(data: Path, text: str) -> Path:
-    path = data / "imports" / "expense_accounts.csv"
-    path.write_text("category,account\n" + text, encoding="utf-8")
-    return path
-
-
 @pytest.mark.usefixtures("quicken_category_map")
 def test_sim_import_transactions_writes_rules_and_a_rerun_shows_the_difference(
-    test_data_dir: Path, quicken_transaction_export: Path,
+    test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
 ) -> None:
-    _expense_accounts(test_data_dir, "Food,Expense_Living\nGifts,-\n")
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
 
     dry = _transactions(test_data_dir, quicken_transaction_export, "--dry-run")
     assert dry.exit_code == 0, dry.output
@@ -239,7 +311,7 @@ def test_sim_import_transactions_writes_rules_and_a_rerun_shows_the_difference(
     quicken_transaction_export.write_text(
         quicken_transaction_export.read_text(encoding="utf-8").replace('"-500.00"', '"-700.00"'),
         encoding="utf-8")
-    _expense_accounts(test_data_dir, "Food,Expense_Living\nGifts,Expense_Living\n")
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,Expense_Living\n")
     rerun = _transactions(test_data_dir, quicken_transaction_export, "--dry-run")
     assert rerun.exit_code == 0, rerun.output
     lines = {line.split()[0]: line.split()[1:] for line in rerun.output.splitlines()
@@ -252,9 +324,9 @@ def test_sim_import_transactions_writes_rules_and_a_rerun_shows_the_difference(
 
 @pytest.mark.usefixtures("quicken_category_map")
 def test_sim_import_transactions_warns_about_a_category_with_no_account(
-    test_data_dir: Path, quicken_transaction_export: Path,
+    test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
 ) -> None:
-    _expense_accounts(test_data_dir, "Food,Expense_Nowhere\n")
+    write_import_map("expense_accounts.csv", "Food,Expense_Nowhere\n")
 
     result = _transactions(test_data_dir, quicken_transaction_export)
 
@@ -278,6 +350,24 @@ def test_sim_import_transactions_asks_for_expense_accounts_and_saves_them(
     assert list(_generated(test_data_dir)) == ["baseline_expense_food"]
 
 
+@pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
+def test_sim_import_transactions_keeps_a_saved_account_another_scenario_may_use(
+    test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
+) -> None:
+    saved = write_import_map("expense_accounts.csv", "Food,Expense_Nowhere\nGifts,-\n")
+    before = saved.read_text(encoding="utf-8")
+
+    result = _transactions(test_data_dir, quicken_transaction_export, input="skip\nn\n")
+    assert result.exit_code == 0, result.output
+    assert saved.read_text(encoding="utf-8") == before
+    assert _generated(test_data_dir) == {}
+
+    result = _transactions(test_data_dir, quicken_transaction_export, input="Expense_Living\ny\n")
+    assert result.exit_code == 0, result.output
+    assert saved.read_text(encoding="utf-8") == "category,account\nFood,Expense_Living\nGifts,-\n"
+    assert list(_generated(test_data_dir)) == ["baseline_expense_food"]
+
+
 def test_sim_import_transactions_needs_a_category_map(
     test_data_dir: Path, quicken_transaction_export: Path,
 ) -> None:
@@ -285,6 +375,25 @@ def test_sim_import_transactions_needs_a_category_map(
     assert result.exit_code != 0
     assert "category map not found" in result.output
     assert "imports/quicken/categories.csv" in result.output
+
+
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_says_when_an_export_has_no_transactions(
+    test_data_dir: Path, quicken_transaction_export: Path, quicken_empty_transaction_export: Path,
+    quicken_net_worth_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
+
+    both = _transactions(test_data_dir, quicken_transaction_export,
+                         str(quicken_empty_transaction_export))
+    assert both.exit_code == 0, both.output
+    assert _generated(test_data_dir)["baseline_expense_food"]["amount"] == "420.00"
+
+    for export, layout in ((quicken_empty_transaction_export, ()),
+                           (quicken_net_worth_export, ("--source", "quicken"))):
+        empty = _transactions(test_data_dir, export, *layout)
+        assert empty.exit_code != 0
+        assert "no transactions in" in empty.output
 
 
 # ---------- moving a data repo's old mapping files ----------
@@ -302,41 +411,24 @@ def _migration():
     return module
 
 
-def _old_account_map(data: Path, scenario: str, rows: str) -> Path:
-    path = data / "scenarios" / scenario / "quicken_account_map.csv"
-    path.write_text("quicken_name,account_name,action,note\n" + rows, encoding="utf-8")
-    return path
-
-
 def test_migrate_527_moves_and_merges_the_old_mapping_files(
     test_data_dir: Path, quicken_net_worth_export: Path, quicken_transaction_export: Path,
+    write_old_import_map: MapWriter,
 ) -> None:
     old = [
-        _old_account_map(test_data_dir, "base", "Asset_Checking,Asset_Checking,map,\n"),
-        _old_account_map(
-            test_data_dir, "retire_alice",
+        write_old_import_map("base", "Asset_Checking,Asset_Checking,map,\n"),
+        write_old_import_map(
+            "retire_alice",
             "Asset_Checking,Asset_Checking,map,\n"
             "Asset_Brokerage_Joint,Asset_Brokerage_Joint,map,\n"
             "Asset_TraditionalIRA_Alice,Asset_TraditionalIRA_Alice,map,\n"
+            "Closed Card,,map,\n"  # a stale row the old importer put up with
             "Liability_Mortgage,,skip,modeled by hand\n"),
+        write_old_import_map("expense_category_map.csv",
+                             "Groceries,Food\nCoffee Shops,Food\nGifts,-\n"),
+        write_old_import_map("expense_category_split.csv", "Food,Checking,Alice Food\n"),
+        write_old_import_map("expense_account_map.csv", "Alice Food,Expense_Living\n"),
     ]
-    quicken = test_data_dir.parent / "quicken"
-    quicken.mkdir()
-    (quicken / "expense_category_map.csv").write_text(
-        "quicken_category,target_category\nGroceries,Food\nCoffee Shops,Food\nGifts,-\n",
-        encoding="utf-8")
-    (quicken / "expense_category_split.csv").write_text(
-        "category,account,target_category\nFood,Checking,Alice Food\n", encoding="utf-8")
-    (quicken / "expense_account_map.csv").write_text(
-        "category,target_account\nAlice Food,Expense_Living\n", encoding="utf-8")
-    old += [quicken / "expense_category_map.csv", quicken / "expense_category_split.csv",
-            quicken / "expense_account_map.csv"]
-
-    # Until it is migrated, the import says what to do.
-    stale = _import(test_data_dir, "holdings", str(quicken_net_worth_export))
-    assert stale.exit_code != 0 and "scripts/migrate_527.py" in stale.output
-    stale = _transactions(test_data_dir, quicken_transaction_export)
-    assert stale.exit_code != 0 and "scripts/migrate_527.py" in stale.output
 
     migration = _migration()
     assert migration.main([str(test_data_dir)]) == 0
@@ -366,11 +458,28 @@ def test_migrate_527_moves_and_merges_the_old_mapping_files(
     assert migration.main([str(test_data_dir)]) == 0  # nothing left to migrate
 
 
-def test_migrate_527_stops_when_two_scenarios_map_an_account_differently(
-    test_data_dir: Path, capsys: pytest.CaptureFixture[str],
+@pytest.mark.usefixtures("quicken_category_map", "quicken_account_map", "at_a_terminal")
+@pytest.mark.parametrize(("where", "rows"), [
+    ("base", "Asset_Checking,Asset_Checking,map,\n"),  # not the scenario imported into
+    ("expense_category_split.csv", "Food,Checking,Alice Food\n"),
+])
+def test_sim_import_stops_until_old_mappings_anywhere_are_migrated(
+    test_data_dir: Path, quicken_net_worth_export: Path, quicken_transaction_export: Path,
+    write_old_import_map: MapWriter, where: str, rows: str,
 ) -> None:
-    _old_account_map(test_data_dir, "base", "Savings,Asset_Checking,map,\n")
-    old = _old_account_map(test_data_dir, "retire_alice", "Savings,Asset_Brokerage_Joint,map,\n")
+    old = write_old_import_map(where, rows)
+
+    for result in (_import(test_data_dir, "holdings", str(quicken_net_worth_export)),
+                   _transactions(test_data_dir, quicken_transaction_export)):
+        assert result.exit_code != 0
+        assert "scripts/migrate_527.py" in result.output and str(old) in result.output
+
+
+def test_migrate_527_stops_when_two_scenarios_map_an_account_differently(
+    test_data_dir: Path, capsys: pytest.CaptureFixture[str], write_old_import_map: MapWriter,
+) -> None:
+    write_old_import_map("base", "Savings,Asset_Checking,map,\n")
+    old = write_old_import_map("retire_alice", "Savings,Asset_Brokerage_Joint,map,\n")
 
     assert _migration().main([str(test_data_dir), "--write"]) == 1
 

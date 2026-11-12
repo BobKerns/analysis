@@ -25,7 +25,7 @@ import csv
 import os
 import re
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,7 +34,7 @@ __all__ = [
     "EXCLUDED_PAYEES_HEADER", "EXPENSE_ACCOUNTS", "EXPENSE_ACCOUNTS_HEADER", "IMPORTS", "NO_RULE",
     "SPLITS", "SPLITS_HEADER", "AccountMap", "AccountTarget", "ExpenseAccounts", "expense_accounts_path",
     "imports_dir", "load_account_map", "load_category_map", "load_category_splits",
-    "load_excluded_payees", "load_expense_accounts", "rename_account", "source_dir",
+    "load_excluded_payees", "load_expense_accounts", "rename_account", "rename_lot", "source_dir",
 ]
 
 IMPORTS = "imports"
@@ -105,6 +105,11 @@ class AccountTarget:
     lot: str = ""
     """Blank for the account's only lot."""
     note: str = ""
+
+    @property
+    def label(self) -> str:
+        """``account``, or ``account:lot``: how a message names the target."""
+        return f"{self.account}:{self.lot}" if self.lot else self.account
 
 
 @dataclass
@@ -249,21 +254,35 @@ def load_expense_accounts(path: Path | str) -> ExpenseAccounts:
 
 # ---------- following a rename ----------
 
-def rename_account(data_dir: Path, old: str, new: str) -> list[str]:
-    """Follow a renamed scenario account in every saved mapping; the files
-    changed, relative to the data dir."""
-    root = imports_dir(data_dir)
-    if not root.is_dir():
-        return []
+def _retarget(data_dir: Path, moved: Callable[[AccountTarget], AccountTarget | None]) -> list[str]:
+    """Rewrite every source's account map, each ``map`` row's target replaced
+    by ``moved``'s answer where it gives one; the files changed, relative to
+    the data dir."""
     changed: list[str] = []
-    for path in sorted(root.glob(f"*/{ACCOUNTS}")):
+    for path in sorted(imports_dir(data_dir).glob(f"*/{ACCOUNTS}")):
         found = load_account_map(path)
-        renamed = {key: AccountTarget(t.action, new, t.lot, t.note)
-                   for key, t in found.entries.items() if t.action == "map" and t.account == old}
+        renamed = {key: new for key, target in found.entries.items()
+                   if target.action == "map" and (new := moved(target)) is not None}
         if renamed:
             found.entries.update(renamed)
             found.save()
             changed.append(str(path.relative_to(data_dir)))
+    return changed
+
+
+def rename_lot(data_dir: Path, account: str, old: str, new: str) -> list[str]:
+    """Follow a renamed lot of ``account`` in every saved account mapping;
+    the files changed, relative to the data dir."""
+    return _retarget(data_dir, lambda t: AccountTarget(t.action, t.account, new, t.note)
+                     if (t.account, t.lot) == (account, old) else None)
+
+
+def rename_account(data_dir: Path, old: str, new: str) -> list[str]:
+    """Follow a renamed scenario account in every saved mapping; the files
+    changed, relative to the data dir."""
+    root = imports_dir(data_dir)
+    changed = _retarget(data_dir, lambda t: AccountTarget(t.action, new, t.lot, t.note)
+                        if t.account == old else None)
     expenses = load_expense_accounts(root / EXPENSE_ACCOUNTS)
     if old in expenses.accounts.values():
         expenses.accounts = {c: new if a == old else a for c, a in expenses.accounts.items()}

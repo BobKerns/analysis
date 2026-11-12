@@ -2178,11 +2178,31 @@ def quicken_net_worth_export(tmp_path: Path) -> Path:
         ',"  - Total Checking","1,234.56"\n'
         ',"Investments",\n'
         ',"  - Asset_Brokerage_Joint","310,000.00"\n'
-        ',"  - Asset_TraditionalIRA_Alice","510,000.00"\n'
+        ',"  - Retirement",\n'
+        ',"  -  - Asset_TraditionalIRA_Alice","510,000.00"\n'
+        ',"  -  - Total Retirement","510,000.00"\n'
+        ',"  - Total Investments","820,000.00"\n'
         '"Liabilities",,\n'
         ',"Loan",\n'
         ',"  - Liability_Mortgage","-240,000.00"\n'
-        'Net Worth,,"0.00"\n',
+        'Net Worth,,"581,234.56"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_year_end_export(tmp_path: Path) -> Path:
+    """A Quicken "Year End Export" of two of the same accounts, as of
+    2025-12-31."""
+    path = tmp_path / "year_end_export.csv"
+    path.write_text(
+        '"",,"2025-12-31"\n'
+        '"Assets",,\n'
+        ',"Investments",\n'
+        ',"  - Asset_Brokerage_Joint","290,000.00"\n'
+        ',"  - Asset_TraditionalIRA_Alice","495,000.00"\n'
+        'Net Worth,,"785,000.00"\n',
         encoding="utf-8",
     )
     return path
@@ -2193,7 +2213,7 @@ def quicken_account_map(test_data_dir: Path) -> Path:
     """``imports/quicken/accounts.csv`` in the test data dir, mapping each
     account of ``quicken_net_worth_export`` to the account of the same name."""
     path = test_data_dir / "imports" / "quicken" / "accounts.csv"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "outside_account,asset,action,account,lot,note\n"
         "Asset_Checking,,map,Asset_Checking,,\n"
@@ -2224,6 +2244,19 @@ def quicken_transaction_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def quicken_empty_transaction_export(tmp_path: Path) -> Path:
+    """A Quicken "Transaction Export" of an account with no activity."""
+    path = tmp_path / "empty_transaction_export.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Savings",,,,,,,,,,,\n'
+        '"Total Savings",,,,,,,,,,,"0.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
 def quicken_category_map(test_data_dir: Path) -> Path:
     """``imports/quicken/categories.csv`` for ``quicken_transaction_export``:
     both food categories merge into Food, Gifts stays as it is."""
@@ -2237,3 +2270,56 @@ def quicken_category_map(test_data_dir: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+@pytest.fixture
+def write_import_map(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a mapping file under the test data dir's ``imports/``:
+    ``write("quicken/accounts.csv", rows)`` or
+    ``write("expense_accounts.csv", rows)``. The header is the file's own;
+    ``rows`` is the CSV text after it."""
+    from analysis.sim.imports import mapping
+
+    headers = {
+        mapping.ACCOUNTS: mapping.ACCOUNTS_HEADER,
+        mapping.CATEGORIES: mapping.CATEGORIES_HEADER,
+        mapping.SPLITS: mapping.SPLITS_HEADER,
+        mapping.EXCLUDED_PAYEES: mapping.EXCLUDED_PAYEES_HEADER,
+        mapping.EXPENSE_ACCOUNTS: mapping.EXPENSE_ACCOUNTS_HEADER,
+    }
+
+    def write(relative: str, rows: str) -> Path:
+        path = test_data_dir / "imports" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(",".join(headers[path.name]) + "\n" + rows, encoding="utf-8")
+        return path
+
+    return write
+
+
+@pytest.fixture
+def write_old_import_map(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a mapping file where it lived before ``imports/`` (#527), for
+    ``scripts/migrate_527.py``: ``write("<scenario>", rows)`` is that
+    scenario's ``quicken_account_map.csv``; ``write("expense_category_map.csv",
+    rows)`` (or another ``expense_*.csv``) goes in ``quicken/`` beside the
+    data dir. The header is the old file's own."""
+    headers = {
+        "expense_category_map.csv": "quicken_category,target_category",
+        "expense_category_split.csv": "category,account,target_category",
+        "expense_excluded_payees.csv": "payee_pattern",
+        "expense_account_map.csv": "category,target_account",
+    }
+
+    def write(where: str, rows: str) -> Path:
+        if where in headers:
+            path = test_data_dir.parent / "quicken" / where
+            header = headers[where]
+        else:
+            path = test_data_dir / "scenarios" / where / "quicken_account_map.csv"
+            header = "quicken_name,account_name,action,note"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(header + "\n" + rows, encoding="utf-8")
+        return path
+
+    return write

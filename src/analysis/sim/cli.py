@@ -8599,8 +8599,6 @@ def import_group_command() -> None:
     """
 
 
-_MIGRATE_527 = ("{old} is a mapping from before the imports/ folder (#527); "
-                "move the data repo's mappings there with scripts/migrate_527.py")
 _SOURCE_OPTION_HELP = "Outside layout to read FILE as (default: the one the file is in; see 'sim import sources')."
 
 
@@ -8623,36 +8621,60 @@ def import_sources(files: tuple[Path, ...]) -> None:
     _echo_table(["source", "reads", "from"], rows, left=3)
 
 
-def _own_lot_rows(scenario_dir: Path) -> tuple[Path, list[dict[str, str]], list[str]]:
-    """The scenario's own account_lots.csv: its path, rows and header."""
-    path = scenario_dir / "account_lots.csv"
-    if not path.exists():
-        raise click.ClickException(f"account_lots.csv not found: {path}")
-    with path.open(newline="", encoding="utf-8") as fh:
-        reader = _csv.DictReader(fh)
-        header = list(reader.fieldnames or [])
-        rows = list(reader)
-    if "account_name" not in header:
-        raise click.ClickException(f"account_lots.csv missing 'account_name' column: {path}")
-    return path, rows, header
+def _unmigrated_import_maps(data_dir: Path) -> list[Path]:
+    """Mapping files from before the imports/ folder (#527), anywhere in the
+    data repo: any scenario's account map, and the baseline's category files."""
+    old = sorted((data_dir / "scenarios").glob("*/quicken_account_map.csv"))
+    old += [path for name in ("expense_category_map.csv", "expense_category_split.csv",
+                              "expense_excluded_payees.csv", "expense_account_map.csv")
+            if (path := data_dir.parent / "quicken" / name).is_file()]
+    return old
+
+
+def _refuse_unmigrated_imports(data_dir: Path) -> None:
+    """Stop while the data repo still has old mapping files. Importing past
+    them would ignore what they say, and would start an imports/ folder that
+    scripts/migrate_527.py then refuses to write over."""
+    if old := _unmigrated_import_maps(data_dir):
+        raise click.ClickException(
+            "the data repo has import mappings from before the imports/ folder (#527):\n  "
+            + "\n  ".join(map(str, old))
+            + "\nmove them there with scripts/migrate_527.py (it reports first; --write does it)")
+
+
+def _import_target_lots(
+    scenario_dir: Path, scenario: str, accounts: Mapping[str, tuple[str, str]],
+) -> list[_Lot]:
+    """The lots an import can set: every lot the scenario has, its own and
+    inherited (less the deleted ones), and the empty default lot the loader
+    gives an account that holds a balance but has no lot rows. An investment
+    account's lots are named, so it gets no such lot."""
+    lots = [lot for lot in _scenario_lots(scenario_dir, scenario) if not lot.deleted]
+    have = {lot.account for lot in lots}
+    for name, (kind, subkind) in accounts.items():
+        if name not in have and kind in ("asset", "liability") \
+                and subkind not in INVESTMENT_ASSET_SUBKINDS:
+            row = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "")
+            row |= {"account_name": name, "opening_balance": "0.00"}
+            lots.append(_Lot(row, None, None, implicit=True))
+    return lots
 
 
 def _ask_holding_target(
     holding: import_forms.Holding, source: str, lots: Sequence[Mapping[str, str]], why: str,
 ) -> import_mapping.AccountTarget:
     """Where one outside account goes, asked for: one of the scenario's
-    accounts with a lot of its own here (and which lot, if several), or
+    accounts that holds a balance (and which lot, if it has several), or
     ``skip``."""
-    label = " / ".join(filter(None, (holding.account, holding.asset)))
-    click.echo(f"{source} account {label!r} ({format_dollars(holding.value_cents)}) {why}.")
-    own = list(dict.fromkeys(row["account_name"] for row in lots if row.get("account_name")))
-    answer = _ask_name("account", [*own, "skip"], prompt=f"account for {label} (or skip)")
+    click.echo(f"{source} account {holding.label!r} ({format_dollars(holding.value_cents)}) {why}.")
+    held = list(dict.fromkeys(row["account_name"] for row in lots if row.get("account_name")))
+    answer = _ask_name("account", [*held, "skip"], prompt=f"account for {holding.label} (or skip)")
     if answer == "skip":
         return import_mapping.AccountTarget("skip")
-    own_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
+    its_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
     lot = ""
-    if len(own_lots) > 1:
-        lot = _ask_name("lot", [each or registries.DEFAULT_LOT for each in own_lots],
+    if len(its_lots) > 1:
+        lot = _ask_name("lot", [each or registries.DEFAULT_LOT for each in its_lots],
                         prompt=f"lot of {answer}")
     return import_mapping.AccountTarget("map", answer, lot)
 
@@ -8703,6 +8725,7 @@ def import_transactions(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     data_repo_root = data_dir_p.parent
+    _refuse_unmigrated_imports(data_dir_p)
     if not files:
         default_file = data_repo_root / "quicken" / "Transaction Export.csv"
         if not default_file.exists():
@@ -8713,13 +8736,15 @@ def import_transactions(
         flows = import_sources_.read_flows(files, layout)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
+    if flows.transactions.empty:
+        raise click.ClickException(
+            "no transactions in " + ", ".join(map(str, files))
+            + f": is it a {flows.source} transactions export?")
     maps_dir = import_mapping.source_dir(data_dir_p, flows.source)
     category_map_path = maps_dir / import_mapping.CATEGORIES
     category_split_path = maps_dir / import_mapping.SPLITS
     excluded_payees_path = maps_dir / import_mapping.EXCLUDED_PAYEES
     if not category_map_path.exists():
-        if (old_map := data_repo_root / "quicken" / "expense_category_map.csv").exists():
-            raise click.ClickException(_MIGRATE_527.format(old=old_map))
         raise click.ClickException(
             f"category map not found: {category_map_path} "
             f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
@@ -8764,14 +8789,18 @@ def import_transactions(
               for r in baseline.category_totals.to_dict("records")}
     months = max(baseline.monthly["summary_month_start"].nunique(), 1)
 
+    # What this run uses: the saved accounts, and any answer given for this
+    # run only.
+    chosen = dict(expense_accounts.accounts)
+
     def target_of(category: str) -> str | None:
-        """The saved account, else the scenario account of the same name."""
-        saved = expense_accounts.accounts.get(category)
+        """The chosen account, else the scenario account of the same name."""
+        saved = chosen.get(category)
         if saved is None and category in scenario_accounts:
             return category
         return saved
 
-    asked = False
+    to_save = False
     if _interactive():
         for category in sorted(totals):
             target = target_of(category)
@@ -8782,9 +8811,14 @@ def import_transactions(
             click.echo(f"category {category!r} (about {totals[category] / months:,.2f} a month) {why}.")
             answer = _ask_name("expense account", [*expense_names, "skip"],
                                prompt=f"expense account for {category} (or skip)")
-            expense_accounts.accounts[category] = \
-                import_mapping.NO_RULE if answer == "skip" else answer
-            asked = True
+            chosen[category] = import_mapping.NO_RULE if answer == "skip" else answer
+            # A saved account may be right for another scenario, which would
+            # then silently lose the category's rule, or pay the wrong account.
+            if target is None or click.confirm(
+                    f"Replace the saved account {target}, for every scenario? "
+                    "(No uses your answer for this import only)", default=False):
+                expense_accounts.accounts[category] = chosen[category]
+                to_save = True
 
     mappings: dict[str, str] = {}
     ignored: set[str] = set()
@@ -8824,10 +8858,10 @@ def import_transactions(
     if dry_run:
         click.echo(f"(dry run) would replace the generated row(s) in {_shown(scheduled_path)} "
                    f"with {len(rows)}: {counts or 'none'}")
-        if asked:
+        if to_save:
             click.echo("(dry run) the expense accounts you gave were not saved")
         return
-    if asked:
+    if to_save:
         expense_accounts.save()
         click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
     with _scenario_edit(data_dir_p, scenario_name) as edit:
@@ -9747,7 +9781,7 @@ def edit_account(
                 _rename_account(edit, name, new_name)
             if override:
                 _append_csv_row(edit.path(accounts_path), tuple(df.columns), row)
-        _rename_in_imports(data_dir_p, name, new_name)
+        followed = _rename_in_imports(data_dir_p, name, new_name)
         if override:
             click.echo(
                 f"wrote an override of account '{new_name}' "
@@ -9758,6 +9792,7 @@ def edit_account(
                 f"renamed account '{name}' to '{new_name}' where it is defined, "
                 f"in {chosen.inherited_from!r}"
             )
+        _echo_followed_in_imports(followed)
         return
     df.loc[idx, list(fields)] = list(fields.values())
     with _scenario_edit(data_dir_p, scenario_name) as edit:
@@ -9766,9 +9801,10 @@ def edit_account(
             # write below then carries this scenario's other changes.
             _rename_account(edit, name, new_name)
         df.to_csv(edit.path(accounts_path), index=False)
-    _rename_in_imports(data_dir_p, name, new_name)
+    followed = _rename_in_imports(data_dir_p, name, new_name)
 
     click.echo(f"updated account '{new_name}' in {_shown(accounts_path)}")
+    _echo_followed_in_imports(followed)
 
 
 @account_group_command.command("rename")
@@ -11566,6 +11602,9 @@ def lot_edit(
             rename=(chosen.lot, new) if renamed else None, growth_character=character,
         )
         _echo_growth_character(chosen.account, character)
+        if renamed:
+            _echo_followed_in_imports(
+                _rename_lot_in_imports(data_dir_p, chosen.account, chosen.lot, new))
         if chosen.implicit:
             click.echo(f"added lot {new!r} of {chosen.account!r} to {_shown(path)}")
         elif chosen.index is None:
@@ -11873,33 +11912,48 @@ def import_holdings(
     marked ``skip`` -- this catches new or renamed outside accounts instead
     of silently ignoring them. At a terminal the missing ones are asked for
     and saved.
+
+    A lot inherited from a parent scenario is changed by writing an override
+    of the whole lot into this scenario.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
-    values_path, lots, header = _own_lot_rows(scenario_dir)
+    _refuse_unmigrated_imports(data_dir_p)
+    values_path = scenario_dir / "account_lots.csv"
     accounts = {
         row["name"]: (row.get("kind", ""), row.get("subkind", ""))
         for row in names.lineage_rows(data_dir_p, scen_name, "accounts.csv") if row.get("name")
     }
+    lots = _import_target_lots(scenario_dir, scen_name, accounts)
+    rows = [lot.row for lot in lots]
     try:
         snapshot = import_sources_.read_holdings(files, layout)
         map_path = import_mapping.source_dir(data_dir_p, snapshot.source) / import_mapping.ACCOUNTS
-        if not map_path.exists() and (scenario_dir / "quicken_account_map.csv").exists():
-            raise click.ClickException(_MIGRATE_527.format(old=scenario_dir / "quicken_account_map.csv"))
-        account_map = import_mapping.load_account_map(map_path)
-        result = import_holdings_.plan(snapshot, account_map, accounts, lots, year_end=year_end)
-        asked = False
+        saved_map = import_mapping.load_account_map(map_path)
+        # What this run uses: the saved map, and any answer given for this
+        # run only.
+        account_map = import_mapping.AccountMap(map_path, dict(saved_map.entries))
+        result = import_holdings_.plan(snapshot, account_map, accounts, rows, year_end=year_end)
+        to_save = False
         while not result.complete and _interactive():
             for holding in result.unmapped:
-                account_map.set(holding.account, holding.asset, _ask_holding_target(
-                    holding, snapshot.source, lots, "has no saved mapping"))
-            for holding, target in result.unknown:
-                missing = f"{target.account}:{target.lot}" if target.lot else target.account
-                account_map.set(holding.account, holding.asset, _ask_holding_target(
-                    holding, snapshot.source, lots,
-                    f"is mapped to {missing}, which {scen_name} doesn't have"))
-            asked = True
-            result = import_holdings_.plan(snapshot, account_map, accounts, lots, year_end=year_end)
+                target = _ask_holding_target(holding, snapshot.source, rows, "has no saved mapping")
+                account_map.set(holding.account, holding.asset, target)
+                saved_map.set(holding.account, holding.asset, target)
+                to_save = True
+            for holding, old in result.unknown:
+                target = _ask_holding_target(
+                    holding, snapshot.source, rows,
+                    f"is mapped to {old.label}, which {scen_name} doesn't have")
+                account_map.set(holding.account, holding.asset, target)
+                # The saved mapping may be right for another scenario, which
+                # would then silently import into the wrong place, or not at all.
+                if click.confirm(
+                        f"Replace the saved mapping to {old.label}, for every scenario? "
+                        "(No uses your answer for this import only)", default=False):
+                    saved_map.set(holding.account, holding.asset, target)
+                    to_save = True
+            result = import_holdings_.plan(snapshot, account_map, accounts, rows, year_end=year_end)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
 
@@ -11908,15 +11962,13 @@ def import_holdings(
             f"unmapped {snapshot.source} account(s); add to {map_path} "
             f"(columns {', '.join(import_mapping.ACCOUNTS_HEADER)}), or run at a terminal "
             "to be asked:\n  "
-            + "\n  ".join(sorted({" / ".join(filter(None, (h.account, h.asset)))
-                                  for h in result.unmapped}))
+            + "\n  ".join(sorted({h.label for h in result.unmapped}))
         )
     if result.unknown:
         raise click.ClickException(
-            f"mapping target(s) not found in {scen_name}:\n  "
-            + "\n  ".join(sorted(
-                f"{h.account} -> {t.account}{':' + t.lot if t.lot else ''}"
-                for h, t in result.unknown))
+            f"mapping target(s) not found in {scen_name} (an account needs a lot to hold a "
+            "balance: 'sim account lot add'):\n  "
+            + "\n  ".join(sorted(f"{h.label} -> {t.label}" for h, t in result.unknown))
         )
     for warning in result.warnings:
         click.echo(f"warning: {warning}", err=True)
@@ -11933,19 +11985,25 @@ def import_holdings(
               f"{result.lots_unchanged} unchanged")
     if dry_run:
         click.echo(f"(dry run) {result.lots_changed} lot(s) would change, {counts}")
-        if asked:
+        if to_save:
             click.echo("(dry run) the mappings you gave were not saved")
         return
 
-    if asked:
-        account_map.save()
+    if to_save:
+        saved_map.save()
         click.echo(f"saved mappings to {_shown(map_path)}")
+    overrides = 0
     with _scenario_edit(data_dir_p, scen_name) as edit:
-        with edit.path(values_path).open("w", newline="", encoding="utf-8") as fh:
-            writer = _csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
-            writer.writeheader()
-            writer.writerows(result.rows)
-    click.echo(f"updated {result.lots_changed} lot(s) in {values_path} ({counts})")
+        staged = edit.path(values_path)
+        for index in result.changed_rows:
+            # In place for the scenario's own row; a whole-row override of an
+            # inherited lot, or the first row of an account that had none.
+            own = lots[index].index
+            overrides += own is None and not lots[index].implicit
+            _append_csv_row(staged, registries.ACCOUNT_LOTS_CSV_HEADER, result.rows[index],
+                            replace=own)
+    inherited = f"; {overrides} as override(s) of inherited lots" if overrides else ""
+    click.echo(f"updated {result.lots_changed} lot(s) in {values_path} ({counts}){inherited}")
 
 
 @transfer_group_command.command("list")
@@ -14011,6 +14069,24 @@ def _rename_in_imports(data_dir: Path, old: str, new: str) -> list[str]:
     return import_mapping.rename_account(data_dir, old, new)
 
 
+def _rename_lot_in_imports(data_dir: Path, account: str, old: str, new: str) -> list[str]:
+    """``_rename_in_imports``, for a renamed lot of ``account``."""
+    if old == new:
+        return []
+    scenarios = data_dir / "scenarios"
+    still = _lot_defined(account, old)
+    if any(still(scenarios / each) for each in rename.scenario_folders(scenarios)):
+        return []
+    return import_mapping.rename_lot(data_dir, account, old, new)
+
+
+def _echo_followed_in_imports(changed: list[str]) -> None:
+    """Say which shared mapping files a rename also rewrote: they are
+    outside the scenario, so the command's own report doesn't cover them."""
+    for path in changed:
+        click.echo(f"  also renamed in {path}")
+
+
 def _defined_outside_scope(edit: StagedEdit, defines: rename.Defines) -> bool:
     """Whether a scenario a rename in ``edit`` won't reach still defines the
     name: a shared file's old key must then stay (``rename.rename_lot_keys``).
@@ -14844,6 +14920,7 @@ def lot_rename(
             moved=moved,
         )
         changed += rename.rename_lot_keys(edit.data_dir, moved, keep_old=keep_old)
+    changed += _rename_lot_in_imports(data, account, lot, new_lot)
     _echo_renamed(f"lot of {account}", lot, new_lot, changed)
 
 

@@ -31,6 +31,11 @@ class Holding:
     """Whatever else the file says about the account (type, owner, tax
     treatment), for pre-filling a new account."""
 
+    @property
+    def label(self) -> str:
+        """``account``, or ``account / asset``: how a message names it."""
+        return f"{self.account} / {self.asset}" if self.asset else self.account
+
 
 @dataclass(frozen=True)
 class Snapshot:

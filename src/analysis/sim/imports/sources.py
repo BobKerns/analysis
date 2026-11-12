@@ -126,6 +126,16 @@ def read_holdings(paths: Sequence[Path], name: str | None = None) -> Snapshot:
     if len(dates) > 1:
         raise SourceError(
             "the files are as of different dates: " + ", ".join(sorted(map(str, dates))))
+    # The applier adds what lands in one lot together, so the same outside
+    # account read from two files would be counted twice.
+    seen: dict[tuple[str, str], int] = {}
+    for number, snapshot in enumerate(snapshots):
+        for holding in snapshot.holdings:
+            first = seen.setdefault((holding.account, holding.asset), number)
+            if first != number:
+                raise SourceError(
+                    f"{holding.label!r} is in more than one file ({paths[first]}, "
+                    f"{paths[number]}); import each outside account from one file")
     return Snapshot(
         source=source.name,
         holdings=tuple(holding for snapshot in snapshots for holding in snapshot.holdings),

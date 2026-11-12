@@ -17,6 +17,8 @@ every scenario, with column names that don't assume Quicken:
 per-scenario account maps are merged into one. A Quicken account two
 scenarios map differently can't be: it is reported, and nothing is written
 until the maps agree (edit them, or delete the one that is out of date).
+A ``map`` row that names no account is dropped, and said so: the new map
+doesn't allow one, and without it the account is simply unmapped.
 Exports themselves (``quicken/Transaction Export.csv``) stay where they are.
 
 Usage: scripts/migrate_527.py [DATA_DIR] [--write]
@@ -100,6 +102,13 @@ def plan_migration(data_dir: Path) -> Plan:
         plan.removes.append(path)
         for quicken_name, account, action, note in rows:
             if not quicken_name:
+                continue
+            if action == "map" and not account:
+                # The new map refuses such a row. Without it the account is
+                # unmapped, which is what the old importer made of it too:
+                # an error (now a question) if an export ever has it.
+                plan.report.append(
+                    f"{path}: dropping {quicken_name!r}, a 'map' row with no account_name")
                 continue
             row = [quicken_name, "", action, account, "", note]
             earlier = merged.setdefault(quicken_name, (row, scenario))

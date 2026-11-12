@@ -175,4 +175,10 @@ def read_transactions(path: Path) -> Flows:
         "source_row", "account", "date", "entered", "posted", "action",
         "payee", "category", "tags", "transfer", "memo", "amount_cents",
     ]
-    return Flows(source=NAME, transactions=pd.DataFrame(rows, columns=columns))
+    frame = pd.DataFrame(rows, columns=columns)
+    # An export with no transactions must still have a date column of dates:
+    # an empty frame's columns are objects, and so is anything joined to one.
+    frame["date"] = pd.to_datetime(frame["date"])
+    frame["amount_cents"] = frame["amount_cents"].astype("int64")
+    frame["source_row"] = frame["source_row"].astype("int64")
+    return Flows(source=NAME, transactions=frame)

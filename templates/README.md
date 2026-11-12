@@ -225,12 +225,16 @@ Steps:
    never silently left out. Both reports share the same account list, so one map
    covers both. Edit the file to change an answer.
 
+   When a saved answer names an account this scenario doesn't have (it may be right
+   for another scenario), the import asks again and uses the new answer for that run;
+   it replaces the saved one only if you say so.
+
 Liability balances are stored as a non-negative debt magnitude (per the engine's sign
 convention), so the importer negates Quicken's signed liability values automatically.
 `prior_year_end_balance` is only meaningful for the RMD rule ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §2.3), hence the
 investment-asset restriction.
 
-**Bookkeeping:** `sim account rename` and `sim account edit --new-name` update the
+**Bookkeeping:** `sim account rename`, `sim account edit --new-name` and `sim account lot rename` update the
 saved mappings alongside `accounts.csv`, `account_lots.csv`, `scheduled.csv`,
 `calendar.csv`, `year_to_date.csv` and chain files, in every scenario that shares the
 account — no manual edit of the map is needed after a rename.

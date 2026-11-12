@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -10,82 +11,45 @@ import pytest
 from analysis.sim.imports import flows, holdings, mapping, quicken, sources
 from analysis.sim.imports.forms import Flows, Holding, Snapshot
 
-_NET_WORTH = """\
-Net Worth Export
-Month to Date: 2026-08-01 - 2026-08-18
-41 Accounts
-
-
-"",,"2026-08-18"
--------------------------,-------------------------,-------------------------
-"Assets",,
-,"Checking",
-," - Business","304.17"
-," - Bank CA","20.11"
-," - Total Checking","324.28"
-,"Investments",
-," - Retirement",
-," -  - Bill Brokerage","10,000.38"
-," -  - Total Retirement","10,000.38"
-," - Total Investments","10,000.38"
-,"Total Assets","10,324.66"
-"Liabilities",,
-,"Credit Card",
-," - Card","-8,378.91"
-," - Total Credit Card","-8,378.91"
-,"Total Liabilities","-8,378.91"
--------------------------,-------------------------,-------------------------
-Net Worth,,"1,945.75"
-"""
-
-_TRANSACTIONS = (
-    '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
-    '"Checking",,,,,,,,,,,\n'
-    ',,"2026-01-02","2026-01-03","2026-01-02","","Market","Groceries","","","","-12.34"\n'
-    '"Total Checking",,,,,,,,,,,"-12.34"\n'
-)
-
-
-@pytest.fixture
-def net_worth_file(tmp_path: Path) -> Path:
-    path = tmp_path / "net_worth.csv"
-    path.write_text(_NET_WORTH, encoding="utf-8")
-    return path
-
-
-@pytest.fixture
-def transactions_file(tmp_path: Path) -> Path:
-    path = tmp_path / "transactions.csv"
-    path.write_text(_TRANSACTIONS, encoding="utf-8")
-    return path
-
-
 # ---------- the Quicken source ----------
 
-def test_read_account_tree_extracts_leaf_accounts_and_the_report_date(net_worth_file: Path) -> None:
-    snapshot = quicken.read_account_tree(net_worth_file)
+def test_read_account_tree_extracts_leaf_accounts_and_the_report_date(
+    quicken_net_worth_export: Path,
+) -> None:
+    snapshot = quicken.read_account_tree(quicken_net_worth_export)
 
     assert snapshot.source == "quicken"
     assert snapshot.as_of == dt.date(2026, 8, 18)
+    # Category headers, subtotals at any depth and the net worth line are not accounts.
     assert {h.account: h.value_cents for h in snapshot.holdings} == {
-        "Business": 30417,
-        "Bank CA": 2011,
-        "Bill Brokerage": 1000038,
-        "Card": -837891,
+        "Asset_Checking": 123456,
+        "Asset_Brokerage_Joint": 31000000,
+        "Asset_TraditionalIRA_Alice": 51000000,
+        "Liability_Mortgage": -24000000,
     }
 
 
-def test_read_transactions_gives_the_common_columns(transactions_file: Path) -> None:
-    found = quicken.read_transactions(transactions_file)
+def test_read_transactions_gives_the_common_columns(quicken_transaction_export: Path) -> None:
+    found = quicken.read_transactions(quicken_transaction_export)
 
     assert isinstance(found, Flows)
-    assert found.transactions[["account", "payee", "category", "amount_cents"]].to_dict("records") == [
-        {"account": "Checking", "payee": "Market", "category": "Groceries", "amount_cents": -1234},
-    ]
+    assert found.transactions[["account", "payee", "category", "amount_cents"]].to_dict("records")[0] == {
+        "account": "Checking", "payee": "Market", "category": "Groceries", "amount_cents": -30000}
+    assert len(found.transactions) == 4
 
 
-def test_flows_refuse_a_frame_without_the_common_columns(transactions_file: Path) -> None:
-    frame = quicken.read_transactions(transactions_file).transactions.drop(columns=["payee"])
+def test_an_export_with_no_transactions_still_has_dates(
+    quicken_transaction_export: Path, quicken_empty_transaction_export: Path,
+) -> None:
+    empty = quicken.read_transactions(quicken_empty_transaction_export).transactions
+    assert empty.empty and str(empty["date"].dtype).startswith("datetime64")
+
+    both = sources.read_flows([quicken_transaction_export, quicken_empty_transaction_export])
+    assert both.transactions["date"].dt.month.tolist() == [1, 1, 2, 2]
+
+
+def test_flows_refuse_a_frame_without_the_common_columns(quicken_transaction_export: Path) -> None:
+    frame = quicken.read_transactions(quicken_transaction_export).transactions.drop(columns=["payee"])
     with pytest.raises(ValueError, match="payee"):
         Flows("quicken", frame)
 
@@ -93,41 +57,40 @@ def test_flows_refuse_a_frame_without_the_common_columns(transactions_file: Path
 # ---------- sources ----------
 
 def test_detect_tells_the_two_quicken_layouts_apart(
-    net_worth_file: Path, transactions_file: Path, tmp_path: Path,
+    quicken_net_worth_export: Path, quicken_transaction_export: Path, prototype_data: Path,
 ) -> None:
-    other = tmp_path / "other.csv"
-    other.write_text("a,b\n1,2\n", encoding="utf-8")
-
-    assert [(s.name, form) for s, form in sources.detect(net_worth_file)] == [("quicken", "holdings")]
-    assert [(s.name, form) for s, form in sources.detect(transactions_file)] == [
+    assert [(s.name, form) for s, form in sources.detect(quicken_net_worth_export)] == [
+        ("quicken", "holdings")]
+    assert [(s.name, form) for s, form in sources.detect(quicken_transaction_export)] == [
         ("quicken", "transactions")]
-    assert sources.detect(other) == []
+    assert sources.detect(prototype_data / "persons.csv") == []
 
 
 def test_read_holdings_finds_the_source_and_refuses_the_wrong_layout(
-    net_worth_file: Path, transactions_file: Path,
+    quicken_net_worth_export: Path, quicken_transaction_export: Path,
 ) -> None:
-    assert sources.read_holdings([net_worth_file]).source == "quicken"
-    assert len(sources.read_flows([transactions_file], "quicken").transactions) == 1
+    assert sources.read_holdings([quicken_net_worth_export]).source == "quicken"
+    assert len(sources.read_flows([quicken_transaction_export], "quicken").transactions) == 4
     with pytest.raises(sources.SourceError, match="looks like quicken transactions"):
-        sources.read_holdings([transactions_file])
+        sources.read_holdings([quicken_transaction_export])
     with pytest.raises(sources.SourceError, match="unknown source 'nowhere'"):
-        sources.read_holdings([net_worth_file], "nowhere")
+        sources.read_holdings([quicken_net_worth_export], "nowhere")
 
 
-def test_read_holdings_refuses_files_of_different_dates(net_worth_file: Path, tmp_path: Path) -> None:
-    later = tmp_path / "later.csv"
-    later.write_text(_NET_WORTH.replace('"",,"2026-08-18"', '"",,"2026-09-18"'), encoding="utf-8")
-
+def test_read_holdings_refuses_files_of_different_dates_or_with_the_same_account(
+    quicken_net_worth_export: Path, quicken_year_end_export: Path,
+) -> None:
     with pytest.raises(sources.SourceError, match="different dates"):
-        sources.read_holdings([net_worth_file, later])
-    assert len(sources.read_holdings([net_worth_file, net_worth_file]).holdings) == 8
+        sources.read_holdings([quicken_net_worth_export, quicken_year_end_export])
+    # Holdings that land in one lot are added, so a repeat would count twice.
+    with pytest.raises(sources.SourceError, match="'Asset_Checking' is in more than one file"):
+        sources.read_holdings([quicken_net_worth_export, quicken_net_worth_export])
 
 
 # ---------- mapping ----------
 
-def test_account_map_round_trips_and_falls_back_to_the_whole_account(tmp_path: Path) -> None:
-    path = tmp_path / "imports" / "quicken" / "accounts.csv"
+def test_account_map_round_trips_and_falls_back_to_the_whole_account(test_data_dir: Path) -> None:
+    path = mapping.source_dir(test_data_dir, "quicken") / mapping.ACCOUNTS
     found = mapping.load_account_map(path)
     assert found.entries == {}
 
@@ -145,39 +108,53 @@ def test_account_map_round_trips_and_falls_back_to_the_whole_account(tmp_path: P
         mapping.AccountTarget("map", "Asset_Brokerage_Joint", "vti")
     assert again.lookup("Bill Brokerage") is None
     assert again.lookup("Home Repair Reserve") == mapping.AccountTarget("skip", note="not tracked")
+    assert (found.entries["Bill Brokerage", "VTI"].label, found.entries["Business", ""].label) == \
+        ("Asset_Brokerage_Joint:vti", "Asset_Checking")
 
 
-@pytest.mark.parametrize(("text", "message"), [
-    ("wrong,header\n", "expected header"),
-    ("outside_account,asset,action,account,lot,note\nA,,move,X,,\n", "action must be"),
-    ("outside_account,asset,action,account,lot,note\nA,,map,,,\n", "needs an account"),
-    ("outside_account,asset,action,account,lot,note\nA,,map,X,,\nA,,skip,,,\n", "duplicate"),
+@pytest.mark.parametrize(("rows", "message"), [
+    ("A,,move,X,,\n", "action must be"),
+    ("A,,map,,,\n", "needs an account"),
+    ("A,,map,X,,\nA,,skip,,,\n", "duplicate"),
 ])
-def test_load_account_map_rejects_bad_files(tmp_path: Path, text: str, message: str) -> None:
-    path = tmp_path / "accounts.csv"
-    path.write_text(text, encoding="utf-8")
+def test_load_account_map_rejects_bad_rows(
+    write_import_map: Callable[[str, str], Path], rows: str, message: str,
+) -> None:
     with pytest.raises(ValueError, match=message):
-        mapping.load_account_map(path)
+        mapping.load_account_map(write_import_map("quicken/accounts.csv", rows))
 
 
-def test_rename_account_follows_in_every_saved_mapping(tmp_path: Path) -> None:
-    accounts = mapping.load_account_map(mapping.source_dir(tmp_path, "quicken") / mapping.ACCOUNTS)
-    accounts.set("Business", "", mapping.AccountTarget("map", "Asset_Checking"))
-    accounts.set("Card", "", mapping.AccountTarget("map", "Liability_Card"))
-    accounts.save()
-    expenses = mapping.load_expense_accounts(mapping.expense_accounts_path(tmp_path))
-    expenses.accounts.update({"Food": "Expense_Living", "Gifts": mapping.NO_RULE})
-    expenses.save()
+def test_load_account_map_rejects_another_header(quicken_account_map: Path) -> None:
+    quicken_account_map.write_text("quicken_name,account_name,action,note\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="expected header"):
+        mapping.load_account_map(quicken_account_map)
 
-    assert mapping.rename_account(tmp_path, "Asset_Checking", "Asset_Bank") == [
+
+def test_renames_follow_in_every_saved_mapping(
+    test_data_dir: Path, write_import_map: Callable[[str, str], Path],
+) -> None:
+    accounts = write_import_map(
+        "quicken/accounts.csv",
+        "Business,,map,Asset_Checking,,\n"
+        "Funds,,map,Asset_Brokerage_Joint,vti,\n"
+        "Bonds,,map,Asset_Brokerage_Joint,bnd,\n"
+        "Card,,skip,,,\n")
+    expenses = write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
+
+    assert mapping.rename_account(test_data_dir, "Asset_Checking", "Asset_Bank") == [
         "imports/quicken/accounts.csv"]
-    assert mapping.rename_account(tmp_path, "Expense_Living", "Expense_Home") == [
+    assert mapping.rename_account(test_data_dir, "Expense_Living", "Expense_Home") == [
         "imports/expense_accounts.csv"]
-    assert mapping.rename_account(tmp_path, "Nothing", "Else") == []
+    assert mapping.rename_lot(test_data_dir, "Asset_Brokerage_Joint", "vti", "total_market") == [
+        "imports/quicken/accounts.csv"]
+    assert mapping.rename_account(test_data_dir, "Nothing", "Else") == []
+    assert mapping.rename_lot(test_data_dir, "Asset_Checking", "vti", "x") == []
 
-    assert mapping.load_account_map(accounts.path).lookup("Business") == \
-        mapping.AccountTarget("map", "Asset_Bank")
-    assert mapping.load_expense_accounts(expenses.path).accounts == {
+    found = mapping.load_account_map(accounts)
+    assert found.lookup("Business") == mapping.AccountTarget("map", "Asset_Bank")
+    assert found.entries["Funds", ""].label == "Asset_Brokerage_Joint:total_market"
+    assert found.entries["Bonds", ""].label == "Asset_Brokerage_Joint:bnd"
+    assert mapping.load_expense_accounts(expenses).accounts == {
         "Food": "Expense_Home", "Gifts": "-"}
 
 
@@ -202,8 +179,8 @@ def _lots() -> list[dict[str, str]]:
     ]
 
 
-def _map(tmp_path: Path, **targets: mapping.AccountTarget) -> mapping.AccountMap:
-    found = mapping.AccountMap(tmp_path / "accounts.csv")
+def _map(**targets: mapping.AccountTarget) -> mapping.AccountMap:
+    found = mapping.AccountMap(Path("accounts.csv"))
     for outside, target in targets.items():
         found.set(outside, "", target)
     return found
@@ -213,9 +190,8 @@ def _snapshot(**cents: int) -> Snapshot:
     return Snapshot("quicken", tuple(Holding(name, value) for name, value in cents.items()))
 
 
-def test_plan_sets_balances_sums_shared_lots_and_negates_debts(tmp_path: Path) -> None:
+def test_plan_sets_balances_sums_shared_lots_and_negates_debts() -> None:
     account_map = _map(
-        tmp_path,
         Bank=mapping.AccountTarget("map", "Asset_Checking"),
         Savings=mapping.AccountTarget("map", "Asset_Checking"),
         Funds=mapping.AccountTarget("map", "Asset_Brokerage_Joint", "vti"),
@@ -233,12 +209,26 @@ def test_plan_sets_balances_sums_shared_lots_and_negates_debts(tmp_path: Path) -
         ("Liability_Card", "", "opening_balance", "0.00", "42.00", ""),
     ]
     assert (result.lots_changed, result.lots_unchanged, result.skipped) == (2, 1, ["Old"])
+    assert result.changed_rows == [0, 1, 3]
     assert result.rows[2] == _lots()[2]
 
 
-def test_plan_year_end_overwrites_investment_accounts_only(tmp_path: Path) -> None:
+def test_plan_nets_a_credit_against_the_debt_it_shares_a_lot_with() -> None:
     account_map = _map(
-        tmp_path,
+        CardA=mapping.AccountTarget("map", "Liability_Card"),
+        CardB=mapping.AccountTarget("map", "Liability_Card"),
+    )
+    owed = holdings.plan(_snapshot(CardA=-10000, CardB=2000), account_map, _ACCOUNTS, _lots())
+    assert owed.rows[3]["opening_balance"] == "80.00" and owed.warnings == []
+
+    # Only a net credit is unusual: its size is kept, with a warning.
+    credit = holdings.plan(_snapshot(CardA=-1000, CardB=2500), account_map, _ACCOUNTS, _lots())
+    assert credit.rows[3]["opening_balance"] == "15.00"
+    assert len(credit.warnings) == 1 and "credit balance" in credit.warnings[0]
+
+
+def test_plan_year_end_overwrites_investment_accounts_only() -> None:
+    account_map = _map(
         Bank=mapping.AccountTarget("map", "Asset_Checking"),
         Bonds=mapping.AccountTarget("map", "Asset_Brokerage_Joint", "bnd"),
     )
@@ -251,39 +241,41 @@ def test_plan_year_end_overwrites_investment_accounts_only(tmp_path: Path) -> No
     assert result.rows[2]["opening_balance"] == "50.00"
 
 
-def test_plan_reports_what_the_mapping_leaves_open(tmp_path: Path) -> None:
+def test_plan_reports_what_the_mapping_leaves_open() -> None:
     account_map = _map(
-        tmp_path,
         Gone=mapping.AccountTarget("map", "Asset_Closed"),
         NoLot=mapping.AccountTarget("map", "Asset_Brokerage_Joint", "voo"),
         Funds=mapping.AccountTarget("map", "Asset_Brokerage_Joint"),
+        Card=mapping.AccountTarget("map", "Liability_Card"),
     )
-    result = holdings.plan(_snapshot(New=1, Gone=2, NoLot=3, Funds=4), account_map,
-                           _ACCOUNTS, _lots())
+    lots = [lot for lot in _lots() if lot["account_name"] != "Liability_Card"]
+    result = holdings.plan(_snapshot(New=1, Gone=2, NoLot=3, Funds=4, Card=-5), account_map,
+                           _ACCOUNTS, lots)
 
     assert not result.complete
     assert [h.account for h in result.unmapped] == ["New"]
-    assert [h.account for h, _ in result.unknown] == ["Gone", "NoLot"]
+    # An account with no lot at all has nowhere to hold a balance either.
+    assert [h.account for h, _ in result.unknown] == ["Gone", "NoLot", "Card"]
     assert len(result.warnings) == 1 and "has 2 lots" in result.warnings[0]
-    assert result.changes == []
+    assert result.changes == [] and result.changed_rows == []
 
 
 # ---------- the flows applier ----------
 
-def test_flow_plan_classifies_each_generated_rule(tmp_path: Path) -> None:
-    scheduled = tmp_path / "scheduled.csv"
-    columns = ("name", "from_account", "from_lot", "to_account", "amount", "series", "start",
-               "cadence", "tags")
+def test_flow_plan_classifies_each_generated_rule(test_data_dir: Path) -> None:
+    scheduled = test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv"
+    header = scheduled.read_text(encoding="utf-8").splitlines()[0].split(",")
 
     def row(name: str, amount: str, tags: str = "generated:x") -> dict[str, str]:
-        return dict(zip(columns, (name, "Asset_Checking", "", "Expense_Living", amount, "cpi",
-                                  "2026-05-31", "monthly", tags), strict=True))
+        return dict.fromkeys(header, "") | {
+            "name": name, "from_account": "Asset_Checking", "to_account": "Expense_Living",
+            "amount": amount, "series": "cpi", "start": "2026-05-31", "cadence": "monthly",
+            "tags": tags}
 
-    lines = [row("same", "1.00"), row("differs", "2.00"), row("stale", "3.00"),
-             row("manual", "4.00", "")]
-    scheduled.write_text(
-        ",".join(columns) + "\n" + "".join(",".join(r.values()) + "\n" for r in lines),
-        encoding="utf-8")
+    with scheduled.open("a", encoding="utf-8") as fh:
+        for each in (row("same", "1.00"), row("differs", "2.00"), row("stale", "3.00"),
+                     row("manual", "4.00", "")):
+            fh.write(",".join(each.values()) + "\n")
 
     changes = flows.plan(scheduled, [row("same", "1.00"), row("differs", "2.50"), row("new", "9.00")],
                          "generated:x")
@@ -294,5 +286,5 @@ def test_flow_plan_classifies_each_generated_rule(tmp_path: Path) -> None:
         ("new", "", "9.00", "added"),
         ("stale", "3.00", "", "removed"),
     ]
-    assert [c.status for c in flows.plan(tmp_path / "none.csv", [row("new", "9.00")], "generated:x")] \
-        == ["added"]
+    missing = test_data_dir / "scenarios" / "none" / "scheduled.csv"
+    assert [c.status for c in flows.plan(missing, [row("new", "9.00")], "generated:x")] == ["added"]
