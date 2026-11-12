@@ -3085,15 +3085,22 @@ def _mortgage_months(
     that balance, so the larger is taken rather than the sum. A
     ``ytd_amount`` catch-up posts several months' interest at once, so its
     balance is the debt's in its first month of regular payments that year
-    instead, or with none, the average its interest implies; a
-    ``ytd_preroll`` posts month by month, as the rule does. The year is the
-    one the interest counts in as spending."""
+    instead, or with none, the average over its payments; a
+    ``ytd_preroll`` posts month by month, as the rule does. A debt paid by
+    several payers or characters in a month has a month for each, which
+    takes its share of the balance by its interest. The year is the one
+    the interest counts in as spending."""
     rules = {
         tid: (liability, rate) for tid, liability, rate in con.execute(
             "SELECT s.id, c.account_id, s.rate_micros FROM scheduled_transaction s "
             "JOIN chain c ON c.id = s.to_account "
             "WHERE s.amount_rule_kind = 'mortgage_payment' AND s.rate_micros > 0")
     }
+    # A ytd_amount's payments, whole and partial, as _post_mortgage_ytd
+    # replays them: its total over the regular payment.
+    payments = {int(tid): (int(ytd), int(amount)) for tid, ytd, amount in con.execute(
+        "SELECT id, ytd_amount, amount_cents FROM scheduled_transaction "
+        "WHERE amount_rule_kind = 'mortgage_payment' AND ytd_amount > 0 AND amount_cents > 0")}
     # A ytd_preroll catch-up posts each month's own interest, so it's read
     # as a regular month; a ytd_amount posts them all at once.
     preroll = {int(tid) for (tid,) in con.execute(
@@ -3123,35 +3130,51 @@ def _mortgage_months(
         own = rule_tags.get(tid, frozenset())
         tags[key] = tax_api._effective_tags(own, payee.tags) | _implied_tags(
             own, payer, payee, character, _IMPLIED_TAX_TAGS["mortgage_payment"])
-    # (year, month, liability, payer, character) -> [interest, balance, tags]
-    months: dict[Key, list] = {}
-    for key, paid in interest.items():
-        year, month, tid, frm, character = key
+    # The debt's balance each month comes from all of a rule's interest
+    # that month, whoever paid it: one payment drawn from several lots or
+    # of several characters is still one payment on one debt. Two rules on
+    # one debt in a month take the larger balance.
+    by_rule: dict[tuple[int, int, int], int] = defaultdict(int)
+    for (year, month, tid, _frm, _character), paid in interest.items():
+        by_rule[(year, month, tid)] += paid
+    debt: dict[tuple[int, int, int], int] = {}
+    for (year, month, tid), paid in by_rule.items():
         liability, rate = rules[tid]
-        found = months.setdefault((year, month, int(liability), frm, character), [0, 0, frozenset()])
-        found[0] += paid
-        found[1] = max(found[1], paid * 12 * 1_000_000 // int(rate))
-        found[2] |= tags[key]
+        at = (year, month, int(liability))
+        debt[at] = max(debt.get(at, 0), paid * 12 * 1_000_000 // int(rate))
     first: dict[tuple[int, int], int] = {}
-    for (year, _month, liability, _frm, _character), (_, balance, _tags) in sorted(months.items()):
+    for (year, _month, liability), balance in sorted(debt.items()):
         first.setdefault((year, liability), balance)
-    for key, paid in catchup.items():
+    caught: dict[tuple[int, int, int], int] = defaultdict(int)
+    for (year, month, tid, _frm, _character), paid in catchup.items():
+        caught[(year, month, tid)] += paid
+    for (year, month, tid), paid in caught.items():
+        liability, rate = rules[tid]
+        # With no regular month that year (the debt was paid off before the
+        # run starts), the balance is the payments' average.
+        ytd, payment = payments.get(tid, (0, 0))
+        balance = first.get((year, int(liability))) or (
+            paid * 12 * 1_000_000 // int(rate) * payment // ytd if ytd else 0)
+        at = (year, month, int(liability))
+        debt[at] = max(debt.get(at, 0), balance)
+    # (year, month, liability, payer, character) -> [interest, tags]; each
+    # takes its interest's share of the month's balance.
+    months: dict[Key, list] = {}
+    totals: dict[tuple[int, int, int], int] = defaultdict(int)
+    for key, paid in (*interest.items(), *catchup.items()):
         year, month, tid, frm, character = key
         liability = int(rules[tid][0])
-        # With no regular month that year (the debt was paid off before the
-        # run starts), the balance is the months' average: the catch-up
-        # covers January through its own month.
-        balance = first.get((year, liability)) or paid * 12 * 1_000_000 // int(rules[tid][1]) // month
-        found = months.setdefault((year, month, liability, frm, character), [0, 0, frozenset()])
+        found = months.setdefault((year, month, liability, frm, character), [0, frozenset()])
         found[0] += paid
-        found[1] = max(found[1], balance)
-        found[2] |= tags[key]
+        found[1] |= tags[key]
+        totals[(year, month, liability)] += paid
     return [
         tax_api.Mortgage(
-            year, month, account(liability).name,
-            paid, balance, found_tags, account(frm), character)
-        for (year, month, liability, frm, character), (paid, balance, found_tags)
-        in sorted(months.items())
+            year, month, account(liability).name, paid,
+            debt.get((year, month, liability), 0) * paid // total
+            if (total := totals[(year, month, liability)]) else 0,
+            found_tags, account(frm), character)
+        for (year, month, liability, frm, character), (paid, found_tags) in sorted(months.items())
     ]
 
 
@@ -3162,11 +3185,13 @@ def _taxes_paid(
     """The state and local income tax paid in calendar ``tax_year`` (#542),
     the SALT deduction's income taxes on a cash basis: each such
     jurisdiction's settlements, wherever they were paid, and what else was
-    paid into its destination account, less its refunds. Spending there that carries an
-    itemized tag (``tax:property``, say) or the ``property_tax`` character
-    is left out: the itemized lines count it by that. So is anything else paid into an account the
-    federal tax is paid into too, which can't be told apart (the loader
-    warns)."""
+    paid into its destination account, less its refunds. Spending there that
+    an itemized line counts is left out: by an itemized tag
+    (``tax:property``, say), the ``property_tax`` character, or a
+    ``mortgage_payment`` or ``irmaa`` rule's implied tag; so is a
+    ``business_expense``, which Schedule C deducts. So is anything else paid into an
+    account the federal tax is paid into too, which can't be told apart
+    (#586 gives each tax its own)."""
     jurisdictions = list(con.execute(
         "SELECT j.id, j.name, c.account_id FROM tax_jurisdiction j "
         "JOIN chain c ON c.id = j.destination_chain_id"))
@@ -3183,6 +3208,9 @@ def _taxes_paid(
             destinations[int(account_id)].append(str(name))
     paid_to = {account_id: min(names, key=lambda n: (order.get(n, len(order)), n))
                for account_id, names in destinations.items()}
+    implied_kinds = {int(tid) for (tid,) in con.execute(
+        "SELECT id FROM scheduled_transaction "
+        f"WHERE amount_rule_kind IN ({', '.join(repr(k) for k in _IMPLIED_TAX_TAGS)})")}
     paid: dict[str, int] = defaultdict(int)
     for frm, to, kind, reason, character, amount in con.execute(
             "SELECT from_account, to_account, reason_kind, reason_id, tax_character, SUM(amount) "
@@ -3201,9 +3229,17 @@ def _taxes_paid(
                 refund = frm is not None and frm == settled_from[reason]
                 paid[settled[reason]] += -int(amount) if refund else int(amount)
             continue
-        tags = rule_tags.get(reason, frozenset()) if kind in ("rule", "ytd_rule") else frozenset()
+        rule = kind in ("rule", "ytd_rule")
+        tags = rule_tags.get(reason, frozenset()) if rule else frozenset()
         payee = account(to)
-        if character == "property_tax" or tax_api.itemizing(tax_api._effective_tags(tags, payee.tags)):
+        # Not income tax: what an itemized line counts (by its tag, the
+        # property_tax character, or a rule kind's implied tag: a
+        # mortgage's interest, an IRMAA surcharge), and a business
+        # expense, which Schedule C deducts. State tax merely paid from a
+        # business account is still the owner's income tax.
+        if character in ("property_tax", registries.BUSINESS_EXPENSE) \
+                or (rule and reason in implied_kinds) \
+                or tax_api.itemizing(tax_api._effective_tags(tags, payee.tags)):
             continue
         paid[paid_to[to]] += int(amount)
     # A refund larger than the year's payments deducts nothing; it isn't

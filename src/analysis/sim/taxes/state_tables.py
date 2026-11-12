@@ -174,10 +174,12 @@ class StateTablesYear(FederalStateYear):
         """Whether a subclass's :meth:`deductions` was written for an API
         before the lines (5, #542): it may figure its own Schedule A, which
         the lines would count again, so it keeps the deduction it figures."""
-        cls = type(self)
-        if cls.deductions is StateTablesYear.deductions:
+        # The version is the one of the module that wrote the deductions
+        # in use, which a later subclass elsewhere may only inherit.
+        owner = next(c for c in type(self).__mro__ if "deductions" in vars(c))
+        if owner is StateTablesYear:
             return False
-        module = sys.modules.get(cls.__module__)
+        module = sys.modules.get(owner.__module__)
         return getattr(module, "API_VERSION", tax_api.API_VERSION) < ITEMIZED_LINES_API
 
     def additions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:

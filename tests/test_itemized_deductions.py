@@ -655,14 +655,23 @@ def test_a_state_refund_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connect
         [(1, "federal", "federal", checking, federal), (2, "state", "state_tables", checking, state)])
 
     def post(date: str, frm: int, to: int, amount: int, kind: str, reason: int | None,
-             tax_year: int | None = None) -> None:
+             tax_year: int | None = None, character: str = "none") -> None:
         con.execute(
             "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
             "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind, "
-            "reason_id, tax_year) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, 'none', ?, ?, ?)",
-            (date, frm, to, frm, to, amount, amount, kind, reason, tax_year))
+            "reason_id, tax_year) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
+            (date, frm, to, frm, to, amount, amount, character, kind, reason, tax_year))
 
     post("2028-06-30", checking, state, 5_000_00, "rule", None)
+    # Not income tax, though paid into the state's account: a mortgage's
+    # interest (an implied itemized tag) and a business expense.
+    con.execute(
+        "INSERT INTO scheduled_transaction(id, name, from_account, to_account, cadence, "
+        "amount_rule_kind, tax_character, start) "
+        "VALUES (7, 'mortgage', ?, ?, 'monthly', 'mortgage_payment', 'none', '2026-01-31')",
+        (checking, state))
+    post("2028-07-31", checking, state, 2_000_00, "rule", 7)
+    post("2028-08-31", checking, state, 3_000_00, "rule", None, character="business_expense")
     post("2028-04-30", state, checking, 1_000_00, "tax", 2, 2027)
     paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None))
     assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 4_000_00)]
@@ -672,16 +681,27 @@ def test_a_state_refund_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connect
     assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 0)]
 
 
-@pytest.mark.parametrize("preroll", [False, True])
-def test_a_catch_up_with_no_regular_month_still_meets_the_debt_limit(
-    ledger_con: sqlite3.Connection, preroll: bool,
-) -> None:
-    """A $2M mortgage paid off before the run starts has only its catch-up
-    that year: five months' interest at once (``ytd_amount``) is on the
-    months' average debt, and a ``ytd_preroll``'s each month on its own."""
-    from analysis.sim.engine import _mortgage_months
+class _InheritedOwnDeductions(_OlderOwnDeductions):
+    """A subclass in a household module written for API 5 that only
+    inherits an API-4 module's Schedule A."""
+
+
+_InheritedOwnDeductions.__module__ = "household_later"
+
+
+def test_an_inherited_older_schedule_a_keeps_its_api_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "API_VERSION", 4, raising=False)
+    year = _InheritedOwnDeductions(calculator("state_tables"), _year(
+        200_000_00, [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")],
+        jurisdiction="state", tables={**TABLES, **CA_LIMITS}))
+    assert "itemized_salt" not in year.compute().lines
+
+
+def _mortgage_ledger(con: sqlite3.Connection, *, preroll: bool = False, ytd: int | None = None) -> int:
+    """A $10,000-a-month mortgage at 6% from checking (1) to its liability
+    (2), interest into account 3, in ``ledger_con``; returns the interest
+    account's id."""
     checking, liability, interest = 1, 2, 3
-    con = ledger_con
     con.executemany("INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)", [
         (checking, "Asset_Checking", "asset", "cash"),
         (liability, "Liability_Mortgage", "liability", "mortgage"),
@@ -690,19 +710,53 @@ def test_a_catch_up_with_no_regular_month_still_meets_the_debt_limit(
         (checking, "Asset_Checking", checking), (liability, "Liability_Mortgage", liability)])
     con.execute(
         "INSERT INTO scheduled_transaction(id, name, from_account, to_account, cadence, "
-        "amount_rule_kind, tax_character, start, rate_micros, ytd_preroll) "
-        "VALUES (1, 'mortgage', ?, ?, 'monthly', 'mortgage_payment', 'none', '2025-01-31', 60000, ?)",
-        (checking, liability, int(preroll)))
-    posts = ([(f"2026-{m:02d}-28", 10_000_00) for m in range(1, 6)] if preroll
-             else [("2026-05-31", 50_000_00)])
-    for date, amount in posts:
-        con.execute(
-            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
-            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind, "
-            "reason_id) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, 'none', 'ytd_rule', 1)",
-            (date, checking, interest, checking, interest, amount, amount))
+        "amount_rule_kind, tax_character, start, rate_micros, amount_cents, ytd_amount, ytd_preroll) "
+        "VALUES (1, 'mortgage', ?, ?, 'monthly', 'mortgage_payment', 'none', '2025-01-31', 60000, "
+        "1000000, ?, ?)", (checking, liability, ytd, int(preroll)))
+    return interest
+
+
+def _post_interest(con: sqlite3.Connection, date: str, amount: int, kind: str,
+                   character: str = "none") -> None:
+    con.execute(
+        "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+        "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind, "
+        "reason_id) VALUES (1, ?, 1, 3, 1, 3, ?, ?, 0, ?, ?, 1)",
+        (date, amount, amount, character, kind))
+
+
+@pytest.mark.parametrize(("preroll", "payments"), [(False, 5), (False, 2), (True, 5)])
+def test_a_catch_up_with_no_regular_month_still_meets_the_debt_limit(
+    ledger_con: sqlite3.Connection, preroll: bool, payments: int,
+) -> None:
+    """A $2M interest-only mortgage paid off before the run starts has only
+    its catch-up that year. A ``ytd_amount`` posts its payments' interest
+    at once in May: the debt is their average, however few there were. A
+    ``ytd_preroll`` posts each month on its own."""
+    from analysis.sim.engine import _mortgage_months
+    con = ledger_con
+    interest = _mortgage_ledger(con, preroll=preroll, ytd=None if preroll else payments * 10_000_00)
+    if preroll:
+        for month in range(1, payments + 1):
+            _post_interest(con, f"2026-{month:02d}-28", 10_000_00, "ytd_rule")
+    else:
+        _post_interest(con, "2026-05-31", payments * 10_000_00, "ytd_rule")
     months = _mortgage_months(con, 2026, {}, lambda aid: Account(f"#{aid}", "expense", "", None),
                               [interest])
     assert {m.balance for m in months} == {2_000_000_00}
-    assert sum(m.interest for m in months) == 50_000_00
-    assert len(months) == (5 if preroll else 1)
+    assert sum(m.interest for m in months) == payments * 10_000_00
+    assert len(months) == (payments if preroll else 1)
+
+
+def test_one_payment_drawn_as_two_characters_is_one_debt(ledger_con: sqlite3.Connection) -> None:
+    """A $3,000 interest payment on $600,000 at 6%, drawn as two legs of
+    different characters, is still on $600,000, shared by its legs."""
+    from analysis.sim.engine import _mortgage_months
+    con = ledger_con
+    interest = _mortgage_ledger(con)
+    _post_interest(con, "2026-03-31", 4_000_00, "rule", "return_of_capital")
+    _post_interest(con, "2026-03-31", -1_000_00, "rule", "ltcg")
+    months = _mortgage_months(con, 2026, {}, lambda aid: Account(f"#{aid}", "expense", "", None),
+                              [interest])
+    assert sum(m.interest for m in months) == 3_000_00
+    assert sum(m.balance for m in months) == 600_000_00
