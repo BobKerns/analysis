@@ -7,22 +7,31 @@ weekday's US market close, without touching the user's checkout (Bob):
 
 - The fetch works in a sparse worktree of the data repo, ``prices/`` in the
   builder's state folder, with a detached HEAD, holding the price files and
-  the few files the symbol list comes from. Each fetch starts from ``main``'s
-  tip, so the result is ``main`` plus at most one commit, and nothing on it
-  ever needs a conflict resolved: a fetch only adds rows, and the provider
-  returns the history, so fetching again on a newer ``main`` loses nothing.
-  That commit is ``builder/prices``.
+  the few files the symbol list comes from, on the ``builder/prices``
+  branch. Each fetch begins by merging ``main`` into it (#588), always as a
+  merge commit, and where the two conflict ``main``'s side wins: a fetch only
+  adds rows, and the provider returns the history, so fetching again loses
+  nothing. Only a merge git can't settle that way (a price file deleted on
+  one side and changed on the other) starts the branch over from ``main``.
+  When the fetch leaves the branch's files the same as ``main``'s, the branch
+  goes back to ``main``: nothing waits to merge.
 - ``builder/prices`` is merged into ``main`` only by the daemon, between
-  builds (so no build reads a price file mid-merge), only by a fast-forward,
-  and only when the data worktree has ``main`` checked out with no
+  builds (so no build reads a price file mid-merge), always as a merge commit
+  (#588), and only when the data worktree has ``main`` checked out with no
   uncommitted change to a tracked file and no merge, rebase or cherry-pick
   under way. Otherwise it waits: the daemon tries again on every poke, so it
   lands soon after the user commits or switches back. If ``main`` moved
-  meanwhile, the commit is cherry-picked onto it in the sparse worktree; only
-  if that conflicts is it dropped and fetched again. The merge runs the data repo's
+  meanwhile, it is merged into ``builder/prices`` again first, in the sparse
+  worktree, so the merge into the user's checkout never conflicts; only if
+  that merge fails are the prices dropped and fetched again. The merge runs the data repo's
   ``post-merge`` hook, which pokes the builder; a merge only changes runs
   whose start the new prices reach (``provenance``: a price file counts up to
   the scenario's start), so a daily fetch reruns nothing until a roll.
+- After its merge the daemon pushes ``main`` when it is strictly ahead of
+  its upstream (``origin/main``); a failed push is logged and otherwise
+  ignored. When ``main`` isn't strictly ahead (it lacks some of the
+  upstream's commits) it logs that as why it didn't push, and suggests
+  ``git pull``.
 - A fetch is due when the last good one came before the latest weekday
   17:30 in New York, after the close is final. Nothing keeps the builder
   running, so ``sim builder install`` adds an hourly OS timer (a launchd agent
@@ -59,7 +68,7 @@ from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 __all__ = [
@@ -71,6 +80,11 @@ __all__ = [
 PRICES_BRANCH = "builder/prices"
 # The data repo's branch the fetched prices go into.
 DATA_BRANCH = "main"
+_PRICES_REF = f"refs/heads/{PRICES_BRANCH}"
+_MAIN_REF = f"refs/heads/{DATA_BRANCH}"
+# Commits the builder makes in its own worktree: no hooks (it isn't a
+# worktree the builder watches) and no signing (nobody is there to unlock a key).
+_QUIET = ("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false")
 SWITCH_ENV = "ANALYSIS_PRICE_FETCH"
 MARKET = ZoneInfo("America/New_York")
 # After the 16:00 close, once the provider's close is final.
@@ -226,8 +240,10 @@ def _sparse_patterns(rel: str) -> list[str]:
             f"{base}scenarios/*/account_lots.csv", f"{base}scenarios/*/scenario.csv"]
 
 
-def _prepare(top: Path, worktree: Path, rel: str) -> None:
-    """The sparse worktree, at ``main``'s tip, with nothing left over."""
+def _prepare(top: Path, worktree: Path, rel: str) -> str | None:
+    """The sparse worktree at ``builder/prices`` with ``main`` merged in
+    (:func:`_merge_main`), nothing left over; a line for the log when the
+    branch had to start over from ``main``."""
     if not (worktree / ".git").exists():
         _git(top, "worktree", "prune")
         if worktree.exists():
@@ -236,8 +252,30 @@ def _prepare(top: Path, worktree: Path, rel: str) -> None:
         _git(top, "worktree", "add", "--no-checkout", "--detach", str(worktree), DATA_BRANCH,
              check=True)
     _git(worktree, "sparse-checkout", "set", "--no-cone", *_sparse_patterns(rel), check=True)
-    _git(worktree, "reset", "--hard", "-q", DATA_BRANCH, check=True)
+    base = _PRICES_REF if _ref(top, _PRICES_REF) else _MAIN_REF
+    _git(worktree, "reset", "--hard", "-q", base, check=True)
     _git(worktree, "clean", "-fdq", check=True)
+    if _merge_main(top, worktree) is None:
+        return f"{PRICES_BRANCH} didn't merge with {DATA_BRANCH}; starting it over from {DATA_BRANCH}"
+    return None
+
+
+def _merge_main(top: Path, worktree: Path) -> str | None:
+    """Merge ``main`` into ``builder/prices`` in the sparse worktree (which
+    has it checked out), always as a merge commit, ``main``'s side winning
+    wherever the two conflict (#588); the branch's tip after. When git
+    can't merge them that way (a file deleted on one side and changed on
+    the other), the branch starts over at ``main`` and this returns None."""
+    merged = _git(worktree, *_QUIET, "merge", "--no-ff", "-X", "theirs", "-q",
+                  "-m", f"Merge {DATA_BRANCH} into {PRICES_BRANCH}", _MAIN_REF, env=IDENTITY)
+    if merged.returncode:
+        _git(worktree, "merge", "--abort")
+        _git(worktree, "reset", "--hard", "-q", _MAIN_REF)
+        _git(top, "update-ref", _PRICES_REF, _MAIN_REF)
+        return None
+    head = _git(worktree, "rev-parse", "HEAD", check=True).stdout.strip()
+    _git(top, "update-ref", _PRICES_REF, head, check=True)
+    return head
 
 
 @dataclass
@@ -246,6 +284,9 @@ class FetchOutcome:
 
     lines: list[str]
     committed: str | None = None
+    # builder/prices's tip when it holds prices main lacks, from this fetch
+    # or an earlier one still waiting to merge.
+    pending: str | None = None
 
 
 def fetch(
@@ -268,13 +309,13 @@ def fetch(
         if _ref(top, DATA_BRANCH) is None:
             raise PriceScheduleError(f"the data repo has no {DATA_BRANCH} branch")
         state = _update_state(top, attempted=now.timestamp(), refetch=False)
-        _prepare(top, worktree, rel)
+        started_over = _prepare(top, worktree, rel)
+        lines: list[str] = [started_over] if started_over else []
         data = worktree / rel
         use = prices.prices_in_use(data / "scenarios") if (data / "scenarios").is_dir() \
             else prices.PriceUse()
         held = set(use.symbols)
         chosen = sorted(held | set(prices.known_symbols(data)))
-        lines: list[str] = []
         failing: dict[str, Any] = dict(state.get("failing") or {})
         if not chosen:
             lines.append("no symbols to fetch")
@@ -304,38 +345,52 @@ def fetch(
         failing = {s: f for s, f in failing.items() if s in chosen}
         worked = not results or any(r.error is None for r in results)
         committed = _commit(top, worktree, rel, results)
-        _update_state(top, failing=failing, pending=committed, waiting=None,
+        pending = _settle(top, worktree)
+        _update_state(top, failing=failing, pending=pending, waiting=None,
                       **({"succeeded": now.timestamp()} if worked else {}))
         if committed:
             lines.append(f"committed new prices on {PRICES_BRANCH} ({committed[:10]})")
-        elif worked:
-            lines.append("no new prices")
-        else:
+        elif not worked:
             lines.append("every symbol failed; trying again in an hour")
-    return FetchOutcome(lines, committed)
+        elif pending:
+            lines.append(f"no new prices; earlier ones still wait to merge into {DATA_BRANCH}")
+        else:
+            lines.append("no new prices")
+    return FetchOutcome(lines, committed, pending)
 
 
 def _commit(top: Path, worktree: Path, rel: str, results: list[Any]) -> str | None:
-    """Commit the fetched files on ``builder/prices``; the commit, or None
-    (the branch then points at ``main``: nothing to merge)."""
+    """Commit the fetched files on ``builder/prices``; the new commit, or
+    None when nothing changed."""
     path = f"{rel}/prices" if rel not in ("", ".") else "prices"
     if (worktree / path).exists():  # none when no symbol was fetched into a repo without one
         _git(worktree, "add", "-A", "--", path, check=True)
     if _git(worktree, "diff", "--cached", "--quiet").returncode == 0:
-        _git(top, "update-ref", f"refs/heads/{PRICES_BRANCH}", DATA_BRANCH, check=True)
         return None
     changed = [r for r in results if r.error is None and (r.added or r.changed)]
     symbols = ", ".join(r.symbol for r in changed[:6]) + (", ..." if len(changed) > 6 else "")
     latest = max((r.latest[0] for r in changed if r.latest), default=None)
     subject = f"Prices: {symbols}" + (f" to {latest}" if latest else "") if changed else "Prices"
-    # No hooks: this worktree isn't one the builder watches, and the merge
-    # into main runs main's own.
-    _git(worktree, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
-         "commit", "-q", "-m", subject, "-m", "Fetched by the background builder (#560).",
-         env=IDENTITY, check=True)
+    _git(worktree, *_QUIET, "commit", "-q", "-m", subject,
+         "-m", "Fetched by the background builder (#560).", env=IDENTITY, check=True)
     head = _git(worktree, "rev-parse", "HEAD", check=True).stdout.strip()
-    _git(top, "update-ref", f"refs/heads/{PRICES_BRANCH}", head, check=True)
+    _git(top, "update-ref", _PRICES_REF, head, check=True)
     return head
+
+
+def _settle(top: Path, worktree: Path) -> str | None:
+    """What waits to merge into ``main``: ``builder/prices``'s tip, or None
+    when its files are ``main``'s (the branch then goes back to ``main``, so
+    the merge commits a fetch with nothing new made don't pile up on it)."""
+    head = _git(worktree, "rev-parse", "HEAD", check=True).stdout.strip()
+    if _same_files(top, _MAIN_REF, head):
+        _git(top, "update-ref", _PRICES_REF, _MAIN_REF, check=True)
+        return None
+    return head
+
+
+def _same_files(top: Path, one: str, other: str) -> bool:
+    return _git(top, "diff", "--quiet", one, other).returncode == 0
 
 
 # -- merging ------------------------------------------------------------------------------
@@ -360,64 +415,109 @@ def _why_not(top: Path) -> str | None:
     return None
 
 
-def merge_pending(data_dir: Path, worktree: Path) -> str | None:
-    """Fast-forward ``main`` to ``builder/prices`` if it is ahead and this
-    worktree allows it; ``worktree`` is the builder's sparse one, where a
-    commit left behind by ``main`` moving is moved onto it. Returns a line
-    when it merged; why it waits goes in the state (:func:`read_state`'s
-    ``waiting``). Only the daemon calls this, between builds."""
+def merge_pending(data_dir: Path, worktree: Path) -> list[str]:
+    """Merge ``builder/prices`` into ``main`` if it holds prices ``main``
+    lacks and this worktree allows it, always as a merge commit (#588), then
+    push ``main`` (:func:`_push`); ``worktree`` is the builder's sparse one,
+    where ``main`` is merged into the branch first if it moved. Returns lines
+    for the log when it merged; why it waits goes in the state
+    (:func:`read_state`'s ``waiting``). Only the daemon calls this, between
+    builds."""
     try:
         top = _top(data_dir)
     except PriceScheduleError:
-        return None
-    pending, main = _ref(top, f"refs/heads/{PRICES_BRANCH}"), _ref(top, DATA_BRANCH)
-    if pending is None or main is None or _is_ancestor(top, pending, main):
+        return []
+    pending, main = _ref(top, _PRICES_REF), _ref(top, _MAIN_REF)
+    if pending is None or main is None or _is_ancestor(top, pending, main) \
+            or _same_files(top, main, pending):
         # Nothing waiting, perhaps since someone merged it by hand.
         if read_state(data_dir).get("pending"):
             _update_state(top, pending=None, waiting=None)
-        return None
+        return []
     if not _is_ancestor(top, main, pending):
-        # main moved since the fetch (a commit while the prices waited).
+        # main moved since the fetch (a commit while the prices waited):
+        # merge it in here first, so the merge into the user's checkout
+        # can't conflict.
         with _locked(top) as mine:
             if not mine:
-                return None  # a fetch is running, and it starts from main
-            pending = _restack(top, worktree, pending)
-        if pending is None:
+                return []  # a fetch is running, and it merges main first
+            pending = _merge_main_again(top, worktree)
+        if pending is False:
             _update_state(top, pending=None, refetch=True,
-                          waiting=f"{DATA_BRANCH} moved and the prices didn't apply to it; "
+                          waiting=f"{PRICES_BRANCH} didn't merge with {DATA_BRANCH}; "
                                   "fetching again from it")
-            return None
+            return []
+        if pending is None:
+            return []  # main's side won every change: nothing left to merge
     why = _why_not(top)
     if why is None:
-        done = _git(top, "merge", "--ff-only", "-q", f"refs/heads/{PRICES_BRANCH}")
+        # Signing off for the same reason as the builder's own commits; the
+        # data repo's hooks run, so post-merge pokes the builder.
+        done = _git(top, "-c", "commit.gpgsign=false", "merge", "--no-ff", "-q",
+                    "-m", f"Merge new prices from {PRICES_BRANCH}", _PRICES_REF, env=IDENTITY)
         if done.returncode == 0:
             _update_state(top, pending=None, waiting=None, merged=clock.time())
-            return f"merged new prices into {DATA_BRANCH}"
+            return [f"merged new prices into {DATA_BRANCH}", _push(top)]
         why = (done.stderr or done.stdout).strip().splitlines()[0] if (done.stderr or done.stdout) \
             else "git merge failed"
     _update_state(top, waiting=why)
-    return None
+    return []
 
 
-def _restack(top: Path, worktree: Path, pending: str) -> str | None:
-    """``pending``'s change again on ``main``'s tip, as ``builder/prices``.
-    It touches only price files, so this almost never conflicts; when it
-    does, or the worktree is gone, None (the next fetch starts over)."""
+def _merge_main_again(top: Path, worktree: Path) -> str | None | Literal[False]:
+    """``main`` merged into ``builder/prices`` again, in the sparse worktree:
+    the branch's new tip, None when that leaves nothing for ``main``
+    (:func:`_settle`), or False when it fails or the worktree is gone (the
+    next fetch starts over)."""
     if not (worktree / ".git").exists():
-        return None
-    if _git(worktree, "reset", "--hard", "-q", DATA_BRANCH).returncode:
-        return None
-    picked = _git(worktree, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
-                  "cherry-pick", pending, env=IDENTITY)
-    if picked.returncode:
-        _git(worktree, "cherry-pick", "--abort")
-        _git(worktree, "reset", "--hard", "-q", DATA_BRANCH)
-        _git(top, "update-ref", f"refs/heads/{PRICES_BRANCH}", DATA_BRANCH)
-        return None
-    head = _git(worktree, "rev-parse", "HEAD", check=True).stdout.strip()
-    _git(top, "update-ref", f"refs/heads/{PRICES_BRANCH}", head, check=True)
+        return False
+    if _git(worktree, "reset", "--hard", "-q", _PRICES_REF).returncode:
+        return False
+    if _merge_main(top, worktree) is None:
+        return False
+    head = _settle(top, worktree)
     _update_state(top, pending=head)
     return head
+
+
+# How long a push may take before it counts as failed: the daemon waits on it.
+PUSH_SECONDS = 120
+
+
+def _push(top: Path) -> str:
+    """Push ``main`` when it is strictly ahead of its upstream (#588); a
+    line for the log either way. A failed push is only logged: the next
+    merge pushes again."""
+    upstream = _git(top, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                    f"{DATA_BRANCH}@{{upstream}}")
+    remote = _git(top, "config", f"branch.{DATA_BRANCH}.remote").stdout.strip()
+    target = _git(top, "config", f"branch.{DATA_BRANCH}.merge").stdout.strip()
+    if upstream.returncode or remote in ("", ".") or not target:
+        return f"not pushing: {DATA_BRANCH} has no upstream branch on a remote"
+    name = upstream.stdout.strip()
+    ours, theirs = _ref(top, _MAIN_REF), _ref(top, name)
+    if ours is None or theirs is None:
+        return f"not pushing: {name} isn't known here; try git fetch"
+    if ours == theirs:
+        return f"not pushing: {DATA_BRANCH} is already at {name}"
+    if not _is_ancestor(top, theirs, ours):
+        return (f"not pushing: {DATA_BRANCH} isn't strictly ahead of {name} "
+                f"(it lacks commits {name} has); try git pull on {DATA_BRANCH}")
+    try:
+        # No terminal to ask on: a push that wants a password fails, not hangs.
+        done = subprocess.run(
+            ["git", "-C", str(top), "push", "-q", remote, f"{_MAIN_REF}:{target}"],
+            capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
+            timeout=PUSH_SECONDS, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except subprocess.TimeoutExpired:
+        return f"push of {DATA_BRANCH} to {remote} failed: no answer in {PUSH_SECONDS}s"
+    except OSError as exc:
+        return f"push of {DATA_BRANCH} to {remote} failed: {exc}"
+    if done.returncode:
+        said = [line for line in (done.stderr or done.stdout).splitlines() if line.strip()]
+        return f"push of {DATA_BRANCH} to {remote} failed: {said[0] if said else 'git push failed'}"
+    return f"pushed {DATA_BRANCH} to {name}"
 
 
 # -- the timer -----------------------------------------------------------------------------

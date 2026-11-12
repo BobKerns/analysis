@@ -144,8 +144,10 @@ held by shares stays current without `sim prices fetch`. `sim builder install`
 adds an hourly timer that runs `sim builder prices --if-due` (a launchd agent
 on macOS, a crontab line elsewhere; `uninstall` removes it). The fetch never
 touches your checkout: it commits on the data repo's `builder/prices` branch,
-in its own sparse worktree, and the builder fast-forwards `main` to it between
-builds, only while `main` is checked out with no uncommitted changes. `sim builder status` shows the last
+in its own sparse worktree, and the builder merges it into `main` between
+builds, only while `main` is checked out with no uncommitted changes. Then, if
+`main` is strictly ahead of `origin/main`, it pushes; otherwise `sim builder
+log` says why it didn't (run `git pull` on `main` when it lacks commits). `sim builder status` shows the last
 fetch, prices waiting to merge and why, and any symbol that keeps failing;
 `sim builder prices` fetches now. `sim builder install --no-prices`, or
 `ANALYSIS_PRICE_FETCH=off`, turns the fetches off.
