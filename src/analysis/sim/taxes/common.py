@@ -827,16 +827,15 @@ class Itemized:
                          (salt, self.mortgage_interest, charity, medical, self.other), strict=True))
         return {**lines, "itemized_deduction": sum(lines.values())}
 
-    def deduction_lines(self, agi: int, standard: int | None, *,
-                        taken: int | None = None) -> dict[str, int]:
+    def deduction_lines(self, agi: int, standard: int | None, *, beside: int = 0) -> dict[str, int]:
         """The deduction lines at ``agi``: the ``standard`` deduction (none
         when None: a calculator without one), the itemized lines, and the
-        ``deduction`` taken, the larger of the itemized total and ``taken``
-        (the standard deduction, unless a calculator figured its own)."""
+        ``deduction`` taken: the larger of the standard deduction and the
+        itemized total, and ``beside`` it what a calculator deducts either
+        way (an exemption)."""
         lines = self.lines(agi)
-        floor = taken if taken is not None else standard or 0
         return {**({} if standard is None else {"standard_deduction": standard}), **lines,
-                "deduction": max(floor, lines["itemized_deduction"])}
+                "deduction": max(standard or 0, lines["itemized_deduction"]) + beside}
 
 
 def itemized_limits(ty: TaxYear, kind: str, series: str | None = None) -> Mapping[str, Any] | None:
@@ -907,11 +906,12 @@ def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, incom
 
 def personal(item: SpendingItem | Mortgage) -> bool:
     """Whether ``item`` is the household's own, which Schedule A can
-    deduct: not a business's (the ``business_expense`` character, or paid
-    from a ``business`` account: Schedule C deducts it, #231) or a
-    rental's (``tax:rental``: Schedule E's)."""
+    deduct: not a business expense (the ``business_expense`` character:
+    Schedule C deducts it, #231) or a rental's (``tax:rental``: Schedule
+    E's). What account paid doesn't decide it: a gift or the home's
+    property tax paid from business checking is still the household's,
+    and Schedule C deducts only the business_expense character."""
     return not (item.character == registries.BUSINESS_EXPENSE
-                or item.payer.subkind == registries.BUSINESS_SUBKIND
                 or registries.RENTAL_TAG in item.tags)
 
 

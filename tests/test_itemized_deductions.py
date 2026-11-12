@@ -24,6 +24,10 @@ from analysis.sim.tax_api import (
     Account, Extra, IncomeItem, Mortgage, Residence, Return, SpendingItem, TaxPaid, TaxYear, calculator,
 )
 
+# The calculator subclasses below are written for the current API: an
+# undeclared household module is taken to predate the itemized lines.
+API_VERSION = 5
+
 YEAR = 2030
 MICROS = 1_000_000
 SALARY = Account("Income_Salary", "income", "salary", "alice")
@@ -361,21 +365,36 @@ def test_a_subclass_written_before_the_lines_keeps_its_own_schedule_a(
         == 20_000_00
 
 
+def test_a_household_module_without_an_api_version_keeps_its_own_schedule_a(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """API_VERSION is optional, and a module written before the lines had
+    no reason to say one."""
+    monkeypatch.delattr(sys.modules[__name__], "API_VERSION")
+    year = _OlderOwnDeductions(calculator("state_tables"), _year(
+        200_000_00, [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")],
+        jurisdiction="state", tables={**TABLES, **CA_LIMITS}))
+    assert "itemized_salt" not in year.compute().lines
+
+
 class _NoStandard(StateTablesYear):
-    """A state with an exemption and no standard deduction, which leaves
-    the itemized lines to the built-in."""
+    """A state with a $12,000 exemption and no standard deduction, which
+    leaves the itemized lines to the built-in."""
 
     def deductions(self) -> Mapping[str, int]:
         return {"itemized_deduction": 0, "deduction": 12_000_00}
 
 
-def test_a_subclass_without_a_standard_deduction_gets_no_such_line() -> None:
+def test_a_subclass_without_a_standard_deduction_keeps_its_exemption_beside_the_lines() -> None:
+    """No standard_deduction line it never figured, and its exemption is
+    taken on top of the itemized total, not instead of it."""
     year = _NoStandard(calculator("state_tables"), _year(
         200_000_00, [_paid(PROPERTY_TAX, 20_000_00, tags="tax:property")],
         jurisdiction="state", tables={**TABLES, **CA_LIMITS}))
     ret = year.compute()
     assert "standard_deduction" not in ret.lines
-    assert ret["itemized_salt"] == ret["deduction"] == 20_000_00
+    assert ret["itemized_salt"] == 20_000_00
+    assert ret["deduction"] == 32_000_00
 
 
 def test_a_subclass_extending_deductions_keeps_the_lines() -> None:
@@ -487,10 +506,13 @@ def test_state_tax_paid_counts_once_wherever_it_is_paid(
             "  (SELECT id FROM scheduled_transaction WHERE name = 'housing') GROUP BY 1"))
         # A settlement out of the state's account is a refund (#568): when
         # property tax is routed there, the state counts it as paid and
-        # gives the excess back.
+        # gives the excess back. Only a refund of the same year's tax nets.
         state_paid = {year: max(0, paid) for year, paid in con.execute(
             "SELECT CAST(substr(t.date, 1, 4) AS INTEGER), "
-            "       SUM(CASE WHEN t.from_account = c.account_id THEN -t.amount ELSE t.amount END) "
+            "       SUM(CASE WHEN t.from_account <> c.account_id THEN t.amount "
+            "                WHEN COALESCE(t.tax_year, CAST(substr(t.date, 1, 4) AS INTEGER)) "
+            "                     = CAST(substr(t.date, 1, 4) AS INTEGER) THEN -t.amount "
+            "                ELSE 0 END) "
             "FROM transfer_event t JOIN tax_jurisdiction j ON j.id = t.reason_id "
             "JOIN chain c ON c.id = j.destination_chain_id "
             "WHERE t.reason_kind = 'tax' AND j.name = 'state' GROUP BY 1")}
@@ -570,21 +592,28 @@ def test_a_federal_deduction_base_leaves_out_the_state_tax_deducted(state_tax: i
     assert state["taxpayer_credit"] == credit
 
 
-def test_business_and_rental_spending_is_never_itemized() -> None:
-    """Schedule C deducts a business's (the business_expense character, or
-    paid from a business account) and Schedule E a rental's (tax:rental),
-    whatever the expense account's tag."""
+def test_business_expenses_and_rental_spending_are_never_itemized() -> None:
+    """Schedule C deducts a business expense (the business_expense
+    character) and Schedule E a rental's (tax:rental), whatever the
+    expense account's tag. The household's own spending paid from
+    business checking is still the household's."""
     business = Account("Asset_Business_Alice", "asset", "business", "alice")
     spending = [
-        _paid(PROPERTY_TAX, 10_000_00, tags="tax:property", payer=business),
-        _paid(PROPERTY_TAX, 10_000_00, tags="tax:property", character="business_expense"),
+        _paid(PROPERTY_TAX, 10_000_00, tags="tax:property", payer=business,
+              character="business_expense"),
         _paid(PROPERTY_TAX, 10_000_00, tags="tax:property tax:rental"),
-        _paid(GIFTS, 10_000_00, payer=business),
+        _paid(GIFTS, 10_000_00, payer=business, character="business_expense"),
         _paid(PROPERTY_TAX, 3_000_00, tags="tax:property"),
     ]
     ret = _federal(200_000_00, spending)
     assert ret["itemized_salt"] == 3_000_00
     assert ret["itemized_charity"] == 0
+    own = [_paid(PROPERTY_TAX, 4_000_00, tags="tax:property", payer=business),
+           _paid(GIFTS, 12_000_00, payer=business)]
+    ret = _federal(200_000_00, [*spending, *own])
+    assert ret["itemized_salt"] == 7_000_00
+    # Over 0.5% of AGI.
+    assert ret["itemized_charity"] == 12_000_00 - 1_000_00
 
 
 @pytest.mark.slow
@@ -619,9 +648,10 @@ def test_a_business_mortgage_stays_out_of_the_debt_limit() -> None:
     doesn't shrink the home's deductible interest."""
     business = Account("Asset_Business_Alice", "asset", "business", "alice")
     spending = [_paid(INTEREST, 36_000_00, tags="tax:mortgage_interest"),
-                _paid(INTEREST, 54_000_00, tags="tax:mortgage_interest", payer=business)]
+                _paid(INTEREST, 54_000_00, tags="tax:mortgage_interest", payer=business,
+                      character="business_expense")]
     mortgages = [*_months("Liability_Mortgage", range(1, 13), 3_000_00, 600_000_00),
-                 *[replace(m, payer=business) for m in
+                 *[replace(m, payer=business, character="business_expense") for m in
                    _months("Liability_Office", range(1, 13), 4_500_00, 900_000_00)]]
     ret = _federal(300_000_00, spending, mortgages=mortgages)
     assert ret["itemized_mortgage_interest"] == 36_000_00
@@ -636,7 +666,7 @@ def test_an_implied_tag_keeps_the_accounts_own_tax_tag() -> None:
     assert item.tags == {"tax:premiums", "tax:medical"}
 
 
-def test_a_state_refund_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connection) -> None:
+def test_only_a_same_year_state_refund_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connection) -> None:
     """A refund (#568) posts from the state's account under its id, as a
     settlement does; it takes back what was paid rather than adding to it."""
     from analysis.sim.engine import _taxes_paid
@@ -665,18 +695,25 @@ def test_a_state_refund_comes_off_the_state_tax_paid(ledger_con: sqlite3.Connect
     post("2028-06-30", checking, state, 5_000_00, "rule", None)
     # Not income tax, though paid into the state's account: a mortgage's
     # interest (an implied itemized tag) and a business expense.
+    con.execute("INSERT INTO account(id, name, kind, subkind) "
+                "VALUES (4, 'Liability_Mortgage', 'liability', 'mortgage')")
+    con.execute("INSERT INTO chain(id, name, account_id) VALUES (4, 'Liability_Mortgage', 4)")
     con.execute(
         "INSERT INTO scheduled_transaction(id, name, from_account, to_account, cadence, "
-        "amount_rule_kind, tax_character, start) "
-        "VALUES (7, 'mortgage', ?, ?, 'monthly', 'mortgage_payment', 'none', '2026-01-31')",
-        (checking, state))
+        "amount_rule_kind, tax_character, start, interest_account) "
+        "VALUES (7, 'mortgage', ?, 4, 'monthly', 'mortgage_payment', 'none', '2026-01-31', "
+        "'Expense_Tax_State')", (checking,))
     post("2028-07-31", checking, state, 2_000_00, "rule", 7)
     post("2028-08-31", checking, state, 3_000_00, "rule", None, character="business_expense")
+    # A refund of 2027's tax is 2027's business, not less paid in 2028.
     post("2028-04-30", state, checking, 1_000_00, "tax", 2, 2027)
     paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None))
+    assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 5_000_00)]
+    # One of 2028's own takes back what was paid, and never below zero.
+    post("2028-12-31", state, checking, 1_000_00, "tax", 2, 2028)
+    paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None))
     assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 4_000_00)]
-    # A refund larger than the year's payments deducts nothing.
-    post("2028-05-31", state, checking, 9_000_00, "tax", 2, 2027)
+    post("2028-12-31", state, checking, 9_000_00, "tax", 2, 2028)
     paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None))
     assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 0)]
 

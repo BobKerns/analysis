@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
-from analysis.sim import registries, tax_api
+from analysis.sim import registries
 from analysis.sim.tax_api import NO_EXTRA, Extra, TaxError, register
 from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import (
@@ -134,13 +134,16 @@ class StateTablesYear(FederalStateYear):
     def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
         """:meth:`deductions`, with :meth:`itemized_lines` at the year's
         income added to its ``itemized_deduction`` (#542): the deduction
-        taken is the larger of the two totals."""
+        taken is the larger of the standard deduction and the itemized
+        total, and on top what :meth:`deductions` takes beyond either of
+        its own (a subclass's exemption, which itemizing doesn't replace)."""
         base = self._deductions
         itemized = self._itemized
         if itemized is None:
             return base
-        return {**base, **itemized.deduction_lines(
-            income.agi, base.get("standard_deduction"), taken=base["deduction"])}
+        standard = base.get("standard_deduction")
+        beside = max(0, base["deduction"] - max(standard or 0, base.get("itemized_deduction", 0)))
+        return {**base, **itemized.deduction_lines(income.agi, standard, beside=beside)}
 
     def itemized_lines(self) -> common.Itemized | None:
         """The year's itemized deductions from spending (#542), under the
@@ -171,16 +174,19 @@ class StateTablesYear(FederalStateYear):
         return self.itemized_lines()
 
     def _deductions_before_lines(self) -> bool:
-        """Whether a subclass's :meth:`deductions` was written for an API
-        before the lines (5, #542): it may figure its own Schedule A, which
-        the lines would count again, so it keeps the deduction it figures."""
+        """Whether a subclass's :meth:`deductions` may have been written
+        before the lines (API 5, #542): it may figure its own Schedule A,
+        which the lines would count again, so it keeps the deduction it
+        figures. Its module says so with an ``API_VERSION`` below 5, or by
+        saying none: a household module written before them never needed
+        one, so only one that declares 5 or later gets the lines."""
         # The version is the one of the module that wrote the deductions
         # in use, which a later subclass elsewhere may only inherit.
         owner = next(c for c in type(self).__mro__ if "deductions" in vars(c))
-        if owner is StateTablesYear:
+        if owner is StateTablesYear or owner.__module__.startswith("analysis."):
             return False
         module = sys.modules.get(owner.__module__)
-        return getattr(module, "API_VERSION", tax_api.API_VERSION) < ITEMIZED_LINES_API
+        return getattr(module, "API_VERSION", 0) < ITEMIZED_LINES_API
 
     def additions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:
         fed, capital = basis.federal, self._capital
