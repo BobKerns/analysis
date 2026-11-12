@@ -1058,8 +1058,8 @@ You do not need to compare them yourself. Each line shows in
 | Line | Comes from | Limited by |
 | --- | --- | --- |
 | `itemized_salt` | Property tax (spending tagged `tax:property`), and the state and local income tax you paid during the year, the April payment for the year before included | The SALT cap: $40,400 in 2026, rising 1% a year through 2029, less 30% of income over $505,000 but not below $10,000; $10,000 from 2030 |
-| `itemized_mortgage_interest` | A `mortgage_payment` rule's interest, automatically | Interest on up to $750,000 of mortgage debt, tested month by month |
-| `itemized_charity` | Spending tagged `tax:charity` | Only the part over 0.5% of AGI, at most 60% of AGI |
+| `itemized_mortgage_interest` | A `mortgage_payment` rule's interest on a `mortgage` liability, automatically (not a car loan's or a HELOC's) | Interest on up to $750,000 of mortgage debt, tested month by month |
+| `itemized_charity` | Spending tagged `tax:charity` | At most 60% of AGI, less 0.5% of AGI |
 | `itemized_medical` | Spending tagged `tax:medical`, and IRMAA's Medicare surcharges, automatically; not what an HSA paid | Only the part over 7.5% of AGI |
 | `itemized_other` | Anything else you add by hand (below) | None |
 

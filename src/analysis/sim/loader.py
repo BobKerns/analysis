@@ -1381,7 +1381,7 @@ def load_scenario(
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
-    _warn_hand_typed_deductions(aux_rows, scheduled_rows, accounts, warnings)
+    _warn_hand_typed_deductions(aux_rows, scheduled_rows, accounts, tax_rows, residence_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_state_adjustments(
@@ -4133,6 +4133,8 @@ def _warn_hand_typed_deductions(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     scheduled_rows: list[dict[str, str]],
     accounts: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
+    residence_rows: list[dict[str, str]],
     warnings: list[str],
 ) -> None:
     """A hand-typed itemized total (``federal_deductions``,
@@ -4140,17 +4142,32 @@ def _warn_hand_typed_deductions(
     spending too (#542): one written before they were, a whole Schedule A,
     counts its mortgage interest, property tax or IRMAA twice. Only years
     the lines are figured in: from the federal limits' first date, and for
-    ``state_deductions`` only where some state has limits of its own; a
-    zero total adds nothing. One warning for all such rows."""
-    def first_year(kind: str, *, keyed: bool) -> str | None:
-        dates = [effective for k, series, _payload, effective in aux_rows
-                 if k == kind and (series is not None) == keyed]
+    ``state_deductions`` only where the state lived in that year has limits
+    of its own (or its tax takes the federal ones); a zero total adds
+    nothing. One warning for all such rows."""
+    def first_year(kind: str, series: str | None) -> str | None:
+        dates = [effective for k, s, _payload, effective in aux_rows if k == kind and s == series]
         return min(dates)[:4] if dates else None
 
-    federal_from = first_year(registries.ITEMIZED_LIMITS, keyed=False)
+    federal_from = first_year(registries.ITEMIZED_LIMITS, None)
     if federal_from is None:
         return
-    state_from = first_year(registries.STATE_ITEMIZED_LIMITS, keyed=True)
+    supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    state_aux = [tax_files.params(row).get("itemized_limits_aux", registries.STATE_ITEMIZED_LIMITS)
+                 for row in tax_rows if row.get("name") == "state"]
+
+    def state_from(year: int) -> str | None:
+        """The first year the state lived in in ``year`` figures lines."""
+        if not state_aux:
+            return None
+        if state_aux[0] != registries.STATE_ITEMIZED_LIMITS:
+            return first_year(str(state_aux[0]), None)  # a federal-shaped table
+        found = _residence_states(residence_rows, [year])
+        if not found:
+            return None
+        series = states.tax_series(found[0], has_tables=("state_brackets", found[0]) in supplied)
+        return first_year(registries.STATE_ITEMIZED_LIMITS, series)
+
     itemized = frozenset(registries.ITEMIZED_TAGS.values())
 
     def tagged(row: Mapping[str, str]) -> bool:
@@ -4160,23 +4177,23 @@ def _warn_hand_typed_deductions(
             return False  # reported where the tags are checked
         return bool(tags & itemized) or row.get("tax_character") == "property_tax"
 
-    figured_always = any(tagged(row) for row in (*accounts, *scheduled_rows)) or any(
-        row.get("amount_rule_kind") == "irmaa" for row in scheduled_rows)
+    def active(kind: str, year: str) -> bool:
+        return any(row.get("amount_rule_kind") == kind
+                   and row.get("start", "")[:7] <= f"{year}-12"
+                   and (not row.get("end") or row["end"][:7] >= f"{year}-01")
+                   for row in scheduled_rows)
+
+    figured_always = any(tagged(row) for row in (*accounts, *scheduled_rows))
     found: dict[str, list[str]] = {}
     for kind, series, payload, effective in aux_rows:
         if kind not in ("federal_deductions", "state_deductions") or series is not None:
             continue
         year = effective[:4]
-        lines_from = federal_from if kind == "federal_deductions" else state_from
+        lines_from = federal_from if kind == "federal_deductions" else state_from(int(year))
         if lines_from is None or year < max(lines_from, federal_from) \
                 or payload.get("amount") == 0:
             continue
-        mortgage = any(
-            row.get("amount_rule_kind") == "mortgage_payment"
-            and row.get("start", "")[:7] <= f"{year}-12"
-            and (not row.get("end") or row["end"][:7] >= f"{year}-01")
-            for row in scheduled_rows)
-        if mortgage or figured_always:
+        if figured_always or active("mortgage_payment", year) or active("irmaa", year):
             found.setdefault(kind, []).append(year)
     if found:
         where = "; ".join(f"aux/{kind}.csv ({', '.join(sorted(set(years)))})"
@@ -6274,6 +6291,10 @@ def _validate_itemized_limits(
             # The phase-down stops at the floor, so a floor above the cap
             # would raise the cap itself.
             issues.append(f"{where}: salt_floor can't be above salt_cap")
+        if cap is None and (floor is not None or payload.get("salt_phaseout_start") is not None):
+            # Without a cap there is nothing to phase down or hold up, so
+            # they'd be ignored without a word.
+            issues.append(f"{where}: a salt_floor or SALT phase-down needs a salt_cap")
     _check_filing_statuses(
         {(f"aux/{name}.csv", effective[:7]): found
          for (name, _series, effective), found in statuses.items()},

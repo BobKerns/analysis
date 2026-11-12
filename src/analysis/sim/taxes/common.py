@@ -784,8 +784,7 @@ class Itemized:
         salt, limits = self.salt, self.limits
         if limits is None or limits.get("salt_cap") is None:
             return salt
-        cap = limits["salt_cap"]
-        cap = int(cap)
+        cap = int(limits["salt_cap"])
         start, rate = limits.get("salt_phaseout_start"), limits.get("salt_phaseout_rate_micros")
         if start is not None and rate is not None and agi > int(start):
             cap -= (agi - int(start)) * int(rate) // 1_000_000
@@ -813,13 +812,15 @@ class Itemized:
             return None if rate is None else base * int(rate) // 1_000_000
 
         salt = self._salt(agi)
+        # §170(b)(1)(I) takes the floor off what the percentage limit
+        # allows, so the cap comes first.
         charity = self.charity
-        floor = share("charity_floor")
-        if floor is not None:
-            charity = max(0, charity - floor)
         cap_share = share("charity_limit")
         if cap_share is not None:
             charity = min(charity, cap_share)
+        floor = share("charity_floor")
+        if floor is not None:
+            charity = max(0, charity - floor)
         floor = share("medical_floor")
         medical = self.medical if floor is None else max(0, self.medical - floor)
         # In registries.ITEMIZED_LINES' order, the one list of their names.
