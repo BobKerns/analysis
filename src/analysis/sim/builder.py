@@ -890,8 +890,8 @@ class _Daemon:
             except (price_schedule.PriceScheduleError, OSError) as exc:
                 self.log(f"prices not merged: {exc}")
                 return
-            if merged:
-                self.log(merged)
+            for line in merged:
+                self.log(line)
         if time.monotonic() - self.fetch_ended < price_schedule.RETRY_SECONDS:
             return
         if not price_schedule.due(price_schedule.read_state(self.data_dir), datetime.now(UTC)):
