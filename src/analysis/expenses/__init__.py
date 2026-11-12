@@ -1,4 +1,4 @@
-"""Expense baseline construction from Quicken and Amazon summaries."""
+"""Expense baseline construction from imported transactions and Amazon summaries."""
 
 from analysis.expenses.baseline import (
     BASELINE_GENERATED_TAG,
@@ -9,15 +9,10 @@ from analysis.expenses.baseline import (
     CategoryCanonicalization,
     CategorySplits,
     ExpenseAccountName,
-    QuickenAccount,
+    OutsideAccount,
     SourceCategory,
     build_expense_baseline,
     build_scheduled_baseline_rows,
-    load_category_map,
-    load_category_splits,
-    load_excluded_payees,
-    load_expense_account_map,
-    load_quicken_transactions,
     replace_generated_scheduled_rows,
 )
 
@@ -30,14 +25,9 @@ __all__ = [
     "CategoryCanonicalization",
     "CategorySplits",
     "ExpenseAccountName",
-    "QuickenAccount",
+    "OutsideAccount",
     "SourceCategory",
     "build_expense_baseline",
     "build_scheduled_baseline_rows",
-    "load_category_map",
-    "load_category_splits",
-    "load_excluded_payees",
-    "load_expense_account_map",
-    "load_quicken_transactions",
     "replace_generated_scheduled_rows",
 ]
