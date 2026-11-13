@@ -8465,7 +8465,7 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--params-json", default=None,
               help="JSON object: subject_account for an rmd from a chain.")
 @click.option("--tags", default="",
-              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary household:rwk').")
+              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary household:alice').")
 def scheduled_add(
     date: str | None,
     from_account: str | None,

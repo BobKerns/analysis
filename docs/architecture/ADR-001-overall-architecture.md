@@ -103,7 +103,7 @@ Detail in [ADR-004](ADR-004-reproducibility-and-activation.md); summary here:
 The data repo provides a sourceable `activate` script (venv-style) that sets:
 
 - `ANALYSIS_DATA_DIR` — absolute path to the data repo. Engine refuses to run if unset.
-- `ANALYSIS_USER` — short identifier (`rwk`, `mwk`, …) matching a row `id` in `persons.csv` in the data repo. Refuses to run if unset or unknown. (Persons and operator identities are the same set: every operator is a person, though not every person needs to be an operator.)
+- `ANALYSIS_USER` — short identifier (`alice`, `bill`, …) matching a row `id` in `persons.csv` in the data repo. Refuses to run if unset or unknown. (Persons and operator identities are the same set: every operator is a person, though not every person needs to be an operator.)
 - `ANALYSIS_DATA_REPO_NAME` — display label, defaults to basename of `ANALYSIS_DATA_DIR`.
 
 `PS1` is prefixed `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER:<current scenario>]` (the scenario left out when none is current) so the active context is visible in a shared shell. `deactivate` reverses all of it.

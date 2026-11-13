@@ -225,7 +225,7 @@ which inlines the SVG so the theme's CSS can restyle it.
 
 | Template | Fields |
 | --- | --- |
-| `title` | `series`, `episode`, `title`, `subtitle`, `cast` (assets to show; default home, Alice, Bill) |
+| `title` | `series`, `episode`, `title`, `subtitle`, `cast` (assets to show; default home, Alice, Bill), `notice` (a boxed line under the rule, such as who can skip the video) |
 | `card` | `series`, `heading`, `body` (text, or a list shown one item per line), `speaker` (one asset, optional) |
 | `figure` | `series`, `heading` (the command, shown as typed), `demo_image` (a picture `setup.sh` made) |
 | `window` | `series`, `heading`, `title` (the title bar), `look` (`terminal`, `light`, `files`, `editor` or `code`), `lines`, `address` (`files`), `status` (`editor`, `code`), `code`, `language`, `first`, `marks` (`code`), `note` (below the window) |

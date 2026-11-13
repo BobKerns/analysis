@@ -483,7 +483,7 @@ Single identity list for the household: account owners *and* operator identities
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
-| `id` | text | ✓ | short identifier, e.g. `rwk`; matched against `$ANALYSIS_USER` |
+| `id` | text | ✓ | short identifier, e.g. `alice`; matched against `$ANALYSIS_USER` |
 | `display` | text | ✓ | full or display name |
 | `birthdate` | YYYY-MM-DD | ✓ | for RMD and life-transition computations; may be blank only for a pseudo-person (blank `role`) |
 | `sex` | `f` \| `m` | | picks a life table's column, so a person with a `life_table` lifespan (§4.9) must have one; otherwise unused. The column itself is optional: a `persons.csv` without it loads, and `sim person add` and `edit` add it |
@@ -1132,7 +1132,7 @@ Authors can override by setting `priority` explicitly.
 that holds a whitespace-separated list of `<role>:<name>` tokens. Tags are an
 **open** registry — `role` is not validated against a fixed vocabulary — and are
 intended for low-friction ad-hoc grouping (e.g. `expense:discretionary
-household:rwk`, `tax:itemized`, `notebook:net_worth`).
+household:alice`, `tax:itemized`, `notebook:net_worth`).
 
 Token shape: `^[a-z0-9_]+:[a-z0-9_]+$`. Both halves are required; the loader
 rejects malformed tokens.
