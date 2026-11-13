@@ -10,8 +10,10 @@ and surcharge; its own deductions and credits (``state_adjustments``,
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from analysis.sim import registries
@@ -20,6 +22,10 @@ from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import (
     Adjustment, Basis, FederalStateYear, Income, StateFromFederal,
 )
+
+
+ITEMIZED_LINES_API = 5
+"""The API version that added :meth:`StateTablesYear.itemized_lines` (#542)."""
 
 
 class StateTablesYear(FederalStateYear):
@@ -125,6 +131,71 @@ class StateTablesYear(FederalStateYear):
         return {"standard_deduction": standard, "itemized_deduction": itemized,
                 "deduction": max(standard, itemized)}
 
+    def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
+        """:meth:`deductions`, with :meth:`itemized_lines` at the year's
+        income added to its ``itemized_deduction`` (#542): the deduction
+        taken is the larger of the standard deduction and the itemized
+        total, and on top what :meth:`deductions` takes beyond either of
+        its own (a subclass's exemption, which itemizing doesn't replace).
+        A :meth:`deductions` that takes less than the larger of its own two
+        caps the deduction there, which the lines don't raise. A subclass
+        whose limit depends on the deduction with the lines (a proration)
+        applies it by overriding this step. A new mapping each call, so an
+        override may change what it's given."""
+        base = self._deductions
+        itemized = self._itemized
+        if itemized is None:
+            return dict(base)
+        standard = base.get("standard_deduction")
+        own = max(standard or 0, base.get("itemized_deduction", 0))
+        lines = itemized.deduction_lines(income.agi, standard, beside=max(0, base["deduction"] - own))
+        if base["deduction"] < own:
+            lines["deduction"] = min(lines["deduction"], base["deduction"])
+        return {**base, **lines}
+
+    def itemized_lines(self) -> common.Itemized | None:
+        """The year's itemized deductions from spending (#542), under the
+        state's own limits (``state_itemized_limits__<state>``), which
+        :meth:`deductions_at` adds to :meth:`deductions`'. None for a state
+        without them, whose rules the federal ones may not match, and
+        without the federal ``itemized_limits`` table, which turns the lines
+        off everywhere. ``itemized_limits_aux`` set to ``itemized_limits``
+        takes the federal limits for the state. A subclass whose
+        :meth:`deductions` figures its own Schedule A overrides this to
+        return None. A state never deducts an income tax: not its own, and
+        few another's. An HSA's medical payments count where the state taxes
+        the HSA (#490): it never excluded that money."""
+        ty, params = self.ty, self.ty.params
+        if not ty.has_table(registries.ITEMIZED_LIMITS) or self._deductions_before_lines():
+            return None
+        limits_aux = params.itemized_limits_aux
+        series = self.series if limits_aux == registries.STATE_ITEMIZED_LIMITS else None
+        if not ty.has_table(limits_aux, series):
+            return None
+        return common.itemized(
+            ty, common.itemized_limits(ty, limits_aux, series),
+            other=self._deductions.get("itemized_deduction", 0), income_taxes=0,
+            hsa_paid_counts=self._hsa_taxed)
+
+    @cached_property
+    def _itemized(self) -> common.Itemized | None:
+        return self.itemized_lines()
+
+    def _deductions_before_lines(self) -> bool:
+        """Whether a subclass's :meth:`deductions` may have been written
+        before the lines (API 5, #542): it may figure its own Schedule A,
+        which the lines would count again, so it keeps the deduction it
+        figures. Its module says so with an ``API_VERSION`` below 5, or by
+        saying none: a household module written before them never needed
+        one, so only one that declares 5 or later gets the lines."""
+        # The version is the one of the module that wrote the deductions
+        # in use, which a later subclass elsewhere may only inherit.
+        owner = next(c for c in type(self).__mro__ if "deductions" in vars(c))
+        if owner is StateTablesYear or owner.__module__.startswith("analysis."):
+            return False
+        module = sys.modules.get(owner.__module__)
+        return getattr(module, "API_VERSION", 0) < ITEMIZED_LINES_API
+
     def additions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:
         fed, capital = basis.federal, self._capital
         memo = fed.memo
@@ -198,7 +269,10 @@ class StateTablesYear(FederalStateYear):
             if a.base == "federal_tax":
                 figure = a.from_base(basis.federal["tax"])
             elif a.base == "federal_deduction":
-                figure = a.from_base(basis.federal["deduction"])
+                # Less the state income tax it deducted (#542): the
+                # state's own tax mustn't grow its own credit.
+                figure = a.from_base(
+                    basis.federal["deduction"] - basis.federal.memo.get("income_tax_deducted", 0))
             elif a.base == "gains_tax":
                 figure = a.from_base(self.excise(basis)[1])
             out[a.name] = a.after_income_test(figure, income)
@@ -295,6 +369,10 @@ class StateTables(StateFromFederal):
         bracket_aux: str = "state_brackets"
         standard_deduction_aux: str = registries.STATE_STANDARD_DEDUCTION
         itemized_deduction_aux: str = "state_deductions"
+        itemized_limits_aux: str = registries.STATE_ITEMIZED_LIMITS
+        """The state's limits on its itemized lines from spending (#542),
+        keyed by state; a state without them figures none (``itemized_limits``
+        takes the federal limits)."""
         retirement_exclusion_aux: str = registries.STATE_RETIREMENT_EXCLUSION
         ltcg_bracket_aux: str = registries.STATE_LTCG_BRACKETS
         stcg_bracket_aux: str = registries.STATE_STCG_BRACKETS

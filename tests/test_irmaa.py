@@ -553,3 +553,16 @@ def test_annual_cost_counts_only_the_months_a_rule_charges() -> None:
     early[8], early[16], early[17] = "bill", "2030-01-31", "2033-06-30"  # ends in June
     context = _context(aux, rules=[late, early])
     assert context.annual_cost(2031, 200_000_01, "2031-12-31", 1) == (1 + 6) * 110_00
+
+
+def test_irmaa_surcharges_are_itemized_medical_expenses(irmaa_run: Run) -> None:
+    """An irmaa rule's charges carry ``tax:medical`` (#542) though neither
+    the rule nor its account is tagged: they're Medicare premiums."""
+    run = irmaa_run(_bonus(2029, "400000.00"))
+    charges, summary = _charges(run), _summary(run)
+    year = 2031
+    paid = int(charges[[m.startswith(str(year)) for m in charges.index]].sum().sum())
+    # Nothing else in retire_alice is tagged tax:medical; 7.5% of AGI is the floor.
+    floor = int(summary.loc[year, "federal_agi"]) * 75_000 // 1_000_000
+    assert paid > floor
+    assert summary.loc[year, "federal_itemized_medical"] == paid - floor

@@ -39,6 +39,11 @@ class Federal(TaxCalculator):
         """The series of the federal tables (``federal_brackets__<series>``)."""
         standard_deduction_aux: str = "standard_deduction"
         itemized_deduction_aux: str = "federal_deductions"
+        """The hand-typed itemized total, added to the lines figured from
+        spending (#542)."""
+        itemized_limits_aux: str = registries.ITEMIZED_LIMITS
+        """The limits on the itemized lines figured from spending (#542);
+        without the table, only the hand-typed total counts."""
         ltcg_bracket_aux: str = "ltcg_brackets"
         stcg_bracket_aux: str | None = None
         """A table of separate short-term gain rates; none federally."""
@@ -90,11 +95,16 @@ class FederalYear(Prepared):
                 raise TaxError(f"{common.where(ty)}: missing ss thresholds for filing_status={status!r}")
             self._ss_tiers = (int(thresholds[0]["tier1_floor"]), int(thresholds[0]["tier2_floor"]))
 
-        standard = common.standard_deduction(
+        self._standard = common.standard_deduction(
             ty, params.standard_deduction_aux)
-        itemized = common.itemized_deduction(
-            ty, params.itemized_deduction_aux)
-        self._deduction = deduction = max(standard, itemized)
+        # Itemized deductions from the year's spending (#542), with the
+        # state and local income tax paid this calendar year; their limits
+        # move with AGI, so each what-if figures its own.
+        self._itemized = common.itemized(
+            ty, common.itemized_limits(ty, params.itemized_limits_aux),
+            other=common.itemized_deduction(ty, params.itemized_deduction_aux),
+            income_taxes=ty.tax_paid())
+        deduction = self._deduction_lines(self._agi(NO_EXTRA))["deduction"]
         # A net operating loss carried in offsets part of this year's
         # taxable income (#231). It doesn't lower AGI first, as the NOL
         # deduction really does, so taxable Social Security can come out a
@@ -111,9 +121,6 @@ class FederalYear(Prepared):
             "ltcg_exclusion": capital.ltcg - self._net_ltcg(capital.ltcg),
             **common.capital_lines(capital),
             "ss_benefits": ss_income,
-            "standard_deduction": standard,
-            "itemized_deduction": itemized,
-            "deduction": deduction,
         }
         hsa_contributed, hsa_withdrawn = common.hsa_deferred_flows(ty)
         self._memo = {
@@ -150,6 +157,11 @@ class FederalYear(Prepared):
             tier1=self._ss_tiers[0], tier2=self._ss_tiers[1], exempt_interest=self._exempt,
         )
 
+    def _deduction_lines(self, agi: int) -> dict[str, int]:
+        """The standard deduction, the itemized lines at ``agi``, and the
+        ``deduction`` taken, the larger."""
+        return self._itemized.deduction_lines(agi, self._standard)
+
     def _agi(self, extra: Extra) -> int:
         ordinary, ltcg = self._ordinary + extra.ordinary, self._taxed_ltcg(extra.ltcg)
         return ordinary + ltcg + self._taxable_ss(ordinary, ltcg)
@@ -158,7 +170,8 @@ class FederalYear(Prepared):
         ordinary, ltcg = self._ordinary + extra.ordinary, self._taxed_ltcg(extra.ltcg)
         taxable_ss = self._taxable_ss(ordinary, ltcg)
         agi = ordinary + ltcg + taxable_ss
-        before_nol = agi - self._deduction
+        deductions = self._deduction_lines(agi)
+        before_nol = agi - deductions["deduction"]
         nol_used = common.nol_used(self._nol_in, before_nol, self._nol_limit)
         taxable = max(0, before_nol - nol_used)
         stcg = self._capital.stcg
@@ -170,6 +183,7 @@ class FederalYear(Prepared):
             "ss_taxable": taxable_ss,
             "agi": agi,
             **self._fixed,
+            **deductions,
             "taxable_income": taxable,
             "ordinary_taxable": common.ordinary_taxable(taxable, ltcg, stcg, bool(self._stcg_brackets)),
             "tax": common.stacked_tax(
@@ -179,6 +193,11 @@ class FederalYear(Prepared):
         }
         if self._exempt:
             lines["tax_exempt_interest"] = self._exempt
+        # The state income tax among the deduction taken, which Utah's
+        # taxpayer credit leaves out of its federal_deduction base (#542).
+        income_tax = (self._itemized.income_tax_deducted(agi)
+                      if deductions["deduction"] == deductions["itemized_deduction"] else 0)
         # A Return shares the memo, so it must not be writable.
         return Return(lines, MappingProxyType(
-            {**self._memo, "ss_untaxed": self._ss_income - taxable_ss}))
+            {**self._memo, "ss_untaxed": self._ss_income - taxable_ss,
+             "income_tax_deducted": income_tax}))

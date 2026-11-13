@@ -35,18 +35,22 @@ from analysis.sim import ownership, registries
 from analysis.sim.param_units import Dollars, Percent, Tag, percent
 
 __all__ = [
-    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "HsaGain", "IncomeItem", "Percent", "Person",
-    "Prepared", "Residence", "Return", "SpendingItem", "Tag", "TaxCalculator", "TaxError",
+    "API_VERSION", "Account", "CapitalLoss", "Dollars", "Extra", "HsaGain", "IncomeItem", "Mortgage", "Percent",
+    "Person", "Prepared", "Residence", "Return", "SpendingItem", "Tag", "TaxCalculator", "TaxError", "TaxPaid",
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
-API_VERSION = 4
+API_VERSION = 5
 """Bumped when a calculator written against the previous version could
 break, or one written for this version needs what the previous lacks. 1
 (#510) is the first a data repo can write to; 2 (#511) adds a state year's
 ``other_deductions`` and ``credit_lines`` steps; 3 (#489) its ``excise``
 step and :attr:`Extra.real_estate_ltcg`; 4 (#568) its
-``refundable_credits`` step and :meth:`TaxYear.grown`."""
+``refundable_credits`` step and :meth:`TaxYear.grown`; 5 (#542) its
+``deductions_at`` and ``itemized_lines`` steps, :attr:`TaxYear.mortgages`
+and :attr:`TaxYear.taxes_paid`. A state year whose module says it was
+written for 4 or before and that overrides ``deductions`` figures no
+itemized lines from spending: it may figure its own Schedule A."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""
@@ -75,6 +79,27 @@ def _effective_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[
     a rule refines its account's tag, as in the reports' ``--by tag:ROLE``."""
     roles = {tag.partition(":")[0] for tag in rule}
     return rule | frozenset(tag for tag in account if tag.partition(":")[0] not in roles)
+
+
+_ITEMIZING_TAGS = frozenset({*registries.ITEMIZED_TAGS.values(), registries.RENTAL_TAG})
+
+
+def spending_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[str]:
+    """A spending item's tags (#542): :func:`_effective_tags`, except that
+    the expense account's itemizing tag (``tax:charity``, ``tax:rental``)
+    stays unless the rule has one of its own. A rule's report tag
+    (``tax:itemized``, ``tax:repair``) refines the account's for a report,
+    but doesn't move the spending off its itemized line."""
+    tags = _effective_tags(rule, account)
+    return tags if rule & _ITEMIZING_TAGS else tags | (account & _ITEMIZING_TAGS)
+
+
+def itemizing(tags: frozenset[str]) -> bool:
+    """Whether ``tags`` say which itemized line spending is on, or that it's
+    on none (``tax:rental``, #542). Another ``tax:`` tag, one for a report,
+    says neither: an implied tag or the ``property_tax`` character still
+    applies."""
+    return bool(tags & _ITEMIZING_TAGS)
 
 
 @dataclass(frozen=True)
@@ -119,13 +144,19 @@ class SpendingItem:
     amount: int
     rule_tags: frozenset[str] = frozenset()
     person: str | None = None
+    implied_tags: frozenset[str] = frozenset()
+    """The tag the rule's kind implies when nothing says which itemized
+    line the item is on (#542): a mortgage payment's interest is
+    ``tax:mortgage_interest``, an IRMAA surcharge ``tax:medical``."""
 
     @property
     def tags(self) -> frozenset[str]:
         """The item's tags: its rule's, and in each role the rule has none
-        of, the expense account's. A rule tagged ``tax:repair`` paying into
-        an account tagged ``tax:rent`` is a repair, not rent."""
-        return _effective_tags(self.rule_tags, self.payee.tags)
+        of, the expense account's, with :attr:`implied_tags` beside them. A
+        rule tagged ``tax:repair`` paying into an account tagged
+        ``tax:rent`` is a repair, not rent; but the account's itemizing tag
+        stays unless the rule has one (:func:`spending_tags`)."""
+        return spending_tags(self.rule_tags, self.payee.tags) | self.implied_tags
 
 
 @dataclass(frozen=True)
@@ -150,6 +181,37 @@ class HsaGain:
     year: int
     character: str
     owner: str | None
+    amount: int
+
+
+@dataclass(frozen=True)
+class Mortgage:
+    """One mortgage debt's month (#542): the interest its ``mortgage_payment``
+    rules paid and the balance it was figured on, which the debt limit on
+    deductible interest is tested against. ``name`` is the liability
+    account. ``tags`` are its interest's, as a :class:`SpendingItem`'s: a
+    home's carries ``tax:mortgage_interest``, a rental's another ``tax:``
+    tag. ``character`` is ``business_expense`` for a business's payments
+    on the debt, which stay out of the limit, and ``none`` for the
+    household's; a debt both pay in a month has a month for each, each
+    with its share of the balance."""
+    year: int
+    month: int
+    name: str
+    interest: int
+    balance: int
+    tags: frozenset[str] = frozenset()
+    character: str = "none"
+
+
+@dataclass(frozen=True)
+class TaxPaid:
+    """What the household paid in one calendar year toward a jurisdiction's
+    income tax (#542), by the payments' dates (a cash-basis taxpayer's
+    deduction): the year's estimated payments and the April settlement of
+    the year before."""
+    year: int
+    jurisdiction: str
     amount: int
 
 
@@ -204,6 +266,13 @@ class TaxYear:
     hsa_gains: Sequence[HsaGain] = ()
     """Every year's HSA withdrawals' gains over basis up to ``year`` (#497),
     for a state that taxes an HSA."""
+    mortgages: Sequence[Mortgage] = ()
+    """Each mortgage's interest and balance by month (#542); the engine
+    gives this year's only."""
+    taxes_paid: Sequence[TaxPaid] = ()
+    """What was paid toward each state and local jurisdiction in a calendar
+    year (#542), the SALT deduction's income taxes; the engine gives this
+    year's only."""
     _grown: Callable[[int, str, int], int] = field(
         repr=False, default=lambda amount, _series, _since: amount)
 
@@ -329,6 +398,16 @@ class TaxYear:
         """This year's spending carrying ``tag``, in cents: what a deduction
         for rent or property tax starts from."""
         return sum(s.amount for s in self._spent_this_year if tag in s.tags)
+
+    def year_mortgages(self) -> list[Mortgage]:
+        """This year's :class:`Mortgage` months."""
+        return [m for m in self.mortgages if m.year == self.year]
+
+    def tax_paid(self, *jurisdictions: str) -> int:
+        """What was paid this calendar year toward the ``jurisdictions``'
+        income taxes (every state and local one when none are named)."""
+        return sum(t.amount for t in self.taxes_paid
+                   if t.year == self.year and (not jurisdictions or t.jurisdiction in jurisdictions))
 
 
 @dataclass(frozen=True)

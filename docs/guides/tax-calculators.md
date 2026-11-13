@@ -147,11 +147,18 @@ What it does:
   (`fill_bracket` steps, the after-tax drawdown). It overrides
   `refundable_credits`, run for each return, one of the steps a
   state year goes through (`additions`, `subtractions`, `deductions`,
-  `other_deductions`, `tax`, `credits`, `credit_lines`, `excise`,
-  `refundable_credits`). Each line it returns is a line of the return,
+  `itemized_lines`, `other_deductions`, `tax`, `credits`, `credit_lines`,
+  `excise`, `refundable_credits`). Each line it returns is a line of the return,
   written to the run as `state_<line>`. A refundable credit comes off
   last and can take the tax below zero; the April settlement pays it
   back. A credit that can't, like most, goes in `credit_lines` instead.
+- The built-in `itemized_lines` figures property tax, mortgage interest,
+  charity and medical from tagged spending and adds them to what
+  `deductions` returns; a year whose `deductions` figures its own itemized
+  total overrides `itemized_lines` to return `None`, or those count twice.
+  (A module that overrides `deductions` and says `API_VERSION = 4`, or
+  sets no `API_VERSION`, gets no lines, as before they existed; say
+  `API_VERSION = 5` to get them.)
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is
   the year's spending carrying a tag; `ty.grown(amount, series, since)` a
   figure the law set for year `since`, grown with inflation to this one,

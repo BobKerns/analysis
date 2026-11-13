@@ -114,7 +114,7 @@ state/
 | `load_warning` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `hsa_gain`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `hsa_gain`, `basis_step_up`, `mortgage_balance`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 66) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 67) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -948,6 +948,20 @@ CREATE TABLE basis_step_up (
     rule            TEXT NOT NULL
 );
 
+-- #542: the balance each month's interest of a mortgage_payment rule was
+-- figured on, for the mortgage debt limit: one row per rule and month the
+-- interest covers. A ytd_amount catch-up posts several months' interest
+-- at once (``posted``), so it has a row for each month it replays.
+CREATE TABLE mortgage_balance (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    rule_id         INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    posted          TEXT NOT NULL,
+    month           TEXT NOT NULL,
+    balance         INTEGER NOT NULL,
+    interest        INTEGER NOT NULL
+);
+
 CREATE TABLE applied_calendar_event (
     step_id           INTEGER NOT NULL REFERENCES simulation_step(id),
     calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
@@ -1019,6 +1033,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
 | `hsa_gain` | An HSA withdrawal's gain over the lot's basis, a loss negative ([#497](https://github.com/BobKerns/analysis/issues/497)): what a state that doesn't recognize HSAs taxes, with no money of its own, so the federal return never sees it. |
+| `mortgage_balance` | The balance a home mortgage's interest was figured on, by rule and month ([#542](https://github.com/BobKerns/analysis/issues/542)): the base of the itemized deduction's mortgage debt limit. A `ytd_amount` catch-up, posted at once, has a row for each month it replays. No money of its own. |
 | `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, the basis before and after, and the `rule` that decided it (`owner`, `inherited`, `joint_half`, `community_property`, `last_survivor`). No money moves. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
@@ -1232,3 +1247,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#497](https://github.com/BobKerns/analysis/issues/497): run table `hsa_gain` (an HSA withdrawal's gain over its basis, for a state that taxes HSAs); the reserved account names include `hsa_dividends` and `hsa_gain_distributions` (Placement summary, Ledger DDL, glossary, Conventions; schema 65).
 - [#265](https://github.com/BobKerns/analysis/issues/265): tax character `tax_exempt` (municipal bond interest); the reserved account names include `muni_interest` and `muni_interest__<ST>` (Intent layer DDL, Conventions; schema 66).
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax jurisdiction also pays back what was paid past the year's tax (Intent layer DDL).
+- [#542](https://github.com/BobKerns/analysis/issues/542): run table `mortgage_balance` (the balance each month's mortgage interest was figured on, for the debt limit) (Placement summary, Ledger DDL, glossary; schema 67).
