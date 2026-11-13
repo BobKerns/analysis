@@ -81,7 +81,7 @@ def _effective_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[
     return rule | frozenset(tag for tag in account if tag.partition(":")[0] not in roles)
 
 
-_ITEMIZING_TAGS = frozenset({*registries.ITEMIZED_TAGS.values(), registries.RENTAL_TAG})
+_ITEMIZING_TAGS = registries.ITEMIZING_TAGS
 
 
 def spending_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[str]:

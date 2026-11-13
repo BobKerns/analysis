@@ -1430,7 +1430,8 @@ def load_scenario(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
     _validate_itemizing_rows(accounts, scheduled_rows, ytd_rows, leaves, issues)
-    _validate_income_tax_payments(accounts, scheduled_rows, calendar_rows, ytd_rows, leaves, issues)
+    _validate_income_tax_payments(accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves,
+                                  issues)
     rail_rows = _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
                                       calendar_rows, issues)
     disabled_strategies: list[strategy_load.PreparedStrategy] = []
@@ -3797,58 +3798,77 @@ def _validate_itemizing_rows(
                 "rule's ytd_amount")
 
 
+def _row_tags(row: Mapping[str, str]) -> set[str] | None:
+    """A row's ``tags`` cell as ``role:name`` tags; None when it is
+    malformed, which is reported where the tags are checked."""
+    try:
+        return {f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", ""))}
+    except ValueError:
+        return None
+
+
 def _validate_income_tax_payments(
     accounts: list[dict[str, str]], scheduled_rows: list[dict[str, str]],
     calendar_rows: list[dict[str, str]], ytd_rows: list[dict[str, str]],
-    leaves: _LeafIndex, issues: list[str],
+    chains: Mapping[str, tuple[str, list[dict[str, str]]]], leaves: _LeafIndex, issues: list[str],
 ) -> None:
     """Only income tax payments go into an income-tax account (#586,
     ``registries.INCOME_TAX_SUBKINDS``): withholding, an estimated payment,
     a settlement, so what went into a jurisdiction's account is what it
-    was paid. Refused there: whatever an itemized line or another schedule
-    counts, which isn't income tax: the ``property_tax`` and
-    ``business_expense`` characters, an itemizing tag (``tax:property``,
-    ``tax:charity``, ``tax:rental``, ...) on the row or the account, and the
-    rule kinds that imply one (a mortgage's interest, an IRMAA surcharge)."""
-    itemizing = frozenset({*registries.ITEMIZED_TAGS.values(), registries.RENTAL_TAG})
-
-    def tags_of(row: Mapping[str, str]) -> set[str]:
-        try:
-            return {f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", ""))}
-        except ValueError:
-            return set()  # reported where the tags are checked
-
+    was paid. Refused there, directly or through a destination chain whose
+    steps reach one: whatever an itemized line or another schedule counts,
+    which isn't income tax: the ``property_tax`` and ``business_expense``
+    characters (a step's own too), an itemizing tag
+    (``registries.ITEMIZING_TAGS``) on the row or the account, and the rule
+    kinds that imply one (a mortgage's interest, an IRMAA surcharge). Runs
+    after the references are resolved to leaf chains."""
     income_tax = {a.get("name", ""): a.get("subkind", "") for a in accounts
                   if a.get("subkind") in registries.INCOME_TAX_SUBKINDS}
     if not income_tax:
         return
+    not_tax = ("property_tax", registries.BUSINESS_EXPENSE)
     for where, row in _located(accounts, "accounts.csv"):
-        if row.get("name") in income_tax and (found := sorted(tags_of(row) & itemizing)):
+        if row.get("name") in income_tax and (found := sorted((_row_tags(row) or set())
+                                                              & registries.ITEMIZING_TAGS)):
             issues.append(
                 f"{where} ({row.get('name')}): a {row.get('subkind')} account takes only income "
                 f"tax payments, which no itemizing tag fits ({' '.join(found)})")
 
+    def reached(ref: str, seen: frozenset[str] = frozenset()) -> list[str]:
+        """The income-tax accounts money paid to ``ref`` can land in: the
+        account itself, or those a destination chain's steps reach."""
+        if ref in chains and ref not in seen:
+            return sorted({account for row in chains[ref][1]
+                           for account in reached(row.get("account_name", ""), seen | {ref})})
+        account = leaves.account_of.get(ref, ref)
+        return [account] if account in income_tax else []
+
+    def refuse(where: str, account: str, why: Sequence[str], property_tax: bool) -> None:
+        hint = (f"pay it into a {registries.PROPERTY_TAX_SUBKIND} account" if property_tax
+                else "pay it into another expense account")
+        issues.append(
+            f"{where}: {account} is a {income_tax[account]} account, which takes only income "
+            f"tax payments (withholding, estimated payments), not spending of "
+            f"{', '.join(why)}; {hint}")
+
     def check(where: str, row: Mapping[str, str], to_ref: str, kind: str = "") -> None:
-        account = leaves.account_of.get(to_ref, to_ref)
-        if account not in income_tax:
+        targets = reached(to_ref)
+        if not targets:
             return
         why = []
         character = row.get("tax_character", "")
-        if character in ("property_tax", registries.BUSINESS_EXPENSE):
+        if character in not_tax:
             why.append(f"tax_character {character}")
-        found = sorted(tags_of(row) & itemizing)
+        found = sorted((_row_tags(row) or set()) & registries.ITEMIZING_TAGS)
         if found:
             why.append(f"tag {' '.join(found)}")
         if kind in registries.IMPLIED_TAX_TAGS:
             why.append(f"amount_rule_kind {kind}")
         if why:
-            property_tax = character == "property_tax" or registries.ITEMIZED_TAGS["property_tax"] in found
-            hint = (f"pay it into a {registries.PROPERTY_TAX_SUBKIND} account" if property_tax
-                    else "pay it into another expense account")
-            issues.append(
-                f"{where}: {account} is a {income_tax[account]} account, which takes only income "
-                f"tax payments (withholding, estimated payments), not spending of "
-                f"{', '.join(why)}; {hint}")
+            via = f" (through chain {to_ref})" if to_ref in chains else ""
+            for account in targets:
+                refuse(f"{where}{via}", account, why, character == "property_tax"
+                       or registries.ITEMIZED_TAGS["property_tax"] in found)
 
     for where, row in _located(scheduled_rows, "scheduled.csv"):
         rule_kind = row.get("amount_rule_kind", "")
@@ -3861,6 +3881,12 @@ def _validate_income_tax_payments(
     for where, row in _located(calendar_rows, "calendar.csv"):
         if row.get("kind") in ("one_off_transfer", "transfer_balance"):
             check(where, row, row.get("account_2", ""))
+    # A destination chain's step sets the character of the money it places.
+    for name, (role, rows) in chains.items():
+        for where, row in _located(rows, _chain_label(role, name)):
+            if (character := row.get("tax_character", "")) in not_tax:
+                for account in reached(row.get("account_name", "")):
+                    refuse(where, account, [f"tax_character {character}"], character == "property_tax")
 
 
 def _validate_guard_rails(
@@ -4293,12 +4319,15 @@ def _warn_hand_typed_deductions(
     itemized = frozenset(registries.ITEMIZED_TAGS.values())
 
     def tagged(row: Mapping[str, str]) -> bool:
-        try:
-            tags = {f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", ""))}
-        except ValueError:
+        tags = _row_tags(row)
+        if tags is None:
             return False  # reported where the tags are checked
+        # A taxes_property account is property tax (#586), unless its own
+        # itemizing tag says otherwise (tax:rental: Schedule E's), as the
+        # engine's implied tag is.
         return bool(tags & itemized) or row.get("tax_character") == "property_tax" \
-            or row.get("subkind") == registries.PROPERTY_TAX_SUBKIND  # an account (#586)
+            or (row.get("subkind") == registries.PROPERTY_TAX_SUBKIND
+                and not tags & registries.ITEMIZING_TAGS)
 
     # A retire_scheduled event ends its rule early; the earliest one, as a
     # warning needn't follow every reopening.
@@ -5844,8 +5873,8 @@ def _validate_local_tax(
         files = ", ".join(f"aux/{registries.STATE_LOCAL_TAX}__{t}.csv" for t in tables)
         issues.append(
             f"{files}: a local income tax is its own jurisdiction now, and the scenario has no "
-            f"{registries.TAXES_DIR}/local.csv; add it with `sim tax add local` (it is paid with "
-            "the state's tax)")
+            f"{registries.TAXES_DIR}/local.csv; add it with `sim tax add local` (it is paid into "
+            "an account of its own, of subkind taxes_local)")
 
 
 def _read_strategy_vary_files(

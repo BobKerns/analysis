@@ -10596,7 +10596,7 @@ def report_tax_command(
 
     For federal, and for state when the run computes it: AGI, the larger of
     the standard and itemized deduction, the taxable income (income) the brackets
-    taxed, and the tax. A local income tax, paid with the state's, is
+    taxed, and the tax. A local income tax, its own jurisdiction, is
     local_tax, shown only when some year has one; state_tax then leaves it
     out. effective_rate is total tax over federal AGI. Tax belongs to the
     year the income was earned in; its balance due or refund settles the
@@ -19427,13 +19427,22 @@ def _tax_account(
     """The expense account ``jurisdiction``'s tax is paid into (#586): the
     scenario's account of the jurisdiction's own subkind
     (``registries.TAX_DESTINATION_SUBKINDS``), or a new one,
-    ``Expense_Taxes_<Jurisdiction>``, returned as its accounts.csv row."""
+    ``Expense_Taxes_<Jurisdiction>``, returned with its accounts.csv row.
+    That name already taken by an account of another subkind is refused:
+    adding a second row would duplicate it, or in a child scenario turn the
+    parent's account into a tax account."""
     subkind = registries.TAX_DESTINATION_SUBKINDS[jurisdiction]
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
     found = next((n for n, a in sorted(accounts.items()) if a.row.get("subkind") == subkind), None)
     if found is not None:
         return found, None
     name = f"Expense_Taxes_{jurisdiction.capitalize()}"
+    if name in accounts:
+        raise click.ClickException(
+            f"the {jurisdiction} tax is paid into an expense account of subkind {subkind}, and the "
+            f"scenario has none; {name} already exists, with subkind "
+            f"{accounts[name].row.get('subkind') or '(blank)'}. Change its subkind to {subkind} "
+            f"(sim account edit {name}) or name another with --destination. Nothing was written.")
     return name, {
         **dict.fromkeys(registries.ACCOUNTS_CSV_HEADER, ""),
         "name": name, "kind": "expense", "subkind": subkind,
@@ -19443,13 +19452,14 @@ def _tax_account(
 
 def _tax_spec(
     data: Path, scenario_dir: Path, scenario: str, command: str, jurisdiction: str | None,
-    free: Sequence[str] = (),
+    free: Sequence[str] = (), *, own: tuple[str, dict[str, str] | None] | None = None,
 ) -> calendar_guide.KindSpec:
     """The questions for ``sim tax add|edit``, completing from the scenario:
     a destination is one of its expense accounts of the jurisdiction's own
     subkind (``taxes_federal``, ``taxes_state``, ``taxes_local``, #586). For
-    ``add``, the default destination is that account, or a new one the add
-    creates, and the default source another jurisdiction's, if it has one."""
+    ``add``, the default destination is ``own``, :func:`_tax_account`'s
+    answer (the add creates it if it's new), and the default source another
+    jurisdiction's, if it has one."""
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
     subkind = registries.TAX_DESTINATION_SUBKINDS.get(jurisdiction or "")
     expenses = sorted(n for n, a in accounts.items() if a.row.get("kind") == "expense"
@@ -19458,9 +19468,9 @@ def _tax_spec(
     if command == "add":
         taxes = _tax_rows(scenario_dir)
         source = next((t.row["source_chain"] for t in taxes.values() if t.row.get("source_chain")), None)
-        if jurisdiction is not None:
-            destination, new = _tax_account(scenario_dir, jurisdiction)
-            if new is not None:
+        if own is not None:
+            destination = own[0]
+            if own[1] is not None:
                 expenses.append(destination)
     kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
@@ -19613,20 +19623,22 @@ def tax_add_command(
     given = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
              "end": end, "params_json": params_json, "description": description}
 
-    def write(answers: Mapping[str, str]) -> None:
+    def write(answers: Mapping[str, str], own: tuple[str, dict[str, str] | None] | None) -> None:
+        """Write the file; ``own`` is :func:`_tax_account`'s answer, whose
+        new account is added when the destination is that account."""
         name = answers["jurisdiction"]
         row = tax_guide.row_of(name, answers)
-        account, new_account = _tax_account(ref.path, name, row.get("start") or "")
-        if row["destination"] != account:
-            new_account = None  # an account the guide's answer named
+        new_account = own[1] if own is not None and own[0] == row["destination"] else None
+        if new_account is not None:
+            new_account = {**new_account, "opened": row.get("start") or ""}
         path = _write_tax(data, ref.name, name, row, new_account=new_account)
-        made = f", and expense account {account}" if new_account is not None else ""
+        made = f", and expense account {row['destination']}" if new_account is not None else ""
         click.echo(f"added {name} tax ({_shown(path)}){made}: {_tax_summary(name, row)}")
 
-    def at_once(name: str) -> dict[str, str] | None:
-        """The answers for adding ``name`` without asking: with its source
-        given, or a local tax's taken from the state's (#508), and the
-        destination given or the tax's own account (#586)."""
+    def at_once(name: str) -> bool:
+        """Add ``name`` without asking, when its source is given, or a local
+        tax's taken from the state's (#508): into the destination given or
+        the tax's own account (#586)."""
         source = source_chain
         if name == "local":
             state = existing.get("state")
@@ -19636,12 +19648,17 @@ def tax_add_command(
                     "(sim tax add state first)")
             source = source or state.row.get("source_chain") or None
         if source is None:
-            return None
-        return {"jurisdiction": name, **{k: v or "" for k, v in given.items()}, "source_chain": source,
-                "destination": destination or _tax_account(ref.path, name)[0]}
+            return False
+        own = None
+        into = destination
+        if not into:
+            own = _tax_account(ref.path, name)
+            into = own[0]
+        write({"jurisdiction": name, **{k: v or "" for k, v in given.items()}, "source_chain": source,
+               "destination": into}, own)
+        return True
 
-    if jurisdiction is not None and (answers_now := at_once(jurisdiction)) is not None:
-        write(answers_now)
+    if jurisdiction is not None and at_once(jurisdiction):
         return
     free = [n for n in registries.TAX_JURISDICTIONS if n not in existing]
     if not free:
@@ -19650,16 +19667,19 @@ def tax_add_command(
     if jurisdiction is not None:
         answers["jurisdiction"] = jurisdiction
     guide = _tax_guide()
-    spec = _tax_spec(data, ref.path, ref.name, "add", jurisdiction, free)
     if "jurisdiction" not in answers:  # the defaults follow from it
+        spec = _tax_spec(data, ref.path, ref.name, "add", None, free)
         answers["jurisdiction"] = guide.ask_field(spec, spec.fields[0], calendar_guide.GuideContext(), answers)
-        if answers["jurisdiction"] == "local" and (answers_now := at_once("local")) is not None:
-            write(answers_now)
+        if answers["jurisdiction"] == "local" and at_once("local"):
             return
-        spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free)
+    try:
+        own: tuple[str, dict[str, str] | None] | None = _tax_account(ref.path, answers["jurisdiction"])
+    except click.ClickException:
+        own = None  # the name is taken: no default, and the guide asks
+    spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free, own=own)
     ctx = calendar_guide.GuideContext()
     guide.complete(spec, ctx, answers)
-    guide.review(spec, ctx, answers, lambda _params: write(answers), scenario=ref.name)
+    guide.review(spec, ctx, answers, lambda _params: write(answers, own), scenario=ref.name)
 
 
 def _pick_tax(data: Path, scenario: str | None, jurisdiction: str | None, prompt: str) -> tuple[_Overlaid, str]:

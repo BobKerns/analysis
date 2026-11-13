@@ -415,7 +415,7 @@ def test_a_move_to_washington_reads_its_shipped_tables(
 # ---------- sim tax list|add|edit|delete (#507) ----------
 
 
-def test_add_with_only_a_source_pays_into_the_taxs_own_account(
+def test_add_with_only_a_source_pays_into_each_taxes_own_account(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     add_residence: Callable[..., Path],
 ) -> None:
@@ -435,6 +435,28 @@ def test_add_with_only_a_source_pays_into_the_taxs_own_account(
     assert rows == {"federal": "Expense_Taxes_Federal", "state": "Expense_Taxes_State"}
     accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
     assert accounts.loc[accounts["name"] == "Expense_Taxes_State", "subkind"].tolist() == ["taxes_state"]
+
+
+def test_add_refuses_a_made_up_account_name_already_taken(
+    test_data_dir: Path, add_state_tax: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """An Expense_Taxes_Local made before #586, of another subkind, isn't
+    duplicated or turned into a tax account: `sim tax add local` says what
+    to do and writes nothing."""
+    add_state_tax()
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""), "name": "Expense_Taxes_Local", "kind": "expense",
+        "subkind": "other_expense", "owner": "joint", "tax_treatment": "none",
+        "opened": "2020-01-31", "meta_json": "{}"}
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    result = _tax(test_data_dir, "add", "local")
+    assert result.exit_code != 0
+    assert ("Expense_Taxes_Local already exists, with subkind other_expense. Change its subkind to "
+            "taxes_local (sim account edit Expense_Taxes_Local)") in result.output
+    assert not retire_alice_csv("taxes/local.csv").exists()
+    after = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    assert after["name"].tolist().count("Expense_Taxes_Local") == 1
 
 
 def test_add_writes_the_federal_tax_file(

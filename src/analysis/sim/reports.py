@@ -600,8 +600,9 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     out Social Security and, in ``state_exclusion`` (shown only when some
     year has one), the state's retirement income exclusions (#486). The
     state columns appear only when the run computes state tax. A local
-    income tax (#487), its own jurisdiction paid with the state's by default
-    (#508), is ``local_tax``, shown only when some year has one. A run that charges IRMAA (#253) adds ``fed_magi`` and
+    income tax (#487), its own jurisdiction (#508) paid into its own
+    account (#586), is ``local_tax``, shown only when some year has one. A
+    run that charges IRMAA (#253) adds ``fed_magi`` and
     ``irmaa_tier``, the tier that year's MAGI set for the premiums two years
     later (0 below the first), blank for a year whose premiums the run ends
     before charging. ``effective_rate`` is total tax over federal AGI. Liability
@@ -627,7 +628,7 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
         if excluded.fillna(0).ne(0).any():
             frame.insert(frame.columns.get_loc("state_agi"), "state_exclusion", excluded)
         # A local income tax (#487) is its own jurisdiction (#508), paid
-        # with the state's by default; shown only when some year has one.
+        # into its own account (#586); shown only when some year has one.
         local = extra["local_tax"]
         if local.fillna(0).ne(0).any():
             frame.insert(frame.columns.get_loc("state_tax") + 1, "local_tax", local)

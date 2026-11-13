@@ -597,8 +597,8 @@ STATE_LOCAL_TAX = "state_local_tax"
 the state's taxable income, in the shape of its brackets (Maryland's county
 rate, New York City's brackets). Keyed by state like the brackets, since a
 household lives in one locality. The local jurisdiction reads it
-(``taxes/local.csv``, ``local_bands``, #508), paid with the state's tax,
-as most are filed on the state return, and reported apart from it."""
+(``taxes/local.csv``, ``local_bands``, #508), paid into its own
+``taxes_local`` account (#586), and reported apart from the state's."""
 
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""
@@ -704,6 +704,11 @@ Property tax is also spending of the ``property_tax`` character; a
 ``mortgage_payment`` rule's interest carries ``tax:mortgage_interest``, and
 an ``irmaa`` rule's surcharges ``tax:medical``, unless the rule or its
 account has one of these or ``tax:rental`` already."""
+
+ITEMIZING_TAGS: frozenset[str] = frozenset({*ITEMIZED_TAGS.values(), RENTAL_TAG})
+"""The tags that say which itemized line spending is on, or that it's on
+none (``tax:rental``, #542): the engine's ``tax_api.itemizing`` and the
+loader's checks read this one set (#586)."""
 
 IMPLIED_TAX_TAGS: dict[str, str] = {
     "mortgage_payment": ITEMIZED_TAGS["mortgage_interest"],

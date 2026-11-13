@@ -195,3 +195,27 @@ def test_a_calendar_row_of_property_tax_into_an_income_tax_account_is_refused(
                         amount="500.00", tax_character="property_tax")
     with pytest.raises(LoadError, match="calendar.csv.*Expense_Taxes_Federal is a taxes_federal account"):
         load_test_copy()
+
+
+@pytest.mark.parametrize("step_character", ["", "property_tax"])
+def test_property_tax_through_a_chain_into_an_income_tax_account_is_refused(
+    add_tax: Callable[..., Path], append_scheduled_row: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+    step_character: str,
+) -> None:
+    """#586: a destination chain whose step lands in an income-tax account
+    is followed: the rule's tag, or the step's own character, is refused
+    there as it would be paid directly."""
+    add_tax()
+    (retire_alice_csv("chains/destination") / "county.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence,tax_character\n"
+        f"Expense_Taxes_Federal,,,,,,{step_character}\n")
+    append_scheduled_row(name="county_tax", from_account="Asset_Checking", to_account="county",
+                         amount_rule_kind="fixed_amount", amount="100.00", start="2027-01-31",
+                         tax_character="none", tags="" if step_character else "tax:property")
+    with pytest.raises(LoadError, match="Expense_Taxes_Federal is a taxes_federal account") as raised:
+        load_test_copy()
+    issues = "\n".join(raised.value.issues)
+    assert "pay it into a taxes_property account" in issues
+    if not step_character:
+        assert "(through chain county)" in issues
