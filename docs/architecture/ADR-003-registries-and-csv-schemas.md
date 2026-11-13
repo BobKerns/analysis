@@ -1263,9 +1263,11 @@ year-to-date catch-ups, and for START's year not a `ytd_preroll` rule's,
 which posts those months itself), summed by tax year (a flow's own, else
 its date's), lots and character, are offered as `year_to_date.csv` rows of
 their year, for START's year and the one before (whose tax is settled the
-April after), named `projected_<year>_<n>`; `--yes` takes them. A row an
-earlier roll projected for the same year, lots and character is added to
-rather than repeated, and one of a year before that is dropped. So the
+April after), named `projected_<year>_<n>`, each described as projected by the roll
+with the months it covers (`2026-05 to 2026-12`); `--yes` takes them. A
+row an earlier roll projected for the same year, lots and character is
+added to rather than repeated (its months then run from the earlier
+roll's first), and one of a year before that is dropped. So the
 rolled run taxes those years as the old one did; the rows are a projection,
 to be replaced with the actual figures (`sim ytd edit`), and carry no rule's
 tags or person. Without them (no run reaches the month, or declined), it
@@ -1274,12 +1276,17 @@ now cover too few months, and for a start in a later year by April, what
 the prior year's April tax needs. `--own` rolls only what is the
 scenario's own, for one built on a scenario that has rolled: its own lot
 rows (and lots of accounts it defines), its own year-to-date rows and rules,
-and its start only if it sets one. An inherited start must already be START
-(its parent rolled first; otherwise it refuses), and the old start is then
-that of the scenario's newest run starting before START. Whenever the
-months skipped get projected rows, the projected rows the scenario inherits
-of the years kept are overridden first (at zero, under the same names), so
-its own run's flows replace its parent's rather than add to them. A roll
+and its start only if it sets one. An inherited start must already be START,
+which must be given (its parent rolled first; otherwise it refuses), and
+the old start is then that of the scenario's newest run starting before
+START; one whose own projected rows already reach the month before START
+was rolled there, and is refused. Whenever the months skipped get
+projected rows, each projected row the scenario inherits of the years kept
+whose months its own run covers too is overridden first (at zero, under the
+same name), so its own run's flows replace its parent's rather than add to
+them; one of months before its run stays, and one covering months both
+before and in it (or whose months aren't recorded any more: the actual
+figures, say) can't be split, so the roll refuses. A roll
 without `--own` lists the scenarios built on this one that have lot rows
 of their own, to roll with `--own`. `--yes`
 fails, rather than asks, at a question with no default (an

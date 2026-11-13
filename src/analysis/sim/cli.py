@@ -15311,11 +15311,16 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     # it already, and the scenario's own runs say where it was.
     follows = own and not sc._scenario_row(scenario_dir).get("start", "").strip()
     if follows:
-        start = month_end_iso(_validate_month_date((start or old_start).strip()))[:7]
+        if start is None:
+            raise click.UsageError(
+                f"{name} inherits its start: give START, the month its parent rolled to")
+        start = month_end_iso(_validate_month_date(start.strip()))[:7]
         if start != old_start:
             raise click.ClickException(
                 f"{name}'s start is inherited, and is {old_start}, not {start}: "
                 f"{roll.PARENT_FIRST}, or give {name} a start of its own")
+        if roll.rolled_through(scenario_dir, start):
+            raise click.ClickException(f"{name}'s own rows are already rolled to {start}")
         old_start = _run_start_before(ref.runs_dir, name, start)
         if old_start is None:
             raise click.ClickException(
@@ -15445,6 +15450,15 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                  "year-to-date row(s)?")
         if not (accept or click.confirm(label, default=True)):
             skipped = []
+    # Built on another scenario: its own flows stand in for the projected
+    # rows it inherits, where they cover the same months.
+    replaced, mixed = (roll.inherited_projected(scenario_dir, old_start, start) if skipped
+                       else ([], []))
+    if mixed:
+        raise click.ClickException(
+            f"{name} inherits projected year-to-date rows whose months its run's can't be told "
+            f"apart from ({', '.join(mixed)}): replace them with the actual figures where they "
+            "are (`sim ytd edit`), or roll without projected rows")
     # A rule with no start counts its cadence (a quarter, a biweekly payday,
     # ytd_preroll's months) from the scenario's start, which is moving.
     anchored: list[_Overlaid] = []
@@ -15484,15 +15498,12 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
                             replace=found.index)
         dropped = 0
-        # Built on another scenario: its own flows stand in for the
-        # projected rows it inherits.
-        replaced = roll.inherited_projected(scenario_dir, start) if skipped else []
         if skipped or replaced or any(row["name"].startswith(roll.PROJECTED_PREFIX)
                                       for row in _read_ytd_rows(ytd_path)):
             _widen_ytd_header(ytd_path, scenario_dir)
             inherited = set(_overlay_rows(scenario_dir, "year_to_date.csv"))
             merged, dropped = roll.merge_projected(
-                [*_read_ytd_rows(ytd_path), *replaced], skipped, start, inherited)
+                [*_read_ytd_rows(ytd_path), *replaced], skipped, old_start, start, inherited)
             pd.DataFrame(merged, columns=list(registries.YEAR_TO_DATE_CSV_HEADER)).to_csv(
                 ytd_path, index=False)
         scheduled_path = edit.path(scenario_dir / "scheduled.csv")
@@ -18777,8 +18788,14 @@ def builder_roll(if_due: bool, data_dir: Path | None) -> None:
 @click.pass_context
 def builder_tick(ctx: click.Context, data_dir: Path | None) -> None:
     """What the hourly timer runs: `sim builder prices --if-due`, then
-    `sim builder roll --if-due`."""
-    ctx.invoke(builder_prices, if_due=True, data_dir=data_dir)
+    `sim builder roll --if-due`. A fetch that fails doesn't keep the roll
+    from its turn: it is reported, and the tick fails, after the roll."""
+    try:
+        ctx.invoke(builder_prices, if_due=True, data_dir=data_dir)
+    except click.ClickException as exc:
+        exc.show()
+        ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
+        raise click.exceptions.Exit(exc.exit_code) from None
     ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
 
 

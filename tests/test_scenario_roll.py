@@ -375,7 +375,8 @@ def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_co
          "tax_character": "ordinary", "year": "2025", "description": ""},
         {"name": "projected_2026_1", "from_account": "Income_Salary_Alice", "from_lot": "default",
          "to_account": "Asset_Checking", "to_lot": "default", "amount": "1000.00",
-         "tax_character": "ordinary", "year": "2026", "description": ""},
+         "tax_character": "ordinary", "year": "2026",
+         "description": "projected by sim scenario roll, 2026-05 to 2026-10"},
     ]
     projected = [
         roll.ProjectedRow(2026, "Income_Salary_Alice", "default", "Asset_Checking", "default",
@@ -384,14 +385,17 @@ def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_co
                           "none", 12_000),
     ]
 
-    rows, dropped = roll.merge_projected(earlier, projected, "2027-02")
+    rows, dropped = roll.merge_projected(earlier, projected, "2026-11", "2027-02")
 
     by_name = {row["name"]: row for row in rows}
     # 2025 is settled before a 2027 start can see it.
     assert dropped == 1 and "projected_2025_1" not in by_name
     assert by_name["prior_wages"] == earlier[0]
     assert by_name["projected_2026_1"]["amount"] == "1500.25"
-    assert by_name["projected_2026_1"]["description"] == "projected by sim scenario roll, through 2027-01"
+    # Each row says which months it covers, so a derived scenario's roll
+    # knows which of them its own run covers again.
+    assert by_name["projected_2026_1"]["description"] == "projected by sim scenario roll, 2026-05 to 2027-01"
+    assert roll.covers(by_name["projected_2027_1"]) == ("2026-11", "2027-01")
     assert by_name["projected_2027_1"]["amount"] == "120.00"
     assert by_name["projected_2027_1"]["year"] == "2027"
 
@@ -419,12 +423,15 @@ def test_a_derived_scenario_rolls_only_its_own_rows_after_its_parent(
     early = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
                  "--no-keep")
     assert early.exit_code != 0 and roll.PARENT_FIRST in early.output
+    # With no START, it would take the inherited one: so it asks for one.
+    assert "give START" in _sim(test_data_dir, "scenario", "roll", "alice_more", "--own").output
 
     parent = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--yes", "--no-keep")
     assert parent.exit_code == 0, parent.output
     assert "sim scenario roll alice_more 2027-01 --own" in parent.output
 
-    result = _sim(test_data_dir, "scenario", "roll", "alice_more", "--own", "--yes", "--no-keep")
+    result = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
+                  "--no-keep")
 
     assert result.exit_code == 0, result.output
     assert "Rolling alice_more forward: 2026-05 -> 2027-01" in result.output
@@ -442,3 +449,29 @@ def test_a_derived_scenario_rolls_only_its_own_rows_after_its_parent(
     total = sum(round(float(row["amount"]) * 100) for row in own.values())
     assert total == sum(one.amount for one in flows)
     assert _sim(test_data_dir, "check", "alice_more").exit_code == 0
+    # Twice would add the same months again.
+    again = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
+                 "--no-keep")
+    assert again.exit_code != 0 and "already rolled to 2027-01" in again.output
+
+
+@pytest.mark.uses_current_scenario_write
+def test_a_derived_scenario_replaces_only_the_projected_rows_its_run_covers_again(
+    test_data_dir: Path, test_scenarios_dir: Path,
+) -> None:
+    assert _sim(test_data_dir, "scenario", "create", "alice_more", "retire_alice").exit_code == 0
+    path = test_scenarios_dir / "retire_alice" / "year_to_date.csv"
+    with path.open("a", newline="", encoding="utf-8") as fh:
+        for name, described in (("projected_2026_1", "projected by sim scenario roll, 2026-01 to 2026-02"),
+                                ("projected_2026_2", "projected by sim scenario roll, 2026-03 to 2026-04"),
+                                ("projected_2026_3", "projected by sim scenario roll, 2026-02 to 2026-04"),
+                                ("projected_2026_4", "Alice's W-2")):
+            csv.writer(fh).writerow([name, "Income_Salary_Alice", "default", "Asset_Checking",
+                                     "default", "100.00", "ordinary", "2026", described])
+
+    replaced, mixed = roll.inherited_projected(test_scenarios_dir / "alice_more", "2026-03", "2026-05")
+
+    # Jan-Feb is before the child's run: retire_alice's row stays.
+    assert [row["name"] for row in replaced] == ["projected_2026_2"]
+    assert replaced[0]["amount"] == "0.00"
+    assert mixed == ["projected_2026_3 (retire_alice)", "projected_2026_4 (retire_alice)"]

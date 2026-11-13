@@ -376,8 +376,8 @@ def _tag_for(top: Path, base: str, year: int, paths: Sequence[str]) -> tuple[str
 def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *,
          now: datetime | None = None) -> RollOutcome:
     """Roll each due scenario forward to this month, in ``worktree``, and
-    commit what rolled on ``builder/roll``, the plan before it tagged when
-    a start moves into a new year. Merging is the daemon's, between builds
+    commit what rolled on ``builder/roll``, the plan before it to be tagged
+    (once merged) when a start moves into a new year. Merging is the daemon's, between builds
     (:func:`merge_pending`). Each scenario's outcome goes in the state, for
     ``sim builder status``."""
     now = now or datetime.now(UTC)
@@ -406,9 +406,14 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
         for name, old in due_now:
             lines.append(f"rolling {name} forward: {old} -> {month}")
             # Built on one rolling tonight: that one's roll covers the rest.
-            own = bool(rolling & set(_lineage_names(data, name)[:-1]))
-            code, said = _roll_one(data, name, month, own=own)
+            parents = [one for one in _lineage_names(data, name)[:-1] if one in rolling]
             entry: dict[str, Any] = {"at": now.timestamp(), "from": old, "to": month}
+            # Its own rows rolled on a parent's that didn't would open a
+            # month the rest of its plan doesn't.
+            if stuck := [one for one in parents if one not in rolled]:
+                code, said = 1, [f"Error: {', '.join(stuck)} didn't roll; {PARENT_FIRST}"]
+            else:
+                code, said = _roll_one(data, name, month, own=bool(parents))
             if code == 0:
                 _git(worktree, "add", "-A", "--", _lineage_paths(data, rel, name)[-1], check=True)
                 rolled[name] = f"{old} -> {month}"
@@ -434,18 +439,16 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
         committed = None
         if rolled:
             committed = _commit(top, worktree, month, rolled)
-            for tag, names in tags.items():
-                if price_schedule._ref(top, f"refs/tags/{tag}") is None:
-                    _git(top, "tag", "-a", tag, base, "-m",
-                         f"The plan before {', '.join(names)} rolled into {month[:4]} (#564)",
-                         check=True)
-                    lines.append(f"tagged the plan before the roll {tag}")
             lines.append(f"committed the roll on {ROLL_BRANCH} ({committed[:10]})")
         _update_state(
             top, scenarios=scenarios,
             pending=committed, pending_paths=sorted(
                 {path for name in rolled for path in _lineage_paths(data, rel, name)}),
-            pending_tags=sorted(tags) if committed else [], waiting=None,
+            # Tagged once merged: a roll dropped before then leaves no tag.
+            pending_tags=[{"tag": tag, "base": base, "message":
+                           f"The plan before {', '.join(names)} rolled into {month[:4]} (#564)"}
+                          for tag, names in sorted(tags.items())] if committed else [],
+            waiting=None,
             **({"succeeded": now.timestamp()} if committed else {}),
         )
     return RollOutcome(lines, committed, rolled)
@@ -498,8 +501,14 @@ def merge_pending(data_dir: Path) -> list[str]:
                     "-m", f"Merge the roll from {ROLL_BRANCH}", _ROLL_REF)
         if done.returncode == 0:
             _update_state(top, pending=None, waiting=None, merged=clock.time())
-            return [f"merged the roll into {price_schedule.DATA_BRANCH}", price_schedule._push(top),
-                    *_push_tags(top, list(state.get("pending_tags") or []))]
+            lines = [f"merged the roll into {price_schedule.DATA_BRANCH}"]
+            tags = []
+            for one in state.get("pending_tags") or []:
+                if price_schedule._ref(top, f"refs/tags/{one['tag']}") is None:
+                    _git(top, "tag", "-a", one["tag"], one["base"], "-m", one["message"], check=True)
+                    lines.append(f"tagged the plan before the roll {one['tag']}")
+                tags.append(one["tag"])
+            return [*lines, price_schedule._push(top), *_push_tags(top, tags)]
         _git(top, "merge", "--abort")
         said = (done.stderr or done.stdout).strip().splitlines()
         why = said[0] if said else "git merge failed"

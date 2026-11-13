@@ -26,6 +26,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import re
+
 import pandas as pd
 
 from analysis.frames import named_rows
@@ -38,8 +40,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PARENT_FIRST", "PROJECTED_PREFIX", "Projection", "ProjectedRow", "anchored_rules",
-    "calendar_before", "cell_dollars", "default_start", "inherited_projected", "merge_projected",
-    "preroll_rules", "projected_year_to_date",
+    "calendar_before", "cell_dollars", "covers", "default_start", "inherited_projected",
+    "merge_projected", "preroll_rules", "projected_year_to_date", "rolled_through",
     "projections", "unpinned_year_to_date", "ytd_amount_rules",
 ]
 
@@ -242,25 +244,63 @@ def projected_year_to_date(rc: RunConnection, old_start: str, new_start: str) ->
     return found
 
 
-def inherited_projected(scenario_dir: Path, new_start: str) -> list[dict[str, str]]:
+# What a projected row's description records: the months its flows cover.
+_COVERS = re.compile(r"projected by sim scenario roll, (\d{4}-\d{2}) to (\d{4}-\d{2})")
+
+
+def _described(first: str, new_start: str) -> str:
+    return f"projected by sim scenario roll, {first} to {month_before(new_start):%Y-%m}"
+
+
+def covers(row: dict[str, str]) -> tuple[str, str] | None:
+    """The months (``YYYY-MM``, first and last) a projected row's flows
+    cover, as its description records them; None once that is gone (the
+    row edited to the actual figures, say)."""
+    found = _COVERS.fullmatch(row.get("description", "").strip())
+    return (found[1], found[2]) if found else None
+
+
+def inherited_projected(
+    scenario_dir: Path, old_start: str, new_start: str,
+) -> tuple[list[dict[str, str]], list[str]]:
     """The projected year-to-date rows the scenario only inherits, of the
-    years a run from ``new_start`` still settles. A roll of a scenario built
-    on another replaces them with its own run's flows (each overridden at
-    zero, then :func:`merge_projected` adds its own by key), since its
-    parent's flows in those months aren't its own: it may earn or spend
-    differently, and counting both would count the shared ones twice."""
+    years a run from ``new_start`` still settles, that its own run, from
+    ``old_start``, covers again: its roll replaces them with that run's
+    flows (each overridden at zero, then :func:`merge_projected` adds its
+    own by key), since its parent's flows in those months aren't its own,
+    and counting both would count the shared ones twice. A row of months
+    before its run stays. Also returns the names of those covering months
+    both before and in its run, which can't be told apart (nor can a row
+    whose months aren't recorded any more)."""
     new_year = int(new_start[:4])
-    found = []
-    for one in overlay_rows(scenario_dir, "year_to_date.csv").values():
+    replaced, mixed = [], []
+    for name, one in overlay_rows(scenario_dir, "year_to_date.csv").items():
         year = _projected_year(one.row)
-        if one.index is None and year is not None and year >= new_year - 1:
-            found.append({column: one.row.get(column, "")
-                          for column in registries.YEAR_TO_DATE_CSV_HEADER} | {"amount": "0.00"})
-    return found
+        if one.index is not None or year is None or year < new_year - 1:
+            continue
+        months = covers(one.row)
+        if months is not None and months[1] < old_start:
+            continue
+        if months is None or months[0] < old_start:
+            mixed.append(f"{name} ({one.inherited_from})")
+            continue
+        replaced.append({column: one.row.get(column, "")
+                         for column in registries.YEAR_TO_DATE_CSV_HEADER}
+                        | {"amount": "0.00", "description": _described(old_start, new_start)})
+    return replaced, mixed
+
+
+def rolled_through(scenario_dir: Path, new_start: str) -> bool:
+    """Whether the scenario's own projected rows already reach the month
+    before ``new_start``: it has been rolled there."""
+    through = f"{month_before(new_start):%Y-%m}"
+    return any(one.index is not None and (months := covers(one.row)) is not None
+               and months[1] >= through
+               for one in overlay_rows(scenario_dir, "year_to_date.csv").values())
 
 
 def merge_projected(
-    rows: list[dict[str, str]], projected: list[ProjectedRow], new_start: str,
+    rows: list[dict[str, str]], projected: list[ProjectedRow], old_start: str, new_start: str,
     taken: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, str]], int]:
     """A scenario's own year_to_date.csv ``rows`` with ``projected`` added:
@@ -268,11 +308,12 @@ def merge_projected(
     there is one (a scenario rolled each month keeps one row each), else as
     a new ``projected_<year>_<n>`` row. The earlier rolls' rows of a year
     the new run no longer settles (before the one before ``new_start``'s)
-    are dropped. A new row's name avoids ``taken`` (the names the scenario
+    are dropped. Each row's description records the months it covers, from
+    ``old_start`` (or the earlier roll's first) on. A new row's name avoids ``taken`` (the names the scenario
     inherits) too. Returns the rows and how many of them were dropped."""
     new_year = int(new_start[:4])
     # Replaced by the actual figures once known (`sim ytd edit`).
-    described = f"projected by sim scenario roll, through {month_before(new_start):%Y-%m}"
+    described = _described(old_start, new_start)
     kept: list[dict[str, str]] = []
     dropped = 0
     for row in rows:
@@ -289,8 +330,10 @@ def merge_projected(
         row = by_key.get(one.key)
         if row is not None:
             total = round(Decimal(cell_dollars(row["amount"]) or 0) * 100) + one.amount
+            months = covers(row)
             row["amount"] = _cents_text(total)
-            row["description"] = described
+            row["description"] = _described(min(months[0], old_start), new_start) \
+                if months is not None and total != one.amount else described
             continue
         count = 1
         while f"{PROJECTED_PREFIX}{one.year}_{count}" in used:

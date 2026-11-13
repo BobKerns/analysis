@@ -98,7 +98,7 @@ def test_the_mark_is_inherited_and_a_derived_scenario_may_opt_out(
         ("retire_alice", "2026-05"), ("alice_more", "2026-05")]
 
 
-def test_a_derived_scenario_rolls_its_own_rows_after_its_parent_and_waits_when_it_fails(
+def test_a_derived_scenario_rolls_its_own_rows_after_its_parent(
     marked: tuple[Path, git.Repo], commit_files: Callable[..., str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -110,8 +110,10 @@ def test_a_derived_scenario_rolls_its_own_rows_after_its_parent_and_waits_when_i
 
     def fake(data: Path, name: str, month: str, *, own: bool = False) -> tuple[int, list[str]]:
         calls.append((name, own))
-        return 1, [f"Error: alice_more's start is inherited ...: {PARENT_FIRST}, or ..."
-                   if own else "Error: it broke"]
+        if own:
+            return 1, [f"Error: alice_more's start is inherited ...: {PARENT_FIRST}, or ..."]
+        (data / "scenarios" / name / "README.md").write_text("rolled\n")
+        return 0, []
 
     monkeypatch.setattr(roll_schedule, "_roll_one", fake)
     worktree = builder.BuilderPaths.for_data(data).roll_worktree
@@ -119,10 +121,35 @@ def test_a_derived_scenario_rolls_its_own_rows_after_its_parent_and_waits_when_i
     outcome = roll_schedule.roll(data, worktree, {"roll": True}, now=_local(2026, 11, 13, 2, 0))
 
     assert calls == [("retire_alice", False), ("alice_more", True)]
-    assert outcome.committed is None
+    assert outcome.rolled == {"retire_alice": "2026-05 -> 2026-11"}
     scenarios = roll_schedule.read_state(data)["scenarios"]
-    assert scenarios["retire_alice"]["outcome"] == "failed"
     assert scenarios["alice_more"]["outcome"] == "skipped"
+
+
+def test_a_derived_scenario_with_its_own_start_waits_when_its_parent_fails(
+    marked: tuple[Path, git.Repo], commit_files: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data, repo = marked
+    files = _derived("alice_own")
+    path = "sim/scenarios/alice_own/scenario.csv"
+    files[path] = files[path].replace(",,,,retire_alice", ",2026-05,,,retire_alice")
+    commit_files(repo, files, "a what-if with its own start")
+    calls: list[str] = []
+
+    def fake(data: Path, name: str, month: str, *, own: bool = False) -> tuple[int, list[str]]:
+        calls.append(name)
+        return 1, ["Error: it broke"]
+
+    monkeypatch.setattr(roll_schedule, "_roll_one", fake)
+    worktree = builder.BuilderPaths.for_data(data).roll_worktree
+
+    roll_schedule.roll(data, worktree, {"roll": True}, now=_local(2026, 11, 13, 2, 0))
+
+    # Its own start moved over its parent's old lots would be a plan of two months.
+    assert calls == ["retire_alice"]
+    entry = roll_schedule.read_state(data)["scenarios"]["alice_own"]
+    assert entry["outcome"] == "skipped" and "retire_alice didn't roll" in entry["why"]
 
 
 def test_a_roll_is_due_once_a_night_in_the_window_after_the_prices(
@@ -162,8 +189,7 @@ def test_a_roll_into_a_new_year_commits_on_its_branch_tags_the_plan_and_merges(
 
     assert outcome.rolled == {"retire_alice": "2026-05 -> 2027-01"}, outcome.lines
     assert repo.head.commit.hexsha == before  # the roll never merges: the daemon does
-    tag = repo.tags["plan-2026"]
-    assert tag.commit.hexsha == before
+    assert "plan-2026" not in [t.name for t in repo.tags]  # nor tags, till it merges
     rolled = repo.commit(roll_schedule.ROLL_BRANCH)
     assert str(rolled.message).startswith("Roll retire_alice forward to 2027-01")
     assert sorted(repo.git.diff("--name-only", before, rolled.hexsha).splitlines()) == [
@@ -173,9 +199,9 @@ def test_a_roll_into_a_new_year_commits_on_its_branch_tags_the_plan_and_merges(
     ]
 
     lines = roll_schedule.merge_pending(data)
-    assert lines[0] == "merged the roll into main"
-    assert lines[1] == "pushed main to origin/main"
-    assert lines[2] == "pushed plan-2026 to origin"
+    assert lines == ["merged the roll into main", "tagged the plan before the roll plan-2026",
+                     "pushed main to origin/main", "pushed plan-2026 to origin"]
+    assert repo.tags["plan-2026"].commit.hexsha == before
     assert [p.hexsha for p in repo.head.commit.parents] == [before, rolled.hexsha]
     assert _scenario_row(data / "scenarios" / "retire_alice" / "scenario.csv")["start"] == "2027-01"
     ytd = (data / "scenarios" / "retire_alice" / "year_to_date.csv").read_text()
@@ -317,3 +343,23 @@ def test_install_records_whether_to_roll_and_when(
     bad = CliRunner().invoke(sim_group_command, [
         "builder", "install", "--roll-window", "nights", "--data-dir", str(data)])
     assert bad.exit_code != 0 and "not a window" in bad.output
+
+
+def test_a_failed_price_fetch_still_lets_the_tick_roll(
+    data_repo_sim: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from click import ClickException
+
+    from analysis.sim import price_schedule
+
+    monkeypatch.setattr(builder, "read_config", lambda paths: {"prices": True, "roll": True})
+
+    def broken() -> bool:
+        raise ClickException("the fetch broke")
+
+    monkeypatch.setattr(price_schedule, "switched_off", broken)
+    tick = CliRunner().invoke(sim_group_command, ["builder", "tick", "--data-dir", str(data_repo_sim)])
+
+    # The roll still has its turn (switched off in the tests), and the tick fails.
+    assert "the fetch broke" in tick.output and "rolls are off" in tick.output
+    assert tick.exit_code == 1
