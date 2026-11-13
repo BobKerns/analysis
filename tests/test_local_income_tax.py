@@ -253,8 +253,8 @@ def test_tax_report_shows_local_tax_apart_from_the_states(
     # The chart stacks it on the state's.
     legend = tax_figure(frame, "tax").axes[0].get_legend_handles_labels()[1]
     assert legend[:3] == ["federal", "state", "local"]
-    # Paid with the state's, into the same account, each its own payment
-    # in full: the state's payment doesn't count toward the local tax.
+    # Each paid in full into its own account (#586): the state's payment
+    # doesn't count toward the local tax.
     con = sqlite3.connect(run)
     try:
         summary = dict(con.execute(

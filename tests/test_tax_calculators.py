@@ -341,3 +341,26 @@ def test_a_renter_names_no_property_tax(
     property_credit(rent="tax:rent")  # the default property tax tag, carried by nothing
     with pytest.raises(LoadError, match="reads tag 'tax:property'"):
         load_test_copy()
+
+
+def test_a_taxes_property_account_carries_the_property_tag_for_a_calculator(
+    add_state_tax: Callable[..., None], add_tax: Callable[..., Path], tax_module: Callable[..., Path],
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], object],
+) -> None:
+    """#586: housing paid, untagged, into a taxes_property account is
+    property tax, so a calculator's Tag param naming tax:property finds a
+    carrier and the scenario loads."""
+    add_state_tax("DC")
+    tax_module("property_credit")
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""), "name": "Expense_Taxes_Property", "kind": "expense",
+        "subkind": "taxes_property", "owner": "joint", "tax_treatment": "none",
+        "opened": "2020-01-31", "meta_json": "{}"}
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    path = retire_alice_csv("scheduled.csv")
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rows.loc[rows["name"] == "housing", "to_account"] = "Expense_Taxes_Property"
+    rows.to_csv(path, index=False)
+    add_tax("state", kind="property_credit")
+    load_test_copy()
