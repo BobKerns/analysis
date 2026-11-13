@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 67) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 68) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -297,7 +297,7 @@ CREATE TABLE account (
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
-            'interest_expense','taxes_federal','taxes_state','taxes_property',
+            'interest_expense','taxes_federal','taxes_state','taxes_local','taxes_property',
             'business','gift','other_expense'))
     )
 );
@@ -1248,3 +1248,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#265](https://github.com/BobKerns/analysis/issues/265): tax character `tax_exempt` (municipal bond interest); the reserved account names include `muni_interest` and `muni_interest__<ST>` (Intent layer DDL, Conventions; schema 66).
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax jurisdiction also pays back what was paid past the year's tax (Intent layer DDL).
 - [#542](https://github.com/BobKerns/analysis/issues/542): run table `mortgage_balance` (the balance each month's mortgage interest was figured on, for the debt limit) (Placement summary, Ledger DDL, glossary; schema 67).
+- [#586](https://github.com/BobKerns/analysis/issues/586): expense subkind `taxes_local` (Intent layer DDL; schema 68).

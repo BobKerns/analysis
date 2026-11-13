@@ -20,7 +20,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     },
     "expense": {
         "living", "healthcare", "housing", "interest_expense", "taxes_federal",
-        "taxes_state", "taxes_property", "business", "gift", "other_expense",
+        "taxes_state", "taxes_local", "taxes_property", "business", "gift", "other_expense",
     },
 }
 
@@ -68,9 +68,23 @@ jurisdiction it computes."""
 TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state", "local")
 """The jurisdictions, in the order they settle: a state's return builds on
 the federal one, a local one on the state's (#508)."""
-TAX_PAID_WITH: dict[str, str] = {"local": "state"}
-"""A jurisdiction paid with another's (#508): a blank ``source_chain`` or
-``destination`` in its file takes that one's."""
+TAX_DESTINATION_SUBKINDS: dict[str, str] = {
+    "federal": "taxes_federal", "state": "taxes_state", "local": "taxes_local"}
+"""The expense subkind each jurisdiction's ``destination`` must have (#586):
+each tax pays into an account of its own kind, which no other jurisdiction
+shares, so what went into it is that tax's payments and nothing else."""
+INCOME_TAX_SUBKINDS: frozenset[str] = frozenset(TAX_DESTINATION_SUBKINDS.values())
+"""The income-tax expense subkinds (#586): only income tax payments go into
+one (withholding, an estimated payment, a settlement)."""
+PROPERTY_TAX_SUBKIND = "taxes_property"
+"""Spending into an account of this subkind is property tax (#586), with no
+``tax:property`` tag or ``property_tax`` character needed."""
+TAX_RATE_COUNTS: dict[str, str] = {"local": "state"}
+"""A jurisdiction whose tax a fill_bracket's ``max_marginal_rate`` in
+another's scope counts too (#508): the local tax is bands on the state's
+taxable income, so the next dollar of it costs both. The state isn't
+counted in a federal rate: it has its own income, deductions and
+brackets, and a state-scope rule measures it."""
 RESIDENCE_FILE = "residence.csv"
 RESIDENCE_CSV_HEADER: tuple[str, ...] = ("effective_date", "state", "county", "description")
 """Where the household lives (#509, ADR-003 §4.16): from each row's month
@@ -585,8 +599,8 @@ STATE_LOCAL_TAX = "state_local_tax"
 the state's taxable income, in the shape of its brackets (Maryland's county
 rate, New York City's brackets). Keyed by state like the brackets, since a
 household lives in one locality. The local jurisdiction reads it
-(``taxes/local.csv``, ``local_bands``, #508), paid with the state's tax,
-as most are filed on the state return, and reported apart from it."""
+(``taxes/local.csv``, ``local_bands``, #508), paid into its own
+``taxes_local`` account (#586), and reported apart from the state's."""
 
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""
@@ -692,6 +706,11 @@ Property tax is also spending of the ``property_tax`` character; a
 ``mortgage_payment`` rule's interest carries ``tax:mortgage_interest``, and
 an ``irmaa`` rule's surcharges ``tax:medical``, unless the rule or its
 account has one of these or ``tax:rental`` already."""
+
+ITEMIZING_TAGS: frozenset[str] = frozenset({*ITEMIZED_TAGS.values(), RENTAL_TAG})
+"""The tags that say which itemized line spending is on, or that it's on
+none (``tax:rental``, #542): the engine's ``tax_api.itemizing`` and the
+loader's checks read this one set (#586)."""
 
 IMPLIED_TAX_TAGS: dict[str, str] = {
     "mortgage_payment": ITEMIZED_TAGS["mortgage_interest"],

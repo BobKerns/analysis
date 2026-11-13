@@ -497,38 +497,37 @@ def test_a_business_mortgage_is_not_itemized(
     assert lines["federal_business_net"][2028] < 0
 
 def _route(retire_alice_csv: Callable[[str], Path], variant: str) -> None:
-    """Tag the housing rule ``tax:property``; ``shared`` pays the state tax
-    into the federal tax's account, ``routed`` pays the housing rule into
-    the state tax's, and ``report_tag`` tags the state tax's account and
-    the mortgage interest's ``tax:itemized``, a tag for a report."""
+    """``property_account`` pays the housing rule, untagged, into an
+    account of subkind taxes_property (#586); ``report_tag`` tags the
+    housing rule ``tax:property`` and the state tax's account and the
+    mortgage interest's ``tax:itemized``, a tag for a report."""
     path = retire_alice_csv("scheduled.csv")
     rows = pd.read_csv(path, dtype=str, keep_default_na=False)
     housing = rows["name"] == "housing"
-    rows.loc[housing, "tags"] = "tax:property"
-    if variant == "routed":
-        rows.loc[housing, "to_account"] = "Expense_Taxes_State"
-    rows.to_csv(path, index=False)
-    if variant == "report_tag":
-        accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    if variant == "property_account":
+        rows.loc[housing, "to_account"] = "Expense_Taxes_Property"
+        accounts.loc[len(accounts)] = {
+            **dict.fromkeys(accounts.columns, ""), "name": "Expense_Taxes_Property", "kind": "expense",
+            "subkind": "taxes_property", "owner": "joint", "tax_treatment": "none",
+            "opened": "2020-01-31", "meta_json": "{}"}
+    else:
+        rows.loc[housing, "tags"] = "tax:property"
         accounts.loc[accounts["name"].isin(["Expense_Taxes_State", "Expense_Interest_Mortgage"]),
                      "tags"] = "tax:itemized"
-        accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
-    if variant == "shared":
-        state = retire_alice_csv("") / "taxes" / "state.csv"
-        rows = pd.read_csv(state, dtype=str, keep_default_na=False)
-        rows["destination"] = "Expense_Taxes_Federal"
-        rows.to_csv(state, index=False)
+    rows.to_csv(path, index=False)
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("variant", ["shared", "routed", "report_tag"])
-def test_state_tax_paid_counts_once_wherever_it_is_paid(
+@pytest.mark.parametrize("variant", ["property_account", "report_tag"])
+def test_state_tax_paid_and_property_tax_count_once(
     add_state_tax: Callable[..., None], retire_alice_csv: Callable[[str], Path],
     run_test_copy: Callable[[], Path], variant: str,
 ) -> None:
-    """Its settlements count though the federal tax is paid into the same
-    account or the account has a tax: tag for a report, and property tax
-    paid into the state's account counts once."""
+    """The state's settlements count though its account has a tax: tag for
+    a report, and property tax counts once, whether tagged or paid into a
+    taxes_property account with no tag (#586)."""
     add_state_tax()
     _route(retire_alice_csv, variant)
     run = run_test_copy()
@@ -539,9 +538,8 @@ def test_state_tax_paid_counts_once_wherever_it_is_paid(
             "SELECT CAST(substr(date, 1, 4) AS INTEGER), SUM(amount) FROM transfer_event "
             "WHERE reason_kind = 'rule' AND reason_id = "
             "  (SELECT id FROM scheduled_transaction WHERE name = 'housing') GROUP BY 1"))
-        # A settlement out of the state's account is a refund (#568): when
-        # property tax is routed there, the state counts it as paid and
-        # gives the excess back. Only a refund of the same year's tax nets.
+        # A settlement out of the state's account is a refund (#568), for
+        # the year before: never netted.
         state_paid = {year: max(0, paid) for year, paid in con.execute(
             "SELECT CAST(substr(t.date, 1, 4) AS INTEGER), "
             "       SUM(CASE WHEN t.from_account <> c.account_id THEN t.amount "
@@ -555,8 +553,7 @@ def test_state_tax_paid_counts_once_wherever_it_is_paid(
             "SELECT CAST(substr(t.date, 1, 4) AS INTEGER), SUM(t.amount) FROM transfer_event t "
             "JOIN account a ON a.id = t.to_account WHERE a.name = 'Expense_Interest_Mortgage' "
             "GROUP BY 1"))
-    if variant != "routed":
-        assert state_paid[2028] > 0
+    assert state_paid[2028] > 0
     for year in (2028, 2029):
         assert lines["federal_itemized_mortgage_interest"][year] == interest[year] > 0
         assert salt[year] == housing[year] + state_paid.get(year, 0), year
@@ -846,8 +843,10 @@ def test_a_state_refund_never_comes_off_the_state_tax_paid(ledger_con: sqlite3.C
     settlement does, the April after the year it's for. Under the
     tax-benefit rule it is income of the year received, to the extent the
     earlier deduction saved tax, which isn't modeled; it isn't less paid,
-    nor a payment."""
-    from analysis.sim.engine import _implied_rules, _taxes_paid
+    nor a payment. What went into the state's own account that year (#586)
+    is what was paid; the federal account's payments are the federal
+    tax's."""
+    from analysis.sim.engine import _taxes_paid
     checking, state, federal = 1, 2, 3
     con = ledger_con
     con.executemany("INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)", [
@@ -863,29 +862,20 @@ def test_a_state_refund_never_comes_off_the_state_tax_paid(ledger_con: sqlite3.C
         [(1, "federal", "federal", checking, federal), (2, "state", "state_tables", checking, state)])
 
     def post(date: str, frm: int, to: int, amount: int, kind: str, reason: int | None,
-             tax_year: int | None = None, character: str = "none") -> None:
+             tax_year: int | None = None) -> None:
         con.execute(
             "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
             "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind, "
-            "reason_id, tax_year) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
-            (date, frm, to, frm, to, amount, amount, character, kind, reason, tax_year))
+            "reason_id, tax_year) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, 'none', ?, ?, ?)",
+            (date, frm, to, frm, to, amount, amount, kind, reason, tax_year))
 
     post("2028-06-30", checking, state, 5_000_00, "rule", None)
-    # Not income tax, though paid into the state's account: a mortgage's
-    # interest (an implied itemized tag) and a business expense.
-    con.execute("INSERT INTO account(id, name, kind, subkind) "
-                "VALUES (4, 'Liability_Mortgage', 'liability', 'mortgage')")
-    con.execute("INSERT INTO chain(id, name, account_id) VALUES (4, 'Liability_Mortgage', 4)")
-    con.execute(
-        "INSERT INTO scheduled_transaction(id, name, from_account, to_account, cadence, "
-        "amount_rule_kind, tax_character, start, interest_account) "
-        "VALUES (7, 'mortgage', ?, 4, 'monthly', 'mortgage_payment', 'none', '2026-01-31', "
-        "'Expense_Tax_State')", (checking,))
-    post("2028-07-31", checking, state, 2_000_00, "rule", 7)
-    post("2028-08-31", checking, state, 3_000_00, "rule", None, character="business_expense")
+    post("2028-04-30", checking, state, 700_00, "tax", 2, 2027)
     post("2028-04-30", state, checking, 1_000_00, "tax", 2, 2027)
-    paid = _taxes_paid(con, 2028, {}, lambda aid: Account(f"#{aid}", "", "", None), _implied_rules(con)[0])
-    assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 5_000_00)]
+    post("2028-06-30", checking, federal, 9_000_00, "rule", None)
+    post("2029-01-15", checking, state, 400_00, "rule", None, 2028)
+    paid = _taxes_paid(con, 2028)
+    assert [(p.jurisdiction, p.amount) for p in paid] == [("state", 5_700_00)]
 
 
 class _InheritedOwnDeductions(_OlderOwnDeductions):
@@ -1066,3 +1056,25 @@ def test_one_payment_drawn_as_two_characters_is_one_debt(ledger_con: sqlite3.Con
     _record_balance(con, "2026-03-31", [3], 600_000_00, 3_000_00)
     # One debt-month, not a leg each with a share (one of them negative).
     assert [(m.interest, m.balance) for m in _months_of(con, interest)] == [(3_000_00, 600_000_00)]
+
+
+@pytest.mark.parametrize(("tags", "warns"), [("", True), ("tax:rental", False)])
+def test_a_property_tax_account_beside_a_hand_typed_total_is_a_warning(
+    write_aux: Callable[[str, str], Path], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], Any], tags: str, warns: bool,
+) -> None:
+    """#586: a taxes_property account is figured as property tax, so a
+    hand-typed total would count it twice; a rental's (tax:rental) isn't
+    itemized, so it's no warning. No mortgage here, which warns alone."""
+    path = retire_alice_csv("scheduled.csv")
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rows[rows["amount_rule_kind"] != "mortgage_payment"].to_csv(path, index=False)
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""), "name": "Expense_Taxes_Property", "kind": "expense",
+        "subkind": "taxes_property", "owner": "joint", "tax_treatment": "none",
+        "opened": "2020-01-31", "meta_json": "{}", "tags": tags}
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    write_aux("federal_deductions.csv", "effective_date,amount\n2027-01-31,30000.00\n")
+    warnings = load_test_copy().warnings
+    assert any("the hand-typed total adds" in w for w in warnings) == warns, warnings
