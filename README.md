@@ -110,7 +110,7 @@ an issue to close, or a row you write yourself.
 | Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing ([#582](https://github.com/BobKerns/analysis/issues/582)) |
 | Kentucky | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
 | Louisiana | Tables needed | |
-| Maine | Tables needed | |
+| Maine | Partial | Standard deduction phase-out's width grows with inflation (the law's divisor is fixed) |
 | Maryland | Partial | Pension exclusion reduced by Social Security ([#579](https://github.com/BobKerns/analysis/issues/579)); capital gains surtax above $350,000 of income |
 | Massachusetts | Tables needed | |
 | Michigan | Partial | City income taxes (a base of their own) |
@@ -140,7 +140,7 @@ an issue to close, or a row you write yourself.
 | Virginia | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
 | Washington | Shipped | Charitable and family-business deductions; credits for other states' taxes |
 | West Virginia | Tables needed | |
-| Wisconsin | Tables needed | |
+| Wisconsin | Partial | Head of household's standard deduction switching to the single figure |
 | Wyoming | No tax | |
 
 | Territory | Status | Not modeled |

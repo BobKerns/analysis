@@ -575,6 +575,11 @@ after every other rule of its month (#252)."""
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
 
+STATE_PHASEOUT_AGI: tuple[str, ...] = ("state", "federal")
+"""Which AGI a ``state_standard_deduction`` phase-out tests (#578): the
+state's own (the default, blank) or the federal, as Minnesota's, Rhode
+Island's and South Carolina's do."""
+
 STATE_SURCHARGE = "state_surcharge"
 """The aux kind of a state's surcharge on high taxable income (#490), in the
 shape of its brackets, whose rates add to the brackets' (California's 1%
@@ -829,11 +834,12 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # nothing at phaseout_end (linearly; at once when they're equal), or by
     # phaseout_rate of each dollar over, but not below floor. With
     # phaseout_step the amount over counts in whole steps, each started step
-    # in full (Alabama's $500 rows, Rhode Island's 20% steps). The columns
-    # after amount are optional (AUX_OPTIONAL_COLUMNS).
+    # in full (Alabama's $500 rows, Rhode Island's 20% steps). phaseout_agi
+    # (STATE_PHASEOUT_AGI) says which AGI: the state's (blank) or the
+    # federal. The columns after amount are optional (AUX_OPTIONAL_COLUMNS).
     STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount", "floor",
                                "phaseout_start", "phaseout_end", "phaseout_rate",
-                               "phaseout_step"),
+                               "phaseout_step", "phaseout_agi"),
     # How a state taxes Social Security (#484): it starts from the federally
     # taxable amount and excludes exclusion_percent of it, an exclusion that
     # phases out above phaseout_start of federal AGI: to nothing at
@@ -1017,6 +1023,7 @@ AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     **{kind: frozenset(ITEMIZED_LIMITS_COLUMNS[2:]) for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
     STATE_STANDARD_DEDUCTION: frozenset({
         "floor", "phaseout_start", "phaseout_end", "phaseout_rate", "phaseout_step",
+        "phaseout_agi",
     }),
     STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
     STATE_ADJUSTMENTS: frozenset({

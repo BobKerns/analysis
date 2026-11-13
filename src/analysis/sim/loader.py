@@ -4336,7 +4336,9 @@ def _validate_state_standard_deduction(
         floor, amount = payload.get("floor"), payload.get("amount")
         if start is None:
             given = [c for c, v in (("phaseout_end", end), ("phaseout_rate", rate),
-                                     ("phaseout_step", step), ("floor", floor)) if v is not None]
+                                     ("phaseout_step", step), ("floor", floor),
+                                     ("phaseout_agi", payload.get("phaseout_agi")))
+                     if v is not None]
             if given:
                 issues.append(f"{where}: {', '.join(given)} need a phaseout_start")
             continue
@@ -4351,6 +4353,15 @@ def _validate_state_standard_deduction(
             issues.append(f"{where}: phaseout_step must be more than 0")
         if floor is not None and amount is not None and floor > amount:
             issues.append(f"{where}: floor is above amount")
+        agi = payload.get("phaseout_agi")
+        if agi is not None and agi not in registries.STATE_PHASEOUT_AGI:
+            issues.append(f"{where}: phaseout_agi {agi!r} must be one of "
+                          f"{', '.join(registries.STATE_PHASEOUT_AGI)} (blank: state)")
+        # Indexed apart, the start could pass the end and make a cliff of it.
+        if end is not None and (payload.get("phaseout_start_series") or None) != (
+                payload.get("phaseout_end_series") or None):
+            issues.append(f"{where}: phaseout_start_series and phaseout_end_series must "
+                          "name the same series, or both be blank")
 
 
 def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str]) -> int:

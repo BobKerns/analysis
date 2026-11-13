@@ -15,6 +15,7 @@ from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import (
     Adjustment, Basis, FederalStateYear, Income, StateFromFederal, StateFromIncome, StateYear,
 )
+from analysis.sim.taxes.state_tables import StateTablesYear
 from tests.test_tax_api import MICROS, TABLES, _item, _year
 
 SS = _item("ss_benefit", 40_000_00)
@@ -258,3 +259,58 @@ def test_a_phased_out_standard_deduction_gives_way_to_itemizing() -> None:
     state = calculator("state_tables").prepare(year).compute()
     assert (state["standard_deduction"], state["itemized_deduction"]) == (0, 5_000_00)
     assert state["deduction"] == 5_000_00
+
+
+_SLIDING = {"filing_status": "MFJ", "amount": 20_000_00, "phaseout_start": 50_000_00,
+            "phaseout_rate_micros": MICROS // 5}
+
+
+def test_a_phase_out_can_test_federal_agi() -> None:
+    # Half the gain is left out of the state's AGI, so its AGI is $20,000
+    # under the federal; a row testing federal AGI loses $4,000 more.
+    items = [_item("ordinary", 80_000_00), _item("ltcg", 40_000_00)]
+    exclusion = {("state_ltcg_exclusion", "CA"): [{"exclusion_micros": MICROS // 2}]}
+    state_agi, _ = _state_tables(items, {**TABLES, **exclusion,
+                                         ("state_standard_deduction", "CA"): [_SLIDING]})
+    federal_agi, federal = _state_tables(items, {**TABLES, **exclusion, (
+        "state_standard_deduction", "CA"): [{**_SLIDING, "phaseout_agi": "federal"}]})
+    assert federal.agi - state_agi.agi == 20_000_00
+    assert state_agi["standard_deduction"] == 20_000_00 - (state_agi.agi - 50_000_00) // 5
+    assert federal_agi["standard_deduction"] == 20_000_00 - (federal.agi - 50_000_00) // 5
+
+
+class _RaisedYear(StateTablesYear):
+    """A household's state that adds $1,000 to the table's standard
+    deduction (an amount from 65, say)."""
+
+    def deductions(self) -> Mapping[str, int]:
+        base = dict(super().deductions())
+        base["standard_deduction"] += 1_000_00
+        base["deduction"] = max(base["standard_deduction"], base["itemized_deduction"])
+        return base
+
+
+def test_the_phase_out_cuts_what_a_subclass_gives_not_the_tables_amount() -> None:
+    year = _year([_item("ordinary", 40_000_00)], jurisdiction="state",
+                 tables={**TABLES, ("state_standard_deduction", "CA"): [_SLIDING]})
+    below = _RaisedYear(calculator("state_tables"), year).compute()
+    assert (below["standard_deduction"], below["deduction"]) == (21_000_00, 21_000_00)
+    year = _year([_item("ordinary", 60_000_00)], jurisdiction="state",
+                 tables={**TABLES, ("state_standard_deduction", "CA"): [_SLIDING]})
+    above = _RaisedYear(calculator("state_tables"), year).compute()
+    assert (above["standard_deduction"], above["deduction"]) == (19_000_00, 19_000_00)
+
+
+class _OwnDeductionsYear(StateTablesYear):
+    """A household's state that writes its deductions without the table's
+    method: the table's phase-out still applies to its standard line."""
+
+    def deductions(self) -> Mapping[str, int]:
+        return {"standard_deduction": 20_000_00, "itemized_deduction": 0, "deduction": 20_000_00}
+
+
+def test_a_subclass_with_its_own_deductions_keeps_the_phase_out() -> None:
+    year = _year([_item("ordinary", 60_000_00)], jurisdiction="state",
+                 tables={**TABLES, ("state_standard_deduction", "CA"): [_SLIDING]})
+    state = _OwnDeductionsYear(calculator("state_tables"), year).compute()
+    assert state["deduction"] == 18_000_00

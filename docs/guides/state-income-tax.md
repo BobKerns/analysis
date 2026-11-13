@@ -75,9 +75,9 @@ every state's list.
   above `phaseout_start` of the state's AGI it falls to nothing at
   `phaseout_end`, or by `phaseout_rate` of each dollar over, not below
   `floor`; `phaseout_step` counts the income over in whole steps, as a
-  table of $500 rows does. A state that tests federal AGI (Minnesota,
-  Rhode Island, South Carolina) is tested on its own, which for a retired
-  household differs only by the state's subtractions.
+  table of $500 rows does. It tests the state's AGI unless
+  `phaseout_agi` is `federal`, as Minnesota's, Rhode Island's and South
+  Carolina's do.
 - **Married couples filing separately on one return** (Arkansas, Delaware,
   the District, Kentucky, Virginia): each spouse's income runs through the
   brackets and standard deduction alone, which saves tax where the lower
@@ -265,8 +265,9 @@ on interest and dividends ended with 2024.
 - The standard deduction phases out above an income: **table**, from
   `phaseout_start` (the worksheet's threshold) to nothing at
   `phaseout_end`, the threshold plus its divisor ($150,000 joint, $75,000
-  single). Both are indexed, so the span grows a little with inflation
-  where the divisor doesn't.
+  single). The start and end must index together (or not at all), so the
+  span grows with inflation where the law's divisor doesn't: close, not
+  exact.
 
 ### Maryland
 
@@ -308,7 +309,7 @@ on interest and dividends ended with 2024.
   approximately. One `phaseout_rate` of 10% from the second threshold
   less a third of the 3% band's width matches the law above the second
   threshold and is a little off within the band; `floor` is 20% of the
-  amount.
+  amount. `phaseout_agi` is `federal`.
 - A 1% surtax on net investment income over $1 million: **not supported**.
 - The renter's credit and property tax refund: **household calculator**,
   and refundable (#579).
@@ -419,7 +420,8 @@ on interest and dividends ended with 2024.
 - The standard deduction and exemptions phase out at high income in 20%
   steps: **table**. For the standard deduction, `phaseout_step` is the
   step ($7,250 for 2025) and `phaseout_end` five steps above
-  `phaseout_start`, so each started step takes a fifth. The exemptions are
+  `phaseout_start`, so each started step takes a fifth, and `phaseout_agi`
+  is `federal`. The exemptions are
   a `state_adjustments` `filers` row, phased out as a straight line.
 
 ### South Carolina
@@ -427,7 +429,7 @@ on interest and dividends ended with 2024.
 - From 2026 (H.4216), South Carolina starts from federal AGI with a
   deduction of its own that phases down with income: **table**
   (`phaseout_start` and `phaseout_end`: $80,000 to $190,000 joint,
-  $40,000 to $95,000 single). Two rates, the upper one with a subtraction: **table**.
+  $40,000 to $95,000 single; `phaseout_agi` `federal`). Two rates, the upper one with a subtraction: **table**.
 - The retirement deduction, and the deduction from 65: **table**. Social
   Security is exempt.
 - A share of long-term gain excluded: **table**. Check whether H.4216
@@ -475,7 +477,7 @@ on interest and dividends ended with 2024.
 - The standard deduction slides to nothing as income rises: **table**
   (`phaseout_rate`: 19.778% joint, 12% single). Head of household falls
   at 22.515% until it meets the single figure and then follows it, which
-  one row can't say: its own line to nothing is close.
+  one row can't say: its own line to nothing is close, not exact.
 - The homestead credit: **household calculator**.
 
 ## Gaps left for after beta

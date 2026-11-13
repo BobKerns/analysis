@@ -2229,16 +2229,20 @@ def test_an_account_defined_by_unrelated_scenarios_gets_a_hint(
 
 
 @pytest.mark.parametrize(("cells", "message"), [
-    ("8500,,,90000,,", "phaseout_end need a phaseout_start"),
-    ("8500,5000,,,,", "floor need a phaseout_start"),
-    ("8500,,,,,500", "phaseout_step need a phaseout_start"),
-    ("8500,,80000,,,", "not both or neither"),
-    ("8500,,80000,90000,10%,", "not both or neither"),
-    ("8500,,80000,70000,,", "phaseout_end is below phaseout_start"),
-    ("8500,,80000,,0%,", "phaseout_rate must be more than 0%"),
-    ("8500,,80000,,10%,0", "phaseout_step must be more than 0"),
-    ("8500,9000,80000,,10%,", "floor is above amount"),
-    ("8500,-1,80000,,10%,", "floor must not be negative"),
+    ("8500,,,90000,,,,,", "phaseout_end need a phaseout_start"),
+    ("8500,5000,,,,,,,", "floor need a phaseout_start"),
+    ("8500,,,,,500,,,", "phaseout_step need a phaseout_start"),
+    ("8500,,80000,,,,,,", "not both or neither"),
+    ("8500,,80000,90000,10%,,,,", "not both or neither"),
+    ("8500,,80000,70000,,,,,", "phaseout_end is below phaseout_start"),
+    ("8500,,80000,,0%,,,,", "phaseout_rate must be more than 0%"),
+    ("8500,,80000,,10%,0,,,", "phaseout_step must be more than 0"),
+    ("8500,9000,80000,,10%,,,,", "floor is above amount"),
+    ("8500,-1,80000,,10%,,,,", "floor must not be negative"),
+    ("8500,,,,,,federal,,", "phaseout_agi need a phaseout_start"),
+    ("8500,,80000,,10%,,magi,,", "phaseout_agi 'magi' must be one of state, federal"),
+    ("8500,,80000,90000,,,,cpi,", "must name the same series, or both be blank"),
+    ("8500,,80000,90000,,,,cpi,other", "must name the same series, or both be blank"),
 ])
 def test_state_standard_deduction_phase_out_is_checked(
     write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
@@ -2247,7 +2251,8 @@ def test_state_standard_deduction_phase_out_is_checked(
     """A state_standard_deduction row shrinks with income one way (#578)."""
     write_aux("state_standard_deduction__CA.csv",
               "effective_date,filing_status,amount,floor,phaseout_start,phaseout_end,"
-              f"phaseout_rate,phaseout_step\n2020-01-31,MFJ,{cells}\n")
+              "phaseout_rate,phaseout_step,phaseout_agi,phaseout_start_series,"
+              f"phaseout_end_series\n2020-01-31,MFJ,{cells}\n")
     with pytest.raises(LoadError, match=message):
         load_test_copy()
 
