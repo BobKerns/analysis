@@ -91,7 +91,7 @@ an issue to close, or a row you write yourself.
 
 | State | Status | Not modeled |
 | --- | --- | --- |
-| Alabama | Partial | Standard deduction that shrinks with income ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| Alabama | Tables needed | |
 | Alaska | No tax | |
 | Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
 | Arkansas | Partial | Low-income tax tables; spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
@@ -110,11 +110,11 @@ an issue to close, or a row you write yourself.
 | Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing ([#582](https://github.com/BobKerns/analysis/issues/582)) |
 | Kentucky | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
 | Louisiana | Tables needed | |
-| Maine | Partial | Standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| Maine | Tables needed | |
 | Maryland | Partial | Pension exclusion reduced by Social Security ([#579](https://github.com/BobKerns/analysis/issues/579)); capital gains surtax above $350,000 of income |
 | Massachusetts | Tables needed | |
 | Michigan | Partial | City income taxes (a base of their own) |
-| Minnesota | Partial | Standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)); 1% surtax on investment income over $1 million; Social Security subtraction's $4,000 steps (modeled as a straight line) |
+| Minnesota | Partial | Standard deduction phase-out's lower 3% band (approximated); 1% surtax on investment income over $1 million; Social Security subtraction's $4,000 steps (modeled as a straight line) |
 | Mississippi | Tables needed | |
 | Missouri | Tables needed | |
 | Montana | Tables needed | |
@@ -130,8 +130,8 @@ an issue to close, or a row you write yourself.
 | Oklahoma | Tables needed | |
 | Oregon | Tables needed | |
 | Pennsylvania | Partial | Separate income classes; Philadelphia's tax on investment income |
-| Rhode Island | Partial | Social Security exemption's full-retirement-age test ([#581](https://github.com/BobKerns/analysis/issues/581)); standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)) |
-| South Carolina | Partial | Deduction that phases down with income, from 2026 ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| Rhode Island | Partial | Social Security exemption's full-retirement-age test ([#581](https://github.com/BobKerns/analysis/issues/581)) |
+| South Carolina | Tables needed | |
 | South Dakota | No tax | |
 | Tennessee | No tax | |
 | Texas | No tax | |
@@ -140,7 +140,7 @@ an issue to close, or a row you write yourself.
 | Virginia | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
 | Washington | Shipped | Charitable and family-business deductions; credits for other states' taxes |
 | West Virginia | Tables needed | |
-| Wisconsin | Partial | Standard deduction that shrinks with income ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| Wisconsin | Tables needed | |
 | Wyoming | No tax | |
 
 | Territory | Status | Not modeled |

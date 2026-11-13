@@ -750,10 +750,40 @@ def brackets(ty: TaxYear, kind: str, series: str | None) -> list[tuple[int, int]
 
 
 def standard_deduction(ty: TaxYear, kind: str, series: str | None = None) -> int:
+    """The full standard deduction, before any phase-out with income."""
+    return int(standard_deduction_row(ty, kind, series)["amount"])
+
+
+def standard_deduction_row(ty: TaxYear, kind: str, series: str | None = None) -> Mapping[str, Any]:
+    """The standard deduction row in force for the year's filing status."""
     rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == ty.filing_status]
     if not rows:
         raise TaxError(f"{where(ty)}: missing standard deduction for filing_status={ty.filing_status!r}")
-    return int(rows[0]["amount"])
+    return rows[0]
+
+
+def phased_standard_deduction(row: Mapping[str, Any], agi: int) -> int:
+    """A ``state_standard_deduction`` ``row``'s amount at an AGI of ``agi``
+    (#578): above ``phaseout_start`` it falls to nothing at ``phaseout_end``
+    (at once when they are equal), or by ``phaseout_rate`` of each dollar
+    over, but not below ``floor``. With ``phaseout_step`` the amount over
+    counts in whole steps, a started one in full, as a state's table of
+    $500 rows does."""
+    amount = int(row["amount"])
+    start = row.get("phaseout_start")
+    if start is None or agi <= int(start):
+        return amount
+    over = agi - int(start)
+    step = row.get("phaseout_step")
+    if step:
+        over = -(-over // int(step)) * int(step)
+    rate = row.get("phaseout_rate_micros")
+    if rate is not None:
+        cut = over * int(rate) // 1_000_000
+    else:
+        span = int(row["phaseout_end"]) - int(start)
+        cut = amount if over >= span else amount * over // span
+    return max(min(amount, int(row.get("floor") or 0)), amount - cut)
 
 
 def itemized_deduction(ty: TaxYear, kind: str) -> int:

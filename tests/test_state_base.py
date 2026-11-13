@@ -184,3 +184,77 @@ def test_the_federal_memo_records_what_agi_leaves_out() -> None:
     assert memo["roth_qualified"] == 7_000_00
     assert memo["excluded_gain"] == 250_000_00
     assert memo["ss_untaxed"] == 40_000_00 - federal["ss_taxable"]
+
+
+# -- a standard deduction that shrinks with income (#578) --------------------
+
+def _phased(agi: int, **row: int) -> int:
+    return common.phased_standard_deduction({"amount": 8_500_00, **row}, agi)
+
+
+def test_a_standard_deduction_without_a_phase_out_is_the_same_at_any_income() -> None:
+    assert _phased(10_000_000_00) == 8_500_00
+
+
+def test_a_standard_deduction_falls_in_started_steps_to_its_floor() -> None:
+    # Alabama's joint deduction: $175 off for each $500 row from $26,000,
+    # each row started in full, to $5,000.
+    row = {"phaseout_start": 25_999_00, "phaseout_rate_micros": MICROS * 35 // 100,
+           "phaseout_step": 500_00, "floor": 5_000_00}
+    assert _phased(25_999_00, **row) == 8_500_00
+    assert _phased(26_000_00, **row) == 8_325_00
+    assert _phased(26_499_00, **row) == 8_325_00
+    assert _phased(26_500_00, **row) == 8_150_00
+    assert _phased(35_499_00, **row) == 5_175_00
+    assert _phased(35_500_00, **row) == 5_000_00
+    assert _phased(1_000_000_00, **row) == 5_000_00
+
+
+def test_a_standard_deduction_falls_in_a_line_to_nothing_at_the_end() -> None:
+    # Maine's: in proportion to the income over the start, over $150,000.
+    row = {"phaseout_start": 200_000_00, "phaseout_end": 350_000_00}
+    assert _phased(275_000_00, **row) == 4_250_00
+    assert _phased(350_000_00, **row) == 0
+    # Equal ends take it all at once.
+    assert _phased(200_000_01, phaseout_start=200_000_00, phaseout_end=200_000_00) == 0
+
+
+def test_steps_toward_an_end_take_a_share_each() -> None:
+    # Rhode Island's: 20% for each started $7,250 over the start, so the
+    # fifth step (past $29,000 over) takes the last of it.
+    row = {"phaseout_start": 254_250_00, "phaseout_end": 290_500_00, "phaseout_step": 7_250_00}
+    assert _phased(254_250_01, **row) == 6_800_00
+    assert _phased(283_250_00, **row) == 1_700_00
+    assert _phased(283_250_01, **row) == 0
+
+
+def test_a_state_takes_its_standard_deduction_as_phased_at_its_agi() -> None:
+    # A Wisconsin-shaped sliding deduction: $20,000, less 20% of each
+    # dollar of state AGI over $50,000.
+    tables = {**TABLES, ("state_standard_deduction", "CA"): [
+        {"filing_status": "MFJ", "amount": 20_000_00, "phaseout_start": 50_000_00,
+         "phaseout_rate_micros": MICROS // 5}]}
+    state, _federal = _state_tables([_item("ordinary", 80_000_00)], tables)
+    assert state.agi == 80_000_00
+    assert state["standard_deduction"] == 14_000_00
+    assert state["deduction"] == 14_000_00
+    assert state.taxable_income == 66_000_00
+    # A what-if's extra income shrinks it too: the marginal dollar costs
+    # the rate on 1.2 dollars.
+    year = _year([_item("ordinary", 80_000_00)], jurisdiction="state", tables=tables)
+    prepared = calculator("state_tables").prepare(year)
+    assert prepared.compute(Extra(1_000_00)).taxable_income == 67_200_00
+
+
+def test_a_phased_out_standard_deduction_gives_way_to_itemizing() -> None:
+    tables = {**TABLES, ("state_standard_deduction", "CA"): [
+        {"filing_status": "MFJ", "amount": 20_000_00, "phaseout_start": 50_000_00,
+         "phaseout_end": 60_000_00}],
+        ("state_deductions", None): [{"amount": 5_000_00}]}
+    year = _year([_item("ordinary", 80_000_00)], jurisdiction="state", tables=tables)
+    # The itemized total is one tax year's, dated in it.
+    year = dataclasses.replace(year, _dated=lambda kind, series: [
+        (f"{year.year}-12-31", r) for r in tables.get((kind, series), [])])
+    state = calculator("state_tables").prepare(year).compute()
+    assert (state["standard_deduction"], state["itemized_deduction"]) == (0, 5_000_00)
+    assert state["deduction"] == 5_000_00

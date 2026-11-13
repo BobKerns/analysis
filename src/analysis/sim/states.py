@@ -52,7 +52,7 @@ TAXES_NO_MUNI_INTEREST = frozenset({"DC"})
 GAINS_TAX_ONLY = frozenset({"WA"})
 
 STATES: tuple[State, ...] = (
-    State("AL", "Alabama", PARTIAL),
+    State("AL", "Alabama", TABLES_NEEDED),
     State("AK", "Alaska", NO_TAX),
     State("AZ", "Arizona", PARTIAL),
     State("AR", "Arkansas", PARTIAL),
@@ -71,7 +71,7 @@ STATES: tuple[State, ...] = (
     State("KS", "Kansas", SHIPPED),
     State("KY", "Kentucky", PARTIAL),
     State("LA", "Louisiana", TABLES_NEEDED),
-    State("ME", "Maine", PARTIAL),
+    State("ME", "Maine", TABLES_NEEDED),
     State("MD", "Maryland", PARTIAL),
     State("MA", "Massachusetts", TABLES_NEEDED),
     State("MI", "Michigan", PARTIAL),
@@ -92,7 +92,7 @@ STATES: tuple[State, ...] = (
     State("OR", "Oregon", TABLES_NEEDED),
     State("PA", "Pennsylvania", PARTIAL),
     State("RI", "Rhode Island", PARTIAL),
-    State("SC", "South Carolina", PARTIAL),
+    State("SC", "South Carolina", TABLES_NEEDED),
     State("SD", "South Dakota", NO_TAX),
     State("TN", "Tennessee", NO_TAX),
     State("TX", "Texas", NO_TAX),
@@ -101,7 +101,7 @@ STATES: tuple[State, ...] = (
     State("VA", "Virginia", PARTIAL),
     State("WA", "Washington", SHIPPED),
     State("WV", "West Virginia", TABLES_NEEDED),
-    State("WI", "Wisconsin", PARTIAL),
+    State("WI", "Wisconsin", TABLES_NEEDED),
     State("WY", "Wyoming", NO_TAX),
     State("AS", "American Samoa", NOT_SUPPORTED),
     State("GU", "Guam", FEDERAL_RULE),

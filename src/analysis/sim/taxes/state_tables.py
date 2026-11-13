@@ -31,6 +31,10 @@ ITEMIZED_LINES_API = 5
 class StateTablesYear(FederalStateYear):
     """One year of a :class:`StateTables` state."""
 
+    _standard_row: Mapping[str, Any] | None = None
+    """The state's own standard deduction row in force, which may phase out
+    with income (#578); None while the federal one stands in for it."""
+
     def setup(self) -> None:
         ty, params = self.ty, self.ty.params
         where = common.where(ty)
@@ -120,7 +124,11 @@ class StateTablesYear(FederalStateYear):
         if series is not None and not ty.has_table(standard_aux, series):
             # The loader warned: the federal figure stands in for the state's.
             standard_aux, series = "standard_deduction", None
-        standard = common.standard_deduction(ty, standard_aux, series)
+        row = common.standard_deduction_row(ty, standard_aux, series)
+        standard = int(row["amount"])
+        # Some states shrink their own with income (#578): deductions_at
+        # phases it out at the year's AGI.
+        self._standard_row = row if series is not None else None
         # state_deductions falls back to federal_deductions when the
         # scenario has no state_deductions rows at all: most states don't
         # need their own file.
@@ -142,7 +150,7 @@ class StateTablesYear(FederalStateYear):
         whose limit depends on the deduction with the lines (a proration)
         applies it by overriding this step. A new mapping each call, so an
         override may change what it's given."""
-        base = self._deductions
+        base = self._phased(self._deductions, income.agi)
         itemized = self._itemized
         if itemized is None:
             return dict(base)
@@ -152,6 +160,25 @@ class StateTablesYear(FederalStateYear):
         if base["deduction"] < own:
             lines["deduction"] = min(lines["deduction"], base["deduction"])
         return {**base, **lines}
+
+    def _phased(self, deductions: Mapping[str, int], agi: int) -> Mapping[str, int]:
+        """``deductions`` with the state's standard deduction phased out at
+        an AGI of ``agi`` (#578), and the one taken with it: the larger of
+        the standard and itemized deductions, and what :meth:`deductions`
+        takes beyond either (an exemption) on top, or the less it takes
+        when it caps them."""
+        row = self._standard_row
+        standard = deductions.get("standard_deduction")
+        if row is None or standard is None:
+            return deductions
+        phased = min(standard, common.phased_standard_deduction(row, agi))
+        if phased == standard:
+            return deductions
+        itemized = deductions.get("itemized_deduction", 0)
+        before, after = max(standard, itemized), max(phased, itemized)
+        taken = deductions["deduction"]
+        taken = taken - before + after if taken >= before else min(taken, after)
+        return {**deductions, "standard_deduction": phased, "deduction": taken}
 
     def itemized_lines(self) -> common.Itemized | None:
         """The year's itemized deductions from spending (#542), under the

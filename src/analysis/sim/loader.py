@@ -1385,6 +1385,7 @@ def load_scenario(
     _warn_hand_typed_deductions(
         aux_rows, scheduled_rows, accounts, calendar_rows, tax_rows, residence_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
+    _validate_state_standard_deduction(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_state_adjustments(
         aux_rows, issues, unused, tax_rows=tax_rows, residence_rows=residence_rows,
@@ -4315,6 +4316,41 @@ def _validate_state_social_security(
             issues.append(f"{where}: phaseout_end is below phaseout_start")
         elif rate is not None and rate <= 0:
             issues.append(f"{where}: phaseout_rate must be more than 0%")
+
+
+def _validate_state_standard_deduction(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A state_standard_deduction row (#578) shrinks one way: to nothing at
+    phaseout_end, or by phaseout_rate per dollar, both from phaseout_start,
+    and its floor and steps belong to that phase-out."""
+    for kind, state, payload, effective in aux_rows:
+        if kind != registries.STATE_STANDARD_DEDUCTION:
+            continue
+        where = (f"aux/{kind}__{state}.csv" if state else f"aux/{kind}.csv") + (
+            f" ({effective}, {payload.get('filing_status')})")
+        _check_not_negative(where, payload, ("amount", "floor", "phaseout_start"), issues)
+        start, end = payload.get("phaseout_start"), payload.get("phaseout_end")
+        rate, step = payload.get("phaseout_rate_micros"), payload.get("phaseout_step")
+        floor, amount = payload.get("floor"), payload.get("amount")
+        if start is None:
+            given = [c for c, v in (("phaseout_end", end), ("phaseout_rate", rate),
+                                     ("phaseout_step", step), ("floor", floor)) if v is not None]
+            if given:
+                issues.append(f"{where}: {', '.join(given)} need a phaseout_start")
+            continue
+        if (end is None) == (rate is None):
+            issues.append(f"{where}: give phaseout_end or phaseout_rate with phaseout_start, "
+                          "not both or neither")
+        elif end is not None and end < start:
+            issues.append(f"{where}: phaseout_end is below phaseout_start")
+        elif rate is not None and rate <= 0:
+            issues.append(f"{where}: phaseout_rate must be more than 0%")
+        if step is not None and step <= 0:
+            issues.append(f"{where}: phaseout_step must be more than 0")
+        if floor is not None and amount is not None and floor > amount:
+            issues.append(f"{where}: floor is above amount")
 
 
 def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str]) -> int:
