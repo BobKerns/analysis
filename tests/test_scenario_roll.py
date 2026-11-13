@@ -70,7 +70,12 @@ def test_roll_takes_the_projection_keeps_the_old_plan_and_pins_last_years_rows(
     ytd = _rows(folder / "year_to_date.csv")
     assert ytd["prior_ordinary_wages"]["year"] == "2026"
     assert ytd["prior_ltcg_loss_carryforward"]["year"] == "2025"
-    assert "2026's tax is settled in April 2027" in result.output
+    # The months the run no longer covers stay in 2026's income (#564), so
+    # nothing is left to record by hand for its April settlement.
+    projected_rows = [row for name, row in ytd.items() if name.startswith(roll.PROJECTED_PREFIX)]
+    assert projected_rows and {row["year"] for row in projected_rows} == {"2026"}
+    assert "projected year-to-date row(s) for 2026-05 to 2026-12" in result.output
+    assert "2026's tax is settled in April 2027" not in result.output
     # The old plan is kept as it stood, and the rolled one stays current.
     kept = test_scenarios_dir / "retire_alice-2026"
     assert (kept / "account_lots.csv").read_bytes() == before
@@ -329,3 +334,62 @@ def test_roll_writes_nothing_when_a_file_changed_while_it_asked(
     assert "changed while retire_alice was being rolled forward" in result.output
     with retire_alice_csv("scenario.csv").open(newline="", encoding="utf-8") as fh:
         assert next(csv.DictReader(fh))["start"].startswith("2026-05")
+
+
+@pytest.mark.slow
+@pytest.mark.uses_current_scenario_write
+@pytest.mark.parametrize("start", ["2026-09", "2027-01"])
+def test_a_roll_keeps_the_skipped_months_in_their_tax_year(
+    start: str, test_data_dir: Path, latest_test_run: Callable[[str], Path],
+    add_state_tax: Callable[..., None],
+) -> None:
+    """#564: the old run's flows in the months the roll skips become
+    projected year-to-date rows, so the rolled run taxes the year as the old
+    one did: within the year, and across it (the April settlement)."""
+    add_state_tax()
+    old = latest_test_run("retire_alice")
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", start, "--no-keep", "--yes")
+    assert result.exit_code == 0, result.output
+    new = latest_test_run("retire_alice")
+
+    def taxes(run: Path) -> dict[tuple[int, str], int]:
+        with RunConnection(run, "retire_alice") as rc:
+            frame = rc._read_sql("SELECT year, bucket, amount FROM tax_year_summary "
+                                 "WHERE year = 2026 AND bucket IN "
+                                 "('federal_agi', 'federal_tax', 'state_tax')")
+        return {(int(row.year), str(row.bucket)): int(row.amount) for row in frame.itertuples()}
+
+    before = taxes(old)
+    assert before and taxes(new) == before
+
+
+def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_count() -> None:
+    earlier = [
+        {"name": "prior_wages", "from_account": "Income_Salary_Alice", "from_lot": "",
+         "to_account": "Asset_Checking", "to_lot": "", "amount": "9000.00",
+         "tax_character": "ordinary", "year": "", "description": ""},
+        {"name": "projected_2025_1", "from_account": "Income_Salary_Alice", "from_lot": "default",
+         "to_account": "Asset_Checking", "to_lot": "default", "amount": "100.00",
+         "tax_character": "ordinary", "year": "2025", "description": ""},
+        {"name": "projected_2026_1", "from_account": "Income_Salary_Alice", "from_lot": "default",
+         "to_account": "Asset_Checking", "to_lot": "default", "amount": "1000.00",
+         "tax_character": "ordinary", "year": "2026", "description": ""},
+    ]
+    projected = [
+        roll.ProjectedRow(2026, "Income_Salary_Alice", "default", "Asset_Checking", "default",
+                          "ordinary", 50_025),
+        roll.ProjectedRow(2027, "Asset_Checking", "default", "Expense_Living", "default",
+                          "none", 12_000),
+    ]
+
+    rows, dropped = roll.merge_projected(earlier, projected, "2027-02")
+
+    by_name = {row["name"]: row for row in rows}
+    # 2025 is settled before a 2027 start can see it.
+    assert dropped == 1 and "projected_2025_1" not in by_name
+    assert by_name["prior_wages"] == earlier[0]
+    assert by_name["projected_2026_1"]["amount"] == "1500.25"
+    assert by_name["projected_2026_1"]["description"] == "projected by sim scenario roll, through 2027-01"
+    assert by_name["projected_2027_1"]["amount"] == "120.00"
+    assert by_name["projected_2027_1"]["year"] == "2027"

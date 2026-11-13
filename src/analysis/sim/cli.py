@@ -15326,6 +15326,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     # The Dec 31 before a start that isn't a January: what a lot's
     # prior_year_end_balance (an RMD's base) defaults to.
     year_end: dict[tuple[str, str], roll.Projection] = {}
+    # The flows of the months the roll skips, as year-to-date rows (#564).
+    skipped: list[roll.ProjectedRow] = []
     # The newest run that reaches the month: one made after an earlier roll
     # (or a trial one) starts too late to say.
     for run_path in reversed(run_files(ref.runs_dir, name)):
@@ -15335,6 +15337,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             projected = roll.projections(rc, month)
             if projected and start[5:] != "01":
                 year_end = roll.projections(rc, month_before(f"{new_year}-01"))
+            if projected:
+                skipped = roll.projected_year_to_date(rc, old_start, start)
         if projected:
             break
     if projected:
@@ -15401,6 +15405,14 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                      f"{old_year}'s catch-up: make it a {old_year} year-to-date row?")
             if accept or click.confirm(label, default=True):
                 converted.append(found)
+    if skipped:
+        months = (f"{old_start}" if month.strftime("%Y-%m") == old_start
+                  else f"{old_start} to {month:%Y-%m}")
+        label = (f"the run no longer covers {months}, so that income would drop out of "
+                 f"its tax year: add the old run's flows then as {len(skipped)} projected "
+                 "year-to-date row(s)?")
+        if not (accept or click.confirm(label, default=True)):
+            skipped = []
     # A rule with no start counts its cadence (a quarter, a biweekly payday,
     # ytd_preroll's months) from the scenario's start, which is moving.
     anchored: list[_Overlaid] = []
@@ -15436,6 +15448,13 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             row = {column: found.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
             _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
                             replace=found.index)
+        dropped = 0
+        if skipped or any(row["name"].startswith(roll.PROJECTED_PREFIX)
+                          for row in _read_ytd_rows(ytd_path)):
+            _widen_ytd_header(ytd_path, scenario_dir)
+            merged, dropped = roll.merge_projected(_read_ytd_rows(ytd_path), skipped, start)
+            pd.DataFrame(merged, columns=list(registries.YEAR_TO_DATE_CSV_HEADER)).to_csv(
+                ytd_path, index=False)
         scheduled_path = edit.path(scenario_dir / "scheduled.csv")
         # Each rule changed once, whichever of the edits below it takes.
         rule_rows = {found.row["name"]: (found, dict(found.row)) for found in [*converted, *anchored]}
@@ -15472,6 +15491,13 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                    f"(`sim scheduled edit {found.row['name']} --ytd-amount ''`)")
     for found in anchored:
         click.echo(f"  rule {found.row['name']}: starts {old_start}, so its schedule keeps its months")
+    if skipped:
+        click.echo(f"  {len(skipped)} projected year-to-date row(s) for {old_start} to "
+                   f"{month:%Y-%m}: replace them with the actual figures when you have them "
+                   "(`sim ytd edit`)")
+    if dropped:
+        click.echo(f"  dropped {dropped} projected year-to-date row(s) of years before {new_year - 1}, "
+                   "which no longer count")
     for entry in roll.calendar_before(scenario_dir, start):
         click.echo(f"  calendar {entry.row.get('date')} {entry.row.get('kind')} "
                    f"{entry.row.get('description') or entry.row.get('scheduled_name') or ''}"
@@ -15479,7 +15505,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     for rule_name in roll.preroll_rules(scenario_dir):
         if start[5:] != "01":
             click.echo(f"  rule {rule_name}'s ytd_preroll now counts {new_year}'s months before {start}")
-    if new_year == old_year:
+    if new_year == old_year and not skipped:
         # Same year: the first year's catch-ups now cover fewer months
         # than they should, and only the person knows the new totals.
         before = f"{month_before(start):%Y-%m}"
@@ -15489,7 +15515,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         for found in roll.ytd_amount_rules(scenario_dir):
             click.echo(f"  rule {found.row['name']}'s ytd_amount covers {new_year} before "
                        f"{old_start}: update it through {before} (`sim scheduled edit`)")
-    if new_year != old_year and int(start[5:7]) <= 4:
+    if new_year != old_year and int(start[5:7]) <= 4 \
+            and not any(one.year == new_year - 1 for one in skipped):
         # A start by April: the prior year's tax is still to be paid in it.
         click.echo(
             f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
