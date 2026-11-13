@@ -7,6 +7,7 @@ data = "prototype_data"
 
 [youtube]
 title = "Keeping the plan current"
+next = "12-strategy-plugins"  # not 11a, the importing side trip
 summary = """
 A year after they built their plan, Alice and Bill bring it up to date. \
 They keep last year's plan, start the plan again in January with what their \

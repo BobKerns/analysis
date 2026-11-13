@@ -1990,6 +1990,10 @@ them all (`--yes` stops instead when a question has nothing to offer). A
 lot's Dec 31 balance (`prior_year_end_balance`), when it has one, follows,
 offering the run's Dec 31.
 
+With more than a few accounts, the balances can come from a file another
+program exported instead, and the year's spending too:
+[Importing your data](guides/importing-data.md).
+
 A new year changes what some rows mean, so `roll` deals with those too:
 
 - A year-to-date row (§4.13) with no year belongs to the first year,
