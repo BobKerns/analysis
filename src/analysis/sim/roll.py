@@ -33,6 +33,7 @@ import pandas as pd
 from analysis.frames import named_rows
 from analysis.sim import registries
 from analysis.sim.dates import month_before, month_end_iso
+from analysis.sim.units import cents_to_dollars
 from analysis.sim.overlay import CalendarRow, Overlaid, overlay_rows, scenario_calendar_rows
 
 if TYPE_CHECKING:
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PARENT_FIRST", "PROJECTED_PREFIX", "Projection", "ProjectedRow", "anchored_rules",
-    "calendar_before", "cell_dollars", "covers", "default_start", "inherited_projected",
+    "calendar_before", "cell_dollars", "covers", "default_start", "inherited_projected", "is_projected",
     "merge_projected", "preroll_rules", "projected_year_to_date", "rolled_through",
     "projections", "unpinned_year_to_date", "ytd_amount_rules",
 ]
@@ -49,6 +50,8 @@ __all__ = [
 # ``projected_<year>_<n>``, so a later roll can add to it, and drop it once
 # its year no longer counts.
 PROJECTED_PREFIX = "projected_"
+# Only that exact shape: a row someone named ``projected_bonus`` is theirs.
+_PROJECTED_NAME = re.compile(rf"{PROJECTED_PREFIX}(\d{{4}})_\d+")
 
 # How ``sim scenario roll --own`` refuses a scenario whose inherited start
 # hasn't moved yet: the nightly roll reads it as "not this time", not a failure.
@@ -211,8 +214,9 @@ def projected_year_to_date(rc: RunConnection, old_start: str, new_start: str) ->
     the years the new run still settles: ``new_start``'s and the one before
     (taxed the April after). A ``ytd_preroll`` rule's flows of the new
     start's year are left out, since the rule posts those months itself
-    (ADR-003 §4.10). Nothing when the run doesn't reach that
-    far: no month of it is a projection then."""
+    (ADR-003 §4.10). Only for a run that reaches the month before
+    ``new_start`` (the caller's :func:`projections` say so): before that, no
+    month of it is a projection."""
     new_year = int(new_start[:4])
     frame = rc._read_sql(
         "SELECT COALESCE(t.tax_year, CAST(substr(t.date, 1, 4) AS INTEGER)) AS year, "
@@ -228,7 +232,7 @@ def projected_year_to_date(rc: RunConnection, old_start: str, new_start: str) ->
         "GROUP BY 1, 2, 3, 4, 5, 6 HAVING SUM(t.amount) != 0 ORDER BY 1, 2, 3, 4, 5, 6",
         (f"{old_start}-01", f"{new_start}-01", *_NOT_PROJECTED, str(new_year)),
     )
-    if frame.empty or not projections(rc, month_before(new_start)):
+    if frame.empty:
         return []
     found = []
     for row in named_rows(frame):
@@ -331,7 +335,7 @@ def merge_projected(
         if row is not None:
             total = round(Decimal(cell_dollars(row["amount"]) or 0) * 100) + one.amount
             months = covers(row)
-            row["amount"] = _cents_text(total)
+            row["amount"] = cents_to_dollars(total)
             row["description"] = _described(min(months[0], old_start), new_start) \
                 if months is not None and total != one.amount else described
             continue
@@ -342,7 +346,7 @@ def merge_projected(
         used.add(name)
         row = {"name": name, "from_account": one.from_account, "from_lot": one.from_lot,
                "to_account": one.to_account, "to_lot": one.to_lot,
-               "amount": _cents_text(one.amount), "tax_character": one.tax_character,
+               "amount": cents_to_dollars(one.amount), "tax_character": one.tax_character,
                "year": str(one.year),
                "description": described}
         by_key[one.key] = row
@@ -350,16 +354,15 @@ def merge_projected(
     return kept, dropped
 
 
+def is_projected(row: dict[str, str]) -> bool:
+    """Whether a year-to-date row is one a roll projected
+    (``projected_<year>_<n>``, of that year)."""
+    return _projected_year(row) is not None
+
+
 def _projected_year(row: dict[str, str]) -> int | None:
     """The year of a row an earlier roll projected; None for any other."""
-    name = row.get("name", "")
-    if not name.startswith(PROJECTED_PREFIX):
+    found = _PROJECTED_NAME.fullmatch(row.get("name", "").strip())
+    if found is None or row.get("year", "").strip() != found[1]:
         return None
-    year = row.get("year", "").strip()
-    return int(year) if year.isdigit() else None
-
-
-def _cents_text(cents: int) -> str:
-    sign = "-" if cents < 0 else ""
-    whole, part = divmod(abs(cents), 100)
-    return f"{sign}{whole}.{part:02d}"
+    return int(found[1])

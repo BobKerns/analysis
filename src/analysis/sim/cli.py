@@ -15498,7 +15498,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
                             replace=found.index)
         dropped = 0
-        if skipped or replaced or any(row["name"].startswith(roll.PROJECTED_PREFIX)
+        if skipped or replaced or any(roll.is_projected(row)
                                       for row in _read_ytd_rows(ytd_path)):
             _widen_ytd_header(ytd_path, scenario_dir)
             inherited = set(_overlay_rows(scenario_dir, "year_to_date.csv"))
@@ -15837,7 +15837,8 @@ def _apply_scenario_edit(
     if reserve is not None:
         meta["reserve"] = _blank_or(reserve, _reserve_json, "--reserve")
     if roll is not None:
-        # Off is no key: the builder reads only the scenario's own.
+        # '' drops the key, so the scenario inherits its parent's
+        # (roll_schedule.roll_mark); off opts out of it.
         meta[registries.ROLL_KEY] = roll or None
     if not values and not meta:
         raise click.UsageError("nothing to change: give at least one option (see --help)")

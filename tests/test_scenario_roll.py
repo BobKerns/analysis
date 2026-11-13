@@ -377,6 +377,10 @@ def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_co
          "to_account": "Asset_Checking", "to_lot": "default", "amount": "1000.00",
          "tax_character": "ordinary", "year": "2026",
          "description": "projected by sim scenario roll, 2026-05 to 2026-10"},
+        # Someone's own row, named like one: not the roll's to drop.
+        {"name": "projected_bonus", "from_account": "Income_Salary_Alice", "from_lot": "",
+         "to_account": "Asset_Checking", "to_lot": "", "amount": "500.00",
+         "tax_character": "ordinary", "year": "2024", "description": ""},
     ]
     projected = [
         roll.ProjectedRow(2026, "Income_Salary_Alice", "default", "Asset_Checking", "default",
@@ -391,6 +395,7 @@ def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_co
     # 2025 is settled before a 2027 start can see it.
     assert dropped == 1 and "projected_2025_1" not in by_name
     assert by_name["prior_wages"] == earlier[0]
+    assert by_name["projected_bonus"] == earlier[3]
     assert by_name["projected_2026_1"]["amount"] == "1500.25"
     # Each row says which months it covers, so a derived scenario's roll
     # knows which of them its own run covers again.

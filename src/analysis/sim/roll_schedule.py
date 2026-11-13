@@ -50,16 +50,13 @@ The state shared by the data repo's worktrees is in git's common directory:
 from __future__ import annotations
 
 import contextlib
-import fcntl
-import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time as clock
-from collections.abc import Generator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -203,53 +200,21 @@ def due_scenarios(data_dir: Path, today: date) -> list[tuple[str, str]]:
 # -- shared state --------------------------------------------------------------------
 
 
-def _state_path(top: Path) -> Path:
-    return price_schedule._common_dir(top) / STATE_FILE
-
-
 def read_state(data_dir: Path) -> dict[str, Any]:
     """The last roll and merge, as every worktree of the data repo sees
     them; {} before the first, or outside a git repository."""
-    try:
-        return json.loads(_state_path(price_schedule._top(data_dir)).read_text())
-    except (OSError, ValueError, price_schedule.PriceScheduleError):
-        return {}
+    return price_schedule.read_state_file(data_dir, STATE_FILE)
 
 
 def _update_state(top: Path, **changes: Any) -> dict[str, Any]:
     """Change some of the state's keys under its own lock, as the price
-    state is changed (``price_schedule._update_state``)."""
-    path = _state_path(top)
-    fd = os.open(path.with_name(STATE_LOCK_FILE), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        try:
-            state = json.loads(path.read_text())
-        except (OSError, ValueError):
-            state = {}
-        state.update(changes)
-        with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f"{STATE_FILE}.",
-                                         suffix=".tmp", delete=False) as tmp:
-            tmp.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
-        os.replace(tmp.name, path)
-        return state
-    finally:
-        os.close(fd)
+    state is changed (``price_schedule.update_state_file``)."""
+    return price_schedule.update_state_file(top, STATE_FILE, STATE_LOCK_FILE, **changes)
 
 
-@contextlib.contextmanager
-def _locked(top: Path) -> Generator[bool]:
+def _locked(top: Path) -> contextlib.AbstractContextManager[bool]:
     """One roll at a time per data repo: True when this one may go ahead."""
-    fd = os.open(price_schedule._common_dir(top) / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
-        yield True
-    finally:
-        os.close(fd)
+    return price_schedule.locked_file(top, LOCK_FILE)
 
 
 def due(data_dir: Path, config: dict[str, Any] | None, now: datetime) -> bool:
