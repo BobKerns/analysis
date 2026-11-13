@@ -21,9 +21,9 @@ from analysis.sim.cli import sim_group_command
 SCENARIO = "sim/scenarios/retire_alice/scenario.csv"
 
 
-def _local(*args: int) -> datetime:
+def _local(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
     """A moment in this machine's local time, as the window is."""
-    return datetime(*args).astimezone()  # noqa: DTZ001 -- local time on purpose
+    return datetime(year, month, day, hour, minute).astimezone()  # noqa: DTZ001 -- local on purpose
 
 
 def _scenario_row(path: Path) -> dict[str, str]:
@@ -116,7 +116,7 @@ def test_a_roll_into_a_new_year_commits_on_its_branch_tags_the_plan_and_merges(
     tag = repo.tags["plan-2026"]
     assert tag.commit.hexsha == before
     rolled = repo.commit(roll_schedule.ROLL_BRANCH)
-    assert rolled.message.startswith("Roll retire_alice forward to 2027-01")
+    assert str(rolled.message).startswith("Roll retire_alice forward to 2027-01")
     assert sorted(repo.git.diff("--name-only", before, rolled.hexsha).splitlines()) == [
         "sim/scenarios/retire_alice/account_lots.csv",
         "sim/scenarios/retire_alice/scenario.csv",

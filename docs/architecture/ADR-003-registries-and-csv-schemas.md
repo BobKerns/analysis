@@ -735,6 +735,8 @@ Exactly one data row (the loader rejects more).
 | `created_by` | text | ✓ | `$ANALYSIS_USER` at authoring time |
 | `meta_json` | json | | a JSON object, default `{}`; merged key by key down the lineage (see below) |
 
+`meta_json`'s `roll` ([#564](https://github.com/BobKerns/analysis/issues/564)), `monthly` or `off` (the default), has the background builder roll the scenario forward to the current month each night its start month is over ([ADR-004](ADR-004-reproducibility-and-activation.md) §12). Only the scenario's own `scenario.csv` counts: a scenario built on one that rolls doesn't roll unless it says so too. `sim scenario edit --roll` sets it.
+
 The calendar lives at `scenarios/<name>/calendar.csv` by filename convention — there is no `calendar` column. Calendars are the least-shared file in practice; a derived scenario overlays its parent's calendar.
 
 ##### Derived scenarios (`parent_scenario`)
@@ -1253,9 +1255,23 @@ is listed to record by hand instead. A rule with no `start` whose schedule
 counts from it (quarterly, biweekly, `ytd_preroll`) is offered the old
 start, so its months don't move with the scenario's. It lists the calendar rows dated before START
 (not latent factors or date markers), and the rules whose `ytd_preroll` now
-counts the new year's months; within the same year, the year-to-date rows
-and `ytd_amount`s that now cover too few months. For a start in a later
-year by April, it names what the prior year's April tax needs. `--yes`
+counts the new year's months. The months from the old start to START leave
+the run, and their income would leave its tax year with them
+([#564](https://github.com/BobKerns/analysis/issues/564)): the same run's
+flows in those months (not its opening balances, tax settlements or
+year-to-date catch-ups, and for START's year not a `ytd_preroll` rule's,
+which posts those months itself), summed by tax year (a flow's own, else
+its date's), lots and character, are offered as `year_to_date.csv` rows of
+their year, for START's year and the one before (whose tax is settled the
+April after), named `projected_<year>_<n>`; `--yes` takes them. A row an
+earlier roll projected for the same year, lots and character is added to
+rather than repeated, and one of a year before that is dropped. So the
+rolled run taxes those years as the old one did; the rows are a projection,
+to be replaced with the actual figures (`sim ytd edit`), and carry no rule's
+tags or person. Without them (no run reaches the month, or declined), it
+lists, within the same year, the year-to-date rows and `ytd_amount`s that
+now cover too few months, and for a start in a later year by April, what
+the prior year's April tax needs. `--yes`
 fails, rather than asks, at a question with no default (an
 `@itemization` balance and no run). A lot deleted in the scenario isn't
 brought back by an older run's projection. The whole edit is one staged edit, the kept copy
@@ -1526,3 +1542,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax settlement pays an overpayment back, and after-tax net worth counts a refund owed (§2.6).
 - [#542](https://github.com/BobKerns/analysis/issues/542): itemized deductions figured from the year's spending (SALT with its cap and phase-down, mortgage interest under the debt limit, charity, medical) beside the hand-typed total, under the new `itemized_limits`/`state_itemized_limits` aux kinds; `mortgage_payment` interest and `irmaa` surcharges carry implied `tax:` tags (§2.6, §4.4).
 - [#527](https://github.com/BobKerns/analysis/issues/527): import mappings move to the shared `imports/` folder, one subfolder per source, replacing each scenario's `quicken_account_map.csv` and the data repo's `quicken/expense_*.csv`; an account mapping can name a lot (§4.17).
+- [#564](https://github.com/BobKerns/analysis/issues/564): `scenario roll` offers the skipped months' flows as projected year-to-date rows; `scenario.meta_json` takes `roll` (§4.5, §7).

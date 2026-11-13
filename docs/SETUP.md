@@ -141,8 +141,10 @@ and `sim builder log` what it did in the last hour (`-v` adds build output).
 
 The builder also fetches prices after each weekday's US market close, so a lot
 held by shares stays current without `sim prices fetch`. `sim builder install`
-adds an hourly timer that runs `sim builder prices --if-due` (a launchd agent
-on macOS, a crontab line elsewhere; `uninstall` removes it). The fetch never
+adds an hourly timer that runs `sim builder tick` (a launchd agent on macOS,
+a crontab line elsewhere; `uninstall` removes it). A timer installed before
+nightly rolls (below) runs `sim builder prices --if-due`; run
+`sim builder install` again to replace it. The fetch never
 touches your checkout: it commits on the data repo's `builder/prices` branch,
 in its own sparse worktree, and the builder merges it into `main` between
 builds, only while `main` is checked out with no uncommitted changes. Then, if
@@ -153,6 +155,15 @@ that `origin` should live; never make the data repo public. `sim builder status`
 fetch, prices waiting to merge and why, and any symbol that keeps failing;
 `sim builder prices` fetches now. `sim builder install --no-prices`, or
 `ANALYSIS_PRICE_FETCH=off`, turns the fetches off.
+
+The same timer rolls forward, at night, each scenario marked to roll
+(`sim scenario edit NAME --roll monthly`) once its start month is over, so
+its run picks up the month's prices: as `sim scenario roll --yes` would, on
+the `builder/roll` branch, merged into `main` the same way. Night is 01:00 to
+05:00 local time unless `sim builder install --roll-window HH:MM-HH:MM` says
+otherwise; `--no-roll`, or `ANALYSIS_ROLL=off`, turns it off. A roll into a
+new year tags the plan before it `plan-<year>` rather than keeping a copy.
+`sim builder status` shows each roll, and one skipped or failed with why.
 Since it builds from your local `main`, not `origin/main`, `sim run` and
 the first run a notebook opens say so when your `main` is behind what you
 last fetched (a `NOTE:` line); `git pull` on `main` brings the newer code.
