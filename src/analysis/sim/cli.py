@@ -19423,6 +19423,7 @@ def _tax_guide() -> calendar_guide.Guide:
 
 def _tax_account(
     scenario_dir: Path, jurisdiction: str, opened: str = "", *, destination_option: bool = True,
+    accounts: Mapping[str, _Overlaid] | None = None,
 ) -> tuple[str, dict[str, str] | None]:
     """The expense account ``jurisdiction``'s tax is paid into (#586): the
     scenario's account of the jurisdiction's own subkind
@@ -19431,9 +19432,11 @@ def _tax_account(
     That name already taken by an account of another subkind is refused:
     adding a second row would duplicate it, or in a child scenario turn the
     parent's account into a tax account. ``destination_option``: the
-    command has ``--destination``, which the refusal may suggest."""
+    command has ``--destination``, which the refusal may suggest.
+    ``accounts``: the scenario's accounts.csv overlay, if already read."""
     subkind = registries.TAX_DESTINATION_SUBKINDS[jurisdiction]
-    accounts = _overlay_rows(scenario_dir, "accounts.csv")
+    if accounts is None:
+        accounts = _overlay_rows(scenario_dir, "accounts.csv")
     found = next((n for n, a in sorted(accounts.items()) if a.row.get("subkind") == subkind), None)
     if found is not None:
         return found, None
@@ -19456,14 +19459,18 @@ def _tax_account(
 def _tax_spec(
     data: Path, scenario_dir: Path, scenario: str, command: str, jurisdiction: str | None,
     free: Sequence[str] = (), *, own: tuple[str, dict[str, str] | None] | None = None,
+    accounts: Mapping[str, _Overlaid] | None = None, kinds: Mapping[str, Any] | None = None,
 ) -> calendar_guide.KindSpec:
     """The questions for ``sim tax add|edit``, completing from the scenario:
     a destination is one of its expense accounts of the jurisdiction's own
     subkind (``taxes_federal``, ``taxes_state``, ``taxes_local``, #586), and
     ``own``, :func:`_tax_account`'s answer, which the command creates if
     it's new. For ``add``, that is the default destination, and the default
-    source is another jurisdiction's, if it has one."""
-    accounts = _overlay_rows(scenario_dir, "accounts.csv")
+    source is another jurisdiction's, if it has one. ``accounts`` (the
+    accounts.csv overlay) and ``kinds`` (the tax calculator kinds) are
+    read here unless the caller has them."""
+    if accounts is None:
+        accounts = _overlay_rows(scenario_dir, "accounts.csv")
     subkind = registries.TAX_DESTINATION_SUBKINDS.get(jurisdiction or "")
     expenses = sorted(n for n, a in accounts.items() if a.row.get("kind") == "expense"
                       and (subkind is None or a.row.get("subkind") == subkind))
@@ -19476,7 +19483,8 @@ def _tax_spec(
             destination = own[0]
         if own[1] is not None:
             expenses.append(own[0])
-    kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
+    if kinds is None:
+        kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
                           expenses=expenses, jurisdictions=free, source=source,
                           destination=destination, subkind=subkind,
@@ -19639,10 +19647,11 @@ def tax_add_command(
         made = f", and expense account {row['destination']}" if new_account is not None else ""
         click.echo(f"added {name} tax ({_shown(path)}){made}: {_tax_summary(name, row)}")
 
-    def at_once(name: str) -> bool:
-        """Add ``name`` without asking, when its source is given, or a local
-        tax's taken from the state's (#508): into the destination given or
-        the tax's own account (#586)."""
+    def quick(name: str) -> tuple[dict[str, str], tuple[str, dict[str, str] | None] | None] | None:
+        """The answers for adding ``name`` without asking, and
+        :func:`_tax_account`'s answer when the destination is the tax's own
+        account (#586); None when something must be asked. Its source is
+        the one given, or a local tax's the state's (#508)."""
         source = source_chain
         if name == "local":
             state = existing.get("state")
@@ -19652,17 +19661,15 @@ def tax_add_command(
                     "(sim tax add state first)")
             source = source or state.row.get("source_chain") or None
         if source is None:
-            return False
-        own = None
-        into = destination
-        if not into:
-            own = _tax_account(ref.path, name)
-            into = own[0]
-        write({"jurisdiction": name, **{k: v or "" for k, v in given.items()}, "source_chain": source,
-               "destination": into}, own)
-        return True
+            return None
+        own = None if destination else _tax_account(ref.path, name, accounts=accounts)
+        into = destination or (own[0] if own is not None else "")
+        return ({"jurisdiction": name, **{k: v or "" for k, v in given.items()}, "source_chain": source,
+                 "destination": into}, own)
 
-    if jurisdiction is not None and at_once(jurisdiction):
+    accounts = _overlay_rows(ref.path, "accounts.csv")
+    if jurisdiction is not None and (ready := quick(jurisdiction)) is not None:
+        write(*ready)
         return
     free = [n for n in registries.TAX_JURISDICTIONS if n not in existing]
     if not free:
@@ -19671,15 +19678,18 @@ def tax_add_command(
     if jurisdiction is not None:
         answers["jurisdiction"] = jurisdiction
     guide = _tax_guide()
+    kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     if "jurisdiction" not in answers:  # the defaults follow from it
-        spec = _tax_spec(data, ref.path, ref.name, "add", None, free)
+        spec = _tax_spec(data, ref.path, ref.name, "add", None, free, accounts=accounts, kinds=kinds)
         answers["jurisdiction"] = guide.ask_field(spec, spec.fields[0], calendar_guide.GuideContext(), answers)
-        if answers["jurisdiction"] == "local" and at_once("local"):
+        if answers["jurisdiction"] == "local" and (ready := quick("local")) is not None:
+            write(*ready)
             return
     # A made-up name already taken stops here, with what to do: the guide
     # would offer no account to choose.
-    own = _tax_account(ref.path, answers["jurisdiction"])
-    spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free, own=own)
+    own = _tax_account(ref.path, answers["jurisdiction"], accounts=accounts)
+    spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free, own=own,
+                     accounts=accounts, kinds=kinds)
     ctx = calendar_guide.GuideContext()
     guide.complete(spec, ctx, answers)
     guide.review(spec, ctx, answers, lambda _params: write(answers, own), scenario=ref.name)

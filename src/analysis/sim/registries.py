@@ -81,8 +81,10 @@ PROPERTY_TAX_SUBKIND = "taxes_property"
 ``tax:property`` tag or ``property_tax`` character needed."""
 TAX_RATE_COUNTS: dict[str, str] = {"local": "state"}
 """A jurisdiction whose tax a fill_bracket's ``max_marginal_rate`` in
-another's scope counts too (#508): a state's rate includes the local tax
-figured on the same income."""
+another's scope counts too (#508): the local tax is bands on the state's
+taxable income, so the next dollar of it costs both. The state isn't
+counted in a federal rate: it has its own income, deductions and
+brackets, and a state-scope rule measures it."""
 RESIDENCE_FILE = "residence.csv"
 RESIDENCE_CSV_HEADER: tuple[str, ...] = ("effective_date", "state", "county", "description")
 """Where the household lives (#509, ADR-003 §4.16): from each row's month

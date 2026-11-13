@@ -4032,9 +4032,11 @@ def _apply_fill_bracket(
         if magi_est is not None and irmaa is not None:
             def cliff(x: int, e: tax_api.Prepared = magi_est) -> int:
                 return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).magi, month_s, tid)
-        # A rate counts the taxes figured on the same income, a state's
-        # local tax (#508), since the same dollar pays them. A federal rate stays the
-        # federal tax's: a state builds on it, but is paid on its own.
+        # A state's rate counts the local tax (#508): its bands sit on the
+        # state's taxable income, so the next dollar there costs both. A
+        # federal rate stays the federal tax's: a state builds on federal
+        # AGI but has its own deductions and brackets, which its own scope
+        # measures.
         measured_with = [est, *(
             _prepare_tax(con, paid.params, aux=aux, tax_year=tax_year, tid=paid.id, kind=paid.kind,
                          jurisdictions=tax_rules, person_lifespan=person_lifespan,

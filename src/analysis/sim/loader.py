@@ -3819,9 +3819,11 @@ def _validate_income_tax_payments(
     steps reach one: whatever an itemized line or another schedule counts,
     which isn't income tax: the ``property_tax`` and ``business_expense``
     characters (a step's own too), an itemizing tag
-    (``registries.ITEMIZING_TAGS``) on the row or the account, and the rule
-    kinds that imply one (a mortgage's interest, an IRMAA surcharge). Runs
-    after the references are resolved to leaf chains."""
+    (``registries.ITEMIZING_TAGS``) on the row or the account, the rules
+    whose kind implies one as the engine reads them (``_implying_rules``:
+    an IRMAA surcharge, a home mortgage's interest), and any other
+    ``mortgage_payment``'s interest, which is interest, not tax. Runs after
+    the references are resolved to leaf chains."""
     income_tax = {a.get("name", ""): a.get("subkind", "") for a in accounts
                   if a.get("subkind") in registries.INCOME_TAX_SUBKINDS}
     if not income_tax:
@@ -3851,7 +3853,9 @@ def _validate_income_tax_payments(
             f"tax payments (withholding, estimated payments), not spending of "
             f"{', '.join(why)}; {hint}")
 
-    def check(where: str, row: Mapping[str, str], to_ref: str, kind: str = "") -> None:
+    implying = {id(row) for row in _implying_rules(scheduled_rows, accounts)}
+
+    def check(where: str, row: Mapping[str, str], to_ref: str, also: str = "") -> None:
         targets = reached(to_ref)
         if not targets:
             return
@@ -3862,8 +3866,8 @@ def _validate_income_tax_payments(
         found = sorted((_row_tags(row) or set()) & registries.ITEMIZING_TAGS)
         if found:
             why.append(f"tag {' '.join(found)}")
-        if kind in registries.IMPLIED_TAX_TAGS:
-            why.append(f"amount_rule_kind {kind}")
+        if also:
+            why.append(also)
         if why:
             via = f" (through chain {to_ref})" if to_ref in chains else ""
             for account in targets:
@@ -3872,10 +3876,16 @@ def _validate_income_tax_payments(
 
     for where, row in _located(scheduled_rows, "scheduled.csv"):
         rule_kind = row.get("amount_rule_kind", "")
-        check(f"{where} ({row.get('name', '')})", row, row.get("to_account", ""), rule_kind)
+        # A rule kind that implies an itemized tag, as the engine reads it
+        # (an irmaa rule, a home mortgage's interest); a car loan's or a
+        # HELOC's interest implies none, but is interest, not tax.
+        implied = (f"amount_rule_kind {rule_kind} (its {registries.IMPLIED_TAX_TAGS[rule_kind]})"
+                   if id(row) in implying else "")
+        if rule_kind != "mortgage_payment":
+            check(f"{where} ({row.get('name', '')})", row, row.get("to_account", ""), implied)
         if row.get("interest_account"):
             check(f"{where} ({row.get('name', '')}) interest_account", row,
-                  row["interest_account"], rule_kind)
+                  row["interest_account"], implied or f"interest (amount_rule_kind {rule_kind})")
     for where, row in _located(ytd_rows, "year_to_date.csv"):
         check(f"{where} ({row.get('name', '')})", row, row.get("to_account", ""))
     for where, row in _located(calendar_rows, "calendar.csv"):
