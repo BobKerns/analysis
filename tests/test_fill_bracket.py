@@ -258,7 +258,7 @@ def test_series_fixed_means_no_inflation_on_either_target(fill_run: Rules) -> No
     assert {fill["target"] for fill in fixed["fill"]} == {250_000_00}
 
 
-def test_a_states_max_marginal_rate_counts_the_local_tax_paid_with_it(
+def test_a_states_max_marginal_rate_counts_the_local_tax_built_on_it(
     fill_run: Rules, add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
     write_aux: Callable[[str, str], Path],
 ) -> None:

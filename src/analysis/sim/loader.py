@@ -1430,6 +1430,7 @@ def load_scenario(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
     _validate_itemizing_rows(accounts, scheduled_rows, ytd_rows, leaves, issues)
+    _validate_income_tax_payments(accounts, scheduled_rows, calendar_rows, ytd_rows, leaves, issues)
     rail_rows = _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
                                       calendar_rows, issues)
     disabled_strategies: list[strategy_load.PreparedStrategy] = []
@@ -3796,6 +3797,72 @@ def _validate_itemizing_rows(
                 "rule's ytd_amount")
 
 
+def _validate_income_tax_payments(
+    accounts: list[dict[str, str]], scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]], ytd_rows: list[dict[str, str]],
+    leaves: _LeafIndex, issues: list[str],
+) -> None:
+    """Only income tax payments go into an income-tax account (#586,
+    ``registries.INCOME_TAX_SUBKINDS``): withholding, an estimated payment,
+    a settlement, so what went into a jurisdiction's account is what it
+    was paid. Refused there: whatever an itemized line or another schedule
+    counts, which isn't income tax: the ``property_tax`` and
+    ``business_expense`` characters, an itemizing tag (``tax:property``,
+    ``tax:charity``, ``tax:rental``, ...) on the row or the account, and the
+    rule kinds that imply one (a mortgage's interest, an IRMAA surcharge)."""
+    itemizing = frozenset({*registries.ITEMIZED_TAGS.values(), registries.RENTAL_TAG})
+
+    def tags_of(row: Mapping[str, str]) -> set[str]:
+        try:
+            return {f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", ""))}
+        except ValueError:
+            return set()  # reported where the tags are checked
+
+    income_tax = {a.get("name", ""): a.get("subkind", "") for a in accounts
+                  if a.get("subkind") in registries.INCOME_TAX_SUBKINDS}
+    if not income_tax:
+        return
+    for where, row in _located(accounts, "accounts.csv"):
+        if row.get("name") in income_tax and (found := sorted(tags_of(row) & itemizing)):
+            issues.append(
+                f"{where} ({row.get('name')}): a {row.get('subkind')} account takes only income "
+                f"tax payments, which no itemizing tag fits ({' '.join(found)})")
+
+    def check(where: str, row: Mapping[str, str], to_ref: str, kind: str = "") -> None:
+        account = leaves.account_of.get(to_ref, to_ref)
+        if account not in income_tax:
+            return
+        why = []
+        character = row.get("tax_character", "")
+        if character in ("property_tax", registries.BUSINESS_EXPENSE):
+            why.append(f"tax_character {character}")
+        found = sorted(tags_of(row) & itemizing)
+        if found:
+            why.append(f"tag {' '.join(found)}")
+        if kind in registries.IMPLIED_TAX_TAGS:
+            why.append(f"amount_rule_kind {kind}")
+        if why:
+            property_tax = character == "property_tax" or registries.ITEMIZED_TAGS["property_tax"] in found
+            hint = (f"pay it into a {registries.PROPERTY_TAX_SUBKIND} account" if property_tax
+                    else "pay it into another expense account")
+            issues.append(
+                f"{where}: {account} is a {income_tax[account]} account, which takes only income "
+                f"tax payments (withholding, estimated payments), not spending of "
+                f"{', '.join(why)}; {hint}")
+
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        rule_kind = row.get("amount_rule_kind", "")
+        check(f"{where} ({row.get('name', '')})", row, row.get("to_account", ""), rule_kind)
+        if row.get("interest_account"):
+            check(f"{where} ({row.get('name', '')}) interest_account", row,
+                  row["interest_account"], rule_kind)
+    for where, row in _located(ytd_rows, "year_to_date.csv"):
+        check(f"{where} ({row.get('name', '')})", row, row.get("to_account", ""))
+    for where, row in _located(calendar_rows, "calendar.csv"):
+        if row.get("kind") in ("one_off_transfer", "transfer_balance"):
+            check(where, row, row.get("account_2", ""))
+
+
 def _validate_guard_rails(
     scenarios_dir: Path, scenario_name: str, accounts: list[dict[str, str]],
     scheduled_rows: list[dict[str, str]], calendar_rows: list[dict[str, str]],
@@ -4230,7 +4297,8 @@ def _warn_hand_typed_deductions(
             tags = {f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", ""))}
         except ValueError:
             return False  # reported where the tags are checked
-        return bool(tags & itemized) or row.get("tax_character") == "property_tax"
+        return bool(tags & itemized) or row.get("tax_character") == "property_tax" \
+            or row.get("subkind") == registries.PROPERTY_TAX_SUBKIND  # an account (#586)
 
     # A retire_scheduled event ends its rule early; the earliest one, as a
     # warning needn't follow every reopening.
@@ -4266,8 +4334,9 @@ def _warn_hand_typed_deductions(
                           for kind, years in sorted(found.items()))
         warnings.append(
             f"{where}: the hand-typed total adds to the itemized lines figured from spending "
-            "(a mortgage's interest, IRMAA's surcharges, spending tagged tax:property, "
-            "tax:charity or tax:medical, and federally the state and local income tax paid); "
+            "(a mortgage's interest, IRMAA's surcharges, property tax paid into a "
+            "taxes_property account or tagged tax:property, spending tagged tax:charity or "
+            "tax:medical, and federally the state and local income tax paid); "
             "leave those out of it, or they count twice")
     # The state's fallback: with no state_deductions rows at all, a state
     # that figures no lines takes federal_deductions, the rest only.
@@ -5662,14 +5731,8 @@ def _validate_taxes(
     calculators = kinds if kinds is not None else tax_code.TaxKinds({})
     defined = [row["name"] for row in tax_rows]
     account_kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
-    by_name = {row["name"]: row for row in tax_rows}
-    for row in tax_rows:
-        # A jurisdiction paid with another's (local with the state's, #508)
-        # takes its source and destination when its own are blank. Before
-        # either is resolved, so both resolve the same way.
-        if (with_row := by_name.get(registries.TAX_PAID_WITH.get(row["name"], ""))) is not None:
-            for column in ("source_chain", "destination"):
-                row[column] = row.get(column) or with_row.get(column, "")
+    account_subkinds = {a.get("name", ""): a.get("subkind", "") for a in accounts}
+    paid_into: dict[str, list[str]] = defaultdict(list)
     for row in tax_rows:
         where = row.get(ORIGIN) or f"{registries.TAXES_DIR}/{row['name']}.csv"
         name = row["name"]
@@ -5716,6 +5779,17 @@ def _validate_taxes(
         elif account_kinds.get(destination) not in (None, "expense"):
             issues.append(f"{where}: destination '{destination}' is a {account_kinds[destination]} account; "
                           "the tax is paid into an expense account")
+        elif destination in account_subkinds and name in registries.TAX_DESTINATION_SUBKINDS:
+            # Each tax pays into an account of its own kind (#586), so what
+            # went into it is that tax's payments and nothing else.
+            want = registries.TAX_DESTINATION_SUBKINDS[name]
+            if account_subkinds[destination] != want:
+                issues.append(
+                    f"{where}: destination '{destination}' has subkind "
+                    f"{account_subkinds[destination] or '(blank)'}; the {name} tax is paid into an "
+                    f"expense account of subkind {want} (change the account's subkind in "
+                    f"accounts.csv, or name another)")
+            paid_into[destination].append(name)
         schedule = row.get("schedule") or registries.TAX_SCHEDULES[0]
         if schedule not in registries.TAX_SCHEDULES:
             issues.append(f"{where}: schedule {schedule!r} must be one of "
@@ -5747,6 +5821,11 @@ def _validate_taxes(
         if not problems and not set(params) & retired:
             row["params_json"] = json.dumps(converted, sort_keys=True, separators=(",", ":")) \
                 if converted else ""
+    for destination, names in paid_into.items():
+        if len(names) > 1:
+            issues.append(
+                f"{registries.TAXES_DIR}/: the {' and '.join(names)} taxes are both paid into "
+                f"'{destination}'; each tax is paid into an account of its own")
 
 
 def _validate_local_tax(

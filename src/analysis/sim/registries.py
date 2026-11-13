@@ -20,7 +20,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     },
     "expense": {
         "living", "healthcare", "housing", "interest_expense", "taxes_federal",
-        "taxes_state", "taxes_property", "business", "gift", "other_expense",
+        "taxes_state", "taxes_local", "taxes_property", "business", "gift", "other_expense",
     },
 }
 
@@ -68,9 +68,21 @@ jurisdiction it computes."""
 TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state", "local")
 """The jurisdictions, in the order they settle: a state's return builds on
 the federal one, a local one on the state's (#508)."""
-TAX_PAID_WITH: dict[str, str] = {"local": "state"}
-"""A jurisdiction paid with another's (#508): a blank ``source_chain`` or
-``destination`` in its file takes that one's."""
+TAX_DESTINATION_SUBKINDS: dict[str, str] = {
+    "federal": "taxes_federal", "state": "taxes_state", "local": "taxes_local"}
+"""The expense subkind each jurisdiction's ``destination`` must have (#586):
+each tax pays into an account of its own kind, which no other jurisdiction
+shares, so what went into it is that tax's payments and nothing else."""
+INCOME_TAX_SUBKINDS: frozenset[str] = frozenset(TAX_DESTINATION_SUBKINDS.values())
+"""The income-tax expense subkinds (#586): only income tax payments go into
+one (withholding, an estimated payment, a settlement)."""
+PROPERTY_TAX_SUBKIND = "taxes_property"
+"""Spending into an account of this subkind is property tax (#586), with no
+``tax:property`` tag or ``property_tax`` character needed."""
+TAX_RATE_COUNTS: dict[str, str] = {"local": "state"}
+"""A jurisdiction whose tax a fill_bracket's ``max_marginal_rate`` in
+another's scope counts too (#508): a state's rate includes the local tax
+figured on the same income."""
 RESIDENCE_FILE = "residence.csv"
 RESIDENCE_CSV_HEADER: tuple[str, ...] = ("effective_date", "state", "county", "description")
 """Where the household lives (#509, ADR-003 §4.16): from each row's month

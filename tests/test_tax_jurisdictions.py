@@ -117,3 +117,81 @@ def test_a_child_scenarios_tax_file_replaces_its_parents_whole(
     assert start == "2030-04-30"
     assert paid and paid[0] >= "2030-04-30"
     assert all(d[5:7] == "04" for d in paid)
+
+
+def test_each_tax_is_paid_into_an_account_of_its_own_kind(
+    add_tax: Callable[..., Path], add_state_tax: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """#586: the federal tax pays into a taxes_federal account, the state's
+    into taxes_state, and no two taxes share one."""
+    add_state_tax()
+    add_tax("state", destination="Expense_Taxes_Federal")
+    with pytest.raises(LoadError) as raised:
+        load_test_copy()
+    issues = "\n".join(raised.value.issues)
+    assert ("taxes/state.csv line 2: destination 'Expense_Taxes_Federal' has subkind taxes_federal; "
+            "the state tax is paid into an expense account of subkind taxes_state") in issues
+    assert "the federal and state taxes are both paid into 'Expense_Taxes_Federal'" in issues
+
+
+def test_a_local_tax_needs_its_own_destination(
+    add_tax: Callable[..., Path], add_state_tax: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """#586: a blank destination for the local tax no longer takes the
+    state's."""
+    add_state_tax()
+    add_tax("local", destination="")
+    with pytest.raises(LoadError, match="taxes/local.csv line 2: destination names the expense account"):
+        load_test_copy()
+
+
+@pytest.mark.parametrize(("cells", "why"), [
+    ({"tax_character": "property_tax"}, "tax_character property_tax; pay it into a taxes_property account"),
+    ({"tags": "tax:property"}, "tag tax:property; pay it into a taxes_property account"),
+    ({"tags": "tax:charity"}, "tag tax:charity; pay it into another expense account"),
+    ({"tax_character": "business_expense"}, "tax_character business_expense"),
+])
+def test_only_income_tax_payments_go_into_an_income_tax_account(
+    add_tax: Callable[..., Path], append_scheduled_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], cells: dict[str, str], why: str,
+) -> None:
+    """#586: a rule paying into an income-tax account must be a tax payment:
+    property tax, an itemized deduction's spending or a business expense is
+    refused there."""
+    add_tax()
+    append_scheduled_row(name="not_tax", from_account="Asset_Checking",
+                         to_account="Expense_Taxes_Federal", amount_rule_kind="fixed_amount",
+                         amount="100.00", start="2027-01-31", **{"tax_character": "none", **cells})
+    with pytest.raises(LoadError, match="Expense_Taxes_Federal is a taxes_federal account, which takes "
+                       "only income tax payments") as raised:
+        load_test_copy()
+    assert why in "\n".join(raised.value.issues)
+
+
+def test_withholding_into_an_income_tax_account_loads(
+    add_tax: Callable[..., Path], append_scheduled_row: Callable[..., None],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Withholding and an estimated payment are tax payments (#586)."""
+    add_tax()
+    append_scheduled_row(name="withholding", from_account="Asset_Checking",
+                         to_account="Expense_Taxes_Federal", amount_rule_kind="fixed_amount",
+                         amount="100.00", start="2027-01-31", tax_character="none")
+    append_calendar_row(date="2027-06-30", kind="one_off_transfer", name="estimate",
+                        account_1="Asset_Checking", account_2="Expense_Taxes_Federal",
+                        amount="500.00")
+    load_test_copy()
+
+
+def test_a_calendar_row_of_property_tax_into_an_income_tax_account_is_refused(
+    add_tax: Callable[..., Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_tax()
+    append_calendar_row(date="2027-06-30", kind="one_off_transfer", name="county",
+                        account_1="Asset_Checking", account_2="Expense_Taxes_Federal",
+                        amount="500.00", tax_character="property_tax")
+    with pytest.raises(LoadError, match="calendar.csv.*Expense_Taxes_Federal is a taxes_federal account"):
+        load_test_copy()

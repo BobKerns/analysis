@@ -147,7 +147,8 @@ class SpendingItem:
     implied_tags: frozenset[str] = frozenset()
     """The tag the rule's kind implies when nothing says which itemized
     line the item is on (#542): a mortgage payment's interest is
-    ``tax:mortgage_interest``, an IRMAA surcharge ``tax:medical``."""
+    ``tax:mortgage_interest``, an IRMAA surcharge ``tax:medical``, and
+    spending into a ``taxes_property`` account ``tax:property`` (#586)."""
 
     @property
     def tags(self) -> frozenset[str]:
