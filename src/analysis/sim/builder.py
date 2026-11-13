@@ -924,7 +924,7 @@ class _Daemon:
         """#564: note a roll that ended; merge a roll that waits for main,
         between builds; start a roll when one is due. Looks as often as
         :meth:`prices_tick` does."""
-        from analysis.sim import roll_schedule
+        from analysis.sim import price_schedule, roll_schedule
 
         if self.roller is not None:
             if self.roller.poll() is None:
@@ -945,7 +945,8 @@ class _Daemon:
         if self.build is None and not self.held:
             try:
                 merged = roll_schedule.merge_pending(self.data_dir)
-            except (roll_schedule.RollScheduleError, OSError) as exc:
+            except (roll_schedule.RollScheduleError, price_schedule.PriceScheduleError,
+                    OSError) as exc:
                 self.log(f"roll not merged: {exc}")
                 return
             for line in merged:

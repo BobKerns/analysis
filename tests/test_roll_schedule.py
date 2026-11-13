@@ -380,3 +380,54 @@ def test_a_tag_that_fails_is_said_and_the_roll_still_merges(
     assert lines[1].startswith("couldn't tag the plan plan-2026:")
     assert not roll_schedule.read_state(data)["pending"]
     assert "plan-2026" not in [t.name for t in repo.tags]
+
+
+def test_a_night_that_rolls_nothing_leaves_a_waiting_roll_waiting(
+    marked: tuple[Path, git.Repo], commit_files: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data, repo = marked
+    rolled = _pending_roll(repo, data, commit_files)
+    monkeypatch.setattr(roll_schedule, "_roll_one",
+                        lambda data, name, month, *, own=False: (1, ["Error: it broke"]))
+    worktree = builder.BuilderPaths.for_data(data).roll_worktree
+
+    roll_schedule.roll(data, worktree, {"roll": True}, now=_local(2026, 11, 14, 2, 0))
+
+    state = roll_schedule.read_state(data)
+    assert state["pending"] == rolled
+    # The hint names the month the night tried, as the command takes it.
+    assert any("`sim scenario roll retire_alice 2026-11` does it by hand" in line
+               for line in roll_schedule.describe(state, {"roll": True}, data))
+    assert roll_schedule.merge_pending(data)[0] == "merged the roll into main"
+
+
+def test_a_roll_committed_after_the_state_was_read_waits_for_its_state(
+    marked: tuple[Path, git.Repo], commit_files: Callable[..., str],
+) -> None:
+    data, repo = marked
+    _pending_roll(repo, data, commit_files)
+    newer = commit_files(repo, {"sim/notes.txt": "x\n"}, "a newer roll")
+    repo.git.update_ref(f"refs/heads/{roll_schedule.ROLL_BRANCH}", newer)
+    repo.git.reset("--hard", "HEAD^")
+
+    assert roll_schedule.merge_pending(data) == []
+    assert newer not in [c.hexsha for c in repo.head.commit.parents]
+
+
+def test_a_quiet_night_reads_the_scenarios_once(
+    marked: tuple[Path, git.Repo], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data, _ = marked
+    monkeypatch.delenv(roll_schedule.SWITCH_ENV)
+    calls: list[date] = []
+
+    def none_due(data_dir: Path, today: date) -> list[tuple[str, str]]:
+        calls.append(today)
+        return []
+
+    monkeypatch.setattr(roll_schedule, "due_scenarios", none_due)
+    config = {"prices": False, "roll": True}
+    for minute in (0, 1, 2):
+        assert not roll_schedule.due(data, config, _local(2026, 11, 20, 2, minute))
+    assert len(calls) == 1

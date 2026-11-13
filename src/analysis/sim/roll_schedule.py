@@ -217,6 +217,11 @@ def _locked(top: Path) -> contextlib.AbstractContextManager[bool]:
     return price_schedule.locked_file(top, LOCK_FILE)
 
 
+# The nights nothing was due, by data dir: the daemon asks every minute of
+# the window, and most nights none is, so it reads the scenarios once.
+_quiet: set[tuple[str, str]] = set()
+
+
 def due(data_dir: Path, config: dict[str, Any] | None, now: datetime) -> bool:
     """Whether a roll is due: rolls are on, ``now`` is in the window, none
     was tried yet this night, the day's prices aren't still to come or to
@@ -226,13 +231,17 @@ def due(data_dir: Path, config: dict[str, Any] | None, now: datetime) -> bool:
     night = night_of(now, window_of(config))
     if night is None:
         return False
-    if read_state(data_dir).get("night") == night.isoformat():
+    quiet = (str(data_dir), night.isoformat())
+    if quiet in _quiet or read_state(data_dir).get("night") == night.isoformat():
         return False
     if price_schedule.enabled(config):
         prices = price_schedule.read_state(data_dir)
         if prices.get("pending") or price_schedule.due(prices, now):
             return False  # the roll should see the latest close
-    return bool(due_scenarios(data_dir, now.astimezone().date()))
+    if due_scenarios(data_dir, now.astimezone().date()):
+        return True
+    _quiet.add(quiet)
+    return False
 
 
 # -- rolling -------------------------------------------------------------------------
@@ -372,7 +381,8 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
             lines.append(f"rolling {name} forward: {old} -> {month}")
             # Built on one rolling tonight: that one's roll covers the rest.
             parents = [one for one in _lineage_names(data, name)[:-1] if one in rolling]
-            entry: dict[str, Any] = {"at": now.timestamp(), "from": old, "to": month}
+            entry: dict[str, Any] = {"at": now.timestamp(), "from": old, "to": month,
+                                     "own": bool(parents)}
             # Its own rows rolled on a parent's that didn't would open a
             # month the rest of its plan doesn't.
             if stuck := [one for one in parents if one not in rolled]:
@@ -405,17 +415,18 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
         if rolled:
             committed = _commit(top, worktree, month, rolled)
             lines.append(f"committed the roll on {ROLL_BRANCH} ({committed[:10]})")
-        _update_state(
-            top, scenarios=scenarios,
-            pending=committed, pending_paths=sorted(
+        # A night that rolled nothing leaves an earlier roll still waiting
+        # to merge as it is.
+        pending = {} if committed is None else {
+            "pending": committed, "waiting": None, "succeeded": now.timestamp(),
+            "pending_paths": sorted(
                 {path for name in rolled for path in _lineage_paths(data, rel, name)}),
             # Tagged once merged: a roll dropped before then leaves no tag.
-            pending_tags=[{"tag": tag, "base": base, "message":
-                           f"The plan before {', '.join(names)} rolled into {month[:4]} (#564)"}
-                          for tag, names in sorted(tags.items())] if committed else [],
-            waiting=None,
-            **({"succeeded": now.timestamp()} if committed else {}),
-        )
+            "pending_tags": [{"tag": tag, "base": base, "message":
+                              f"The plan before {', '.join(names)} rolled into {month[:4]} (#564)"}
+                             for tag, names in sorted(tags.items())],
+        }
+        _update_state(top, scenarios=scenarios, **pending)
     return RollOutcome(lines, committed, rolled)
 
 
@@ -452,18 +463,20 @@ def merge_pending(data_dir: Path) -> list[str]:
         if state.get("pending"):
             _update_state(top, pending=None, waiting=None)
         return []
+    if state["pending"] != pending:
+        return []  # a roll is committing: its state comes next
     base = _git(top, "rev-parse", f"{pending}^", check=True).stdout.strip()
     paths = list(state.get("pending_paths") or [])
     if main != base and paths and _git(top, "diff", "--quiet", base, main, "--", *paths).returncode:
         # Edited since the roll: it was made from the plan as it was then.
-        _git(top, "update-ref", _ROLL_REF, main)
+        _git(top, "update-ref", _ROLL_REF, main, pending)
         _update_state(top, pending=None, waiting=None, night=None)
         return [f"dropped the roll: {price_schedule.DATA_BRANCH} changed a rolled scenario since; "
                 "rolling again from it"]
     why = price_schedule._why_not(top)
     if why is None:
         done = _git(top, "-c", "commit.gpgsign=false", "merge", "--no-ff", "-q",
-                    "-m", f"Merge the roll from {ROLL_BRANCH}", _ROLL_REF)
+                    "-m", f"Merge the roll from {ROLL_BRANCH}", pending)
         if done.returncode == 0:
             lines = [f"merged the roll into {price_schedule.DATA_BRANCH}"]
             tags = []
@@ -533,5 +546,6 @@ def describe(state: dict[str, Any], config: dict[str, Any] | None, data_dir: Pat
             lines.append(f"roll: {name}: rolled {span} on {when(entry.get('at'))}{tag}")
         else:
             lines.append(f"roll {entry.get('outcome')}: {name} ({span}, {when(entry.get('at'))}): "
-                         f"{entry.get('why')}; `sim scenario roll {name}` does it by hand")
+                         f"{entry.get('why')}; `sim scenario roll {name} {entry.get('to')}"
+                         f"{' --own' if entry.get('own') else ''}` does it by hand")
     return lines

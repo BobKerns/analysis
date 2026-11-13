@@ -2064,7 +2064,9 @@ skips become projected year-to-date rows. The mark is inherited, so the
 what-ifs built on `base` roll too, each after `base`, and only what is its
 own (`sim scenario roll --own`): its own lots. The projected rows are
 `base`'s for all of them, since the months skipped are past, the same in
-every plan. `sim scenario edit NAME --roll off` keeps one where it is.
+every plan. `sim scenario edit NAME --roll off` stops one rolling its own
+lots; one that takes its start from `base` still starts when `base` does,
+so give it a start of its own to keep it at the old plan.
 It works on its own branch and merges into `main` while `main` is checked out
 with nothing uncommitted, then the builder runs everything again. Instead of
 a copy of last year's plan, a roll into a new year tags the plan before it

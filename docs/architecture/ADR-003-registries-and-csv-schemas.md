@@ -1273,7 +1273,10 @@ added to rather than repeated (its months then run from the earlier
 roll's first), and one of a year before that is dropped. So the
 rolled run taxes those years as the old one did; the rows are a projection,
 to be replaced with the actual figures (`sim ytd edit`), and carry no rule's
-tags or person. Without them (no run reaches the month, or declined), it
+tags or person. An HSA withdrawal's gain (`hsa_gain`, which only a state that
+taxes an HSA taxes) is not among them: no year-to-date row can carry one yet,
+so in such a state those months' HSA gains are missing from its tax of the
+year. Without them (no run reaches the month, or declined), it
 lists, within the same year, the year-to-date rows and `ytd_amount`s that
 now cover too few months, and for a start in a later year by April, what
 the prior year's April tax needs. A projected row stays the roll's only
@@ -1563,5 +1566,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax settlement pays an overpayment back, and after-tax net worth counts a refund owed (§2.6).
 - [#542](https://github.com/BobKerns/analysis/issues/542): itemized deductions figured from the year's spending (SALT with its cap and phase-down, mortgage interest under the debt limit, charity, medical) beside the hand-typed total, under the new `itemized_limits`/`state_itemized_limits` aux kinds; `mortgage_payment` interest and `irmaa` surcharges carry implied `tax:` tags (§2.6, §4.4).
 - [#527](https://github.com/BobKerns/analysis/issues/527): import mappings move to the shared `imports/` folder, one subfolder per source, replacing each scenario's `quicken_account_map.csv` and the data repo's `quicken/expense_*.csv`; an account mapping can name a lot (§4.17).
-- [#564](https://github.com/BobKerns/analysis/issues/564): `scenario roll` offers the skipped months' flows as projected year-to-date rows, moves the start-dependent rows of the scenarios that take its start, and `--own` rolls a derived scenario's own lots; `scenario.meta_json` takes an inherited `roll`; IRMAA reads the year before the start's MAGI from the run when projected rows settle it (§2.11, §4.5, §7).
 - [#586](https://github.com/BobKerns/analysis/issues/586): each tax jurisdiction pays into an account of its own subkind (new `taxes_local`), none shared and `local` no longer paid with the state's; only income tax payments go into an income-tax account; spending into a `taxes_property` account is property tax; the income tax paid is what went into the jurisdiction's account (§1, §2.6, §4.15).
+- [#564](https://github.com/BobKerns/analysis/issues/564): `scenario roll` offers the skipped months' flows as projected year-to-date rows, moves the start-dependent rows of the scenarios that take its start, and `--own` rolls a derived scenario's own lots; `scenario.meta_json` takes an inherited `roll`; IRMAA reads the year before the start's MAGI from the run when projected rows settle it (§2.11, §4.5, §7).

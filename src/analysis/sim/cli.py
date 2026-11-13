@@ -15256,8 +15256,9 @@ def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
               help="Take every default without asking: the old plan's projections, and "
                    "pinning the old first year's rows to that year.")
 @click.option("--own", is_flag=True,
-              help="Roll only what is NAME's own (its start, if it sets one, its own lots and "
-                   "rows), after the scenario it is built on has rolled.")
+              help="Roll only what is NAME's own, after the scenario it is built on has "
+                   "rolled: its lots, and with a start of its own, that start and its rows. "
+                   "With an inherited start, START must be given.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep: bool,
@@ -18794,7 +18795,7 @@ def builder_roll(if_due: bool, data_dir: Path | None) -> None:
     builder/roll branch. A roll that needs a question answered, or fails, is
     reported in `sim builder status`; do that one by hand.
     """
-    from analysis.sim import builder, roll_schedule
+    from analysis.sim import builder, price_schedule, roll_schedule
 
     resolved = _builder_data_dir(data_dir)
     paths = builder.BuilderPaths.for_data(resolved)
@@ -18815,7 +18816,7 @@ def builder_roll(if_due: bool, data_dir: Path | None) -> None:
         writer.event("rolling scenarios forward")
     try:
         outcome = roll_schedule.roll(resolved, paths.roll_worktree, config)
-    except roll_schedule.RollScheduleError as exc:
+    except (roll_schedule.RollScheduleError, price_schedule.PriceScheduleError) as exc:
         if writer is not None:
             writer.event(f"roll failed: {exc}")
         raise click.ClickException(str(exc)) from None
