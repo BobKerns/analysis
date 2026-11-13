@@ -196,10 +196,6 @@ def run_scenario(
             if tax_kinds.problems:
                 raise EngineError("\n".join(tax_kinds.problems))
         kinds_token = _RUN_TAX_KINDS.set(tax_kinds.kinds if tax_kinds is not None else None)
-        destinations = {j.name: j.destination_chain for j in jurisdictions}
-        paid_with_another = {
-            j.id for j in jurisdictions
-            if destinations.get(registries.TAX_PAID_WITH.get(j.name, "")) == j.destination_chain}
 
         year_to_date_rows = con.execute(
             "SELECT id, from_lot_id, to_lot_id, amount, tax_character, year "
@@ -385,7 +381,7 @@ def run_scenario(
                             account_subkind=account_subkind, account_name=account_name,
                             person_lifespan=person_lifespan, taxpayers=taxpayers,
                             refill_ctx=refill_ctx, drawdown_pricing=drawdown_pricing,
-                            own_payments_only=j.id in paid_with_another, shared=shared,
+                            shared=shared,
                         )
 
             for txn in month_steps:
@@ -620,7 +616,6 @@ def run_scenario(
                     tax_char="none", tid=j.id, post_transfer=False,
                     person_lifespan=person_lifespan, taxpayers=taxpayers,
                     drawdown_pricing=drawdown_pricing,
-                    own_payments_only=j.id in paid_with_another,
                 )
         _record_drawdown_taxes(con, drawdown_pricing)
 
@@ -3098,10 +3093,14 @@ def _implied_tags(
 ) -> frozenset[str]:
     """The rule kind's ``implied`` tag, when the item would otherwise carry
     no itemized tag (``registries.ITEMIZED_TAGS``) or ``tax:rental``;
-    another ``tax:`` tag, one for a report, doesn't stop it. It goes beside
-    the item's own tags, not into the rule's, which would hide the expense
-    account's ``tax:`` tag. A business expense (the business_expense
-    character) gets none: it's deducted on Schedule C, not itemized."""
+    another ``tax:`` tag, one for a report, doesn't stop it. Spending into a
+    ``taxes_property`` account is property tax (#586), ``tax:property``,
+    the same way. It goes beside the item's own tags, not into the rule's,
+    which would hide the expense account's ``tax:`` tag. A business expense
+    (the business_expense character) gets none: it's deducted on Schedule
+    C, not itemized."""
+    if implied is None and payee.subkind == registries.PROPERTY_TAX_SUBKIND:
+        implied = registries.ITEMIZED_TAGS["property_tax"]
     if implied is None or character == registries.BUSINESS_EXPENSE \
             or tax_api.itemizing(tax_api.spending_tags(rule_tags, payee.tags)):
         return frozenset()
@@ -3223,71 +3222,26 @@ def _mortgage_months(
     ]
 
 
-def _taxes_paid(
-    con, tax_year: int, rule_tags: Mapping[int, frozenset[str]],
-    account: Callable[[int], tax_api.Account], implied: Mapping[int, str],
-) -> list[tax_api.TaxPaid]:
+def _taxes_paid(con, tax_year: int) -> list[tax_api.TaxPaid]:
     """The state and local income tax paid in calendar ``tax_year`` (#542),
-    the SALT deduction's income taxes on a cash basis: each such
-    jurisdiction's settlements, wherever they were paid, and what else was
-    paid into its destination account. A refund (a settlement out of the
-    destination, #568) is never netted: the settlement posts it the April
-    after, for the year before, and under the tax-benefit rule it is that
-    year's income, to the extent the deduction saved tax, which isn't
-    modeled. Spending there that
-    an itemized line counts is left out: by an itemized tag
-    (``tax:property``, say), the ``property_tax`` character, or a
-    ``mortgage_payment`` or ``irmaa`` rule's implied tag; so is a
-    ``business_expense``, which Schedule C deducts. So is anything else paid into an
-    account the federal tax is paid into too, which can't be told apart
-    (#586 gives each tax its own). ``implied`` is ``_implied_rules``'."""
-    jurisdictions = list(con.execute(
-        "SELECT j.id, j.name, c.account_id FROM tax_jurisdiction j "
-        "JOIN chain c ON c.id = j.destination_chain_id"))
-    federal = {account_id for _, name, account_id in jurisdictions if name == "federal"}
-    # Each state or local jurisdiction: its name and destination account.
-    settled = {int(jid): (str(name), account_id) for jid, name, account_id in jurisdictions
-               if name != "federal"}
-    if not settled:
-        return []
-    order = {name: i for i, name in enumerate(registries.TAX_JURISDICTIONS)}
-    destinations: dict[int, list[str]] = defaultdict(list)
-    for _, name, account_id in jurisdictions:
-        if name != "federal" and account_id is not None and account_id not in federal:
-            destinations[int(account_id)].append(str(name))
-    paid_to = {account_id: min(names, key=lambda n: (order.get(n, len(order)), n))
-               for account_id, names in destinations.items()}
-    paid: dict[str, int] = defaultdict(int)
-    for frm, to, kind, reason, character, amount in con.execute(
-            "SELECT from_account, to_account, reason_kind, reason_id, tax_character, "
-            "SUM(amount) FROM transfer_event "
-            "WHERE date >= ? AND date < ? AND reason_kind != 'initial' AND ("
-            f"(reason_kind = 'tax' AND reason_id IN ({', '.join(map(str, settled))}))"
-            + (f" OR to_account IN ({', '.join(map(str, paid_to))})" if paid_to else "")
-            + ") GROUP BY from_account, to_account, reason_kind, reason_id, tax_character",
-            (f"{tax_year:04d}-01-01", f"{tax_year + 1:04d}-01-01")):
-        if kind == "tax":
-            # A jurisdiction's own settlement always counts, whatever the
-            # account's tags; another's in the account is that one's. One
-            # out of its destination is a refund, left out (above).
-            name, destination = settled.get(reason, (None, None))
-            if name is not None and frm != destination:
-                paid[name] += int(amount)
-            continue
-        rule = kind in ("rule", "ytd_rule")
-        tags = rule_tags.get(reason, frozenset()) if rule else frozenset()
-        payee = account(to)
-        # Not income tax: what an itemized line counts (by its tag, the
-        # property_tax character, or a rule kind's implied tag: a
-        # mortgage's interest, an IRMAA surcharge), and a business
-        # expense, which Schedule C deducts. State tax merely paid from a
-        # business account is still the owner's income tax.
-        if character in ("property_tax", registries.BUSINESS_EXPENSE) \
-                or (rule and reason in implied) \
-                or tax_api.itemizing(_spending_tags(tags, payee, character, None)):
-            continue
-        paid[paid_to[to]] += int(amount)
-    return [tax_api.TaxPaid(tax_year, name, amount) for name, amount in sorted(paid.items())]
+    the SALT deduction's income taxes on a cash basis: everything paid into
+    each such jurisdiction's destination that year. The destination is the
+    jurisdiction's own account, and only its income tax payments go in
+    (the loader, #586), so nothing there needs telling apart. A refund (a
+    settlement out of the destination, #568) is never netted: the
+    settlement posts it the April after, for the year before, and under the
+    tax-benefit rule it is that year's income, to the extent the deduction
+    saved tax, which isn't modeled."""
+    return [
+        tax_api.TaxPaid(tax_year, str(name), int(amount))
+        for name, amount in con.execute(
+            "SELECT j.name, SUM(e.amount) FROM tax_jurisdiction j "
+            "JOIN chain c ON c.id = j.destination_chain_id "
+            "JOIN transfer_event e ON e.to_account = c.account_id "
+            "WHERE j.name != 'federal' AND e.date >= ? AND e.date < ? "
+            "AND e.reason_kind != 'initial' GROUP BY j.name ORDER BY j.name",
+            (f"{tax_year:04d}-01-01", f"{tax_year + 1:04d}-01-01"))
+    ]
 
 
 def _tax_ledger(con, tax_year: int) -> _TaxLedger:
@@ -3342,8 +3296,8 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
             int(year), character, account(frm), account(to), int(amount),
             rule_tags.get(tid, frozenset()) if tid is not None else frozenset(),
             rule_person.get(tid) if tid is not None else None,
-            _implied_tags(rule_tags.get(tid, frozenset()), account(to), character, implied.get(tid))
-            if tid is not None else frozenset())
+            _implied_tags(rule_tags.get(tid, frozenset()) if tid is not None else frozenset(),
+                          account(to), character, implied.get(tid) if tid is not None else None))
         for year, character, frm, to, tid, amount in con.execute(
             f"SELECT {year_of} AS y, tax_character, from_account, to_account, {rule} AS r, SUM(amount) "
             f"FROM transfer_event WHERE to_account IN ({', '.join(map(str, expense_ids))}) AND y <= ? "
@@ -3379,7 +3333,7 @@ def _tax_ledger(con, tax_year: int) -> _TaxLedger:
     return _TaxLedger(items, losses, persons, spending, hsa_gains,
                       _mortgage_months(con, tax_year, rule_tags, account, expense_ids,
                                        implied, interest_accounts),
-                      _taxes_paid(con, tax_year, rule_tags, account, implied))
+                      _taxes_paid(con, tax_year))
 
 
 def _tax_year(
@@ -3618,15 +3572,12 @@ def _settle_tax(
     taxpayers: Collection[str] = (),
     refill_ctx: RefillContext | None = None,
     drawdown_pricing: dict[tuple[str, int], DrawdownPricing] | None = None,
-    own_payments_only: bool = False,
     shared: _SharedPrepares | None = None,
 ) -> None:
     """Compute and optionally pay a tax jurisdiction's income tax for the
     year before ``month`` (#507: ``taxes/<jurisdiction>.csv``, settled each
     April). ``tid`` is the jurisdiction's id, the payment's ``reason_id``
-    (``reason_kind`` ``tax``). ``own_payments_only``: it is paid with another
-    jurisdiction into the same account (a local tax with the state's, #508),
-    so only its own settlements count as paid toward it.
+    (``reason_kind`` ``tax``).
 
     Supported params (the built-in calculators'; a local tax reads none: its
     bands are the county's, or the state's, where the household lives that
@@ -3706,18 +3657,14 @@ def _settle_tax(
             hsa_taxed=bool(ret.memo.get("hsa_taxed", 0)))
 
     # What was paid toward the year: everything into the destination for
-    # it, less another jurisdiction's settlements there (a local tax paid
-    # with the state's, #508). One paid with another's into the same account
-    # counts only its own settlements: the other's estimated payments are
-    # the other's.
+    # it. The destination is the jurisdiction's own account, of its own
+    # subkind, and only its tax payments go in (the loader, #586).
     paid_transfers = con.execute(
         "SELECT COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
         "WHERE to_lot_id = ? "
-        "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ? "
-        "  AND NOT (reason_kind = 'tax' AND COALESCE(reason_id, -1) != ?) "
-        "  AND (? = 0 OR reason_kind = 'tax')",
-        (to_id, tax_year, tid, int(own_payments_only)),
+        "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ?",
+        (to_id, tax_year),
     ).fetchone()[0]
     already_paid = int(paid_transfers or 0)
     tax_due = max(0, tax_liability - already_paid)
@@ -3858,11 +3805,12 @@ def _fill_bracket_tax_rule(
     )
 
 
-def _paid_with(tax_rules: Jurisdictions, scope: str) -> list[TaxRule]:
-    """Each of the scenario's jurisdictions paid with ``scope``'s tax
-    (``registries.TAX_PAID_WITH``), in settlement order."""
+def _rate_counts(tax_rules: Jurisdictions, scope: str) -> list[TaxRule]:
+    """Each of the scenario's jurisdictions whose tax a marginal rate in
+    ``scope`` counts too (``registries.TAX_RATE_COUNTS``), in settlement
+    order."""
     return [tax_rules[name] for name in registries.TAX_JURISDICTIONS
-            if name in tax_rules and registries.TAX_PAID_WITH.get(name) == scope]
+            if name in tax_rules and registries.TAX_RATE_COUNTS.get(name) == scope]
 
 
 def _largest_within(measure: Callable[[int], int], target: int, cap: int) -> int:
@@ -4084,15 +4032,17 @@ def _apply_fill_bracket(
         if magi_est is not None and irmaa is not None:
             def cliff(x: int, e: tax_api.Prepared = magi_est) -> int:
                 return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).magi, month_s, tid)
-        # A rate counts the taxes paid with its own, a state's local tax
-        # (#508), since the same dollar pays them. A federal rate stays the
-        # federal tax's: a state builds on it, but is paid on its own.
+        # A state's rate counts the local tax (#508): its bands sit on the
+        # state's taxable income, so the next dollar there costs both. A
+        # federal rate stays the federal tax's: a state builds on federal
+        # AGI but has its own deductions and brackets, which its own scope
+        # measures.
         measured_with = [est, *(
             _prepare_tax(con, paid.params, aux=aux, tax_year=tax_year, tid=paid.id, kind=paid.kind,
                          jurisdictions=tax_rules, person_lifespan=person_lifespan,
                          taxpayers=taxpayers, growth_cache=inflation_factor_cache,
                          ledger=ledger, shared=shared)
-            for paid in _paid_with(tax_rules, scope))]
+            for paid in _rate_counts(tax_rules, scope))]
         amount = _within_marginal_rate(
             lambda ordinary, ltcg: sum(
                 p.compute(tax_api.Extra(ordinary, ltcg)).tax for p in measured_with),
