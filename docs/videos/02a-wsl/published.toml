@@ -2,10 +2,11 @@
 # scenes: each scene's length in seconds in the build that was uploaded.
 
 [en]
-video = "16j-Qz7Tfq8"
-uploaded = 2026-11-03T06:47:29Z
+video = "yHr90VdoHGQ"
+uploaded = 2026-11-12T18:52:39Z
 scenes = [
-  ["title", 20.96],
+  ["title", 12.34],
+  ["skip", 25.59],
   ["why", 30.10],
   ["turn-on", 26.14],
   ["linux-user", 16.49],
@@ -15,15 +16,16 @@ scenes = [
   ["explorer", 22.99],
   ["vscode", 27.02],
   ["vscode-window", 24.61],
-  ["ready", 19.00],
+  ["ready", 21.36],
   ["end", 5.80],
 ]
 
 [ja]
-video = "MOE2uIAkIRA"
-uploaded = 2026-11-03T06:47:41Z
+video = "zeTFTujsWwI"
+uploaded = 2026-11-12T18:52:55Z
 scenes = [
-  ["title", 25.37],
+  ["title", 16.82],
+  ["skip", 32.85],
   ["why", 34.56],
   ["turn-on", 34.97],
   ["linux-user", 19.51],
