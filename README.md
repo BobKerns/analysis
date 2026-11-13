@@ -325,6 +325,10 @@ Persistent memory:
 
 ### Importing the Expense Baseline
 
+[Importing your data](docs/guides/importing-data.md) is the guide to
+`sim import`, for balances and spending both; this section is the reference
+for the spending files.
+
 The baseline importer combines canonicalized Quicken expenses with Amazon
 monthly summaries and replaces only rows it previously generated:
 

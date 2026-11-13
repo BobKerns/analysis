@@ -8623,7 +8623,7 @@ def import_sources(files: tuple[Path, ...]) -> None:
     one each file is in."""
     for path in files:
         found = import_sources_.detect(path)
-        click.echo(f"{path}: " + (", ".join(f"{source.name} {form}" for source, form in found)
+        click.echo(f"{_shown(path)}: " + (", ".join(f"{source.name} {form}" for source, form in found)
                                   or "no source recognizes it"))
     if files:
         return
@@ -8908,7 +8908,7 @@ def import_transactions(
         expense_accounts.save()
         click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
     click.echo(
-        f"replaced {len(rows)} generated baseline row(s) in {scheduled_path} "
+        f"replaced {len(rows)} generated baseline row(s) in {_shown(scheduled_path)} "
         f"for scenario {scenario_name} ({counts or 'none'})"
     )
 
@@ -12070,7 +12070,7 @@ def import_holdings(
         saved_map.save()
         click.echo(f"saved mappings to {_shown(map_path)}")
     inherited = f"; {overrides} as override(s) of inherited lots" if overrides else ""
-    click.echo(f"updated {result.lots_changed} lot(s) in {values_path} ({counts}){inherited}")
+    click.echo(f"updated {result.lots_changed} lot(s) in {_shown(values_path)} ({counts}){inherited}")
 
 
 @transfer_group_command.command("list")
