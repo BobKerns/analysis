@@ -14,7 +14,7 @@ Alice gets the simulator running on her own computer, and starts a folder \
 for her household's data. Setup guide, with the one-line installer: \
 https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md
 
-On Windows, set up WSL first: https://youtu.be/16j-Qz7Tfq8"""
+On Windows, set up WSL first: https://youtu.be/yHr90VdoHGQ"""
 contents = [
   "Installing with one line, on a Mac, Linux, or Windows under WSL",
   "What the installer does",

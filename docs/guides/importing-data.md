@@ -5,7 +5,9 @@ into a scenario. `sim import` reads a file another program exported and
 writes the scenario's own files from it.
 
 **Video.** *Importing your data* (video 11a) walks through this guide with
-Alice and Bill and a Quicken export.
+Alice and Bill and a Quicken export:
+[English](https://www.youtube.com/watch?v=usFLQg8Lvsk),
+[Japanese (日本語)](https://www.youtube.com/watch?v=x7PQfaDGhFA).
 
 ## Which path is yours
 

@@ -1943,7 +1943,9 @@ offering the run's Dec 31.
 
 With more than a few accounts, the balances can come from a file another
 program exported instead, and the year's spending too:
-[Importing your data](guides/importing-data.md).
+[Importing your data](guides/importing-data.md), with its own video
+([English](https://www.youtube.com/watch?v=usFLQg8Lvsk),
+[Japanese (日本語)](https://www.youtube.com/watch?v=x7PQfaDGhFA)).
 
 A new year changes what some rows mean, so `roll` deals with those too:
 
