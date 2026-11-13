@@ -81,7 +81,7 @@ def _effective_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[
     return rule | frozenset(tag for tag in account if tag.partition(":")[0] not in roles)
 
 
-_ITEMIZING_TAGS = frozenset({*registries.ITEMIZED_TAGS.values(), registries.RENTAL_TAG})
+_ITEMIZING_TAGS = registries.ITEMIZING_TAGS
 
 
 def spending_tags(rule: frozenset[str], account: frozenset[str]) -> frozenset[str]:
@@ -147,7 +147,8 @@ class SpendingItem:
     implied_tags: frozenset[str] = frozenset()
     """The tag the rule's kind implies when nothing says which itemized
     line the item is on (#542): a mortgage payment's interest is
-    ``tax:mortgage_interest``, an IRMAA surcharge ``tax:medical``."""
+    ``tax:mortgage_interest``, an IRMAA surcharge ``tax:medical``, and
+    spending into a ``taxes_property`` account ``tax:property`` (#586)."""
 
     @property
     def tags(self) -> frozenset[str]:
