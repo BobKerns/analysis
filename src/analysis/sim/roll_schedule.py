@@ -3,15 +3,20 @@
 A run reads prices only up to its start (``provenance``: a price file counts
 up to the scenario's start, the end of its first month), so once that month
 is over, new prices change nothing until the start is rolled forward
-(``sim scenario roll``, #502). A scenario whose own ``scenario.csv`` says
-``"roll": "monthly"`` in its ``meta_json`` (never inherited: a what-if built
-on it rolls only if it says so too) is rolled forward by the builder, to the
-current month, on the first night after its start month ends. Bob's choices:
+(``sim scenario roll``, #502). A scenario whose ``meta_json`` says
+``"roll": "monthly"`` is rolled forward by the builder, to the current month,
+on the first night after its start month ends. The key is inherited like any
+other, so marking ``base`` marks every what-if built on it; one opts out with
+``"roll": "off"``. Bob's choices:
 
 - **At night**, in the builder's window (``config.json`` ``roll_window``,
   default 01:00-05:00, the machine's local time), so the full rebuild a roll
   sets off stays out of working hours; and after the day's prices have
   merged, so it values the lots at the latest close.
+- **Parents first**: a scenario built on another one rolling the same night
+  rolls after it, with ``--own``: only its own lots and rows (and its start,
+  if it sets one), so it keeps inheriting the rest, freshly rolled. When
+  its parent's roll fails, one that inherits its start waits for the next.
 - **Unattended**: ``sim scenario roll NAME MONTH --yes --no-keep``. Each lot
   opens with what the old run projected (shares, for a lot valued by them,
   so the new prices set its value), and the months the run no longer covers
@@ -147,26 +152,36 @@ def night_of(now: datetime, window: tuple[time, time]) -> date | None:
 # -- which scenarios ---------------------------------------------------------------
 
 
+def roll_mark(scenarios: Path, name: str) -> object:
+    """``name``'s ``roll`` as its load merges ``meta_json``: the last one
+    set along its load order (so ``base``'s covers what is built on it)."""
+    mark = None
+    for one in load_order(scenarios, name):
+        meta = read_meta(scenario_dir(scenarios, one))
+        if registries.ROLL_KEY in meta:
+            mark = meta[registries.ROLL_KEY]
+    return mark
+
+
 def marked(data_dir: Path) -> list[str]:
-    """The scenarios whose own ``meta_json`` says ``"roll": "monthly"``,
-    parents before what is built on them (so a child's roll reads its
-    parent's new start), then by name. A pool or template never rolls."""
+    """The scenarios whose ``meta_json``, as their load merges it, says
+    ``"roll": "monthly"``, parents before what is built on them (so a
+    child's roll reads its parent's new start), then by name. A pool or
+    template never rolls."""
     scenarios = data_dir / "scenarios"
     if not scenarios.is_dir():
         return []
-    found = sorted(
-        folder.name for folder in scenarios.iterdir()
-        if folder.is_dir() and not is_template_name(folder.name)
-        and read_meta(folder).get(registries.ROLL_KEY) == "monthly"
-        and not is_pool(scenarios, folder.name)
-    )
-    depth = {}
-    for name in found:
+    depth: dict[str, int] = {}
+    for folder in scenarios.iterdir():
+        name = folder.name
+        if not folder.is_dir() or is_template_name(name) or is_pool(scenarios, name):
+            continue
         try:
-            depth[name] = len(load_order(scenarios, name))
+            if roll_mark(scenarios, name) == "monthly":
+                depth[name] = len(load_order(scenarios, name))
         except (OSError, ValueError):
-            depth[name] = 0
-    return sorted(found, key=lambda name: (depth[name], name))
+            continue
+    return sorted(depth, key=lambda name: (depth[name], name))
 
 
 def due_scenarios(data_dir: Path, today: date) -> list[tuple[str, str]]:
@@ -306,13 +321,14 @@ def _sim() -> list[str]:
     return [sys.executable, "-m", "analysis", "sim"]
 
 
-def _roll_one(data: Path, name: str, month: str) -> tuple[int, list[str]]:
+def _roll_one(data: Path, name: str, month: str, *, own: bool = False) -> tuple[int, list[str]]:
     """``sim scenario roll`` in the worktree: its exit status and output."""
     # Not waiting on the builder: the daemon may be this roll's parent.
     env = {**os.environ, BUILDER_SWITCH_ENV: "off", "ANALYSIS_DATA_DIR": str(data)}
     try:
         done = subprocess.run(
-            [*_sim(), "scenario", "roll", name, month, "--yes", "--no-keep", "--data-dir", str(data)],
+            [*_sim(), "scenario", "roll", name, month, "--yes", "--no-keep",
+             *(["--own"] if own else []), "--data-dir", str(data)],
             capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
             timeout=ROLL_SECONDS, env=env,
         )
@@ -329,15 +345,18 @@ def _why(lines: Sequence[str]) -> str:
     return "; ".join([*found[:3], *errors]) or (lines[-1].strip() if lines else "it failed")
 
 
+def _lineage_names(data: Path, name: str) -> list[str]:
+    """``name``'s load order, root first; just ``name`` when it can't be read."""
+    try:
+        return load_order(data / "scenarios", name)
+    except (OSError, ValueError):
+        return [name]
+
+
 def _lineage_paths(data: Path, rel: str, name: str) -> list[str]:
     """The folders a scenario's plan is read from, as repository paths."""
-    scenarios = data / "scenarios"
     prefix = f"{rel}/" if rel not in ("", ".") else ""
-    try:
-        names = load_order(scenarios, name)
-    except (OSError, ValueError):
-        names = [name]
-    return [f"{prefix}scenarios/{one}" for one in names]
+    return [f"{prefix}scenarios/{one}" for one in _lineage_names(data, name)]
 
 
 def _tag_for(top: Path, base: str, year: int, paths: Sequence[str]) -> tuple[str, bool]:
@@ -382,9 +401,13 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
         due_now = due_scenarios(data, now.astimezone().date())
         if not due_now:
             lines.append("no scenario to roll")
+        from analysis.sim.roll import PARENT_FIRST  # pandas: only when rolling
+        rolling = {name for name, _ in due_now}
         for name, old in due_now:
             lines.append(f"rolling {name} forward: {old} -> {month}")
-            code, said = _roll_one(data, name, month)
+            # Built on one rolling tonight: that one's roll covers the rest.
+            own = bool(rolling & set(_lineage_names(data, name)[:-1]))
+            code, said = _roll_one(data, name, month, own=own)
             entry: dict[str, Any] = {"at": now.timestamp(), "from": old, "to": month}
             if code == 0:
                 _git(worktree, "add", "-A", "--", _lineage_paths(data, rel, name)[-1], check=True)
@@ -400,7 +423,8 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
                 _git(worktree, "checkout", "-q", "--", ".")
                 _git(worktree, "clean", "-fdq")
                 why = _why(said)
-                entry["outcome"] = "skipped" if _NEEDS_YOU in why else "failed"
+                entry["outcome"] = ("skipped" if _NEEDS_YOU in why or PARENT_FIRST in why
+                                    else "failed")
                 entry["why"] = why
                 lines.append(f"  {entry['outcome']}: {why}")
             scenarios[name] = entry

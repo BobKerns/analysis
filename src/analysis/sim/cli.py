@@ -15255,10 +15255,13 @@ def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
 @click.option("--yes", "accept", is_flag=True,
               help="Take every default without asking: the old plan's projections, and "
                    "pinning the old first year's rows to that year.")
+@click.option("--own", is_flag=True,
+              help="Roll only what is NAME's own (its start, if it sets one, its own lots and "
+                   "rows), after the scenario it is built on has rolled.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep: bool,
-                  accept: bool, data_dir: Path | None) -> None:
+                  accept: bool, own: bool, data_dir: Path | None) -> None:
     """Bring scenario NAME up to date: start it again at START (YYYY-MM),
     opening with what the accounts hold then (#502).
 
@@ -15278,9 +15281,17 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     START, which no longer happen, and the rules whose ytd_preroll now
     counts the new year's months, and says what last year's tax needs.
 
+    A scenario built on another one that has rolled takes --own: only its
+    own rows roll, so it keeps inheriting the rest. Its start moves only if
+    it sets one; an inherited start must already be START (its parent
+    rolled first), and the months it skipped are then those of NAME's newest
+    run from before START. Either way the projected year-to-date rows it
+    inherits are replaced by its own run's.
+
     Everything is written in one edit, only if NAME and every scenario
     built on it still load. NAME stays current. START defaults to the
-    first January after the old start (and not before this year's)."""
+    first January after the old start (and not before this year's), or with
+    --own and an inherited start, to that start."""
     if keep is not None and no_keep:
         raise click.UsageError("--keep and --no-keep are exclusive")
     data = _resolve_data_dir(data_dir)
@@ -15293,12 +15304,30 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     if old is None:
         raise click.ClickException(f"{name} has no start, so there is nothing to roll forward")
     old_start = old.month
-    if start is None:
-        suggested = roll.default_start(old_start, date.today())
-        start = suggested if accept else click.prompt("new start (YYYY-MM)", default=suggested)
-    start = month_end_iso(_validate_month_date(start.strip()))[:7]
-    if start <= old_start:
-        raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
+    # A run still being built in the background is the newest one; wait for it.
+    from analysis.sim import builder
+    builder.await_fresh(ref.runs_dir, name, echo=lambda text: click.echo(text, err=True))
+    # --own on a scenario that inherits its start: the parent's roll moved
+    # it already, and the scenario's own runs say where it was.
+    follows = own and not sc._scenario_row(scenario_dir).get("start", "").strip()
+    if follows:
+        start = month_end_iso(_validate_month_date((start or old_start).strip()))[:7]
+        if start != old_start:
+            raise click.ClickException(
+                f"{name}'s start is inherited, and is {old_start}, not {start}: "
+                f"{roll.PARENT_FIRST}, or give {name} a start of its own")
+        old_start = _run_start_before(ref.runs_dir, name, start)
+        if old_start is None:
+            raise click.ClickException(
+                f"no run of {name} starts before {start}, so there is nothing to roll its own "
+                "rows from")
+    else:
+        if start is None:
+            suggested = roll.default_start(old_start, date.today())
+            start = suggested if accept else click.prompt("new start (YYYY-MM)", default=suggested)
+        start = month_end_iso(_validate_month_date(start.strip()))[:7]
+        if start <= old_start:
+            raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
     old_year, new_year = int(old_start[:4]), int(start[:4])
     taken = set(names.scenario_names(data))
     if keep is not None:
@@ -15319,9 +15348,6 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     click.echo(f"Rolling {name} forward: {old_start} -> {start}")
 
     month = month_before(start)
-    # A run still being built in the background is the newest one; wait for it.
-    from analysis.sim import builder
-    builder.await_fresh(ref.runs_dir, name, echo=lambda text: click.echo(text, err=True))
     projected: dict[tuple[str, str], roll.Projection] = {}
     # The Dec 31 before a start that isn't a January: what a lot's
     # prior_year_end_balance (an RMD's base) defaults to.
@@ -15364,6 +15390,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         if account is None or account.row.get("kind") not in ("asset", "liability"):
             continue
         seen.add((one.account, one.lot))
+        if own and one.index is None:
+            continue  # its parent's to roll
         rows.append((one, _rolled_lot(data, one, account.row, projected.get((one.account, one.lot)),
                                       year_end.get((one.account, one.lot)), start, accept,
                                       same_year=new_year == old_year)))
@@ -15373,7 +15401,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         if (account_name, lot) in seen or lot != registries.DEFAULT_LOT or not projection.balance:
             continue
         account = accounts.get(account_name)
-        if account is None:
+        if account is None or (own and (account.index is None or account.inherited_from)):
             continue
         blank = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "") | {
             "account_name": account_name, "lot": lot}
@@ -15387,12 +15415,16 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     unconverted: list[tuple[_Overlaid, str]] = []
     if new_year != old_year:
         for found in roll.unpinned_year_to_date(scenario_dir):
+            if own and found.index is None:
+                continue
             label = (f"year-to-date row {found.row['name']} ({found.row.get('amount', '')}) "
                      f"has no year, so it would move into {new_year}: pin it to {old_year}?")
             if accept or click.confirm(label, default=True):
                 pins.append(found)
         chains = set(names.chain_names(data, name))
         for found in roll.ytd_amount_rules(scenario_dir):
+            if own and found.index is None:
+                continue
             rule = found.row
             # A year-to-date row moves between accounts, with a character.
             if why := ("it moves money through a chain"
@@ -15417,6 +15449,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     # ytd_preroll's months) from the scenario's start, which is moving.
     anchored: list[_Overlaid] = []
     for found in roll.anchored_rules(scenario_dir):
+        if own and found.index is None:
+            continue
         label = (f"rule {found.row['name']} has no start, so its {found.row.get('cadence')} "
                  f"schedule counts from the scenario's: keep counting from {old_start}?")
         if accept or click.confirm(label, default=True):
@@ -15437,7 +15471,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             except (OSError, ValueError) as exc:
                 raise click.ClickException(str(exc).replace(str(edit.data_dir), str(data))) from None
         staged_dir = edit.path(scenario_dir)
-        sc.edit_scenario_row(staged_dir, {"start": start}, {})
+        if not follows:
+            sc.edit_scenario_row(staged_dir, {"start": start}, {})
         lots_path = edit.path(scenario_dir / "account_lots.csv")
         for one, row in rows:
             _append_csv_row(lots_path, registries.ACCOUNT_LOTS_CSV_HEADER, row, replace=one.index)
@@ -15449,10 +15484,15 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
                             replace=found.index)
         dropped = 0
-        if skipped or any(row["name"].startswith(roll.PROJECTED_PREFIX)
-                          for row in _read_ytd_rows(ytd_path)):
+        # Built on another scenario: its own flows stand in for the
+        # projected rows it inherits.
+        replaced = roll.inherited_projected(scenario_dir, start) if skipped else []
+        if skipped or replaced or any(row["name"].startswith(roll.PROJECTED_PREFIX)
+                                      for row in _read_ytd_rows(ytd_path)):
             _widen_ytd_header(ytd_path, scenario_dir)
-            merged, dropped = roll.merge_projected(_read_ytd_rows(ytd_path), skipped, start)
+            inherited = set(_overlay_rows(scenario_dir, "year_to_date.csv"))
+            merged, dropped = roll.merge_projected(
+                [*_read_ytd_rows(ytd_path), *replaced], skipped, start, inherited)
             pd.DataFrame(merged, columns=list(registries.YEAR_TO_DATE_CSV_HEADER)).to_csv(
                 ytd_path, index=False)
         scheduled_path = edit.path(scenario_dir / "scheduled.csv")
@@ -15522,8 +15562,44 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
             f"record it with `sim ytd add NAME FROM TO AMOUNT --tax-character ... --year "
             f"{new_year - 1}` (W-2s, 1099s, tax already withheld)")
+    if not own:
+        for other in _built_on_with_own_lots(data, name):
+            click.echo(f"  {other} is built on {name} and has lots of its own: roll them too "
+                       f"(`sim scenario roll {other} {start} --own`)")
     click.echo(f"next: `sim run {name} --commit`"
                + (f", `sim run {keep} --commit`, then `sim compare {keep} {name}`" if keep else ""))
+
+
+def _run_start_before(runs_dir: Path, name: str, start: str) -> str | None:
+    """The start (``YYYY-MM``) of ``name``'s newest succeeded run that starts
+    before ``start``: where a scenario that inherits its start was, before
+    its parent rolled it forward."""
+    for run_path in reversed(run_files(runs_dir, name)):
+        if read_run_status(run_path).status != "succeeded":
+            continue
+        with RunConnection(run_path, name) as rc:
+            frame = rc._read_sql("SELECT start FROM scenario")
+        run_start = str(frame.iloc[0, 0])[:7] if not frame.empty else ""
+        if run_start and run_start < start:
+            return run_start
+    return None
+
+
+def _built_on_with_own_lots(data: Path, name: str) -> list[str]:
+    """The scenarios built on ``name`` (as parent or mix-in) with lot rows of
+    their own, which a roll of ``name`` leaves as they were."""
+    scenarios = data / "scenarios"
+    found = []
+    for other in names.scenario_names(data):
+        if other == name or is_pool(scenarios, other) or _is_template(scenarios, other):
+            continue
+        try:
+            built_on = name in load_order(scenarios, other)[:-1]
+        except (OSError, ValueError):
+            continue
+        if built_on and _read_values_rows(scenarios / other / "account_lots.csv"):
+            found.append(other)
+    return found
 
 
 def _check_keep_name(keep: str, taken: set[str]) -> None:
@@ -15751,7 +15827,7 @@ def _apply_scenario_edit(
         meta["reserve"] = _blank_or(reserve, _reserve_json, "--reserve")
     if roll is not None:
         # Off is no key: the builder reads only the scenario's own.
-        meta[registries.ROLL_KEY] = roll if roll == "monthly" else None
+        meta[registries.ROLL_KEY] = roll or None
     if not values and not meta:
         raise click.UsageError("nothing to change: give at least one option (see --help)")
 
@@ -15830,7 +15906,7 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
         click.option("--roll", default=None, type=click.Choice([*registries.ROLL_CHOICES, ""]),
                      help="monthly: the background builder rolls the start forward to the "
                           "current month each night the start month is over (meta_json roll, "
-                          "#564; never inherited). off or '' stops it."),
+                          "#564); off: it doesn't, though a parent does; '' inherits it."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
     ]

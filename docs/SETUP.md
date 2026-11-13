@@ -157,7 +157,8 @@ fetch, prices waiting to merge and why, and any symbol that keeps failing;
 `ANALYSIS_PRICE_FETCH=off`, turns the fetches off.
 
 The same timer rolls forward, at night, each scenario marked to roll
-(`sim scenario edit NAME --roll monthly`) once its start month is over, so
+(`sim scenario edit NAME --roll monthly`; what is built on it too, after it,
+unless marked `off`) once its start month is over, so
 its run picks up the month's prices: as `sim scenario roll --yes` would, on
 the `builder/roll` branch, merged into `main` the same way. Night is 01:00 to
 05:00 local time unless `sim builder install --roll-window HH:MM-HH:MM` says

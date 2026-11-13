@@ -37,8 +37,9 @@ if TYPE_CHECKING:
     from analysis.sim.connection import RunConnection
 
 __all__ = [
-    "PROJECTED_PREFIX", "Projection", "ProjectedRow", "anchored_rules", "calendar_before",
-    "cell_dollars", "default_start", "merge_projected", "preroll_rules", "projected_year_to_date",
+    "PARENT_FIRST", "PROJECTED_PREFIX", "Projection", "ProjectedRow", "anchored_rules",
+    "calendar_before", "cell_dollars", "default_start", "inherited_projected", "merge_projected",
+    "preroll_rules", "projected_year_to_date",
     "projections", "unpinned_year_to_date", "ytd_amount_rules",
 ]
 
@@ -46,6 +47,10 @@ __all__ = [
 # ``projected_<year>_<n>``, so a later roll can add to it, and drop it once
 # its year no longer counts.
 PROJECTED_PREFIX = "projected_"
+
+# How ``sim scenario roll --own`` refuses a scenario whose inherited start
+# hasn't moved yet: the nightly roll reads it as "not this time", not a failure.
+PARENT_FIRST = "roll the scenario it inherits its start from first"
 
 
 @dataclass(frozen=True)
@@ -237,15 +242,34 @@ def projected_year_to_date(rc: RunConnection, old_start: str, new_start: str) ->
     return found
 
 
+def inherited_projected(scenario_dir: Path, new_start: str) -> list[dict[str, str]]:
+    """The projected year-to-date rows the scenario only inherits, of the
+    years a run from ``new_start`` still settles. A roll of a scenario built
+    on another replaces them with its own run's flows (each overridden at
+    zero, then :func:`merge_projected` adds its own by key), since its
+    parent's flows in those months aren't its own: it may earn or spend
+    differently, and counting both would count the shared ones twice."""
+    new_year = int(new_start[:4])
+    found = []
+    for one in overlay_rows(scenario_dir, "year_to_date.csv").values():
+        year = _projected_year(one.row)
+        if one.index is None and year is not None and year >= new_year - 1:
+            found.append({column: one.row.get(column, "")
+                          for column in registries.YEAR_TO_DATE_CSV_HEADER} | {"amount": "0.00"})
+    return found
+
+
 def merge_projected(
     rows: list[dict[str, str]], projected: list[ProjectedRow], new_start: str,
+    taken: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, str]], int]:
     """A scenario's own year_to_date.csv ``rows`` with ``projected`` added:
     onto an earlier roll's row for the same year, lots and character when
     there is one (a scenario rolled each month keeps one row each), else as
     a new ``projected_<year>_<n>`` row. The earlier rolls' rows of a year
     the new run no longer settles (before the one before ``new_start``'s)
-    are dropped. Returns the rows and how many of them were dropped."""
+    are dropped. A new row's name avoids ``taken`` (the names the scenario
+    inherits) too. Returns the rows and how many of them were dropped."""
     new_year = int(new_start[:4])
     # Replaced by the actual figures once known (`sim ytd edit`).
     described = f"projected by sim scenario roll, through {month_before(new_start):%Y-%m}"
@@ -260,7 +284,7 @@ def merge_projected(
     by_key = {(row["year"].strip(), row["from_account"], row["from_lot"], row["to_account"],
                row["to_lot"], row["tax_character"]): row
               for row in kept if _projected_year(row) is not None}
-    taken = {row["name"] for row in kept}
+    used = {row["name"] for row in kept} | set(taken)
     for one in projected:
         row = by_key.get(one.key)
         if row is not None:
@@ -269,10 +293,10 @@ def merge_projected(
             row["description"] = described
             continue
         count = 1
-        while f"{PROJECTED_PREFIX}{one.year}_{count}" in taken:
+        while f"{PROJECTED_PREFIX}{one.year}_{count}" in used:
             count += 1
         name = f"{PROJECTED_PREFIX}{one.year}_{count}"
-        taken.add(name)
+        used.add(name)
         row = {"name": name, "from_account": one.from_account, "from_lot": one.from_lot,
                "to_account": one.to_account, "to_lot": one.to_lot,
                "amount": _cents_text(one.amount), "tax_character": one.tax_character,

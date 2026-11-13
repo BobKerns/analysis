@@ -279,9 +279,10 @@ RETIREMENT_LOT_SUBKINDS: dict[str, str] = {
 ROTH_SURVIVOR_ELECTIONS: tuple[str, ...] = ("own", "beneficiary")
 RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_401k"})
 
-# #564: scenario.meta_json "roll", read from the scenario's own scenario.csv
-# only (never inherited): "monthly" has the background builder roll its
-# start forward to the current month each night its start month is over.
+# #564: scenario.meta_json "roll", inherited like any meta_json key:
+# "monthly" has the background builder roll its start forward to the
+# current month each night its start month is over; "off" opts out of a
+# parent's.
 ROLL_KEY = "roll"
 ROLL_CHOICES: tuple[str, ...] = ("monthly", "off")
 

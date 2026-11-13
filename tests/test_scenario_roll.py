@@ -394,3 +394,51 @@ def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_co
     assert by_name["projected_2026_1"]["description"] == "projected by sim scenario roll, through 2027-01"
     assert by_name["projected_2027_1"]["amount"] == "120.00"
     assert by_name["projected_2027_1"]["year"] == "2027"
+
+
+@pytest.mark.slow
+@pytest.mark.uses_current_scenario_write
+def test_a_derived_scenario_rolls_only_its_own_rows_after_its_parent(
+    test_data_dir: Path, test_scenarios_dir: Path, latest_test_run: Callable[[str], Path],
+) -> None:
+    """#564: a scenario built on a rolled one rolls with --own: its own lot,
+    no start of its own, and its own run's flows in place of the projected
+    rows it would inherit, so none are counted twice."""
+    assert _sim(test_data_dir, "scenario", "create", "alice_more", "retire_alice").exit_code == 0
+    edited = _sim(test_data_dir, "account", "lot", "edit", "Asset_Savings", "default",
+                  "--opening-balance", "30000.00")
+    assert edited.exit_code == 0, edited.output
+    latest_test_run("retire_alice")
+    child_run = latest_test_run("alice_more")
+    with RunConnection(child_run, "alice_more") as rc:
+        savings = roll.projections(rc, month_before("2027-01"))[("Asset_Savings", "default")]
+        flows = roll.projected_year_to_date(rc, "2026-05", "2027-01")
+    child = test_scenarios_dir / "alice_more"
+
+    # Its start is retire_alice's, which hasn't moved yet.
+    early = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
+                 "--no-keep")
+    assert early.exit_code != 0 and roll.PARENT_FIRST in early.output
+
+    parent = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--yes", "--no-keep")
+    assert parent.exit_code == 0, parent.output
+    assert "sim scenario roll alice_more 2027-01 --own" in parent.output
+
+    result = _sim(test_data_dir, "scenario", "roll", "alice_more", "--own", "--yes", "--no-keep")
+
+    assert result.exit_code == 0, result.output
+    assert "Rolling alice_more forward: 2026-05 -> 2027-01" in result.output
+    with (child / "scenario.csv").open(newline="", encoding="utf-8") as fh:
+        assert next(csv.DictReader(fh))["start"] == ""
+    lots = _rows(child / "account_lots.csv")
+    assert list(lots) == ["Asset_Savings/default"]
+    assert lots["Asset_Savings/default"]["opening_balance"] == f"{savings.balance:.2f}"
+    # Every projected row it inherits is its own now, holding its own flows.
+    inherited = {name for name in _rows(test_scenarios_dir / "retire_alice" / "year_to_date.csv")
+                 if name.startswith(roll.PROJECTED_PREFIX)}
+    own = {name: row for name, row in _rows(child / "year_to_date.csv").items()
+           if name.startswith(roll.PROJECTED_PREFIX)}
+    assert inherited and inherited <= set(own)
+    total = sum(round(float(row["amount"]) * 100) for row in own.values())
+    assert total == sum(one.amount for one in flows)
+    assert _sim(test_data_dir, "check", "alice_more").exit_code == 0

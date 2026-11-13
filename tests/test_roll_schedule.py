@@ -64,7 +64,17 @@ def test_a_window_may_run_past_midnight() -> None:
     assert roll_schedule.window_of({"roll_window": "soon"}) == window
 
 
-def test_only_a_scenarios_own_mark_rolls_it_once_its_start_month_is_over(
+def _derived(name: str, meta: str = "{}") -> dict[str, str]:
+    """A scenario built on retire_alice, inheriting its start, as files."""
+    return {
+        f"sim/scenarios/{name}/scenario.csv": _csv_text({
+            "name": name, "description": "", "start": "", "end": "", "seed": "",
+            "parent_scenario": "retire_alice", "created_by": "alice", "meta_json": meta}),
+        f"sim/scenarios/{name}/README.md": f"# {name}\n",
+    }
+
+
+def test_a_marked_scenario_rolls_once_its_start_month_is_over(
     marked: tuple[Path, git.Repo],
 ) -> None:
     data, _ = marked
@@ -74,6 +84,45 @@ def test_only_a_scenarios_own_mark_rolls_it_once_its_start_month_is_over(
     # Disabled: no run is kept current for it to project from.
     (data / "scenarios" / "retire_alice" / ".disable").write_text("off\n")
     assert roll_schedule.due_scenarios(data, date(2026, 6, 1)) == []
+
+
+def test_the_mark_is_inherited_and_a_derived_scenario_may_opt_out(
+    marked: tuple[Path, git.Repo], commit_files: Callable[..., str],
+) -> None:
+    data, repo = marked
+    commit_files(repo, {**_derived("alice_more"), **_derived("alice_fixed", '{"roll": "off"}')},
+                 "two what-ifs")
+    # Parents first, so a child's roll reads its parent's new start.
+    assert roll_schedule.marked(data) == ["retire_alice", "alice_more"]
+    assert roll_schedule.due_scenarios(data, date(2026, 6, 1)) == [
+        ("retire_alice", "2026-05"), ("alice_more", "2026-05")]
+
+
+def test_a_derived_scenario_rolls_its_own_rows_after_its_parent_and_waits_when_it_fails(
+    marked: tuple[Path, git.Repo], commit_files: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.roll import PARENT_FIRST
+
+    data, repo = marked
+    commit_files(repo, _derived("alice_more"), "a what-if")
+    calls: list[tuple[str, bool]] = []
+
+    def fake(data: Path, name: str, month: str, *, own: bool = False) -> tuple[int, list[str]]:
+        calls.append((name, own))
+        return 1, [f"Error: alice_more's start is inherited ...: {PARENT_FIRST}, or ..."
+                   if own else "Error: it broke"]
+
+    monkeypatch.setattr(roll_schedule, "_roll_one", fake)
+    worktree = builder.BuilderPaths.for_data(data).roll_worktree
+
+    outcome = roll_schedule.roll(data, worktree, {"roll": True}, now=_local(2026, 11, 13, 2, 0))
+
+    assert calls == [("retire_alice", False), ("alice_more", True)]
+    assert outcome.committed is None
+    scenarios = roll_schedule.read_state(data)["scenarios"]
+    assert scenarios["retire_alice"]["outcome"] == "failed"
+    assert scenarios["alice_more"]["outcome"] == "skipped"
 
 
 def test_a_roll_is_due_once_a_night_in_the_window_after_the_prices(
@@ -233,7 +282,9 @@ def test_scenario_edit_marks_a_scenario_to_roll_and_the_loader_checks_it(
 
     assert json.loads(edit("--roll", "monthly")) == {"roll": "monthly"}
     assert roll_schedule.marked(test_data_dir) == ["retire_alice"]
-    assert json.loads(edit("--roll", "off")) == {}
+    assert json.loads(edit("--roll", "off")) == {"roll": "off"}
+    assert roll_schedule.marked(test_data_dir) == []
+    assert json.loads(edit("--roll", "")) == {}
     path = test_scenarios_dir / "retire_alice" / "scenario.csv"
     path.write_text(_csv_text(_scenario_row(path) | {"meta_json": '{"roll": "weekly"}'}))
     check = CliRunner().invoke(sim_group_command, ["check", "retire_alice", "--data-dir", str(test_data_dir)])

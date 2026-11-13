@@ -52,7 +52,7 @@ def spec(scenarios: Sequence[str]) -> KindSpec:
                   required=False, strict=True,
                   choices=lambda ctx, answers: list(ROLL_CHOICES),  # noqa: ARG005
                   help="monthly: the background builder rolls it forward each night its start "
-                       "month is over (#564). Never inherited; blank is off."),
+                       "month is over (#564); off opts out of a parent's. Blank inherits it."),
         ),
     )
 

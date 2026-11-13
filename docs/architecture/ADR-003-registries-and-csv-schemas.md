@@ -735,7 +735,7 @@ Exactly one data row (the loader rejects more).
 | `created_by` | text | ✓ | `$ANALYSIS_USER` at authoring time |
 | `meta_json` | json | | a JSON object, default `{}`; merged key by key down the lineage (see below) |
 
-`meta_json`'s `roll` ([#564](https://github.com/BobKerns/analysis/issues/564)), `monthly` or `off` (the default), has the background builder roll the scenario forward to the current month each night its start month is over ([ADR-004](ADR-004-reproducibility-and-activation.md) §12). Only the scenario's own `scenario.csv` counts: a scenario built on one that rolls doesn't roll unless it says so too. `sim scenario edit --roll` sets it.
+`meta_json`'s `roll` ([#564](https://github.com/BobKerns/analysis/issues/564)), `monthly` or `off` (the default), has the background builder roll the scenario forward to the current month each night its start month is over ([ADR-004](ADR-004-reproducibility-and-activation.md) §12). It merges down the lineage like any other key, so marking `base` marks what is built on it; `off` opts a scenario out of its parent's mark. `sim scenario edit --roll` sets it (`''` inherits).
 
 The calendar lives at `scenarios/<name>/calendar.csv` by filename convention — there is no `calendar` column. Calendars are the least-shared file in practice; a derived scenario overlays its parent's calendar.
 
@@ -1271,7 +1271,17 @@ to be replaced with the actual figures (`sim ytd edit`), and carry no rule's
 tags or person. Without them (no run reaches the month, or declined), it
 lists, within the same year, the year-to-date rows and `ytd_amount`s that
 now cover too few months, and for a start in a later year by April, what
-the prior year's April tax needs. `--yes`
+the prior year's April tax needs. `--own` rolls only what is the
+scenario's own, for one built on a scenario that has rolled: its own lot
+rows (and lots of accounts it defines), its own year-to-date rows and rules,
+and its start only if it sets one. An inherited start must already be START
+(its parent rolled first; otherwise it refuses), and the old start is then
+that of the scenario's newest run starting before START. Whenever the
+months skipped get projected rows, the projected rows the scenario inherits
+of the years kept are overridden first (at zero, under the same names), so
+its own run's flows replace its parent's rather than add to them. A roll
+without `--own` lists the scenarios built on this one that have lot rows
+of their own, to roll with `--own`. `--yes`
 fails, rather than asks, at a question with no default (an
 `@itemization` balance and no run). A lot deleted in the scenario isn't
 brought back by an older run's projection. The whole edit is one staged edit, the kept copy
@@ -1542,4 +1552,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax settlement pays an overpayment back, and after-tax net worth counts a refund owed (§2.6).
 - [#542](https://github.com/BobKerns/analysis/issues/542): itemized deductions figured from the year's spending (SALT with its cap and phase-down, mortgage interest under the debt limit, charity, medical) beside the hand-typed total, under the new `itemized_limits`/`state_itemized_limits` aux kinds; `mortgage_payment` interest and `irmaa` surcharges carry implied `tax:` tags (§2.6, §4.4).
 - [#527](https://github.com/BobKerns/analysis/issues/527): import mappings move to the shared `imports/` folder, one subfolder per source, replacing each scenario's `quicken_account_map.csv` and the data repo's `quicken/expense_*.csv`; an account mapping can name a lot (§4.17).
-- [#564](https://github.com/BobKerns/analysis/issues/564): `scenario roll` offers the skipped months' flows as projected year-to-date rows; `scenario.meta_json` takes `roll` (§4.5, §7).
+- [#564](https://github.com/BobKerns/analysis/issues/564): `scenario roll` offers the skipped months' flows as projected year-to-date rows, and `--own` rolls a derived scenario's own rows; `scenario.meta_json` takes an inherited `roll` (§4.5, §7).

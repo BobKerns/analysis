@@ -2021,7 +2021,10 @@ A new year changes what some rows mean, so `roll` deals with those too:
 
 Everything is written in one edit, only if the scenario and everything
 built on it still load. What's built on it follows by itself: a what-if
-built on `base` starts when `base` does. Then run both and compare them:
+built on `base` starts when `base` does. One with lots of its own still
+holds last year's balances in them, so `roll` lists it, to roll after
+`base` with `sim scenario roll NAME 2027-01 --own`: only its own lots and
+rows move. Then run both and compare them:
 
 ```sh
 sim run base --commit
@@ -2049,8 +2052,10 @@ current month on the first night after its start month ends, between 01:00
 and 05:00 by default, after that day's prices are in. It takes every default,
 as `sim scenario roll --yes --no-keep` would: each lot opens with what the
 run projected (a lot kept in shares, at the new prices), and the months it
-skips become projected year-to-date rows. Only the scenario that says so
-rolls; a what-if built on `base` follows its start without rolling itself.
+skips become projected year-to-date rows. The mark is inherited, so the
+what-ifs built on `base` roll too, each after `base`, and only what is its
+own (`sim scenario roll --own`): its own lots, and the projected rows from
+its own run. `sim scenario edit NAME --roll off` keeps one where it is.
 It works on its own branch and merges into `main` while `main` is checked out
 with nothing uncommitted, then the builder runs everything again. Instead of
 a copy of last year's plan, a roll into a new year tags the plan before it
