@@ -751,7 +751,6 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     STATE_STANDARD_DEDUCTION: {
         "amount_series": "amount", "floor_series": "floor",
         "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
-        "phaseout_step_series": "phaseout_step",
     },
     STATE_SOCIAL_SECURITY: {
         "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
@@ -832,14 +831,16 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # state, and the loader warns that it did. Some states shrink it as
     # income rises (#578): above phaseout_start of state AGI it falls to
     # nothing at phaseout_end (linearly; at once when they're equal), or by
-    # phaseout_rate of each dollar over, but not below floor. With
-    # phaseout_step the amount over counts in whole steps, each started step
-    # in full (Alabama's $500 rows, Rhode Island's 20% steps). phaseout_agi
+    # phaseout_rate of each dollar over, but not below floor. With a rate,
+    # phaseout_step counts the dollars over in whole steps, a started one in
+    # full (Alabama's $500 rows); with an end, phaseout_steps splits the span
+    # into that many equal steps (Rhode Island's five 20% steps), which
+    # stay equal as the start and end are indexed. phaseout_agi
     # (STATE_PHASEOUT_AGI) says which AGI: the state's (blank) or the
     # federal. The columns after amount are optional (AUX_OPTIONAL_COLUMNS).
     STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount", "floor",
                                "phaseout_start", "phaseout_end", "phaseout_rate",
-                               "phaseout_step", "phaseout_agi"),
+                               "phaseout_step", "phaseout_steps", "phaseout_agi"),
     # How a state taxes Social Security (#484): it starts from the federally
     # taxable amount and excludes exclusion_percent of it, an exclusion that
     # phases out above phaseout_start of federal AGI: to nothing at
@@ -1023,7 +1024,7 @@ AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     **{kind: frozenset(ITEMIZED_LIMITS_COLUMNS[2:]) for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
     STATE_STANDARD_DEDUCTION: frozenset({
         "floor", "phaseout_start", "phaseout_end", "phaseout_rate", "phaseout_step",
-        "phaseout_agi",
+        "phaseout_steps", "phaseout_agi",
     }),
     STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
     STATE_ADJUSTMENTS: frozenset({

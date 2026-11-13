@@ -223,7 +223,7 @@ def test_a_standard_deduction_falls_in_a_line_to_nothing_at_the_end() -> None:
 def test_steps_toward_an_end_take_a_share_each() -> None:
     # Rhode Island's: 20% for each started $7,250 over the start, so the
     # fifth step (past $29,000 over) takes the last of it.
-    row = {"phaseout_start": 254_250_00, "phaseout_end": 290_500_00, "phaseout_step": 7_250_00}
+    row = {"phaseout_start": 254_250_00, "phaseout_end": 290_500_00, "phaseout_steps": 5}
     assert _phased(254_250_01, **row) == 6_800_00
     assert _phased(283_250_00, **row) == 1_700_00
     assert _phased(283_250_01, **row) == 0

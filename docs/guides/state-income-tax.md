@@ -74,8 +74,9 @@ every state's list.
   `state_standard_deduction`'s optional phase-out columns, **table**:
   above `phaseout_start` of the state's AGI it falls to nothing at
   `phaseout_end`, or by `phaseout_rate` of each dollar over, not below
-  `floor`; `phaseout_step` counts the income over in whole steps, as a
-  table of $500 rows does. It tests the state's AGI unless
+  `floor`. With a rate, `phaseout_step` counts the income over in whole
+  steps, as a table of $500 rows does; with an end, `phaseout_steps`
+  splits the span into equal steps. It tests the state's AGI unless
   `phaseout_agi` is `federal`, as Minnesota's, Rhode Island's and South
   Carolina's do.
 - **Married couples filing separately on one return** (Arkansas, Delaware,
@@ -418,10 +419,10 @@ on interest and dividends ended with 2024.
   is **table** (tagged `income` from 67). The age test on Social Security
   is **not supported** (#581).
 - The standard deduction and exemptions phase out at high income in 20%
-  steps: **table**. For the standard deduction, `phaseout_step` is the
-  step ($7,250 for 2025) and `phaseout_end` five steps above
-  `phaseout_start`, so each started step takes a fifth, and `phaseout_agi`
-  is `federal`. The exemptions are
+  steps: **table**. For the standard deduction, `phaseout_end` is five
+  steps ($7,250 each for 2025) above `phaseout_start` and `phaseout_steps`
+  is 5, so each started step takes a fifth, and `phaseout_agi` is
+  `federal`. The exemptions are
   a `state_adjustments` `filers` row, phased out as a straight line.
 
 ### South Carolina
