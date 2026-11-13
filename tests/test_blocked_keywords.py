@@ -125,6 +125,20 @@ def test_a_staged_file_naming_a_real_account_is_blocked(scratch_repo: Path) -> N
     assert "accounts.csv:2:" in result.stderr
 
 
+@pytest.mark.parametrize("lock_file", ["package-lock.json", "uv.lock"])
+def test_lock_files_are_not_searched(scratch_repo: Path, lock_file: str) -> None:
+    # A checksum's base64 text can hold a short keyword by chance, with '+',
+    # '/' or '-' on each side of it.
+    keyword = _keywords()[0]
+    _stage(scratch_repo, lock_file, f'"integrity": "sha512-{keyword}+abc/def=="\n')
+
+    assert _check(scratch_repo, "--staged").returncode == 0
+    assert _check(scratch_repo, "--all").returncode == 0
+
+    _stage(scratch_repo, "notes.txt", f"sha512-{keyword}+abc\n")
+    assert _check(scratch_repo, "--staged").returncode == 1
+
+
 def test_keywords_inside_longer_words_are_not_matched(scratch_repo: Path) -> None:
     first, second = _keywords()[:2]
     _stage(scratch_repo, "notes.txt", f"x{first}\n{second}9\nplain text\n")
