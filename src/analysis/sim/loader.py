@@ -1149,6 +1149,11 @@ def _read_scenario_inputs(
             f"{scenario_name}: scenario.csv meta_json roth_survivor must be one of "
             f"{', '.join(registries.ROTH_SURVIVOR_ELECTIONS)} (got {meta['roth_survivor']!r})"
         )
+    if meta.get(registries.ROLL_KEY, "off") not in registries.ROLL_CHOICES:
+        issues.append(
+            f"{scenario_name}: scenario.csv meta_json {registries.ROLL_KEY} must be one of "
+            f"{', '.join(registries.ROLL_CHOICES)} (got {meta[registries.ROLL_KEY]!r})"
+        )
     if not isinstance(meta.get("community_property", False), bool):
         # #255: a household fact the basis step-up at a death reads.
         issues.append(

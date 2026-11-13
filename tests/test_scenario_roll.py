@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
+from analysis.frames import named_rows
 from analysis.sim import compare, roll
 from analysis.sim.connection import RunConnection
 from analysis.sim.dates import month_before
@@ -358,7 +359,7 @@ def test_a_roll_keeps_the_skipped_months_in_their_tax_year(
             frame = rc._read_sql("SELECT year, bucket, amount FROM tax_year_summary "
                                  "WHERE year = 2026 AND bucket IN "
                                  "('federal_agi', 'federal_tax', 'state_tax')")
-        return {(int(row.year), str(row.bucket)): int(row.amount) for row in frame.itertuples()}
+        return {(int(row.year), str(row.bucket)): int(row.amount) for row in named_rows(frame)}
 
     before = taxes(old)
     assert before and taxes(new) == before

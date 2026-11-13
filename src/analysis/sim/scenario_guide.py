@@ -1,6 +1,6 @@
 """Guided entry for ``sim scenario edit`` (issue #190).
 
-A scenario's own settings are its ``scenario.csv`` row and two of its
+A scenario's own settings are its ``scenario.csv`` row and three of its
 ``meta_json`` keys. They are described here as data for
 ``calendar_guide.Guide`` to ask, as a lot's or a scheduled rule's fields are.
 Every field is optional: a blank one inherits, except the description, where
@@ -13,6 +13,7 @@ import json
 from collections.abc import Callable, Sequence
 
 from analysis.sim.calendar_guide import Answers, Field, KindSpec
+from analysis.sim.registries import ROLL_CHOICES, ROLL_KEY
 
 NEW_SEED = "new"  # typed as the seed to draw a fresh one
 # Typed for the seed, size or reserve: clears it, so it inherits, as a blank
@@ -47,6 +48,11 @@ def spec(scenarios: Sequence[str]) -> KindSpec:
                   help=f"0 makes it not an ensemble; blank or '{NONE}' inherits it."),
             Field("reserve", "reserve in CPI-constant dollars", type="money", option="--reserve",
                   required=False, help=f"For the ensemble reports; blank or '{NONE}' inherits it."),
+            Field("roll", "roll its start forward each month (monthly or off)", option="--roll",
+                  required=False, strict=True,
+                  choices=lambda ctx, answers: list(ROLL_CHOICES),  # noqa: ARG005
+                  help="monthly: the background builder rolls it forward each night its start "
+                       "month is over (#564). Never inherited; blank is off."),
         ),
     )
 
@@ -109,6 +115,7 @@ def answers_of(row: dict[str, str]) -> Answers:
         "seed": row.get("seed", ""),
         "size": "" if meta.get("ensemble_size") is None else str(meta["ensemble_size"]),
         "reserve": "" if meta.get("reserve") is None else str(meta["reserve"]),
+        "roll": str(meta.get(ROLL_KEY) or ""),
     }
 
 

@@ -35,7 +35,8 @@ scenario's follow it at once.
 
 It also fetches prices after each weekday's close, on a branch merged into
 the data repo's ``main`` when that is checked out and clean (#560: see
-``price_schedule``).
+``price_schedule``), and at night rolls forward the scenarios marked to roll
+each month, the same way (#564: see ``roll_schedule``).
 
 Everything lives in the data repo's ``state/builder/`` (untracked, and one
 per data worktree): ``config.json`` (the opt-in and the pair),
@@ -235,6 +236,11 @@ class BuilderPaths:
     def prices_worktree(self) -> Path:
         """The sparse worktree scheduled price fetches work in (#560)."""
         return self.dir / "prices"
+
+    @property
+    def roll_worktree(self) -> Path:
+        """The worktree scheduled rolls work in (#564)."""
+        return self.dir / "roll"
 
     @property
     def working_set(self) -> Path:
@@ -633,6 +639,12 @@ class _Daemon:
         self.fetch_reader: threading.Thread | None = None
         self.prices_looked = float("-inf")
         self.fetch_ended = float("-inf")
+        # A scheduled roll in progress (#564) and its log copier, and when
+        # rolls were last looked at.
+        self.roller: subprocess.Popen[bytes] | None = None
+        self.roll_reader: threading.Thread | None = None
+        self.roll_looked = float("-inf")
+        self.roll_ended = float("-inf")
 
     # The key a build is good for: the code trees and the scenario's data tree.
     def key(self, scenario: str, trees: tuple[str, ...]) -> list[Any]:
@@ -908,6 +920,53 @@ class _Daemon:
                                              name="log prices", daemon=True)
         self.fetch_reader.start()
 
+    def roll_tick(self, now: bool) -> None:
+        """#564: note a roll that ended; merge a roll that waits for main,
+        between builds; start a roll when one is due. Looks as often as
+        :meth:`prices_tick` does."""
+        from analysis.sim import roll_schedule
+
+        if self.roller is not None:
+            if self.roller.poll() is None:
+                return
+            if self.roll_reader is not None:
+                self.roll_reader.join(timeout=5)
+            code = self.roller.returncode
+            self.roller = self.roll_reader = None
+            self.roll_ended = time.monotonic()
+            self.log("rolled scenarios forward" if code == 0 else f"roll failed (exit {code})")
+            now = True
+        if not now and time.monotonic() - self.roll_looked < 60:
+            return
+        self.roll_looked = time.monotonic()
+        config = read_config(self.paths)
+        if not roll_schedule.enabled(config):
+            return
+        if self.build is None and not self.held:
+            try:
+                merged = roll_schedule.merge_pending(self.data_dir)
+            except (roll_schedule.RollScheduleError, OSError) as exc:
+                self.log(f"roll not merged: {exc}")
+                return
+            for line in merged:
+                self.log(line)
+        # One that crashed before recording its night isn't started again
+        # every minute: an hour later, as a failed fetch is.
+        if self.fetcher is not None or time.monotonic() - self.roll_ended < 3600 \
+                or not roll_schedule.due(self.data_dir, config, datetime.now(UTC)):
+            return
+        self.log("rolling scenarios forward")
+        env = {**os.environ, BUILDER_SWITCH_ENV: "off", BUILDER_CHILD_ENV: "1"}
+        self.roller = subprocess.Popen(
+            [*_sim_executable(), "builder", "roll", "--if-due", "--data-dir", str(self.data_dir)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            start_new_session=True, env=env, close_fds=True,
+        )
+        assert self.roller.stdout is not None
+        self.roll_reader = threading.Thread(target=self.writer.copy, args=(self.roller.stdout,),
+                                            name="log roll", daemon=True)
+        self.roll_reader.start()
+
     def finished(self) -> bool:
         """Note a build that ended; True if one did."""
         build = self.build
@@ -990,7 +1049,9 @@ class _Daemon:
                     self.start_next(self.started_trees)
                     self.write_status()
                 self.prices_tick(looked_again)
-                if self.build is None and not self.queue and self.fetcher is None:
+                self.roll_tick(looked_again)
+                if self.build is None and not self.queue and self.fetcher is None \
+                        and self.roller is None:
                     idle_since = idle_since or time.monotonic()
                     if time.monotonic() - idle_since > IDLE_GRACE_SECONDS:
                         break
@@ -1305,13 +1366,21 @@ def _ours(hook: Path) -> bool:
     return hook.read_text(errors="replace").split("\n")[1:2] == [HOOK_MARKER]
 
 
-def install(data_dir: Path, branch: str | None = None, prices: bool | None = None) -> list[str]:
+def install(data_dir: Path, branch: str | None = None, prices: bool | None = None,
+            roll: bool | None = None, roll_window: str | None = None) -> list[str]:
     """Opt this workspace in: check the pair, record it, the branch its
-    code must match (``branch``, else the one recorded before, else main)
-    and whether it fetches prices (``prices``, else as recorded, else yes:
-    #560), install the data repo's hooks (the code repo's are in
-    ``.githooks/``). Returns what it did. The price timer is the CLI's
+    code must match (``branch``, else the one recorded before, else main),
+    whether it fetches prices (``prices``, else as recorded, else yes:
+    #560), and whether it rolls marked scenarios forward and in what
+    window (``roll``, ``roll_window``, else as recorded, else yes and
+    01:00-05:00: #564), install the data repo's hooks (the code repo's are
+    in ``.githooks/``). Returns what it did. The timer is the CLI's
     (``price_schedule.install_timer``)."""
+    from analysis.sim import roll_schedule
+
+    if roll_window is not None:
+        start, end = roll_schedule.parse_window(roll_window)  # ValueError: the CLI says why
+        roll_window = f"{start:%H:%M}-{end:%H:%M}"
     data_dir = data_dir.resolve()
     code = code_dir()
     problems = pair_problems(code, data_dir)
@@ -1329,13 +1398,17 @@ def install(data_dir: Path, branch: str | None = None, prices: bool | None = Non
     before = read_config(paths) or {}
     branch = branch or config_branch(before)
     prices = bool(before.get("prices", True)) if prices is None else prices
+    roll = bool(before.get("roll", True)) if roll is None else roll
+    roll_window = roll_window or str(before.get("roll_window") or roll_schedule.DEFAULT_WINDOW)
     _write_json(paths.config, {
         "data_dir": str(data_dir), "code_dir": str(code), "branch": branch,
-        "prices": prices, "installed": time.time(),
+        "prices": prices, "roll": roll, "roll_window": roll_window, "installed": time.time(),
     })
     done = [f"recorded the pair in {paths.config}",
             f"builds only from code matching the local {branch} branch",
-            "fetches prices after each weekday's close" if prices else "doesn't fetch prices"]
+            "fetches prices after each weekday's close" if prices else "doesn't fetch prices",
+            f"rolls scenarios marked to roll forward each night, {roll_window} local time"
+            if roll else "doesn't roll scenarios forward"]
     hooks.mkdir(parents=True, exist_ok=True)
     for name in HOOK_NAMES:
         hook = hooks / name
@@ -1371,4 +1444,8 @@ def uninstall(data_dir: Path) -> list[str]:
         subprocess.run(["git", "-C", str(data_dir), "worktree", "remove", "--force",
                         str(paths.prices_worktree)], capture_output=True, check=False)
         done.append(f"removed the price worktree {paths.prices_worktree}")
+    if paths.roll_worktree.exists():
+        subprocess.run(["git", "-C", str(data_dir), "worktree", "remove", "--force",
+                        str(paths.roll_worktree)], capture_output=True, check=False)
+        done.append(f"removed the roll worktree {paths.roll_worktree}")
     return done

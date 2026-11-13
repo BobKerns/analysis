@@ -15706,6 +15706,7 @@ def _apply_scenario_edit(
     data: Path, name: str, *, description: str | None = None, start: str | None = None,
     end: str | None = None, parents: str | None = None, seed: str | None = None,
     new_seed: bool = False, size: str | None = None, reserve: str | None = None,
+    roll: str | None = None,
 ) -> None:
     """Set the given fields of scenario ``name``'s scenario.csv; see ``_edit_scenario``."""
     if seed is not None and new_seed:
@@ -15748,6 +15749,9 @@ def _apply_scenario_edit(
         meta["ensemble_size"] = _blank_or(size, _member_count, "--size")
     if reserve is not None:
         meta["reserve"] = _blank_or(reserve, _reserve_json, "--reserve")
+    if roll is not None:
+        # Off is no key: the builder reads only the scenario's own.
+        meta[registries.ROLL_KEY] = roll if roll == "monthly" else None
     if not values and not meta:
         raise click.UsageError("nothing to change: give at least one option (see --help)")
 
@@ -15823,6 +15827,10 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
         click.option("--reserve", default=None,
                      help="The ensemble reports' reserve, in CPI-constant dollars "
                           "(meta_json reserve); '' or none inherits."),
+        click.option("--roll", default=None, type=click.Choice([*registries.ROLL_CHOICES, ""]),
+                     help="monthly: the background builder rolls the start forward to the "
+                          "current month each night the start month is over (meta_json roll, "
+                          "#564; never inherited). off or '' stops it."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
     ]
@@ -15835,7 +15843,8 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
 @_edit_options("scenario")
 def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
     """Change scenario NAME's scenario.csv: its description, start and end
-    months, parents and mix-ins, seed, ensemble size or reserve.
+    months, parents and mix-ins, seed, ensemble size, reserve, or whether the
+    background builder rolls it forward each month.
 
     Options set those fields and write at once; a blank value ('') clears
     one, so it inherits again (a blank description restores the default).
@@ -18461,8 +18470,15 @@ _BUILDER_DATA_DIR = click.option(
 @click.argument("branch", required=False)
 @click.option("--prices/--no-prices", "fetch_prices", default=None,
               help="Fetch prices after each weekday's close (default: as before, else yes).")
+@click.option("--roll/--no-roll", "roll", default=None,
+              help="Roll the scenarios marked to roll (`sim scenario edit NAME --roll monthly`) "
+                   "forward each night (default: as before, else yes).")
+@click.option("--roll-window", default=None, metavar="HH:MM-HH:MM",
+              help="When a night's roll may run, in this machine's local time (default: as "
+                   "before, else 01:00-05:00).")
 @_BUILDER_DATA_DIR
-def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Path | None) -> None:
+def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | None,
+                    roll_window: str | None, data_dir: Path | None) -> None:
     """Opt this workspace pair in: check the code worktree and the data repo
     name each other, record the pair, and install the data repo's hooks.
 
@@ -18477,19 +18493,31 @@ def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Pat
     builder/prices branch and merged into main when main is checked out and
     has no uncommitted changes; main is then pushed if it is strictly ahead of
     its upstream.
+
+    Unless --no-roll, the same timer rolls forward, each night in the
+    --roll-window, every scenario marked to roll whose start month is over
+    (#564): to the current month, as `sim scenario roll --yes` would, on the
+    builder/roll branch, merged the same way. When a start moves into a new
+    year, the plan before it is tagged plan-<year>.
     """
-    from analysis.sim import builder, price_schedule
+    from analysis.sim import builder, price_schedule, roll_schedule
 
     resolved = _builder_data_dir(data_dir)
+    if roll_window is not None:
+        try:
+            roll_schedule.parse_window(roll_window)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--roll-window") from None
     try:
-        done = builder.install(resolved, branch, fetch_prices)
+        done = builder.install(resolved, branch, fetch_prices, roll, roll_window)
     except ValueError as exc:
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
         click.echo(line)
     # By the recorded choice alone: ANALYSIS_PRICE_FETCH=off is for one shell
     # (an agent's, a test's), so install_timer then leaves the timer as it is.
-    if (builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}).get("prices", True):
+    config = builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}
+    if config.get("prices", True) or config.get("roll", True):
         click.echo(price_schedule.install_timer(resolved, _builder_sim(resolved)))
     elif line := price_schedule.uninstall_timer(resolved):
         click.echo(line)
@@ -18508,7 +18536,7 @@ def _builder_sim(data_dir: Path) -> Path:
 @builder_group.command(name="uninstall")
 @_BUILDER_DATA_DIR
 def builder_uninstall(data_dir: Path | None) -> None:
-    """Opt this workspace out, stop its builder, and remove its price timer."""
+    """Opt this workspace out, stop its builder, and remove its timer."""
     from analysis.sim import builder, price_schedule
 
     resolved = _builder_data_dir(data_dir)
@@ -18619,6 +18647,65 @@ def builder_prices(if_due: bool, data_dir: Path | None) -> None:
         click.echo(builder.notify(resolved))
 
 
+@builder_group.command(name="roll")
+@click.option("--if-due", is_flag=True, default=False,
+              help="Only when a night's roll is due (what the builder runs).")
+@_BUILDER_DATA_DIR
+def builder_roll(if_due: bool, data_dir: Path | None) -> None:
+    """Roll forward now, as the night's schedule does (#564), every scenario
+    marked to roll (`sim scenario edit NAME --roll monthly`) whose start
+    month is over: to the current month, as `sim scenario roll NAME MONTH
+    --yes --no-keep` would. The builder merges the roll into the data repo's
+    main, between builds, once main is checked out with no uncommitted
+    changes.
+
+    It never touches your checkout: it works in its own worktree, on the
+    builder/roll branch. A roll that needs a question answered, or fails, is
+    reported in `sim builder status`; do that one by hand.
+    """
+    from analysis.sim import builder, roll_schedule
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    config = builder.read_config(paths)
+    if config is None:
+        raise click.ClickException("background builds aren't installed here (sim builder install)")
+    if roll_schedule.switched_off():
+        click.echo(f"rolls are off ({roll_schedule.SWITCH_ENV}=off)")
+        return
+    if if_due and not roll_schedule.due(resolved, config, datetime.now(UTC)):
+        click.echo("no roll due")
+        return
+    from analysis.sim.builder_log import LogWriter
+    from analysis.sim.locks import BUILDER_CHILD_ENV
+
+    writer = None if os.environ.get(BUILDER_CHILD_ENV) else LogWriter(paths.log_dir)
+    if writer is not None:
+        writer.event("rolling scenarios forward")
+    try:
+        outcome = roll_schedule.roll(resolved, paths.roll_worktree, config)
+    except roll_schedule.RollScheduleError as exc:
+        if writer is not None:
+            writer.event(f"roll failed: {exc}")
+        raise click.ClickException(str(exc)) from None
+    for line in outcome.lines:
+        click.echo(line)
+        if writer is not None:
+            writer.output(line)
+    if outcome.committed:
+        click.echo(builder.notify(resolved))
+
+
+@builder_group.command(name="tick")
+@_BUILDER_DATA_DIR
+@click.pass_context
+def builder_tick(ctx: click.Context, data_dir: Path | None) -> None:
+    """What the hourly timer runs: `sim builder prices --if-due`, then
+    `sim builder roll --if-due`."""
+    ctx.invoke(builder_prices, if_due=True, data_dir=data_dir)
+    ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
+
+
 @builder_group.command(name="series", hidden=True)
 @click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
 @_BUILDER_DATA_DIR
@@ -18690,6 +18777,15 @@ def builder_status(data_dir: Path | None) -> None:
         click.echo(f"prices: not fetched ({price_schedule.SWITCH_ENV}=off)")
     else:
         click.echo("prices: not fetched (sim builder install --prices to start)")
+    from analysis.sim import roll_schedule
+
+    if roll_schedule.enabled(config):
+        for line in roll_schedule.describe(roll_schedule.read_state(resolved), config, resolved):
+            click.echo(line)
+    elif roll_schedule.switched_off():
+        click.echo(f"roll: off ({roll_schedule.SWITCH_ENV}=off)")
+    else:
+        click.echo("roll: off (sim builder install --roll to start)")
     click.echo(f"log: {paths.log_dir} (sim builder log)")
 
 

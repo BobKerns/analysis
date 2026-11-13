@@ -35,8 +35,8 @@ weekday's US market close, without touching the user's checkout (Bob):
 - A fetch is due when the last good one came before the latest weekday
   17:30 in New York, after the close is final. Nothing keeps the builder
   running, so ``sim builder install`` adds an hourly OS timer (a launchd agent
-  on macOS, a crontab line elsewhere) that runs ``sim builder prices
-  --if-due``: a look at the state, and a fetch when one is due, which pokes
+  on macOS, a crontab line elsewhere) that runs ``sim builder tick``: a look
+  at the state, and a fetch when one is due (and a roll, #564), which pokes
   the builder when it commits. The daemon also checks on starting, and on
   each rescan.
 - A symbol that fails is recorded, with when it first failed, and doesn't
@@ -539,10 +539,10 @@ def _plist_path(data_dir: Path) -> Path:
 
 
 def _timer_command(sim: Path, data_dir: Path) -> list[str]:
-    """What the timer runs: only a look at the state unless a fetch is due,
-    so the hourly wake costs no scan; a fetch that commits pokes the builder,
-    which merges between builds."""
-    return [str(sim), "builder", "prices", "--if-due", "--data-dir", str(data_dir.resolve())]
+    """What the timer runs: only a look at the state unless a fetch or a
+    roll (#564) is due, so the hourly wake costs no scan; one that commits
+    pokes the builder, which merges between builds."""
+    return [str(sim), "builder", "tick", "--data-dir", str(data_dir.resolve())]
 
 
 def _cron_marker(data_dir: Path) -> str:
@@ -559,8 +559,8 @@ def _crontab(run: Runner) -> list[str] | None:
 
 def install_timer(data_dir: Path, sim: Path, *, run: Runner = _run,
                   platform: str = sys.platform) -> str:
-    """Run ``sim builder prices --if-due`` hourly, so a due fetch happens
-    whether or not anything starts the builder. Replaces the timer of
+    """Run ``sim builder tick`` hourly, so a due fetch (or roll, #564)
+    happens whether or not anything starts the builder. Replaces the timer of
     this data dir if there is one. Returns a line saying what it did."""
     if switched_off():
         return f"price fetches are off here ({SWITCH_ENV}=off): the timer is left as it is"
@@ -578,7 +578,7 @@ def install_timer(data_dir: Path, sim: Path, *, run: Runner = _run,
         done = run(["launchctl", "bootstrap", domain, str(plist)])
         if done.returncode:
             return f"wrote {plist}, but launchctl couldn't load it: {done.stderr.strip()}"
-        return f"installed {plist}: the builder wakes hourly to fetch prices when due"
+        return f"installed {plist}: the builder wakes hourly to fetch prices and roll scenarios when due"
     lines = _crontab(run)
     if lines is None:
         return "no crontab here: prices are fetched only when the builder starts for other work"
@@ -588,7 +588,7 @@ def install_timer(data_dir: Path, sim: Path, *, run: Runner = _run,
     done = run(["crontab", "-"], input="\n".join([*kept, entry]) + "\n")
     if done.returncode:
         return f"couldn't install the crontab line: {done.stderr.strip()}"
-    return "added an hourly crontab line: the builder wakes to fetch prices when due"
+    return "added an hourly crontab line: the builder wakes to fetch prices and roll scenarios when due"
 
 
 def uninstall_timer(data_dir: Path, *, run: Runner = _run, platform: str = sys.platform) -> str | None:

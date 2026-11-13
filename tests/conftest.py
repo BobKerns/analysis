@@ -110,6 +110,8 @@ def _no_ambient_analysis_env(
     # Nor fetches prices or installs a timer (#560), even with the builder on:
     # a test that does turns this off and passes a fake provider.
     monkeypatch.setenv("ANALYSIS_PRICE_FETCH", "off")
+    # Nor rolls scenarios forward at night (#564).
+    monkeypatch.setenv("ANALYSIS_ROLL", "off")
 
 
 _STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_REPO")
