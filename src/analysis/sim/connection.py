@@ -60,6 +60,7 @@ EXPENSE_SUBKIND_TO_CATEGORY: dict[str, str] = {
     "healthcare": "healthcare",
     "taxes_federal": "taxes",
     "taxes_state": "taxes",
+    "taxes_local": "taxes",
     "living": "living",
     "food": "living",
     "business": "business",

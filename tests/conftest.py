@@ -1425,17 +1425,27 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
 
 def _write_tax_file(scenario_dir: Path, name: str = "federal", **cells: Any) -> Path:
     """Write ``scenario_dir/taxes/<name>.csv``, a tax jurisdiction (#507):
-    paid from Asset_Checking into Expense_Taxes_Federal (or _State) each
-    April from 2027, unless ``cells`` say otherwise; a local one (#508) is
-    paid with the state's. ``params_json`` may be a dict."""
+    paid from Asset_Checking into Expense_Taxes_Federal (or _State, _Local)
+    each April from 2027, unless ``cells`` say otherwise. A local one's
+    account (#586) is added to the scenario's accounts.csv when it has one
+    and lacks it. ``params_json`` may be a dict."""
     params = cells.pop("params_json", {})
-    local = name == "local"
+    destination = f"Expense_Taxes_{name.capitalize()}"
+    accounts_csv = scenario_dir / "accounts.csv"
+    if name == "local" and "destination" not in cells and accounts_csv.exists():
+        accounts = pd.read_csv(accounts_csv, dtype=str, keep_default_na=False)
+        if destination not in accounts["name"].tolist():
+            accounts.loc[len(accounts)] = {
+                **dict.fromkeys(accounts.columns, ""),
+                "name": destination, "kind": "expense", "subkind": "taxes_local",
+                "owner": "joint", "tax_treatment": "none", "opened": "2020-01-31", "meta_json": "{}",
+            }
+            accounts.to_csv(accounts_csv, index=False)
     row = {
         **dict.fromkeys(TAX_CSV_HEADER, ""),
         "kind": {"federal": "federal", "local": "local_bands"}.get(name, "state_tables"),
-        "source_chain": "" if local else "Asset_Checking",
-        "destination": ("" if local else "Expense_Taxes_Federal" if name == "federal"
-                        else "Expense_Taxes_State"),
+        "source_chain": "Asset_Checking",
+        "destination": destination,
         "start": "2027-04",
         "params_json": params if isinstance(params, str) else json.dumps(params),
         **cells,

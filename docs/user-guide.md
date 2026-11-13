@@ -400,8 +400,14 @@ Each income tax is a file in the scenario's `taxes/` folder: `federal.csv`
 for federal tax and `state.csv` for state tax. Each April the file works out
 the year before's tax and pays what is still due, from its `source_chain`
 (usually `Asset_Checking`) into its `destination` (`Expense_Taxes_Federal`).
-`sim tax add federal` writes one, asking for each field, and `sim tax list`
-shows them. A child scenario inherits its parent's files; its own file for
+Each tax is paid into an expense account of its own kind: subkind
+`taxes_federal` for the federal tax, `taxes_state` for the state's and
+`taxes_local` for a local one, and no two taxes share one. Only income tax
+payments (withholding, estimated payments) go into these accounts; pay
+property tax into a `taxes_property` account, where it counts as property
+tax for itemizing with no tag. `sim tax add federal` writes one, asking for
+each field (and adds the account if the scenario has none of the right
+kind), and `sim tax list` shows them. A child scenario inherits its parent's files; its own file for
 a jurisdiction replaces the parent's whole. A scenario with no `taxes/`
 files pays no income tax.
 
@@ -501,8 +507,9 @@ files pays no income tax.
   and name the county where you live: `sim tax state --county MD-county`.
   (A table named for the state, `state_local_tax__MD.csv`, applies wherever
   you live in it without a county.) Then `sim tax add local` adds
-  `taxes/local.csv`, the local tax's own file: it is paid with the state's
-  tax unless you name another source or destination, and `sim report tax`
+  `taxes/local.csv`, the local tax's own file: it is paid from the state
+  tax's source, unless you name another, into an account of its own,
+  `Expense_Taxes_Local` (subkind `taxes_local`) unless you have one, and `sim report tax`
   shows it as `local_tax`, apart from `state_tax`. A scenario with the table
   and no `taxes/local.csv` doesn't load. A local tax only on wages, or with a base of its own
   (Philadelphia's on investment income, Yonkers's share of the state tax),

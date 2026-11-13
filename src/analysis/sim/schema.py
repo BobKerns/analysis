@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 67
+SCHEMA_VERSION = 68
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -70,7 +70,7 @@ CREATE TABLE account (
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
-            'interest_expense','taxes_federal','taxes_state','taxes_property',
+            'interest_expense','taxes_federal','taxes_state','taxes_local','taxes_property',
             'business','gift','other_expense'))
     )
 );
