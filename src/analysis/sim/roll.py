@@ -20,29 +20,27 @@ found here so the command can deal with each:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-import re
 
 import pandas as pd
 
 from analysis.frames import named_rows
 from analysis.sim import registries
 from analysis.sim.dates import month_before, month_end_iso
-from analysis.sim.units import cents_to_dollars
 from analysis.sim.overlay import CalendarRow, Overlaid, overlay_rows, scenario_calendar_rows
+from analysis.sim.units import cents_to_dollars, dollars_to_cents
 
 if TYPE_CHECKING:
     from analysis.sim.connection import RunConnection
 
 __all__ = [
     "PARENT_FIRST", "PROJECTED_PREFIX", "Projection", "ProjectedRow", "anchored_rules",
-    "calendar_before", "cell_dollars", "covers", "default_start", "inherited_projected", "is_projected",
-    "merge_projected", "preroll_rules", "projected_year_to_date", "rolled_through",
+    "calendar_before", "cell_dollars", "covers", "default_start", "is_projected",
+    "merge_projected", "preroll_rules", "projected_year_to_date",
     "projections", "unpinned_year_to_date", "ytd_amount_rules",
 ]
 
@@ -51,7 +49,7 @@ __all__ = [
 # its year no longer counts.
 PROJECTED_PREFIX = "projected_"
 # Only that exact shape: a row someone named ``projected_bonus`` is theirs.
-_PROJECTED_NAME = re.compile(rf"{PROJECTED_PREFIX}(\d{{4}})_\d+")
+_PROJECTED_NAME = registries.PROJECTED_YTD_NAME
 
 # How ``sim scenario roll --own`` refuses a scenario whose inherited start
 # hasn't moved yet: the nightly roll reads it as "not this time", not a failure.
@@ -264,45 +262,6 @@ def covers(row: dict[str, str]) -> tuple[str, str] | None:
     return (found[1], found[2]) if found else None
 
 
-def inherited_projected(
-    scenario_dir: Path, old_start: str, new_start: str,
-) -> tuple[list[dict[str, str]], list[str]]:
-    """The projected year-to-date rows the scenario only inherits, of the
-    years a run from ``new_start`` still settles, that its own run, from
-    ``old_start``, covers again: its roll replaces them with that run's
-    flows (each overridden at zero, then :func:`merge_projected` adds its
-    own by key), since its parent's flows in those months aren't its own,
-    and counting both would count the shared ones twice. A row of months
-    before its run stays. Also returns the names of those covering months
-    both before and in its run, which can't be told apart (nor can a row
-    whose months aren't recorded any more)."""
-    new_year = int(new_start[:4])
-    replaced, mixed = [], []
-    for name, one in overlay_rows(scenario_dir, "year_to_date.csv").items():
-        year = _projected_year(one.row)
-        if one.index is not None or year is None or year < new_year - 1:
-            continue
-        months = covers(one.row)
-        if months is not None and months[1] < old_start:
-            continue
-        if months is None or months[0] < old_start:
-            mixed.append(f"{name} ({one.inherited_from})")
-            continue
-        replaced.append({column: one.row.get(column, "")
-                         for column in registries.YEAR_TO_DATE_CSV_HEADER}
-                        | {"amount": "0.00", "description": _described(old_start, new_start)})
-    return replaced, mixed
-
-
-def rolled_through(scenario_dir: Path, new_start: str) -> bool:
-    """Whether the scenario's own projected rows already reach the month
-    before ``new_start``: it has been rolled there."""
-    through = f"{month_before(new_start):%Y-%m}"
-    return any(one.index is not None and (months := covers(one.row)) is not None
-               and months[1] >= through
-               for one in overlay_rows(scenario_dir, "year_to_date.csv").values())
-
-
 def merge_projected(
     rows: list[dict[str, str]], projected: list[ProjectedRow], old_start: str, new_start: str,
     taken: set[str] | frozenset[str] = frozenset(),
@@ -313,8 +272,12 @@ def merge_projected(
     a new ``projected_<year>_<n>`` row. The earlier rolls' rows of a year
     the new run no longer settles (before the one before ``new_start``'s)
     are dropped. Each row's description records the months it covers, from
-    ``old_start`` (or the earlier roll's first) on. A new row's name avoids ``taken`` (the names the scenario
-    inherits) too. Returns the rows and how many of them were dropped."""
+    ``old_start`` (or the earlier roll's first) on. A row is the roll's only
+    while it says so: named as above, its description the roll's, its
+    amount plain dollars. One edited to the actual figures (or an
+    ``@itemization``) is the person's, left alone. A new row's name avoids
+    ``taken`` (the names the scenario inherits) too. Returns the rows and
+    how many of them were dropped."""
     new_year = int(new_start[:4])
     # Replaced by the actual figures once known (`sim ytd edit`).
     described = _described(old_start, new_start)
@@ -322,22 +285,21 @@ def merge_projected(
     dropped = 0
     for row in rows:
         year = _projected_year(row)
-        if year is not None and year < new_year - 1:
+        if year is not None and year < new_year - 1 and _rolls_cents(row) is not None:
             dropped += 1
             continue
         kept.append(dict(row))
     by_key = {(row["year"].strip(), row["from_account"], row["from_lot"], row["to_account"],
                row["to_lot"], row["tax_character"]): row
-              for row in kept if _projected_year(row) is not None}
+              for row in kept if _rolls_cents(row) is not None}
     used = {row["name"] for row in kept} | set(taken)
     for one in projected:
         row = by_key.get(one.key)
         if row is not None:
-            total = round(Decimal(cell_dollars(row["amount"]) or 0) * 100) + one.amount
             months = covers(row)
-            row["amount"] = cents_to_dollars(total)
+            row["amount"] = cents_to_dollars((_rolls_cents(row) or 0) + one.amount)
             row["description"] = _described(min(months[0], old_start), new_start) \
-                if months is not None and total != one.amount else described
+                if months is not None else described
             continue
         count = 1
         while f"{PROJECTED_PREFIX}{one.year}_{count}" in used:
@@ -352,6 +314,17 @@ def merge_projected(
         by_key[one.key] = row
         kept.append(row)
     return kept, dropped
+
+
+def _rolls_cents(row: dict[str, str]) -> int | None:
+    """The amount, in cents, of a row that is still a roll's projection;
+    None for any other (the person's own, or one they edited)."""
+    if _projected_year(row) is None or covers(row) is None:
+        return None
+    try:
+        return dollars_to_cents(row.get("amount", ""))
+    except ValueError:
+        return None
 
 
 def is_projected(row: dict[str, str]) -> bool:

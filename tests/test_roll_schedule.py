@@ -363,3 +363,20 @@ def test_a_failed_price_fetch_still_lets_the_tick_roll(
     # The roll still has its turn (switched off in the tests), and the tick fails.
     assert "the fetch broke" in tick.output and "rolls are off" in tick.output
     assert tick.exit_code == 1
+
+
+def test_a_tag_that_fails_is_said_and_the_roll_still_merges(
+    marked: tuple[Path, git.Repo], commit_files: Callable[..., str],
+) -> None:
+    data, repo = marked
+    _pending_roll(repo, data, commit_files)
+    top = Path(str(repo.working_tree_dir))
+    roll_schedule._update_state(top, pending_tags=[
+        {"tag": "plan-2026", "base": "0" * 40, "message": "The plan before retire_alice"}])
+
+    lines = roll_schedule.merge_pending(data)
+
+    assert lines[0] == "merged the roll into main"
+    assert lines[1].startswith("couldn't tag the plan plan-2026:")
+    assert not roll_schedule.read_state(data)["pending"]
+    assert "plan-2026" not in [t.name for t in repo.tags]

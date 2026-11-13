@@ -465,14 +465,23 @@ def merge_pending(data_dir: Path) -> list[str]:
         done = _git(top, "-c", "commit.gpgsign=false", "merge", "--no-ff", "-q",
                     "-m", f"Merge the roll from {ROLL_BRANCH}", _ROLL_REF)
         if done.returncode == 0:
-            _update_state(top, pending=None, waiting=None, merged=clock.time())
             lines = [f"merged the roll into {price_schedule.DATA_BRANCH}"]
             tags = []
             for one in state.get("pending_tags") or []:
                 if price_schedule._ref(top, f"refs/tags/{one['tag']}") is None:
-                    _git(top, "tag", "-a", one["tag"], one["base"], "-m", one["message"], check=True)
+                    # Unsigned, as the builder's commits are: no key to unlock
+                    # at night. A tag that fails is said, and doesn't stop
+                    # the push.
+                    made = _git(top, "-c", "tag.gpgSign=false", "tag", "-a", one["tag"],
+                                one["base"], "-m", one["message"])
+                    if made.returncode:
+                        said = (made.stderr or made.stdout).strip().splitlines()
+                        lines.append(f"couldn't tag the plan {one['tag']}: "
+                                     f"{said[0] if said else 'git tag failed'}")
+                        continue
                     lines.append(f"tagged the plan before the roll {one['tag']}")
                 tags.append(one["tag"])
+            _update_state(top, pending=None, waiting=None, merged=clock.time())
             return [*lines, price_schedule._push(top), *_push_tags(top, tags)]
         _git(top, "merge", "--abort")
         said = (done.stderr or done.stdout).strip().splitlines()

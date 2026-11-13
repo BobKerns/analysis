@@ -1426,7 +1426,11 @@ def load_scenario(
             and isinstance(payload.get("tier"), int)),
     )
     _validate_retirement_owners(accounts, persons, issues)
-    _validate_irmaa(scheduled_rows, tax_rows, aux_rows, persons, scenario_row, issues, warnings)
+    _validate_irmaa(scheduled_rows, tax_rows, aux_rows, persons, scenario_row, issues, warnings,
+                    projected_years={row.get("year", "").strip() for row in ytd_rows
+                                     if (found := registries.PROJECTED_YTD_NAME.fullmatch(
+                                         row.get("name", "").strip()))
+                                     and found[1] == row.get("year", "").strip()})
     _validate_filing_status(scheduled_rows, tax_rows, aux_rows, scenario_row, issues)
     _validate_itemized_deductions(aux_rows, issues)
     _validate_optional_state_tables(aux_rows, issues)
@@ -3204,14 +3208,16 @@ def _validate_irmaa(
     tax_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     persons: list[dict[str, str]], scenario_row: dict[str, str],
-    issues: list[str], warnings: list[str],
+    issues: list[str], warnings: list[str], *, projected_years: Collection[str] = (),
 ) -> None:
     """An ``irmaa`` rule (#253) charges one enrolled person the Medicare
     surcharge, each month, for the tier the household's MAGI two years
     earlier lands in: so it needs a person, a federal tax rule to compute
     MAGI, and an ``irmaa_tiers`` table. The first two premium years read
-    MAGI from before the run, in ``meta_json`` ``irmaa.magi``; a year left
-    out charges nothing, which is worth a warning."""
+    MAGI from before the run, in ``meta_json`` ``irmaa.magi``, or for the
+    year before it, from the run's own tax of it, which a roll's projected
+    year-to-date rows settle (#564); a year with neither charges nothing,
+    which is worth a warning."""
     rules = [(where, row) for where, row in _located(rows, "scheduled.csv")
              if row.get("amount_rule_kind") == "irmaa"]
     if not rules:
@@ -3269,7 +3275,8 @@ def _validate_irmaa(
             for _, row in rules
         )
         magi_year = str(premium_year - 2)
-        if charged and magi_year not in known:
+        settled = magi_year == str(first - 1) and magi_year in projected_years
+        if charged and magi_year not in known and not settled:
             warnings.append(
                 f"scenario.csv meta_json has no irmaa.magi for {magi_year}, before the run "
                 f"starts, so {premium_year} charges no IRMAA surcharge")

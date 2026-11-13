@@ -247,7 +247,7 @@ A yearly Roth conversion sized to a tax target ([#252](https://github.com/BobKer
 Medicare's income-related monthly adjustment amount ([#253](https://github.com/BobKerns/analysis/issues/253)): the surcharge on the Part B and Part D premiums that a household pays when its modified adjusted gross income (MAGI) on the tax return from **two years before** the premium year is over a tier's floor (42 USC 1395r(i), 1395w-113(a)(7)). The tiers are cliffs: one dollar over a floor costs the tier's whole add-on, every month of the premium year, for each enrolled person on the return.
 
 - **Params:** `person` (required) is the enrollee, one row each (a couple both on Medicare has two). `from_account`/`to_account` as for the premium legs (§2.5.1): the Social Security income account with `tax_character = 'ss_benefit'` while a benefit is paid and the surcharge is withheld from it, otherwise the account it is billed from, with `none` (`sim scheduled add` picks between the two by whether `from_account` is an `ss_benefit` income account). `start`/`end` are the person's Medicare months, as on the premium rows; the lifespan gate (§4.9) ends it at a death. `cadence = monthly`. No `amount`: the tier table sets it. `params_json`, both optional: `parts`, `"B+D"` (default), `"B"` (no drug coverage) or `"D"`; `filing_status_aux`, the filing-status table, `filing_status` by default.
-- **Compute:** for premium year Y, the household's MAGI for Y − 2 picks the highest tier whose `magi_floor` it is more than (none: nothing to charge), in the `irmaa_tiers` table (§4.4) for the filing status on that year's return: the filing-status table's row for Y − 2, `Single` from the year after a taxpayer's death as for income tax (§2.6), and for a year before the table starts its first row. So the year a spouse dies is still a joint return, and two years later the survivor alone pays on that joint MAGI with joint floors (the "widow's penalty"); after that, single floors. The table is the one in force in January of Y. Each of a row's three figures grows past its `effective_date` to that January by its own optional inflation series (`floor_series`, `part_b_series`, `part_d_series`): a grown floor is rounded to $1,000, as the law rounds it, and a blank series holds the figure flat. Nothing about how the law indexes the figures is built in: the series say it, so the top tier's floor, frozen through 2027, names a series that is 0% until then, and a change in the law is a dated row in a series or a `set_rate` (§3.1) that can vary in an ensemble. MAGI for a year the run computes is the federal jurisdiction's `federal_magi` (§2.6), so the scenario needs `taxes/federal.csv` (§4.15; the loader refuses a scenario without one), and it must have computed Y − 2 by January of Y. For a year before the run's first year, it is `scenario.meta_json`'s `irmaa.magi` (§4.5); a year left out charges nothing, and the loader warns for each of the first two premium years a rule is active in that has none. The tier charged is recorded in `tax_year_summary` as `federal_irmaa_tier` under the MAGI's year (0 below the first tier), for the years the run computed.
+- **Compute:** for premium year Y, the household's MAGI for Y − 2 picks the highest tier whose `magi_floor` it is more than (none: nothing to charge), in the `irmaa_tiers` table (§4.4) for the filing status on that year's return: the filing-status table's row for Y − 2, `Single` from the year after a taxpayer's death as for income tax (§2.6), and for a year before the table starts its first row. So the year a spouse dies is still a joint return, and two years later the survivor alone pays on that joint MAGI with joint floors (the "widow's penalty"); after that, single floors. The table is the one in force in January of Y. Each of a row's three figures grows past its `effective_date` to that January by its own optional inflation series (`floor_series`, `part_b_series`, `part_d_series`): a grown floor is rounded to $1,000, as the law rounds it, and a blank series holds the figure flat. Nothing about how the law indexes the figures is built in: the series say it, so the top tier's floor, frozen through 2027, names a series that is 0% until then, and a change in the law is a dated row in a series or a `set_rate` (§3.1) that can vary in an ensemble. MAGI for a year the run computes is the federal jurisdiction's `federal_magi` (§2.6), so the scenario needs `taxes/federal.csv` (§4.15; the loader refuses a scenario without one), and it must have computed Y − 2 by January of Y. For a year before the run's first year, it is `scenario.meta_json`'s `irmaa.magi` (§4.5), else the run's own `federal_magi` for it when year-to-date rows settle that year (the year before a rolled plan's start, from its projected rows, §7); a year with neither charges nothing, and the loader warns for each of the first two premium years a rule is active in that has none (the second not when projected rows settle its MAGI year). The tier charged is recorded in `tax_year_summary` as `federal_irmaa_tier` under the MAGI's year (0 below the first tier), for the years the run computed.
 - **Emits:** one event per month: the tier's `part_b` plus `part_d` add-ons (or the one `parts` names), grown; none below the first tier.
 - **Not modeled:** an appeal with form SSA-44 to use a more recent year after a life-changing event (stopping work, a spouse's death).
 - **Use:** with each person's Medicare premium legs; a Roth conversion's cost two years later.
@@ -1276,22 +1276,23 @@ to be replaced with the actual figures (`sim ytd edit`), and carry no rule's
 tags or person. Without them (no run reaches the month, or declined), it
 lists, within the same year, the year-to-date rows and `ytd_amount`s that
 now cover too few months, and for a start in a later year by April, what
-the prior year's April tax needs. `--own` rolls only what is the
-scenario's own, for one built on a scenario that has rolled: its own lot
-rows (and lots of accounts it defines), its own year-to-date rows and rules,
-and its start only if it sets one. An inherited start must already be START,
+the prior year's April tax needs. A projected row stays the roll's only
+while it is named so, described with its months and holds plain dollars:
+one edited to the actual figures (or an `@itemization`) is left alone, and
+the roll adds to a new row instead. The scenarios that take the
+scenario's start (built on it, with no start of their own or after it in
+their load order) move with it: the same questions are asked about their
+own year-to-date rows, `ytd_amount`s and anchored rules, with the same old
+start, in the same edit. Their own lots are left, and the roll lists the
+scenarios built on it that have lot rows of their own, to roll with
+`--own`, which rolls only what is the scenario's own: its own lot rows (and
+lots of accounts it defines), and with a start of its own, that start and
+its own start-dependent rows. An inherited start must already be START,
 which must be given (its parent rolled first; otherwise it refuses), and
-the old start is then that of the scenario's newest run starting before
-START; one whose own projected rows already reach the month before START
-was rolled there, and is refused. Whenever the months skipped get
-projected rows, each projected row the scenario inherits of the years kept
-whose months its own run covers too is overridden first (at zero, under the
-same name), so its own run's flows replace its parent's rather than add to
-them; one of months before its run stays, and one covering months both
-before and in it (or whose months aren't recorded any more: the actual
-figures, say) can't be split, so the roll refuses. A roll
-without `--own` lists the scenarios built on this one that have lot rows
-of their own, to roll with `--own`. `--yes`
+then only its lots reopen, from its newest run reaching the month before
+START (so doing it again changes nothing). `--own` writes no projected
+rows: the months skipped are the household's past, the same in every plan
+built on the parent, whose rows it inherits. `--yes`
 fails, rather than asks, at a question with no default (an
 `@itemization` balance and no run). A lot deleted in the scenario isn't
 brought back by an older run's projection. The whole edit is one staged edit, the kept copy
@@ -1562,5 +1563,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax settlement pays an overpayment back, and after-tax net worth counts a refund owed (§2.6).
 - [#542](https://github.com/BobKerns/analysis/issues/542): itemized deductions figured from the year's spending (SALT with its cap and phase-down, mortgage interest under the debt limit, charity, medical) beside the hand-typed total, under the new `itemized_limits`/`state_itemized_limits` aux kinds; `mortgage_payment` interest and `irmaa` surcharges carry implied `tax:` tags (§2.6, §4.4).
 - [#527](https://github.com/BobKerns/analysis/issues/527): import mappings move to the shared `imports/` folder, one subfolder per source, replacing each scenario's `quicken_account_map.csv` and the data repo's `quicken/expense_*.csv`; an account mapping can name a lot (§4.17).
-- [#564](https://github.com/BobKerns/analysis/issues/564): `scenario roll` offers the skipped months' flows as projected year-to-date rows, and `--own` rolls a derived scenario's own rows; `scenario.meta_json` takes an inherited `roll` (§4.5, §7).
+- [#564](https://github.com/BobKerns/analysis/issues/564): `scenario roll` offers the skipped months' flows as projected year-to-date rows, moves the start-dependent rows of the scenarios that take its start, and `--own` rolls a derived scenario's own lots; `scenario.meta_json` takes an inherited `roll`; IRMAA reads the year before the start's MAGI from the run when projected rows settle it (§2.11, §4.5, §7).
 - [#586](https://github.com/BobKerns/analysis/issues/586): each tax jurisdiction pays into an account of its own subkind (new `taxes_local`), none shared and `local` no longer paid with the state's; only income tax payments go into an income-tax account; spending into a `taxes_property` account is property tax; the income tax paid is what went into the jurisdiction's account (§1, §2.6, §4.15).

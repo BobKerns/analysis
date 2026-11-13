@@ -358,10 +358,12 @@ def test_a_roll_keeps_the_skipped_months_in_their_tax_year(
         with RunConnection(run, "retire_alice") as rc:
             frame = rc._read_sql("SELECT year, bucket, amount FROM tax_year_summary "
                                  "WHERE year = 2026 AND bucket IN "
-                                 "('federal_agi', 'federal_tax', 'state_tax')")
+                                 "('federal_agi', 'federal_magi', 'federal_tax', 'state_tax')")
         return {(int(row.year), str(row.bucket)): int(row.amount) for row in named_rows(frame)}
 
     before = taxes(old)
+    # MAGI too: the 2028 IRMAA tier reads 2026's from the rolled run.
+    assert (2026, "federal_magi") in before
     assert before and taxes(new) == before
 
 
@@ -372,7 +374,8 @@ def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_co
          "tax_character": "ordinary", "year": "", "description": ""},
         {"name": "projected_2025_1", "from_account": "Income_Salary_Alice", "from_lot": "default",
          "to_account": "Asset_Checking", "to_lot": "default", "amount": "100.00",
-         "tax_character": "ordinary", "year": "2025", "description": ""},
+         "tax_character": "ordinary", "year": "2025",
+         "description": "projected by sim scenario roll, 2025-03 to 2025-12"},
         {"name": "projected_2026_1", "from_account": "Income_Salary_Alice", "from_lot": "default",
          "to_account": "Asset_Checking", "to_lot": "default", "amount": "1000.00",
          "tax_character": "ordinary", "year": "2026",
@@ -407,21 +410,24 @@ def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_co
 
 @pytest.mark.slow
 @pytest.mark.uses_current_scenario_write
-def test_a_derived_scenario_rolls_only_its_own_rows_after_its_parent(
+def test_a_derived_scenario_rolls_only_its_own_lots_after_its_parent(
     test_data_dir: Path, test_scenarios_dir: Path, latest_test_run: Callable[[str], Path],
 ) -> None:
-    """#564: a scenario built on a rolled one rolls with --own: its own lot,
-    no start of its own, and its own run's flows in place of the projected
-    rows it would inherit, so none are counted twice."""
+    """#564: rolling a scenario moves the start-dependent rows of what takes
+    its start too; each of those then reopens only its own lots, with
+    --own, and inherits the projected rows: the months skipped are the
+    household's past, the same in every plan."""
     assert _sim(test_data_dir, "scenario", "create", "alice_more", "retire_alice").exit_code == 0
     edited = _sim(test_data_dir, "account", "lot", "edit", "Asset_Savings", "default",
                   "--opening-balance", "30000.00")
     assert edited.exit_code == 0, edited.output
+    bonus = _sim(test_data_dir, "ytd", "add", "bonus", "Income_Salary_Alice", "Asset_Checking",
+                 "2000", "--tax-character", "ordinary", "--description", "before the start")
+    assert bonus.exit_code == 0, bonus.output
     latest_test_run("retire_alice")
     child_run = latest_test_run("alice_more")
     with RunConnection(child_run, "alice_more") as rc:
         savings = roll.projections(rc, month_before("2027-01"))[("Asset_Savings", "default")]
-        flows = roll.projected_year_to_date(rc, "2026-05", "2027-01")
     child = test_scenarios_dir / "alice_more"
 
     # Its start is retire_alice's, which hasn't moved yet.
@@ -433,50 +439,45 @@ def test_a_derived_scenario_rolls_only_its_own_rows_after_its_parent(
 
     parent = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--yes", "--no-keep")
     assert parent.exit_code == 0, parent.output
+    # The child's own row of the old first year moved with retire_alice's.
+    assert "alice_more's year-to-date row bonus: pinned to 2026" in parent.output
+    assert _rows(child / "year_to_date.csv")["bonus"]["year"] == "2026"
     assert "sim scenario roll alice_more 2027-01 --own" in parent.output
 
     result = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
                   "--no-keep")
 
     assert result.exit_code == 0, result.output
-    assert "Rolling alice_more forward: 2026-05 -> 2027-01" in result.output
+    assert "Rolling alice_more's own lots forward to 2027-01" in result.output
     with (child / "scenario.csv").open(newline="", encoding="utf-8") as fh:
         assert next(csv.DictReader(fh))["start"] == ""
     lots = _rows(child / "account_lots.csv")
     assert list(lots) == ["Asset_Savings/default"]
     assert lots["Asset_Savings/default"]["opening_balance"] == f"{savings.balance:.2f}"
-    # Every projected row it inherits is its own now, holding its own flows.
-    inherited = {name for name in _rows(test_scenarios_dir / "retire_alice" / "year_to_date.csv")
-                 if name.startswith(roll.PROJECTED_PREFIX)}
-    own = {name: row for name, row in _rows(child / "year_to_date.csv").items()
-           if name.startswith(roll.PROJECTED_PREFIX)}
-    assert inherited and inherited <= set(own)
-    total = sum(round(float(row["amount"]) * 100) for row in own.values())
-    assert total == sum(one.amount for one in flows)
+    # It keeps retire_alice's projected rows, and writes none of its own.
+    assert set(_rows(child / "year_to_date.csv")) == {"bonus"}
     assert _sim(test_data_dir, "check", "alice_more").exit_code == 0
-    # Twice would add the same months again.
+    # Again is the same: its lots reopen from the same run.
     again = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
                  "--no-keep")
-    assert again.exit_code != 0 and "already rolled to 2027-01" in again.output
+    assert again.exit_code == 0, again.output
+    assert _rows(child / "account_lots.csv") == lots
 
 
-@pytest.mark.uses_current_scenario_write
-def test_a_derived_scenario_replaces_only_the_projected_rows_its_run_covers_again(
-    test_data_dir: Path, test_scenarios_dir: Path,
-) -> None:
-    assert _sim(test_data_dir, "scenario", "create", "alice_more", "retire_alice").exit_code == 0
-    path = test_scenarios_dir / "retire_alice" / "year_to_date.csv"
-    with path.open("a", newline="", encoding="utf-8") as fh:
-        for name, described in (("projected_2026_1", "projected by sim scenario roll, 2026-01 to 2026-02"),
-                                ("projected_2026_2", "projected by sim scenario roll, 2026-03 to 2026-04"),
-                                ("projected_2026_3", "projected by sim scenario roll, 2026-02 to 2026-04"),
-                                ("projected_2026_4", "Alice's W-2")):
-            csv.writer(fh).writerow([name, "Income_Salary_Alice", "default", "Asset_Checking",
-                                     "default", "100.00", "ordinary", "2026", described])
+def test_a_projected_row_edited_to_the_actual_figures_is_left_alone() -> None:
+    projection = roll.ProjectedRow(2026, "Income_Salary_Alice", "default", "Asset_Checking",
+                                   "default", "ordinary", 10_000)
+    base = {"from_account": "Income_Salary_Alice", "from_lot": "default",
+            "to_account": "Asset_Checking", "to_lot": "default", "tax_character": "ordinary",
+            "year": "2026"}
+    rows = [base | {"name": "projected_2026_1", "amount": "@w2_2026",
+                    "description": "projected by sim scenario roll, 2026-05 to 2026-10"},
+            base | {"name": "projected_2025_1", "amount": "900.00", "year": "2025",
+                    "description": "Alice's W-2"}]
 
-    replaced, mixed = roll.inherited_projected(test_scenarios_dir / "alice_more", "2026-03", "2026-05")
+    merged, dropped = roll.merge_projected(rows, [projection], "2026-11", "2027-01")
 
-    # Jan-Feb is before the child's run: retire_alice's row stays.
-    assert [row["name"] for row in replaced] == ["projected_2026_2"]
-    assert replaced[0]["amount"] == "0.00"
-    assert mixed == ["projected_2026_3 (retire_alice)", "projected_2026_4 (retire_alice)"]
+    assert dropped == 0
+    by_name = {row["name"]: row for row in merged}
+    assert by_name["projected_2026_1"] == rows[0] and by_name["projected_2025_1"] == rows[1]
+    assert by_name["projected_2026_2"]["amount"] == "100.00"
