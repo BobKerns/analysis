@@ -144,8 +144,12 @@ held by shares stays current without `sim prices fetch`. `sim builder install`
 adds an hourly timer that runs `sim builder prices --if-due` (a launchd agent
 on macOS, a crontab line elsewhere; `uninstall` removes it). The fetch never
 touches your checkout: it commits on the data repo's `builder/prices` branch,
-in its own sparse worktree, and the builder fast-forwards `main` to it between
-builds, only while `main` is checked out with no uncommitted changes. `sim builder status` shows the last
+in its own sparse worktree, and the builder merges it into `main` between
+builds, only while `main` is checked out with no uncommitted changes. Then, if
+`main` is strictly ahead of `origin/main`, it pushes; otherwise `sim builder
+log` says why it didn't (run `git pull` on `main` when it lacks commits).
+[A private remote for the data repo](guides/data-repo-remote.md) covers where
+that `origin` should live; never make the data repo public. `sim builder status` shows the last
 fetch, prices waiting to merge and why, and any symbol that keeps failing;
 `sim builder prices` fetches now. `sim builder install --no-prices`, or
 `ANALYSIS_PRICE_FETCH=off`, turns the fetches off.
@@ -228,6 +232,36 @@ hand with `.venv/bin/analysis research-plugin install` or `uninstall`; see
     ```sh
     .venv/bin/analysis research-plugin install --data-dir data/shared/sim
     ```
+
+## Blocked keywords
+
+The git hooks and the `Gates` workflow refuse commits, commit messages and
+pull requests that contain a word giving away the real data
+(`scripts/check-blocked-keywords.sh`). The words come from two lists in the
+same format: one keyword per line, `#` comment lines and blank lines ignored.
+
+- **Public:** `.githooks/blocked-keywords.txt`, committed here, for words
+  that are fine to publish (an initial, an institution's abbreviation).
+- **Private:** never committed here, for words that would themselves give
+  something away. A hit on one reports only the file and line, never the
+  text. The check reads both of these places and merges them with the
+  public list:
+  - the `BLOCKED_KEYWORDS_PRIVATE` environment variable, which may also
+    separate keywords with commas where a value can't span lines;
+  - a `blocked-keywords.txt` file at the top of the data repo, found through
+    `$ANALYSIS_DATA_DIR`, or else through `data/shared` in the main checkout
+    (so worktrees and hooks run from an editor find it too).
+
+Set the private list once in each place it is needed:
+
+- **Your own machine:** create `blocked-keywords.txt` at the top of the data
+  repo and commit it there. Nothing more is needed.
+- **GitHub:** in this repository, Settings → Secrets and variables → Actions
+  → New repository secret, named `BLOCKED_KEYWORDS_PRIVATE`, with the
+  keywords one per line. The workflow warns when the secret is missing.
+- **Claude Code on the web:** in the cloud environment's settings, add an
+  environment variable `BLOCKED_KEYWORDS_PRIVATE` with the keywords separated
+  by commas.
 
 ## Drawing chain flowcharts in the terminal
 

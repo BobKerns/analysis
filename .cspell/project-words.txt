@@ -31,6 +31,7 @@ axhspan
 axisbelow
 axvline
 axvspan
+Backblaze
 backfillable
 backticked
 begidx
@@ -303,6 +304,7 @@ reprompts
 rerunnable
 rescan
 respellings
+restic
 retarget
 reweighted
 rint

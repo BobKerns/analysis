@@ -186,7 +186,7 @@ Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage
 - Runtime-created lots, and cost-basis lot selection (FIFO / HIFO / specific) as a policy on multi-lot withdrawals.
 - `on_death` sweeps and the other account-level rule kinds (`ss_benefit`, income tax, `mortgage_payment`) all need auditing for one-balance-per-account assumptions; the plan's Phase 0 does this.
 - Namespace collision between account names and symbols in `aux_table` rate series (lookup order in §5 covers it, but an account and a ticker with the same name would be ambiguous).
-- Quicken import is per account; multi-lot accounts need a per-security import.
+- `sim import holdings` sets the lot each outside account is mapped to, adding together those mapped to one lot (a mapping row names the lot of a multi-lot account, ADR-003 §4.17); per-security positions need a source that carries them ([#527](https://github.com/BobKerns/analysis/issues/527)).
 
 ## Amendments
 
@@ -205,3 +205,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#547](https://github.com/BobKerns/analysis/issues/547): long-term and short-term capital-gain distributions from `<series>_cg_yield` and `<series>_stcg_yield`, taxed `ltcg` and `ordinary`; an untaxed lot holding shares reinvests its payouts untaxed, buying shares without basis; a fund's ordinary payouts are dividends from `ordinary_dividends`, not interest (§5).
 - [#497](https://github.com/BobKerns/analysis/issues/497): every HSA lot gets payouts, from `hsa_dividends` and `hsa_gain_distributions`, which add basis; an HSA lot tracks a basis, and a withdrawal's gain over it is an `hsa_gain` row for a state that taxes the HSA (§5, §7).
 - [#265](https://github.com/BobKerns/analysis/issues/265): a municipal bond class (`muni`, `muni_<ST>`) pays its yield as tax-exempt interest from `muni_interest` or `muni_interest__<ST>` (§5).
+- [#527](https://github.com/BobKerns/analysis/issues/527): an import mapping can name a lot, so a multi-lot account can be imported into, one outside account per lot (open questions).

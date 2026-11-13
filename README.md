@@ -329,33 +329,47 @@ The baseline importer combines canonicalized Quicken expenses with Amazon
 monthly summaries and replaces only rows it previously generated:
 
 ```sh
-sim import transactions --scenario current --dry-run
-sim import transactions --scenario current
+sim import transactions --from-account Asset_Checking --dry-run
+sim import transactions --from-account Asset_Checking
 ```
 
-Generated rows are tagged `generated:expense_baseline` and carry provenance in
-`meta_json`, so rerunning removes stale generated categories after the private
-category maps change while preserving manually authored scheduled rows.
+The dry run lists each generated rule's amount before and after, and whether
+it is added, changed, removed or unchanged. Generated rows are tagged
+`generated:expense_baseline` and carry provenance in `meta_json`, so rerunning
+removes stale generated categories after the private category maps change
+while preserving manually authored scheduled rows.
+A generated rule a parent scenario has, which a rerun in a derived scenario no
+longer produces, is listed as `kept`: it stays in force until it is ended
+there with `sim scheduled delete`.
 
-When `ANALYSIS_DATA_DIR` points to the simulator data directory, the command
-reads Quicken and Amazon inputs from sibling top-level data-repo directories:
-`../quicken/` and `../state/`. The command expects an optional
-`quicken/expense_account_map.csv` with columns
-`category,target_account`. If a canonical category already matches a scenario
-expense account, no map row is needed. Supply the funding account explicitly
-with `--from-account`. Invalid target accounts are warned about and skipped.
+The export to read is an argument (`sim import transactions export.csv`).
+With none, and `ANALYSIS_DATA_DIR` pointing to the simulator data directory,
+the command reads `../quicken/Transaction Export.csv` and the Amazon state in
+`../state/`, both at the data repo's top level.
 
-Two more optional files in `quicken/` hold household-specific choices, so none
-of them live in the code:
+The household's choices live in the data directory's `imports/` folder
+([ADR-003](docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.17), so
+none of them live in the code:
 
-- `expense_category_split.csv`, columns `category,account,target_category`:
-  splits one canonical category by the Quicken account that paid. A row with a
-  blank `account` is that category's default, taking every expense no named
-  account claims, including Amazon summaries. For example, `Food,Alice
-  Checking,Alice Food` and `Food,,Bill Food` divide Food between two people.
-- `expense_excluded_payees.csv`, one column `payee_pattern`: case-insensitive
-  regular expressions for payees whose expenses the scenario models separately
-  (an insurer, HOA dues). Amazon and mortgage payees are always excluded.
+- `imports/quicken/categories.csv`, columns `outside_category,category`
+  (required): merges Quicken's categories into the baseline's. A blank or `-`
+  `category` excludes one; a category with no row becomes `Other`.
+- `imports/expense_accounts.csv`, columns `category,account`: the expense
+  account each category's rule pays into, or `-` for no rule. If a category
+  already matches a scenario expense account, no row is needed. At a terminal
+  a category with no account is asked for and the answer saved; otherwise it
+  is warned about and skipped. Supply the funding account explicitly with
+  `--from-account`.
+- `imports/quicken/splits.csv`, columns
+  `category,outside_account,target_category` (optional): splits one category
+  by the Quicken account that paid. A row with a blank `outside_account` is
+  that category's default, taking every expense no named account claims,
+  including Amazon summaries. For example, `Food,Alice Checking,Alice Food`
+  and `Food,,Bill Food` divide Food between two people.
+- `imports/quicken/excluded_payees.csv`, one column `payee_pattern`
+  (optional): case-insensitive regular expressions for payees whose expenses
+  the scenario models separately (an insurer, HOA dues). Amazon and mortgage
+  payees are always excluded.
 
 Amounts are monthly averages over the observed baseline months and use the
 scenario start date by default.

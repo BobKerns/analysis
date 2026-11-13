@@ -483,7 +483,7 @@ Single identity list for the household: account owners *and* operator identities
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
-| `id` | text | ✓ | short identifier, e.g. `rwk`; matched against `$ANALYSIS_USER` |
+| `id` | text | ✓ | short identifier, e.g. `alice`; matched against `$ANALYSIS_USER` |
 | `display` | text | ✓ | full or display name |
 | `birthdate` | YYYY-MM-DD | ✓ | for RMD and life-transition computations; may be blank only for a pseudo-person (blank `role`) |
 | `sex` | `f` \| `m` | | picks a life table's column, so a person with a `life_table` lifespan (§4.9) must have one; otherwise unused. The column itself is optional: a `persons.csv` without it loads, and `sim person add` and `edit` add it |
@@ -1063,6 +1063,49 @@ Where the household lives ([#509](https://github.com/BobKerns/analysis/issues/50
 
 Rows merge by `effective_date` down the lineage (§4.5): a child adds a move without restating where the household starts, and a row of the same month replaces its parent's. The loader stores them in the `residence` table (ADR-002), which the run file keeps. It refuses an unknown state, a missing or repeated date, a county without its table, a state tax with no residence, a territory with a tax code of its own (Puerto Rico, American Samoa; [#570](https://github.com/BobKerns/analysis/issues/570)), and a `state_brackets__<code>.csv` of a territory the federal tax stands in for, which would tax the same income twice; with a state tax, a state that taxes income needs its `state_brackets__<state>.csv`, a state with no income tax and no tables of its own reads the shipped 0% `none` tables, and one without its own standard deduction loads with a warning (§4.4). `sim tax state [STATE] [--county COUNTY] [--here]` writes the first row, where it is defined, and `sim tax move DATE STATE [--county COUNTY]` adds a later one to the current scenario (with a state tax, modeled on the federal one, when it moves into a state with income tax and the scenario has none). A row of a later scenario replaces an earlier one's whole: a column its file leaves out is blank. Rows have no `vary_*` columns, so an ensemble can't vary when a move happens.
 
+#### 4.17 Shared: `data_repo/imports/` (optional): saved import mappings
+
+`sim import` ([#527](https://github.com/BobKerns/analysis/issues/527)) reads an outside file with a *source* (one outside layout; `sim import sources` lists them), into one of two common forms: *holdings*, a snapshot of what each outside account holds, or *flows*, a period's transactions. Which of a scenario's names each outside name means is saved here, once, for every scenario: the outside world's names don't change from one scenario to the next, and a target is checked against the scenario being written. The loader never reads this folder.
+
+```text
+imports/
+  expense_accounts.csv     category -> expense account
+  <source>/
+    accounts.csv           (outside account, asset) -> (account, lot), or skip
+    categories.csv         outside category -> category
+    splits.csv             a category divided by the outside account that paid
+    excluded_payees.csv    payees whose expenses the scenario models itself
+```
+
+`<source>/accounts.csv`, read by `sim import holdings`:
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `outside_account` | text | ✓ | the account as the source spells it |
+| `asset` | text | | a symbol or asset name within the outside account; blank covers everything in it that has no row of its own. Unique with `outside_account` |
+| `action` | `map` \| `skip` | ✓ | `skip`: acknowledged, deliberately not imported |
+| `account` | text | for `map` | the scenario account |
+| `lot` | text | | the lot of `account`; blank is its only lot. An account with several lots is skipped, with a warning, unless the row names one |
+| `note` | text | | |
+
+Every outside account in a file must have a row: a new or renamed one is an error naming it, never a balance quietly left out. At a terminal the command asks instead (completing the scenario's accounts that hold a balance, plus `skip`) and saves the answer. A row whose account or lot the scenario doesn't have is asked about too, but the row may be right for another scenario: the answer is used for that import, and replaces the saved row only if the user says so. Answers are saved once the scenario's own files are written, so an import that is refused saves none, and a scenario that doesn't load is asked nothing. Two outside accounts mapped to one lot are added together, as the source signs them, before a liability's total is turned into a debt. An outside account that appears in two of a run's files is refused, as are two transaction files that cover the same days of one outside account.
+
+A target can be any lot the scenario has, its own or inherited (§4.5): a changed lot that is inherited is written as an override of the whole lot in the scenario's own `account_lots.csv`, as `sim account lot edit` writes one. A lot in the scenario's own file has only its balance cells set. Balances are compared as money, so `20000` beside an imported 20,000.00 is no change. A prior-year balance is seeded, or set by `--year-end`, only when the account's other lots (Roth lots aside) have one or get one in the same run, since the loader wants it on every lot or on none.
+
+`<source>/categories.csv` (required by `sim import transactions`), `splits.csv` and `excluded_payees.csv` (both optional):
+
+| file | columns | meaning |
+| --- | --- | --- |
+| `categories.csv` | `outside_category`, `category` | merges an outside category into `category`; a blank or `-` `category` excludes it. A category with no row becomes `Other` |
+| `splits.csv` | `category`, `outside_account`, `target_category` | sends `category` expenses paid from `outside_account` to `target_category`; a blank `outside_account` is the category's default |
+| `excluded_payees.csv` | `payee_pattern` | a case-insensitive regular expression; a matching payee's expenses are left out, the scenario modeling them itself |
+
+`expense_accounts.csv` (`category`, `account`) names the expense account each category's generated rule pays into, or `-` for no rule. It belongs to no source, since a budget and a year of transactions name the same categories. A category with the name of one of the scenario's accounts needs no row. A category with no account gets no rule and a warning, or at a terminal a question whose answer is saved. An account the scenario doesn't have is handled like an account mapping's: asked about, and replaced only if the user says so. So is a category with no row when another scenario has an account of its name, which a saved row would override. A transaction with no category at all gets no rule and a warning, never a question: no row could name it.
+
+The import's before-and-after compares against every generated rule the scenario loads. It replaces only the scenario's own rows, so a rule a parent scenario generated that the rerun no longer produces is listed as `kept`, with a warning naming `sim scheduled delete`.
+
+`sim account rename` and `sim account lot rename` follow an account or a lot into these files once no scenario still has the old name; a category that found a renamed account by its name gets a row. A mapping file that doesn't read leaves them all unchanged, with a warning, after the rename itself is written. Generated rules carry the tag `generated:expense_baseline` (§6) and, in `meta_json`, `source` and a hash of the imported files.
+
 ### 5. Default priorities
 
 When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule kind's band:
@@ -1088,7 +1131,7 @@ Authors can override by setting `priority` explicitly.
 that holds a whitespace-separated list of `<role>:<name>` tokens. Tags are an
 **open** registry — `role` is not validated against a fixed vocabulary — and are
 intended for low-friction ad-hoc grouping (e.g. `expense:discretionary
-household:rwk`, `tax:itemized`, `notebook:net_worth`).
+household:alice`, `tax:itemized`, `notebook:net_worth`).
 
 Token shape: `^[a-z0-9_]+:[a-z0-9_]+$`. Both halves are required; the loader
 rejects malformed tokens.
@@ -1480,3 +1523,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#489](https://github.com/BobKerns/analysis/issues/489): aux kinds `state_gains_tax` and `state_gains_deduction`, a state's tax on long-term gains apart from its income tax, whose base replaces the net long-term gain in its income; `state_adjustments` base `gains_tax`; Washington's tables ship (§4.4).
 - [#491](https://github.com/BobKerns/analysis/issues/491): the mirror-code territories (Guam, the Northern Mariana Islands, the U.S. Virgin Islands) always read the `none` tables; the loader refuses a residence in Puerto Rico or American Samoa, and a mirror territory's own `state_brackets` table (§2.6, §4.16).
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax settlement pays an overpayment back, and after-tax net worth counts a refund owed (§2.6).
+- [#527](https://github.com/BobKerns/analysis/issues/527): import mappings move to the shared `imports/` folder, one subfolder per source, replacing each scenario's `quicken_account_map.csv` and the data repo's `quicken/expense_*.csv`; an account mapping can name a lot (§4.17).

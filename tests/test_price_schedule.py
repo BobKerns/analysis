@@ -1,4 +1,5 @@
-"""#560: the builder fetches prices on a schedule, on a branch merged into main."""
+"""#560: the builder fetches prices on a schedule, on a branch merged into main
+(#588: by merge commits both ways, then main is pushed when strictly ahead)."""
 
 from __future__ import annotations
 
@@ -86,20 +87,25 @@ def test_a_fetch_is_due_once_a_day_and_retried_hourly() -> None:
     assert not price_schedule.due({"succeeded": now - 60, "attempted": now - 60, "refetch": True}, NOW)
 
 
-def test_a_fetch_commits_on_its_branch_and_fast_forwards_a_clean_main(
+MERGED = "merged new prices into main"
+NO_UPSTREAM = "not pushing: main has no upstream branch on a remote"
+
+
+def test_a_fetch_commits_on_its_branch_and_merges_it_into_a_clean_main(
     priced: tuple[Path, git.Repo], fetching: None,
 ) -> None:
     data, repo = priced
     before = repo.head.commit.hexsha
     outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
 
-    assert outcome.committed is not None
+    assert outcome.committed is not None and outcome.pending == outcome.committed
     assert repo.head.commit.hexsha == before  # the fetch never merges: the daemon does
-    assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
-    assert repo.head.commit.hexsha == outcome.committed
-    assert repo.head.commit.parents[0].hexsha == before  # a fast-forward: no merge commit
-    assert repo.head.commit.author.name == "sim builder"
-    assert repo.head.commit.message.startswith("Prices: VTI to 2026-06-10")
+    assert price_schedule.merge_pending(data, _worktree(data)) == [MERGED, NO_UPSTREAM]
+    # #588: a merge commit, never a fast-forward.
+    merge = repo.head.commit
+    assert [p.hexsha for p in merge.parents] == [before, outcome.committed]
+    assert merge.author.name == "sim builder"
+    assert merge.parents[1].message.startswith("Prices: VTI to 2026-06-10")
     assert "2026-06-10,110.00" in (data / "prices" / "security_price__VTI.csv").read_text()
     # Only the price files changed, and the user's checkout is clean.
     assert repo.git.diff("--name-only", before, "HEAD").splitlines() == [
@@ -109,7 +115,9 @@ def test_a_fetch_commits_on_its_branch_and_fast_forwards_a_clean_main(
     assert state["succeeded"] == NOW.timestamp() and not state.get("pending")
 
     again = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
-    assert again.committed is None and "no new prices" in again.lines
+    assert again.committed is None and again.pending is None and "no new prices" in again.lines
+    # Nothing new: the branch is main again, not main plus an empty merge.
+    assert repo.commit(price_schedule.PRICES_BRANCH).hexsha == repo.head.commit.hexsha
 
 
 def test_the_merge_waits_for_main_to_be_clean_and_checked_out(
@@ -119,22 +127,34 @@ def test_the_merge_waits_for_main_to_be_clean_and_checked_out(
     before = repo.head.commit.hexsha
     (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
     outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
-    assert price_schedule.merge_pending(data, _worktree(data)) is None
+    assert price_schedule.merge_pending(data, _worktree(data)) == []
     assert outcome.committed and repo.head.commit.hexsha == before
     assert price_schedule.read_state(data)["waiting"] == "main has uncommitted changes"
 
     repo.git.checkout("sim/persons.csv")
     repo.git.checkout("-b", "edits")
-    assert price_schedule.merge_pending(data, _worktree(data)) is None
+    assert price_schedule.merge_pending(data, _worktree(data)) == []
     assert "has edits checked out" in price_schedule.read_state(data)["waiting"]
 
     repo.git.checkout("main")
-    assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
-    assert repo.head.commit.hexsha == outcome.committed
-    assert price_schedule.merge_pending(data, _worktree(data)) is None  # nothing left
+    assert price_schedule.merge_pending(data, _worktree(data)) == [MERGED, NO_UPSTREAM]
+    assert repo.head.commit.parents[1].hexsha == outcome.committed
+    assert price_schedule.merge_pending(data, _worktree(data)) == []  # nothing left
 
 
-def test_when_main_moves_first_the_fetched_commit_moves_onto_it(
+def test_a_fetch_while_prices_wait_keeps_them_waiting(
+    priced: tuple[Path, git.Repo], fetching: None,
+) -> None:
+    data, repo = priced
+    (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
+    first = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    again = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    assert again.committed is None and again.pending == first.committed
+    assert again.lines == ["no new prices; earlier ones still wait to merge into main"]
+    assert price_schedule.read_state(data)["pending"] == first.committed
+
+
+def test_when_main_moves_first_it_is_merged_into_the_prices_branch(
     commit_files: Callable[..., str],
     priced: tuple[Path, git.Repo], fetching: None,
 ) -> None:
@@ -142,18 +162,22 @@ def test_when_main_moves_first_the_fetched_commit_moves_onto_it(
     (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
     first = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
     repo.git.checkout("sim/persons.csv")
-    commit_files(repo, {"sim/notes.txt": "an edit\n"}, "the user's commit")
+    users = commit_files(repo, {"sim/notes.txt": "an edit\n"}, "the user's commit")
 
-    assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
-    assert repo.head.commit.hexsha != first.committed  # picked onto the user's commit
-    assert repo.head.commit.author.name == "sim builder"
-    assert repo.head.commit.parents[0].message.strip() == "the user's commit"
+    assert price_schedule.merge_pending(data, _worktree(data)) == [MERGED, NO_UPSTREAM]
+    merge = repo.head.commit
+    assert merge.parents[0].hexsha == users
+    # #588: main went into builder/prices by a merge commit, not a cherry-pick.
+    prices_tip = merge.parents[1]
+    assert [p.hexsha for p in prices_tip.parents] == [first.committed, users]
+    assert prices_tip.author.name == "sim builder"
     assert "2026-06-10,110.00" in (data / "prices" / "security_price__VTI.csv").read_text()
+    assert (data / "notes.txt").read_text() == "an edit\n"
     state = price_schedule.read_state(data)
     assert not state.get("pending") and not state.get("refetch")
 
 
-def test_a_fetched_commit_that_no_longer_applies_is_fetched_again(
+def test_where_main_and_the_fetch_conflict_mains_side_wins(
     commit_files: Callable[..., str],
     priced: tuple[Path, git.Repo], fetching: None,
 ) -> None:
@@ -162,17 +186,59 @@ def test_a_fetched_commit_that_no_longer_applies_is_fetched_again(
     price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
     repo.git.checkout("sim/persons.csv")
     commit_files(repo, {"sim/prices/security_price__VTI.csv":
-                   "effective_date,price\n2025-12-31,301.00\n"}, "a correction by hand")
+                   "effective_date,price\n2025-12-31,301.00\n2026-06-11,999.00\n"},
+                 "a correction by hand")
 
-    assert price_schedule.merge_pending(data, _worktree(data)) is None
+    # The fetch's rows all fall in the hunk main changed, so main's file
+    # stands whole: nothing is left to merge, and the next fetch adds them.
+    assert price_schedule.merge_pending(data, _worktree(data)) == []
+    assert repo.head.commit.message.strip() == "a correction by hand"
+    assert repo.commit(price_schedule.PRICES_BRANCH).hexsha == repo.head.commit.hexsha
+    assert (data / "prices" / "security_price__VTI.csv").read_text() == \
+        "effective_date,price\n2025-12-31,301.00\n2026-06-11,999.00\n"
     state = price_schedule.read_state(data)
-    assert state["refetch"] and "didn't apply" in state["waiting"] and not state["pending"]
+    assert not state.get("refetch") and not state.get("pending")
+
+
+def test_prices_that_wont_merge_with_main_are_fetched_again(
+    commit_files: Callable[..., str],
+    priced: tuple[Path, git.Repo], fetching: None,
+) -> None:
+    data, repo = priced
+    (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
+    price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    repo.git.checkout("sim/persons.csv")
+    # Deleted on main, changed by the fetch: no side of the merge to prefer.
+    repo.git.rm("-q", "sim/prices/security_price__VTI.csv")
+    commit_files(repo, {}, "the user dropped VTI's prices")
+
+    assert price_schedule.merge_pending(data, _worktree(data)) == []
+    state = price_schedule.read_state(data)
+    assert state["refetch"] and "didn't merge" in state["waiting"] and not state["pending"]
+    assert repo.commit(price_schedule.PRICES_BRANCH).hexsha == repo.head.commit.hexsha
     later = NOW + timedelta(hours=2)
     assert price_schedule.due(state, later)
+    # Nothing names VTI now, so the fetch from main has nothing to fetch.
     second = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=later)
-    assert second.committed
-    assert price_schedule.merge_pending(data, _worktree(data)) == "merged new prices into main"
-    assert repo.head.commit.parents[0].message.strip() == "a correction by hand"
+    assert second.lines == ["no symbols to fetch", "no new prices"] and second.pending is None
+
+
+def test_a_fetch_starts_the_branch_over_when_main_wont_merge_into_it(
+    commit_files: Callable[..., str],
+    priced: tuple[Path, git.Repo], fetching: None,
+) -> None:
+    data, repo = priced
+    commit_files(repo, {"sim/securities.csv": "symbol,name\nVTI,Total market\n"}, "VTI")
+    (data / "persons.csv").write_text((data / "persons.csv").read_text() + "\n")
+    price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    repo.git.checkout("sim/persons.csv")
+    repo.git.rm("-q", "sim/prices/security_price__VTI.csv")
+    users = commit_files(repo, {}, "the user dropped VTI's prices")
+
+    later = NOW + timedelta(days=1)
+    again = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=later)
+    assert again.lines[0] == "builder/prices didn't merge with main; starting it over from main"
+    assert again.committed and repo.commit(again.committed).parents[0].hexsha == users
 
 
 def test_prices_merged_by_hand_are_no_longer_pending(
@@ -186,10 +252,52 @@ def test_prices_merged_by_hand_are_no_longer_pending(
     repo.git.checkout("sim/persons.csv")
     repo.git.merge("--ff-only", price_schedule.PRICES_BRANCH)
 
-    assert price_schedule.merge_pending(data, _worktree(data)) is None
+    assert price_schedule.merge_pending(data, _worktree(data)) == []
     state = price_schedule.read_state(data)
     assert not state["pending"] and not state["waiting"]
     assert not any("waiting to merge" in line for line in price_schedule.describe(state, NOW))
+
+
+def test_after_its_merge_the_builder_pushes_main_when_strictly_ahead(
+    priced: tuple[Path, git.Repo], data_repo_origin: Path, fetching: None,
+) -> None:
+    data, repo = priced
+    price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    assert price_schedule.merge_pending(data, _worktree(data)) == [
+        MERGED, "pushed main to origin/main"]
+    with git.Repo(data_repo_origin) as origin:
+        assert origin.commit("main").hexsha == repo.head.commit.hexsha
+
+
+def test_the_builder_holds_back_a_main_that_lacks_the_upstreams_commits(
+    commit_files: Callable[..., str], tmp_path: Path,
+    priced: tuple[Path, git.Repo], data_repo_origin: Path, fetching: None,
+) -> None:
+    data, repo = priced
+    with git.Repo.clone_from(data_repo_origin, tmp_path / "elsewhere") as other:
+        commit_files(other, {"notes.txt": "from elsewhere\n"}, "another machine's commit")
+        other.git.push("-q", "origin", "main")
+    pushed = git.Repo(data_repo_origin).commit("main").hexsha
+    repo.git.fetch("-q", "origin")
+    price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+
+    assert price_schedule.merge_pending(data, _worktree(data)) == [
+        MERGED, "not pushing: main isn't strictly ahead of origin/main "
+                "(it lacks commits origin/main has); try git pull on main"]
+    assert git.Repo(data_repo_origin).commit("main").hexsha == pushed
+
+
+def test_a_failed_push_is_logged_and_the_merge_stands(
+    tmp_path: Path, priced: tuple[Path, git.Repo], data_repo_origin: Path, fetching: None,
+) -> None:
+    data, repo = priced
+    repo.git.remote("set-url", "origin", str(tmp_path / "gone.git"))
+    outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+
+    merged, pushed = price_schedule.merge_pending(data, _worktree(data))
+    assert merged == MERGED and pushed.startswith("push of main to origin failed: ")
+    assert repo.head.commit.parents[1].hexsha == outcome.committed
+    assert not price_schedule.read_state(data).get("pending")
 
 
 def test_a_repo_with_no_prices_folder_and_nothing_to_fetch_still_succeeds(

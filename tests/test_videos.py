@@ -190,6 +190,15 @@ def test_scale_renders_the_layout_at_more_pixels(videos_root: Path) -> None:
     assert any(s.startswith("Set WaitPattern /") and prompt in s for s in settings)
 
 
+def test_title_notice_shows_only_when_set(videos_root: Path) -> None:
+    theme = themes.load(videos_root)
+    plain = render.slide_html(theme, {"series": "S", "title": "T"}, {"template": "title"}, "en")
+    assert 'class="notice"' not in plain
+    html = render.slide_html(theme, {"series": "S", "title": "T"},
+                             {"template": "title", "notice": "Not on <Windows>?"}, "en")
+    assert '<div class="notice">Not on &lt;Windows&gt;?</div>' in html
+
+
 def test_slide_html_fills_template_inlines_assets_and_escapes(videos_root: Path) -> None:
     theme = themes.load(videos_root)
     html = render.slide_html(theme, {"series": "S", "title": "A <video>"}, {"template": "title"}, "en")
