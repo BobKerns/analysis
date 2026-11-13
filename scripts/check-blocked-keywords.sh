@@ -39,6 +39,13 @@ esac
 top=$(git rev-parse --show-toplevel)
 cd "$top"
 list=.githooks/blocked-keywords.txt
+# Not searched: the public list itself, and the lock files, which tools write
+# and which hold only package names, versions, URLs and checksums. A short
+# keyword turns up in a checksum's base64 text by chance, where '+', '/' and
+# '-' stand as word boundaries around it.
+skip_list=":!$list"
+skip_npm_lock=':!package-lock.json'
+skip_uv_lock=':!uv.lock'
 
 # The private list file: in the data repo named by $ANALYSIS_DATA_DIR (which
 # points into its sim/ subtree), or else the one data/shared links to in the
@@ -73,10 +80,10 @@ search() {
     case $mode in
         --staged)
             # Checked first: with no file names, git grep would search everything.
-            if git diff --cached --quiet --diff-filter=ACMR -- . ":!$list"; then
+            if git diff --cached --quiet --diff-filter=ACMR -- . "$skip_list" "$skip_npm_lock" "$skip_uv_lock"; then
                 return 0
             fi
-            git diff --cached --name-only -z --diff-filter=ACMR -- . ":!$list" \
+            git diff --cached --name-only -z --diff-filter=ACMR -- . "$skip_list" "$skip_npm_lock" "$skip_uv_lock" \
                 | xargs -0 git grep --cached -n -I -i -E -e "$1" -- || true
             ;;
         --all)
@@ -84,7 +91,7 @@ search() {
             # as a textconv that can't run (a worktree without .venv), and
             # must not pass as clean.
             status=0
-            git grep --textconv -n -I -i -E -e "$1" -- . ":!$list" || status=$?
+            git grep --textconv -n -I -i -E -e "$1" -- . "$skip_list" "$skip_npm_lock" "$skip_uv_lock" || status=$?
             if [ "$status" -gt 1 ]; then
                 echo "git grep failed (exit $status); files were not all checked." >&2
                 exit 2
