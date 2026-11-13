@@ -1056,3 +1056,25 @@ def test_one_payment_drawn_as_two_characters_is_one_debt(ledger_con: sqlite3.Con
     _record_balance(con, "2026-03-31", [3], 600_000_00, 3_000_00)
     # One debt-month, not a leg each with a share (one of them negative).
     assert [(m.interest, m.balance) for m in _months_of(con, interest)] == [(3_000_00, 600_000_00)]
+
+
+@pytest.mark.parametrize(("tags", "warns"), [("", True), ("tax:rental", False)])
+def test_a_property_tax_account_beside_a_hand_typed_total_is_a_warning(
+    write_aux: Callable[[str, str], Path], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], Any], tags: str, warns: bool,
+) -> None:
+    """#586: a taxes_property account is figured as property tax, so a
+    hand-typed total would count it twice; a rental's (tax:rental) isn't
+    itemized, so it's no warning. No mortgage here, which warns alone."""
+    path = retire_alice_csv("scheduled.csv")
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rows[rows["amount_rule_kind"] != "mortgage_payment"].to_csv(path, index=False)
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""), "name": "Expense_Taxes_Property", "kind": "expense",
+        "subkind": "taxes_property", "owner": "joint", "tax_treatment": "none",
+        "opened": "2020-01-31", "meta_json": "{}", "tags": tags}
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    write_aux("federal_deductions.csv", "effective_date,amount\n2027-01-31,30000.00\n")
+    warnings = load_test_copy().warnings
+    assert any("the hand-typed total adds" in w for w in warnings) == warns, warnings

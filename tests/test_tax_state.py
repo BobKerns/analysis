@@ -575,3 +575,56 @@ def test_a_guided_edit_shows_the_fields_and_changes_the_one_named(
     [row] = pd.read_csv(retire_alice_csv("taxes/federal.csv"), dtype=str,
                         keep_default_na=False).to_dict("records")
     assert (row["end"], row["source_chain"]) == ("2035-04", "Asset_Checking")
+
+
+def _add_account(retire_alice_csv: Callable[[str], Path], name: str, subkind: str) -> None:
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""), "name": name, "kind": "expense", "subkind": subkind,
+        "owner": "joint", "tax_treatment": "none", "opened": "2020-01-31", "meta_json": "{}"}
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+
+
+def test_a_guided_add_creates_the_state_taxes_own_account(
+    test_data_dir: Path, add_tax: Callable[..., Path], add_residence: Callable[..., Path],
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """#586: asked, the destination offered is Expense_Taxes_State, which
+    the add creates."""
+    add_tax()
+    add_residence("2026-05", "CA")
+    result = _tax(test_data_dir, "add", "state", answers=["", "", "", "", "", "", "write"])
+    assert result.exit_code == 0, result.output
+    assert "and expense account Expense_Taxes_State" in result.output
+    [row] = pd.read_csv(retire_alice_csv("taxes/state.csv"), dtype=str,
+                        keep_default_na=False).to_dict("records")
+    assert (row["source_chain"], row["destination"]) == ("Asset_Checking", "Expense_Taxes_State")
+
+
+def test_a_guided_add_says_why_a_taken_name_stops_it(
+    test_data_dir: Path, add_tax: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    add_tax()
+    _add_account(retire_alice_csv, "Expense_Taxes_State", "other_expense")
+    result = _tax(test_data_dir, "add", "state", answers=["", "", "", "", "", "", "write"])
+    assert result.exit_code != 0
+    assert "Expense_Taxes_State already exists, with subkind other_expense" in result.output
+    assert not retire_alice_csv("taxes/state.csv").exists()
+
+
+@pytest.mark.parametrize("guided", [False, True])
+def test_edit_gives_a_pre_586_local_tax_its_own_account(
+    test_data_dir: Path, add_state_tax: Callable[..., None], add_tax: Callable[..., Path],
+    retire_alice_csv: Callable[[str], Path], guided: bool,
+) -> None:
+    """A local tax written before #586, with a blank destination, doesn't
+    load; `sim tax edit local` can name Expense_Taxes_Local, which it adds."""
+    add_state_tax()
+    add_tax("local", destination="")
+    args = ["edit", "local"] if guided else ["edit", "local", "--destination", "Expense_Taxes_Local"]
+    result = _tax(test_data_dir, *args,
+                  answers=["destination", "Expense_Taxes_Local", "write"] if guided else ())
+    assert result.exit_code == 0, result.output
+    assert "and expense account Expense_Taxes_Local" in result.output
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    assert accounts.loc[accounts["name"] == "Expense_Taxes_Local", "subkind"].tolist() == ["taxes_local"]

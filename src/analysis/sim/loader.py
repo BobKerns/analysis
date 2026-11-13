@@ -5736,9 +5736,12 @@ def _scenario_tags(
             out.update(f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", "")))
         except ValueError:
             continue
-    # The tags a rule kind implies (#542) are carried as surely.
+    # The tags a rule kind implies (#542) are carried as surely, and so is
+    # the property tax a taxes_property account implies (#586).
     out.update(registries.IMPLIED_TAX_TAGS[row["amount_rule_kind"]]
                for row in _implying_rules(scheduled_rows, accounts))
+    if any(a.get("subkind") == registries.PROPERTY_TAX_SUBKIND for a in accounts):
+        out.add(registries.ITEMIZED_TAGS["property_tax"])
     return frozenset(out)
 
 
@@ -5799,7 +5802,10 @@ def _validate_taxes(
             issues.append(f"{where}: source_chain {problem}")
         destination = row.get("destination", "")
         if not destination:
-            issues.append(f"{where}: destination names the expense account the tax is paid into")
+            want = registries.TAX_DESTINATION_SUBKINDS.get(name)
+            issues.append(f"{where}: destination names the expense account the tax is paid into"
+                          + (f", one of subkind {want} (`sim tax edit {name}` can add "
+                             f"Expense_Taxes_{name.capitalize()})" if want else ""))
         elif destination in chain_names:
             issues.append(f"{where}: destination '{destination}' is a chain; the tax is paid "
                           "into an account")
@@ -5853,8 +5859,9 @@ def _validate_taxes(
     for destination, names in paid_into.items():
         if len(names) > 1:
             issues.append(
-                f"{registries.TAXES_DIR}/: the {' and '.join(names)} taxes are both paid into "
-                f"'{destination}'; each tax is paid into an account of its own")
+                f"{registries.TAXES_DIR}/: the {', '.join(names[:-1])} and {names[-1]} taxes are "
+                f"{'both' if len(names) == 2 else 'all'} paid into '{destination}'; each tax is "
+                "paid into an account of its own")
 
 
 def _validate_local_tax(

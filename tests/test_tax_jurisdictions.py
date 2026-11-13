@@ -219,3 +219,62 @@ def test_property_tax_through_a_chain_into_an_income_tax_account_is_refused(
     assert "pay it into a taxes_property account" in issues
     if not step_character:
         assert "(through chain county)" in issues
+
+
+def test_a_mortgage_interest_account_may_not_be_an_income_tax_account(
+    add_tax: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """#586: a mortgage's interest is itemized, never income tax."""
+    add_tax()
+    path = retire_alice_csv("scheduled.csv")
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    mortgage = rows["amount_rule_kind"] == "mortgage_payment"
+    assert mortgage.any()
+    rows.loc[mortgage, "interest_account"] = "Expense_Taxes_Federal"
+    rows.to_csv(path, index=False)
+    with pytest.raises(LoadError, match=r"interest_account: Expense_Taxes_Federal is a taxes_federal account.*"
+                       "amount_rule_kind mortgage_payment"):
+        load_test_copy()
+
+
+def test_an_irmaa_surcharge_may_not_go_into_an_income_tax_account(
+    add_tax: Callable[..., Path], append_scheduled_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_tax()
+    append_scheduled_row(name="surcharge", from_account="Asset_Checking", to_account="Expense_Taxes_Federal",
+                         amount_rule_kind="irmaa", person="alice", start="2030-01-31", tax_character="none")
+    with pytest.raises(LoadError) as raised:
+        load_test_copy()
+    assert any("(surcharge): Expense_Taxes_Federal is a taxes_federal account" in issue
+               and "amount_rule_kind irmaa" in issue for issue in raised.value.issues), raised.value.issues
+
+
+def test_a_year_to_date_row_of_property_tax_into_an_income_tax_account_is_refused(
+    add_tax: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_tax()
+    path = retire_alice_csv("year_to_date.csv")
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    withholding = rows["to_account"] == "Expense_Taxes_Federal"
+    assert withholding.any()
+    rows.loc[withholding, "tax_character"] = "property_tax"
+    rows.to_csv(path, index=False)
+    with pytest.raises(LoadError, match=r"year_to_date.csv.*Expense_Taxes_Federal is a taxes_federal account.*"
+                       "tax_character property_tax"):
+        load_test_copy()
+
+
+def test_an_income_tax_account_may_not_carry_an_itemizing_tag(
+    add_tax: Callable[..., Path], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_tax()
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[accounts["name"] == "Expense_Taxes_Federal", "tags"] = "tax:property"
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    with pytest.raises(LoadError, match=r"\(Expense_Taxes_Federal\): a taxes_federal account takes only income "
+                       r"tax payments, which no itemizing tag fits \(tax:property\)"):
+        load_test_copy()

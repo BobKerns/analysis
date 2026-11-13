@@ -19422,7 +19422,7 @@ def _tax_guide() -> calendar_guide.Guide:
 
 
 def _tax_account(
-    scenario_dir: Path, jurisdiction: str, opened: str = "",
+    scenario_dir: Path, jurisdiction: str, opened: str = "", *, destination_option: bool = True,
 ) -> tuple[str, dict[str, str] | None]:
     """The expense account ``jurisdiction``'s tax is paid into (#586): the
     scenario's account of the jurisdiction's own subkind
@@ -19430,7 +19430,8 @@ def _tax_account(
     ``Expense_Taxes_<Jurisdiction>``, returned with its accounts.csv row.
     That name already taken by an account of another subkind is refused:
     adding a second row would duplicate it, or in a child scenario turn the
-    parent's account into a tax account."""
+    parent's account into a tax account. ``destination_option``: the
+    command has ``--destination``, which the refusal may suggest."""
     subkind = registries.TAX_DESTINATION_SUBKINDS[jurisdiction]
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
     found = next((n for n, a in sorted(accounts.items()) if a.row.get("subkind") == subkind), None)
@@ -19442,7 +19443,9 @@ def _tax_account(
             f"the {jurisdiction} tax is paid into an expense account of subkind {subkind}, and the "
             f"scenario has none; {name} already exists, with subkind "
             f"{accounts[name].row.get('subkind') or '(blank)'}. Change its subkind to {subkind} "
-            f"(sim account edit {name}) or name another with --destination. Nothing was written.")
+            f"(sim account edit {name})"
+            + (" or name another with --destination" if destination_option else "")
+            + ". Nothing was written.")
     return name, {
         **dict.fromkeys(registries.ACCOUNTS_CSV_HEADER, ""),
         "name": name, "kind": "expense", "subkind": subkind,
@@ -19456,10 +19459,10 @@ def _tax_spec(
 ) -> calendar_guide.KindSpec:
     """The questions for ``sim tax add|edit``, completing from the scenario:
     a destination is one of its expense accounts of the jurisdiction's own
-    subkind (``taxes_federal``, ``taxes_state``, ``taxes_local``, #586). For
-    ``add``, the default destination is ``own``, :func:`_tax_account`'s
-    answer (the add creates it if it's new), and the default source another
-    jurisdiction's, if it has one."""
+    subkind (``taxes_federal``, ``taxes_state``, ``taxes_local``, #586), and
+    ``own``, :func:`_tax_account`'s answer, which the command creates if
+    it's new. For ``add``, that is the default destination, and the default
+    source is another jurisdiction's, if it has one."""
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
     subkind = registries.TAX_DESTINATION_SUBKINDS.get(jurisdiction or "")
     expenses = sorted(n for n, a in accounts.items() if a.row.get("kind") == "expense"
@@ -19468,10 +19471,11 @@ def _tax_spec(
     if command == "add":
         taxes = _tax_rows(scenario_dir)
         source = next((t.row["source_chain"] for t in taxes.values() if t.row.get("source_chain")), None)
-        if own is not None:
+    if own is not None:
+        if command == "add":
             destination = own[0]
-            if own[1] is not None:
-                expenses.append(destination)
+        if own[1] is not None:
+            expenses.append(own[0])
     kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
                           expenses=expenses, jurisdictions=free, source=source,
@@ -19672,10 +19676,9 @@ def tax_add_command(
         answers["jurisdiction"] = guide.ask_field(spec, spec.fields[0], calendar_guide.GuideContext(), answers)
         if answers["jurisdiction"] == "local" and at_once("local"):
             return
-    try:
-        own: tuple[str, dict[str, str] | None] | None = _tax_account(ref.path, answers["jurisdiction"])
-    except click.ClickException:
-        own = None  # the name is taken: no default, and the guide asks
+    # A made-up name already taken stops here, with what to do: the guide
+    # would offer no account to choose.
+    own = _tax_account(ref.path, answers["jurisdiction"])
     spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free, own=own)
     ctx = calendar_guide.GuideContext()
     guide.complete(spec, ctx, answers)
@@ -19711,13 +19714,28 @@ def tax_edit_command(
     name = found.row["name"]
     row = {c: found.row.get(c, "") for c in registries.TAX_CSV_HEADER}
 
+    folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
+    # The tax's own account, or the one a destination left blank or of
+    # another subkind (before #586) may be changed to, which the edit adds.
+    try:
+        own: tuple[str, dict[str, str] | None] | None = _tax_account(folder, name)
+        clash = None
+    except click.ClickException as error:
+        own, clash = None, error
+
     def write(new: dict[str, str]) -> None:
         if new == row:
             click.echo(f"{name} tax unchanged")
             return
-        _write_tax(data, scenario_name, name, new)
+        new_account = own[1] if own is not None and own[0] == new["destination"] else None
+        if new_account is not None:
+            new_account = {**new_account, "opened": new.get("start") or ""}
+        # repair: the edit may be what fixes a scenario that doesn't load
+        # (a tax file from before #586); the result must still load.
+        _write_tax(data, scenario_name, name, new, new_account=new_account, repair=True)
         inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
-        click.echo(f"changed {name} tax{inherited}: {_tax_summary(name, new)}")
+        made = f", and expense account {new['destination']}" if new_account is not None else ""
+        click.echo(f"changed {name} tax{inherited}{made}: {_tax_summary(name, new)}")
 
     changes = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
                "end": end, "params_json": params_json, "description": description}
@@ -19726,8 +19744,9 @@ def tax_edit_command(
         new["kind"] = new["kind"] or registries.TAX_DEFAULT_KINDS[name]
         write(new)
         return
-    folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
-    spec = _tax_spec(data, folder, scenario_name, "edit", name)
+    if own is None and clash is not None:
+        raise clash
+    spec = _tax_spec(data, folder, scenario_name, "edit", name, own=own)
     answers = tax_guide.answers_of(row)
     click.echo(f"{name}: {_tax_summary(name, row)}")
     _tax_guide().review(spec, calendar_guide.GuideContext(), answers,
@@ -19812,7 +19831,8 @@ def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[st
         raise click.ClickException(
             "this scenario has no income tax: add the federal one first "
             "(sim tax add federal). Nothing was written.")
-    account, new_account = _tax_account(scenario_dir, "state", federal.row.get("start", ""))
+    account, new_account = _tax_account(scenario_dir, "state", federal.row.get("start", ""),
+                                        destination_option=False)
     params = tax_files.params(federal.row)
     # bracket_series names the federal tables' series; a state's are where
     # the household lives (residence.csv), and state.csv refuses it.
