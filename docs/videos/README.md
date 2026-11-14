@@ -394,26 +394,36 @@ all.
 ## Building in a container
 
 `scripts/videos/docker.sh` builds videos in a container (the image is
-`docker/videos/Dockerfile`), so the only thing the host needs is Docker. The
-image has ffmpeg, VHS, ttyd, Playwright's Chromium, the Kokoro voice model,
-the project's Python and Node.js, the theme's fonts, and the notebooks that
-notebook scenes record. It builds for amd64
-and arm64 (Docker Desktop on Apple silicon).
+`docker/videos/Dockerfile`), so the only thing the host needs is Docker. It
+builds for amd64 and arm64 (Docker Desktop on Apple silicon).
 
 ```sh
 analysis video build 00-pilot [--lang ja] [--silent] [--rerecord] [--jobs N] [--publish]
 analysis video check                 # every video, or name some
 analysis video shell 01-intro        # bash, with the video's data repo
+analysis video image                 # rebuild the image from scratch
 ```
 
 (`analysis video` runs `scripts/videos/docker.sh` for these when Docker is
-running; `shell` needs it.)
+running; `shell` and `image` need it.)
 
-Each run rebuilds the `analysis-videos` image from the checkout first. The
-first build takes several minutes (the model and Chromium are most of it);
-after that it's a quick check unless the code changed, which rebuilds only
-the code's layers. So a tape records this checkout's CLI. `docs/videos` is
-mounted read-only rather than copied, so editing a script needs no rebuild.
+The image holds only the system tools: ffmpeg, VHS, ttyd, uv, Node.js, the
+voice model, the fonts and Chromium's libraries. The checkout (`src`,
+`pyproject.toml`, `uv.lock`, `templates`, `prototype_data`, `notebooks`,
+`docs/videos` and the rest of `MOUNTS` in `docker.sh`) is mounted read-only,
+so a tape records this checkout's CLI as it stands. The project's Python
+dependencies, uv's cache and Playwright's Chromium live in the Docker volume
+`analysis-videos-env`: each run starts with `uv sync` into it, which takes
+several minutes the first time and a moment after that. The host's `.venv`
+isn't used, since it may be for another OS or architecture.
+
+So neither a code change nor a dependency change needs a new image. The image
+is built from `docker/videos` alone, the first time (a few minutes) and again
+only when a file there changes. `analysis video image` rebuilds it from
+scratch, pulling the newest base image and system packages;
+`docker volume rm analysis-videos-env` discards the Python environment, which
+the next run makes again.
+
 Videos and the build cache land in `out/videos` (or `$ANALYSIS_VIDEO_OUT`),
 as in a native build.
 

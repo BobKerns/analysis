@@ -384,6 +384,51 @@ def state_ss_exclusion(row: Mapping[str, Any], taxable_ss: int, agi: int) -> int
     return phase_out(taxable_ss * int(row["exclusion_micros"]) // 1_000_000, row, agi)
 
 
+def full_retirement_age_months(born: date) -> int:
+    """Social Security's full retirement age (#581), in months, for someone
+    born on ``born``: 65 through 1937, two months more a year to 66 for
+    1943-1954, again two months a year to 67 from 1960. Someone born on
+    January 1 counts with the year before, as SSA counts them."""
+    year = born.year - (born.month == 1 and born.day == 1)
+    if year <= 1937:
+        return 65 * 12
+    if year <= 1942:
+        return 65 * 12 + 2 * (year - 1937)
+    if year <= 1954:
+        return 66 * 12
+    if year <= 1959:
+        return 66 * 12 + 2 * (year - 1954)
+    return 67 * 12
+
+
+def min_age_months(row: Mapping[str, Any], born: date | None) -> int | None:
+    """A row's ``min_age`` in months for someone born on ``born``: blank is
+    any age (0), ``fra`` their own full retirement age (#581), otherwise
+    years (59.5: 714). None when it needs a birthdate they don't have."""
+    age = row.get("min_age")
+    if age in (None, ""):
+        return 0
+    if registries.is_fra(age):
+        return None if born is None else full_retirement_age_months(born)
+    return round(float(age) * 12)
+
+
+def state_ss_row(rows: Sequence[Mapping[str, Any]], born: date | None,
+                 year: int) -> Mapping[str, Any] | None:
+    """Of a filing status's ``state_social_security`` ``rows``, the one
+    for someone born on ``born`` in ``year`` (#581): the highest
+    ``min_age`` they reach by December 31; None when they reach none."""
+    months = age_months(born, year)
+    best: tuple[int, Mapping[str, Any]] | None = None
+    for row in rows:
+        need = min_age_months(row, born)
+        if need is None or need > 0 and (months is None or months < need):
+            continue
+        if best is None or need > best[0]:
+            best = (need, row)
+    return None if best is None else best[1]
+
+
 def progressive_tax(taxable_income: int, brackets: Sequence[tuple[int, int]]) -> int:
     """The tax on ``taxable_income`` by ``brackets``, (floor, rate micros)
     pairs in floor order."""

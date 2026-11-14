@@ -105,8 +105,11 @@ class StateTablesYear(FederalStateYear):
             hsa_taxed=self._hsa_taxed)
 
         # A state taxes Social Security only by its state_social_security
-        # table (#484).
-        state_ss: dict[str, Any] | None = None
+        # table (#484). Its rows may be age tiers (#581): each person's share
+        # of the taxable amount, by their benefits, takes the row of the
+        # highest min_age they reach, Colorado's 55 and 65 or Rhode Island's
+        # full retirement age. A table without ages is one row for everyone.
+        self._ss_tiers: dict[str, Mapping[str, Any] | None] | None = None
         if ty.has_table(registries.STATE_SOCIAL_SECURITY, series):
             rows = [r for r in ty.indexed(registries.STATE_SOCIAL_SECURITY, series)
                     if r.get("filing_status") == ty.filing_status]
@@ -114,8 +117,12 @@ class StateTablesYear(FederalStateYear):
                 raise TaxError(
                     f"{where}: no {registries.STATE_SOCIAL_SECURITY}__"
                     f"{series} row for filing_status={ty.filing_status!r} in {ty.year}")
-            state_ss = rows[0]
-        self._state_ss = state_ss
+            birthdates = common.household(ty)
+            # No one to test (the loader warns): the household takes the
+            # rows any age reaches.
+            self._ss_tiers = {
+                p: common.state_ss_row(rows, born, ty.year) for p, born in sorted(birthdates.items())
+            } or {"": common.state_ss_row(rows, None, ty.year)}
 
         # A state's surcharge on high incomes (#490) adds its rates to the
         # brackets'. Its own bands, rather than more bracket rows, because
@@ -169,7 +176,9 @@ class StateTablesYear(FederalStateYear):
             for p in self._spouses}
         self._ordinary_weights = {p: max(0, v) for p, v in self._ordinary_own.items()}
         self._gain_weights = {p: max(0, pools[p]["capital_gain"]) for p in self._spouses}
-        self._ss_weights = dict(ss)
+        # The spouses are the household, so these are the benefits the age
+        # tiers (#581) divide by: one person_income call serves both.
+        self._ss_benefits = self._ss_weights = dict(ss)
         # Each spouse's tables are read through ty's filing status as well
         # as self.filing_status, so a subclass's own table read in its tax
         # step (common.rate_table(self.ty, ...)) gets the MFS rows too.
@@ -407,15 +416,52 @@ class StateTablesYear(FederalStateYear):
         them, ``{**super().refundable_credits(tax, income, basis), ...}``."""
         return self._adjusted("credit", income.agi, basis, refundable=True)
 
+    @cached_property
+    def _ss_benefits(self) -> dict[str, int]:
+        """Each household person's Social Security benefits this year, by
+        which the federally taxable amount divides (#581, #580)."""
+        people = sorted(common.household(self.ty))
+        return common.person_income(self.ty, people, hsa_taxed=self._hsa_taxed)[1]
+
     def _taxable_ss(self, basis: Basis) -> int:
         """The state's taxable Social Security: none, or by its table the
         federally taxable amount less its exclusion, phased out by federal
-        AGI (#484)."""
-        if self._state_ss is None:
+        AGI (#484), each person's share by their age (#581)."""
+        tiers = self._ss_tiers
+        if tiers is None:
             return 0
+        rows = list(tiers.values())
+        row = rows[0]
+        if row is not None and all(r is row for r in rows):
+            # Everyone on one row: the household's amount, phased as one.
+            fed = basis.federal
+            taxable = fed["ss_taxable"]
+            return taxable - common.state_ss_exclusion(row, taxable, fed.agi)
+        return sum(self._taxable_ss_by_person(basis).values())
+
+    def _taxable_ss_by_person(self, basis: Basis) -> dict[str, int]:
+        """Each person's taxable Social Security (#581): the federally
+        taxable amount divided by benefits, less the exclusion of the row
+        they reach. The shares on one row are phased out together at
+        federal AGI (the loader allows a rate phase-out on one row only, so
+        it isn't taken twice), so a row everyone reaches gives what one
+        household figure does."""
+        tiers = self._ss_tiers
+        assert tiers is not None
         fed = basis.federal
-        taxable = fed["ss_taxable"]
-        return taxable - common.state_ss_exclusion(self._state_ss, taxable, fed.agi)
+        weights = self._ss_benefits if set(tiers) <= set(self._ss_benefits) else dict.fromkeys(tiers, 1)
+        shares = common.apportion(fed["ss_taxable"], {p: weights[p] for p in tiers})
+        groups: dict[int, tuple[Mapping[str, Any], list[str]]] = {}
+        for person, row in tiers.items():
+            if row is not None:
+                groups.setdefault(id(row), (row, []))[1].append(person)
+        out = dict(shares)
+        for row, people in groups.values():
+            group = {p: shares[p] for p in people}
+            excluded = common.state_ss_exclusion(row, sum(group.values()), fed.agi)
+            for p, amount in common.apportion(excluded, group).items():
+                out[p] -= amount
+        return out
 
     def fixed_lines(self, basis: Basis) -> Mapping[str, int]:
         # The state nets its own gains, so its capital-loss lines replace
@@ -446,7 +492,7 @@ class StateTablesYear(FederalStateYear):
         if not self._spouses:
             return None
         people = self._spouses
-        income_by = self._spouse_income(joint.income, joint.subtractions)
+        income_by = self._spouse_income(joint.income, joint.subtractions, basis)
         agi = {p: income_by[p].agi for p in people}
         fed_agi = common.apportion(basis.federal.agi, agi)
 
@@ -508,8 +554,8 @@ class StateTablesYear(FederalStateYear):
             (self.ty, self.filing_status, self.brackets, self.ltcg_brackets,
              self.stcg_brackets, self._surcharge) = saved
 
-    def _spouse_income(self, income: Income,
-                       subtractions: Sequence[Adjustment]) -> dict[str, Income]:
+    def _spouse_income(self, income: Income, subtractions: Sequence[Adjustment],
+                       basis: Basis) -> dict[str, Income]:
         """The joint return's ``income`` divided between the spouses
         (#580): before the retirement exclusion and the table's own
         subtractions, ordinary income by their shares of non-gain income,
@@ -539,7 +585,9 @@ class StateTablesYear(FederalStateYear):
         rest_by = {p: own[p] + beyond[p] for p in people}
         stcg_by = common.apportion(stcg, self._gain_weights)
         ltcg_by = common.apportion(income.ltcg + retirement.ltcg, self._gain_weights)
-        ss_by = common.apportion(income.ss, self._ss_weights)
+        # With rows by age (#581) each spouse's taxable share is their own.
+        ss_by = common.apportion(income.ss, self._taxable_ss_by_person(basis)
+                                 if self._ss_tiers is not None else self._ss_weights)
         # The exclusion's gain goes to the spouses whose grants covered
         # gain, the rest to those whose grants covered other income.
         gain_weights = {p: grants.get(p, (0, 0))[1] for p in people}
