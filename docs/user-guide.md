@@ -523,6 +523,15 @@ files pays no income tax.
   as `state_exclusion`. Give a pension income account its owner, so the
   pension counts as that person's; a joint account's income is split
   between you.
+- **Spouses filing separately on one state return**: Arkansas, Delaware,
+  the District of Columbia, Kentucky and Virginia let a married couple
+  file separately on one state return, each through the brackets and
+  standard deduction alone, which saves tax when you both have income.
+  `state_separate_return__<state>.csv` in `aux/` with `allowed` `yes`
+  turns it on (the District's ships): the state tax figures both ways and
+  takes the lower, with your income split by whose accounts it comes from
+  (a joint account's split evenly). `sim report tax --return state` shows
+  `joint_tax`, `separate_tax` and each of yours.
 - **State deductions and credits** of the state's own, such as a renter's
   deduction or credit, a 529 or long-term care premium deduction, personal
   exemptions and exemption credits, or a deduction for federal tax paid, are

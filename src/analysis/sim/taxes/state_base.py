@@ -20,6 +20,10 @@ override on its :class:`StateYear`:
    on capital gains, #489), added to the tax;
 7. :meth:`~StateYear.refundable_credits` (#568), taken off last, which can
    leave the tax below zero: the state pays it back.
+
+Between 5 and 6, :meth:`~StateYear.separate` may figure the couple's tax
+filing separately on one return (#580), which the return takes when it's
+lower than the joint tax after credits.
 """
 
 from __future__ import annotations
@@ -175,6 +179,17 @@ class StateYear(Prepared):
         used up. None by default."""
         return {}
 
+    def separate(self, income: Income, deductions: Mapping[str, int],
+                 others: Mapping[str, int], nol_used: int, basis: Basis,
+                 ) -> tuple[Mapping[str, int], int] | None:
+        """The tax after credits of a married couple filing separately on
+        one return (#580), with the lines that show each spouse's, or None
+        where the state doesn't allow it (the default). ``income``,
+        ``deductions``, ``others`` and ``nol_used`` are the joint return's.
+        The return takes it when it's lower than the joint tax after
+        credits."""
+        return None
+
     def excise(self, basis: Basis) -> tuple[Mapping[str, int], int]:
         """A tax the state levies apart from its income tax, on its own base
         (Washington's on capital gains, #489): its lines and the tax, which
@@ -223,9 +238,16 @@ class StateYear(Prepared):
         for line, amount in self.credit_lines(tax, income, basis).items():
             credit_lines[line] = max(0, min(amount, tax - credits))
             credits += credit_lines[line]
+        # Spouses filing separately on one return (#580) pay the lower.
+        owed, separate_lines = tax - credits, {}
+        if (separate := self.separate(income, deductions, others, nol_used, basis)) is not None:
+            separate_lines, separate_tax = separate
+            separate_lines = {**separate_lines, "joint_tax": owed, "separate_tax": separate_tax,
+                              "separate_return": int(separate_tax < owed)}
+            owed = min(owed, separate_tax)
         excise_lines, excise = self.excise(basis)
         refundable = {line: max(0, amount) for line, amount in self.refundable_credits(
-            tax - credits + excise, income, basis).items()}
+            owed + excise, income, basis).items()}
         lines = {
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,
@@ -242,13 +264,14 @@ class StateYear(Prepared):
             "ordinary_taxable": common.ordinary_taxable(
                 taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),
             "credits": credits,
+            **separate_lines,
             **excise_lines,
         }
         if clash := sorted(set(refundable) & {*lines, "tax"}):
             raise TaxError(f"refundable credit line {', '.join(clash)} names a line the "
                            "return already has; name it apart (#568)")
         lines.update(refundable)
-        lines["tax"] = tax - credits + excise - sum(refundable.values())
+        lines["tax"] = owed + excise - sum(refundable.values())
         return Return(lines, MappingProxyType(dict(self.memo(basis))))
 
 

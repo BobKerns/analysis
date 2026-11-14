@@ -3077,10 +3077,11 @@ FILING_STATUS_RULE_KINDS = frozenset({"irmaa"})
 def _validate_optional_state_tables(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
 ) -> None:
-    """A ``state_surcharge``, ``state_local_tax`` (#487) or ``state_hsa``
-    table (#490) is keyed by state like the brackets it goes with, since one
-    without a state is never read; a ``state_hsa`` row's treatment is one
-    the engine knows; and a table of bands has every filing status the
+    """A ``state_surcharge``, ``state_local_tax`` (#487), ``state_hsa``
+    (#490) or other optional state table is keyed by state like the brackets
+    it goes with, since one without a state is never read; a ``state_hsa``
+    row's treatment is one the engine knows, and a
+    ``state_separate_return`` row's ``allowed`` yes or no (#580); and a table of bands has every filing status the
     brackets have at each of its effective dates, since only the latest
     date's rows are in force, and a year filed under a missing status (the
     survivor's Single, §4.9) would silently tax nothing."""
@@ -3102,6 +3103,10 @@ def _validate_optional_state_tables(
             issues.append(
                 f"{file} ({effective}): treatment {treatment!r} must be one of "
                 f"{', '.join(registries.STATE_HSA_TREATMENTS)}")
+        allowed = str(payload.get("allowed") or "").strip().lower()
+        if kind == registries.STATE_SEPARATE_RETURN and allowed not in ("yes", "no"):
+            issues.append(
+                f"{file} ({effective}): allowed {payload.get('allowed')!r} must be yes or no")
         if kind in registries.STATE_BAND_KINDS:
             band_statuses.setdefault((kind, state, effective), set()).add(
                 str(payload.get("filing_status")))

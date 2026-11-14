@@ -94,12 +94,12 @@ an issue to close, or a row you write yourself.
 | Alabama | Tables needed | |
 | Alaska | No tax | |
 | Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
-| Arkansas | Partial | Low-income tax tables; spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Arkansas | Partial | Low-income tax tables |
 | California | Shipped | |
 | Colorado | Partial | Social Security subtraction's age test ([#581](https://github.com/BobKerns/analysis/issues/581)) |
 | Connecticut | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); personal tax credit; Social Security's 25% cap |
-| Delaware | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
-| District of Columbia | Shipped | Extra deduction at 65 ([#582](https://github.com/BobKerns/analysis/issues/582)); spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Delaware | Tables needed | |
+| District of Columbia | Shipped | Extra deduction at 65 ([#582](https://github.com/BobKerns/analysis/issues/582)) |
 | Florida | No tax | |
 | Georgia | Tables needed | |
 | Hawaii | Tables needed | |
@@ -108,7 +108,7 @@ an issue to close, or a row you write yourself.
 | Indiana | Tables needed | |
 | Iowa | Partial | School district surtax (a share of state tax) |
 | Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing ([#582](https://github.com/BobKerns/analysis/issues/582)) |
-| Kentucky | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Kentucky | Tables needed | |
 | Louisiana | Tables needed | |
 | Maine | Partial | Standard deduction phase-out's width grows with inflation (the law's divisor is fixed) |
 | Maryland | Partial | Pension exclusion reduced by Social Security ([#579](https://github.com/BobKerns/analysis/issues/579)); capital gains surtax above $350,000 of income |
@@ -137,7 +137,7 @@ an issue to close, or a row you write yourself.
 | Texas | No tax | |
 | Utah | Tables needed | |
 | Vermont | Partial | Minimum tax of 3% of AGI over $150,000; capital gain exclusion's holding period |
-| Virginia | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Virginia | Tables needed | |
 | Washington | Shipped | Charitable and family-business deductions; credits for other states' taxes |
 | West Virginia | Tables needed | |
 | Wisconsin | Partial | Head of household's standard deduction switching to the single figure |

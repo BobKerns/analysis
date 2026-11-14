@@ -610,6 +610,12 @@ household lives in one locality. The local jurisdiction reads it
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""
 
+STATE_SEPARATE_RETURN = "state_separate_return"
+"""The aux kind of whether a state lets a married couple file separately on
+one return (#580): each spouse's income through the brackets and standard
+deduction alone, the two taxes added, the couple paying the lower of that and
+the joint tax (Arkansas, Delaware, the District, Kentucky, Virginia)."""
+
 STATE_GAINS_TAX = "state_gains_tax"
 """The aux kind of a state's tax on long-term capital gains apart from its
 income tax (#489), in the shape of its brackets: Washington's 7%, and 9.9%
@@ -730,7 +736,7 @@ STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
     "state_brackets", STATE_ITEMIZED_LIMITS, STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
     STATE_LTCG_EXCLUSION, STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA,
     STATE_RETIREMENT_EXCLUSION, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
-    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
+    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION, STATE_SEPARATE_RETURN,
 })
 """The aux kinds keyed by state (or, for ``state_local_tax``, by county):
 a tax year reads the series where the household lives that year
@@ -738,11 +744,11 @@ a tax year reads the series where the household lives that year
 
 OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset({
     STATE_ITEMIZED_LIMITS, STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
-    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
+    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION, STATE_SEPARATE_RETURN,
 })
-"""The state tables a state may lack (#490, #487, #489, #542): then it has
-no surcharge, local tax or gains tax, its HSA follows the federal rules, and
-it figures no itemized lines from spending."""
+"""The state tables a state may lack (#490, #487, #489, #542, #580): then it
+has no surcharge, local tax or gains tax, its HSA follows the federal rules,
+it figures no itemized lines from spending, and a couple files jointly."""
 
 STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX, STATE_GAINS_TAX})
 """The state tables of bands (#490, #487, #489): a surcharge's and a local
@@ -819,6 +825,10 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # How a state treats an HSA (#490), read with the brackets' series:
     # `treatment` is one of STATE_HSA_TREATMENTS. Without a table, `federal`.
     STATE_HSA: ("effective_date", "treatment"),
+    # Whether a state lets a married couple file separately on one return
+    # (#580), read with the brackets' series: `allowed` is yes or no.
+    # Without a table, no.
+    STATE_SEPARATE_RETURN: ("effective_date", "allowed"),
     # A state's tax on long-term gains apart from its income tax (#489):
     # bands in the shape of its brackets on the gain after its own
     # deduction, read with the brackets' series. Washington's.

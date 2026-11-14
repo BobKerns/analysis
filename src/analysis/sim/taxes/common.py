@@ -406,6 +406,21 @@ def split_cents(amount: int, ways: int) -> list[int]:
     return [share + (i < extra) for i in range(ways)]
 
 
+def apportion(amount: int, weights: Mapping[str, int]) -> dict[str, int]:
+    """``amount`` split in proportion to ``weights`` (#580), the cents
+    rounding loses going to the first key, so the parts add up; evenly when
+    the weights are all zero."""
+    keys = list(weights)
+    if not keys:
+        return {}
+    total = sum(max(0, w) for w in weights.values())
+    if total == 0:
+        return dict(zip(keys, split_cents(amount, len(keys)), strict=True))
+    out = {k: amount * max(0, weights[k]) // total for k in keys}
+    out[keys[0]] += amount - sum(out.values())
+    return out
+
+
 class ExclusionGrant(NamedTuple):
     """One person's exclusion (#486), before the household income is known."""
     person: str
@@ -454,8 +469,32 @@ class RetirementExclusion(NamedTuple):
         if not self.grants:
             return 0, 0, 0
         income = ordinary + ltcg
+        granted, gains = self._granted(income, net_gain)
+        total = sum(granted.values())
+        total = min(total, max(0, income))
+        # When income is below the gain left out (a business loss), the
+        # total is all gain and none of it comes off ordinary income.
+        off_ordinary = max(0, min(total - min(gains, max(0, ltcg)), max(0, ordinary)))
+        off_ltcg = min(total - off_ordinary, max(0, ltcg))
+        # Gain left out past the long-term gain is short-term gain, which is
+        # part of ordinary income: a state's short-term rates (#485) skip it.
+        return off_ordinary, off_ltcg, min(max(0, gains - off_ltcg), off_ordinary)
+
+    def by_person(self, ordinary: int, ltcg: int, net_gain: int | None = None) -> dict[str, int]:
+        """What each person's grants would leave out at the household
+        income :meth:`split` tests (#580), before its caps at the income:
+        whose share of the exclusion it is, for a spouse filing
+        separately."""
+        if not self.grants:
+            return {}
+        return self._granted(ordinary + ltcg, net_gain)[0]
+
+    def _granted(self, income: int, net_gain: int | None) -> tuple[dict[str, int], int]:
+        """Each person's grants' total at a household ``income``, and how
+        much of it is gain (:meth:`split`)."""
         pools = {person: dict(by_kind) for person, by_kind in self.pools.items()}
-        total = gains = 0
+        out: dict[str, int] = {}
+        gains = 0
         gain_limit = max(0, self.net_gain if net_gain is None else net_gain)
         for grant in self.grants:
             left = pools[grant.person]
@@ -468,20 +507,13 @@ class RetirementExclusion(NamedTuple):
             if grant.cap is not None:
                 eligible = min(eligible, grant.cap)
             granted = grant.after_income_test(eligible, income)
-            total += granted
+            out[grant.person] = out.get(grant.person, 0) + granted
             for kind, amount in covered:
                 take = min(amount, granted)
                 left[kind] -= take
                 granted -= take
                 gains += take if kind == "capital_gain" else 0
-        total = min(total, max(0, income))
-        # When income is below the gain left out (a business loss), the
-        # total is all gain and none of it comes off ordinary income.
-        off_ordinary = max(0, min(total - min(gains, max(0, ltcg)), max(0, ordinary)))
-        off_ltcg = min(total - off_ordinary, max(0, ltcg))
-        # Gain left out past the long-term gain is short-term gain, which is
-        # part of ordinary income: a state's short-term rates (#485) skip it.
-        return off_ordinary, off_ltcg, min(max(0, gains - off_ltcg), off_ordinary)
+        return out, gains
 
 
 _EXCLUSION_POOL_BY_CHARACTER: dict[str, tuple[str, int]] = {
@@ -744,25 +776,29 @@ def state_series(ty: TaxYear, year: int | None = None) -> str:
         residence.state, has_tables=ty.has_table("state_brackets", residence.state))
 
 
-def rate_table(ty: TaxYear, kind: str | None, series: str | None = None) -> list[tuple[int, int]]:
+def rate_table(ty: TaxYear, kind: str | None, series: str | None = None,
+               filing_status: str | None = None) -> list[tuple[int, int]]:
     """The year's (floor, rate micros) rows of ``kind`` for its filing
-    status, in floor order; none for no kind."""
+    status (or ``filing_status``, a spouse's separate return, #580), in
+    floor order; none for no kind."""
     if kind is None:
         return []
+    status = filing_status or ty.filing_status
     return sorted(
         (int(r["floor"]), int(r["marginal_rate_micros"]))
         for r in ty.indexed(kind, series)
-        if r.get("filing_status") == ty.filing_status
+        if r.get("filing_status") == status
     )
 
 
-def brackets(ty: TaxYear, kind: str, series: str | None) -> list[tuple[int, int]]:
+def brackets(ty: TaxYear, kind: str, series: str | None,
+             filing_status: str | None = None) -> list[tuple[int, int]]:
     """The ordinary brackets, which a jurisdiction can't do without."""
-    rows = rate_table(ty, kind, series)
+    rows = rate_table(ty, kind, series, filing_status)
     if not rows:
         raise TaxError(
             f"{where(ty)}: missing brackets kind={kind!r} "
-            f"series={series!r} filing_status={ty.filing_status!r}"
+            f"series={series!r} filing_status={filing_status or ty.filing_status!r}"
         )
     return rows
 
@@ -772,11 +808,14 @@ def standard_deduction(ty: TaxYear, kind: str, series: str | None = None) -> int
     return int(standard_deduction_row(ty, kind, series)["amount"])
 
 
-def standard_deduction_row(ty: TaxYear, kind: str, series: str | None = None) -> Mapping[str, Any]:
-    """The standard deduction row in force for the year's filing status."""
-    rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == ty.filing_status]
+def standard_deduction_row(ty: TaxYear, kind: str, series: str | None = None,
+                           filing_status: str | None = None) -> Mapping[str, Any]:
+    """The standard deduction row in force for the year's filing status (or
+    ``filing_status``, #580)."""
+    status = filing_status or ty.filing_status
+    rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == status]
     if not rows:
-        raise TaxError(f"{where(ty)}: missing standard deduction for filing_status={ty.filing_status!r}")
+        raise TaxError(f"{where(ty)}: missing standard deduction for filing_status={status!r}")
     return rows[0]
 
 
@@ -1093,6 +1132,9 @@ class StateAdjustment:
     units: int = 1
     """How many exemptions a ``filers`` line is: ``phaseout_rate`` takes its
     share of each dollar over from each, as California's does."""
+    persons: tuple[str, ...] = ()
+    """The filers who have reached its age, whose line it is when spouses
+    file separately (#580); empty when no one is."""
 
     def from_base(self, amount: int) -> int:
         """The figure for a ``federal_tax``, ``federal_deduction`` or
@@ -1138,10 +1180,11 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
     out = []
     for name, row in chosen.items():
         min_months = _exclusion_age_months(row)
-        eligible = min(filers, sum(
-            1 for born in birthdates.values()
+        reached = tuple(sorted(
+            person for person, born in birthdates.items()
             if min_months == 0
             or (age_months(born, ty.year) or 0) >= min_months))
+        eligible = min(filers, len(reached))
         amount = None if row.get("amount") is None else int(row["amount"])
         base, rate = str(row["base"]), row.get("rate_micros")
         cap = amount if amount is None or not _yes(row.get("per_person")) else amount * eligible
@@ -1164,5 +1207,5 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
             None if rate is None else int(rate), cap,
             None if limit is None else int(limit), None if phaseout is None else int(phaseout),
             None if phaseout_rate is None else int(phaseout_rate),
-            units=eligible if base == "filers" else 1))
+            units=eligible if base == "filers" else 1, persons=reached[:eligible]))
     return out
