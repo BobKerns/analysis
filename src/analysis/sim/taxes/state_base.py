@@ -100,10 +100,13 @@ class Basis:
 @dataclass(frozen=True)
 class Joint:
     """The joint return a separate one is figured beside (#580): its
-    income, deductions, the NOL it used, its tax before credits, and the
-    credits as :meth:`StateYear.credits` and :meth:`StateYear.credit_lines`
-    gave them at that tax, before the tax limited them."""
+    income, the subtractions as :meth:`StateYear.subtractions` gave them
+    (an adjustment may say whose it is), deductions, the NOL it used, its
+    tax before credits, and the credits as :meth:`StateYear.credits` and
+    :meth:`StateYear.credit_lines` gave them at that tax, before the tax
+    limited them."""
     income: Income
+    subtractions: Sequence[Adjustment]
     deductions: Mapping[str, int]
     others: Mapping[str, int]
     nol_used: int
@@ -116,10 +119,19 @@ class Joint:
 class Separate:
     """Spouses filing separately on one return (#580): the lines showing
     each spouse's, the two taxes after credits added up, and the NOL they
-    used, which the return carries forward from when it's the one taken."""
+    used, which the return carries forward from when it's the one taken.
+    The rest are the two returns' figures added up, which the return shows
+    in place of the joint one's when it takes this one, so its lines
+    reconcile: the deduction, taxable income and its ordinary part, the
+    credits taken, and what each credit line took."""
     lines: Mapping[str, int]
     tax: int
     nol_used: int
+    deduction: int
+    taxable: int
+    ordinary_taxable: int
+    credits: int
+    credit_lines: Mapping[str, int]
 
 
 class StateYear(Prepared):
@@ -233,20 +245,24 @@ class StateYear(Prepared):
 
     # -- The pipeline ---------------------------------------------------------
 
-    def _income(self, basis: Basis) -> tuple[Income, dict[str, int]]:
+    def _income(self, basis: Basis) -> tuple[Income, dict[str, int], tuple[Adjustment, ...]]:
+        """The year's income after its additions and subtractions, their
+        lines, and the subtractions as applied (whose they are, for a
+        separate return, #580)."""
         income = self.start(basis)
         lines: dict[str, int] = {}
         for adjustment in self.additions(income, basis):
             income = income.changed(adjustment, 1)
             lines[adjustment.line] = adjustment.value
-        for adjustment in self.subtractions(income, basis):
+        subtracted = tuple(self.subtractions(income, basis))
+        for adjustment in subtracted:
             income = income.changed(adjustment, -1)
             lines[adjustment.line] = adjustment.value
-        return income, lines
+        return income, lines, subtracted
 
     def compute(self, extra: Extra = NO_EXTRA) -> Return:
         basis = self.basis(extra)
-        income, adjustments = self._income(basis)
+        income, adjustments, subtracted = self._income(basis)
         deductions = self.deductions_at(income, basis)
         others = dict(self.other_deductions(income, basis))
         # A NOL is figured without these (#511): a nonbusiness deduction
@@ -266,15 +282,25 @@ class StateYear(Prepared):
             credit_lines[line] = max(0, min(amount, tax - credits))
             credits += credit_lines[line]
         # Spouses filing separately on one return (#580) pay the lower, and
-        # carry forward the NOL that return left.
+        # carry forward the NOL that return left; its deduction, taxable
+        # income and credits are then the two spouses' added up, so the
+        # return's lines reconcile to the tax taken.
         owed, separate_lines = tax - credits, {}
-        joint = Joint(income, deductions, others, nol_used, tax, asked_credits, asked_lines)
+        ordinary_taxable = common.ordinary_taxable(
+            taxable, income.ltcg, income.stcg, bool(self.stcg_brackets))
+        joint = Joint(income, subtracted, deductions, others, nol_used, tax, asked_credits,
+                      asked_lines)
         if (separate := self.separate(joint, basis)) is not None:
             chosen = separate.tax < owed
-            separate_lines = {**separate.lines, "joint_tax": owed, "separate_tax": separate.tax,
+            separate_lines = {**separate.lines, "joint_taxable_income": taxable,
+                              "joint_tax": owed, "separate_tax": separate.tax,
                               "separate_return": int(chosen)}
             if chosen:
                 owed, nol_used = separate.tax, separate.nol_used
+                taxable, credits = separate.taxable, separate.credits
+                ordinary_taxable = separate.ordinary_taxable
+                deductions = {**deductions, "deduction": separate.deduction}
+                credit_lines = dict(separate.credit_lines)
         excise_lines, excise = self.excise(basis)
         refundable = {line: max(0, amount) for line, amount in self.refundable_credits(
             owed + excise, income, basis).items()}
@@ -291,8 +317,7 @@ class StateYear(Prepared):
             **others,
             **credit_lines,
             "taxable_income": taxable,
-            "ordinary_taxable": common.ordinary_taxable(
-                taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),
+            "ordinary_taxable": ordinary_taxable,
             "credits": credits,
             **separate_lines,
             **excise_lines,

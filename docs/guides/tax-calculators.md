@@ -166,8 +166,9 @@ What it does:
   `API_VERSION = 5` to get them.)
 - In a state whose `state_separate_return` table allows it, the built-in
   `separate` figures each spouse's tax alone, calling your `tax` with the
-  `MFS` tables in place of the year's, and the return takes it when it's
-  lower. A module whose year overrides `tax` or `deductions` gets it only
+  `MFS` tables in place of the year's (and `self.ty.filing_status`
+  saying `MFS`, so a table you read through `self.ty` gives that
+  spouse's rows), and the return takes it when it's lower. A module whose year overrides `tax` or `deductions` gets it only
   if it says `API_VERSION = 6` or later; a year that can't figure one
   spouse's tax overrides `separate` to return `None` and file jointly.
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is

@@ -512,8 +512,17 @@ class RetirementExclusion(NamedTuple):
         test denied. Gain beyond the net capital gain (a loss offset it)
         isn't left out at all; the rest comes off the long-term gain first,
         and never more than there is."""
+        return self.split_by_person(ordinary, ltcg, net_gain)[:3]
+
+    def split_by_person(
+        self, ordinary: int, ltcg: int, net_gain: int | None = None,
+    ) -> tuple[int, int, int, dict[str, tuple[int, int]]]:
+        """:meth:`split`, and what each person's grants leave out before its
+        caps at the income, with how much of that is their gain (#580):
+        whose share of the exclusion it is, and of which kind, for a spouse
+        filing separately. One walk of the grants serves both."""
         if not self.grants:
-            return 0, 0, 0
+            return 0, 0, 0, {}
         income = ordinary + ltcg
         granted = self._granted(income, net_gain)
         total = sum(amount for amount, _ in granted.values())
@@ -525,17 +534,8 @@ class RetirementExclusion(NamedTuple):
         off_ltcg = min(total - off_ordinary, max(0, ltcg))
         # Gain left out past the long-term gain is short-term gain, which is
         # part of ordinary income: a state's short-term rates (#485) skip it.
-        return off_ordinary, off_ltcg, min(max(0, gains - off_ltcg), off_ordinary)
-
-    def by_person(self, ordinary: int, ltcg: int,
-                  net_gain: int | None = None) -> dict[str, tuple[int, int]]:
-        """What each person's grants would leave out at the household
-        income :meth:`split` tests (#580), before its caps at the income,
-        and how much of that is their gain: whose share of the exclusion
-        it is, and of which kind, for a spouse filing separately."""
-        if not self.grants:
-            return {}
-        return self._granted(ordinary + ltcg, net_gain)
+        off_short = min(max(0, gains - off_ltcg), off_ordinary)
+        return off_ordinary, off_ltcg, off_short, granted
 
     def _granted(self, income: int, net_gain: int | None) -> dict[str, tuple[int, int]]:
         """Each person's grants' total at a household ``income``, and how
@@ -592,10 +592,11 @@ def _shares(owner: str | None, amount: int, people: Sequence[str],
 
 
 def person_income(
-    ty: TaxYear, people: Sequence[str], *, hsa_taxed: bool = False,
+    ty: TaxYear, people: Sequence[str], *, hsa_taxed: bool = False, clip: bool = True,
 ) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
     """Each person's income this year by ``STATE_EXCLUSION_INCOME`` kind
-    (never below zero), and their Social Security. An item is whose
+    (never below zero, unless ``clip`` is false: a spouse's own business
+    loss on a separate return, #580), and their Social Security. An item is whose
     :func:`_owner` says; the household's is split evenly among ``people``. An
     HSA's flows are ``other`` income, not a retirement account's, and none
     at all when the state taxes the HSA as a brokerage account
@@ -649,9 +650,10 @@ def person_income(
     for owner, amount in losses.items():
         for person, share in _shares(owner, amount, people, pools):
             pools[person]["capital_gain"] -= share
-    for by_kind in pools.values():
-        for pool, amount in by_kind.items():
-            by_kind[pool] = max(0, amount)
+    if clip:
+        for by_kind in pools.values():
+            for pool, amount in by_kind.items():
+                by_kind[pool] = max(0, amount)
     return pools, ss
 
 

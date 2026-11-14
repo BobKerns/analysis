@@ -3100,7 +3100,7 @@ def _validate_optional_state_tables(
     bracket_statuses = {str(payload.get("filing_status")) for kind, _s, payload, _e in aux_rows
                         if kind == "state_brackets"}
     band_statuses: dict[tuple[str, str, str], set[str]] = {}
-    separate: set[str] = set()
+    separate: dict[str, dict[str, bool]] = {}
     nameless: set[str] = set()
     for kind, state, payload, effective in aux_rows:
         if kind not in registries.OPTIONAL_STATE_AUX_KINDS:
@@ -3116,12 +3116,9 @@ def _validate_optional_state_tables(
             issues.append(
                 f"{file} ({effective}): treatment {treatment!r} must be one of "
                 f"{', '.join(registries.STATE_HSA_TREATMENTS)}")
-        allowed = str(payload.get("allowed") or "").strip().lower()
-        if kind == registries.STATE_SEPARATE_RETURN and allowed not in ("yes", "no"):
-            issues.append(
-                f"{file} ({effective}): allowed {payload.get('allowed')!r} must be yes or no")
-        if kind == registries.STATE_SEPARATE_RETURN and allowed == "yes":
-            separate.add(state)
+        if kind == registries.STATE_SEPARATE_RETURN:
+            separate.setdefault(state, {})[effective] = _check_yes(
+                f"{file} ({effective})", payload, "allowed", issues)
         if kind in registries.STATE_BAND_KINDS:
             band_statuses.setdefault((kind, state, effective), set()).add(
                 str(payload.get("filing_status")))
@@ -3135,29 +3132,62 @@ def _validate_optional_state_tables(
 
 
 def _check_separate_return_tables(
-    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], states: set[str],
-    issues: list[str],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    allowed: Mapping[str, Mapping[str, bool]], issues: list[str],
 ) -> None:
-    """Each of ``states``, which let spouses file separately on one return
-    (#580), has ``MFS`` rows at every date of its brackets and standard
-    deduction (the federal standard deduction where it has none of its
-    own), so its first married year doesn't fail mid-run."""
-    dated: dict[tuple[str, str | None, str], set[str]] = {}
+    """Each state whose ``state_separate_return`` table (``allowed``: yes
+    or no by date) lets spouses file separately on one return (#580) has
+    ``MFS`` rows in its brackets, its long- and short-term gain tables
+    where it has them, and its standard deduction (the federal one while it
+    has none of its own), at each date in force while the table says yes,
+    so a married year doesn't fail mid-run or tax a spouse's gain as no
+    gain. A date in force only while it says no, or before its first row,
+    needs none. (Its surcharge follows from the brackets: a band table has
+    every status they have.)"""
+    dated: dict[tuple[str, str | None], dict[str, set[str]]] = {}
     for kind, state, payload, effective in aux_rows:
-        if kind in ("state_brackets", registries.STATE_STANDARD_DEDUCTION, "standard_deduction"):
-            dated.setdefault((kind, state, effective), set()).add(str(payload.get("filing_status")))
-    for state in sorted(states):
-        own = any(k == registries.STATE_STANDARD_DEDUCTION and s == state for k, s, _ in dated)
-        tables = [("state_brackets", state),
-                  (registries.STATE_STANDARD_DEDUCTION, state) if own else ("standard_deduction", None)]
-        for kind, series in tables:
+        if kind in _SEPARATE_RETURN_TABLES:
+            dated.setdefault((kind, state), {}).setdefault(effective, set()).add(
+                str(payload.get("filing_status")))
+    for state in sorted(allowed):
+        yes = _intervals(allowed[state])
+        if not yes:
+            continue
+        # The federal figure stands in where the state has none of its own.
+        own = (registries.STATE_STANDARD_DEDUCTION, state) in dated
+        tables = [("state_brackets", state, yes),
+                  (registries.STATE_LTCG_BRACKETS, state, yes),
+                  (registries.STATE_STCG_BRACKETS, state, yes),
+                  (registries.STATE_STANDARD_DEDUCTION, state, yes),
+                  ("standard_deduction", None, [] if own else yes)]
+        for kind, series, when in tables:
             file = f"aux/{kind}__{series}.csv" if series else f"aux/{kind}.csv"
-            for (k, s, effective), found in sorted(dated.items(), key=lambda x: x[0][2]):
-                if (k, s) == (kind, series) and "MFS" not in found:
-                    issues.append(
-                        f"{file} ({effective}): no MFS rows, which "
-                        f"aux/{registries.STATE_SEPARATE_RETURN}__{state}.csv (allowed yes) "
-                        "needs for each spouse's separate return")
+            by_date = dated.get((kind, series), {})
+            for start, end in _intervals(dict.fromkeys(by_date, True)):
+                if "MFS" in by_date[start] or not _overlaps(start, end, when):
+                    continue
+                issues.append(
+                    f"{file} ({start}): no MFS rows, which "
+                    f"aux/{registries.STATE_SEPARATE_RETURN}__{state}.csv (allowed yes) "
+                    "needs for each spouse's separate return")
+
+
+_SEPARATE_RETURN_TABLES = frozenset({
+    "state_brackets", registries.STATE_LTCG_BRACKETS, registries.STATE_STCG_BRACKETS,
+    registries.STATE_STANDARD_DEDUCTION, "standard_deduction"})
+
+
+def _intervals(flags: Mapping[str, bool]) -> list[tuple[str, str | None]]:
+    """The spans ``[start, end)`` of a dated table's dates whose flag is
+    true, each until the next date (None: open-ended)."""
+    dates = sorted(flags)
+    return [(d, dates[i + 1] if i + 1 < len(dates) else None)
+            for i, d in enumerate(dates) if flags[d]]
+
+
+def _overlaps(start: str, end: str | None, spans: list[tuple[str, str | None]]) -> bool:
+    """Whether ``[start, end)`` meets any of ``spans``."""
+    return any((end is None or end > s) and (e is None or start < e) for s, e in spans)
 
 
 def _check_filing_statuses(

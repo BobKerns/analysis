@@ -467,14 +467,14 @@ effective_date,allowed
 The state tax then figures both and takes the lower, in a married year
 with two people in the household (`primary` and `secondary`). Each spouse
 gets the income that's theirs, by the paying account's owner as for a
-retirement exclusion, joint income split evenly: ordinary income by their
-shares of the non-gain income, gains by their shares of gain, Social
+retirement exclusion, joint income split evenly: their own ordinary income,
+a loss included (a business loss stays its owner's), gains by their shares of gain, Social
 Security by their benefits, and their own retirement exclusion off their
 own. Each takes the state's `MFS` standard deduction (phased out at their
 own AGI where it shrinks), or their share of the itemized deduction by
 AGI, and is taxed with the `MFS` brackets, gain tables and surcharge, so
-the state's brackets and standard deduction need `MFS` rows (loading
-checks). A carried-in loss offsets each spouse's income in turn. A
+the state's brackets, gain tables and standard deduction need `MFS` rows
+while the table says `yes` (loading checks). A carried-in loss offsets each spouse's income in turn. A
 `state_adjustments` line for each filer goes to the filers who reached its
 age, a `per_person` income line to each one's own, others evenly; a credit
 takes no more than its spouse's tax. Income
@@ -482,8 +482,9 @@ tests stay the household's, as on the joint return. The run records
 `state_joint_tax`, `state_separate_tax`, `state_separate_return` (1 when
 separate was lower) and each spouse's `state_separate_agi_<person>`,
 `state_separate_deduction_<person>`, `state_separate_taxable_income_<person>`
-and `state_separate_tax_<person>`; the joint return's other lines stay as
-they are. Kentucky's and Delaware's rule that both spouses itemize or
+and `state_separate_tax_<person>`. When separate is lower, the return's
+`deduction`, `taxable_income`, `credits` and credit lines are the two
+spouses' added up (`state_joint_taxable_income` keeps the joint figure). Kentucky's and Delaware's rule that both spouses itemize or
 neither isn't modeled.
 
 ## A state's capital gains
