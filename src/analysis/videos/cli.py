@@ -212,6 +212,20 @@ def shell_command(video: str) -> None:
     raise SystemExit(_docker(["shell", folder.name]))
 
 
+@video_group_command.command(name="image")
+def image_command() -> None:
+    """Rebuild the container image from scratch, with the newest system packages.
+
+    Builds rebuild it themselves only when docker/videos changes: the code
+    is mounted and its Python dependencies sync into a volume at each run,
+    so this is for an update to the base image or its packages.
+    """
+    _videos_root()  # in the repo, before asking Docker
+    if not docker_running():
+        raise click.ClickException("image needs Docker, and it isn't installed here or isn't running")
+    raise SystemExit(_docker(["image"]))
+
+
 # publish and setup always run here: publishing needs this machine's Google
 # sign-in, and setup fetches the tools a local build uses.
 @video_group_command.command(name="publish")

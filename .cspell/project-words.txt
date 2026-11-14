@@ -279,6 +279,7 @@ pyeb
 pyopenjtalk
 pypi
 pytestmark
+PYTHONPYCACHEPREFIX
 QQQM
 QQQX
 QSBS

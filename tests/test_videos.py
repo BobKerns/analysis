@@ -687,6 +687,51 @@ def test_launch_chromium_says_how_to_get_one(monkeypatch: pytest.MonkeyPatch) ->
         render.launch_chromium(SimpleNamespace(chromium=_FakeChromium(set())))
 
 
+def test_analysis_video_image_rebuilds_in_docker(monkeypatch: pytest.MonkeyPatch,
+                                                 video_runs: dict[str, list[Any]]) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.videos import cli as video_cli
+
+    monkeypatch.setattr(video_cli, "docker_running", lambda: True)
+    result = CliRunner().invoke(main, ["video", "image"])
+    assert result.exit_code == 0, result.output
+    assert video_runs == {"docker": [["image"]], "local": []}
+
+
+def test_video_image_is_built_from_its_own_folder(repo_root: Path) -> None:
+    """The image is rebuilt only when docker/videos changes (#612), so it
+    must copy nothing else: the checkout is mounted, and what the code needs
+    from it at run time must be among the mounts."""
+    docker_sh = (repo_root / "scripts" / "videos" / "docker.sh").read_text()
+    body = re.search(r"^MOUNTS=\((.*?)\)", docker_sh, re.MULTILINE | re.DOTALL)
+    assert body is not None
+    mounts = set(body.group(1).split())
+    for path in mounts:
+        assert (repo_root / path).exists(), path
+    assert {"src", "pyproject.toml", "uv.lock", "README.md", "templates", "historical_data",
+            "prototype_data", "notebooks", "scripts/videos", "docs/videos"} <= mounts
+    assert ".venv" not in mounts
+    assert "context=docker/videos" in docker_sh
+    dockerfile = (repo_root / "docker" / "videos" / "Dockerfile").read_text()
+    copied = [line.split()[1:-1] for line in re.findall(r"^COPY .+$", dockerfile, re.MULTILINE)]
+    for sources in copied:
+        for source in sources:
+            assert (repo_root / "docker" / "videos" / source).exists(), source
+
+
+def test_video_image_playwright_matches_the_lock(repo_root: Path) -> None:
+    """The image installs the system libraries of the Playwright the venv
+    syncs; a Playwright bump must bump the Dockerfile too."""
+    dockerfile = (repo_root / "docker" / "videos" / "Dockerfile").read_text()
+    pinned = re.search(r"^ARG PLAYWRIGHT_VERSION=(\S+)$", dockerfile, re.MULTILINE)
+    locked = re.search(r'^name = "playwright"\nversion = "([^"]+)"',
+                       (repo_root / "uv.lock").read_text(), re.MULTILINE)
+    assert pinned is not None and locked is not None
+    assert pinned.group(1) == locked.group(1)
+
+
 @pytest.fixture
 def video_runs(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     """`analysis video` with the container and the local builder replaced
@@ -812,7 +857,7 @@ def test_analysis_video_docker_needs_docker(monkeypatch: pytest.MonkeyPatch,
     from analysis.videos import cli as video_cli
 
     monkeypatch.setattr(video_cli, "docker_running", lambda: False)
-    for args in (["build", "01-intro", "--docker"], ["shell", "01-intro"]):
+    for args in (["build", "01-intro", "--docker"], ["shell", "01-intro"], ["image"]):
         result = CliRunner().invoke(main, ["video", *args])
         assert result.exit_code == 1 and "Docker" in result.output
     assert video_runs == {"docker": [], "local": []}
