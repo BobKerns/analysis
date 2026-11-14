@@ -786,10 +786,11 @@ def test_sim_import_holdings_asks_about_a_brokerage_files_lots_once(
     cash = lots["Asset_Brokerage_Joint", "spaxx"]
     assert (cash["symbol"], cash["quantity"], cash["opening_balance"], cash["opening_cost_basis"]) == (
         "SPAXX", "", "44900.00", "")
-    # The lot the holdings were split out of is the user's to remove.
-    assert lots["Asset_Brokerage_Joint", "default"]["opening_balance"] == "300000.00"
-    assert "lot 'default' of Asset_Brokerage_Joint isn't in the fidelity file and now has lots" \
-        in result.output
+    # The lot the holdings were split out of is emptied, not counted twice.
+    old = lots["Asset_Brokerage_Joint", "default"]
+    assert (old["opening_balance"], old["opening_cost_basis"]) == ("0.00", "0.00")
+    assert "[split into lots]" in result.output
+    assert "note: Asset_Brokerage_Joint:default is emptied" in result.output
     # A broker's cost basis isn't a Roth's contributions.
     roth = lots["Asset_Roth_Alice", "default"]
     assert (roth["opening_balance"], roth["opening_cost_basis"]) == ("90000.00", "")
@@ -934,16 +935,23 @@ def test_sim_import_holdings_prune_empties_the_lot_a_file_no_longer_has(
     write_import_map("fidelity/accounts.csv",
                      "111111111,,map,Asset_Brokerage_Joint,,\n222222222,,skip,,,\n")
 
-    kept = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--new-lots", "--dry-run")
+    first = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--new-lots")
+    assert first.exit_code == 0, first.output
+
+    # FSKAX is sold: the next file doesn't have it.
+    text = fidelity_positions_export.read_text(encoding="utf-8").splitlines(keepends=True)
+    fidelity_positions_export.write_text(
+        "".join(line for line in text if ",FSKAX," not in line), encoding="utf-8")
+    kept = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--dry-run")
     assert kept.exit_code == 0, kept.output
+    assert "lot 'fskax' of Asset_Brokerage_Joint isn't in the fidelity file and keeps" in kept.output
     assert "--prune empties such lots" in kept.output
 
-    result = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--new-lots", "--prune")
+    result = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--prune")
     assert result.exit_code == 0, result.output
     assert "[not in the file]" in result.output and "1 emptied" in result.output
-    # The lot the holdings were split out of no longer counts them twice.
-    old = _all_lots(test_data_dir)["Asset_Brokerage_Joint", "default"]
-    assert (old["opening_balance"], old["opening_cost_basis"]) == ("0.00", "0.00")
+    sold = _all_lots(test_data_dir)["Asset_Brokerage_Joint", "fskax"]
+    assert (sold["opening_balance"], sold["quantity"], sold["opening_cost_basis"]) == ("0.00", "0", "0.00")
 
     refused = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--prune", "--year-end")
     assert refused.exit_code != 0 and "doesn't go with --year-end" in refused.output

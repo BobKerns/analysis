@@ -12174,8 +12174,9 @@ def import_holdings(
                         f"{len(covered)} holding(s) in it: "
                         + ", ".join(h.asset for h, _ in covered) + ".")
                     click.echo(
-                        "  A lot for each lets the plan grow each as its own fund does; "
-                        "one lot keeps the account simple.")
+                        "  A lot for each lets the plan grow each as its own fund does, and "
+                        f"empties {only!r}, whose total they then hold; one lot keeps the "
+                        "account simple.")
                     together = click.confirm(f"Add them together into {only!r}?", default=False)
                 elif not new_lots:
                     continue
@@ -12266,6 +12267,12 @@ def import_holdings(
         )
     for note in dict.fromkeys(result.notes):
         click.echo(f"note: {note}")
+    for account in sorted(split):
+        if emptied := [label for label in result.pruned if label.partition(":")[0] == account]:
+            click.echo(
+                f"note: {emptied[0]} is emptied, since the new lots hold what it held; rules that "
+                f"name it still do: 'sim account lot delete {emptied[0].replace(':', ' ')}' "
+                "removes it and lists them")
     # A symbol with no rate series, allocation or name grows as its account
     # does, which may not be what the fund does.
     if fresh:

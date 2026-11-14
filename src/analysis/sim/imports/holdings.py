@@ -144,7 +144,8 @@ def plan(
     A file that lists an account's holdings one by one says all the account
     holds, so a lot of that account it doesn't mention may have been sold.
     Such a lot keeps what it holds, with a warning, unless ``prune``: then
-    its balance, shares and basis are set to zero. Its prior-year balance
+    its balance, shares and basis are set to zero. The one lot of a ``split``
+    account is emptied either way, since the lots made from it hold its total. Its prior-year balance
     stays, since it held that on December 31 whatever became of it since.
 
     A liability is stored as a non-negative debt, so its total is negated.
@@ -285,7 +286,10 @@ def plan(
         if year_end or row.get("account_name") not in listed or index in landed \
                 or not (_cents(row.get("opening_balance", "")) or _number(row.get("quantity", ""))):
             continue
-        if prune:
+        # A lot the holdings were split out of is emptied whatever was asked:
+        # its total is in the new lots now, and would be counted twice.
+        split_out = row["account_name"] in split and not row.get("symbol", "").strip()
+        if prune or split_out:
             cells = {"opening_balance": "0.00"} if row.get("opening_balance", "").strip() else {}
             cells |= {column: zero for column, zero in (("quantity", "0"), ("opening_cost_basis", "0.00"))
                       if row.get(column, "").strip()}
@@ -293,20 +297,17 @@ def plan(
                      if _number(row.get(column, "")) != 0}
             result.changes.extend(
                 Change(row["account_name"], row.get("lot", ""), column, row.get(column, ""), zero,
-                       "not in the file")
+                       "split into lots" if split_out else "not in the file")
                 for column, zero in cells.items())
             row |= cells
             result.cells[index] = cells
             result.lots_changed += 1
             result.pruned.append(f"{row['account_name']}:{_lot_name(row)}")
             continue
-        # A lot the holdings were split out of still has their total.
-        why = "now has lots of its own for what it held" \
-            if row["account_name"] in split and not row.get("symbol", "").strip() \
-            else "keeps what it holds, though it may have been sold"
         result.warnings.append(
             f"lot {_lot_name(row)!r} of {row['account_name']} isn't in the "
-            f"{snapshot.source} file and {why}; --prune empties such lots, and "
+            f"{snapshot.source} file and keeps what it holds, though it may have been sold; "
+            "--prune empties such lots, and "
             f"'sim account lot delete {row['account_name']} {_lot_name(row)}' removes this one")
     return result
 

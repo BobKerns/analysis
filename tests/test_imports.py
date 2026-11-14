@@ -487,7 +487,9 @@ def test_plan_leaves_open_a_symbol_with_no_lot_and_fills_a_fresh_one(test_data_d
     assert {"quantity": "50.5", "opening_balance": "5000.00"}.items() <= result.cells[2].items()
     assert not any("opening_cost_basis" in cells for cells in result.cells.values())
     assert len(result.notes) == 2 and "sim account lot edit Roth aaa --opening-cost-basis" in result.notes[0]
-    assert [w for w in result.warnings if "'default'" in w and "now has lots of its own" in w]
+    # The lot they were split out of doesn't keep their total too.
+    assert result.cells[0]["opening_balance"] == "0.00" and result.pruned == ["Roth:default"]
+    assert not result.warnings
 
 
 def test_plan_prune_empties_a_lot_the_file_no_longer_has(test_data_dir: Path) -> None:

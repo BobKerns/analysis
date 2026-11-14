@@ -112,8 +112,9 @@ sim import holdings ~/Downloads/Portfolio_Positions_Jan-05-2026.csv
    holdings together into that lot, or keep a lot for each? A lot for each
    lets each grow as its own fund does, which matters to the plan's
    allocation and to an ensemble's range of outcomes. One lot is simpler.
-   If you split, the old lot still holds the total: the import says so.
-   `--prune` empties it, and `sim account lot delete` removes it.
+   If you split, the old lot is emptied, since the new lots hold its total.
+   Rules that name it still do; `sim account lot delete` removes it and
+   lists them.
 
 Things to know:
 
