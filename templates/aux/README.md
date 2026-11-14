@@ -446,9 +446,12 @@ shares of the non-gain income, gains by their shares of gain, Social
 Security by their benefits, and their own retirement exclusion off their
 own. Each takes the state's `MFS` standard deduction (phased out at their
 own AGI where it shrinks), or their share of the itemized deduction by
-AGI, and is taxed with the `MFS` brackets, gain tables and surcharge. A
+AGI, and is taxed with the `MFS` brackets, gain tables and surcharge, so
+the state's brackets and standard deduction need `MFS` rows (loading
+checks). A carried-in loss offsets each spouse's income in turn. A
 `state_adjustments` line for each filer goes to the filers who reached its
-age, others evenly; a credit takes no more than its spouse's tax. Income
+age, a `per_person` income line to each one's own, others evenly; a credit
+takes no more than its spouse's tax. Income
 tests stay the household's, as on the joint return. The run records
 `state_joint_tax`, `state_separate_tax`, `state_separate_return` (1 when
 separate was lower) and each spouse's `state_separate_agi_<person>`,

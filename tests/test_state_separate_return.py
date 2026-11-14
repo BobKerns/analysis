@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,7 @@ from analysis.sim.connection import RunConnection
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.reports import tax_return
 from analysis.sim.tax_api import Extra, Return
-from analysis.sim.taxes.state_base import Income
+from analysis.sim.taxes.state_base import Basis, Income
 from analysis.sim.taxes.state_tables import StateTablesYear
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
@@ -276,3 +276,128 @@ def test_the_district_ships_with_separate_returns_allowed(
     first.unlink()
     write_aux("state_separate_return__DC.csv", "effective_date,allowed\n2000-01-31,no\n")
     assert lines(run_test_copy(), "state_separate_return") == [{}]
+
+
+def _kentucky() -> Aux:
+    """Kentucky's shape: a flat 4%, one $3,270 deduction per return."""
+    return _aux(brackets=_rates((0, 40_000)),
+                standard=_amounts(MFJ=3_270_00, MFS=3_270_00, Single=3_270_00))
+
+
+def test_a_carried_in_nol_offsets_each_spouse_in_turn(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    """$20,000 of NOL: Alice's small income uses what it can, Bill's the
+    rest, so none is lost to the split and none carries on."""
+    _pay(ledger, post_transfer, 5_000_00, 60_000_00)
+    ledger.execute("INSERT INTO tax_year_summary(year, bucket, amount, computed_at) "
+                   "VALUES (?, 'state_nol_carryover', ?, 'test')", (YEAR - 1, 20_000_00))
+    state = _state(ledger, _kentucky())
+    assert state["separate_return"] == 1
+    assert state["separate_taxable_income_alice"] == 0
+    assert state["separate_taxable_income_bill"] == 60_000_00 - 3_270_00 - 18_270_00
+    assert state["nol_used"] == 20_000_00
+    assert state.lines.get("nol_carryover", 0) == 0
+
+
+def test_a_per_person_income_line_comes_off_its_own_spouse(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    """A deduction of each filer's own tagged income from 65 (#579) is
+    Alice's pension, not half of it Bill's salary."""
+    _pay(ledger, post_transfer, 0, 60_000_00)
+    ledger.execute("INSERT INTO account(id, name, kind, subkind, owner) VALUES "
+                   "(9, 'Income_Pension_Alice', 'income', 'pension', 'alice')")
+    ledger.execute("INSERT INTO tag(id, role, name) VALUES (1, 'tax', 'pension')")
+    ledger.execute("INSERT INTO account_tag(account_id, tag_id) VALUES (9, 1)")
+    post_transfer(ledger, YEAR, 9, CHECKING_A, 20_000_00, "ordinary")
+    aux = _aux()
+    aux[(registries.STATE_ADJUSTMENTS, STATE)] = [(DATED, {
+        "name": "pension_deduction", "step": "deduction", "base": "income",
+        "tag": "tax:pension", "per_person": "yes", "min_age": 65})]
+    state = _state(ledger, aux)
+    assert state["pension_deduction"] == 20_000_00
+    assert state["separate_taxable_income_alice"] == 0
+    assert state["separate_taxable_income_bill"] == 60_000_00 - 3_250_00
+
+
+def test_a_subtraction_for_each_filer_comes_off_the_one_old_enough(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    """A $5,000 subtraction from 65 is Alice's, though Bill earns more."""
+    _pay(ledger, post_transfer, 20_000_00, 80_000_00)
+    aux = _aux()
+    aux[(registries.STATE_ADJUSTMENTS, STATE)] = [(DATED, {
+        "name": "age_subtraction", "step": "subtraction", "base": "filers",
+        "amount": 5_000_00, "min_age": 65})]
+    state = _state(ledger, aux)
+    assert (state["separate_agi_alice"], state["separate_agi_bill"]) == (15_000_00, 80_000_00)
+
+
+def test_an_exclusion_of_gain_comes_off_the_gain_it_covered(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    """Alice's grant covers her $10,000 gain and Bill's his salary: her
+    gain is excluded, not moved onto his other income."""
+    ledger.execute("INSERT INTO account(id, name, kind, subkind, owner) VALUES "
+                   "(8, 'Asset_Brokerage_Alice', 'asset', 'brokerage_taxable', 'alice')")
+    ledger.execute("INSERT INTO account(id, name, kind, subkind) VALUES "
+                   "(7, 'Income_Gains', 'income', 'capital_gain')")
+    _pay(ledger, post_transfer, 30_000_00, 40_000_00)
+    post_transfer(ledger, YEAR, 8, CHECKING_A, 10_000_00, "ltcg")
+    aux = _aux()
+    aux[(registries.STATE_RETIREMENT_EXCLUSION, STATE)] = [
+        (DATED, {"name": "gains", "income": "capital_gain", "min_age": 65, "amount": 10_000_00}),
+        (DATED, {"name": "pay", "income": "other", "min_age": 60, "amount": 10_000_00}),
+    ]
+    state = _state(ledger, aux)
+    assert state["retirement_exclusion"] == 30_000_00
+    # Alice: $30,000 pay less $10,000 and her $10,000 gain wholly left out;
+    # Bill: $40,000 less $10,000.
+    assert (state["separate_agi_alice"], state["separate_agi_bill"]) == (20_000_00, 30_000_00)
+
+
+class _ExemptionsOnly(StateTablesYear):
+    """A household's state year with exemptions and no standard deduction,
+    a minimum tax of $100 a return, and a credit of 5% of the tax."""
+
+    def deductions(self) -> Mapping[str, int]:
+        return {"standard_deduction": 0, "itemized_deduction": 0, "deduction": 2_000_00}
+
+    def tax(self, taxable: int, income: Income) -> int:
+        return max(100_00, super().tax(taxable, income))
+
+    def credits(self, tax: int, income: Income, basis: Basis) -> int:
+        return tax * 5 // 100
+
+
+def test_a_household_years_own_steps_apply_to_each_spouse(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Written for API 6: no standard deduction for either spouse, the
+    minimum tax on each return, and the credit as the joint return figured
+    it, at its own tax."""
+    monkeypatch.setattr(sys.modules[__name__], "API_VERSION", 6, raising=False)
+    _pay(ledger, post_transfer, 60_000_00, 2_000_00)
+    prepared = _prepared(ledger, _aux())
+    state = _ExemptionsOnly(prepared.calc, prepared.ty).compute()
+    assert state["separate_deduction_alice"] == state["separate_deduction_bill"] == 1_000_00
+    assert state["separate_taxable_income_bill"] == 1_000_00
+    joint = _tax(62_000_00 - 2_000_00)
+    credit = joint * 5 // 100
+    assert state["separate_tax_bill"] == 100_00 - credit // 2
+    assert state["separate_tax_alice"] == _tax(59_000_00) - (credit - credit // 2)
+
+
+def test_the_loader_wants_mfs_rows_where_spouses_may_file_separately(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_state_tax()
+    write_aux("state_separate_return__CA.csv", "effective_date,allowed\n2026-01-31,yes\n")
+    brackets = test_data_dir / "aux" / "state_brackets__CA.csv"
+    rows = brackets.read_text().splitlines(keepends=True)
+    brackets.write_text("".join(r for r in rows if ",MFS," not in r))
+    with pytest.raises(LoadError, match=r"aux/state_brackets__CA.csv \(2026-01-31\): no MFS rows"):
+        load_test_copy()

@@ -9,6 +9,7 @@ import functools
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from analysis.sim import ownership, registries, states
@@ -469,8 +470,9 @@ class RetirementExclusion(NamedTuple):
         if not self.grants:
             return 0, 0, 0
         income = ordinary + ltcg
-        granted, gains = self._granted(income, net_gain)
-        total = sum(granted.values())
+        granted = self._granted(income, net_gain)
+        total = sum(amount for amount, _ in granted.values())
+        gains = sum(gain for _, gain in granted.values())
         total = min(total, max(0, income))
         # When income is below the gain left out (a business loss), the
         # total is all gain and none of it comes off ordinary income.
@@ -480,20 +482,21 @@ class RetirementExclusion(NamedTuple):
         # part of ordinary income: a state's short-term rates (#485) skip it.
         return off_ordinary, off_ltcg, min(max(0, gains - off_ltcg), off_ordinary)
 
-    def by_person(self, ordinary: int, ltcg: int, net_gain: int | None = None) -> dict[str, int]:
+    def by_person(self, ordinary: int, ltcg: int,
+                  net_gain: int | None = None) -> dict[str, tuple[int, int]]:
         """What each person's grants would leave out at the household
-        income :meth:`split` tests (#580), before its caps at the income:
-        whose share of the exclusion it is, for a spouse filing
-        separately."""
+        income :meth:`split` tests (#580), before its caps at the income,
+        and how much of that is their gain: whose share of the exclusion
+        it is, and of which kind, for a spouse filing separately."""
         if not self.grants:
             return {}
-        return self._granted(ordinary + ltcg, net_gain)[0]
+        return self._granted(ordinary + ltcg, net_gain)
 
-    def _granted(self, income: int, net_gain: int | None) -> tuple[dict[str, int], int]:
+    def _granted(self, income: int, net_gain: int | None) -> dict[str, tuple[int, int]]:
         """Each person's grants' total at a household ``income``, and how
         much of it is gain (:meth:`split`)."""
         pools = {person: dict(by_kind) for person, by_kind in self.pools.items()}
-        out: dict[str, int] = {}
+        out: dict[str, tuple[int, int]] = {}
         gains = 0
         gain_limit = max(0, self.net_gain if net_gain is None else net_gain)
         for grant in self.grants:
@@ -507,13 +510,17 @@ class RetirementExclusion(NamedTuple):
             if grant.cap is not None:
                 eligible = min(eligible, grant.cap)
             granted = grant.after_income_test(eligible, income)
-            out[grant.person] = out.get(grant.person, 0) + granted
+            total, gain = out.get(grant.person, (0, 0))
+            total += granted
             for kind, amount in covered:
                 take = min(amount, granted)
                 left[kind] -= take
                 granted -= take
-                gains += take if kind == "capital_gain" else 0
-        return out, gains
+                if kind == "capital_gain":
+                    gains += take
+                    gain += take
+            out[grant.person] = (total, gain)
+        return out
 
 
 _EXCLUSION_POOL_BY_CHARACTER: dict[str, tuple[str, int]] = {
@@ -1132,9 +1139,11 @@ class StateAdjustment:
     units: int = 1
     """How many exemptions a ``filers`` line is: ``phaseout_rate`` takes its
     share of each dollar over from each, as California's does."""
-    persons: tuple[str, ...] = ()
-    """The filers who have reached its age, whose line it is when spouses
-    file separately (#580); empty when no one is."""
+    shares: Mapping[str, int] = MappingProxyType({})
+    """Whose line it is when spouses file separately (#580): each filer's
+    weight in it, the filers who reached its age equally for a ``filers``
+    line, each filer's own figure for a ``per_person`` ``income`` line;
+    empty (split evenly) for the rest."""
     refundable: bool = False
     """A ``credit`` the state pays in full, past the tax (#579)."""
 
@@ -1192,9 +1201,9 @@ def _living(ty: TaxYear, people: Iterable[str]) -> list[str]:
 def _per_person_income(
     ty: TaxYear, row: Mapping[str, Any], birthdates: Mapping[str, date | None],
     min_months: int,
-) -> tuple[int, int | None]:
-    """An ``income`` row's figure with ``per_person`` (#579), and the caps it
-    summed: each filer living in the year who has reached ``min_age`` gets
+) -> tuple[int, int | None, dict[str, int]]:
+    """An ``income`` row's figure with ``per_person`` (#579), the caps it
+    summed, and each filer's part of the figure (#580): each filer living in the year who has reached ``min_age`` gets
     their own tagged income (a joint account's split among the living),
     times ``rate``, up to ``amount``, less their own Social Security
     (:func:`person_income`'s, as ``state_retirement_exclusion`` takes it)
@@ -1203,7 +1212,7 @@ def _per_person_income(
     income = _by_person(_tagged_income(ty, str(row.get("tag") or "")), people)
     ss = person_income(ty, people)[1] if _yes(row.get("less_ss")) else {}
     rate, amount = row.get("rate_micros"), row.get("amount")
-    total, caps = 0, None if amount is None else 0
+    total, caps, parts = 0, None if amount is None else 0, {}
     for person in people:
         if min_months and (age_months(birthdates[person], ty.year) or 0) < min_months:
             continue
@@ -1215,7 +1224,8 @@ def _per_person_income(
             figure = min(figure, cap)
             caps = (caps or 0) + cap
         total += figure
-    return total, caps
+        parts[person] = figure
+    return total, caps, parts
 
 
 def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustment]:
@@ -1239,6 +1249,7 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
     filers = 2 if ty.filing_status == "MFJ" else 1
     out = []
     for name, row in chosen.items():
+        shares: dict[str, int] = {}
         min_months = _exclusion_age_months(row)
         reached = tuple(sorted(
             person for person, born in birthdates.items()
@@ -1250,10 +1261,11 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
         cap = amount if amount is None or not _yes(row.get("per_person")) else amount * eligible
         if base == "filers":
             figure = (amount or 0) * eligible
+            shares = dict.fromkeys(reached[:eligible], 1)
         elif base == "income" and _yes(row.get("per_person")) and birthdates:
             # Each filer's own income against their own cap (#579), so
             # one spouse's pension can't use the other's.
-            figure, cap = _per_person_income(ty, row, birthdates, min_months)
+            figure, cap, shares = _per_person_income(ty, row, birthdates, min_months)
         elif base in ("spending", "income"):
             tag = str(row.get("tag") or "")
             raw = ty.spent(tag) if base == "spending" else sum(
@@ -1275,6 +1287,6 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
             None if rate is None else int(rate), cap,
             None if limit is None else int(limit), None if phaseout is None else int(phaseout),
             None if phaseout_rate is None else int(phaseout_rate),
-            units=eligible if base == "filers" else 1, persons=reached[:eligible],
+            units=eligible if base == "filers" else 1, shares=MappingProxyType(shares),
             refundable=_yes(row.get("refundable"))))
     return out

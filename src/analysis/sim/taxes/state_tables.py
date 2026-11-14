@@ -11,7 +11,8 @@ and surcharge; its own deductions and credits (``state_adjustments``,
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
@@ -20,7 +21,7 @@ from analysis.sim import registries
 from analysis.sim.tax_api import NO_EXTRA, Extra, TaxError, register
 from analysis.sim.taxes import common
 from analysis.sim.taxes.state_base import (
-    Adjustment, Basis, FederalStateYear, Income, StateFromFederal,
+    Adjustment, Basis, FederalStateYear, Income, Joint, Separate, StateFromFederal,
 )
 
 
@@ -34,12 +35,23 @@ SEPARATE = "MFS"
 """The filing status of each spouse filing separately on one return (#580)."""
 
 
+@dataclass(frozen=True)
+class _Owned:
+    """Whose a computed return's subtractions are, for spouses filing
+    separately (#580): the return's ``basis``, its retirement exclusion,
+    each spouse's grants (total, gain) and the table's own subtractions."""
+    basis: Basis
+    retirement: Adjustment
+    grants: Mapping[str, tuple[int, int]]
+    subtractions: Mapping[str, int]
+
+
 class StateTablesYear(FederalStateYear):
     """One year of a :class:`StateTables` state."""
 
     # A subclass whose setup doesn't call this one's files jointly (#580).
     _spouses: tuple[str, ...] = ()
-    _retirement: tuple[Basis, Adjustment, dict[str, int]] | None = None
+    _owned: _Owned | None = None
 
     def setup(self) -> None:
         ty, params = self.ty, self.ty.params
@@ -132,7 +144,8 @@ class StateTablesYear(FederalStateYear):
         them file separately on one return this year (#580); none for a
         Single year, or a household that isn't two people."""
         ty, aux = self.ty, self.ty.params.separate_return_aux
-        if aux is None or ty.filing_status != "MFJ" or self._written_before("tax", SEPARATE_API):
+        if (aux is None or ty.filing_status != "MFJ"
+                or self._written_before(("deductions", "tax"), SEPARATE_API)):
             return ()
         rows = ty.table(aux, self.series)
         if not rows or str(rows[0].get("allowed") or "").strip().lower() != "yes":
@@ -161,6 +174,7 @@ class StateTablesYear(FederalStateYear):
             for p in self._spouses}
         self._gain_weights = {p: pools[p]["capital_gain"] for p in self._spouses}
         self._ss_weights = dict(ss)
+        self._adjustment_named = {a.name: a for a in self._adjustments}
 
     def deductions(self) -> Mapping[str, int]:
         ty, params = self.ty, self.ty.params
@@ -271,16 +285,16 @@ class StateTablesYear(FederalStateYear):
         before the lines (API 5, #542): it may figure its own Schedule A,
         which the lines would count again, so it keeps the deduction it
         figures."""
-        return self._written_before("deductions", ITEMIZED_LINES_API, ignore="tax")
+        return self._written_before(("deductions",), ITEMIZED_LINES_API)
 
-    def _written_before(self, step: str, api: int, *, ignore: str | None = None) -> bool:
+    def _written_before(self, steps: Sequence[str], api: int) -> bool:
         """Whether a household module written before API ``api`` overrides
-        :meth:`deductions` or ``step`` (unless ``ignore``): its module says
-        so with an ``API_VERSION`` below ``api``, or by saying none, since a
-        household module written before the change never needed one. Each
-        step's version is the one of the module that wrote it, which a
-        later subclass elsewhere may only inherit."""
-        for name in {"deductions", step} - {ignore}:
+        any of ``steps``: its module says so with an ``API_VERSION`` below
+        ``api``, or by saying none, since a household module written before
+        the change never needed one. Each step's version is the one of the
+        module that wrote it, which a later subclass elsewhere may only
+        inherit."""
+        for name in steps:
             owner = next(c for c in type(self).__mro__ if name in vars(c))
             if owner is StateTablesYear or owner.__module__.startswith("analysis."):
                 continue
@@ -339,10 +353,6 @@ class StateTablesYear(FederalStateYear):
         off_ordinary, off_ltcg, off_short = self._exclusion.split(ordinary, ltcg, net_gain)
         retirement = Adjustment(
             "retirement_exclusion", ordinary=off_ordinary - off_short, stcg=off_short, ltcg=off_ltcg)
-        if self._spouses:
-            # Whose exclusion it was, for spouses filing separately (#580).
-            self._retirement = (basis, retirement,
-                                self._exclusion.by_person(ordinary, ltcg, net_gain))
         ss = Adjustment("ss_difference", ss=income.ss - self._taxable_ss(basis))
         # The table's subtractions come off ordinary income, tested against
         # the income before them, and never take it below zero.
@@ -353,6 +363,11 @@ class StateTablesYear(FederalStateYear):
             amount = min(amount, max(0, left))
             left -= amount
             own.append(Adjustment(line, ordinary=amount))
+        if self._spouses:
+            # Whose these lines are, for spouses filing separately (#580).
+            self._owned = _Owned(basis, retirement,
+                                 self._exclusion.by_person(ordinary, ltcg, net_gain),
+                                 {a.line: a.ordinary for a in own})
         return (exclusion, *([swap] if self._gains_bands else []), retirement, ss, *own)
 
     def _adjusted(self, step: str, income: int, basis: Basis, *,
@@ -410,80 +425,108 @@ class StateTablesYear(FederalStateYear):
     def tax(self, taxable: int, income: Income) -> int:
         return super().tax(taxable, income) + common.progressive_tax(taxable, self._surcharge)
 
-    def separate(self, income: Income, deductions: Mapping[str, int],
-                 others: Mapping[str, int], nol_used: int, basis: Basis,
-                 ) -> tuple[Mapping[str, int], int] | None:
+    def separate(self, joint: Joint, basis: Basis) -> Separate | None:
         """Each spouse's tax filing separately on one return (#580): the
         joint return's income divided by whose it is (each kind by the
-        spouses' shares of that kind; the retirement exclusion to the
-        spouse whose grant it was), each spouse's own married-filing-
-        separately standard deduction (phased out at their own AGI), the
-        itemized deduction and NOL by share of AGI, and the brackets, gain
-        tables and surcharge for married filing separately. A line of the
-        table for each filer goes to the filers who reached its age, any
-        other evenly; a credit takes no more than its spouse's tax. Income
-        tests stay the household's, as on the joint return."""
+        spouses' shares of that kind; the retirement exclusion and the
+        table's own subtractions to the spouse they're for), each spouse's
+        own married-filing-separately standard deduction (phased out at
+        their own AGI) where the joint return takes one, the itemized
+        deduction by share of AGI, and :meth:`tax` with the married-filing-
+        separately brackets, gain tables and surcharge. The carried-in NOL
+        offsets each spouse's income in turn. The table's deductions and
+        credits are the joint return's, divided by whose they are (a
+        ``filers`` line to those who reached its age, a ``per_person``
+        income line by each one's own), any other evenly; a credit takes no
+        more than its spouse's tax. Income tests stay the household's."""
         if not self._spouses:
             return None
         people = self._spouses
-        income_by = self._spouse_income(income, basis)
+        income_by = self._spouse_income(joint.income, basis)
         agi = {p: income_by[p].agi for p in people}
         fed_agi = common.apportion(basis.federal.agi, agi)
 
         # The deduction: the joint return's standard and itemized beside
         # what it takes on top of the larger (a subclass's exemption).
+        deductions = joint.deductions
         standard = deductions.get("standard_deduction") or 0
         itemized = deductions.get("itemized_deduction", 0)
         beside = common.split_cents(max(0, deductions["deduction"] - max(standard, itemized)), 2)
         itemized_by = common.apportion(itemized, agi)
-        nol_by = common.apportion(nol_used, agi)
-        others_by = {p: 0 for p in people}
-        for line, amount in others.items():
+        others_by = dict.fromkeys(people, 0)
+        for line, amount in joint.others.items():
             for p, share in self._line_shares(line, amount).items():
                 others_by[p] += share
         lines: dict[str, int] = {}
         taxes: dict[str, int] = {}
+        nol_left, nol_used = self._nol_in, 0
         for i, p in enumerate(people):
-            own = self._spouse_standard(agi[p], fed_agi[p])
+            # A state without a standard deduction of its own (only
+            # exemptions) gives a spouse none either.
+            own = self._spouse_standard(agi[p], fed_agi[p]) if standard else 0
             deduction = max(own, itemized_by[p]) + beside[i]
-            taxable = max(0, agi[p] - deduction - others_by[p] - nol_by[p])
-            spouse = income_by[p]
-            taxes[p] = common.stacked_tax(
-                taxable, spouse.ltcg, spouse.stcg,
-                self._mfs_brackets, self._mfs_ltcg, self._mfs_stcg,
-            ) + common.progressive_tax(taxable, self._mfs_surcharge)
+            before_nol = agi[p] - deduction - others_by[p]
+            used = common.nol_used(nol_left, before_nol, self._nol_limit)
+            nol_left, nol_used = nol_left - used, nol_used + used
+            taxable = max(0, before_nol - used)
+            with self._filing_separately():
+                taxes[p] = self.tax(taxable, income_by[p])
             lines[f"separate_agi_{p}"] = agi[p]
             lines[f"separate_deduction_{p}"] = deduction
             lines[f"separate_taxable_income_{p}"] = taxable
-        return lines, self._after_credits(taxes, income, basis, lines)
+        return Separate(lines, self._after_credits(taxes, joint, lines), nol_used)
+
+    @contextmanager
+    def _filing_separately(self) -> Generator[None]:
+        """:meth:`tax` with the married-filing-separately tables (#580), so
+        a subclass's own tax step applies to each spouse's return too."""
+        saved = (self.filing_status, self.brackets, self.ltcg_brackets, self.stcg_brackets,
+                 self._surcharge)
+        self.filing_status = SEPARATE
+        self.brackets, self.ltcg_brackets, self.stcg_brackets = (
+            self._mfs_brackets, self._mfs_ltcg, self._mfs_stcg)
+        self._surcharge = self._mfs_surcharge
+        try:
+            yield
+        finally:
+            (self.filing_status, self.brackets, self.ltcg_brackets, self.stcg_brackets,
+             self._surcharge) = saved
 
     def _spouse_income(self, income: Income, basis: Basis) -> dict[str, Income]:
         """The joint return's ``income`` divided between the spouses
-        (#580): before the retirement exclusion, ordinary income by their
-        shares of non-gain income, gains by their shares of gain, Social
-        Security by their benefits; then each spouse's own exclusion off
-        theirs."""
+        (#580): before the retirement exclusion and the table's own
+        subtractions, ordinary income by their shares of non-gain income,
+        gains by their shares of gain, Social Security by their benefits;
+        then each spouse's own exclusion (its gain off their gain, the rest
+        off their other income) and own subtractions off theirs."""
         people = self._spouses
-        retirement, owners = Adjustment("retirement_exclusion"), {}
-        if self._retirement is not None and self._retirement[0] is basis:
-            retirement, owners = self._retirement[1], self._retirement[2]
+        owned = self._owned if self._owned is not None and self._owned.basis is basis else None
+        retirement = owned.retirement if owned else Adjustment("retirement_exclusion")
+        grants = owned.grants if owned else {}
+        subtracted = owned.subtractions if owned else {}
         stcg = income.stcg + retirement.stcg
-        rest = income.ordinary - income.stcg + retirement.ordinary
+        rest = income.ordinary - income.stcg + retirement.ordinary + sum(subtracted.values())
         rest_by = common.apportion(rest, self._ordinary_weights)
         stcg_by = common.apportion(stcg, self._gain_weights)
         ltcg_by = common.apportion(income.ltcg + retirement.ltcg, self._gain_weights)
         ss_by = common.apportion(income.ss, self._ss_weights)
-        weights = {p: owners.get(p, 0) for p in people}
-        off_rest = common.apportion(retirement.ordinary, weights)
-        off_stcg = common.apportion(retirement.stcg, weights)
-        off_ltcg = common.apportion(retirement.ltcg, weights)
+        # The exclusion's gain goes to the spouses whose grants covered
+        # gain, the rest to those whose grants covered other income.
+        gain_weights = {p: grants.get(p, (0, 0))[1] for p in people}
+        other_weights = {p: grants.get(p, (0, 0))[0] - grants.get(p, (0, 0))[1] for p in people}
+        off_stcg = common.apportion(retirement.stcg, gain_weights)
+        off_ltcg = common.apportion(retirement.ltcg, gain_weights)
+        off_rest = common.apportion(retirement.ordinary, other_weights)
+        for line, amount in subtracted.items():
+            for p, share in self._line_shares(line, amount).items():
+                off_rest[p] += share
         out = {}
         for p in people:
             short = stcg_by[p] - off_stcg[p]
             long = ltcg_by[p] - off_ltcg[p]
             ordinary = rest_by[p] - off_rest[p] + short
-            # A spouse whose share of the exclusion passes their share of a
-            # kind of gain takes the rest off their other income.
+            # The cents the shares round apart can leave a spouse a little
+            # under on a kind of gain; it comes off their other income.
             if long < 0:
                 ordinary, long = ordinary + long, 0
             out[p] = Income(ordinary=ordinary, stcg=max(0, min(short, ordinary)),
@@ -502,29 +545,27 @@ class StateTablesYear(FederalStateYear):
 
     def _line_shares(self, line: str, amount: int) -> dict[str, int]:
         """A table line's ``amount`` divided between spouses filing
-        separately (#580): a ``filers`` line among the filers who reached
-        its age, any other evenly."""
+        separately (#580) by whose it is (:attr:`StateAdjustment.shares`),
+        or evenly: a subclass's own line, or one that's no one's."""
         people = self._spouses
-        found = next((a for a in self._adjustments if a.name == line), None)
-        owners = found.persons if found is not None and found.base == "filers" else ()
-        owners = tuple(p for p in owners if p in people) or people
-        shares = dict(zip(owners, common.split_cents(amount, len(owners)), strict=True))
-        return {p: shares.get(p, 0) for p in people}
+        found = self._adjustment_named.get(line)
+        weights = {p: found.shares.get(p, 0) for p in people} if found is not None else {}
+        if not any(weights.values()):
+            weights = dict.fromkeys(people, 0)
+        return common.apportion(amount, weights)
 
-    def _after_credits(self, taxes: Mapping[str, int], income: Income, basis: Basis,
+    def _after_credits(self, taxes: Mapping[str, int], joint: Joint,
                        lines: dict[str, int]) -> int:
-        """The spouses' taxes less the joint return's credits (#580), each
-        divided as :meth:`_line_shares` says (a subclass's :meth:`credits`
-        evenly) and taking no more than its spouse's tax; each spouse's
-        tax goes into ``lines``. The joint return's credits are figured at
-        its own tax, since their income tests are the household's."""
+        """The spouses' taxes less the joint return's credits (#580), as it
+        figured them at its own tax, each divided by :meth:`_line_shares`
+        (a subclass's :meth:`credits` evenly) and taking no more than its
+        spouse's tax; each spouse's tax goes into ``lines``."""
         people = self._spouses
-        joint_tax = sum(taxes.values())
         left = dict(taxes)
-        total = self.credits(joint_tax, income, basis)
-        for p, share in zip(people, common.split_cents(total, len(people)), strict=True):
+        for p, share in zip(people, common.split_cents(max(0, joint.credits), len(people)),
+                            strict=True):
             left[p] -= min(left[p], share)
-        for line, amount in self.credit_lines(joint_tax, income, basis).items():
+        for line, amount in joint.credit_lines.items():
             for p, share in self._line_shares(line, max(0, amount)).items():
                 left[p] -= min(left[p], share)
         for p in people:

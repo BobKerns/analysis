@@ -97,6 +97,31 @@ class Basis:
         return self._federal
 
 
+@dataclass(frozen=True)
+class Joint:
+    """The joint return a separate one is figured beside (#580): its
+    income, deductions, the NOL it used, its tax before credits, and the
+    credits as :meth:`StateYear.credits` and :meth:`StateYear.credit_lines`
+    gave them at that tax, before the tax limited them."""
+    income: Income
+    deductions: Mapping[str, int]
+    others: Mapping[str, int]
+    nol_used: int
+    tax: int
+    credits: int
+    credit_lines: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class Separate:
+    """Spouses filing separately on one return (#580): the lines showing
+    each spouse's, the two taxes after credits added up, and the NOL they
+    used, which the return carries forward from when it's the one taken."""
+    lines: Mapping[str, int]
+    tax: int
+    nol_used: int
+
+
 class StateYear(Prepared):
     """One tax year of a state, ready to compute. A subclass sets
     ``brackets`` (and ``ltcg_brackets``, ``stcg_brackets``) in
@@ -179,15 +204,11 @@ class StateYear(Prepared):
         used up. None by default."""
         return {}
 
-    def separate(self, income: Income, deductions: Mapping[str, int],
-                 others: Mapping[str, int], nol_used: int, basis: Basis,
-                 ) -> tuple[Mapping[str, int], int] | None:
-        """The tax after credits of a married couple filing separately on
-        one return (#580), with the lines that show each spouse's, or None
-        where the state doesn't allow it (the default). ``income``,
-        ``deductions``, ``others`` and ``nol_used`` are the joint return's.
-        The return takes it when it's lower than the joint tax after
-        credits."""
+    def separate(self, joint: Joint, basis: Basis) -> Separate | None:
+        """The return of a married couple filing separately on one return
+        (#580), beside the ``joint`` one, or None where the state doesn't
+        allow it (the default). The return takes it when its tax after
+        credits is lower than the joint return's."""
         return None
 
     def excise(self, basis: Basis) -> tuple[Mapping[str, int], int]:
@@ -236,18 +257,24 @@ class StateYear(Prepared):
         tax = self.tax(taxable, income)
         # These credits can't take the tax below zero: a named line shows
         # what it took, in order, so the lines add up to the credits taken.
-        credits = min(tax, self.credits(tax, income, basis))
+        # Asked once, and handed to a separate return as they are.
+        asked_credits = self.credits(tax, income, basis)
+        asked_lines = dict(self.credit_lines(tax, income, basis))
+        credits = min(tax, asked_credits)
         credit_lines = {}
-        for line, amount in self.credit_lines(tax, income, basis).items():
+        for line, amount in asked_lines.items():
             credit_lines[line] = max(0, min(amount, tax - credits))
             credits += credit_lines[line]
-        # Spouses filing separately on one return (#580) pay the lower.
+        # Spouses filing separately on one return (#580) pay the lower, and
+        # carry forward the NOL that return left.
         owed, separate_lines = tax - credits, {}
-        if (separate := self.separate(income, deductions, others, nol_used, basis)) is not None:
-            separate_lines, separate_tax = separate
-            separate_lines = {**separate_lines, "joint_tax": owed, "separate_tax": separate_tax,
-                              "separate_return": int(separate_tax < owed)}
-            owed = min(owed, separate_tax)
+        joint = Joint(income, deductions, others, nol_used, tax, asked_credits, asked_lines)
+        if (separate := self.separate(joint, basis)) is not None:
+            chosen = separate.tax < owed
+            separate_lines = {**separate.lines, "joint_tax": owed, "separate_tax": separate.tax,
+                              "separate_return": int(chosen)}
+            if chosen:
+                owed, nol_used = separate.tax, separate.nol_used
         excise_lines, excise = self.excise(basis)
         refundable = {line: max(0, amount) for line, amount in self.refundable_credits(
             owed + excise, income, basis).items()}

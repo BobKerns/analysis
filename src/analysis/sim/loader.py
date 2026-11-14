@@ -3089,14 +3089,18 @@ def _validate_optional_state_tables(
     """A ``state_surcharge``, ``state_local_tax`` (#487), ``state_hsa``
     (#490) or other optional state table is keyed by state like the brackets
     it goes with, since one without a state is never read; a ``state_hsa``
-    row's treatment is one the engine knows, and a
-    ``state_separate_return`` row's ``allowed`` yes or no (#580); and a table of bands has every filing status the
+    row's treatment is one the engine knows; a ``state_separate_return``
+    row's ``allowed`` is yes or no (#580), and a state that allows it has
+    ``MFS`` rows in its brackets and standard deduction (the federal one
+    where it has none of its own) at each of their dates, which each
+    spouse's return reads; and a table of bands has every filing status the
     brackets have at each of its effective dates, since only the latest
     date's rows are in force, and a year filed under a missing status (the
     survivor's Single, §4.9) would silently tax nothing."""
     bracket_statuses = {str(payload.get("filing_status")) for kind, _s, payload, _e in aux_rows
                         if kind == "state_brackets"}
     band_statuses: dict[tuple[str, str, str], set[str]] = {}
+    separate: set[str] = set()
     nameless: set[str] = set()
     for kind, state, payload, effective in aux_rows:
         if kind not in registries.OPTIONAL_STATE_AUX_KINDS:
@@ -3116,6 +3120,8 @@ def _validate_optional_state_tables(
         if kind == registries.STATE_SEPARATE_RETURN and allowed not in ("yes", "no"):
             issues.append(
                 f"{file} ({effective}): allowed {payload.get('allowed')!r} must be yes or no")
+        if kind == registries.STATE_SEPARATE_RETURN and allowed == "yes":
+            separate.add(state)
         if kind in registries.STATE_BAND_KINDS:
             band_statuses.setdefault((kind, state, effective), set()).add(
                 str(payload.get("filing_status")))
@@ -3125,6 +3131,33 @@ def _validate_optional_state_tables(
         bracket_statuses, "the state brackets have",
         "a year filed that way would tax nothing here (add a 0% band for a status it doesn't tax)",
         issues)
+    _check_separate_return_tables(aux_rows, separate, issues)
+
+
+def _check_separate_return_tables(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], states: set[str],
+    issues: list[str],
+) -> None:
+    """Each of ``states``, which let spouses file separately on one return
+    (#580), has ``MFS`` rows at every date of its brackets and standard
+    deduction (the federal standard deduction where it has none of its
+    own), so its first married year doesn't fail mid-run."""
+    dated: dict[tuple[str, str | None, str], set[str]] = {}
+    for kind, state, payload, effective in aux_rows:
+        if kind in ("state_brackets", registries.STATE_STANDARD_DEDUCTION, "standard_deduction"):
+            dated.setdefault((kind, state, effective), set()).add(str(payload.get("filing_status")))
+    for state in sorted(states):
+        own = any(k == registries.STATE_STANDARD_DEDUCTION and s == state for k, s, _ in dated)
+        tables = [("state_brackets", state),
+                  (registries.STATE_STANDARD_DEDUCTION, state) if own else ("standard_deduction", None)]
+        for kind, series in tables:
+            file = f"aux/{kind}__{series}.csv" if series else f"aux/{kind}.csv"
+            for (k, s, effective), found in sorted(dated.items(), key=lambda x: x[0][2]):
+                if (k, s) == (kind, series) and "MFS" not in found:
+                    issues.append(
+                        f"{file} ({effective}): no MFS rows, which "
+                        f"aux/{registries.STATE_SEPARATE_RETURN}__{state}.csv (allowed yes) "
+                        "needs for each spouse's separate return")
 
 
 def _check_filing_statuses(
