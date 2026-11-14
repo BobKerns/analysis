@@ -25,7 +25,7 @@ The tables are in the code repository's
 | Table | Says |
 | --- | --- |
 | `state_brackets`, `state_standard_deduction` | Rates and the standard deduction (with a personal exemption folded in), which may shrink with income |
-| `state_social_security` | How much federally taxable Social Security the state leaves out, phased by income |
+| `state_social_security` | How much federally taxable Social Security the state leaves out, phased by income, by age where its rows have a `min_age` |
 | `state_retirement_exclusion` | Pension, IRA and other retirement income left out, by age, per person, below an income |
 | `state_adjustments` | The state's own subtractions, deductions and credits: from tagged spending or income, per filer, from federal tax or the federal deduction |
 | `state_ltcg_exclusion`, `state_ltcg_brackets`, `state_stcg_brackets` | A share of long-term gain left out, or gain rates of the state's own |
@@ -156,11 +156,13 @@ on interest and dividends ended with 2024.
 
 ### Colorado
 
-- A pension and annuity subtraction from 55, larger from 65, that also
-  covers taxable Social Security: **table**.
+- A pension and annuity subtraction from 55, larger from 65: **table**.
 - Social Security is subtracted in full from 65, and from 55 below an
-  income: the age test is **not supported**
+  income: **table**, `state_social_security` rows by `min_age`
   ([#581](https://github.com/BobKerns/analysis/issues/581)).
+- From 55 to 64 over that income, taxable Social Security shares the
+  pension subtraction's cap instead. `state_retirement_exclusion` covers
+  no Social Security, so that part is **not supported**.
 
 ### Connecticut
 
@@ -429,8 +431,9 @@ on interest and dividends ended with 2024.
 - Social Security and up to $50,000 a person (2025) of pensions and
   employer plans, not IRAs, are exempt from full retirement age below an
   income ($107,000, or $133,500 joint, for 2025). The pension modification
-  is **table** (tagged `income` from 67). The age test on Social Security
-  is **not supported** (#581).
+  is **table** (tagged `income` from 67). The Social Security exemption is
+  **table**: a `state_social_security` row with `min_age` `fra`, each
+  spouse tested on their own benefits (#581).
 - The standard deduction and exemptions phase out at high income in 20%
   steps: **table**. For the standard deduction, `phaseout_end` is five
   steps ($7,250 each for 2025) above `phaseout_start` and `phaseout_steps`

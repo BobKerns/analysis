@@ -91,7 +91,7 @@ STATES: tuple[State, ...] = (
     State("OK", "Oklahoma", TABLES_NEEDED),
     State("OR", "Oregon", TABLES_NEEDED),
     State("PA", "Pennsylvania", PARTIAL),
-    State("RI", "Rhode Island", PARTIAL),
+    State("RI", "Rhode Island", TABLES_NEEDED),
     State("SC", "South Carolina", TABLES_NEEDED),
     State("SD", "South Dakota", NO_TAX),
     State("TN", "Tennessee", NO_TAX),
