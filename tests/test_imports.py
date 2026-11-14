@@ -417,6 +417,39 @@ def test_a_profile_names_the_cell_it_cant_read(
     assert sources.detect(export, imports=imports) == []
 
 
+def test_a_profile_reads_either_place_of_a_minus_and_any_case_of_heading(
+    write_import_profile: Callable[[str, str], Path], tmp_path: Path, test_data_dir: Path,
+) -> None:
+    write_import_profile("mine", "holdings: {columns: {account: Acct, asset: Sym, value: Current value}}\n")
+    export = tmp_path / "mine.csv"
+    export.write_text(
+        'ACCT,sym,Current Value\nA1,AAA,"$-1,234.56"\nA1,BBB,"-$2.00"\nA1,CCC,($3.00)\n', encoding="utf-8")
+
+    found = sources.read_holdings([export], imports=test_data_dir / "imports")
+
+    assert [h.value_cents for h in found.holdings] == [-123456, -200, -300]
+
+
+def test_a_profile_that_cant_be_used_stops_only_its_own_source(
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+    quicken_net_worth_export: Path, tmp_path: Path,
+) -> None:
+    path = write_import_profile("mine", "holdings: {columns: {asset: A, value: V, colour: X}}\n")
+    imports = test_data_dir / "imports"
+
+    # Another source's file is read as ever.
+    assert sources.read_holdings([quicken_net_worth_export], imports=imports).source == "quicken"
+    assert "mine" not in sources.names(imports=imports)
+    assert str(path) in sources.broken(imports)["mine"]
+    # Naming it says what is wrong with it, and so does a file nothing reads.
+    with pytest.raises(profiles.ProfileError, match="unknown column"):
+        sources.get("mine", "holdings", imports)
+    stray = tmp_path / "stray.csv"
+    stray.write_text("A,V\nx,1\n", encoding="utf-8")
+    with pytest.raises(sources.SourceError, match="not used: .*unknown column"):
+        sources.read_holdings([stray], imports=imports)
+
+
 def test_a_profile_may_not_take_a_coded_sources_name(
     write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
 ) -> None:
@@ -463,6 +496,28 @@ def test_plan_sends_each_holding_to_the_lot_of_its_symbol(test_data_dir: Path) -
         1: {"opening_balance": "5000.00", "opening_cost_basis": "6000.00"},
     }
     assert [w for w in result.warnings if "'gone'" in w and "sim account lot delete Brokerage gone" in w]
+
+
+def test_plan_clears_a_share_count_the_file_lacks_and_keeps_lots_it_names(test_data_dir: Path) -> None:
+    from decimal import Decimal
+    account_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "Brokerage")))
+    snapshot = Snapshot("broker", (
+        Holding("B1", 44900_00, asset="CASH"),
+        Holding("B1", 12000_00, asset="AAA", quantity=Decimal("100")),
+    ))
+    lots = [
+        {"account_name": "Brokerage", "lot": "cash", "symbol": "CASH", "quantity": "44000", "opening_balance": ""},
+        # Two lots of one symbol: the file can't say which, but it has them.
+        {"account_name": "Brokerage", "lot": "a-2020", "symbol": "AAA", "quantity": "60", "opening_balance": "1.00"},
+        {"account_name": "Brokerage", "lot": "a-2024", "symbol": "AAA", "quantity": "40", "opening_balance": "1.00"},
+    ]
+
+    result = holdings.plan(snapshot, account_map, _BROKERAGE, lots, prune=True)
+
+    # A balance beside the old share count would be two answers.
+    assert result.cells == {0: {"quantity": "", "opening_balance": "44900.00"}}
+    assert len(result.warnings) == 1 and "has 2 lots of AAA" in result.warnings[0]
+    assert not result.pruned
 
 
 def test_plan_leaves_open_a_symbol_with_no_lot_and_fills_a_fresh_one(test_data_dir: Path) -> None:

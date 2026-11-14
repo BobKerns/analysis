@@ -20,7 +20,7 @@ from analysis.sim.imports import profiles, quicken
 from analysis.sim.imports.forms import Flows, Snapshot
 
 __all__ = [
-    "FORMS", "Form", "Reader", "Source", "SourceError", "detect", "get", "names",
+    "FORMS", "Form", "Reader", "Source", "SourceError", "broken", "detect", "get", "names",
     "read_flows", "read_holdings", "sources",
 ]
 
@@ -83,68 +83,99 @@ def _from_profile(profile: profiles.Profile) -> Source:
     )
 
 
-def _all(imports: Path | None) -> dict[str, Source]:
-    """Every source: the coded ones, the built-in profiles, and the
-    household's own profiles in ``imports`` (the data dir's imports/
-    folder), which replace a built-in profile of their name."""
+@dataclass(frozen=True)
+class _Table:
+    """Every source, read once for a command: the coded ones, the built-in
+    profiles, and the household's own in the data dir's imports/ folder."""
+
+    found: dict[str, Source]
+    broken: dict[str, profiles.ProfileError]
+    """Household profiles that can't be used, by source name. One stops
+    only an import that names it: a half-written profile mustn't stop the
+    import of another source's file."""
+
+    def names(self, form: Form | None = None) -> list[str]:
+        return [s.name for s in self.found.values() if form is None or s.reader(form) is not None]
+
+    def get(self, name: str, form: Form) -> Source:
+        if name in self.broken:
+            raise self.broken[name]
+        source = self.found.get(name)
+        if source is None:
+            raise SourceError(f"unknown source {name!r}; sources: {', '.join(self.names(form))}")
+        if source.reader(form) is None:
+            raise SourceError(
+                f"source {name!r} has no {form}; sources that do: {', '.join(self.names(form))}")
+        return source
+
+    def detect(self, path: Path, form: Form | None = None) -> list[tuple[Source, Form]]:
+        return [
+            (source, each) for source in self.found.values() for each in FORMS
+            if (form is None or each == form)
+            and (reader := source.reader(each)) is not None and reader.matches(path)
+        ]
+
+
+def _table(imports: Path | None) -> _Table:
     found = dict(_CODED)
     described = profiles.built_in()
+    broken: dict[str, profiles.ProfileError] = {}
     if imports is not None:
-        mine = profiles.user(imports)
+        mine, broken = profiles.user(imports)
         if taken := sorted(set(mine) & set(_CODED)):
             raise SourceError(
                 f"{mine[taken[0]].where}: {taken[0]!r} is a source that reads more than a "
                 "table, so a profile can't replace it; give the profile's folder another name")
-        described |= mine
-    return found | {name: _from_profile(profile) for name, profile in described.items()}
+        # A broken profile doesn't fall back to the built-in one of its name.
+        described = {name: profile for name, profile in (described | mine).items() if name not in broken}
+    return _Table(found | {name: _from_profile(profile) for name, profile in described.items()}, broken)
 
 
 def sources(imports: Path | None = None) -> list[Source]:
-    return list(_all(imports).values())
+    return list(_table(imports).found.values())
+
+
+def broken(imports: Path | None = None) -> dict[str, str]:
+    """The household's profiles that can't be used, and why."""
+    return {name: str(error) for name, error in _table(imports).broken.items()}
 
 
 def names(form: Form | None = None, imports: Path | None = None) -> list[str]:
-    return [s.name for s in sources(imports) if form is None or s.reader(form) is not None]
+    return _table(imports).names(form)
 
 
 def get(name: str, form: Form, imports: Path | None = None) -> Source:
     """Source ``name``, which must read ``form``."""
-    source = _all(imports).get(name)
-    if source is None:
-        raise SourceError(f"unknown source {name!r}; sources: {', '.join(names(form, imports))}")
-    if source.reader(form) is None:
-        raise SourceError(
-            f"source {name!r} has no {form}; sources that do: {', '.join(names(form, imports))}")
-    return source
+    return _table(imports).get(name, form)
 
 
 def detect(
     path: Path, form: Form | None = None, imports: Path | None = None,
 ) -> list[tuple[Source, Form]]:
     """Every (source, form) whose layout ``path`` is in; one, normally."""
-    return [
-        (source, each) for source in sources(imports) for each in FORMS
-        if (form is None or each == form)
-        and (reader := source.reader(each)) is not None and reader.matches(path)
-    ]
+    return _table(imports).detect(path, form)
 
 
 def _resolve(paths: Sequence[Path], name: str | None, form: Form, imports: Path | None) -> Source:
     """The source to read ``paths`` with: ``name``, or the one source whose
     layout every file is in."""
+    table = _table(imports)
     if name is not None:
-        return get(name, form, imports)
+        return table.get(name, form)
     found: dict[str, Source] = {}
     for path in paths:
-        matched = [source for source, _ in detect(path, form, imports)]
+        matched = [source for source, _ in table.detect(path, form)]
         if len(matched) != 1:
-            other = [f"{source.name} {each}" for source, each in detect(path, imports=imports)]
+            other = [f"{source.name} {each}" for source, each in table.detect(path)]
             hint = f" (it looks like {', '.join(other)})" if other and not matched else ""
             problem = "no source recognizes" if not matched else \
                 f"more than one source ({', '.join(s.name for s in matched)}) recognizes"
+            # The file may be one a profile that can't be read was written for.
+            unread = "".join(f"\n  not used: {error}" for error in table.broken.values()) \
+                if not matched else ""
             raise SourceError(
                 f"{problem} {path} as {form}{hint}; name one with --source "
-                f"({', '.join(names(form, imports))}), or see 'sim import sources'")
+                f"({', '.join(table.names(form))}), or see 'sim import sources'{unread}")
         found[matched[0].name] = matched[0]
     if len(found) != 1:
         raise SourceError(

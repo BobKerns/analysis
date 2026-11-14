@@ -14,17 +14,13 @@ from decimal import Decimal, InvalidOperation
 from analysis.sim.imports.forms import Holding, Snapshot
 from analysis.sim.imports.mapping import AccountMap, AccountTarget
 from analysis.sim.registries import DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
-from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
 from analysis.sim.units import dollars_to_cents
 
 __all__ = [
-    "TAXABLE_BROKERAGE", "Change", "HoldingsPlan", "format_dollars", "is_investment_asset", "plan",
+    "Change", "HoldingsPlan", "format_dollars", "is_investment_asset", "plan",
     "roth_basis_note",
 ]
-
-TAXABLE_BROKERAGE = "brokerage_taxable"
-"""The account subkind whose lots keep a cost basis an import can set."""
-
 
 def is_investment_asset(kind: str, subkind: str) -> bool:
     """Whether an account's ``prior_year_end_balance`` is meaningful to set."""
@@ -152,6 +148,8 @@ def plan(
     """
     result = HoldingsPlan(rows=[dict(row) for row in lots])
     landed: dict[int, _Landed] = {}
+    # The lots a holding was matched to by symbol, landed or not: the file has them.
+    in_file: set[int] = set()
     for holding in snapshot.holdings:
         target = account_map.lookup(holding.account, holding.asset)
         if target is None:
@@ -180,6 +178,7 @@ def plan(
             indexes = [i for i in of_account
                        if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper()]
             by_symbol = True
+            in_file.update(indexes)
             if not indexes:
                 alone = len(of_account) == 1 and not result.rows[of_account[0]].get("symbol", "").strip()
                 undecided = alone and target.account not in split
@@ -259,11 +258,18 @@ def plan(
                 and bool(row.get("symbol", "").strip())
             if into.quantity is not None and (had_quantity is not None or index in fresh):
                 changed |= put("quantity", _plain(into.quantity), same=had_quantity == into.quantity)
+            elif had_quantity is not None and into.by_symbol:
+                # The file lists this holding and gives no share count (a
+                # money market's row): a new balance beside the old count
+                # would have the lot say two things. A source with one
+                # number for the account says nothing of shares either way.
+                changed |= put("quantity", "", same=False, note="the file has no share count")
             if not (in_shares and into.quantity is not None):
                 changed |= put("opening_balance", dollars,
                                same=_cents(row.get("opening_balance", "")) == cents,
                                note="new lot" if index in fresh else "")
-            if into.basis_cents is not None and subkind == TAXABLE_BROKERAGE:
+            # The one subkind whose lots keep a cost basis an import can set.
+            if into.basis_cents is not None and subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE:
                 changed |= put("opening_cost_basis", format_dollars(into.basis_cents),
                                same=_cents(row.get("opening_cost_basis", "")) == into.basis_cents)
             if RETIREMENT_LOT_SUBKINDS.get(row.get("subkind", "")) == "tax_free" \
@@ -283,7 +289,7 @@ def plan(
     listed = {result.rows[index]["account_name"] for index, into in landed.items() if into.by_symbol}
     listed |= {target.account for _, target in result.new}
     for index, row in enumerate(result.rows):
-        if year_end or row.get("account_name") not in listed or index in landed \
+        if year_end or row.get("account_name") not in listed or index in landed or index in in_file \
                 or not (_cents(row.get("opening_balance", "")) or _number(row.get("quantity", ""))):
             continue
         # A lot the holdings were split out of is emptied whatever was asked:

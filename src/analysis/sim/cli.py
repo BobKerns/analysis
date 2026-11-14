@@ -16,6 +16,7 @@ import shutil
 import sys
 from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence, Set
 from contextlib import ExitStack, contextmanager, redirect_stdout
+import itertools
 import os
 import sqlite3
 import subprocess
@@ -8637,6 +8638,8 @@ def import_sources(files: tuple[Path, ...], data_dir: Path | None) -> None:
     if data_dir is not None or os.environ.get("ANALYSIS_DATA_DIR"):
         imports = import_mapping.imports_dir(_resolve_data_dir(data_dir))
     try:
+        for error in import_sources_.broken(imports).values():
+            click.echo(f"warning: not used: {error}", err=True)
         for path in files:
             found = import_sources_.detect(path, imports=imports)
             click.echo(f"{_shown(path)}: " + (", ".join(f"{source.name} {form}" for source, form in found)
@@ -12097,8 +12100,8 @@ def import_holdings(
         rows.append(row)
         fresh.add(len(rows) - 1)
 
+    imports = import_mapping.imports_dir(data_dir_p)
     try:
-        imports = import_mapping.imports_dir(data_dir_p)
         snapshot = import_sources_.read_holdings(files, layout, imports, account=outside_account)
         if not snapshot.holdings:
             raise click.ClickException(
@@ -12193,8 +12196,12 @@ def import_holdings(
                 its_lots = [_lot.lot for _lot in lots if _lot.account == target.account]
                 if _interactive() and not new_lots:
                     answer = _ask_holding_lot(holding, target, its_lots)
-                elif new_lots and _clean_symbol(holding.asset) and holding.asset.lower() not in its_lots:
-                    answer = holding.asset.lower()
+                elif new_lots and _clean_symbol(holding.asset):
+                    # A lot of another symbol may have the name already.
+                    base = holding.asset.lower()
+                    answer = next(
+                        name for name in itertools.chain([base], (f"{base}-{n}" for n in itertools.count(2)))
+                        if name not in its_lots)
                 else:
                     continue
                 if answer == "skip" or answer in its_lots:
@@ -12246,6 +12253,13 @@ def import_holdings(
         )
     for warning in result.warnings:
         click.echo(f"warning: {warning}", err=True)
+    profile = import_sources_.get(snapshot.source, "holdings", imports).profile
+    if outside_account is None and profile is not None and profile.holdings is not None \
+            and profile.holdings.account_pattern is not None:
+        # Nothing in such a file says whose it is, so say what was taken.
+        for name in dict.fromkeys(h.account for h in snapshot.holdings):
+            click.echo(f"{snapshot.source} account {name!r}, from the file's name "
+                       "(--outside-account names another)")
     if snapshot.as_of is not None:
         click.echo(f"{snapshot.source} snapshot as of {snapshot.as_of}")
         # The numbers are written as of a fixed day whatever the file's date.

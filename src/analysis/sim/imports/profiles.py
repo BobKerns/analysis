@@ -39,7 +39,7 @@ from typing import Any
 
 import yaml
 
-from analysis.sim.imports.forms import Holding, Snapshot
+from analysis.sim.imports.forms import Holding, Snapshot, read_rows
 
 __all__ = ["PROFILE", "HoldingsProfile", "Profile", "ProfileError", "built_in", "load", "user"]
 
@@ -60,8 +60,9 @@ _AS_OF_PLACES = ("heading", "last_lines", "file_name")
 # title and a date.
 _HEADER_SEARCH = 30
 # The money at the start of a cell: '$1,234.56', '-$16,423.62 (-6.68%)',
-# '(300.00)'.
-_MONEY = re.compile(r"^(?P<open>\()?\s*(?P<sign>[-+])?\s*\$?\s*(?P<number>[\d,]*\.?\d+)\s*(?P<close>\))?")
+# '$-1,234.56', '(300.00)'.
+_MONEY = re.compile(
+    r"^(?P<open>\()?\s*(?P<sign>[-+])?\s*\$?\s*(?P<inner>[-+])?\s*(?P<number>[\d,]*\.?\d+)\s*(?P<close>\))?")
 
 
 class ProfileError(ValueError):
@@ -86,16 +87,16 @@ class HoldingsProfile:
 
     def _header(self, rows: list[list[str]]) -> int | None:
         """The index of the header row: the first near the top with every
-        column the profile names."""
-        wanted = set(self.columns.values())
+        column the profile names, however a download capitalizes them."""
+        wanted = {_heading(name) for name in self.columns.values()}
         for index, row in enumerate(rows[:_HEADER_SEARCH]):
-            if wanted <= {cell.strip() for cell in row}:
+            if wanted <= {_heading(cell) for cell in row}:
                 return index
         return None
 
     def matches(self, path: Path) -> bool:
         try:
-            return self._header(_rows(path, _HEADER_SEARCH)) is not None
+            return self._header(read_rows(path, _HEADER_SEARCH)) is not None
         except (OSError, UnicodeDecodeError, csv.Error):
             return False
 
@@ -106,14 +107,15 @@ class HoldingsProfile:
             raise ProfileError(
                 f"{path}: a {self.source} file names its accounts itself, so "
                 "--outside-account doesn't apply")
-        rows = _rows(path)
+        rows = read_rows(path)
         start = self._header(rows)
         if start is None:
             raise ProfileError(
                 f"{path}: no header row with the columns {self.where} names: "
                 + ", ".join(sorted(set(self.columns.values()))))
         header = [cell.strip() for cell in rows[start]]
-        at = {key: header.index(name) for key, name in self.columns.items()}
+        headings = [_heading(cell) for cell in header]
+        at = {key: headings.index(_heading(name)) for key, name in self.columns.items()}
         file_account = account if account is not None else self._file_account(path)
         holdings: list[Holding] = []
         end = len(rows)
@@ -185,14 +187,8 @@ class Profile:
     built_in: bool = field(default=False, compare=False)
 
 
-def _rows(path: Path, limit: int | None = None) -> list[list[str]]:
-    with Path(path).open(newline="", encoding="utf-8-sig") as fh:
-        rows = []
-        for row in csv.reader(fh):
-            rows.append(row)
-            if limit is not None and len(rows) >= limit:
-                break
-        return rows
+def _heading(text: str) -> str:
+    return text.strip().casefold()
 
 
 def _cents(text: str, where: str) -> int:
@@ -205,7 +201,7 @@ def _cents(text: str, where: str) -> int:
             raise InvalidOperation
     except InvalidOperation:
         raise ProfileError(f"{where}: {text!r} is not an amount of money") from None
-    negative = found["sign"] == "-" or (found["open"] and found["close"])
+    negative = "-" in (found["sign"], found["inner"]) or (found["open"] and found["close"])
     return -int(cents) if negative else int(cents)
 
 
@@ -300,9 +296,15 @@ def built_in() -> dict[str, Profile]:
     return {path.stem: load(path, path.stem, built_in=True) for path in sorted(_BUILT_IN.glob("*.yaml"))}
 
 
-def user(imports: Path) -> dict[str, Profile]:
-    """The household's own profiles: ``imports/<source>/profile.yaml``."""
-    if not imports.is_dir():
-        return {}
-    return {path.parent.name: load(path, path.parent.name)
-            for path in sorted(imports.glob(f"*/{PROFILE}"))}
+def user(imports: Path) -> tuple[dict[str, Profile], dict[str, ProfileError]]:
+    """The household's own profiles, ``imports/<source>/profile.yaml``, and
+    for each that can't be used, why."""
+    good: dict[str, Profile] = {}
+    bad: dict[str, ProfileError] = {}
+    if imports.is_dir():
+        for path in sorted(imports.glob(f"*/{PROFILE}")):
+            try:
+                good[path.parent.name] = load(path, path.parent.name)
+            except ProfileError as error:
+                bad[path.parent.name] = error
+    return good, bad

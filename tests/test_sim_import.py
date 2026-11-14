@@ -848,6 +848,22 @@ def test_sim_import_holdings_new_lots_needs_no_terminal(
             stock["opening_cost_basis"]) == ("roth_ira", "VTSAX", "2500", "400000.00", "")
     assert lots["Asset_Roth_Bill", "vmfxx"]["opening_balance"] == "20000.00"
     assert "lot 'vtsax' of Asset_Roth_Bill is a Roth lot with no basis" in result.output
+    # Nothing in the file says whose it is.
+    assert "vanguard account 'Bill Roth IRA', from the file's name" in result.output
+
+
+def test_sim_import_holdings_new_lots_finds_a_free_name(
+    test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
+    add_account_value: Callable[..., None],
+) -> None:
+    write_import_map("vanguard/accounts.csv", "Bill Roth IRA,,map,Asset_Roth_Bill,,\n")
+    add_account_value("Asset_Roth_Bill", lot="vtsax", subkind="roth_ira", symbol="OTHER",
+                      opening_balance="5.00")
+
+    result = _import(test_data_dir, "holdings", str(vanguard_holdings_export), "--new-lots")
+
+    assert result.exit_code == 0, result.output
+    assert _all_lots(test_data_dir)["Asset_Roth_Bill", "vtsax-2"]["symbol"] == "VTSAX"
 
 
 def test_sim_import_holdings_dry_run_adds_no_lot(
@@ -924,9 +940,14 @@ def test_sim_import_names_a_profile_it_cant_use_and_an_unknown_source(
     assert "unknown source 'nowhere'" in unknown.output and "fidelity" in unknown.output
 
     profile = write_import_profile("my_bank", "holdings:\n  columns: {asset: Symbol, value: Worth, colour: X}\n")
-    result = _import(test_data_dir, "holdings", str(fidelity_positions_export))
+    # It stops an import that names it, and no other source's.
+    result = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--source", "my_bank")
     assert result.exit_code != 0
     assert str(profile) in result.output and "unknown column(s) ['colour']" in result.output
+    other = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--dry-run")
+    assert "unmapped fidelity account(s)" in other.output
+    listed = CliRunner().invoke(main, ["sim", "import", "sources", "--data-dir", str(test_data_dir)])
+    assert listed.exit_code == 0 and f"warning: not used: {profile}" in listed.output
 
 
 def test_sim_import_holdings_prune_empties_the_lot_a_file_no_longer_has(
