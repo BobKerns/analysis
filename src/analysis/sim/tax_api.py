@@ -40,7 +40,7 @@ __all__ = [
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
-API_VERSION = 6
+API_VERSION = 7
 """Bumped when a calculator written against the previous version could
 break, or one written for this version needs what the previous lacks. 1
 (#510) is the first a data repo can write to; 2 (#511) adds a state year's
@@ -54,7 +54,9 @@ itemized lines from spending: it may figure its own Schedule A. 6 (#580)
 adds its ``separate`` step, spouses filing separately on one return; a
 state year whose module says it was written for 5 or before and that
 overrides ``deductions`` or ``tax`` never files separately, since the step
-reads the tables those would replace."""
+reads the tables those would replace. 7 (#593) adds
+:attr:`TaxPaid.refunded` and :meth:`TaxYear.tax_refunded`, the refunds a
+federal return recaptures."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""
@@ -218,6 +220,10 @@ class TaxPaid:
     year: int
     jurisdiction: str
     amount: int
+    refunded: int = 0
+    """What the jurisdiction paid back in the calendar year (#593): the
+    April refund of the year before's overpayment, which the federal return
+    recaptures as income to the extent the deduction saved tax."""
 
 
 @dataclass(frozen=True)
@@ -276,8 +282,8 @@ class TaxYear:
     gives this year's only."""
     taxes_paid: Sequence[TaxPaid] = ()
     """What was paid toward each state and local jurisdiction in a calendar
-    year (#542), the SALT deduction's income taxes; the engine gives this
-    year's only."""
+    year (#542), the SALT deduction's income taxes, and what each paid back
+    (#593); the engine gives this year's and the year before's."""
     _grown: Callable[[int, str, int], int] = field(
         repr=False, default=lambda amount, _series, _since: amount)
 
@@ -411,7 +417,18 @@ class TaxYear:
     def tax_paid(self, *jurisdictions: str) -> int:
         """What was paid this calendar year toward the ``jurisdictions``'
         income taxes (every state and local one when none are named)."""
+        return self.tax_paid_in(self.year, *jurisdictions)
+
+    def tax_paid_in(self, year: int, *jurisdictions: str) -> int:
+        """What was paid in calendar ``year`` (this one or the one before)
+        toward the ``jurisdictions``' income taxes, as :meth:`tax_paid`."""
         return sum(t.amount for t in self.taxes_paid
+                   if t.year == year and (not jurisdictions or t.jurisdiction in jurisdictions))
+
+    def tax_refunded(self, *jurisdictions: str) -> int:
+        """What the ``jurisdictions`` (every state and local one when none
+        are named) paid back this calendar year (#593): last year's refund."""
+        return sum(t.refunded for t in self.taxes_paid
                    if t.year == self.year and (not jurisdictions or t.jurisdiction in jurisdictions))
 
 
