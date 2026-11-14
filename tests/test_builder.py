@@ -848,6 +848,27 @@ def test_the_daemon_fetches_prices_when_due_and_waits_for_the_fetch(
     assert daemon.fetcher is None and any(line.endswith("fetched prices") for line in lines)
 
 
+def test_the_daemon_rolls_scenarios_when_due_and_waits_for_the_roll(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import roll_schedule
+
+    lines: list[str] = []
+    daemon.echo = lines.append
+    builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir), "roll": True})
+    daemon.roll_tick(True)
+    assert daemon.roller is None  # the tests' switch is on
+
+    monkeypatch.delenv(roll_schedule.SWITCH_ENV)
+    monkeypatch.setattr(roll_schedule, "due", lambda *_a: True)
+    daemon.roll_tick(True)
+    assert daemon.roller is not None and any("rolling scenarios forward" in line for line in lines)
+    daemon.roller.wait(timeout=30)
+    daemon.roll_tick(False)
+    # Not again within the hour, even if the roll didn't record its night.
+    assert daemon.roller is None and any(line.endswith("rolled scenarios forward") for line in lines)
+
+
 def test_the_daemon_merges_fetched_prices_only_between_builds(
     commit_files: Callable[..., str],
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,

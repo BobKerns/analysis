@@ -293,6 +293,16 @@ RETIREMENT_LOT_SUBKINDS: dict[str, str] = {
 ROTH_SURVIVOR_ELECTIONS: tuple[str, ...] = ("own", "beneficiary")
 RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_401k"})
 
+# #564: scenario.meta_json "roll", inherited like any meta_json key:
+# "monthly" has the background builder roll its start forward to the
+# current month each night its start month is over; "off" opts out of a
+# parent's.
+ROLL_KEY = "roll"
+# A year-to-date row `sim scenario roll` projected from the old run's flows
+# in the months it skipped (#564): projected_<year>_<n>, of that year.
+PROJECTED_YTD_NAME = re.compile(r"projected_(\d{4})_\d+")
+ROLL_CHOICES: tuple[str, ...] = ("monthly", "off")
+
 # transfer_event.reason_kind (schema.py CHECK), in a sensible display order:
 # a rule firing, the run's opening balances, partial-first-year catch-up
 # facts, a refill draw, a month-end overflow sweep, or a strategy's year-end
