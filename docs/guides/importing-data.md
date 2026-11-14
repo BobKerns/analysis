@@ -134,6 +134,10 @@ Things to know:
   outside accounts go into one of the plan's accounts, import their files
   together: a file with only one of them leaves the account's other lots
   alone.
+- **A Roth account's basis follows its money.** When a Roth lot is emptied
+  (split into a lot for each fund, or by `--prune`), what was contributed
+  to it is shared among the account's Roth lots that hold a balance, by
+  their balances, so the account's contributions add up as before.
 - **A retirement account with a required-withdrawal rule** draws from one
   lot. Before it has several, its rule needs a chain naming them in order;
   the import is refused, with that message, until it has one.

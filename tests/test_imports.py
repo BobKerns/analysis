@@ -593,6 +593,13 @@ def test_plan_leaves_open_a_symbol_with_no_lot_and_fills_a_fresh_one(test_data_d
     assert result.cells[0]["opening_balance"] == "0.00" and result.pruned == ["Roth:default"]
     assert not result.warnings
 
+    # What was contributed to the account goes with its money, and needs no note.
+    one["opening_cost_basis"] = "85.00"
+    carried = holdings.plan(_symbol_snapshot(), account_map, _BROKERAGE, [one, *fresh],
+                            split={"Roth"}, fresh={1, 2})
+    assert [carried.cells[i]["opening_cost_basis"] for i in range(3)] == ["0.00", "60.00", "25.00"]
+    assert not carried.notes
+
 
 def test_plan_keeps_a_split_accounts_prior_year_balance_on_the_lot_split_from(test_data_dir: Path) -> None:
     accounts = {"IRA": ("asset", "retirement")}
@@ -675,6 +682,9 @@ def test_plan_prune_empties_a_lot_the_file_no_longer_has(test_data_dir: Path) ->
              "quantity": "1", "opening_balance": "50.00", "opening_cost_basis": "40.00"}
             for name in ("aaa", "bbb", "ccc")]
     emptied = holdings.plan(_symbol_snapshot(), roth_map, _BROKERAGE, roth, prune=True)
-    assert emptied.cells[2] == {"opening_balance": "0.00", "quantity": "0"}
+    # So it goes to the lots that hold the account now, by their balances.
+    assert emptied.cells[2] == {"opening_balance": "0.00", "quantity": "0", "opening_cost_basis": "0.00"}
+    assert [emptied.cells[i]["opening_cost_basis"] for i in (0, 1)] == ["68.23", "51.77"]
+    assert not emptied.notes
     assert result.pruned == ["Brokerage:sold"] and not result.warnings
     assert (result.lots_changed, result.lots_unchanged) == (1, 2)

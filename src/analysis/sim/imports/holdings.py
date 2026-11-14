@@ -179,6 +179,11 @@ def plan(
     twice. An account that an outside account the file doesn't have is mapped
     to as well is left out of this: the file doesn't say all it holds.
 
+    A Roth lot's basis is what was contributed to the account, not what a
+    fund cost, so when such a lot is emptied its basis moves to the account's
+    lots of the same subkind that hold a balance and are new or have a basis
+    of their own, shared by their balances.
+
     A holding with no symbol, where the mapping names no lot, goes to the
     account's lot with no symbol when it has one, and not into a fund's.
 
@@ -188,6 +193,9 @@ def plan(
     landed: dict[int, _Landed] = {}
     # The lots a holding was matched to by symbol, landed or not: the file has them.
     in_file: set[int] = set()
+    # Roth lots: those filled while they have no basis, and those emptied.
+    no_basis: list[int] = []
+    emptied: list[int] = []
     for holding in snapshot.holdings:
         target = account_map.lookup(holding.account, holding.asset)
         if target is None:
@@ -327,7 +335,7 @@ def plan(
                                same=_cents(row.get("opening_cost_basis", "")) == into.basis_cents)
             if RETIREMENT_LOT_SUBKINDS.get(row.get("subkind", "")) == "tax_free" \
                     and not row.get("opening_cost_basis", "").strip():
-                result.notes.append(roth_basis_note(name, lot))
+                no_basis.append(index)
         result.lots_changed += changed
         result.lots_unchanged += not changed
         if not year_end and is_investment_asset(kind, subkind) and whole \
@@ -381,12 +389,56 @@ def plan(
             result.cells[index] = cells
             result.lots_changed += 1
             result.pruned.append(f"{row['account_name']}:{_lot_name(row)}")
+            if RETIREMENT_LOT_SUBKINDS.get(row.get("subkind", "")) == "tax_free":
+                emptied.append(index)
             continue
         result.warnings.append(
             f"lot {_lot_name(row)!r} of {row['account_name']} isn't in the "
             f"{snapshot.source} file and keeps what it holds, though it may have been sold; "
             "--prune empties such lots, and "
             f"'sim account lot delete {row['account_name']} {_lot_name(row)}' removes this one")
+    # A Roth lot's basis is what its owner put into the account, which is
+    # theirs whatever fund holds it now: an emptied lot's goes to the lots of
+    # its kind that hold the account's money, by their balances, so the
+    # account's basis is what it was. A lot with a blank basis (all of it) is
+    # no place to add one, and with nowhere to go the basis stays put.
+    for index in emptied:
+        row = result.rows[index]
+        basis = _cents(row.get("opening_cost_basis", ""))
+        into = {
+            i: held for i, other in enumerate(result.rows)
+            if i != index and other.get("account_name") == row["account_name"]
+            and other.get("subkind", "") == row.get("subkind", "")
+            and (held := _cents(other.get("opening_balance", "")) or 0) > 0
+            and (i in fresh or other.get("opening_cost_basis", "").strip())
+        }
+        if not basis or not into:
+            continue
+        source = f"{row['account_name']}:{_lot_name(row)}"
+        moves = {index: 0}
+        total, given, passed = sum(into.values()), 0, 0
+        for i, held in into.items():
+            # Each lot's share is what brings the running total to its
+            # share, so the cents add up to the basis exactly.
+            passed += held
+            share = basis * passed // total - given
+            given += share
+            moves[i] = (_cents(result.rows[i].get("opening_cost_basis", "")) or 0) + share
+        for i, cents in moves.items():
+            other = result.rows[i]
+            if i not in result.cells:
+                result.lots_changed += 1
+                result.lots_unchanged -= i in landed
+            after = format_dollars(cents)
+            result.changes.append(Change(
+                other["account_name"], other.get("lot", ""), "opening_cost_basis",
+                other.get("opening_cost_basis", ""), after,
+                "moved to the account's other lots" if i == index else f"from {source}"))
+            other["opening_cost_basis"] = after
+            result.cells.setdefault(i, {})["opening_cost_basis"] = after
+    result.notes.extend(
+        roth_basis_note(result.rows[index]["account_name"], result.rows[index].get("lot", ""))
+        for index in no_basis if not result.rows[index].get("opening_cost_basis", "").strip())
     if prune:
         result.warnings.extend(
             f"{account} also takes {snapshot.source} account(s) "
