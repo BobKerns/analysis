@@ -2283,6 +2283,20 @@ def vanguard_holdings_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def vanguard_two_row_export(vanguard_holdings_export: Path) -> Path:
+    """``vanguard_holdings_export`` with a second row of its first fund (as
+    for shares held two ways) and a row whose symbol is words, as activity
+    not yet settled is listed."""
+    extra = (
+        'VTSAX,Vanguard Total Stock Market Index Admiral,"$16,000.00",100.000,$160.00,'
+        "+$0.80 (+0.50%),\u2014,Mutual fund,0.04%\n"
+        "Pending activity,,$250.00,\u2014,\u2014,\u2014,\u2014,\u2014,\u2014\n")
+    vanguard_holdings_export.write_text(
+        vanguard_holdings_export.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    return vanguard_holdings_export
+
+
+@pytest.fixture
 def write_import_profile(test_data_dir: Path) -> Callable[[str, str], Path]:
     """Write a household's own source profile:
     ``write("my_bank", yaml_text)`` is ``imports/my_bank/profile.yaml`` in the

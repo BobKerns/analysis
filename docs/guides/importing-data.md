@@ -130,7 +130,10 @@ Things to know:
   grows as its account does.
 - **A lot the file doesn't mention is kept**, with a warning: it may have
   been sold. `--prune` empties every such lot (balance, shares and basis to
-  zero), and `sim account lot delete` removes one for good.
+  zero), and `sim account lot delete` removes one for good. When two
+  outside accounts go into one of the plan's accounts, import their files
+  together: a file with only one of them leaves the account's other lots
+  alone.
 - **A retirement account with a required-withdrawal rule** draws from one
   lot. Before it has several, its rule needs a chain naming them in order;
   the import is refused, with that message, until it has one.

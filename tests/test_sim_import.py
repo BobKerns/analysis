@@ -866,6 +866,28 @@ def test_sim_import_holdings_new_lots_finds_a_free_name(
     assert _all_lots(test_data_dir)["Asset_Roth_Bill", "vtsax-2"]["symbol"] == "VTSAX"
 
 
+def test_sim_import_holdings_new_lots_makes_one_lot_of_a_symbol_and_asks_of_words(
+    test_data_dir: Path, vanguard_two_row_export: Path, write_import_map: MapWriter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_import_map("vanguard/accounts.csv", "12345678,,map,Asset_Roth_Bill,,\n")
+
+    refused = _import(test_data_dir, "holdings", str(vanguard_two_row_export), "--new-lots")
+    assert refused.exit_code != 0
+    # Only the row no lot can be named for is left to say.
+    assert refused.output.count("-> Asset_Roth_Bill") == 1 and "Pending activity" in refused.output
+
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    result = _import(test_data_dir, "holdings", str(vanguard_two_row_export), "--new-lots", input="skip\n")
+    assert result.exit_code == 0, result.output
+    lots = _all_lots(test_data_dir)
+    # Both rows of the fund, in the one lot made for it.
+    assert (lots["Asset_Roth_Bill", "vtsax"]["quantity"], lots["Asset_Roth_Bill", "vtsax"]["opening_balance"]) \
+        == ("2600", "416000.00")
+    assert ("Asset_Roth_Bill", "vtsax-2") not in lots
+    assert "12345678,Pending activity,skip,,," in _saved(test_data_dir, "vanguard")
+
+
 def test_sim_import_holdings_dry_run_adds_no_lot(
     test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
 ) -> None:

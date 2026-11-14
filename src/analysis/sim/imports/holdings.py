@@ -174,7 +174,13 @@ def plan(
     Such a lot keeps what it holds, with a warning, unless ``prune``: then
     its balance, shares and basis are set to zero. The one lot of a ``split``
     account is emptied either way, since the lots made from it hold its total. Its prior-year balance
-    stays, since it held that on December 31 whatever became of it since.
+    stays, since it held that on December 31 whatever became of it since, and
+    the lots made from it start theirs at zero, so the account's isn't counted
+    twice. An account that an outside account the file doesn't have is mapped
+    to as well is left out of this: the file doesn't say all it holds.
+
+    A holding with no symbol, where the mapping names no lot, goes to the
+    account's lot with no symbol when it has one, and not into a fund's.
 
     A liability is stored as a non-negative debt, so its total is negated.
     """
@@ -217,7 +223,10 @@ def plan(
                 (result.undecided if undecided else result.new).append((holding, target))
                 continue
         else:
-            indexes = of_account
+            # A row with no symbol among holdings that have one (cash, or
+            # activity not yet settled) is none of the symbols' lots'.
+            bare = [i for i in of_account if not result.rows[i].get("symbol", "").strip()]
+            indexes = bare or of_account
             if not indexes:
                 result.no_lot.append((holding, target))
                 continue
@@ -323,7 +332,12 @@ def plan(
         result.lots_unchanged += not changed
         if not year_end and is_investment_asset(kind, subkind) and whole \
                 and not row.get("prior_year_end_balance", ""):
-            put("prior_year_end_balance", dollars, same=False, note="seeded from opening")
+            # The lot an account was split out of keeps the account's whole
+            # prior-year balance, so its new lots start theirs at nothing:
+            # seeded too, the account's would be counted twice (an RMD's base).
+            kept = index in fresh and name in split and bool(others)
+            put("prior_year_end_balance", "0.00" if kept else dollars, same=False,
+                note="the lot split from keeps the account's" if kept else "seeded from opening")
         if cells:
             row |= cells
             result.cells[index] = cells
@@ -332,6 +346,14 @@ def plan(
     # account holds: a lot it doesn't mention may have been sold.
     listed = {result.rows[index]["account_name"] for index, into in landed.items() if into.by_symbol}
     listed |= {target.account for _, target in result.new}
+    # An account that another outside account fills too, one this file
+    # doesn't have: the file then doesn't say all that the account holds.
+    present = {holding.account for holding in snapshot.holdings}
+    shared: dict[str, set[str]] = {}
+    for (outside, _), target in account_map.entries.items():
+        if target.action == "map" and outside not in present:
+            shared.setdefault(target.account, set()).add(outside)
+    unsaid: set[str] = set()
     for index, row in enumerate(result.rows):
         if year_end or row.get("account_name") not in listed or index in landed or index in in_file \
                 or not (_cents(row.get("opening_balance", "")) or _number(row.get("quantity", ""))):
@@ -339,6 +361,9 @@ def plan(
         # A lot the holdings were split out of is emptied whatever was asked:
         # its total is in the new lots now, and would be counted twice.
         split_out = row["account_name"] in split and not row.get("symbol", "").strip()
+        if not split_out and row["account_name"] in shared:
+            unsaid.add(row["account_name"])
+            continue
         if prune or split_out:
             cells = {"opening_balance": "0.00"} if row.get("opening_balance", "").strip() else {}
             cells |= {column: zero for column, zero in (("quantity", "0"), ("opening_cost_basis", "0.00"))
@@ -359,6 +384,12 @@ def plan(
             f"{snapshot.source} file and keeps what it holds, though it may have been sold; "
             "--prune empties such lots, and "
             f"'sim account lot delete {row['account_name']} {_lot_name(row)}' removes this one")
+    if prune:
+        result.warnings.extend(
+            f"{account} also takes {snapshot.source} account(s) "
+            f"{', '.join(sorted(shared[account]))}, which the file doesn't have, so its lots that "
+            "aren't in the file were left as they are; import the accounts together to empty them"
+            for account in sorted(unsaid))
     return result
 
 

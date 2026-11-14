@@ -12258,7 +12258,13 @@ def import_holdings(
                 progress = True
             for holding, target in result.new:
                 its_lots = [_lot.lot for _lot in lots if _lot.account == target.account]
-                if _interactive() and not new_lots:
+                if any(row.get("account_name") == target.account
+                       and row.get("symbol", "").upper() == holding.asset.upper() for row in rows):
+                    # An earlier holding of the symbol (another row of the
+                    # file, or another outside account) got the lot just now.
+                    continue
+                # --new-lots can't name a lot for 'Pending activity'.
+                if _interactive() and not (new_lots and _clean_symbol(holding.asset)):
                     answer = _ask_holding_lot(holding, target, its_lots)
                 elif new_lots and _clean_symbol(holding.asset):
                     # A lot of another symbol may have the name already.

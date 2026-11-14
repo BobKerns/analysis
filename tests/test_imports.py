@@ -591,6 +591,63 @@ def test_plan_leaves_open_a_symbol_with_no_lot_and_fills_a_fresh_one(test_data_d
     assert not result.warnings
 
 
+def test_plan_keeps_a_split_accounts_prior_year_balance_on_the_lot_split_from(test_data_dir: Path) -> None:
+    accounts = {"IRA": ("asset", "retirement")}
+    account_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "IRA")))
+    lots = [
+        {"account_name": "IRA", "lot": "default", "subkind": "traditional_ira",
+         "opening_balance": "16000.00", "prior_year_end_balance": "15000.00"},
+        *({"account_name": "IRA", "lot": name, "subkind": "traditional_ira", "symbol": name.upper()}
+          for name in ("aaa", "bbb")),
+    ]
+
+    result = holdings.plan(_symbol_snapshot(), account_map, accounts, lots, split={"IRA"}, fresh={1, 2})
+
+    # Seeded on the new lots as well, an RMD would be figured on twice the account.
+    assert result.cells[0] == {"opening_balance": "0.00"}
+    assert [result.cells[i]["prior_year_end_balance"] for i in (1, 2)] == ["0.00", "0.00"]
+
+
+def test_plan_sends_a_row_with_no_symbol_to_the_lot_with_none(test_data_dir: Path) -> None:
+    from decimal import Decimal
+    account_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "Brokerage")))
+    snapshot = Snapshot("broker", (
+        Holding("B1", 12000_00, asset="AAA", quantity=Decimal("100")), Holding("B1", 300_00)))
+    lots = [
+        {"account_name": "Brokerage", "lot": "a", "symbol": "AAA", "quantity": "90", "opening_balance": "",
+         "prior_year_end_balance": "1.00"},
+        {"account_name": "Brokerage", "lot": "cash", "opening_balance": "0.00", "prior_year_end_balance": "1.00"},
+    ]
+
+    result = holdings.plan(snapshot, account_map, _BROKERAGE, lots)
+
+    # Not into the fund's lot, whose share count it would undo.
+    assert result.cells == {0: {"quantity": "100"}, 1: {"opening_balance": "300.00"}}
+    assert not result.warnings
+
+
+def test_plan_leaves_lots_another_outside_account_fills(test_data_dir: Path) -> None:
+    account_map = _mapped(
+        test_data_dir, ("B1", "", mapping.AccountTarget("map", "Brokerage")),
+        ("B2", "", mapping.AccountTarget("map", "Brokerage")))
+    lots = [
+        {"account_name": "Brokerage", "lot": "a", "symbol": "AAA", "quantity": "100",
+         "opening_balance": "12000.00", "opening_cost_basis": "9000.00", "prior_year_end_balance": "1.00"},
+        {"account_name": "Brokerage", "lot": "b", "symbol": "BBB", "quantity": "50.5",
+         "opening_balance": "5000.00", "opening_cost_basis": "6000.00", "prior_year_end_balance": "1.00"},
+        {"account_name": "Brokerage", "lot": "theirs", "symbol": "CCC", "quantity": "5",
+         "opening_balance": "70.00", "prior_year_end_balance": "65.00"},
+    ]
+
+    # The file has B1 only: it can't say what B2 put in the account.
+    quiet = holdings.plan(_symbol_snapshot(), account_map, _BROKERAGE, lots)
+    assert not quiet.warnings and not quiet.cells
+
+    pruned = holdings.plan(_symbol_snapshot(), account_map, _BROKERAGE, lots, prune=True)
+    assert not pruned.pruned and not pruned.cells
+    assert len(pruned.warnings) == 1 and "also takes broker account(s) B2" in pruned.warnings[0]
+
+
 def test_plan_prune_empties_a_lot_the_file_no_longer_has(test_data_dir: Path) -> None:
     account_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "Brokerage")))
     lots = [
