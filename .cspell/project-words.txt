@@ -34,6 +34,7 @@ axvspan
 Backblaze
 backfillable
 backticked
+BDFX
 begidx
 bengen
 birthdates
@@ -165,6 +166,7 @@ intraday
 IRMAA
 isin
 iterm
+ITLX
 Jefferies
 jupyterhub
 keepends
@@ -212,6 +214,7 @@ microcap
 midnightblue
 misaki
 mktree
+MMKX
 modelcontextprotocol
 mojimoji
 movflags
@@ -356,6 +359,7 @@ STARTPTS
 stcg
 stdlib
 steelblue
+STKX
 Stooq
 subclassing
 subkey
@@ -437,6 +441,7 @@ wordcount
 worktree
 worktrees
 WRONLY
+WROS
 XBRL
 xdata
 xdate

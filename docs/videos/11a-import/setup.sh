@@ -1,7 +1,8 @@
 # Prepares what video 11a shows, before any scene records (docs/videos/README.md,
 # "Setting up the demo"). Video 11a brings Alice and Bill's balances and
-# spending in from Quicken, so this builds video 3's base, writes the two
-# reports they exported into ~/Downloads, and then does what the scenes do,
+# spending in from Quicken and their two brokerages, so this builds video 3's
+# base, writes the two reports and two downloads they saved into ~/Downloads,
+# and then does what the scenes do,
 # tagging the data repo before each scene's commands (stage/<scene>): a tape
 # resets to its tag, so it can make on camera what a later scene already has.
 
@@ -63,6 +64,20 @@ sim chain step add spending Asset_Brokerage_Joint --lot stocks
 sim chain step add spending Asset_TraditionalIRA_Alice --lot default
 sim account lot edit Asset_Checking --minimum-balance 5000 --refill-chain spending
 
+# Alice's IRA holds one fund, counted in shares, whose prices are made up and
+# so written in rather than fetched: Quicken's one number for the account
+# then brings the offer to update the share count.
+sim symbol add STKX --name "Example Stock Index Fund" --weight stock_us=100% --no-fetch > /dev/null
+mkdir -p sim/prices
+cat > sim/prices/security_price__STKX.csv <<'CSV'
+effective_date,price
+2025-12-31,125.40
+CSV
+sim account lot edit Asset_TraditionalIRA_Alice default --symbol STKX --quantity 4000 > /dev/null
+# What Bill has put into his Roth, which a broker's file can't say: the
+# import shares it among the lots the Roth is split into.
+sim account lot edit Asset_Roth_Bill default --opening-cost-basis 60000 > /dev/null
+
 # What Quicken exported: the accounts under Quicken's own names, as of the
 # plan's first day, and 2025's spending.
 mkdir -p ~/Downloads
@@ -76,8 +91,8 @@ cat > ~/Downloads/net-worth.csv <<'CSV'
 ,"Investments",
 ,"  - Brokerage","402,300.00"
 ,"  - Alice Rollover IRA","503,610.42"
-,"  - Bill Roth IRA","121,075.00"
-,"  - Total Investments","1,026,985.42"
+,"  - Bill Roth IRA","121,074.11"
+,"  - Total Investments","1,026,984.53"
 ,"Property",
 ,"  - House","650,000.00"
 ,"  - Total Property","650,000.00"
@@ -85,7 +100,7 @@ cat > ~/Downloads/net-worth.csv <<'CSV'
 ,"Credit Cards",
 ,"  - Rewards Card","-1,240.33"
 ,"  - Total Credit Cards","-1,240.33"
-Net Worth,,"1,751,805.74"
+Net Worth,,"1,751,804.85"
 CSV
 python - > ~/Downloads/transactions-2025.csv <<'PY'
 # Twelve months of the same handful of payees, a little different each month.
@@ -114,9 +129,30 @@ for month, day, payee, category, dollars in sorted(rows + yearly):
 print(f'"Total Joint Checking",,,,,,,,,,,"-{total:,.2f}"')
 PY
 
+# What the brokerages' websites downloaded, as of the first business day.
+# The joint account's positions file (every account there; this household
+# has one) says which account in a column; the Roth's holdings file only in
+# its name, the account's number. The tickers are made up.
+cat > ~/Downloads/Portfolio_Positions_Jan-02-2026.csv <<'CSV'
+Account number,Account name,Symbol,Description,Quantity,Last price,Last price change,Current value,Today's gain/loss dollar,Today's gain/loss percent,Total gain/loss dollar,Total gain/loss percent,Percent of account,Cost basis total,Average cost basis,Type,
+555012345,Joint WROS,STKX,EXAMPLE STOCK INDEX FUND,1901.5,$125.40,+$0.62,"$238,448.10",+$1178.93,+0.50%,"+$87,248.10",+57.70%,59.27%,"$151,200.00",$79.52,Cash,
+555012345,Joint WROS,BDFX,EXAMPLE BOND FUND,13957.4,$10.85,-$0.01,"$151,437.79",-$139.57,-0.09%,"-$4,202.21",-2.70%,37.64%,"$155,640.00",$11.15,Cash,
+555012345,Joint WROS,MMKX**,HELD IN MONEY MARKET,,,,"$12,414.11",,,,,3.09%,,,Cash,
+
+"The data and information in this spreadsheet is provided to you solely for your use."
+
+"Date downloaded Jan-02-2026 at 4:10 p.m ET"
+CSV
+cat > ~/Downloads/holdings-88812345.csv <<'CSV'
+Symbol,Name,Current balance,Quantity,"As of 01/02/2026 04:00 p.m., ET Current price","As of 01/02/2026 04:00 p.m., ET Last price change ($/%)",Total unrealized capital gain/loss ($/%),Investment type,Expense ratio
+STKX,Example Stock Index Fund,"$72,644.22",579.300,$125.40,+$0.62 (+0.50%),"+$20,644.22 (+39.70%)",Mutual fund,0.04%
+ITLX,Example International Index Fund,"$30,268.08",1401.300,$21.60,-$0.05 (-0.23%),"+$2,768.08 (+10.07%)",Mutual fund,0.08%
+BDFX,Example Bond Fund,"$18,161.81",1673.900,$10.85,-$0.01 (-0.09%),"-$738.19 (-3.91%)",Mutual fund,0.05%
+CSV
+
 # The one mapping file written by hand: Quicken's categories, gathered into
 # the few the plan keeps.
-mkdir -p sim/imports/quicken
+mkdir -p sim/imports/quicken sim/imports/fidelity sim/imports/vanguard
 cat > sim/imports/quicken/categories.csv <<'CSV'
 outside_category,category
 Groceries,Food
@@ -142,11 +178,27 @@ Joint Checking,,map,Asset_Checking,,
 Online Savings,,map,Asset_Savings,,
 Brokerage,,skip,,,
 Alice Rollover IRA,,map,Asset_TraditionalIRA_Alice,,
-Bill Roth IRA,,map,Asset_Roth_Bill,,
+Bill Roth IRA,,skip,,,
 House,,skip,,,
 Rewards Card,,skip,,,
 CSV
 sim import holdings ~/Downloads/net-worth.csv
+# The share count Alice accepts on camera, which is only offered at a terminal.
+sim account lot edit Asset_TraditionalIRA_Alice default --quantity 4016.032 > /dev/null
+stage positions
+cat > sim/imports/fidelity/accounts.csv <<'CSV'
+outside_account,asset,action,account,lot,note
+555012345,,map,Asset_Brokerage_Joint,,
+555012345,STKX,map,Asset_Brokerage_Joint,stocks,
+555012345,BDFX,map,Asset_Brokerage_Joint,bonds,
+CSV
+sim import holdings ~/Downloads/Portfolio_Positions_Jan-02-2026.csv --new-lots
+stage roth
+cat > sim/imports/vanguard/accounts.csv <<'CSV'
+outside_account,asset,action,account,lot,note
+88812345,,map,Asset_Roth_Bill,,
+CSV
+sim import holdings ~/Downloads/holdings-88812345.csv --new-lots
 stage again
 stage estimates
 sim scheduled delete living --yes
