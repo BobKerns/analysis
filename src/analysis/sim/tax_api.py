@@ -26,7 +26,7 @@ load. The API is this module and the calculator classes and bases in
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, ClassVar
@@ -246,6 +246,12 @@ class Residence:
     county: str | None = None
 
 
+def _paid(rows: Sequence[TaxPaid], year: int, jurisdictions: Sequence[str]) -> Iterator[TaxPaid]:
+    """The ``rows`` of calendar ``year`` for the ``jurisdictions`` (all of
+    them when none are named)."""
+    return (t for t in rows if t.year == year and (not jurisdictions or t.jurisdiction in jurisdictions))
+
+
 @dataclass(frozen=True)
 class TaxYear:
     """One tax year, as a calculator sees it.
@@ -422,20 +428,17 @@ class TaxYear:
     def tax_paid(self, *jurisdictions: str) -> int:
         """What was paid this calendar year toward the ``jurisdictions``'
         income taxes (every state and local one when none are named)."""
-        return sum(t.amount for t in self.taxes_paid
-                   if t.year == self.year and (not jurisdictions or t.jurisdiction in jurisdictions))
+        return sum(t.amount for t in _paid(self.taxes_paid, self.year, jurisdictions))
 
     def prior_tax_paid(self, *jurisdictions: str) -> int:
         """What was paid last calendar year toward the ``jurisdictions``'
         income taxes, as :meth:`tax_paid` (#593)."""
-        return sum(t.amount for t in self.prior_taxes_paid
-                   if t.year == self.year - 1 and (not jurisdictions or t.jurisdiction in jurisdictions))
+        return sum(t.amount for t in _paid(self.prior_taxes_paid, self.year - 1, jurisdictions))
 
     def tax_refunded(self, *jurisdictions: str) -> int:
         """What the ``jurisdictions`` (every state and local one when none
         are named) paid back this calendar year (#593): last year's refund."""
-        return sum(t.refunded for t in self.taxes_paid
-                   if t.year == self.year and (not jurisdictions or t.jurisdiction in jurisdictions))
+        return sum(t.refunded for t in _paid(self.taxes_paid, self.year, jurisdictions))
 
 
 @dataclass(frozen=True)

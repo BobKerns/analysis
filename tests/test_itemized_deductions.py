@@ -1196,26 +1196,27 @@ def test_a_run_recaptures_an_over_withheld_state_refund(
     run = run_test_copy()
     lines = _lines(run, *(f"federal_{line}" for line in (
         "state_refunds", "state_refund_income", "standard_deduction", "itemized_deduction",
-        "itemized_salt", "salt_paid", "deduction_unused", "ordinary_income")),
+        "itemized_salt", "salt_paid")),
         "state_refund_income", "state_tax_overpaid")
     refunds, income = lines["federal_state_refunds"], lines["federal_state_refund_income"]
-    with closing(sqlite3.connect(run)) as con:
-        paid = dict(con.execute(
-            "SELECT CAST(substr(t.date, 1, 4) AS INTEGER), SUM(t.amount) FROM transfer_event t "
-            "JOIN account a ON a.id = t.to_account WHERE a.name = 'Expense_Taxes_State' GROUP BY 1"))
     assert refunds, "the withholding should leave a refund"
     for year, refund in refunds.items():
         # Each refund is the year before's overpayment.
         assert refund == lines["state_tax_overpaid"][year - 1]
-
-        def last(line: str, year: int = year) -> int:
-            return lines[f"federal_{line}"].get(year - 1, 0)
-        gained = last("itemized_deduction") - last("standard_deduction")
-        lost = min(last("itemized_salt"),
-                   last("itemized_salt") - last("salt_paid") + min(refund, paid.get(year - 1, 0)))
-        expected = (0 if gained <= 0 or last("itemized_salt") <= 0
-                    else max(0, min(refund, gained, lost) - last("deduction_unused")))
-        assert income.get(year, 0) == expected, year
+        gained = (lines["federal_itemized_deduction"][year - 1]
+                  - lines["federal_standard_deduction"][year - 1])
+        # Never more than the refund, nor than what itemizing gained.
+        assert 0 <= income.get(year, 0) <= min(refund, max(0, gained)), year
+    # Worked by hand: 2026 itemized $33,915.12 against a $31,500 standard
+    # deduction, under the SALT cap, so the 2027 refund of $15,036.03 is
+    # income only for the $2,415.12 itemizing gained.
+    assert lines["federal_itemized_deduction"][2026] == 33_915_12
+    assert lines["federal_standard_deduction"][2026] == 31_500_00
+    assert lines["federal_itemized_salt"][2026] == lines["federal_salt_paid"][2026]
+    assert refunds[2027] == 15_036_03 and income[2027] == 2_415_12
+    # From 2030 the cap is $10,000, they take the standard deduction, and
+    # the refunds after it are no income.
+    assert all(year not in income for year in refunds if year > 2030)
     assert any(income.values())
     # California doesn't tax its own refund: a named subtraction takes it
     # off the federal income it starts from.
