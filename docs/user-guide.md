@@ -1985,8 +1985,8 @@ growth when markets rise. The design is in
 **Video.** *Keeping the plan current* walks through this section with Alice
 and Bill: rolling the plan forward to January, last year's income for April's
 tax, this year's spending, and comparing the new plan with last year's:
-[English](https://www.youtube.com/watch?v=8db_avIPyaA),
-[Japanese (日本語)](https://www.youtube.com/watch?v=G8olwcX-Udw).
+[English](https://www.youtube.com/watch?v=ZsPk3FI4cd4),
+[Japanese (日本語)](https://www.youtube.com/watch?v=5SmA9xplhgw).
 
 A plan only knows what you told it when you wrote it. Once a year, or after
 a big change, start it again from what the accounts hold now:
@@ -2012,8 +2012,8 @@ offering the run's Dec 31.
 With more than a few accounts, the balances can come from a file another
 program exported instead, and the year's spending too:
 [Importing your data](guides/importing-data.md), with its own video
-([English](https://www.youtube.com/watch?v=usFLQg8Lvsk),
-[Japanese (日本語)](https://www.youtube.com/watch?v=x7PQfaDGhFA)).
+([English](https://www.youtube.com/watch?v=KHS9dpUaHFc),
+[Japanese (日本語)](https://www.youtube.com/watch?v=Dby3vYmfFPA)).
 
 A new year changes what some rows mean, so `roll` deals with those too:
 
