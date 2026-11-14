@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-__all__ = ["FLOW_COLUMNS", "ORIGIN", "Flows", "Holding", "Snapshot", "read_rows"]
+__all__ = ["FLOW_COLUMNS", "ORIGIN", "REFERENCE", "Flows", "Holding", "Snapshot", "read_rows"]
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,9 @@ of the file. A source may add columns of its own."""
 
 
 ORIGIN = "origin"
+REFERENCE = "reference"
+"""A column some sources add: the outside program's own id for a transaction,
+the same in every file that has it."""
 """The column naming each row's source, in transactions read from several."""
 
 
@@ -69,6 +72,9 @@ class Flows:
     source: str
     """The source they were read from; of several, their names joined by '+'."""
     transactions: pd.DataFrame
+    duplicates: int = 0
+    """Rows left out because an earlier file of the run had them too, by
+    their reference."""
 
     @property
     def sources(self) -> tuple[str, ...]:

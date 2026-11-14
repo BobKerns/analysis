@@ -718,6 +718,9 @@ def test_a_banks_download_is_read_as_transactions(bank_checking_export: Path) ->
     assert frame["check"].iloc[5] == "1042"
     assert sources.read_flows([bank_checking_export], account="Joint").transactions["account"].iloc[0] \
         == "Joint"
+    # A bank names its downloads alike, so where it can the command asks.
+    asked = sources.read_flows([bank_checking_export], ask_account=lambda path, source: f"{source} joint")
+    assert set(asked.transactions["account"]) == {"wells_fargo joint"}
 
 
 def test_a_transactions_profile_reads_two_amount_columns_charges_and_only_some_rows(
@@ -752,6 +755,53 @@ def test_one_run_reads_files_of_several_sources(
     # A named source is every file's.
     with pytest.raises((ValueError, KeyError)):
         sources.read_flows([bank_checking_export, quicken_transaction_export], "wells_fargo")
+
+
+def test_a_cards_two_layouts_are_one_profile_and_a_reference_is_counted_once(
+    card_exports: tuple[Path, Path, Path], test_data_dir: Path,
+) -> None:
+    detailed, february, short = card_exports
+    imports = test_data_dir / "imports"
+    assert [(s.name, form) for s, form in sources.detect(short, imports=imports)] == [
+        ("card", "transactions")]
+
+    plain = sources.read_flows([short], imports=imports).transactions
+    assert (plain["amount_cents"].tolist(), plain["account"].tolist(), plain["category"].tolist()) == (
+        [-6000], ["-12345"], [""])
+
+    # The two detailed files share January 25: by its reference it is one charge.
+    both = sources.read_flows([detailed, february], imports=imports)
+    assert both.duplicates == 1
+    frame = both.transactions
+    assert frame["reference"].tolist() == ["'R003'", "'R002'", "'R001'", "'R004'"]
+    # A charge is spending and the payment money in; a cell's line breaks don't split a row.
+    assert frame["amount_cents"].tolist() == [-8000, 30000, -4000, -6000]
+    assert frame["category"].tolist()[0] == "Merchandise & Supplies-Groceries"
+
+    # Without references, the same days of one account twice are refused.
+    with pytest.raises(ValueError, match="both have transactions"):
+        sources.read_flows([short, short], imports=imports)
+
+    payees = mapping.PayeeMap(imports / "card" / "payees.csv")
+    payees.add("harbor cafe", "Treats")
+    payees.add("online payment", "transfer")
+    over = transactions.override(frame, {"card": payees})
+    assert over["category"].tolist() == [
+        "Merchandise & Supplies-Groceries", "", "Treats", "Merchandise & Supplies-Groceries"]
+    assert over["transfer"].tolist() == ["", "transfer", "", ""]
+
+
+def test_a_transactions_profile_says_what_a_file_may_lack(
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+) -> None:
+    write_import_profile(
+        "odd", "transactions: {columns: {date: D, payee: P, amount: A}, optional: [amount]}\n")
+    with pytest.raises(ValueError, match="can't do without"):
+        profiles.load(test_data_dir / "imports" / "odd" / "profile.yaml", "odd")
+    write_import_profile(
+        "odd", "transactions: {columns: {date: D, payee: P, amount: A}, optional: [memo]}\n")
+    with pytest.raises(ValueError, match="'optional' lists columns the profile names"):
+        profiles.load(test_data_dir / "imports" / "odd" / "profile.yaml", "odd")
 
 
 def test_payees_give_a_banks_rows_their_categories(test_data_dir: Path, bank_checking_export: Path) -> None:

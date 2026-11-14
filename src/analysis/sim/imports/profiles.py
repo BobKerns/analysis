@@ -53,7 +53,7 @@ import yaml
 
 import pandas as pd
 
-from analysis.sim.imports.forms import FLOW_COLUMNS, Flows, Holding, Snapshot, read_rows
+from analysis.sim.imports.forms import FLOW_COLUMNS, REFERENCE, Flows, Holding, Snapshot, read_rows
 
 __all__ = [
     "PROFILE", "HoldingsProfile", "Profile", "ProfileError", "TransactionsProfile", "built_in",
@@ -77,10 +77,14 @@ _AS_OF_PLACES = ("heading", "last_lines", "file_name")
 # who was paid, and the amount: in one signed column, or in two.
 _FLOW_COLUMNS = (
     "account", "date", "payee", "amount", "debit", "credit", "category", "memo", "check", "status",
+    "reference",
 )
 _TRANSACTIONS_KEYS = {
-    "layout", "columns", "account", "date_format", "spending", "only", "blank",
+    "layout", "columns", "optional", "account", "date_format", "spending", "only", "blank",
 }
+# What a transactions file can do without: a card's short download and its
+# detailed one are one layout, the second with more columns.
+_OPTIONAL_FLOW_COLUMNS = ("category", "memo", "check", "status", "reference")
 _SPENDING = ("negative", "positive")
 # How far down a file its header row may be: a download may open with a
 # title and a date.
@@ -110,11 +114,13 @@ class _TableProfile:
     account_pattern: re.Pattern[str] | None = None
     """The outside account, from the file's name, when no column has it."""
     blank: frozenset[str] = frozenset()
+    optional: frozenset[str] = frozenset()
+    """Columns a file may lack: it is still the profile's without them."""
 
     def _header(self, rows: list[list[str]]) -> int | None:
         """The index of the header row: the first near the top with every
         column the profile names, however a download capitalizes them."""
-        wanted = {_heading(name) for name in self.columns.values()}
+        wanted = {_heading(name) for key, name in self.columns.items() if key not in self.optional}
         for index, row in enumerate(rows[:_HEADER_SEARCH]):
             if wanted <= {_heading(cell) for cell in row}:
                 return index
@@ -140,9 +146,11 @@ class _TableProfile:
         if start is None:
             raise ProfileError(
                 f"{path}: no header row with the columns {self.where} names: "
-                + ", ".join(sorted(set(self.columns.values()))))
+                + ", ".join(sorted({name for key, name in self.columns.items()
+                                    if key not in self.optional})))
         headings = [_heading(cell) for cell in rows[start]]
-        return rows, start, {key: headings.index(_heading(name)) for key, name in self.columns.items()}
+        return rows, start, {key: headings.index(_heading(name)) for key, name in self.columns.items()
+                             if _heading(name) in headings}
 
     def names_account(self, path: Path) -> bool:
         """Whether ``path`` says which outside account it is: in a column,
@@ -242,11 +250,15 @@ class TransactionsProfile(_TableProfile):
     """Rows to keep, by column: those whose cell is one of the values (a
     bank's ``Posted``, leaving out what is still pending)."""
 
+    def names_account(self, path: Path) -> bool:
+        return "account" in self.columns or (
+            self.account_pattern is not None and self.account_pattern.search(path.name) is not None)
+
     def read(self, path: Path, account: str | None = None) -> Flows:
         """The transactions in ``path``. Its outside account is ``account``,
-        else what the file's name says, else the name itself: nothing maps a
-        transactions account to the plan's, so it only tells one file's rows
-        from another's."""
+        else what the file's name says, else the name itself: a bank's
+        download is named for neither the bank nor the account, so the
+        command asks (``names_account``) where it can."""
         rows, start, at = self._table(path, account)
         file_account = account
         if file_account is None:
@@ -266,7 +278,7 @@ class TransactionsProfile(_TableProfile):
             if not cell("date"):
                 continue
             line = f"{path} line {number + 1}"
-            if any(cell(key).casefold() not in wanted for key, wanted in self.only.items()):
+            if any(key in at and cell(key).casefold() not in wanted for key, wanted in self.only.items()):
                 continue
             day = _date(cell("date"), self.date_format, f"{line}, {self.columns['date']}")
             if day is None:
@@ -294,8 +306,9 @@ class TransactionsProfile(_TableProfile):
                 "memo": cell("memo"),
                 "amount_cents": cents,
                 "check": cell("check"),
+                REFERENCE: cell("reference"),
             })
-        frame = pd.DataFrame(records, columns=[*FLOW_COLUMNS, "check"])
+        frame = pd.DataFrame(records, columns=[*FLOW_COLUMNS, "check", REFERENCE])
         frame["date"] = pd.to_datetime(frame["date"])
         return Flows(source=self.source, transactions=frame)
 
@@ -438,11 +451,22 @@ def _transactions(source: str, where: str, data: object) -> TransactionsProfile:
     blank = data.get("blank") or []
     if not isinstance(blank, list):
         raise ProfileError(f"{where}: 'blank' must be a list")
+    optional = data.get("optional") or []
+    if not isinstance(optional, list) or (
+            strangers := sorted({str(each) for each in optional} - set(columns))):
+        raise ProfileError(
+            f"{where}: 'optional' lists columns the profile names"
+            + (f", not {strangers}" if isinstance(optional, list) else ""))
+    if needed := sorted({str(each) for each in optional} - set(_OPTIONAL_FLOW_COLUMNS)):
+        raise ProfileError(
+            f"{where}: a transactions file can't do without {needed}; 'optional' may list "
+            f"{list(_OPTIONAL_FLOW_COLUMNS)}")
     return TransactionsProfile(
         source=source, where=where, layout=str(data.get("layout") or "a transactions file"),
         columns={str(key): str(name) for key, name in columns.items()},
         account_pattern=_pattern(account["file_name"], where) if account.get("file_name") else None,
         blank=frozenset(str(each) for each in blank),
+        optional=frozenset(str(each) for each in optional),
         date_format=str(data.get("date_format") or "%m/%d/%Y"),
         spending=spending,
         only={str(key): frozenset(str(value).casefold() for value in

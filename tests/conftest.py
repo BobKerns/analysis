@@ -2381,6 +2381,50 @@ def bank_checking_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def card_exports(
+    write_import_profile: Callable[[str, str], Path], tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    """A card's downloads, under a household profile ``card``: the detailed
+    layout for January 2026 (the card's own categories, and references), the
+    detailed layout again for late January into February (one row is in
+    both), and the short layout for February (neither column). Charges are
+    positive, the payment negative, and the account is a column."""
+    write_import_profile(
+        "card",
+        "description: A card's activity download\n"
+        "transactions:\n"
+        "  columns: {date: Date, payee: Description, account: 'Account #', amount: Amount,\n"
+        "            category: Category, reference: Reference}\n"
+        "  optional: [category, reference]\n"
+        "  spending: positive\n")
+    detailed = tmp_path / "activity-detailed.csv"
+    head = ("Date,Description,Card Member,Account #,Amount,Extended Details,"
+            "Appears On Your Statement As,Address,City/State,Zip Code,Country,Reference,Category\n")
+    detailed.write_text(
+        head
+        + "01/25/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,80.00,\"CORNER MARKET\nOAKLAND\","
+          "CORNER MARKET 204,1 MAIN ST,\"OAKLAND\nCA\",94600,UNITED STATES,'R003',"
+          "Merchandise & Supplies-Groceries\n"
+        + "01/15/2026,ONLINE PAYMENT - THANK YOU,ALICE EXAMPLE,-12345,-300.00,,,,,,,'R002',\n"
+        + "01/05/2026,HARBOR CAFE,BILL EXAMPLE,-12346,40.00,,HARBOR CAFE,,,,,'R001',Restaurant-Restaurant\n",
+        encoding="utf-8")
+    short = tmp_path / "activity.csv"
+    short.write_text(
+        "Date,Description,Card Member,Account #,Amount\n"
+        "02/10/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,60.00\n",
+        encoding="utf-8")
+    again = tmp_path / "activity-detailed-february.csv"
+    again.write_text(
+        head
+        + "02/10/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,60.00,,,,,,,'R004',"
+          "Merchandise & Supplies-Groceries\n"
+        + "01/25/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,80.00,,,,,,,'R003',"
+          "Merchandise & Supplies-Groceries\n",
+        encoding="utf-8")
+    return detailed, again, short
+
+
+@pytest.fixture
 def quicken_empty_transaction_export(tmp_path: Path) -> Path:
     """A Quicken "Transaction Export" of an account with no activity."""
     path = tmp_path / "empty_transaction_export.csv"

@@ -1116,12 +1116,14 @@ def test_sim_import_transactions_asks_about_payees_and_saves_the_answers(
     saved = test_data_dir / "imports" / "wells_fargo" / "payees.csv"
 
     # The transfer; the market, by two of its words; then the rest unasked.
-    answers = "transfer\n\nFood\ncorner market\nrest\n"
+    # The file's account, then the payees.
+    answers = "Joint checking\ntransfer\n\nFood\ncorner market\nrest\n"
     dry = _transactions(test_data_dir, bank_checking_export, "--dry-run", input=answers)
     assert dry.exit_code == 0, dry.output
     assert "'ONLINE TRANSFER TO SAVINGS REF #IB0XYZ12', 1 payment(s), 1000.00 in all" in dry.output
     assert "2 payee(s) not asked about went to Other, 375.00 in all" in dry.output
     assert "the payee categories you gave were not saved" in dry.output and not saved.exists()
+    assert "Checking1.csv (wells_fargo) doesn't say which account it is." in dry.output
 
     result = _transactions(test_data_dir, bank_checking_export, input=answers)
     assert result.exit_code == 0, result.output
@@ -1131,7 +1133,7 @@ def test_sim_import_transactions_asks_about_payees_and_saves_the_answers(
 
     # Words the payee doesn't have are asked for again.
     fussy = _transactions(test_data_dir, bank_checking_export, "--dry-run",
-                          input="Utilities\nelectric\ncity power\n-\n\n")
+                          input="\nUtilities\nelectric\ncity power\n-\n\n")
     assert fussy.exit_code == 0, fussy.output
     assert "words found in 'city power and water bill pay'" in fussy.output
 
@@ -1152,3 +1154,22 @@ def test_sim_import_transactions_makes_one_set_of_rules_from_several_sources(
     # Food from both: (300 + 40 + 500) from one and (400 + 200) from the other, over two months.
     assert rules["baseline_expense_food"]["amount"] == "720.00"
     assert json.loads(rules["baseline_expense_food"]["meta_json"])["source"] == "wells_fargo+quicken"
+
+
+def test_sim_import_transactions_reads_a_cards_categories_and_its_payees_over_them(
+    test_data_dir: Path, card_exports: tuple[Path, Path, Path], write_import_map: MapWriter,
+) -> None:
+    detailed, february, _ = card_exports
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nTreats,Expense_Living\n")
+    write_import_map(
+        "card/categories.csv", "Merchandise & Supplies-Groceries,Food\nRestaurant-Restaurant,Food\n")
+    write_import_map("card/payees.csv", "harbor cafe,Treats\n")
+
+    result = _import(test_data_dir, "transactions", str(detailed), str(february),
+                     "--from-account", "Asset_Checking")
+
+    assert result.exit_code == 0, result.output
+    assert "1 transaction(s) that an earlier file had too" in result.output
+    # January 25 once: (80 + 60) over two months; the cafe by its payee, not the card's category.
+    assert {name: rule["amount"] for name, rule in _generated(test_data_dir).items()} == {
+        "baseline_expense_food": "70.00", "baseline_expense_treats": "20.00"}

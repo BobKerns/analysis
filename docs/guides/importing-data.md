@@ -210,7 +210,9 @@ transactions:
 `date` and `payee` are required, and the amount is either one `amount`
 column or a `debit` and a `credit` column. `spending: positive` is for a
 file whose charges are positive numbers; a bank's are negative, which is the
-default. A `category` column is used if the file has one.
+default. `category`, `account` and `reference` columns are used if named,
+and `optional: [category, reference]` lets one profile read both a short
+download and a detailed one with more columns.
 
 ## Spending: `sim import transactions`
 
@@ -305,12 +307,22 @@ sim import transactions Checking1.csv Card.csv --from-account Asset_Checking
 ```
 
 A card's purchases come from the card's own file, so mark its payment
-`transfer` in the bank's `payees.csv`, or the money is counted twice. Each
-bank file's name stands for its account, so download each account under its
-own name.
+`transfer` in the bank's `payees.csv`, or the money is counted twice.
 
-A card's file whose charges are positive numbers says so in its profile
-(`spending: positive`); see [A source of your own](#a-source-of-your-own).
+A bank names its downloads alike whatever the account, so at a terminal the
+import asks which account each such file is, offering the file's name. Away
+from a terminal the file's name is the account, so rename the files, or
+import one at a time with `--outside-account`.
+
+**A card's file.** Describe it in a profile, with `spending: positive` if
+its charges are positive numbers; see
+[A source of your own](#a-source-of-your-own). If the card gives its own
+category for each charge, map those in `imports/<source>/categories.csv` as
+for any other source. Where the card's category isn't yours, a row of
+`imports/<source>/payees.csv` for that payee wins over it. If the file has a
+reference for each transaction, name that column too (`reference`):
+downloads may then overlap, and a transaction in two of them is counted
+once.
 
 ## Quicken
 

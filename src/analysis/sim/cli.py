@@ -8792,6 +8792,16 @@ def _ask_holding_lot(
             click.echo(f"  {error.format_message()}")
 
 
+def _ask_transactions_account(path: Path, source: str) -> str:
+    """Which outside account a transactions file is, when nothing in it or
+    its name says: a bank names its downloads alike, whatever the account."""
+    click.echo(f"{path.name} ({source}) doesn't say which account it is.")
+    while True:
+        answer = _prompt_with_completion("  account", default=path.stem).strip()
+        if answer:
+            return answer
+
+
 def _categorize_by_payee(
     frame: pd.DataFrame, payee_maps: dict[str, import_mapping.PayeeMap], *, known: Collection[str],
 ) -> tuple[pd.DataFrame, set[str], list[import_transactions_.Unmatched]]:
@@ -8919,7 +8929,8 @@ def import_transactions(
     amazon_state_path = amazon_state_dir or data_repo_root / "state"
     try:
         flows = import_sources_.read_flows(
-            files, layout, import_mapping.imports_dir(data_dir_p), account=outside_account)
+            files, layout, import_mapping.imports_dir(data_dir_p), account=outside_account,
+            ask_account=_ask_transactions_account if _interactive() else None)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     if flows.transactions.empty:
@@ -8927,7 +8938,11 @@ def import_transactions(
             "no transactions in " + ", ".join(map(str, files))
             + f": is it a {flows.source} transactions export?")
 
+    if flows.duplicates:
+        click.echo(f"note: {flows.duplicates} transaction(s) that an earlier file had too, by "
+                   "their reference, were left out")
     payee_maps: dict[str, import_mapping.PayeeMap] = {}
+    payee_overrides: dict[str, import_mapping.PayeeMap] = {}
     try:
         category_maps: dict[str, import_transactions_.CategoryMaps] = {}
         for source in flows.sources:
@@ -8942,6 +8957,9 @@ def import_transactions(
                 raise click.ClickException(
                     f"category map not found: {category_map_path} "
                     f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
+            elif (maps_dir / import_mapping.PAYEES).is_file():
+                # A card's own categories may not be the household's.
+                payee_overrides[source] = import_mapping.load_payee_map(maps_dir / import_mapping.PAYEES)
             if category_map_path.exists():
                 each.merges, each.exclusions = import_mapping.load_category_map(category_map_path)
             if category_split_path.exists():
@@ -8952,11 +8970,11 @@ def import_transactions(
         expense_accounts = import_mapping.load_expense_accounts(
             import_mapping.expense_accounts_path(data_dir_p))
         transactions, payees_asked, left_to_other = _categorize_by_payee(
-            flows.transactions, payee_maps,
+            import_transactions_.override(flows.transactions, payee_overrides), payee_maps,
             known={*maps.merges.values(), *expense_accounts.accounts})
         # A category a payee was given is one the household chose, as a
         # merge's target is: not one for the default category to swallow.
-        for payee_map in payee_maps.values():
+        for payee_map in (*payee_maps.values(), *payee_overrides.values()):
             for _, category in payee_map.rows:
                 if category not in (import_mapping.NO_RULE, import_mapping.TRANSFER) \
                         and category not in maps.exclusions:

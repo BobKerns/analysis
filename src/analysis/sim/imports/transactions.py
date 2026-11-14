@@ -17,7 +17,7 @@ import pandas as pd
 from analysis.sim.imports.forms import ORIGIN
 from analysis.sim.imports.mapping import NO_RULE, TRANSFER, PayeeMap, payee_key
 
-__all__ = ["CategoryMaps", "Unmatched", "categorize", "combine", "uncategorized"]
+__all__ = ["CategoryMaps", "Unmatched", "categorize", "combine", "override", "uncategorized"]
 
 
 @dataclass
@@ -63,6 +63,27 @@ def uncategorized(frame: pd.DataFrame, source: str) -> bool:
     """Whether ``source``'s rows come with no category at all: a bank's
     file, whose categories are found by payee."""
     return not frame.loc[frame[ORIGIN].eq(source), "category"].astype(bool).any()
+
+
+def override(frame: pd.DataFrame, payees: Mapping[str, PayeeMap]) -> pd.DataFrame:
+    """``frame`` with the category of each source's ``payees`` put over the
+    one its file gave, where a row of the map is found in the payee. For a
+    source that has categories of its own (a card's), which may not be the
+    household's: the map says otherwise payee by payee, and the rest keep
+    the file's."""
+    found = frame.copy()
+    keep = pd.Series(True, index=found.index)
+    for index, origin, payee in zip(found.index, found[ORIGIN], found["payee"], strict=True):
+        if str(origin) not in payees:
+            continue
+        category = payees[str(origin)].category(str(payee))
+        if category == NO_RULE:
+            keep[index] = False
+        elif category == TRANSFER:
+            found.at[index, "transfer"] = TRANSFER
+        elif category is not None:
+            found.at[index, "category"] = category
+    return found.loc[keep].reset_index(drop=True)
 
 
 @dataclass(frozen=True)

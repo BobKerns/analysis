@@ -17,7 +17,7 @@ from typing import Literal
 import pandas as pd
 
 from analysis.sim.imports import profiles, quicken
-from analysis.sim.imports.forms import ORIGIN, Flows, Snapshot
+from analysis.sim.imports.forms import ORIGIN, REFERENCE, Flows, Snapshot
 
 __all__ = [
     "FORMS", "Form", "Reader", "Source", "SourceError", "broken", "detect", "get", "names",
@@ -246,37 +246,59 @@ def read_holdings(
 
 def read_flows(
     paths: Sequence[Path], name: str | None = None, imports: Path | None = None,
-    *, account: str | None = None,
+    *, account: str | None = None, ask_account: Callable[[Path, str], str] | None = None,
 ) -> Flows:
     """Every file's transactions, in order, each read with source ``name``
     (or the one its own layout says: the files of one run may come from
     several, a bank's and a card's, and make one set of rules). Two files may
     not cover the same days of one outside account: their transactions would
-    be counted twice. ``account`` names the outside account of a file that
-    doesn't say."""
+    be counted twice. Rows with the outside program's own reference are the
+    exception: one that an earlier file had is left out, so downloads of such
+    a source may overlap. ``account`` names the outside account of a file
+    that doesn't say; without it ``ask_account(path, source name)`` is asked,
+    when given, and otherwise the account is the file's name."""
     if account is not None and len(paths) > 1:
         raise SourceError("--outside-account names one file's account; import the files one at a time")
     known = table(imports)
     frames: list[pd.DataFrame] = []
     met: dict[str, None] = {}
+    seen: set[tuple[str, str, str]] = set()
+    duplicates = 0
     for path in paths:
         source = known.get(name, "transactions") if name is not None \
             else _resolve([path], None, "transactions", imports, known)
         assert source.transactions is not None
-        if account is None:
+        described = None if source.profile is None else source.profile.transactions
+        if account is None and ask_account is not None and described is not None \
+                and not described.names_account(path):
+            frame = described.read(path, ask_account(path, source.name)).transactions
+        elif account is None:
             frame = source.transactions.read(path).transactions
         elif source.profile is None or source.profile.transactions is None:
             raise SourceError(
                 f"a {source.name} file names its accounts itself, so --outside-account doesn't apply")
         else:
             frame = source.profile.transactions.read(path, account).transactions
-        frames.append(frame.assign(**{ORIGIN: source.name}))
+        frame = frame.assign(**{ORIGIN: source.name})
+        if REFERENCE not in frame.columns:
+            frame[REFERENCE] = ""
+        # Within one file a reference repeated is the file's own business;
+        # across files it is the same transaction downloaded twice.
+        keys = [(source.name, str(each), str(reference)) if reference else None
+                for each, reference in zip(frame["account"], frame[REFERENCE], strict=True)]
+        fresh = [key is None or key not in seen for key in keys]
+        duplicates += fresh.count(False)
+        seen.update(key for key in keys if key is not None)
+        frames.append(frame.loc[fresh].reset_index(drop=True))
         met[source.name] = None
     spans: dict[tuple[str, str], list[tuple[dt.date, dt.date, int]]] = {}
     for number, frame in enumerate(frames):
         days: dict[tuple[str, str], list[dt.date]] = {}
-        for origin, each, stamp in zip(frame[ORIGIN], frame["account"], frame["date"], strict=True):
-            days.setdefault((str(origin), str(each)), []).append(stamp.date())
+        for origin, each, stamp, reference in zip(
+                frame[ORIGIN], frame["account"], frame["date"], frame[REFERENCE], strict=True):
+            # A row with a reference can't be counted twice, whatever the days.
+            if not reference:
+                days.setdefault((str(origin), str(each)), []).append(stamp.date())
         for key, dates in days.items():
             first, last = min(dates), max(dates)
             for start, end, other in spans.setdefault(key, []):
@@ -286,5 +308,5 @@ def read_flows(
                         f"{key[1]!r} between {max(first, start)} and {min(last, end)}; "
                         "import each period of an outside account from one file")
             spans[key].append((first, last, number))
-    return Flows(source="+".join(met),
+    return Flows(source="+".join(met), duplicates=duplicates,
                  transactions=frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True))
