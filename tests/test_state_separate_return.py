@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,7 @@ from analysis.sim.connection import RunConnection
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.reports import tax_return
 from analysis.sim.tax_api import Extra, Return
-from analysis.sim.taxes.state_base import Basis, Income
+from analysis.sim.taxes.state_base import Adjustment, Basis, Income
 from analysis.sim.taxes.state_tables import StateTablesYear
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
@@ -119,8 +119,7 @@ def test_two_incomes_pay_less_filing_separately(
     assert state["separate_tax"] == alice + bill == joint - 800_00
     assert state["separate_return"] == 1
     assert state.tax == alice + bill
-    # The joint return's own lines stay as they were.
-    assert state["taxable_income"] == 93_500_00
+    assert state["joint_taxable_income"] == 93_500_00
 
 
 def test_without_the_table_a_couple_files_jointly(
@@ -153,6 +152,11 @@ def test_a_deduction_not_doubled_for_a_joint_return_is_taken_twice(
                standard=_amounts(MFJ=3_270_00, MFS=3_270_00, Single=3_270_00))
     state = _state(ledger, aux)
     assert state["joint_tax"] - state.tax == 3_270_00 * 4 // 100
+    # The return shows the separate returns' figures, which reconcile.
+    assert state["deduction"] == 2 * 3_270_00
+    assert state["taxable_income"] == state["agi"] - state["deduction"] == 43_460_00
+    assert state["joint_taxable_income"] == 50_000_00 - 3_270_00
+    assert state["ordinary_taxable"] == state["taxable_income"]
 
 
 def test_a_single_year_never_splits(
@@ -186,7 +190,7 @@ def test_a_credit_for_each_filer_goes_to_the_one_old_enough(
         "name": "senior_credit", "step": "credit", "base": "filers", "amount": 100_00,
         "min_age": 65})]
     state = _state(ledger, aux)
-    assert state["senior_credit"] == 100_00
+    assert state["senior_credit"] == state["credits"] == 100_00
     assert state["separate_tax_alice"] == _tax(56_750_00) - 100_00
     assert state["separate_tax_bill"] == _tax(36_750_00)
     assert state.tax == state["separate_tax"] == state["joint_tax"] - 800_00
@@ -239,13 +243,13 @@ def test_a_household_tax_step_written_before_the_step_files_jointly(
     assert _OwnTax(prepared.calc, prepared.ty).compute()["separate_return"] == 1
 
 
-def test_the_loader_refuses_an_allowed_other_than_yes_or_no(
+def test_the_loader_refuses_an_allowed_cell_it_cannot_read(
     add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
     load_test_copy: Callable[[], LoadResult],
 ) -> None:
     add_state_tax()
     write_aux("state_separate_return__CA.csv", "effective_date,allowed\n2026-01-31,maybe\n")
-    with pytest.raises(LoadError, match="allowed 'maybe' must be yes or no"):
+    with pytest.raises(LoadError, match="allowed 'maybe' must be yes or blank"):
         load_test_copy()
 
 
@@ -395,9 +399,144 @@ def test_the_loader_wants_mfs_rows_where_spouses_may_file_separately(
     test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
 ) -> None:
     add_state_tax()
-    write_aux("state_separate_return__CA.csv", "effective_date,allowed\n2026-01-31,yes\n")
     brackets = test_data_dir / "aux" / "state_brackets__CA.csv"
+    dated = _first_date(brackets)
+    write_aux("state_separate_return__CA.csv", f"effective_date,allowed\n{dated},yes\n")
     rows = brackets.read_text().splitlines(keepends=True)
     brackets.write_text("".join(r for r in rows if ",MFS," not in r))
-    with pytest.raises(LoadError, match=r"aux/state_brackets__CA.csv \(2026-01-31\): no MFS rows"):
+    with pytest.raises(LoadError, match=rf"aux/state_brackets__CA.csv \({dated}\): no MFS rows"):
         load_test_copy()
+
+
+def test_the_loader_wants_mfs_rows_in_the_gain_tables_too(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """A gain table without MFS rows would tax a spouse's gain as ordinary
+    income, so it's refused too."""
+    add_state_tax()
+    dated = _first_date(test_data_dir / "aux" / "state_brackets__CA.csv")
+    write_aux("state_separate_return__CA.csv", f"effective_date,allowed\n{dated},yes\n")
+    write_aux("state_ltcg_brackets__CA.csv",
+              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+              f"{dated},MFJ,0,0.00,3%\n{dated},Single,0,0.00,3%\n")
+    with pytest.raises(LoadError, match=rf"aux/state_ltcg_brackets__CA.csv \({dated}\): no MFS"):
+        load_test_copy()
+
+
+@pytest.mark.parametrize(("mfs_from", "refused"), [(2, False), (6, True)])
+def test_the_loader_wants_mfs_rows_only_while_separate_returns_are_allowed(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
+    mfs_from: int, refused: bool,
+) -> None:
+    """Allowed only from five years on: brackets without MFS rows that give
+    way to ones with them before then are fine; ones still in force then
+    are refused."""
+    add_state_tax()
+    brackets = test_data_dir / "aux" / "state_brackets__CA.csv"
+    dated = _first_date(brackets)
+    later = _years_on(dated, mfs_from)
+    write_aux("state_separate_return__CA.csv",
+              f"effective_date,allowed\n{dated},no\n{_years_on(dated, 5)},yes\n")
+    header, *rows = brackets.read_text().splitlines(keepends=True)
+    brackets.write_text(header + "".join(r for r in rows if ",MFS," not in r)
+                        + "".join(later + r[len(dated):] for r in rows if r.startswith(dated)))
+    if refused:
+        with pytest.raises(LoadError, match=rf"state_brackets__CA.csv \({dated}\): no MFS"):
+            load_test_copy()
+    else:
+        load_test_copy()
+
+
+def _first_date(path: Path) -> str:
+    """The earliest effective date in aux table ``path``."""
+    return min(line.split(",", 1)[0] for line in path.read_text().splitlines()[1:])
+
+
+def _years_on(dated: str, years: int) -> str:
+    return f"{int(dated[:4]) + years}{dated[4:]}"
+
+
+def test_a_joint_phase_out_leaves_each_spouse_their_own_deduction(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    """The joint deduction is gone at $100,000 of AGI; each spouse's own,
+    phased out from $60,000, isn't at $50,000."""
+    _pay(ledger, post_transfer, 50_000_00, 50_000_00)
+    standard = [(DATED, {"filing_status": "MFJ", "amount": 6_500_00,
+                         "phaseout_start": 80_000_00, "phaseout_end": 90_000_00}),
+                (DATED, {"filing_status": "MFS", "amount": 3_250_00,
+                         "phaseout_start": 60_000_00, "phaseout_end": 70_000_00}),
+                (DATED, {"filing_status": "Single", "amount": 3_250_00})]
+    state = _state(ledger, _aux(standard=standard))
+    assert state["joint_taxable_income"] == 100_000_00
+    assert state["separate_deduction_alice"] == state["separate_deduction_bill"] == 3_250_00
+
+
+def test_a_spouses_business_loss_stays_theirs(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+) -> None:
+    """Alice's $100,000 pay and Bill's $50,000 business loss: Bill's
+    separate income is the loss, not none with Alice's cut to $50,000, so
+    the joint return, which nets them, costs less."""
+    ledger.executemany("INSERT INTO account(id, name, kind, subkind, owner) VALUES (?, ?, ?, ?, ?)",
+                       [(8, "Asset_Business_Bill", "asset", "business", "bill"),
+                        (9, "Expense_Business_Bill", "expense", "business", "bill")])
+    _pay(ledger, post_transfer, 100_000_00, 0)
+    post_transfer(ledger, YEAR, 8, 9, 50_000_00, registries.BUSINESS_EXPENSE)
+    state = _state(ledger, _aux())
+    assert (state["separate_agi_alice"], state["separate_agi_bill"]) == (100_000_00, -50_000_00)
+    assert state["separate_return"] == 0
+    assert state.tax == state["joint_tax"] == _tax(50_000_00 - 6_500_00)
+
+
+class _StatusSeen(StateTablesYear):
+    """A household's state year whose tax step records the filing status
+    its tax year says."""
+
+    seen: list[str]
+
+    def tax(self, taxable: int, income: Income) -> int:
+        self.seen.append(self.ty.filing_status)
+        return super().tax(taxable, income)
+
+
+def test_a_household_tax_step_reads_each_spouses_tables_as_mfs(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tax step reading its own table through ``self.ty`` (as
+    ``common.rate_table(self.ty, ...)`` does) gets each spouse's MFS rows."""
+    monkeypatch.setattr(sys.modules[__name__], "API_VERSION", 6, raising=False)
+    _pay(ledger, post_transfer, 60_000_00, 40_000_00)
+    prepared = _prepared(ledger, _aux())
+    year = _StatusSeen(prepared.calc, prepared.ty)
+    year.seen = []
+    year.compute()
+    assert year.seen == ["MFJ", "MFS", "MFS"]
+    assert year.ty.filing_status == "MFJ"
+
+
+class _OwnSubtractions(StateTablesYear):
+    """A household's state year whose subtractions step hands the base
+    class a basis of its own."""
+
+    def subtractions(self, income: Income, basis: Basis) -> Sequence[Adjustment]:
+        return super().subtractions(income, Basis(basis.extra, basis._federal))
+
+
+def test_whose_the_exclusion_is_survives_a_subtractions_override(
+    ledger: sqlite3.Connection, post_transfer: Callable[..., None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whose the retirement exclusion is travels with its line, not with
+    the basis the step was asked at."""
+    monkeypatch.setattr(sys.modules[__name__], "API_VERSION", 6, raising=False)
+    _pay(ledger, post_transfer, 60_000_00, 40_000_00)
+    aux = _aux()
+    aux[(registries.STATE_RETIREMENT_EXCLUSION, STATE)] = [(DATED, {
+        "name": "age", "income": "all", "min_age": 65, "amount": 10_000_00})]
+    prepared = _prepared(ledger, aux)
+    state = _OwnSubtractions(prepared.calc, prepared.ty).compute()
+    assert (state["separate_agi_alice"], state["separate_agi_bill"]) == (50_000_00, 40_000_00)
