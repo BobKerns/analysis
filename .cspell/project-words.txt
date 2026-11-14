@@ -123,9 +123,11 @@ fontsize
 footgun
 framealpha
 frombuffer
+FSKAX
 fstat
 ftruncate
 FTSE
+FXAIX
 GAAP
 getbasetemp
 geteuid
@@ -418,6 +420,7 @@ upserts
 usefixtures
 USSTK
 vaccts
+VBTLX
 VFIFX
 videorc
 viewpane
@@ -425,6 +428,7 @@ vmax
 VMFXX
 vmin
 vsplit
+VTSAX
 VTWNX
 Webull
 wezterm

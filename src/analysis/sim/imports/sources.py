@@ -16,12 +16,12 @@ from typing import Literal
 
 import pandas as pd
 
-from analysis.sim.imports import quicken
+from analysis.sim.imports import profiles, quicken
 from analysis.sim.imports.forms import Flows, Snapshot
 
 __all__ = [
-    "FORMS", "Form", "Reader", "Source", "SourceError", "detect", "get", "names",
-    "read_flows", "read_holdings", "sources",
+    "FORMS", "Form", "Reader", "Source", "SourceError", "broken", "detect", "get", "names",
+    "read_flows", "read_holdings", "sources", "table", "unnamed",
 ]
 
 Form = Literal["holdings", "transactions"]
@@ -49,12 +49,21 @@ class Source:
     description: str
     holdings: Reader[Snapshot] | None = None
     transactions: Reader[Flows] | None = None
+    profile: profiles.Profile | None = None
+    """What describes it, when that is a profile and not code."""
 
     def reader(self, form: Form) -> Reader[Snapshot] | Reader[Flows] | None:
         return self.holdings if form == "holdings" else self.transactions
 
+    @property
+    def where(self) -> str:
+        """Where the source is defined, for ``sim import sources``."""
+        if self.profile is None or self.profile.built_in:
+            return "built in"
+        return self.profile.where
 
-_SOURCES: dict[str, Source] = {
+
+_CODED: dict[str, Source] = {
     quicken.NAME: Source(
         name=quicken.NAME,
         description="Quicken report exports (CSV)",
@@ -66,49 +75,115 @@ _SOURCES: dict[str, Source] = {
 }
 
 
-def sources() -> list[Source]:
-    return list(_SOURCES.values())
+def _from_profile(profile: profiles.Profile) -> Source:
+    held = profile.holdings
+    return Source(
+        name=profile.name, description=profile.description, profile=profile,
+        holdings=None if held is None else Reader(held.matches, held.read, held.layout),
+    )
 
 
-def names(form: Form | None = None) -> list[str]:
-    return [s.name for s in _SOURCES.values() if form is None or s.reader(form) is not None]
+@dataclass(frozen=True)
+class Table:
+    """Every source, read once for a command: the coded ones, the built-in
+    profiles, and the household's own in the data dir's imports/ folder."""
+
+    found: dict[str, Source]
+    broken: dict[str, profiles.ProfileError]
+    """Household profiles that can't be used, by source name. One stops
+    only an import that names it: a half-written profile mustn't stop the
+    import of another source's file."""
+
+    def names(self, form: Form | None = None) -> list[str]:
+        return [s.name for s in self.found.values() if form is None or s.reader(form) is not None]
+
+    def get(self, name: str, form: Form) -> Source:
+        if name in self.broken:
+            raise self.broken[name]
+        source = self.found.get(name)
+        if source is None:
+            raise SourceError(f"unknown source {name!r}; sources: {', '.join(self.names(form))}")
+        if source.reader(form) is None:
+            raise SourceError(
+                f"source {name!r} has no {form}; sources that do: {', '.join(self.names(form))}")
+        return source
+
+    def detect(self, path: Path, form: Form | None = None) -> list[tuple[Source, Form]]:
+        return [
+            (source, each) for source in self.found.values() for each in FORMS
+            if (form is None or each == form)
+            and (reader := source.reader(each)) is not None and reader.matches(path)
+        ]
 
 
-def get(name: str, form: Form) -> Source:
+def table(imports: Path | None = None) -> Table:
+    """The sources, read now: for a command that asks about them more than
+    once, since each reading parses every profile."""
+    found = dict(_CODED)
+    described = profiles.built_in()
+    broken: dict[str, profiles.ProfileError] = {}
+    if imports is not None:
+        mine, broken = profiles.user(imports)
+        # Whether it can be used or not: one that can't mustn't stand in the
+        # coded source's way where one that can is refused.
+        if taken := sorted((set(mine) | set(broken)) & set(_CODED)):
+            raise SourceError(
+                f"{imports / taken[0] / profiles.PROFILE}: {taken[0]!r} is a source that reads more than a "
+                "table, so a profile can't replace it; give the profile's folder another name")
+        # A broken profile doesn't fall back to the built-in one of its name.
+        described = {name: profile for name, profile in (described | mine).items() if name not in broken}
+    return Table(found | {name: _from_profile(profile) for name, profile in described.items()}, broken)
+
+
+def sources(imports: Path | None = None) -> list[Source]:
+    return list(table(imports).found.values())
+
+
+def broken(imports: Path | None = None) -> dict[str, str]:
+    """The household's profiles that can't be used, and why."""
+    return {name: str(error) for name, error in table(imports).broken.items()}
+
+
+def names(form: Form | None = None, imports: Path | None = None) -> list[str]:
+    return table(imports).names(form)
+
+
+def get(name: str, form: Form, imports: Path | None = None) -> Source:
     """Source ``name``, which must read ``form``."""
-    source = _SOURCES.get(name)
-    if source is None:
-        raise SourceError(f"unknown source {name!r}; sources: {', '.join(names(form))}")
-    if source.reader(form) is None:
-        raise SourceError(f"source {name!r} has no {form}; sources that do: {', '.join(names(form))}")
-    return source
+    return table(imports).get(name, form)
 
 
-def detect(path: Path, form: Form | None = None) -> list[tuple[Source, Form]]:
+def detect(
+    path: Path, form: Form | None = None, imports: Path | None = None,
+) -> list[tuple[Source, Form]]:
     """Every (source, form) whose layout ``path`` is in; one, normally."""
-    return [
-        (source, each) for source in _SOURCES.values() for each in FORMS
-        if (form is None or each == form)
-        and (reader := source.reader(each)) is not None and reader.matches(path)
-    ]
+    return table(imports).detect(path, form)
 
 
-def _resolve(paths: Sequence[Path], name: str | None, form: Form) -> Source:
-    """The source to read ``paths`` with: ``name``, or the one source whose
-    layout every file is in."""
+def _resolve(
+    paths: Sequence[Path], name: str | Source | None, form: Form, imports: Path | None,
+) -> Source:
+    """The source to read ``paths`` with: ``name`` (or the source itself,
+    already found), or the one source whose layout every file is in."""
+    if isinstance(name, Source):
+        return name
+    known = table(imports)
     if name is not None:
-        return get(name, form)
+        return known.get(name, form)
     found: dict[str, Source] = {}
     for path in paths:
-        matched = [source for source, _ in detect(path, form)]
+        matched = [source for source, _ in known.detect(path, form)]
         if len(matched) != 1:
-            other = [f"{source.name} {each}" for source, each in detect(path)]
+            other = [f"{source.name} {each}" for source, each in known.detect(path)]
             hint = f" (it looks like {', '.join(other)})" if other and not matched else ""
             problem = "no source recognizes" if not matched else \
                 f"more than one source ({', '.join(s.name for s in matched)}) recognizes"
+            # The file may be one a profile that can't be read was written for.
+            unread = "".join(f"\n  not used: {error}" for error in known.broken.values()) \
+                if not matched else ""
             raise SourceError(
                 f"{problem} {path} as {form}{hint}; name one with --source "
-                f"({', '.join(names(form))}), or see 'sim import sources'")
+                f"({', '.join(known.names(form))}), or see 'sim import sources'{unread}")
         found[matched[0].name] = matched[0]
     if len(found) != 1:
         raise SourceError(
@@ -117,12 +192,35 @@ def _resolve(paths: Sequence[Path], name: str | None, form: Form) -> Source:
     return next(iter(found.values()))
 
 
-def read_holdings(paths: Sequence[Path], name: str | None = None) -> Snapshot:
+def unnamed(
+    paths: Sequence[Path], name: str | None = None, imports: Path | None = None,
+) -> tuple[Source, list[Path]]:
+    """The source to read holdings in ``paths`` with, and the files among
+    them that don't say which outside account they are: one must be given
+    for each (``read_holdings``'s ``account``)."""
+    source = _resolve(paths, name, "holdings", imports)
+    held = None if source.profile is None else source.profile.holdings
+    return source, [] if held is None else [path for path in paths if not held.names_account(path)]
+
+
+def read_holdings(
+    paths: Sequence[Path], name: str | Source | None = None, imports: Path | None = None,
+    *, account: str | None = None,
+) -> Snapshot:
     """One snapshot from every file in ``paths``, read with source ``name``
-    (or the one their layout says). The files must agree on the date."""
-    source = _resolve(paths, name, "holdings")
+    (or the one their layout says). The files must agree on the date.
+    ``account`` names the outside account of a file that doesn't say."""
+    source = _resolve(paths, name, "holdings", imports)
     assert source.holdings is not None
-    snapshots = [source.holdings.read(path) for path in paths]
+    if account is None:
+        snapshots = [source.holdings.read(path) for path in paths]
+    elif source.profile is None or source.profile.holdings is None:
+        raise SourceError(
+            f"a {source.name} file names its accounts itself, so --outside-account doesn't apply")
+    elif len(paths) > 1:
+        raise SourceError("--outside-account names one file's account; import the files one at a time")
+    else:
+        snapshots = [source.profile.holdings.read(paths[0], account)]
     dates = {snapshot.as_of for snapshot in snapshots if snapshot.as_of is not None}
     if len(dates) > 1:
         raise SourceError(
@@ -144,11 +242,13 @@ def read_holdings(paths: Sequence[Path], name: str | None = None) -> Snapshot:
     )
 
 
-def read_flows(paths: Sequence[Path], name: str | None = None) -> Flows:
+def read_flows(
+    paths: Sequence[Path], name: str | None = None, imports: Path | None = None,
+) -> Flows:
     """Every file's transactions, in order, read with source ``name`` (or the
     one their layout says). Two files may not cover the same days of one
     outside account: their transactions would be counted twice."""
-    source = _resolve(paths, name, "transactions")
+    source = _resolve(paths, name, "transactions", imports)
     assert source.transactions is not None
     frames = [source.transactions.read(path).transactions for path in paths]
     spans: dict[str, list[tuple[dt.date, dt.date, int]]] = {}

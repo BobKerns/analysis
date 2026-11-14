@@ -16,6 +16,7 @@ import shutil
 import sys
 from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence, Set
 from contextlib import ExitStack, contextmanager, redirect_stdout
+import itertools
 import os
 import sqlite3
 import subprocess
@@ -8613,26 +8614,48 @@ def import_group_command() -> None:
     """
 
 
+# How far a holdings file's date may be from the day its balances are set as
+# of before the import says so: a download is rarely made on the day itself.
+_IMPORT_DATE_SLACK_DAYS = 7
+
 _SOURCE_OPTION_HELP = "Outside layout to read FILE as (default: the one the file is in; see 'sim import sources')."
 
 
 @import_group_command.command("sources")
 @click.argument("files", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
-def import_sources(files: tuple[Path, ...]) -> None:
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo, for its own sources (default: $ANALYSIS_DATA_DIR).")
+def import_sources(files: tuple[Path, ...], data_dir: Path | None) -> None:
     """List the outside layouts `sim import` reads; with FILEs, say which
-    one each file is in."""
-    for path in files:
-        found = import_sources_.detect(path)
-        click.echo(f"{_shown(path)}: " + (", ".join(f"{source.name} {form}" for source, form in found)
-                                  or "no source recognizes it"))
-    if files:
-        return
-    rows = [
-        (source.name, form, reader.layout)
-        for source in import_sources_.sources() for form in import_sources_.FORMS
-        if (reader := source.reader(form)) is not None
-    ]
-    _echo_table(["source", "reads", "from"], rows, left=3)
+    one each file is in.
+
+    A source that reads a plain table is a profile: a YAML file naming the
+    table's columns. The data repo's own are imports/<source>/profile.yaml,
+    listed with the built-in ones when there is a data repo.
+    """
+    # The built-in sources need no data repo, so the list works without one.
+    imports = None
+    if data_dir is not None or os.environ.get("ANALYSIS_DATA_DIR"):
+        imports = import_mapping.imports_dir(_resolve_data_dir(data_dir))
+    try:
+        known = import_sources_.table(imports)
+        for error in known.broken.values():
+            click.echo(f"warning: not used: {error}", err=True)
+        for path in files:
+            found = known.detect(path)
+            click.echo(f"{_shown(path)}: " + (", ".join(f"{source.name} {form}" for source, form in found)
+                                      or "no source recognizes it"))
+        if files:
+            return
+        rows = [
+            (source.name, form, reader.layout, source.where if source.profile is None
+             or source.profile.built_in else _shown(Path(source.where)))
+            for source in known.found.values() for form in import_sources_.FORMS
+            if (reader := source.reader(form)) is not None
+        ]
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    _echo_table(["source", "reads", "from", "defined"], rows, left=4)
 
 
 def _unmigrated_import_maps(data_dir: Path) -> list[Path]:
@@ -8676,28 +8699,101 @@ def _import_target_lots(
 
 
 def _ask_holding_target(
-    holding: import_forms.Holding, source: str, lots: Sequence[Mapping[str, str]], why: str,
+    label: str, cents: int, source: str, lots: Sequence[Mapping[str, str]], why: str,
+    *, held: Collection[str], by_symbol: bool = False,
 ) -> import_mapping.AccountTarget:
     """Where one outside account goes, asked for: one of the scenario's
-    accounts that holds a balance (and which lot, if it has several), or
-    ``skip``."""
-    click.echo(f"{source} account {holding.label!r} ({format_dollars(holding.value_cents)}) {why}.")
-    held = list(dict.fromkeys(row["account_name"] for row in lots if row.get("account_name")))
-    answer = _ask_name("account", [*held, "skip"], prompt=f"account for {holding.label} (or skip)")
+    accounts that holds a balance (``held``), or ``skip``; and which lot, if
+    it has several. ``by_symbol`` is an outside account whose holdings each
+    have a symbol: those find their lots by it, so no lot is asked."""
+    click.echo(f"{source} account {label} ({format_dollars(cents)}) {why}.")
+    answer = _ask_name("account", [*held, "skip"], prompt=f"account for {label} (or skip)")
     if answer == "skip":
         return import_mapping.AccountTarget("skip")
     its_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
     lot = ""
-    if len(its_lots) > 1:
+    if len(its_lots) > 1 and not by_symbol:
         lot = _ask_name("lot", [each or registries.DEFAULT_LOT for each in its_lots],
                         prompt=f"lot of {answer}")
     return import_mapping.AccountTarget("map", answer, lot)
 
 
+def _outside_label(holdings: Sequence[import_forms.Holding], *, whole: bool) -> str:
+    """How a question names what it asks about: the outside account, with
+    the name the file gives it, or (not ``whole``) the one holding in it."""
+    first = holdings[0]
+    name = first.hints.get("account_name", "") if whole else first.hints.get("name", "")
+    label = first.account if whole else first.label
+    if whole and not name and all(h.asset for h in holdings):
+        # A file with no name for the account: what it holds says which it is.
+        name = "holds " + _some([h.asset for h in holdings])
+    return f"{label!r} ({name})" if name else repr(label)
+
+
+def _ask_outside_account(
+    source: import_sources_.Source, path: Path, saved: import_mapping.AccountMap,
+) -> str:
+    """Which outside account ``path`` is, asked for: nothing in the file or
+    its name says. One the source's mapping has, or a new name for it."""
+    assert source.profile is not None and source.profile.holdings is not None
+    held = [h.asset for h in source.profile.holdings.read(path, "?").holdings if h.asset]
+    known = list(dict.fromkeys(outside for outside, _ in saved.entries))
+    click.echo(f"{path.name} doesn't say which {source.name} account it is"
+               + (f"; it holds {_some(held)}." if held else "."))
+    click.echo("  " + (f"One you have imported ({', '.join(known)}), or a new name for it: "
+                       if known else "Give it a name: ")
+               + "whatever you call the account. It is asked for again each time, unless "
+               "the file's name has the account's number.")
+    while True:
+        if answer := _prompt_with_completion(f"{source.name} account", choices=known).strip():
+            return answer
+
+
+def _some(names: Sequence[str], limit: int = 4) -> str:
+    """The first few of ``names``, and how many more."""
+    names = list(dict.fromkeys(names))
+    more = len(names) - limit
+    return ", ".join(names[:limit]) + (f" and {more} more" if more > 0 else "")
+
+
+def _clean_symbol(text: str) -> bool:
+    """Whether a file's symbol is one a lot can hold: the loader takes no
+    spaces or lower case, and a file may say 'Pending activity' there."""
+    return bool(text) and text == text.upper() and not any(c.isspace() for c in text)
+
+
+def _ask_holding_lot(
+    holding: import_forms.Holding, target: import_mapping.AccountTarget, its_lots: Sequence[str],
+) -> str:
+    """The lot of ``target``'s account for a holding whose symbol none of
+    the account's lots (``its_lots``) has: one of those, a new name (a new
+    lot, which the symbol's own name is offered for), or ``skip``."""
+    click.echo(
+        f"{target.account} has no lot of {_outside_label([holding], whole=False)}, "
+        f"{format_dollars(holding.value_cents)}.")
+    clean = _clean_symbol(holding.asset)
+    suggested = holding.asset.lower() if clean else "skip"
+    click.echo("  " + ("A new name adds a lot for it. " if clean else "")
+               + (f"A lot the account has ({', '.join(its_lots)}) takes it in. " if its_lots else "")
+               + "'skip' leaves it out, now and in later imports.")
+    while True:
+        answer = _prompt_with_completion(
+            f"lot for {holding.asset}", choices=[*its_lots, suggested, "skip"], default=suggested).strip()
+        if answer in its_lots or answer == "skip":
+            return answer
+        if not clean:
+            click.echo(f"  {holding.asset!r} isn't a symbol a lot can hold; an existing lot, or skip")
+            continue
+        try:
+            if answer:
+                return _check_lot_label(answer)
+        except click.ClickException as error:
+            click.echo(f"  {error.format_message()}")
+
+
 @import_group_command.command("transactions")
 @click.argument("files", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--source", "layout", type=click.Choice(import_sources_.names("transactions")), default=None,
-              help=_SOURCE_OPTION_HELP)
+@click.option("--source", "layout", default=None, help=_SOURCE_OPTION_HELP)
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -8748,7 +8844,7 @@ def import_transactions(
         files = (default_file,)
     amazon_state_path = amazon_state_dir or data_repo_root / "state"
     try:
-        flows = import_sources_.read_flows(files, layout)
+        flows = import_sources_.read_flows(files, layout, import_mapping.imports_dir(data_dir_p))
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     if flows.transactions.empty:
@@ -11919,12 +12015,20 @@ def sync_account_lots(
 @import_group_command.command("holdings")
 @click.argument("files", nargs=-1, required=True,
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--source", "layout", type=click.Choice(import_sources_.names("holdings")), default=None,
-              help=_SOURCE_OPTION_HELP)
+@click.option("--source", "layout", default=None, help=_SOURCE_OPTION_HELP)
+@click.option("--outside-account", default=None, metavar="NAME",
+              help="The outside account FILE is of, for a source whose file doesn't say and "
+                   "whose file name doesn't either (one FILE).")
 @click.option("--year-end", is_flag=True, default=False,
               help="Treat FILE as the prior year's end (Quicken's \"Year End Export\") and "
                    "write prior_year_end_balance instead of opening_balance, for "
                    "investment asset accounts only.")
+@click.option("--prune", is_flag=True, default=False,
+              help="Empty (balance, shares and basis to zero) each lot that a file listing its "
+                   "account's holdings no longer has: it was sold.")
+@click.option("--new-lots", is_flag=True, default=False,
+              help="Add a lot, named for its symbol, for each holding whose symbol its account "
+                   "has no lot of, without asking.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -11935,7 +12039,10 @@ def sync_account_lots(
 def import_holdings(
     files: tuple[Path, ...],
     layout: str | None,
+    outside_account: str | None,
     year_end: bool,
+    prune: bool,
+    new_lots: bool,
     scenario: str | None,
     data_dir: Path | None,
     dry_run: bool,
@@ -11954,6 +12061,25 @@ def import_holdings(
     of silently ignoring them. At a terminal the missing ones are asked for
     and saved.
 
+    A brokerage's file lists what each account holds, by symbol. Its outside
+    account is mapped to an account only, and each holding goes to the
+    account's lot of the same symbol: its shares, its balance and, in a
+    taxable account, its cost basis. A holding with no such lot is asked
+    about: a new lot (``--new-lots`` adds them without asking), an existing
+    lot to add it into, or skip. A retirement or HSA lot's basis is never
+    set from a file. A lot of the account that the file doesn't have keeps
+    what it holds, with a warning; ``--prune`` empties it.
+
+    A file that names no account inside says which it is by the account's
+    number in its name; one renamed without it is asked about, or named with
+    ``--outside-account``. Where a file gives a lot a balance and no share
+    count, and the plan has a recent price for the lot's symbol, the share
+    count the two make is offered at a terminal.
+
+    The balances are the scenario's opening ones, so a file dated more than
+    a week from the scenario's start (the December 31 before it, with
+    ``--year-end``) gets a warning naming both dates.
+
     A lot inherited from a parent scenario is changed by writing an override
     of the whole lot into this scenario.
     """
@@ -11965,10 +12091,72 @@ def import_holdings(
     with _intent_db(data_dir_p, scen_name) as (con, _):
         accounts = {name: (kind, subkind or "") for name, kind, subkind in con.execute(
             "SELECT name, kind, subkind FROM account")}
+        scenario_start = date.fromisoformat(con.execute("SELECT start FROM scenario").fetchone()[0][:10])
+        priced: dict[str, list[tuple[date, Decimal]]] = {}
+        for symbol, day, payload in con.execute(
+                "SELECT series, effective_date, payload_json FROM aux_table "
+                "WHERE kind = 'security_price' AND series IS NOT NULL ORDER BY effective_date"):
+            priced.setdefault(symbol.upper(), []).append(
+                (date.fromisoformat(day[:10]), Decimal(json.loads(payload)["price_micros"]) / 1_000_000))
+    if prune and year_end:
+        raise click.UsageError("--prune empties lots as of the scenario's start, so it doesn't go with --year-end")
     lots = _import_target_lots(scenario_dir, scen_name, accounts)
     rows = [lot.row for lot in lots]
+    # A file's one number for an account needs a lot to go into; a file that
+    # lists holdings can fill an account that has no lots yet.
+    with_lots = list(dict.fromkeys(row["account_name"] for row in rows if row.get("account_name")))
+    holding_lots = [name for name, (kind, _) in accounts.items() if kind in ("asset", "liability")]
+    # What the questions decide beyond the mapping: the accounts whose
+    # holdings get a lot each, and the lots made for them (indexes of rows).
+    split: set[str] = set()
+    fresh: set[int] = set()
+    # The lots whose share count is worked out from a stored price, and those
+    # it was offered for and declined.
+    recount: set[int] = set()
+    keep_count: set[int] = set()
+    characters: dict[str, str] = {}
+    lot_context: list[calendar_guide.GuideContext] = []
+
+    def context() -> calendar_guide.GuideContext:
+        if not lot_context:
+            lot_context.append(_lot_guide_context(data_dir_p, scen_name, lots))
+        return lot_context[0]
+
+    def add_lot(account: str, name: str, symbol: str) -> None:
+        """A lot of ``account`` for ``symbol``, with nothing in it yet: the
+        plan fills it from the file."""
+        params: dict[str, object] = {"account": account, "lot": name, "symbol": symbol}
+        if accounts[account][1] == registries.RETIREMENT_SUBKIND:
+            agreed = {row.get("subkind", "") for row in rows if row.get("account_name") == account}
+            if len(agreed) == 1 and "" not in agreed:
+                params["subkind"] = agreed.pop()
+            elif _interactive():
+                params["subkind"] = _ask_name(
+                    "lot subkind", sorted(registries.RETIREMENT_LOT_SUBKINDS),
+                    prompt=f"subkind of lot {name} of {account}")
+            else:
+                raise click.ClickException(
+                    f"{account}'s lots don't agree on a subkind, so a new lot's must be asked: "
+                    f"run at a terminal, or add lot {name!r} with 'sim account lot add'")
+        _check_lot_params(context(), params)
+        if (character := _lot_growth_character(context(), params)) is not None:
+            characters.setdefault(account, character)
+        row = _lot_row(params, None, investment=_is_investment(context(), account))
+        lots.append(_Lot(row, None, None))
+        rows.append(row)
+        fresh.add(len(rows) - 1)
+
+    imports = import_mapping.imports_dir(data_dir_p)
+    asked_account = False
     try:
-        snapshot = import_sources_.read_holdings(files, layout)
+        source, unnamed = import_sources_.unnamed(files, layout, imports)
+        if unnamed and outside_account is None and len(files) == 1 and _interactive():
+            outside_account = _ask_outside_account(
+                source, files[0],
+                import_mapping.load_account_map(
+                    import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
+            asked_account = True
+        snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
         if not snapshot.holdings:
             raise click.ClickException(
                 "no account balances in " + ", ".join(map(str, files))
@@ -11978,27 +12166,138 @@ def import_holdings(
         # What this run uses: the saved map, and any answer given for this
         # run only.
         account_map = import_mapping.AccountMap(map_path, dict(saved_map.entries))
-        result = import_holdings_.plan(snapshot, account_map, accounts, rows, year_end=year_end)
+
+        # The price a share count can be worked out from: each symbol's
+        # latest stored one from the days up to the file's date.
+        priced_on = snapshot.as_of or scenario_start
+        latest = {
+            symbol: near[-1] for symbol, known in priced.items()
+            if (near := [(day, price) for day, price in known
+                         if 0 <= (priced_on - day).days <= _IMPORT_DATE_SLACK_DAYS])
+        }
+
+        def replan() -> import_holdings_.HoldingsPlan:
+            return import_holdings_.plan(
+                snapshot, account_map, accounts, rows, year_end=year_end, split=split, fresh=fresh,
+                prune=prune, prices={symbol: price for symbol, (_, price) in latest.items()},
+                recount=recount, keep_count=keep_count)
+
+        def decided(holding: import_forms.Holding) -> tuple[str, str]:
+            """The mapping row that says where ``holding`` goes: its own, or
+            its outside account's."""
+            own = (holding.account, holding.asset)
+            return own if own in account_map.entries else (holding.account, "")
+
+        def of_row(key: tuple[str, str], among: Iterable[import_forms.Holding]) -> list[import_forms.Holding]:
+            return [each for each in among if decided(each) == key]
+
+        result = replan()
         to_save = False
-        while not result.complete and _interactive():
-            for holding in result.unmapped:
-                target = _ask_holding_target(holding, snapshot.source, rows, "has no saved mapping")
-                account_map.set(holding.account, holding.asset, target)
-                saved_map.set(holding.account, holding.asset, target)
-                to_save = True
-            for holding, old in (*result.unknown, *result.no_lot):
-                target = _ask_holding_target(
-                    holding, snapshot.source, rows,
-                    f"is mapped to {old.label}, which {scen_name} doesn't have")
-                account_map.set(holding.account, holding.asset, target)
-                # The saved mapping may be right for another scenario, which
-                # would then silently import into the wrong place, or not at all.
-                if click.confirm(
-                        f"Replace the saved mapping to {old.label}, for every scenario? "
-                        "(No uses your answer for this import only)", default=False):
-                    saved_map.set(holding.account, holding.asset, target)
+        while not result.complete:
+            progress = False
+            if _interactive():
+                for key in dict.fromkeys(map(decided, result.unmapped)):
+                    covered = of_row(key, result.unmapped)
+                    target = _ask_holding_target(
+                        _outside_label(covered, whole=True), sum(h.value_cents for h in covered),
+                        snapshot.source, rows, "has no saved mapping",
+                        held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
+                        by_symbol=listed)
+                    account_map.set(*key, target)
+                    saved_map.set(*key, target)
+                    to_save = progress = True
+                stale = {decided(h): old for h, old in (*result.unknown, *result.no_lot)}
+                for key, old in stale.items():
+                    covered = of_row(key, (h for h, _ in (*result.unknown, *result.no_lot)))
+                    target = _ask_holding_target(
+                        _outside_label(covered, whole=not key[1]), sum(h.value_cents for h in covered),
+                        snapshot.source, rows,
+                        f"is mapped to {old.label}, which {scen_name} doesn't have",
+                        held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
+                        by_symbol=listed)
+                    account_map.set(*key, target)
+                    progress = True
+                    # The saved mapping may be right for another scenario, which
+                    # would then silently import into the wrong place, or not at all.
+                    if click.confirm(
+                            f"Replace the saved mapping to {old.label}, for every scenario? "
+                            "(No uses your answer for this import only)", default=False):
+                        saved_map.set(*key, target)
+                        to_save = True
+            if progress:
+                # The answers may have sent holdings to accounts with lots to
+                # ask about; ask those once every account is settled.
+                result = replan()
+                continue
+            if year_end:
+                break  # last year's file can't say what a new lot holds now
+            # One lot with no symbol, and a file that lists what is in it.
+            for account in dict.fromkeys(target.account for _, target in result.undecided):
+                covered = [(h, t) for h, t in result.undecided if t.account == account]
+                only = next(_lot.lot for _lot in lots if _lot.account == account)
+                together = False
+                if _interactive() and not new_lots:
+                    click.echo(
+                        f"{account} has one lot, {only!r}, and the {snapshot.source} file lists "
+                        f"{len(covered)} holding(s) in it: "
+                        + ", ".join(h.asset for h, _ in covered) + ".")
+                    click.echo(
+                        "  A lot for each lets the plan grow each as its own fund does, and "
+                        f"empties {only!r}, whose total they then hold; one lot keeps the "
+                        "account simple.")
+                    together = click.confirm(f"Add them together into {only!r}?", default=False)
+                elif not new_lots:
+                    continue
+                if together:
+                    for key in dict.fromkeys(decided(h) for h, _ in covered):
+                        named = import_mapping.AccountTarget("map", account, only, account_map.entries[key].note)
+                        account_map.set(*key, named)
+                        saved_map.set(*key, named)
+                        to_save = True
+                else:
+                    split.add(account)
+                progress = True
+            for holding, target in result.new:
+                its_lots = [_lot.lot for _lot in lots if _lot.account == target.account]
+                if any(row.get("account_name") == target.account
+                       and row.get("symbol", "").upper() == holding.asset.upper() for row in rows):
+                    # An earlier holding of the symbol (another row of the
+                    # file, or another outside account) got the lot just now.
+                    continue
+                # --new-lots can't name a lot for 'Pending activity'.
+                if _interactive() and not (new_lots and _clean_symbol(holding.asset)):
+                    answer = _ask_holding_lot(holding, target, its_lots)
+                elif new_lots and _clean_symbol(holding.asset):
+                    # A lot of another symbol may have the name already.
+                    base = holding.asset.lower()
+                    answer = next(
+                        name for name in itertools.chain([base], (f"{base}-{n}" for n in itertools.count(2)))
+                        if name not in its_lots)
+                else:
+                    continue
+                if answer == "skip" or answer in its_lots:
+                    chosen = import_mapping.AccountTarget("skip") if answer == "skip" \
+                        else import_mapping.AccountTarget("map", target.account, answer)
+                    account_map.set(holding.account, holding.asset, chosen)
+                    saved_map.set(holding.account, holding.asset, chosen)
                     to_save = True
-            result = import_holdings_.plan(snapshot, account_map, accounts, rows, year_end=year_end)
+                else:
+                    add_lot(target.account, answer, holding.asset)
+                progress = True
+            if not progress:
+                break
+            result = replan()
+        while result.complete and result.offers and _interactive():
+            for offer in result.offers:
+                click.echo(
+                    f"The file gives {offer.account}:{offer.lot} a balance, "
+                    f"{format_dollars(offer.cents)}, and no share count. At {offer.symbol}'s price of "
+                    f"{offer.price.normalize():f} on {latest[offer.symbol][0]}, that is {offer.after} "
+                    f"shares; the lot has {offer.before.normalize():f}.")
+                update = click.confirm("  Update the share count (it may have grown by reinvested "
+                                       "dividends)?", default=True)
+                (recount if update else keep_count).add(offer.index)
+            result = replan()
     except ValueError as e:
         raise click.ClickException(str(e)) from None
 
@@ -12022,10 +12321,39 @@ def import_holdings(
             "a terminal to be asked:\n  "
             + "\n  ".join(sorted(f"{h.label} -> {t.label}" for h, t in result.no_lot))
         )
+    if year_end and (result.undecided or result.new):
+        raise click.ClickException(
+            "--year-end sets last year's balance on lots the scenario has, and these holdings "
+            "have none; import the current holdings first:\n  "
+            + "\n  ".join(f"{h.label} -> {t.account}" for h, t in (*result.undecided, *result.new)))
+    if result.undecided or result.new:
+        raise click.ClickException(
+            "holding(s) whose symbol their account has no lot of; run at a terminal to be "
+            "asked, add a lot for each with --new-lots, or say in "
+            f"{map_path} which lot each goes into (a row with its symbol as 'asset'):\n  "
+            + "\n  ".join(f"{h.label} -> {t.account}" for h, t in (*result.undecided, *result.new))
+        )
     for warning in result.warnings:
         click.echo(f"warning: {warning}", err=True)
+    profile = source.profile
+    if not asked_account and outside_account is None and profile is not None \
+            and profile.holdings is not None and profile.holdings.account_pattern is not None:
+        # Nothing in such a file says whose it is, so say what was taken.
+        for name in dict.fromkeys(h.account for h in snapshot.holdings):
+            click.echo(f"{snapshot.source} account {name!r}, from the file's name "
+                       "(--outside-account names another)")
     if snapshot.as_of is not None:
         click.echo(f"{snapshot.source} snapshot as of {snapshot.as_of}")
+        # The numbers are written as of a fixed day whatever the file's date.
+        wanted = date(scenario_start.year - 1, 12, 31) if year_end else scenario_start
+        if abs((snapshot.as_of - wanted).days) > _IMPORT_DATE_SLACK_DAYS:
+            what = "the December 31 before it starts" if year_end else f"the start of {scen_name}"
+            click.echo(
+                f"warning: the file is as of {snapshot.as_of}, and its balances are being set as "
+                f"of {wanted}, {what}. " + (
+                    "Export the year-end report as of that day." if year_end else
+                    "Export it as of that day, or bring the plan to the file's date first "
+                    "with 'sim scenario roll'."), err=True)
     if result.changes:
         _echo_table(
             ["account", "lot", "column", "before", "after", ""],
@@ -12033,8 +12361,34 @@ def import_holdings(
               f"[{c.note}]" if c.note else "") for c in result.changes),
             left=3,
         )
+    for note in dict.fromkeys(result.notes):
+        click.echo(f"note: {note}")
+    for offer in result.offers:
+        click.echo(
+            f"note: the share count of {offer.account}:{offer.lot} could be worked out from its "
+            f"balance and {offer.symbol}'s price on {latest[offer.symbol][0]}, as {offer.after} "
+            "shares: run at a terminal to be asked")
+    for account in sorted(split):
+        if emptied := [label for label in result.pruned if label.partition(":")[0] == account]:
+            click.echo(
+                f"note: {emptied[0]} is emptied, since the new lots hold what it held; rules that "
+                f"name it still do: 'sim account lot delete {emptied[0].replace(':', ' ')}' "
+                "removes it and lists them")
+    # A symbol with no rate series, allocation or name grows as its account
+    # does, which may not be what the fund does.
+    if fresh:
+        known = {*context().securities, *context().growing}
+        if strangers := sorted({rows[i]["symbol"] for i in fresh} - known):
+            click.echo(
+                f"note: the plan doesn't know {', '.join(strangers)} yet, so each lot grows "
+                "as its account does; 'sim symbol add SYMBOL' gives one its name, its "
+                "asset classes and its prices")
     counts = (f"{len(result.skipped)} skipped, {len(result.ineligible)} ineligible, "
               f"{result.lots_unchanged} unchanged")
+    if result.pruned:
+        counts = f"{len(result.pruned)} emptied, {counts}"
+    if fresh:
+        counts = f"{len(fresh)} new, {counts}"
     if dry_run:
         click.echo(f"(dry run) {result.lots_changed} lot(s) would change, {counts}")
         if to_save:
@@ -12049,8 +12403,20 @@ def import_holdings(
         # over, nor its old row index written to.
         now = {(lot.account, lot.lot): lot
                for lot in _import_target_lots(scenario_dir, scen_name, accounts)}
+        for account, character in characters.items():
+            # A whole-row override when the account is inherited (#202).
+            found = _overlay_rows(scenario_dir, "accounts.csv")[account]
+            _append_csv_row(edit.path(scenario_dir / "accounts.csv"), registries.ACCOUNTS_CSV_HEADER,
+                            {**found.row, "tax_character": character}, replace=found.index)
         for index, cells in result.cells.items():
             lot = lots[index]
+            if index in fresh:
+                if (lot.account, lot.lot) in now:
+                    raise click.ClickException(
+                        f"{lot.account} got a lot {lot.lot!r} while this import was being "
+                        "answered. Nothing was written; start again.")
+                _append_csv_row(staged, registries.ACCOUNT_LOTS_CSV_HEADER, result.rows[index])
+                continue
             if (current := now.get((lot.account, lot.lot))) is None \
                     or (current.row, current.index) != (lot.row, lot.index):
                 raise click.ClickException(
@@ -12069,6 +12435,8 @@ def import_holdings(
     if to_save:
         saved_map.save()
         click.echo(f"saved mappings to {_shown(map_path)}")
+    for account, character in characters.items():
+        _echo_growth_character(account, character)
     inherited = f"; {overrides} as override(s) of inherited lots" if overrides else ""
     click.echo(f"updated {result.lots_changed} lot(s) in {_shown(values_path)} ({counts}){inherited}")
 

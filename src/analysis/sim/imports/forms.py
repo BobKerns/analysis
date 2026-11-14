@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 
-__all__ = ["FLOW_COLUMNS", "Flows", "Holding", "Snapshot"]
+__all__ = ["FLOW_COLUMNS", "Flows", "Holding", "Snapshot", "read_rows"]
 
 
 @dataclass(frozen=True)
@@ -67,3 +69,16 @@ class Flows:
         missing = [c for c in FLOW_COLUMNS if c not in self.transactions.columns]
         if missing:
             raise ValueError(f"{self.source}: transactions lack column(s) {missing}")
+
+
+def read_rows(path: Path, limit: int | None = None) -> list[list[str]]:
+    """The rows of an outside CSV file, or its first ``limit``: how every
+    source reads one, so they agree on the encoding (a byte-order mark is
+    not part of the first cell)."""
+    with Path(path).open(newline="", encoding="utf-8-sig") as fh:
+        rows = []
+        for row in csv.reader(fh):
+            rows.append(row)
+            if limit is not None and len(rows) >= limit:
+                break
+        return rows

@@ -2234,6 +2234,95 @@ def quicken_year_end_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def fidelity_positions_export(tmp_path: Path) -> Path:
+    """A Fidelity positions download, as of 2026-01-05: a joint brokerage
+    account holding two funds and its money market, and a Roth IRA holding
+    one fund. Every row ends in a comma, and notes follow an empty row, as
+    in the real file."""
+    path = tmp_path / "Portfolio_Positions_Jan-05-2026.csv"
+    header = ("Account number,Account name,Symbol,Description,Quantity,Last price,Last price change,"
+              "Current value,Today's gain/loss dollar,Today's gain/loss percent,Total gain/loss dollar,"
+              "Total gain/loss percent,Percent of account,Cost basis total,Average cost basis,Type,")
+    path.write_text(
+        header + "\n"
+        '111111111,Joint brokerage,FXAIX,FIDELITY 500 INDEX FUND,1000.5,$200.00,+$1.00,"$200,100.00",'
+        '+$1000.50,+0.50%,"+$50,100.00",+33.40%,62.53%,"$150,000.00",$149.93,Cash,\n'
+        '111111111,Joint brokerage,FSKAX,FIDELITY TOTAL MARKET INDEX FUND,500,$150.00,-$0.50,"$75,000.00",'
+        '-$250.00,-0.33%,"-$5,000.00",-6.25%,23.44%,"$80,000.00",$160.00,Cash,\n'
+        '111111111,Joint brokerage,SPAXX**,HELD IN MONEY MARKET,,,,"$44,900.00",,,,,14.03%,,,Cash,\n'
+        '222222222,ROTH IRA,FXAIX,FIDELITY 500 INDEX FUND,450,$200.00,+$1.00,"$90,000.00",'
+        '+$450.00,+0.50%,"+$30,000.00",+50.00%,100.00%,"$60,000.00",$133.33,Cash,\n'
+        "\n"
+        '"The data and information in this spreadsheet is provided to you solely for your use."\n'
+        "\n"
+        '"Date downloaded Jan-05-2026 at 4:10 p.m ET"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def vanguard_holdings_export(tmp_path: Path) -> Path:
+    """A Vanguard holdings download, as of 2026-01-05, of one account, which
+    only the file's name says: a fund with a gain, one with a loss, and a
+    money market fund with neither."""
+    path = tmp_path / "holdings 12345678.csv"
+    path.write_text(
+        'Symbol,Name,Current balance,Quantity,"As of 01/05/2026 04:00 p.m., ET Current price",'
+        '"As of 01/05/2026 04:00 p.m., ET Last price change ($/%)",'
+        "Total unrealized capital gain/loss ($/%),Investment type,Expense ratio\n"
+        'VTSAX,Vanguard Total Stock Market Index Admiral,"$400,000.00",2500.000,$160.00,'
+        '+$0.80 (+0.50%),"+$100,000.00 (+33.33%)",Mutual fund,0.04%\n'
+        'VBTLX,Vanguard Total Bond Market Index Admiral,"$100,000.00",10000.000,$10.00,'
+        '-$0.02 (-0.20%),"-$16,423.62 (-14.11%)",Mutual fund,0.04%\n'
+        'VMFXX,Vanguard Federal Money Market Fund,"$20,000.00",20000.000,$1.00,'
+        "\u2014,\u2014,Money market,0.11%\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def write_import_export(tmp_path: Path) -> Callable[[str, str], Path]:
+    """Write an outside program's export for a test's own profile to read:
+    ``write("mine.csv", text)``, outside the data dir, as a download is."""
+    def write(name: str, text: str) -> Path:
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    return write
+
+
+@pytest.fixture
+def vanguard_two_row_export(vanguard_holdings_export: Path) -> Path:
+    """``vanguard_holdings_export`` with a second row of its first fund (as
+    for shares held two ways) and a row whose symbol is words, as activity
+    not yet settled is listed."""
+    extra = (
+        'VTSAX,Vanguard Total Stock Market Index Admiral,"$16,000.00",100.000,$160.00,'
+        "+$0.80 (+0.50%),\u2014,Mutual fund,0.04%\n"
+        "Pending activity,,$250.00,\u2014,\u2014,\u2014,\u2014,\u2014,\u2014\n")
+    vanguard_holdings_export.write_text(
+        vanguard_holdings_export.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    return vanguard_holdings_export
+
+
+@pytest.fixture
+def write_import_profile(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a household's own source profile:
+    ``write("my_bank", yaml_text)`` is ``imports/my_bank/profile.yaml`` in the
+    test data dir."""
+    def write(source: str, text: str) -> Path:
+        path = test_data_dir / "imports" / source / "profile.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    return write
+
+
+@pytest.fixture
 def quicken_account_map(test_data_dir: Path) -> Path:
     """``imports/quicken/accounts.csv`` in the test data dir, mapping each
     account of ``quicken_net_worth_export`` to the account of the same name."""
