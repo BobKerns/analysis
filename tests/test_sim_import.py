@@ -1133,9 +1133,10 @@ def test_sim_import_transactions_asks_about_payees_and_saves_the_answers(
 
     # Words the payee doesn't have are asked for again.
     fussy = _transactions(test_data_dir, bank_checking_export, "--dry-run",
-                          input="\nUtilities\nelectric\ncity power\n-\n\n")
+                          input="\nUtilities\nelectric\ncity pow\ncity power\n-\n\n")
     assert fussy.exit_code == 0, fussy.output
-    assert "words found in 'city power and water bill pay'" in fussy.output
+    # Nor is part of a word enough: it would be found in other payees' words.
+    assert fussy.output.count("whole words found together in 'city power and water bill pay'") == 2
 
 
 @pytest.mark.usefixtures("quicken_category_map")
@@ -1173,3 +1174,26 @@ def test_sim_import_transactions_reads_a_cards_categories_and_its_payees_over_th
     # January 25 once: (80 + 60) over two months; the cafe by its payee, not the card's category.
     assert {name: rule["amount"] for name, rule in _generated(test_data_dir).items()} == {
         "baseline_expense_food": "70.00", "baseline_expense_treats": "20.00"}
+
+
+def test_sim_import_transactions_finds_a_short_card_files_rows_by_payee_beside_a_detailed_one(
+    test_data_dir: Path, card_exports: tuple[Path, Path, Path], write_import_map: MapWriter,
+) -> None:
+    detailed, _, short = card_exports
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\n")
+    write_import_map(
+        "amex/categories.csv", "Merchandise & Supplies-Groceries,Food\nRestaurant-Restaurant,Food\n")
+
+    # The short download's charge has no category, and isn't quietly left without one.
+    refused = _import(test_data_dir, "transactions", str(detailed), str(short),
+                      "--from-account", "Asset_Checking")
+    assert refused.exit_code != 0
+    assert "1 payee(s) with no category" in refused.output and "CORNER MARKET 204" in refused.output
+
+    write_import_map("amex/payees.csv", "corner market,Food\n")
+    result = _import(test_data_dir, "transactions", str(detailed), str(short),
+                     "--from-account", "Asset_Checking")
+    assert result.exit_code == 0, result.output
+    # (80 + 40) in January and 60 in February.
+    assert {name: rule["amount"] for name, rule in _generated(test_data_dir).items()} == {
+        "baseline_expense_food": "90.00"}

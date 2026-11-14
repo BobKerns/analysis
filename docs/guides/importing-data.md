@@ -294,8 +294,9 @@ city water,Home
 card payment,transfer
 ```
 
-The first row found in a payee wins, so put the longer pattern above a
-shorter one it contains.
+A pattern matches whole words, together and in their order, so `art` is
+not found in `walmart`. The first row found in a payee wins, so put the
+longer pattern above a shorter one it contains.
 
 **Several files, several sources.** Each run replaces all the generated
 rules, so give it every file the rules should come from: each account's
@@ -311,8 +312,9 @@ A card's purchases come from the card's own file, so mark its payment
 
 A bank names its downloads alike whatever the account, so at a terminal the
 import asks which account each such file is, offering the file's name. Away
-from a terminal the file's name is the account, so rename the files, or
-import one at a time with `--outside-account`.
+from a terminal, name them with `--outside-account`, once for each such
+file in the files' order; a single file may go without, as the account of
+its own name.
 
 **A card's file.** American Express's CSV download is built in (`amex`),
 with or without its additional details; the detailed one has the card's
@@ -323,8 +325,9 @@ category for each charge, map those in `imports/<source>/categories.csv` as
 for any other source. Where the card's category isn't yours, a row of
 `imports/<source>/payees.csv` for that payee wins over it. If the file has a
 reference for each transaction, name that column too (`reference`):
-downloads may then overlap, and a transaction in two of them is counted
-once.
+downloads that all have it may then overlap, and a transaction in two of
+them is counted once. A download without references can't be matched that
+way, so it mustn't cover the same days as another.
 
 ## Quicken
 

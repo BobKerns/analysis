@@ -59,10 +59,10 @@ of the file. A source may add columns of its own."""
 
 
 ORIGIN = "origin"
+"""The column naming each row's source, in transactions read from several."""
 REFERENCE = "reference"
 """A column some sources add: the outside program's own id for a transaction,
 the same in every file that has it."""
-"""The column naming each row's source, in transactions read from several."""
 
 
 @dataclass(frozen=True)
@@ -70,16 +70,21 @@ class Flows:
     """Transactions over a period, one row each (``FLOW_COLUMNS``)."""
 
     source: str
-    """The source they were read from; of several, their names joined by '+'."""
+    """The source they were read from; of several, a label naming them all
+    (joined by '+'), for a rule's provenance. Not to be taken apart: a
+    source's name may have a '+' in it."""
     transactions: pd.DataFrame
     duplicates: int = 0
     """Rows left out because an earlier file of the run had them too, by
     their reference."""
+    origins: tuple[str, ...] = ()
+    """Each source the rows came from, in the order first met, when there
+    are several."""
 
     @property
     def sources(self) -> tuple[str, ...]:
         """Each source the rows came from, in the order first met."""
-        return tuple(self.source.split("+"))
+        return self.origins or (self.source,)
 
     def __post_init__(self) -> None:
         missing = [c for c in FLOW_COLUMNS if c not in self.transactions.columns]

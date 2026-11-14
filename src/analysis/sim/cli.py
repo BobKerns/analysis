@@ -8806,16 +8806,17 @@ def _categorize_by_payee(
     frame: pd.DataFrame, payee_maps: dict[str, import_mapping.PayeeMap], *, known: Collection[str],
 ) -> tuple[pd.DataFrame, set[str], list[import_transactions_.Unmatched]]:
     """``frame`` with categories found by payee (``payee_maps``, by source),
-    asking at a terminal about each payee no row covers, the most paid
-    first. Also the sources whose map got an answer, to save, and the payees
-    that 'rest' sent to Other unasked. ``known`` is the categories in use, to
-    complete."""
+    asking at a terminal about each payee with uncategorized payments that
+    no row covers, the most paid first. Also the sources whose map got an
+    answer, to save, and the payees that 'rest' sent to Other unasked.
+    ``known`` is the categories in use, to complete."""
+    sorter = import_transactions_.Categorizer(frame, payee_maps)
     asked: set[str] = set()
     explained = False
     while True:
-        found, unmatched = import_transactions_.categorize(frame, payee_maps)
+        unmatched = sorter.unmatched()
         if not unmatched:
-            return found, asked, []
+            return sorter.result(), asked, []
         if not _interactive():
             shown = unmatched[:15]
             raise click.ClickException(
@@ -8846,16 +8847,15 @@ def _categorize_by_payee(
                 "category", choices=[*in_use, import_mapping.TRANSFER, import_mapping.NO_RULE, "rest"],
             ).strip()
         if answer == "rest":
-            found, unmatched = import_transactions_.categorize(frame, payee_maps, rest="Other")
-            return found, asked, unmatched
+            return sorter.result("Other"), asked, unmatched
         while True:
             # The fewer words, the more of this payee's other spellings it covers.
             pattern = import_mapping.payee_key(_prompt_with_completion(
                 "  the words of the payee that say so", default=first.key))
-            if pattern and pattern in first.key:
+            if import_mapping.payee_matches(pattern, first.key):
                 break
-            click.echo(f"  words found in {first.key!r}, in their order")
-        payee_maps[first.source].add(pattern, answer)
+            click.echo(f"  whole words found together in {first.key!r}")
+        sorter.add(first.source, pattern, answer)
         asked.add(first.source)
 
 
@@ -8878,15 +8878,15 @@ def _categorize_by_payee(
               help="First scheduled month YYYY-MM or YYYY-MM-DD (default: scenario start).")
 @click.option("--series", type=completion.SCHEDULED_SERIES, default="cpi", show_default=True,
               help="Inflation series applied to generated rows ('fixed' for none).")
-@click.option("--outside-account", default=None,
+@click.option("--outside-account", multiple=True,
               help="The outside account of a file that doesn't name one, in place of the "
-                   "file's name (one FILE).")
+                   "file's name; once for each such FILE, in their order.")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show how the generated rows would change without rewriting scheduled.csv.")
 def import_transactions(
     files: tuple[Path, ...],
     layout: str | None,
-    outside_account: str | None,
+    outside_account: tuple[str, ...],
     scenario: str | None,
     data_dir: Path | None,
     amazon_state_dir: Path | None,
@@ -8942,8 +8942,8 @@ def import_transactions(
         click.echo(f"note: {flows.duplicates} transaction(s) that an earlier file had too, by "
                    "their reference, were left out")
     payee_maps: dict[str, import_mapping.PayeeMap] = {}
-    payee_overrides: dict[str, import_mapping.PayeeMap] = {}
     try:
+        described = import_sources_.table(import_mapping.imports_dir(data_dir_p)).found
         category_maps: dict[str, import_transactions_.CategoryMaps] = {}
         for source in flows.sources:
             maps_dir = import_mapping.source_dir(data_dir_p, source)
@@ -8951,15 +8951,18 @@ def import_transactions(
             category_split_path = maps_dir / import_mapping.SPLITS
             excluded_payees_path = maps_dir / import_mapping.EXCLUDED_PAYEES
             each = category_maps[source] = import_transactions_.CategoryMaps()
-            if import_transactions_.uncategorized(flows.transactions, source):
-                payee_maps[source] = import_mapping.load_payee_map(maps_dir / import_mapping.PAYEES)
-            elif not category_map_path.exists():
+            if not import_transactions_.uncategorized(flows.transactions, source) \
+                    and not category_map_path.exists():
                 raise click.ClickException(
                     f"category map not found: {category_map_path} "
                     f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
-            elif (maps_dir / import_mapping.PAYEES).is_file():
-                # A card's own categories may not be the household's.
-                payee_overrides[source] = import_mapping.load_payee_map(maps_dir / import_mapping.PAYEES)
+            # A source described by a profile is read by payee wherever a
+            # row has no category, which may be one file of two (a card's
+            # short download beside its detailed one); a coded source's
+            # uncategorized rows are warned about, unless it has a payee map.
+            payees_path = maps_dir / import_mapping.PAYEES
+            if payees_path.is_file() or (source in described and described[source].profile is not None):
+                payee_maps[source] = import_mapping.load_payee_map(payees_path)
             if category_map_path.exists():
                 each.merges, each.exclusions = import_mapping.load_category_map(category_map_path)
             if category_split_path.exists():
@@ -8970,11 +8973,11 @@ def import_transactions(
         expense_accounts = import_mapping.load_expense_accounts(
             import_mapping.expense_accounts_path(data_dir_p))
         transactions, payees_asked, left_to_other = _categorize_by_payee(
-            import_transactions_.override(flows.transactions, payee_overrides), payee_maps,
+            flows.transactions, payee_maps,
             known={*maps.merges.values(), *expense_accounts.accounts})
         # A category a payee was given is one the household chose, as a
         # merge's target is: not one for the default category to swallow.
-        for payee_map in (*payee_maps.values(), *payee_overrides.values()):
+        for payee_map in payee_maps.values():
             for _, category in payee_map.rows:
                 if category not in (import_mapping.NO_RULE, import_mapping.TRANSFER) \
                         and category not in maps.exclusions:
