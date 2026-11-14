@@ -2283,6 +2283,18 @@ def vanguard_holdings_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def write_import_export(tmp_path: Path) -> Callable[[str, str], Path]:
+    """Write an outside program's export for a test's own profile to read:
+    ``write("mine.csv", text)``, outside the data dir, as a download is."""
+    def write(name: str, text: str) -> Path:
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    return write
+
+
+@pytest.fixture
 def vanguard_two_row_export(vanguard_holdings_export: Path) -> Path:
     """``vanguard_holdings_export`` with a second row of its first fund (as
     for shares held two ways) and a row whose symbol is words, as activity

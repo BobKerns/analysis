@@ -8638,10 +8638,11 @@ def import_sources(files: tuple[Path, ...], data_dir: Path | None) -> None:
     if data_dir is not None or os.environ.get("ANALYSIS_DATA_DIR"):
         imports = import_mapping.imports_dir(_resolve_data_dir(data_dir))
     try:
-        for error in import_sources_.broken(imports).values():
+        known = import_sources_.table(imports)
+        for error in known.broken.values():
             click.echo(f"warning: not used: {error}", err=True)
         for path in files:
-            found = import_sources_.detect(path, imports=imports)
+            found = known.detect(path)
             click.echo(f"{_shown(path)}: " + (", ".join(f"{source.name} {form}" for source, form in found)
                                       or "no source recognizes it"))
         if files:
@@ -8649,7 +8650,7 @@ def import_sources(files: tuple[Path, ...], data_dir: Path | None) -> None:
         rows = [
             (source.name, form, reader.layout, source.where if source.profile is None
              or source.profile.built_in else _shown(Path(source.where)))
-            for source in import_sources_.sources(imports) for form in import_sources_.FORMS
+            for source in known.found.values() for form in import_sources_.FORMS
             if (reader := source.reader(form)) is not None
         ]
     except ValueError as e:
@@ -12155,7 +12156,7 @@ def import_holdings(
                 import_mapping.load_account_map(
                     import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
             asked_account = True
-        snapshot = import_sources_.read_holdings(files, source.name, imports, account=outside_account)
+        snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
         if not snapshot.holdings:
             raise click.ClickException(
                 "no account balances in " + ", ".join(map(str, files))
@@ -12334,7 +12335,7 @@ def import_holdings(
         )
     for warning in result.warnings:
         click.echo(f"warning: {warning}", err=True)
-    profile = import_sources_.get(snapshot.source, "holdings", imports).profile
+    profile = source.profile
     if not asked_account and outside_account is None and profile is not None \
             and profile.holdings is not None and profile.holdings.account_pattern is not None:
         # Nothing in such a file says whose it is, so say what was taken.

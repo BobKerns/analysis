@@ -366,8 +366,11 @@ def plan(
             continue
         if prune or split_out:
             cells = {"opening_balance": "0.00"} if row.get("opening_balance", "").strip() else {}
+            # A basis only where an import sets one: a Roth lot's is what was
+            # contributed, which selling a fund inside the account doesn't undo.
+            taxable = accounts[row["account_name"]][1] == InvestmentAssetSubkind.BROKERAGE_TAXABLE
             cells |= {column: zero for column, zero in (("quantity", "0"), ("opening_cost_basis", "0.00"))
-                      if row.get(column, "").strip()}
+                      if row.get(column, "").strip() and (taxable or column == "quantity")}
             cells = {column: zero for column, zero in cells.items()
                      if _number(row.get(column, "")) != 0}
             result.changes.extend(

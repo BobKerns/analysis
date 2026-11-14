@@ -403,12 +403,12 @@ def test_a_profile_that_cant_be_used_says_why(
 
 
 def test_a_profile_names_the_cell_it_cant_read(
-    write_import_profile: Callable[[str, str], Path], tmp_path: Path, test_data_dir: Path,
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+    write_import_export: Callable[[str, str], Path],
 ) -> None:
     write_import_profile("mine", "holdings: {columns: {account: Acct, asset: Sym, value: Worth}}\n")
     imports = test_data_dir / "imports"
-    export = tmp_path / "mine.csv"
-    export.write_text("Acct,Sym,Worth\nA1,AAA,lots\n", encoding="utf-8")
+    export = write_import_export("mine.csv", "Acct,Sym,Worth\nA1,AAA,lots\n")
 
     with pytest.raises(profiles.ProfileError, match=r"line 2, Worth: 'lots' is not an amount of money"):
         sources.read_holdings([export], imports=imports)
@@ -418,12 +418,12 @@ def test_a_profile_names_the_cell_it_cant_read(
 
 
 def test_a_profile_reads_either_place_of_a_minus_and_any_case_of_heading(
-    write_import_profile: Callable[[str, str], Path], tmp_path: Path, test_data_dir: Path,
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+    write_import_export: Callable[[str, str], Path],
 ) -> None:
     write_import_profile("mine", "holdings: {columns: {account: Acct, asset: Sym, value: Current value}}\n")
-    export = tmp_path / "mine.csv"
-    export.write_text(
-        'ACCT,sym,Current Value\nA1,AAA,"$-1,234.56"\nA1,BBB,"-$2.00"\nA1,CCC,($3.00)\n', encoding="utf-8")
+    export = write_import_export(
+        "mine.csv", 'ACCT,sym,Current Value\nA1,AAA,"$-1,234.56"\nA1,BBB,"-$2.00"\nA1,CCC,($3.00)\n')
 
     found = sources.read_holdings([export], imports=test_data_dir / "imports")
 
@@ -431,15 +431,15 @@ def test_a_profile_reads_either_place_of_a_minus_and_any_case_of_heading(
 
 
 def test_a_profile_works_out_a_share_count_from_a_value_and_a_price(
-    write_import_profile: Callable[[str, str], Path], tmp_path: Path, test_data_dir: Path,
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+    write_import_export: Callable[[str, str], Path],
 ) -> None:
     from decimal import Decimal
     write_import_profile(
         "mine", "holdings: {columns: {account: Acct, asset: Sym, value: Worth, quantity: Shares, price: Price}}\n")
-    export = tmp_path / "mine.csv"
-    export.write_text(
-        'Acct,Sym,Worth,Shares,Price\nA1,AAA,"$1,234.50",,$12.345\nA1,BBB,$500.00,7,$50.00\n'
-        "A1,CCC,$20.00,,\n", encoding="utf-8")
+    export = write_import_export(
+        "mine.csv", 'Acct,Sym,Worth,Shares,Price\nA1,AAA,"$1,234.50",,$12.345\nA1,BBB,$500.00,7,$50.00\n'
+        "A1,CCC,$20.00,,\n")
 
     found = sources.read_holdings([export], imports=test_data_dir / "imports")
 
@@ -449,7 +449,7 @@ def test_a_profile_works_out_a_share_count_from_a_value_and_a_price(
 
 def test_a_profile_that_cant_be_used_stops_only_its_own_source(
     write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
-    quicken_net_worth_export: Path, tmp_path: Path,
+    quicken_net_worth_export: Path, write_import_export: Callable[[str, str], Path],
 ) -> None:
     path = write_import_profile("mine", "holdings: {columns: {asset: A, value: V, colour: X}}\n")
     imports = test_data_dir / "imports"
@@ -461,8 +461,7 @@ def test_a_profile_that_cant_be_used_stops_only_its_own_source(
     # Naming it says what is wrong with it, and so does a file nothing reads.
     with pytest.raises(profiles.ProfileError, match="unknown column"):
         sources.get("mine", "holdings", imports)
-    stray = tmp_path / "stray.csv"
-    stray.write_text("A,V\nx,1\n", encoding="utf-8")
+    stray = write_import_export("stray.csv", "A,V\nx,1\n")
     with pytest.raises(sources.SourceError, match="not used: .*unknown column"):
         sources.read_holdings([stray], imports=imports)
 
@@ -473,6 +472,10 @@ def test_a_profile_may_not_take_a_coded_sources_name(
     write_import_profile("quicken", "holdings: {columns: {account: A, asset: S, value: V}}\n")
     with pytest.raises(sources.SourceError, match="give the profile's folder another name"):
         sources.sources(test_data_dir / "imports")
+    # One that can't be read is no more welcome there, and no less plainly refused.
+    write_import_profile("quicken", "holdings: {columns: {asset: S}}\n")
+    with pytest.raises(sources.SourceError, match="give the profile's folder another name"):
+        sources.get("quicken", "holdings", test_data_dir / "imports")
 
 
 # ---------- lots by symbol ----------
@@ -665,5 +668,13 @@ def test_plan_prune_empties_a_lot_the_file_no_longer_has(test_data_dir: Path) ->
 
     # What it held on December 31 is still what it held then.
     assert result.cells == {2: {"opening_balance": "0.00", "quantity": "0"}}
+
+    # A Roth lot's basis is what was contributed, whatever fund it sat in.
+    roth_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "Roth")))
+    roth = [{"account_name": "Roth", "lot": name, "subkind": "roth_ira", "symbol": name.upper(),
+             "quantity": "1", "opening_balance": "50.00", "opening_cost_basis": "40.00"}
+            for name in ("aaa", "bbb", "ccc")]
+    emptied = holdings.plan(_symbol_snapshot(), roth_map, _BROKERAGE, roth, prune=True)
+    assert emptied.cells[2] == {"opening_balance": "0.00", "quantity": "0"}
     assert result.pruned == ["Brokerage:sold"] and not result.warnings
     assert (result.lots_changed, result.lots_unchanged) == (1, 2)

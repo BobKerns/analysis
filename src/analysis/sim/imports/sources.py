@@ -21,7 +21,7 @@ from analysis.sim.imports.forms import Flows, Snapshot
 
 __all__ = [
     "FORMS", "Form", "Reader", "Source", "SourceError", "broken", "detect", "get", "names",
-    "read_flows", "read_holdings", "sources", "unnamed",
+    "read_flows", "read_holdings", "sources", "table", "unnamed",
 ]
 
 Form = Literal["holdings", "transactions"]
@@ -84,7 +84,7 @@ def _from_profile(profile: profiles.Profile) -> Source:
 
 
 @dataclass(frozen=True)
-class _Table:
+class Table:
     """Every source, read once for a command: the coded ones, the built-in
     profiles, and the household's own in the data dir's imports/ folder."""
 
@@ -116,66 +116,74 @@ class _Table:
         ]
 
 
-def _table(imports: Path | None) -> _Table:
+def table(imports: Path | None = None) -> Table:
+    """The sources, read now: for a command that asks about them more than
+    once, since each reading parses every profile."""
     found = dict(_CODED)
     described = profiles.built_in()
     broken: dict[str, profiles.ProfileError] = {}
     if imports is not None:
         mine, broken = profiles.user(imports)
-        if taken := sorted(set(mine) & set(_CODED)):
+        # Whether it can be used or not: one that can't mustn't stand in the
+        # coded source's way where one that can is refused.
+        if taken := sorted((set(mine) | set(broken)) & set(_CODED)):
             raise SourceError(
-                f"{mine[taken[0]].where}: {taken[0]!r} is a source that reads more than a "
+                f"{imports / taken[0] / profiles.PROFILE}: {taken[0]!r} is a source that reads more than a "
                 "table, so a profile can't replace it; give the profile's folder another name")
         # A broken profile doesn't fall back to the built-in one of its name.
         described = {name: profile for name, profile in (described | mine).items() if name not in broken}
-    return _Table(found | {name: _from_profile(profile) for name, profile in described.items()}, broken)
+    return Table(found | {name: _from_profile(profile) for name, profile in described.items()}, broken)
 
 
 def sources(imports: Path | None = None) -> list[Source]:
-    return list(_table(imports).found.values())
+    return list(table(imports).found.values())
 
 
 def broken(imports: Path | None = None) -> dict[str, str]:
     """The household's profiles that can't be used, and why."""
-    return {name: str(error) for name, error in _table(imports).broken.items()}
+    return {name: str(error) for name, error in table(imports).broken.items()}
 
 
 def names(form: Form | None = None, imports: Path | None = None) -> list[str]:
-    return _table(imports).names(form)
+    return table(imports).names(form)
 
 
 def get(name: str, form: Form, imports: Path | None = None) -> Source:
     """Source ``name``, which must read ``form``."""
-    return _table(imports).get(name, form)
+    return table(imports).get(name, form)
 
 
 def detect(
     path: Path, form: Form | None = None, imports: Path | None = None,
 ) -> list[tuple[Source, Form]]:
     """Every (source, form) whose layout ``path`` is in; one, normally."""
-    return _table(imports).detect(path, form)
+    return table(imports).detect(path, form)
 
 
-def _resolve(paths: Sequence[Path], name: str | None, form: Form, imports: Path | None) -> Source:
-    """The source to read ``paths`` with: ``name``, or the one source whose
-    layout every file is in."""
-    table = _table(imports)
+def _resolve(
+    paths: Sequence[Path], name: str | Source | None, form: Form, imports: Path | None,
+) -> Source:
+    """The source to read ``paths`` with: ``name`` (or the source itself,
+    already found), or the one source whose layout every file is in."""
+    if isinstance(name, Source):
+        return name
+    known = table(imports)
     if name is not None:
-        return table.get(name, form)
+        return known.get(name, form)
     found: dict[str, Source] = {}
     for path in paths:
-        matched = [source for source, _ in table.detect(path, form)]
+        matched = [source for source, _ in known.detect(path, form)]
         if len(matched) != 1:
-            other = [f"{source.name} {each}" for source, each in table.detect(path)]
+            other = [f"{source.name} {each}" for source, each in known.detect(path)]
             hint = f" (it looks like {', '.join(other)})" if other and not matched else ""
             problem = "no source recognizes" if not matched else \
                 f"more than one source ({', '.join(s.name for s in matched)}) recognizes"
             # The file may be one a profile that can't be read was written for.
-            unread = "".join(f"\n  not used: {error}" for error in table.broken.values()) \
+            unread = "".join(f"\n  not used: {error}" for error in known.broken.values()) \
                 if not matched else ""
             raise SourceError(
                 f"{problem} {path} as {form}{hint}; name one with --source "
-                f"({', '.join(table.names(form))}), or see 'sim import sources'{unread}")
+                f"({', '.join(known.names(form))}), or see 'sim import sources'{unread}")
         found[matched[0].name] = matched[0]
     if len(found) != 1:
         raise SourceError(
@@ -196,7 +204,7 @@ def unnamed(
 
 
 def read_holdings(
-    paths: Sequence[Path], name: str | None = None, imports: Path | None = None,
+    paths: Sequence[Path], name: str | Source | None = None, imports: Path | None = None,
     *, account: str | None = None,
 ) -> Snapshot:
     """One snapshot from every file in ``paths``, read with source ``name``
