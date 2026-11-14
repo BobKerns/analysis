@@ -2427,7 +2427,7 @@ def _budget_export(tmp_path: Path, name: str, head: list[str], rows: list[tuple[
     for label, amounts in rows:
         lines.append(f"{label}," + ",".join(triple(each) for each in amounts) + ("," if amounts else ""))
     path = tmp_path / f"budget-{name.casefold()}.csv"
-    mark = "\ufeff"
+    mark = chr(0xFEFF)
     path.write_text("\n".join(line if n < 4 else mark + line for n, line in enumerate(lines)) + "\n",
                     encoding="utf-8")
     return path

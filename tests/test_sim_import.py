@@ -1173,3 +1173,96 @@ def test_sim_import_transactions_reads_a_cards_categories_and_its_payees_over_th
     # January 25 once: (80 + 60) over two months; the cafe by its payee, not the card's category.
     assert {name: rule["amount"] for name, rule in _generated(test_data_dir).items()} == {
         "baseline_expense_food": "70.00", "baseline_expense_treats": "20.00"}
+
+
+# ---------- a budget (issue #617) ----------
+
+def _budget(data: Path, export: Path, *args: str, input: str | None = None):  # noqa: A002
+    return _import(data, "budget", str(export), "--from-account", "Asset_Checking", *args, input=input)
+
+
+_BUDGET_ACCOUNTS = "Food,Expense_Living\nUtilities,Expense_Housing\nProperty Tax,Expense_Housing\n"
+
+
+def test_sim_import_budget_pays_monthly_categories_monthly_and_yearly_ones_in_their_months(
+    test_data_dir: Path, quicken_budget_full_export: Path, quicken_budget_summary_export: Path,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS)
+
+    dry = _budget(test_data_dir, quicken_budget_full_export, "--dry-run")
+    assert dry.exit_code == 0, dry.output
+    assert "would replace" in dry.output and _generated(test_data_dir) == {}
+
+    result = _budget(test_data_dir, quicken_budget_full_export)
+    assert result.exit_code == 0, result.output
+    rules = _generated(test_data_dir)
+    # With no category map, what is under Food is Food's. Utilities at its average month.
+    assert {name: (rule["cadence"], rule["month_of_year"], rule["amount"], rule["to_account"])
+            for name, rule in rules.items()} == {
+        "baseline_expense_food": ("monthly", "", "710.00", "Expense_Living"),
+        "baseline_expense_utilities": ("monthly", "", "165.00", "Expense_Housing"),
+        "baseline_expense_property_tax_dec": ("annual", "12", "3000.00", "Expense_Housing"),
+        "baseline_expense_property_tax_apr": ("annual", "4", "3000.00", "Expense_Housing"),
+    }
+    assert json.loads(rules["baseline_expense_food"]["meta_json"])["source"] == "quicken budget"
+    # Income is offered, never assumed.
+    assert "The budget has income: 1 category, 60000.00 over its period. It is left out" in result.output
+    assert "copy the budget" in result.output
+
+    # The Summary form has no months, so the tax is spread over the year.
+    spread = _budget(test_data_dir, quicken_budget_summary_export)
+    assert spread.exit_code == 0, spread.output
+    rules = _generated(test_data_dir)
+    assert rules["baseline_expense_property_tax"]["amount"] == "500.00"
+    assert "baseline_expense_property_tax_dec" not in rules and "removed" in spread.output
+
+
+def test_sim_import_budget_gathers_categories_by_the_category_map(
+    test_data_dir: Path, quicken_budget_full_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS + "Dining,Expense_Living\n")
+    # A row covers what is under its category; '-' leaves one out.
+    write_import_map("quicken/categories.csv", "Restaurants,Dining\nProperty Tax,-\n")
+
+    result = _budget(test_data_dir, quicken_budget_full_export)
+
+    assert result.exit_code == 0, result.output
+    assert {name: rule["amount"] for name, rule in _generated(test_data_dir).items()} == {
+        "baseline_expense_food": "510.00", "baseline_expense_dining": "200.00",
+        "baseline_expense_utilities": "165.00"}
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_budget_asks_about_income_and_adds_an_expense_account(
+    test_data_dir: Path, quicken_budget_full_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nUtilities,Expense_Housing\n")
+    # Use the income; a new account for the tax, of the property tax subkind; the paycheck's account.
+    answers = "y\nExpense_Property_Tax\ny\ntaxes_property\nIncome_Salary_Alice\n"
+
+    result = _budget(test_data_dir, quicken_budget_full_export, input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "added expense account Expense_Property_Tax" in result.output
+    accounts = (test_data_dir / "scenarios" / "retire_alice" / "accounts.csv").read_text(encoding="utf-8")
+    assert "Expense_Property_Tax,expense,taxes_property,joint" in accounts
+    assert _generated(test_data_dir)["baseline_expense_property_tax_dec"]["to_account"] \
+        == "Expense_Property_Tax"
+    with (test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv").open(
+            newline="", encoding="utf-8") as f:
+        income = [row for row in csv.DictReader(f) if "generated:income_baseline" in row["tags"]]
+    assert [(row["name"], row["from_account"], row["to_account"], row["amount"], row["tax_character"],
+             row["person"]) for row in income] == [
+        ("baseline_income_paycheck", "Income_Salary_Alice", "Asset_Checking", "5000.00", "ordinary",
+         "alice")]
+    saved = test_data_dir / "imports"
+    assert "Property Tax,Expense_Property_Tax" in (saved / "expense_accounts.csv").read_text(encoding="utf-8")
+    assert (saved / "income_accounts.csv").read_text(encoding="utf-8").splitlines() == [
+        "category,account", "Paycheck,Income_Salary_Alice"]
+
+    # A rerun that declines the income leaves the income rule alone.
+    again = _budget(test_data_dir, quicken_budget_full_export, input="n\n")
+    assert again.exit_code == 0, again.output
+    assert "baseline_income_paycheck" in (
+        test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv").read_text(encoding="utf-8")

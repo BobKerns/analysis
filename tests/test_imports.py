@@ -851,7 +851,7 @@ def test_the_maps_of_several_sources_must_agree() -> None:
 
 # ---------- a budget (issue #617) ----------
 
-def test_a_quicken_budget_is_read_month_by_month_with_each_categorys_own_amount(
+def test_a_quicken_budget_is_read_month_by_month_with_the_own_amount_of_each_category(
     quicken_budget_full_export: Path,
 ) -> None:
     assert [(s.name, form) for s, form in sources.detect(quicken_budget_full_export)] == [

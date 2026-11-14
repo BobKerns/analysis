@@ -7,6 +7,7 @@ mapped once, and the targets are checked against the scenario being written.
 ```text
 imports/
   expense_accounts.csv        category -> expense account ('-' = no rule)
+  income_accounts.csv         category -> income account, for a budget's income
   <source>/
     profile.yaml              the source itself, when it is the household's own (profiles.py)
     accounts.csv              (outside account, asset) -> (account, lot), or skip
@@ -33,9 +34,9 @@ from pathlib import Path
 
 __all__ = [
     "ACCOUNTS", "ACCOUNTS_HEADER", "CATEGORIES", "CATEGORIES_HEADER", "EXCLUDED_PAYEES",
-    "EXCLUDED_PAYEES_HEADER", "EXPENSE_ACCOUNTS", "EXPENSE_ACCOUNTS_HEADER", "IMPORTS", "NO_RULE",
+    "EXCLUDED_PAYEES_HEADER", "EXPENSE_ACCOUNTS", "EXPENSE_ACCOUNTS_HEADER", "IMPORTS", "INCOME_ACCOUNTS", "NO_RULE",
     "PAYEES", "PAYEES_HEADER", "SPLITS", "SPLITS_HEADER", "TRANSFER", "AccountMap", "AccountTarget",
-    "ExpenseAccounts", "PayeeMap", "expense_accounts_path", "imports_dir", "load_account_map",
+    "ExpenseAccounts", "PayeeMap", "expense_accounts_path", "imports_dir", "income_accounts_path", "load_account_map",
     "load_category_map", "load_category_splits", "load_excluded_payees", "load_expense_accounts",
     "load_payee_map", "payee_key", "rename_account", "rename_lot", "source_dir",
 ]
@@ -46,6 +47,7 @@ CATEGORIES = "categories.csv"
 SPLITS = "splits.csv"
 EXCLUDED_PAYEES = "excluded_payees.csv"
 EXPENSE_ACCOUNTS = "expense_accounts.csv"
+INCOME_ACCOUNTS = "income_accounts.csv"
 PAYEES = "payees.csv"
 
 ACCOUNTS_HEADER = ("outside_account", "asset", "action", "account", "lot", "note")
@@ -67,6 +69,12 @@ def imports_dir(data_dir: Path) -> Path:
 
 def source_dir(data_dir: Path, source: str) -> Path:
     return imports_dir(data_dir) / source
+
+
+def income_accounts_path(data_dir: Path) -> Path:
+    """``imports/income_accounts.csv``: as ``expense_accounts.csv``, for the
+    income categories of a budget whose income is used."""
+    return imports_dir(data_dir) / INCOME_ACCOUNTS
 
 
 def expense_accounts_path(data_dir: Path) -> Path:

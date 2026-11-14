@@ -34,7 +34,10 @@ from analysis.amazon.notebook import load_monthly_summaries
 from analysis.expenses.baseline import (
     build_expense_baseline,
     build_scheduled_baseline_rows,
+    category_slug,
+    generated_row,
     BASELINE_GENERATED_TAG,
+    INCOME_GENERATED_TAG,
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
@@ -138,6 +141,7 @@ from analysis.sim.imports import forms as import_forms
 from analysis.sim.imports import holdings as import_holdings_
 from analysis.sim.imports import mapping as import_mapping
 from analysis.sim.imports import sources as import_sources_
+from analysis.sim.imports import budget as import_budget_
 from analysis.sim.imports import transactions as import_transactions_
 from analysis.sim.imports.holdings import format_dollars
 import analysis.sim.scenario as sc
@@ -8792,6 +8796,146 @@ def _ask_holding_lot(
             click.echo(f"  {error.format_message()}")
 
 
+def _category_accounts(
+    data_dir_p: Path, scenario_name: str, monthly: Mapping[str, float],
+    saved: import_mapping.ExpenseAccounts, scenario_accounts: Collection[str],
+    choices: Sequence[str], *, what: str = "expense",
+    create: dict[str, str] | None = None,
+) -> tuple[dict[str, str], set[str], bool]:
+    """The scenario account of each category in ``monthly`` (about what it
+    comes to a month), the categories that get no rule, and whether ``saved``
+    took an answer to save.
+
+    A category's account is its saved one, else the scenario account of its
+    own name. At a terminal one with neither, or whose saved account the
+    scenario doesn't have, is asked about, over ``choices``. With ``create``,
+    a name the scenario doesn't have is offered as a new expense account,
+    and noted there with its subkind for the caller to add.
+    """
+    # What this run uses: the saved accounts, and any answer given for this
+    # run only.
+    chosen = dict(saved.accounts)
+    known = set(scenario_accounts)
+
+    def target_of(category: str) -> str | None:
+        """The chosen account, else the scenario account of the same name."""
+        found = chosen.get(category)
+        if found is None and category in known:
+            return category
+        return found
+
+    to_save = False
+    if _interactive():
+        # An account named like a category needs no row, so a scenario may
+        # rely on having one: a row saved from here would override that.
+        named_elsewhere = {name for each in names.scenario_names(data_dir_p)
+                           for name in names.account_names(data_dir_p, each)}
+        for category in sorted(monthly):
+            # No file can name the blank category, so an answer couldn't be
+            # saved or read back: it is warned about below instead.
+            if not category:
+                continue
+            target = target_of(category)
+            if target is not None and (target == import_mapping.NO_RULE or target in known):
+                continue
+            why = f"has no {what} account" if target is None else \
+                f"is mapped to {target}, which {scenario_name} doesn't have"
+            click.echo(f"category {category!r} (about {monthly[category]:,.2f} a month) {why}.")
+            if create is None:
+                answer = _ask_name(f"{what} account", [*choices, "skip"],
+                                   prompt=f"{what} account for {category} (or skip)")
+            else:
+                answer = _ask_account_or_new(category, [*choices, *create], known, create)
+            chosen[category] = import_mapping.NO_RULE if answer == "skip" else answer
+            # A saved account may be right for another scenario, which would
+            # then silently lose the category's rule, or pay the wrong account.
+            if target is None and category in named_elsewhere:
+                everywhere = click.confirm(
+                    f"Another scenario has an account named {category}, which it uses for "
+                    f"this category. Save {chosen[category]} instead, for every scenario? "
+                    "(No uses your answer for this import only)", default=False)
+            else:
+                everywhere = target is None or click.confirm(
+                    f"Replace the saved account {target}, for every scenario? "
+                    "(No uses your answer for this import only)", default=False)
+            if everywhere:
+                saved.accounts[category] = chosen[category]
+                to_save = True
+
+    mappings: dict[str, str] = {}
+    ignored: set[str] = set()
+    for category in sorted(monthly):
+        target = target_of(category)
+        if target is not None and target in known:
+            mappings[category] = target
+            continue
+        ignored.add(category)
+        if target is None:
+            click.echo(f"warning: ignoring category {category!r}; "
+                       f"no target {what} account mapping exists", err=True)
+        elif target != import_mapping.NO_RULE:
+            click.echo(f"warning: ignoring category {category!r}; "
+                       f"target account {target!r} does not exist", err=True)
+    return mappings, ignored, to_save
+
+
+def _ask_account_or_new(
+    category: str, choices: Sequence[str], known: set[str], create: dict[str, str],
+) -> str:
+    """The expense account for ``category``: one the scenario has, ``skip``,
+    or a new name, which is added to ``known`` and noted in ``create`` with
+    the subkind asked for."""
+    shown = list(dict.fromkeys(choices))
+    click.echo("  expense accounts: " + (", ".join(shown) or "none yet")
+               + "; or a new name to add one, or skip")
+    subkinds = sorted(registries.ACCOUNT_SUBKINDS["expense"])
+    while True:
+        answer = _prompt_with_completion(
+            f"expense account for {category} (or skip)", choices=[*shown, "skip"]).strip()
+        if answer == "skip" or answer in known:
+            return answer
+        if not answer or not click.confirm(f"Add expense account {answer}?", default=True):
+            continue
+        subkind = ""
+        while subkind not in subkinds:
+            subkind = _prompt_with_completion(
+                f"  subkind ({', '.join(subkinds)})", choices=subkinds, default="living").strip()
+        create[answer] = subkind
+        known.add(answer)
+        return answer
+
+
+def _show_generated_changes(
+    scenario_dir: Path, scenario_name: str, rows: Sequence[Mapping[str, str]], tags: Sequence[str],
+) -> str:
+    """Print how ``rows`` differ from the scenario's generated rules of
+    ``tags``, which they would replace, and return the counts as words."""
+    # Against every rule the scenario loads: one a parent scenario has is not
+    # new here, and is not removed by replacing this scenario's own rows.
+    loaded = _overlay_rows(scenario_dir, "scheduled.csv")
+    inherited = {name for name, found in loaded.items() if found.inherited_from is not None}
+    changes = [
+        change for tag in tags
+        for change in import_flows_.plan(
+            {name: found.row for name, found in loaded.items()},
+            [row for row in rows if tag in row["tags"].split()], tag, inherited=inherited)]
+    if changes:
+        _echo_table(
+            ["rule", "to account", "before", "after", ""],
+            ((c.name, c.to_account, c.before, c.after, c.status) for c in changes),
+            left=2,
+        )
+    for change in changes:
+        if change.status == "kept":
+            click.echo(
+                f"warning: {change.name} is no longer generated, but {scenario_name} inherits "
+                f"it from {loaded[change.name].inherited_from}, so it stays in force; end it "
+                f"here with 'sim scheduled delete {change.name}'", err=True)
+    return ", ".join(
+        f"{count} {status}" for status in ("added", "changed", "removed", "unchanged", "kept")
+        if (count := sum(c.status == status for c in changes)))
+
+
 def _ask_transactions_account(path: Path, source: str) -> str:
     """Which outside account a transactions file is, when nothing in it or
     its name says: a bank names its downloads alike, whatever the account."""
@@ -9012,67 +9156,9 @@ def import_transactions(
     totals = {str(r["category"]): float(r["amount_total"])
               for r in baseline.category_totals.to_dict("records")}
     months = max(baseline.monthly["summary_month_start"].nunique(), 1)
-
-    # What this run uses: the saved accounts, and any answer given for this
-    # run only.
-    chosen = dict(expense_accounts.accounts)
-
-    def target_of(category: str) -> str | None:
-        """The chosen account, else the scenario account of the same name."""
-        saved = chosen.get(category)
-        if saved is None and category in scenario_accounts:
-            return category
-        return saved
-
-    to_save = False
-    if _interactive():
-        # An account named like a category needs no row, so a scenario may
-        # rely on having one: a row saved from here would override that.
-        named_elsewhere = {name for each in names.scenario_names(data_dir_p)
-                           for name in names.account_names(data_dir_p, each)}
-        for category in sorted(totals):
-            # No file can name the blank category, so an answer couldn't be
-            # saved or read back: it is warned about below instead.
-            if not category:
-                continue
-            target = target_of(category)
-            if target is not None and (target == import_mapping.NO_RULE or target in scenario_accounts):
-                continue
-            why = "has no expense account" if target is None else \
-                f"is mapped to {target}, which {scenario_name} doesn't have"
-            click.echo(f"category {category!r} (about {totals[category] / months:,.2f} a month) {why}.")
-            answer = _ask_name("expense account", [*expense_names, "skip"],
-                               prompt=f"expense account for {category} (or skip)")
-            chosen[category] = import_mapping.NO_RULE if answer == "skip" else answer
-            # A saved account may be right for another scenario, which would
-            # then silently lose the category's rule, or pay the wrong account.
-            if target is None and category in named_elsewhere:
-                everywhere = click.confirm(
-                    f"Another scenario has an account named {category}, which it uses for "
-                    f"this category. Save {chosen[category]} instead, for every scenario? "
-                    "(No uses your answer for this import only)", default=False)
-            else:
-                everywhere = target is None or click.confirm(
-                    f"Replace the saved account {target}, for every scenario? "
-                    "(No uses your answer for this import only)", default=False)
-            if everywhere:
-                expense_accounts.accounts[category] = chosen[category]
-                to_save = True
-
-    mappings: dict[str, str] = {}
-    ignored: set[str] = set()
-    for category in sorted(totals):
-        target = target_of(category)
-        if target is not None and target in scenario_accounts:
-            mappings[category] = target
-            continue
-        ignored.add(category)
-        if target is None:
-            click.echo(f"warning: ignoring category {category!r}; "
-                       "no target expense account mapping exists", err=True)
-        elif target != import_mapping.NO_RULE:
-            click.echo(f"warning: ignoring category {category!r}; "
-                       f"target account {target!r} does not exist", err=True)
+    mappings, ignored, to_save = _category_accounts(
+        data_dir_p, scenario_name, {category: total / months for category, total in totals.items()},
+        expense_accounts, scenario_accounts, expense_names)
     rows = build_scheduled_baseline_rows(
         baseline,
         mappings,
@@ -9084,27 +9170,7 @@ def import_transactions(
         provenance={"source": flows.source, "files_sha256": import_flows_.file_digest(files)},
     )
     scheduled_path = scenario_dir / "scheduled.csv"
-    # Against every rule the scenario loads: one a parent scenario has is not
-    # new here, and is not removed by replacing this scenario's own rows.
-    loaded = _overlay_rows(scenario_dir, "scheduled.csv")
-    changes = import_flows_.plan(
-        {name: found.row for name, found in loaded.items()}, rows, BASELINE_GENERATED_TAG,
-        inherited={name for name, found in loaded.items() if found.inherited_from is not None})
-    if changes:
-        _echo_table(
-            ["rule", "to account", "before", "after", ""],
-            ((c.name, c.to_account, c.before, c.after, c.status) for c in changes),
-            left=2,
-        )
-    counts = ", ".join(
-        f"{count} {status}" for status in ("added", "changed", "removed", "unchanged", "kept")
-        if (count := sum(c.status == status for c in changes)))
-    for change in changes:
-        if change.status == "kept":
-            click.echo(
-                f"warning: {change.name} is no longer generated, but {scenario_name} inherits "
-                f"it from {loaded[change.name].inherited_from}, so it stays in force; end it "
-                f"here with 'sim scheduled delete {change.name}'", err=True)
+    counts = _show_generated_changes(scenario_dir, scenario_name, rows, (BASELINE_GENERATED_TAG,))
     if dry_run:
         click.echo(f"(dry run) would replace the generated row(s) in {_shown(scheduled_path)} "
                    f"with {len(rows)}: {counts or 'none'}")
@@ -9122,6 +9188,212 @@ def import_transactions(
     if to_save:
         expense_accounts.save()
         click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
+    click.echo(
+        f"replaced {len(rows)} generated baseline row(s) in {_shown(scheduled_path)} "
+        f"for scenario {scenario_name} ({counts or 'none'})"
+    )
+
+
+def _money(cents: int) -> str:
+    """Cents as a scheduled.csv amount."""
+    return f"{'-' if cents < 0 else ''}{abs(cents) // 100}.{abs(cents) % 100:02d}"
+
+
+@import_group_command.command("budget")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--source", "layout", default=None, help=_SOURCE_OPTION_HELP)
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--from-account", type=completion.ENDPOINT, required=True,
+              help="Scenario account that funds all generated expense rows.")
+@click.option("--from-lot", type=completion.LotName("from_account"), default="",
+              help="Lot of --from-account (required for investment accounts).")
+@click.option("--income/--no-income", "use_income", default=None,
+              help="Write income rules from the budget's income rows, or leave them out "
+                   "(asked at a terminal when the budget has income).")
+@click.option("--income-to", type=completion.ACCOUNT, default=None,
+              help="Scenario account the budget's income is paid into (default: --from-account).")
+@click.option("--start", default=None,
+              help="First scheduled month YYYY-MM or YYYY-MM-DD (default: scenario start).")
+@click.option("--series", type=completion.SCHEDULED_SERIES, default="cpi", show_default=True,
+              help="Inflation series applied to generated rows ('fixed' for none).")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show how the generated rows would change without rewriting scheduled.csv.")
+def import_budget(
+    file: Path,
+    layout: str | None,
+    scenario: str | None,
+    data_dir: Path | None,
+    from_account: str,
+    from_lot: str,
+    use_income: bool | None,
+    income_to: str | None,
+    start: str | None,
+    series: str,
+    dry_run: bool,
+) -> None:
+    """Expense rules from a budget: replace the generated baseline rows in scheduled.csv.
+
+    FILE is a budget's export (Quicken's, "Full" for its months or
+    "Summary"). A category budgeted in most months gets one monthly rule at
+    its average month; one budgeted in only a month or two of a year gets a
+    yearly rule in each. A budget with months is the better file: without
+    them every category is spread over the year.
+
+    The budget's categories are gathered by the data dir's
+    imports/<source>/categories.csv, where it has one: a row for a category
+    covers all that is under it, and a category with no row is its top
+    category's. Each category's expense account is read from
+    imports/expense_accounts.csv; at a terminal one with none is asked for,
+    a new name adds the account, and the answer is saved.
+
+    Income in the budget is offered, not assumed: a plan usually models its
+    own. Used, each income category gets a rule from its income account
+    (imports/income_accounts.csv) into --income-to. To leave it out for
+    good, export a copy of the budget without its income.
+
+    The rules replace every generated baseline row, those a transactions
+    import wrote included.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    _refuse_unmigrated_imports(data_dir_p)
+    try:
+        budget = import_sources_.read_budget(file, layout, import_mapping.imports_dir(data_dir_p))
+        category_map_path = import_mapping.source_dir(data_dir_p, budget.source) / import_mapping.CATEGORIES
+        merges, exclusions = import_mapping.load_category_map(category_map_path) \
+            if category_map_path.exists() else ({}, set())
+        expense_accounts = import_mapping.load_expense_accounts(
+            import_mapping.expense_accounts_path(data_dir_p))
+        income_accounts = import_mapping.load_expense_accounts(
+            import_mapping.income_accounts_path(data_dir_p))
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    gathered = import_budget_.gather(budget, merges, exclusions)
+    if not gathered.spending and not gathered.income:
+        raise click.ClickException(f"no budgeted categories in {file}: is it a budget's export?")
+    for what, left in (("a move between your own accounts", gathered.transfers),
+                       ("modeled by the scenario itself", gathered.modeled)):
+        if left:
+            click.echo(f"note: left out as {what}: {', '.join(left)}")
+
+    with _intent_db(data_dir_p, scenario_name) as (con, _):
+        if start is None:
+            start = con.execute("SELECT start FROM scenario").fetchone()[0]
+        accounts = {row[0]: (row[1], row[2], row[3]) for row in con.execute(
+            "SELECT name, kind, subkind, owner FROM account ORDER BY name")}
+        scenario_sources = set(accounts) | {row[0] for row in con.execute("SELECT name FROM chain")}
+    if from_account not in scenario_sources:
+        raise click.ClickException(f"unknown from account or chain: {from_account!r}")
+    income_to = income_to or from_account
+    if income_to not in accounts:
+        raise click.ClickException(
+            f"income is paid into an account, and {income_to!r} isn't one; name one with --income-to")
+    start = _validate_month_date(start)
+    if budget.months:
+        first = date.fromisoformat(start).replace(day=1)
+        ended = budget.months[-1]
+        if (first.year - ended.year) * 12 + first.month - ended.month > 12:
+            click.echo(
+                f"warning: the budget ends in {ended:%B %Y}, more than a year before the rules "
+                f"start ({first:%B %Y}); its amounts are written as they are, in {first:%Y} dollars",
+                err=True)
+
+    if gathered.income and use_income is None:
+        yearly = sum(sum(each) for each in gathered.income.values())
+        count = "1 category" if len(gathered.income) == 1 else f"{len(gathered.income)} categories"
+        said = f"The budget has income: {count}, {format_dollars(yearly)} over its period."
+        if _interactive():
+            use_income = click.confirm(f"{said} Write income rules from it?", default=False)
+        else:
+            click.echo(f"note: {said} It is left out; --income writes income rules from it.")
+    if gathered.income and not use_income:
+        click.echo("note: the budget's income is left out. To export it without, copy the budget "
+                   "in the outside program and exclude its income there.")
+
+    per_month = len(budget.months) or 12
+    planned, nothing = import_budget_.plan(gathered.spending, budget.months)
+    new_accounts: dict[str, str] = {}
+    mappings, ignored, to_save = _category_accounts(
+        data_dir_p, scenario_name,
+        {category: sum(gathered.spending[category]) / per_month / 100
+         for category in dict.fromkeys(each.category for each in planned)},
+        expense_accounts, set(accounts),
+        [name for name, (kind, _, _) in accounts.items() if kind == "expense"], create=new_accounts)
+    earned: list[import_budget_.Planned] = []
+    income_mappings: dict[str, str] = {}
+    income_ignored: set[str] = set()
+    income_to_save = False
+    if use_income:
+        earned, none_earned = import_budget_.plan(gathered.income, budget.months, income=True)
+        nothing += none_earned
+        income_mappings, income_ignored, income_to_save = _category_accounts(
+            data_dir_p, scenario_name,
+            {category: sum(gathered.income[category]) / per_month / 100
+             for category in dict.fromkeys(each.category for each in earned)},
+            income_accounts, set(accounts),
+            [name for name, (kind, _, _) in accounts.items() if kind == "income"], what="income")
+    if nothing:
+        click.echo(f"note: nothing to pay, so no rule: {', '.join(nothing)}")
+
+    provenance = {"source": f"{budget.source} budget", "files_sha256": import_flows_.file_digest([file])}
+    rows: list[dict[str, str]] = []
+    for each in (*planned, *earned):
+        if each.category in (income_ignored if each.income else ignored):
+            continue
+        name = f"baseline_{'income' if each.income else 'expense'}_{category_slug(each.category)}" \
+            + (f"_{date(2000, each.month, 1):%b}".casefold() if each.several and each.month else "")
+        if each.income:
+            account = income_mappings[each.category]
+            _, subkind, owner = accounts[account]
+            rows.append(generated_row(
+                name, each.category, _money(each.amount_cents), from_account=account,
+                to_account=income_to, start=start, series=series, month_of_year=each.month,
+                person="" if owner in (None, "", "joint") else str(owner),
+                tax_character="ordinary" if subkind in scheduled_guide.ORDINARY_INCOME_SUBKINDS else "none",
+                tag=INCOME_GENERATED_TAG, provenance=provenance))
+        else:
+            rows.append(generated_row(
+                name, each.category, _money(each.amount_cents), from_account=from_account,
+                from_lot=from_lot, to_account=mappings[each.category], start=start, series=series,
+                month_of_year=each.month, provenance=provenance))
+
+    # The income rules are replaced only by a run that uses the budget's income.
+    tags = (BASELINE_GENERATED_TAG, INCOME_GENERATED_TAG) if use_income else (BASELINE_GENERATED_TAG,)
+    scheduled_path = scenario_dir / "scheduled.csv"
+    counts = _show_generated_changes(scenario_dir, scenario_name, rows, tags)
+    used = {row["to_account"] for row in rows}
+    added = {name: subkind for name, subkind in new_accounts.items() if name in used}
+    if dry_run:
+        click.echo(f"(dry run) would replace the generated row(s) in {_shown(scheduled_path)} "
+                   f"with {len(rows)}: {counts or 'none'}")
+        if added:
+            click.echo(f"(dry run) would add expense account(s) {', '.join(added)}")
+        if to_save or income_to_save:
+            click.echo("(dry run) the accounts you gave were not saved")
+        return
+    accounts_path = scenario_dir / "accounts.csv"
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        for name, subkind in added.items():
+            _append_csv_row(edit.path(accounts_path), registries.ACCOUNTS_CSV_HEADER, {
+                "name": name, "kind": "expense", "subkind": subkind, "owner": "joint",
+                "tax_treatment": _default_tax_treatment("expense", subkind) or "",
+                "series": "", "tax_character": "", "opened": "", "closed": "", "meta_json": "{}",
+                "tags": "",
+            })
+        replace_generated_scheduled_rows(edit.path(scheduled_path), rows, tags)
+    for name in added:
+        click.echo(f"added expense account {name} to {_shown(accounts_path)}")
+    # Once the rules are written: an edit that is refused saves nothing.
+    if to_save:
+        expense_accounts.save()
+        click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
+    if income_to_save:
+        income_accounts.save()
+        click.echo(f"saved income accounts to {_shown(income_accounts.path)}")
     click.echo(
         f"replaced {len(rows)} generated baseline row(s) in {_shown(scheduled_path)} "
         f"for scenario {scenario_name} ({counts or 'none'})"

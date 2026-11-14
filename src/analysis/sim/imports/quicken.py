@@ -189,6 +189,7 @@ def read_transactions(path: Path) -> Flows:
 # ---------- a budget's export ----------
 
 _BUDGETED = "budgeted"
+_MARK = chr(0xFEFF)
 _SECTIONS = {"income": True, "expenses": False}
 _PERIOD = re.compile(r"(\d{4})(?:\s*-\s*\d{4})?\s*:\s*([A-Za-z]+)\s+to\s+([A-Za-z]+)")
 _MONTHS = {dt.date(2000, month, 1).strftime("%B").casefold(): month for month in range(1, 13)}
@@ -208,7 +209,7 @@ class _BudgetRow:
 def _budget_rows(path: Path, limit: int | None = None) -> list[list[str]]:
     """The file's rows without the byte-order mark that opens each line of
     a budget's export, not just the first."""
-    return [[cell.replace("\ufeff", "") for cell in row] for row in read_rows(path, limit)]
+    return [[cell.replace(_MARK, "") for cell in row] for row in read_rows(path, limit)]
 
 
 def _budgeted_columns(rows: list[list[str]]) -> tuple[int, list[int]] | None:

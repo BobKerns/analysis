@@ -25,6 +25,9 @@ from analysis.sim.registries import SCHEDULED_CSV_HEADER
 _ALWAYS_EXCLUDED_PAYEE_PATTERNS = ("amazon", "mortgage")
 _EXCLUDED_CATEGORY_RE = re.compile(r"mortgage", re.IGNORECASE)
 BASELINE_GENERATED_TAG = "generated:expense_baseline"
+INCOME_GENERATED_TAG = "generated:income_baseline"
+"""On the income rules a budget's import writes: a rerun that uses the
+budget's income replaces them, and nothing else does."""
 SCHEDULED_HEADER = SCHEDULED_CSV_HEADER
 
 type SourceCategory = str
@@ -220,44 +223,66 @@ def build_scheduled_baseline_rows(
         if to_account is None:
             raise ValueError(f"no scheduled account mapping for category {category!r}")
         amount = round(float(record["amount_total"]) / observed_months, 2)
-        slug = re.sub(r"[^a-z0-9]+", "_", category.casefold()).strip("_")
-        metadata = {"generated_by": "expense_baseline", "category": category, **(provenance or {})}
-        rows.append({
-            "name": f"baseline_expense_{slug}",
-            "from_account": from_account,
-            "from_lot": from_lot,
-            "to_account": to_account,
-            "to_lot": "",
-            "cadence": "monthly",
-            "month_of_year": "",
-            "amount_rule_kind": "fixed_amount",
-            "interest_account": "",
-            "person": "",
-            "series": series,
-            "rate": "",
-            "claim_age": "",
-            "amount": f"{amount:.2f}",
-            "base_date": start,
-            "inflation_cadence": "",
-            "tax_character": "none",
-            "start": start,
-            "end": "",
-            "priority": str(priority),
-            "ytd_amount": "",
-            "ytd_preroll": "",
-            "description": f"Generated expense baseline: {category}",
-            "meta_json": json.dumps(metadata, separators=(",", ":")),
-            "params_json": "{}",
-            "tags": BASELINE_GENERATED_TAG,
-        })
+        rows.append(generated_row(
+            f"baseline_expense_{category_slug(category)}", category, f"{amount:.2f}",
+            from_account=from_account, from_lot=from_lot, to_account=to_account, start=start,
+            series=series, priority=priority, provenance=provenance))
     return rows
+
+
+def category_slug(category: str) -> str:
+    """``category`` as part of a rule's name."""
+    return re.sub(r"[^a-z0-9]+", "_", category.casefold()).strip("_")
+
+
+def generated_row(
+    name: str, category: str, amount: str, *, from_account: AccountName, to_account: AccountName,
+    start: str, from_lot: str = "", series: str = "cpi", priority: int = 200,
+    month_of_year: int | None = None, person: str = "", tax_character: str = "none",
+    tag: str = BASELINE_GENERATED_TAG, provenance: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """One generated fixed-amount rule, monthly, or yearly in ``month_of_year``.
+    ``provenance`` (the source, a hash of its files) goes in its ``meta_json``."""
+    income = tag == INCOME_GENERATED_TAG
+    metadata = {"generated_by": "income_baseline" if income else "expense_baseline",
+                "category": category, **(provenance or {})}
+    return {
+        "name": name,
+        "from_account": from_account,
+        "from_lot": from_lot,
+        "to_account": to_account,
+        "to_lot": "",
+        "cadence": "monthly" if month_of_year is None else "annual",
+        "month_of_year": "" if month_of_year is None else str(month_of_year),
+        "amount_rule_kind": "fixed_amount",
+        "interest_account": "",
+        "person": person,
+        "series": series,
+        "rate": "",
+        "claim_age": "",
+        "amount": amount,
+        "base_date": start,
+        "inflation_cadence": "",
+        "tax_character": tax_character,
+        "start": start,
+        "end": "",
+        "priority": str(priority),
+        "ytd_amount": "",
+        "ytd_preroll": "",
+        "description": f"Generated {'income' if income else 'expense'} baseline: {category}",
+        "meta_json": json.dumps(metadata, separators=(",", ":")),
+        "params_json": "{}",
+        "tags": tag,
+    }
 
 
 def replace_generated_scheduled_rows(
     path: Path | str,
     generated_rows: list[dict[str, str]],
+    tags: Collection[str] = (BASELINE_GENERATED_TAG,),
 ) -> int:
-    """Replace rows tagged as generated baseline rows, preserving other rows."""
+    """Replace the rows carrying one of ``tags`` (the generated expense
+    baseline's), preserving other rows."""
     scheduled_path = Path(path)
     existing: list[dict[str, str]] = []
     if scheduled_path.exists() and scheduled_path.stat().st_size:
@@ -267,7 +292,7 @@ def replace_generated_scheduled_rows(
                 raise ValueError(f"{scheduled_path}: scheduled.csv header mismatch")
             existing = [
                 row for row in reader
-                if BASELINE_GENERATED_TAG not in (row.get("tags") or "").split()
+                if not set(tags) & set((row.get("tags") or "").split())
             ]
     scheduled_path.parent.mkdir(parents=True, exist_ok=True)
     with scheduled_path.open("w", newline="", encoding="utf-8") as handle:
