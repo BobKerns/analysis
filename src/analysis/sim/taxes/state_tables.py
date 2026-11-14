@@ -353,7 +353,10 @@ class StateTablesYear(FederalStateYear):
         capital, extra = self._capital, basis.extra
         gain = capital.ltcg + extra.ltcg
         exclusion = Adjustment("ltcg_exclusion", ltcg=gain - self._net_ltcg(gain))
-        ordinary, ltcg = income.ordinary, income.ltcg - exclusion.ltcg
+        # The state and local refund federal AGI recaptured (#593): no
+        # state taxes its own refund.
+        refund = Adjustment("refund_income", ordinary=basis.federal.memo.get("state_refund_income", 0))
+        ordinary, ltcg = income.ordinary - refund.ordinary, income.ltcg - exclusion.ltcg
         # A state with a gains tax taxes the gain it taxes in place of its
         # net long-term gain (#489): ESSB 6346 takes long-term gains and
         # losses out of federal AGI (a long-term loss's deduction from
@@ -375,13 +378,14 @@ class StateTablesYear(FederalStateYear):
         # The table's subtractions come off ordinary income, tested against
         # the income before them, and never take it below zero.
         left = ordinary - retirement.ordinary - retirement.stcg
-        test = income.agi - exclusion.value - swap.value - retirement.value - ss.value
+        test = income.agi - refund.value - exclusion.value - swap.value - retirement.value - ss.value
         own = []
         for line, amount in self._adjusted("subtraction", test, basis).items():
             amount = min(amount, max(0, left))
             left -= amount
             own.append(Adjustment(line, ordinary=amount))
-        return (exclusion, *([swap] if self._gains_bands else []), retirement, ss, *own)
+        return (*([refund] if refund.ordinary else []), exclusion,
+                *([swap] if self._gains_bands else []), retirement, ss, *own)
 
     def _adjusted(self, step: str, income: int, basis: Basis, *,
                   refundable: bool = False) -> dict[str, int]:

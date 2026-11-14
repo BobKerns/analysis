@@ -785,10 +785,63 @@ def test_a_cards_two_layouts_are_one_profile_and_a_reference_is_counted_once(
     payees = mapping.PayeeMap(imports / "amex" / "payees.csv")
     payees.add("harbor cafe", "Treats")
     payees.add("online payment", "transfer")
-    over = transactions.override(frame, {"amex": payees})
+    # A payee's row goes over the card's own category; the rest keep the file's.
+    over, unmatched = transactions.categorize(frame, {"amex": payees})
     assert over["category"].tolist() == [
         "Merchandise & Supplies-Groceries", "", "Treats", "Merchandise & Supplies-Groceries"]
-    assert over["transfer"].tolist() == ["", "transfer", "", ""]
+    assert over["transfer"].tolist() == ["", "transfer", "", ""] and unmatched == []
+
+
+def test_a_file_without_references_may_not_overlap_one_with_them(
+    card_exports: tuple[Path, Path, Path], test_data_dir: Path,
+) -> None:
+    detailed, february, short = card_exports
+    imports = test_data_dir / "imports"
+    # February 10 is in both, and the short download has no reference to match it by.
+    with pytest.raises(ValueError, match="both have transactions of '-12345' between 2026-02-10"):
+        sources.read_flows([february, short], imports=imports)
+    with pytest.raises(ValueError, match="both have transactions"):
+        sources.read_flows([short, february], imports=imports)
+
+    # Apart, the two layouts are one source's, and the short one's rows are found by payee.
+    both = sources.read_flows([detailed, short], imports=imports)
+    assert both.sources == ("amex",) and both.duplicates == 0
+    _, unmatched = transactions.categorize(
+        both.transactions, {"amex": mapping.PayeeMap(imports / "amex" / "payees.csv")})
+    assert [(each.key, each.rows, each.cents) for each in unmatched] == [("corner market", 1, 6000)]
+
+
+def test_files_that_name_no_account_are_named_in_order_or_refused(
+    bank_checking_export: Path, write_import_export: Callable[[str, str], Path],
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+) -> None:
+    again = write_import_export(
+        "Checking1 (1).csv", bank_checking_export.read_text(encoding="utf-8"))
+    # The same account downloaded twice: by their names they would be two.
+    with pytest.raises(ValueError, match="2 files don't say which account they are"):
+        sources.read_flows([bank_checking_export, again])
+    with pytest.raises(ValueError, match="both have transactions of 'Joint'"):
+        sources.read_flows([bank_checking_export, again], account=["Joint", "Joint"])
+    named = sources.read_flows([bank_checking_export, again], account=["Joint", "Savings"])
+    assert named.transactions["account"].value_counts().to_dict() == {"Joint": 7, "Savings": 7}
+    with pytest.raises(ValueError, match="--outside-account was given 1 time"):
+        sources.read_flows([bank_checking_export, again], account="Joint")
+
+    # A source's name may have a '+' in it: the sources are not found by splitting the label.
+    write_import_profile(
+        "bank+card", "transactions: {columns: {date: Day, payee: Merchant, amount: Charge}}\n")
+    odd = write_import_export("odd.csv", "Day,Merchant,Charge\n01/05/2026,Market,-12.50\n")
+    assert sources.read_flows([odd], imports=test_data_dir / "imports").sources == ("bank+card",)
+
+
+def test_a_payee_pattern_matches_whole_words() -> None:
+    payees = mapping.PayeeMap(Path("payees.csv"))
+    payees.add("art", "Hobbies")
+    payees.add("Corner Market", "Food")
+    assert payees.category("WALMART 1234") is None
+    assert payees.category("THE ART STORE") == "Hobbies"
+    assert payees.category("CORNER MARKET #204 OAKLAND") == "Food"
+    assert payees.category("CORNER SUPERMARKET") is None
 
 
 def test_a_transactions_profile_says_what_a_file_may_lack(

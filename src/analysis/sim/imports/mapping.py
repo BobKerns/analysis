@@ -38,7 +38,7 @@ __all__ = [
     "PAYEES", "PAYEES_HEADER", "SPLITS", "SPLITS_HEADER", "TRANSFER", "AccountMap", "AccountTarget",
     "ExpenseAccounts", "PayeeMap", "expense_accounts_path", "imports_dir", "income_accounts_path", "load_account_map",
     "load_category_map", "load_category_splits", "load_excluded_payees", "load_expense_accounts",
-    "load_payee_map", "payee_key", "rename_account", "rename_lot", "source_dir",
+    "load_payee_map", "payee_key", "payee_matches", "rename_account", "rename_lot", "source_dir",
 ]
 
 IMPORTS = "imports"
@@ -333,12 +333,18 @@ def payee_key(text: str) -> str:
     return " ".join(word for word in text.casefold().split() if not any(c.isdigit() for c in word))
 
 
+def payee_matches(pattern: str, key: str) -> bool:
+    """Whether ``pattern``'s words are found in ``key``, whole and in their
+    order (both as ``payee_key`` gives them): ``art`` is not in ``walmart``."""
+    return bool(pattern) and f" {pattern} " in f" {key} "
+
+
 @dataclass
 class PayeeMap:
     """``imports/<source>/payees.csv``: the category of a transaction that
-    comes with none, by its payee. A row's pattern is text found anywhere in
-    the payee, both read as ``payee_key`` reads them; the first row found
-    wins. The category is one of the plan's, ``transfer``, or ``-`` (blank
+    comes with none, by its payee. A row's pattern is words found together
+    anywhere in the payee, both read as ``payee_key`` reads them; the first
+    row found wins. The category is one of the plan's, ``transfer``, or ``-`` (blank
     too) to leave the rows out."""
 
     path: Path
@@ -346,8 +352,11 @@ class PayeeMap:
 
     def category(self, payee: str) -> str | None:
         """The category of ``payee``; None when no row is found in it."""
-        key = payee_key(payee)
-        return next((category for pattern, category in self.rows if pattern in key), None)
+        return self.category_of(payee_key(payee))
+
+    def category_of(self, key: str) -> str | None:
+        """As ``category``, of a payee already read by ``payee_key``."""
+        return next((category for pattern, category in self.rows if payee_matches(pattern, key)), None)
 
     def add(self, pattern: str, category: str) -> None:
         self.rows.append((payee_key(pattern), category))

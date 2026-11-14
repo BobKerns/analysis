@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from analysis.sim.imports.forms import ORIGIN
-from analysis.sim.imports.mapping import NO_RULE, TRANSFER, PayeeMap, payee_key
+from analysis.sim.imports.mapping import NO_RULE, TRANSFER, PayeeMap, payee_key, payee_matches
 
-__all__ = ["CategoryMaps", "Unmatched", "categorize", "combine", "override", "uncategorized"]
+__all__ = ["Categorizer", "CategoryMaps", "Unmatched", "categorize", "combine", "uncategorized"]
 
 
 @dataclass
@@ -60,35 +60,15 @@ def combine(maps: Mapping[str, CategoryMaps]) -> CategoryMaps:
 
 
 def uncategorized(frame: pd.DataFrame, source: str) -> bool:
-    """Whether ``source``'s rows come with no category at all: a bank's
-    file, whose categories are found by payee."""
+    """Whether ``source``'s rows come with no category at all (a bank's
+    file), so that it needs no ``categories.csv``."""
     return not frame.loc[frame[ORIGIN].eq(source), "category"].astype(bool).any()
-
-
-def override(frame: pd.DataFrame, payees: Mapping[str, PayeeMap]) -> pd.DataFrame:
-    """``frame`` with the category of each source's ``payees`` put over the
-    one its file gave, where a row of the map is found in the payee. For a
-    source that has categories of its own (a card's), which may not be the
-    household's: the map says otherwise payee by payee, and the rest keep
-    the file's."""
-    found = frame.copy()
-    keep = pd.Series(True, index=found.index)
-    for index, origin, payee in zip(found.index, found[ORIGIN], found["payee"], strict=True):
-        if str(origin) not in payees:
-            continue
-        category = payees[str(origin)].category(str(payee))
-        if category == NO_RULE:
-            keep[index] = False
-        elif category == TRANSFER:
-            found.at[index, "transfer"] = TRANSFER
-        elif category is not None:
-            found.at[index, "category"] = category
-    return found.loc[keep].reset_index(drop=True)
 
 
 @dataclass(frozen=True)
 class Unmatched:
-    """Payments to one payee that no row of the source's ``payees.csv`` covers."""
+    """Payments to one payee that have no category, and that no row of the
+    source's ``payees.csv`` covers."""
 
     source: str
     key: str
@@ -100,48 +80,93 @@ class Unmatched:
     """What was paid in all, as a positive number."""
 
 
+class Categorizer:
+    """Gives the rows of the sources in ``payees`` their categories by
+    payee, and keeps track of the payees still without one while they are
+    asked about.
+
+    A row of a source's map that is found in a payee says what its
+    transactions are, whatever category their file gave them: a card's own
+    may not be the household's. A ``transfer`` is marked as one, so it isn't
+    spending, and a ``-`` row is dropped. A payment with a category of its
+    file's keeps it otherwise; one with none is *unmatched*, to be asked
+    about. Money in needs no category: only spending makes rules.
+
+    Each row's payee is read once, and rows are kept by payee, so an answer
+    is checked against the payees still unmatched and nothing else.
+    """
+
+    def __init__(self, frame: pd.DataFrame, payees: Mapping[str, PayeeMap]) -> None:
+        self.frame = frame
+        self.payees = payees
+        self._rows: dict[tuple[str, str], list[int]] = {}
+        self._examples: dict[tuple[str, str], str] = {}
+        for at, (origin, payee) in enumerate(zip(frame[ORIGIN], frame["payee"], strict=True)):
+            source = str(origin)
+            if source in payees:
+                group = (source, payee_key(str(payee)))
+                self._rows.setdefault(group, []).append(at)
+                self._examples.setdefault(group, str(payee))
+        self._found = {group: payees[group[0]].category_of(group[1]) for group in self._rows}
+        cents = frame["amount_cents"].tolist()
+        blank = (~frame["category"].astype(bool)).tolist()
+        # What each payee's uncategorized payments come to: only those are asked about.
+        self._owed = {
+            group: paid for group, rows in self._rows.items()
+            if (paid := [int(cents[at]) for at in rows if blank[at] and cents[at] < 0])}
+
+    def unmatched(self) -> list[Unmatched]:
+        """The payees with uncategorized payments that no row covers, the
+        most paid first. One with no words to match (a bare check number) is
+        not among them: no row could ever name it."""
+        found = [
+            Unmatched(group[0], group[1], self._examples[group], len(paid), -sum(paid))
+            for group, paid in self._owed.items() if group[1] and self._found[group] is None]
+        found.sort(key=lambda each: (-each.cents, each.source, each.key))
+        return found
+
+    def add(self, source: str, pattern: str, category: str) -> None:
+        """A new last row of ``source``'s map, applied to the payees no
+        earlier row covers."""
+        self.payees[source].add(pattern, category)
+        key = payee_key(pattern)
+        for group, found in self._found.items():
+            if found is None and group[0] == source and payee_matches(key, group[1]):
+                self._found[group] = category
+
+    def result(self, rest: str | None = None) -> pd.DataFrame:
+        """The frame with its categories. An uncategorized payment that
+        nothing covers keeps its blank category unless ``rest`` names one
+        for all of them; one whose payee has no words takes ``rest``, or
+        ``Other``."""
+        found = self.frame.copy()
+        keep = [True] * len(found)
+        category_at = found.columns.get_loc("category")
+        transfer_at = found.columns.get_loc("transfer")
+        cents = found["amount_cents"].tolist()
+        blank = (~found["category"].astype(bool)).tolist()
+        for group, rows in self._rows.items():
+            category = self._found[group]
+            for at in rows:
+                if category == NO_RULE:
+                    keep[at] = False
+                elif category == TRANSFER:
+                    found.iat[at, transfer_at] = TRANSFER
+                elif category is not None:
+                    found.iat[at, category_at] = category
+                elif blank[at] and cents[at] < 0:
+                    if not group[1]:
+                        found.iat[at, category_at] = rest or "Other"
+                    elif rest is not None:
+                        found.iat[at, category_at] = rest
+        return found.loc[keep].reset_index(drop=True)
+
+
 def categorize(
     frame: pd.DataFrame, payees: Mapping[str, PayeeMap], *, rest: str | None = None,
 ) -> tuple[pd.DataFrame, list[Unmatched]]:
-    """``frame`` with a category on the rows of each source in ``payees``
-    (those sources' rows have none), and the payees it found none for, the
-    most paid first.
-
-    A ``transfer`` is marked as one, so it isn't spending; a ``-`` row is
-    dropped. Money in needs no category: only spending makes rules. A
-    payment that nothing covers keeps its blank category, to be asked about,
-    unless ``rest`` names the category for all of them. One whose payee has
-    no words to match (a bare check number) takes ``rest`` too, or ``Other``:
-    no row of the map could ever name it.
-    """
-    found = frame.copy()
-    keep = pd.Series(True, index=found.index)
-    groups: dict[tuple[str, str], list[int]] = {}
-    examples: dict[tuple[str, str], str] = {}
-    for index, origin, payee, cents in zip(
-            found.index, found[ORIGIN], found["payee"], found["amount_cents"], strict=True):
-        source = str(origin)
-        if source not in payees:
-            continue
-        category = payees[source].category(str(payee))
-        if category == NO_RULE:
-            keep[index] = False
-        elif category == TRANSFER:
-            found.at[index, "transfer"] = TRANSFER
-        elif category is not None:
-            found.at[index, "category"] = category
-        elif cents < 0:
-            key = payee_key(str(payee))
-            if not key:
-                found.at[index, "category"] = rest or "Other"
-                continue
-            groups.setdefault((source, key), []).append(int(cents))
-            examples.setdefault((source, key), str(payee))
-            if rest is not None:
-                found.at[index, "category"] = rest
-    unmatched = [
-        Unmatched(source, key, examples[source, key], len(paid), -sum(paid))
-        for (source, key), paid in groups.items()
-    ]
-    unmatched.sort(key=lambda each: (-each.cents, each.source, each.key))
-    return found.loc[keep].reset_index(drop=True), unmatched
+    """``frame`` with categories by payee on the rows of each source in
+    ``payees``, and the payees it found none for, the most paid first
+    (``Categorizer``, with nothing asked)."""
+    sorter = Categorizer(frame, payees)
+    return sorter.result(rest), sorter.unmatched()

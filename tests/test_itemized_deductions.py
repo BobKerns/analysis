@@ -64,25 +64,30 @@ def _year(
     salary: int, spending: Sequence[SpendingItem] = (), *, jurisdiction: str = "federal",
     mortgages: Sequence[Mortgage] = (), taxes_paid: Sequence[TaxPaid] = (),
     tables: Mapping[tuple[str, str | None], list[dict[str, Any]]] = TABLES,
+    prior: Mapping[str, int] | None = None,
 ) -> TaxYear:
     """A year of ``salary`` with the ``spending``: every table in force from
-    2020, and the household in California."""
+    2020, and the household in California. ``prior`` is last year's
+    federal return's lines."""
+    prior = prior or {}
     kind = {"federal": "federal", "state": "state_tables"}[jurisdiction]
     return TaxYear(
         year=YEAR, jurisdiction=jurisdiction, params=type(calculator(kind)).Params(),
         items=[IncomeItem(YEAR, "ordinary", SALARY, CHECKING, salary)], losses=[], persons=[],
-        spending=list(spending), mortgages=list(mortgages), taxes_paid=list(taxes_paid),
+        spending=list(spending), mortgages=list(mortgages),
+        taxes_paid=[t for t in taxes_paid if t.year == YEAR],
+        prior_taxes_paid=[t for t in taxes_paid if t.year == YEAR - 1],
         _table=lambda kind, series, _year: list(tables.get((kind, series), [])),
         _indexed=lambda kind, series: list(tables.get((kind, series), [])),
         _dated=lambda kind, series=None: [(f"{YEAR}-01-31", r) for r in tables.get((kind, series), [])],
         _keyed=lambda *_a: None,
         _filing_status_in=lambda _year: "MFJ",
-        _prior=lambda _line: 0,
+        _prior=lambda line: prior.get(line, 0) if jurisdiction == "federal" else 0,
         _series_of=lambda kind: sorted(s for k, s in tables if k == kind and s is not None),
         _residences=[("2020-01-31", Residence("CA"))],
         _upstream=lambda name: calculator(name).prepare(_year(
             salary, spending, jurisdiction=name, mortgages=mortgages, taxes_paid=taxes_paid,
-            tables=tables)),
+            tables=tables, prior=prior)),
     )
 
 
@@ -1078,3 +1083,141 @@ def test_a_property_tax_account_beside_a_hand_typed_total_is_a_warning(
     write_aux("federal_deductions.csv", "effective_date,amount\n2027-01-31,30000.00\n")
     warnings = load_test_copy().warnings
     assert any("the hand-typed total adds" in w for w in warnings) == warns, warnings
+
+
+# Last year itemized 45,000 against a 30,000 standard deduction, with
+# 25,000 of SALT, under the cap: 24,000 of it state tax withheld.
+ITEMIZED_LAST_YEAR = {"standard_deduction": 30_000_00, "itemized_deduction": 45_000_00,
+                      "deduction": 45_000_00, "itemized_salt": 25_000_00, "salt_paid": 25_000_00}
+WITHHELD_LAST_YEAR = TaxPaid(YEAR - 1, "state", 24_000_00)
+
+
+def _refunded(refund: int, prior: Mapping[str, int] = ITEMIZED_LAST_YEAR,
+              paid: Sequence[TaxPaid] = (WITHHELD_LAST_YEAR,), **kw: Any) -> Return:
+    return _federal(200_000_00, taxes_paid=[*paid, TaxPaid(YEAR, "state", 0, refund)],
+                    prior=prior, **kw)
+
+
+def test_a_state_refund_is_income_up_to_what_itemizing_gained() -> None:
+    """Under the tax-benefit rule (#593) a refund is income the year it
+    comes back, but no more than last year's deduction saved: here what
+    itemizing gained over the standard deduction."""
+    ret = _refunded(19_000_00)
+    assert ret["state_refunds"] == 19_000_00
+    assert ret["state_refund_income"] == 15_000_00
+    assert ret["agi"] == 215_000_00
+    assert _refunded(4_000_00)["state_refund_income"] == 4_000_00
+    # Without a refund the lines aren't there.
+    assert "state_refunds" not in _federal(200_000_00, prior=ITEMIZED_LAST_YEAR).lines
+
+
+def test_a_refund_after_a_capped_year_recaptures_only_what_the_cap_let_through() -> None:
+    """With 50,000 of SALT under a 40,000 cap, a 19,000 refund would have
+    left 31,000, so the deduction lost only 9,000."""
+    prior = {**ITEMIZED_LAST_YEAR, "itemized_deduction": 60_000_00, "deduction": 60_000_00,
+             "itemized_salt": 40_000_00, "salt_paid": 50_000_00}
+    assert _refunded(19_000_00, prior)["state_refund_income"] == 9_000_00
+    assert "state_refund_income" not in _refunded(5_000_00, prior).lines
+
+
+def test_a_refund_after_a_standard_deduction_year_is_no_income() -> None:
+    prior = {**ITEMIZED_LAST_YEAR, "itemized_deduction": 25_000_00, "deduction": 30_000_00}
+    ret = _refunded(19_000_00, prior)
+    assert ret["state_refunds"] == 19_000_00
+    assert "state_refund_income" not in ret.lines
+    assert ret["agi"] == 200_000_00
+    # Nor after a year with only the hand-typed total, which itemized no SALT.
+    prior = {**ITEMIZED_LAST_YEAR, "itemized_salt": 0, "salt_paid": 0}
+    assert "state_refund_income" not in _refunded(19_000_00, prior).lines
+
+
+def test_a_refund_past_the_tax_paid_was_never_deducted() -> None:
+    """A refundable credit (#568) can pay back more than was paid; only
+    what was paid was in the SALT line."""
+    assert _refunded(8_000_00, paid=[TaxPaid(YEAR - 1, "state", 5_000_00)])[
+        "state_refund_income"] == 5_000_00
+
+
+def test_a_deduction_past_agi_saved_nothing() -> None:
+    """Pub. 525: when last year's taxable income was below zero, that much
+    of the deduction saved no tax, so the recovery is that much less."""
+    prior = {**ITEMIZED_LAST_YEAR, "deduction_unused": 4_000_00}
+    assert _refunded(19_000_00, prior)["state_refund_income"] == 11_000_00
+    # And a year whose deduction is past its income says how far.
+    ret = _federal(20_000_00, [_paid(PROPERTY_TAX, 25_000_00, tags="tax:property")])
+    assert ret["deduction_unused"] == 10_000_00
+    # A loss past the deduction isn't: it carries forward as an NOL.
+    business = Account("Asset_Business_Alice", "asset", "business", "alice")
+    supplies = Account("Expense_Supplies", "expense", "", None)
+    business_loss = IncomeItem(YEAR, "business_expense", business, supplies, 70_000_00)
+    year = _year(20_000_00)
+    year = replace(year, items=[*year.items, business_loss])
+    loss = calculator("federal").prepare(year).compute()
+    assert loss["agi"] < 0
+    assert loss["deduction_unused"] == loss["deduction"] == 30_000_00
+    assert ret["salt_paid"] == ret["itemized_salt"] == 25_000_00
+    assert "deduction_unused" not in _federal(200_000_00).lines
+
+
+def test_a_local_refund_is_pooled_with_the_states() -> None:
+    """Schedule A pools state and local income taxes under one cap, and so
+    do their refunds."""
+    paid = [WITHHELD_LAST_YEAR, TaxPaid(YEAR - 1, "local", 1_000_00),
+            TaxPaid(YEAR, "local", 0, 2_000_00)]
+    ret = _refunded(10_000_00, paid=paid)
+    assert ret["state_refunds"] == ret["state_refund_income"] == 12_000_00
+
+
+def test_a_state_starting_from_federal_agi_leaves_out_its_refund() -> None:
+    def state(refund: int) -> Return:
+        year = _year(200_000_00, jurisdiction="state", prior=ITEMIZED_LAST_YEAR,
+                     taxes_paid=[WITHHELD_LAST_YEAR, TaxPaid(YEAR, "state", 0, refund)])
+        return calculator("state_tables").prepare(year).compute()
+    assert _refunded(19_000_00)["state_refund_income"] == 15_000_00
+    # A named subtraction, so the gap from federal income shows.
+    assert state(19_000_00)["refund_income"] == 15_000_00
+    assert "refund_income" not in state(0).lines
+    assert state(19_000_00)["agi"] == state(0)["agi"] == 200_000_00
+
+
+@pytest.mark.slow
+def test_a_run_recaptures_an_over_withheld_state_refund(
+    add_state_tax: Callable[..., None], append_scheduled_row: Callable[..., None],
+    run_test_copy: Callable[[], Path],
+) -> None:
+    """$3,000 a month withheld for California is far past its tax: the
+    refund each April is federal income as far as last year's deduction
+    saved tax (#593), and the next year's SALT is what was paid in."""
+    add_state_tax()
+    append_scheduled_row(
+        name="state_withholding", from_account="Asset_Checking", to_account="Expense_Taxes_State",
+        amount_rule_kind="fixed_amount", amount="3000.00", tax_character="none",
+        start="2026-05-31", priority="200")
+    run = run_test_copy()
+    lines = _lines(run, *(f"federal_{line}" for line in (
+        "state_refunds", "state_refund_income", "standard_deduction", "itemized_deduction",
+        "itemized_salt", "salt_paid")),
+        "state_refund_income", "state_tax_overpaid")
+    refunds, income = lines["federal_state_refunds"], lines["federal_state_refund_income"]
+    assert refunds, "the withholding should leave a refund"
+    for year, refund in refunds.items():
+        # Each refund is the year before's overpayment.
+        assert refund == lines["state_tax_overpaid"][year - 1]
+        gained = (lines["federal_itemized_deduction"][year - 1]
+                  - lines["federal_standard_deduction"][year - 1])
+        # Never more than the refund, nor than what itemizing gained.
+        assert 0 <= income.get(year, 0) <= min(refund, max(0, gained)), year
+    # Worked by hand: 2026 itemized $33,915.12 against a $31,500 standard
+    # deduction, under the SALT cap, so the 2027 refund of $15,036.03 is
+    # income only for the $2,415.12 itemizing gained.
+    assert lines["federal_itemized_deduction"][2026] == 33_915_12
+    assert lines["federal_standard_deduction"][2026] == 31_500_00
+    assert lines["federal_itemized_salt"][2026] == lines["federal_salt_paid"][2026]
+    assert refunds[2027] == 15_036_03 and income[2027] == 2_415_12
+    # From 2030 the cap is $10,000, they take the standard deduction, and
+    # the refunds after it are no income.
+    assert all(year not in income for year in refunds if year > 2030)
+    assert any(income.values())
+    # California doesn't tax its own refund: a named subtraction takes it
+    # off the federal income it starts from.
+    assert {year: amount for year, amount in income.items() if amount} == lines["state_refund_income"]
