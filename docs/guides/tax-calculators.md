@@ -11,8 +11,9 @@ the state you live in) and `local_bands`. When your state has a rule they
 don't model (a renter deduction, a public pension exclusion, a credit for
 long-term care premiums), first see whether a row of the state's
 `state_adjustments` table can say it: a share of tagged spending or
-income, up to a cap, for filers from an age, below an income, as a
-subtraction, deduction or credit (the code repository's
+income, up to a cap (less Social Security, if the state says so), for
+filers from an age, below an income, as a subtraction, deduction or
+credit, refundable or not (the code repository's
 `templates/aux/README.md` lists the columns). Most renter's, 529 and
 premium rules fit. When one doesn't (a circuit breaker, figured from
 property tax above a share of income, say), you can write a calculator of your own, a small
@@ -25,8 +26,8 @@ scenario's household: the District of Columbia's property tax credit
 (Schedule H), as if they retired to a DC rowhouse. It is a "circuit
 breaker": the property tax above a share of federal AGI, up to a cap, for a
 household below an income limit, and refundable, so DC pays it even when
-no tax is due. The share, the limits that depend on age, and the refund
-are what a row can't say. The design and its rules are in
+no tax is due. A row can be refundable, but the share and the limits
+that depend on age are what a row can't say. The design and its rules are in
 [ADR-011](../architecture/ADR-011-tax-calculators.md), and
 video 13, *Tax plugins*, walks through it:
 [English](https://www.youtube.com/watch?v=rWfsNvoNnVI),

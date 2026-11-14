@@ -1093,6 +1093,8 @@ class StateAdjustment:
     units: int = 1
     """How many exemptions a ``filers`` line is: ``phaseout_rate`` takes its
     share of each dollar over from each, as California's does."""
+    refundable: bool = False
+    """A ``credit`` the state pays in full, past the tax (#579)."""
 
     def from_base(self, amount: int) -> int:
         """The figure for a ``federal_tax``, ``federal_deduction`` or
@@ -1114,6 +1116,50 @@ class StateAdjustment:
         if self.phaseout:
             return max(0, figure - figure * over // self.phaseout)
         return 0
+
+
+def _by_person(items: Iterable[IncomeItem], people: Sequence[str]) -> dict[str, int]:
+    """Each of ``people``'s part of ``items``, whose :func:`_owner` says; the
+    household's split evenly among them."""
+    totals = dict.fromkeys(people, 0)
+    for item in items:
+        owner = _owner(item.payer.owner, item.payee.owner, totals, payer_kind=item.payer.kind)
+        for person, share in _shares(owner, item.amount, people, totals):
+            totals[person] += share
+    return totals
+
+
+def _tagged_income(ty: TaxYear, tag: str) -> list[IncomeItem]:
+    return [i for i in ty.tagged(tag) if i.character in _ADJUSTMENT_INCOME_CHARACTERS]
+
+
+def _per_person_income(
+    ty: TaxYear, row: Mapping[str, Any], birthdates: Mapping[str, date | None],
+    min_months: int, filers: int,
+) -> int:
+    """An ``income`` row's figure with ``per_person`` (#579): each filer who
+    has reached ``min_age`` gets their own tagged income, times ``rate``, up
+    to ``amount``, less their own Social Security with ``less_ss``. Only
+    the first ``filers`` people count, as a survivor files alone."""
+    people = sorted(birthdates)
+    income = _by_person(_tagged_income(ty, str(row.get("tag") or "")), people)
+    ss = _by_person(ty.year_items("ss_benefit"), people) if _yes(row.get("less_ss")) else {}
+    rate, amount = row.get("rate_micros"), row.get("amount")
+    total = counted = 0
+    for person in people:
+        born = birthdates[person]
+        if min_months and (age_months(born, ty.year) or 0) < min_months:
+            continue
+        if counted == filers:
+            break
+        counted += 1
+        figure = max(0, income[person])
+        if rate is not None:
+            figure = figure * int(rate) // 1_000_000
+        if amount is not None:
+            figure = min(figure, max(0, int(amount) - ss.get(person, 0)))
+        total += figure
+    return total
 
 
 def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustment]:
@@ -1147,11 +1193,19 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
         cap = amount if amount is None or not _yes(row.get("per_person")) else amount * eligible
         if base == "filers":
             figure = (amount or 0) * eligible
+        elif base == "income" and _yes(row.get("per_person")) and birthdates:
+            # Each filer's own income against their own cap (#579), so
+            # one spouse's pension can't use the other's.
+            figure = _per_person_income(ty, row, birthdates, min_months, filers)
         elif base in ("spending", "income"):
             tag = str(row.get("tag") or "")
             raw = ty.spent(tag) if base == "spending" else sum(
-                i.amount for i in ty.tagged(tag) if i.character in _ADJUSTMENT_INCOME_CHARACTERS)
+                i.amount for i in _tagged_income(ty, tag))
             figure = max(0, raw) if rate is None else max(0, raw) * int(rate) // 1_000_000
+            if cap is not None and _yes(row.get("less_ss")):
+                # Less the household's Social Security (#579): Idaho's cap
+                # on a joint return falls by both spouses' benefits.
+                cap = max(0, cap - sum(i.amount for i in ty.year_items("ss_benefit")))
             figure = figure if cap is None else min(figure, cap)
         else:
             figure = 0
@@ -1164,5 +1218,6 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
             None if rate is None else int(rate), cap,
             None if limit is None else int(limit), None if phaseout is None else int(phaseout),
             None if phaseout_rate is None else int(phaseout_rate),
-            units=eligible if base == "filers" else 1))
+            units=eligible if base == "filers" else 1,
+            refundable=_yes(row.get("refundable"))))
     return out
