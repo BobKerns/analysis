@@ -121,7 +121,9 @@ def test_a_derived_scenario_rolls_its_own_rows_after_its_parent(
     outcome = roll_schedule.roll(data, worktree, {"roll": True}, now=_local(2026, 11, 13, 2, 0))
 
     assert calls == [("retire_alice", False), ("alice_more", True)]
-    assert outcome.rolled == {"retire_alice": "2026-05 -> 2026-11"}
+    # A month a night, though it is November: the next night rolls June
+    # from the run that opens in June (Bob, #564).
+    assert outcome.rolled == {"retire_alice": "2026-05 -> 2026-06"}
     scenarios = roll_schedule.read_state(data)["scenarios"]
     assert scenarios["alice_more"]["outcome"] == "skipped"
 
@@ -177,9 +179,11 @@ def test_a_roll_is_due_once_a_night_in_the_window_after_the_prices(
 
 @pytest.mark.slow
 def test_a_roll_into_a_new_year_commits_on_its_branch_tags_the_plan_and_merges(
-    marked: tuple[Path, git.Repo], data_repo_origin: Path,
+    marked: tuple[Path, git.Repo], data_repo_origin: Path, commit_files: Callable[..., str],
 ) -> None:
     data, repo = marked
+    december = (data.parent / SCENARIO).read_text().replace("2026-05", "2026-12")
+    commit_files(repo, {SCENARIO: december}, "retire_alice starts in December")
     load = CliRunner().invoke(sim_group_command, ["load", "retire_alice", "--data-dir", str(data)])
     assert load.exit_code == 0, load.output
     before = repo.head.commit.hexsha
@@ -187,7 +191,7 @@ def test_a_roll_into_a_new_year_commits_on_its_branch_tags_the_plan_and_merges(
 
     outcome = roll_schedule.roll(data, worktree, {"roll": True}, now=_local(2027, 1, 5, 2, 0))
 
-    assert outcome.rolled == {"retire_alice": "2026-05 -> 2027-01"}, outcome.lines
+    assert outcome.rolled == {"retire_alice": "2026-12 -> 2027-01"}, outcome.lines
     assert repo.head.commit.hexsha == before  # the roll never merges: the daemon does
     assert "plan-2026" not in [t.name for t in repo.tags]  # nor tags, till it merges
     rolled = repo.commit(roll_schedule.ROLL_BRANCH)
@@ -215,7 +219,7 @@ def test_a_roll_into_a_new_year_commits_on_its_branch_tags_the_plan_and_merges(
     assert not state.get("pending")
     status = roll_schedule.describe(state, {"roll": True}, data)
     assert status[0].startswith("roll: retire_alice (nightly 01:00-05:00")
-    assert any("retire_alice: rolled 2026-05 -> 2027-01" in line and "plan-2026" in line
+    assert any("retire_alice: rolled 2026-12 -> 2027-01" in line and "plan-2026" in line
                for line in status)
     # Its start month isn't over now: nothing more to roll this month.
     again = roll_schedule.roll(data, worktree, {"roll": True}, now=_local(2027, 1, 6, 2, 0))
@@ -397,7 +401,7 @@ def test_a_night_that_rolls_nothing_leaves_a_waiting_roll_waiting(
     state = roll_schedule.read_state(data)
     assert state["pending"] == rolled
     # The hint names the month the night tried, as the command takes it.
-    assert any("`sim scenario roll retire_alice 2026-11` does it by hand" in line
+    assert any("`sim scenario roll retire_alice 2026-06` does it by hand" in line
                for line in roll_schedule.describe(state, {"roll": True}, data))
     assert roll_schedule.merge_pending(data)[0] == "merged the roll into main"
 

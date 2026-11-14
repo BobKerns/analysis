@@ -2055,9 +2055,11 @@ to roll:
 sim scenario edit base --roll monthly
 ```
 
-Then the background builder (see [Setup](SETUP.md)) rolls it forward to the
-current month on the first night after its start month ends, between 01:00
-and 05:00 by default, after that day's prices are in. It takes every default,
+Then the background builder (see [Setup](SETUP.md)) rolls it forward a
+month on the first night after its start month ends, between 01:00 and 05:00
+by default, after that day's prices are in. A scenario further behind (the
+builder was off for a while) rolls a month a night until it catches up, so
+each month opens from a run of the month before, at its prices. It takes every default,
 as `sim scenario roll --yes --no-keep` would: each lot opens with what the
 run projected (a lot kept in shares, at the new prices), and the months it
 skips become projected year-to-date rows. The mark is inherited, so the

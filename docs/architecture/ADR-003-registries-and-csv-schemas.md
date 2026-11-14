@@ -738,7 +738,7 @@ Exactly one data row (the loader rejects more).
 | `created_by` | text | ✓ | `$ANALYSIS_USER` at authoring time |
 | `meta_json` | json | | a JSON object, default `{}`; merged key by key down the lineage (see below) |
 
-`meta_json`'s `roll` ([#564](https://github.com/BobKerns/analysis/issues/564)), `monthly` or `off` (the default), has the background builder roll the scenario forward to the current month each night its start month is over ([ADR-004](ADR-004-reproducibility-and-activation.md) §12). It merges down the lineage like any other key, so marking `base` marks what is built on it; `off` opts a scenario out of its parent's mark. `sim scenario edit --roll` sets it (`''` inherits).
+`meta_json`'s `roll` ([#564](https://github.com/BobKerns/analysis/issues/564)), `monthly` or `off` (the default), has the background builder roll the scenario forward a month each night its start month is over ([ADR-004](ADR-004-reproducibility-and-activation.md) §12). It merges down the lineage like any other key, so marking `base` marks what is built on it; `off` opts a scenario out of its parent's mark. `sim scenario edit --roll` sets it (`''` inherits).
 
 The calendar lives at `scenarios/<name>/calendar.csv` by filename convention — there is no `calendar` column. Calendars are the least-shared file in practice; a derived scenario overlays its parent's calendar.
 

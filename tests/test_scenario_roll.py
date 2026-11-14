@@ -457,11 +457,13 @@ def test_a_derived_scenario_rolls_only_its_own_lots_after_its_parent(
     # It keeps retire_alice's projected rows, and writes none of its own.
     assert set(_rows(child / "year_to_date.csv")) == {"bonus"}
     assert _sim(test_data_dir, "check", "alice_more").exit_code == 0
-    # Again is the same: its lots reopen from the same run.
-    again = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
-                 "--no-keep")
+    # Again is the same: its lots reopen from the same run. Its start
+    # doesn't move, so there is no old plan to keep.
+    again = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes")
     assert again.exit_code == 0, again.output
     assert _rows(child / "account_lots.csv") == lots
+    assert "kept the plan" not in again.output
+    assert sorted(test_scenarios_dir.glob("alice_more-*")) == []
 
 
 def test_a_projected_row_edited_to_the_actual_figures_is_left_alone() -> None:

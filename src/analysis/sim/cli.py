@@ -15290,7 +15290,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     parent rolled first, and dealt with its rows), so only its lots reopen.
     It writes no projected year-to-date rows: the months skipped are the
     household's past, the same in every plan built on the parent, whose
-    rows it inherits.
+    rows it inherits. Nor does it offer to keep a copy, since its start
+    doesn't move (--keep still makes one).
 
     Everything is written in one edit, only if NAME and every scenario
     built on it still load. NAME stays current. START defaults to the
@@ -15334,7 +15335,9 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     taken = set(names.scenario_names(data))
     if keep is not None:
         _check_keep_name(keep.strip(), taken)
-    if not no_keep and keep is None:
+    # Following its parent's roll, the scenario's start doesn't move, so
+    # there is no old plan to keep unless --keep asks for one.
+    if not no_keep and keep is None and not follows:
         suggested = roll.keep_name(name, old_start, taken)
         while True:
             keep = suggested if accept else click.prompt(
@@ -15960,9 +15963,9 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
                      help="The ensemble reports' reserve, in CPI-constant dollars "
                           "(meta_json reserve); '' or none inherits."),
         click.option("--roll", default=None, type=click.Choice([*registries.ROLL_CHOICES, ""]),
-                     help="monthly: the background builder rolls the start forward to the "
-                          "current month each night the start month is over (meta_json roll, "
-                          "#564); off: it doesn't, though a parent does; '' inherits it."),
+                     help="monthly: the background builder rolls the start forward a month "
+                          "each night the start month is over (meta_json roll, #564); off: "
+                          "it doesn't, though a parent does; '' inherits it."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
     ]
@@ -18628,7 +18631,7 @@ def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | 
 
     Unless --no-roll, the same timer rolls forward, each night in the
     --roll-window, every scenario marked to roll whose start month is over
-    (#564): to the current month, as `sim scenario roll --yes` would, on the
+    (#564): a month a night, as `sim scenario roll --yes` would, on the
     builder/roll branch, merged the same way. When a start moves into a new
     year, the plan before it is tagged plan-<year>.
     """
@@ -18786,8 +18789,9 @@ def builder_prices(if_due: bool, data_dir: Path | None) -> None:
 def builder_roll(if_due: bool, data_dir: Path | None) -> None:
     """Roll forward now, as the night's schedule does (#564), every scenario
     marked to roll (`sim scenario edit NAME --roll monthly`) whose start
-    month is over: to the current month, as `sim scenario roll NAME MONTH
-    --yes --no-keep` would. The builder merges the roll into the data repo's
+    month is over: a month on, as `sim scenario roll NAME MONTH --yes
+    --no-keep` would (one further behind rolls the next month the next
+    night, from the run of the month this one opens). The builder merges the roll into the data repo's
     main, between builds, once main is checked out with no uncommitted
     changes.
 

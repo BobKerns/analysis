@@ -4,8 +4,12 @@ A run reads prices only up to its start (``provenance``: a price file counts
 up to the scenario's start, the end of its first month), so once that month
 is over, new prices change nothing until the start is rolled forward
 (``sim scenario roll``, #502). A scenario whose ``meta_json`` says
-``"roll": "monthly"`` is rolled forward by the builder, to the current month,
-on the first night after its start month ends. The key is inherited like any
+``"roll": "monthly"`` is rolled forward by the builder a month at a time:
+on the first night after its start month ends, to the next month. A
+scenario more than a month behind rolls a month a night (Bob: each roll
+moves forward one month), so each month opens from a run that started the
+month before, at that month's prices, and each month's flows become its
+own projected rows. The key is inherited like any
 other, so marking ``base`` marks every what-if built on it; one opts out with
 ``"roll": "off"``. Bob's choices:
 
@@ -256,6 +260,12 @@ class RollOutcome:
     rolled: dict[str, str] = field(default_factory=dict)  # name: "old -> new"
 
 
+def next_month(month: str) -> str:
+    """The month after ``month`` (YYYY-MM)."""
+    year, number = int(month[:4]), int(month[5:7])
+    return f"{year + number // 12}-{number % 12 + 1:02d}"
+
+
 def _git(where: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
     try:
         return price_schedule._git(where, *args, env=price_schedule.IDENTITY, check=check)
@@ -349,7 +359,7 @@ def _tag_for(top: Path, base: str, year: int, paths: Sequence[str]) -> tuple[str
 
 def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *,
          now: datetime | None = None) -> RollOutcome:
-    """Roll each due scenario forward to this month, in ``worktree``, and
+    """Roll each due scenario forward a month, in ``worktree``, and
     commit what rolled on ``builder/roll``, the plan before it to be tagged
     (once merged) when a start moves into a new year. Merging is the daemon's, between builds
     (:func:`merge_pending`). Each scenario's outcome goes in the state, for
@@ -357,7 +367,6 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
     now = now or datetime.now(UTC)
     top = price_schedule._top(data_dir)
     rel = str(data_dir.resolve().relative_to(top.resolve()))
-    month = f"{now.astimezone():%Y-%m}"
     # The night it counts for: the window's, or by hand outside it, today.
     night = night_of(now, window_of(config)) or now.astimezone().date()
     with _locked(top) as mine:
@@ -370,7 +379,7 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
         base = _git(worktree, "rev-parse", "HEAD", check=True).stdout.strip()
         scenarios: dict[str, Any] = dict(state.get("scenarios") or {})
         rolled: dict[str, str] = {}
-        tags: dict[str, list[str]] = {}
+        tags: dict[str, list[tuple[str, str]]] = {}  # tag: (name, year rolled into)
         lines: list[str] = []
         due_now = due_scenarios(data, now.astimezone().date())
         if not due_now:
@@ -378,6 +387,9 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
         from analysis.sim.roll import PARENT_FIRST  # pandas: only when rolling
         rolling = {name for name, _ in due_now}
         for name, old in due_now:
+            # One month, not to today's: the next night rolls the next one,
+            # from the run of the month this one opens (rebuilt meanwhile).
+            month = next_month(old)
             lines.append(f"rolling {name} forward: {old} -> {month}")
             # Built on one rolling tonight: that one's roll covers the rest.
             parents = [one for one in _lineage_names(data, name)[:-1] if one in rolling]
@@ -396,7 +408,7 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
                 lines.extend(f"  {line}" for line in said if line.startswith("  "))
                 if int(month[:4]) > int(old[:4]):
                     tag, _ = _tag_for(top, base, int(old[:4]), _lineage_paths(data, rel, name))
-                    tags.setdefault(tag, []).append(name)
+                    tags.setdefault(tag, []).append((name, month[:4]))
                     entry["tag"] = tag
             else:
                 # Back to what the earlier scenarios' rolls staged.
@@ -413,7 +425,7 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
         scenarios = {name: entry for name, entry in scenarios.items() if name in marked_now}
         committed = None
         if rolled:
-            committed = _commit(top, worktree, month, rolled)
+            committed = _commit(top, worktree, rolled)
             lines.append(f"committed the roll on {ROLL_BRANCH} ({committed[:10]})")
         # A night that rolled nothing leaves an earlier roll still waiting
         # to merge as it is.
@@ -423,16 +435,19 @@ def roll(data_dir: Path, worktree: Path, config: dict[str, Any] | None = None, *
                 {path for name in rolled for path in _lineage_paths(data, rel, name)}),
             # Tagged once merged: a roll dropped before then leaves no tag.
             "pending_tags": [{"tag": tag, "base": base, "message":
-                              f"The plan before {', '.join(names)} rolled into {month[:4]} (#564)"}
-                             for tag, names in sorted(tags.items())],
+                              f"The plan before {', '.join(name for name, _ in rolls)} rolled "
+                              f"into {rolls[0][1]} (#564)"}
+                             for tag, rolls in sorted(tags.items())],
         }
         _update_state(top, scenarios=scenarios, **pending)
     return RollOutcome(lines, committed, rolled)
 
 
-def _commit(top: Path, worktree: Path, month: str, rolled: dict[str, str]) -> str:
+def _commit(top: Path, worktree: Path, rolled: dict[str, str]) -> str:
     """Commit what the rolls staged on ``builder/roll``; the new commit."""
     names = ", ".join(sorted(rolled))
+    # Each a month on from its own start, so usually all to the same one.
+    month = max(span.rsplit(" ", 1)[-1] for span in rolled.values())
     body = "\n".join(f"{name}: {span}" for name, span in sorted(rolled.items()))
     _git(worktree, *price_schedule._QUIET, "commit", "-q", "-m", f"Roll {names} forward to {month}",
          "-m", body, "-m", "Rolled by the background builder (#564).", check=True)
