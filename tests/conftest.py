@@ -2266,7 +2266,7 @@ def vanguard_holdings_export(tmp_path: Path) -> Path:
     """A Vanguard holdings download, as of 2026-01-05, of one account, which
     only the file's name says: a fund with a gain, one with a loss, and a
     money market fund with neither."""
-    path = tmp_path / "Bill Roth IRA.csv"
+    path = tmp_path / "holdings 12345678.csv"
     path.write_text(
         'Symbol,Name,Current balance,Quantity,"As of 01/05/2026 04:00 p.m., ET Current price",'
         '"As of 01/05/2026 04:00 p.m., ET Last price change ($/%)",'

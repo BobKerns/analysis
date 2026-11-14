@@ -8,6 +8,8 @@ holdings:
     name: Description
     value: Current value
     quantity: Quantity
+    # For a row with a value and no quantity: the shares are the value over this.
+    price: Last price
     cost_basis: Cost basis total
     type: Type
   # The last line: "Date downloaded Nov-13-2026 at 9:23 p.m ET".

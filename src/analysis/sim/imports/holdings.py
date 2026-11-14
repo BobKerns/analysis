@@ -18,7 +18,7 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
 from analysis.sim.units import dollars_to_cents
 
 __all__ = [
-    "Change", "HoldingsPlan", "format_dollars", "is_investment_asset", "plan",
+    "Change", "HoldingsPlan", "Offer", "format_dollars", "is_investment_asset", "plan",
     "roth_basis_note",
 ]
 
@@ -44,6 +44,21 @@ class Change:
     before: str
     after: str
     note: str = ""
+
+
+@dataclass(frozen=True)
+class Offer:
+    """A share count that could be worked out for a lot the file gives
+    only a balance for."""
+
+    index: int
+    account: str
+    lot: str
+    symbol: str
+    price: Decimal
+    before: Decimal
+    after: Decimal
+    cents: int
 
 
 @dataclass
@@ -75,6 +90,8 @@ class HoldingsPlan:
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     """What the import couldn't set, and what to do about it."""
+    offers: list[Offer] = field(default_factory=list)
+    """Share counts that could be brought up to date from a known price."""
 
     @property
     def complete(self) -> bool:
@@ -89,6 +106,8 @@ class _Landed:
     cents: int = 0
     quantity: Decimal | None = Decimal(0)
     """None once any holding lacks one."""
+    mixed: bool = False
+    """Whether any holding in it has another symbol than the lot's."""
     basis_cents: int | None = 0
     by_symbol: bool = False
 
@@ -101,6 +120,8 @@ def plan(
     snapshot: Snapshot, account_map: AccountMap, accounts: Mapping[str, tuple[str, str]],
     lots: Sequence[Mapping[str, str]], *, year_end: bool = False,
     split: Collection[str] = (), fresh: Collection[int] = (), prune: bool = False,
+    prices: Mapping[str, Decimal] | None = None, recount: Collection[int] = (),
+    keep_count: Collection[int] = (),
 ) -> HoldingsPlan:
     """What importing ``snapshot`` would change.
 
@@ -136,6 +157,17 @@ def plan(
     ``fresh`` is the indexes of lots made for this import, which have only
     their names and symbol yet: each takes its holding's quantity and
     balance both, so it needs no price to load.
+
+    **A share count the file doesn't give.** A lot that has a ``quantity``,
+    set from holdings with none (one number for a whole account, or a row
+    without a count), could have it worked out from ``prices``, the latest
+    price known for each symbol: the balance over the price, which follows
+    reinvested dividends where the old count doesn't. That is a guess at
+    what the brokerage would say, so it is an ``offer``, taken for the lots
+    in ``recount`` and not made again for those in ``keep_count``. Not
+    taken, the count of a lot the file lists by symbol is cleared, since a
+    new balance beside the old count would have the lot say two things;
+    any other lot's is left.
 
     A file that lists an account's holdings one by one says all the account
     holds, so a lot of that account it doesn't mention may have been sold.
@@ -204,6 +236,7 @@ def plan(
         same = holding.asset.upper() == result.rows[indexes[0]].get("symbol", "").strip().upper()
         into.quantity = None if into.quantity is None or holding.quantity is None or not same \
             else into.quantity + holding.quantity
+        into.mixed |= bool(holding.asset) and not same
         into.basis_cents = None if into.basis_cents is None or holding.cost_basis_cents is None \
             else into.basis_cents + holding.cost_basis_cents
 
@@ -256,15 +289,26 @@ def plan(
             had_quantity = _number(row.get("quantity", ""))
             in_shares = had_quantity is not None and not row.get("opening_balance", "").strip() \
                 and bool(row.get("symbol", "").strip())
-            if into.quantity is not None and (had_quantity is not None or index in fresh):
-                changed |= put("quantity", _plain(into.quantity), same=had_quantity == into.quantity)
+            counted, how = into.quantity, ""
+            symbol = row.get("symbol", "").strip().upper()
+            price = (prices or {}).get(symbol)
+            if counted is None and had_quantity is not None and not into.mixed and price and cents > 0 \
+                    and kind == "asset":
+                estimate = (Decimal(cents) / 100 / price).quantize(_SHARES)
+                if index in recount:
+                    counted, how = estimate, f"balance / {_plain(price)} a share"
+                elif index not in keep_count and estimate != had_quantity:
+                    result.offers.append(Offer(index, name, lot or DEFAULT_LOT, symbol, price,
+                                               had_quantity, estimate, cents))
+            if counted is not None and (had_quantity is not None or index in fresh):
+                changed |= put("quantity", _plain(counted), same=had_quantity == counted, note=how)
             elif had_quantity is not None and into.by_symbol:
                 # The file lists this holding and gives no share count (a
                 # money market's row): a new balance beside the old count
                 # would have the lot say two things. A source with one
                 # number for the account says nothing of shares either way.
                 changed |= put("quantity", "", same=False, note="the file has no share count")
-            if not (in_shares and into.quantity is not None):
+            if not (in_shares and counted is not None):
                 changed |= put("opening_balance", dollars,
                                same=_cents(row.get("opening_balance", "")) == cents,
                                note="new lot" if index in fresh else "")
@@ -327,6 +371,10 @@ def roth_basis_note(account: str, lot: str) -> str:
         "outside file has at most what the holdings cost, which isn't that. Set what was "
         f"contributed and converted with 'sim account lot edit {account} {lot or DEFAULT_LOT} "
         "--opening-cost-basis AMOUNT' (the custodian's Form 5498s add up to it)")
+
+
+_SHARES = Decimal("0.001")
+"""The places a worked-out share count is kept to, as brokerages show them."""
 
 
 def _number(text: str) -> Decimal | None:

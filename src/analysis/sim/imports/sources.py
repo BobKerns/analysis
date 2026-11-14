@@ -21,7 +21,7 @@ from analysis.sim.imports.forms import Flows, Snapshot
 
 __all__ = [
     "FORMS", "Form", "Reader", "Source", "SourceError", "broken", "detect", "get", "names",
-    "read_flows", "read_holdings", "sources",
+    "read_flows", "read_holdings", "sources", "unnamed",
 ]
 
 Form = Literal["holdings", "transactions"]
@@ -182,6 +182,17 @@ def _resolve(paths: Sequence[Path], name: str | None, form: Form, imports: Path 
             f"the files come from different sources ({', '.join(found)}); import each source's "
             "files in a run of their own")
     return next(iter(found.values()))
+
+
+def unnamed(
+    paths: Sequence[Path], name: str | None = None, imports: Path | None = None,
+) -> tuple[Source, list[Path]]:
+    """The source to read holdings in ``paths`` with, and the files among
+    them that don't say which outside account they are: one must be given
+    for each (``read_holdings``'s ``account``)."""
+    source = _resolve(paths, name, "holdings", imports)
+    held = None if source.profile is None else source.profile.holdings
+    return source, [] if held is None else [path for path in paths if not held.names_account(path)]
 
 
 def read_holdings(

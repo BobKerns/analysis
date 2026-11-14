@@ -144,11 +144,23 @@ Things to know:
 | Source | What to download | The account |
 | --- | --- | --- |
 | `fidelity` | *Positions*, *Download*: one file for every account | a column of the file |
-| `vanguard` | *Holdings*, the download of one account's holdings | the file's name, less `.csv`; or `--outside-account NAME` |
+| `vanguard` | *Holdings*, the download of one account's holdings | its number, in the file's name; or `--outside-account NAME` |
 
-A Vanguard file doesn't say which account it is, so the import takes the
-file's name: give each account's download the same name every time, or pass
-`--outside-account`.
+A Vanguard file doesn't say inside which account it is. The name it is
+downloaded with has the account's number, and the import goes by that: the
+first time, it asks which of the plan's accounts the number is, showing what
+the file holds, and remembers. A file renamed without the number is asked
+about at a terminal each time (any name you like, such as `Bill Roth`), or
+named with `--outside-account`.
+
+**Share counts.** A row that gives a value and a price and no share count
+has its shares worked out from the two. Where the file has only a balance
+for a lot that is counted in shares (a money market's row at some
+brokerages, or another source's one number for an account), and the plan
+has a price for the lot's symbol from the week up to the file's date, an
+import at a terminal offers to set the count to the balance over that price:
+the count then follows reinvested dividends. Away from a terminal it says
+that it could.
 
 ### A source of your own
 
@@ -167,7 +179,8 @@ holdings:
 ```
 
 `columns` says which heading holds what; `asset` and `value` are required,
-and `quantity`, `cost_basis`, `account_name` and a few more are optional.
+and `quantity`, `price`, `cost_basis`, `account_name` and a few more are
+optional.
 The keys for a date, for an account that is only in the file's name, and for
 cells that mean "nothing" are in
 [ADR-003](../architecture/ADR-003-registries-and-csv-schemas.md), §4.17.

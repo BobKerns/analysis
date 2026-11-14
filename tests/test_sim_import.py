@@ -832,11 +832,11 @@ def test_sim_import_holdings_takes_an_existing_lot_or_skip_for_a_holding(
 def test_sim_import_holdings_new_lots_needs_no_terminal(
     test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
 ) -> None:
-    write_import_map("vanguard/accounts.csv", "Bill Roth IRA,,map,Asset_Roth_Bill,,\n")
+    write_import_map("vanguard/accounts.csv", "12345678,,map,Asset_Roth_Bill,,\n")
 
     refused = _import(test_data_dir, "holdings", str(vanguard_holdings_export))
     assert refused.exit_code != 0
-    assert "--new-lots" in refused.output and "Bill Roth IRA / VTSAX" in refused.output
+    assert "--new-lots" in refused.output and "12345678 / VTSAX" in refused.output
 
     result = _import(test_data_dir, "holdings", str(vanguard_holdings_export), "--new-lots")
     assert result.exit_code == 0, result.output
@@ -849,14 +849,14 @@ def test_sim_import_holdings_new_lots_needs_no_terminal(
     assert lots["Asset_Roth_Bill", "vmfxx"]["opening_balance"] == "20000.00"
     assert "lot 'vtsax' of Asset_Roth_Bill is a Roth lot with no basis" in result.output
     # Nothing in the file says whose it is.
-    assert "vanguard account 'Bill Roth IRA', from the file's name" in result.output
+    assert "vanguard account '12345678', from the file's name" in result.output
 
 
 def test_sim_import_holdings_new_lots_finds_a_free_name(
     test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
     add_account_value: Callable[..., None],
 ) -> None:
-    write_import_map("vanguard/accounts.csv", "Bill Roth IRA,,map,Asset_Roth_Bill,,\n")
+    write_import_map("vanguard/accounts.csv", "12345678,,map,Asset_Roth_Bill,,\n")
     add_account_value("Asset_Roth_Bill", lot="vtsax", subkind="roth_ira", symbol="OTHER",
                       opening_balance="5.00")
 
@@ -869,7 +869,7 @@ def test_sim_import_holdings_new_lots_finds_a_free_name(
 def test_sim_import_holdings_dry_run_adds_no_lot(
     test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
 ) -> None:
-    write_import_map("vanguard/accounts.csv", "Bill Roth IRA,,map,Asset_Roth_Bill,,\n")
+    write_import_map("vanguard/accounts.csv", "12345678,,map,Asset_Roth_Bill,,\n")
     before = _all_lots(test_data_dir)
 
     result = _import(test_data_dir, "holdings", str(vanguard_holdings_export), "--new-lots", "--dry-run")
@@ -883,23 +883,71 @@ def test_sim_import_holdings_outside_account_names_a_files_account(
     test_data_dir: Path, vanguard_holdings_export: Path, fidelity_positions_export: Path,
     write_import_map: MapWriter,
 ) -> None:
-    write_import_map("vanguard/accounts.csv", "12345678,,map,Asset_TraditionalIRA_Alice,default,\n")
+    write_import_map("vanguard/accounts.csv", "Alice IRA,,map,Asset_TraditionalIRA_Alice,default,\n")
 
     result = _import(test_data_dir, "holdings", str(vanguard_holdings_export),
-                     "--outside-account", "12345678")
+                     "--outside-account", "Alice IRA")
     assert result.exit_code == 0, result.output
     assert _all_lots(test_data_dir)["Asset_TraditionalIRA_Alice", "default"]["opening_balance"] == "520000.00"
 
     refused = _import(test_data_dir, "holdings", str(fidelity_positions_export),
-                      "--outside-account", "12345678")
+                      "--outside-account", "Alice IRA")
     assert refused.exit_code != 0
     assert "names its accounts itself" in refused.output
+
+
+def test_sim_import_holdings_asks_which_account_a_file_without_its_number_is(
+    test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_import_map("vanguard/accounts.csv", "Bill Roth,,map,Asset_Roth_Bill,,\n")
+    renamed = vanguard_holdings_export.rename(vanguard_holdings_export.with_name("holdings.csv"))
+
+    refused = _import(test_data_dir, "holdings", str(renamed), "--new-lots")
+    assert refused.exit_code != 0
+    assert "doesn't say which account it is" in refused.output and "--outside-account" in refused.output
+
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    result = _import(test_data_dir, "holdings", str(renamed), "--new-lots", input="Bill Roth\n")
+    assert result.exit_code == 0, result.output
+    # What it holds says which account the file is, and the ones imported before are offered.
+    assert "holdings.csv doesn't say which vanguard account it is; it holds VTSAX, VBTLX, VMFXX." \
+        in result.output
+    assert "One you have imported (Bill Roth)" in result.output
+    assert "from the file's name" not in result.output
+    assert _all_lots(test_data_dir)["Asset_Roth_Bill", "vtsax"]["opening_balance"] == "400000.00"
+
+
+def test_sim_import_holdings_offers_a_share_count_from_a_stored_price(
+    test_data_dir: Path, fidelity_positions_export: Path, write_import_map: MapWriter,
+    add_account_value: Callable[..., None], write_aux: Callable[[str, str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_import_map("fidelity/accounts.csv",
+                     "111111111,,map,Asset_Brokerage_Joint,,\n222222222,,skip,,,\n")
+    # The file's money market row has a balance and neither shares nor a price.
+    add_account_value("Asset_Brokerage_Joint", lot="spaxx", symbol="SPAXX", quantity="44000",
+                      opening_balance="44000.00")
+    write_aux("security_price__SPAXX.csv", "effective_date,price\n2026-01-02,1.00\n")
+
+    unasked = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--new-lots", "--dry-run")
+    assert unasked.exit_code == 0, unasked.output
+    assert "[the file has no share count]" in unasked.output
+    assert "Asset_Brokerage_Joint:spaxx could be worked out" in unasked.output
+
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    result = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--new-lots", input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "At SPAXX's price of 1 on 2026-01-02, that is 44900.000 shares; the lot has 44000." \
+        in result.output
+    money = _all_lots(test_data_dir)["Asset_Brokerage_Joint", "spaxx"]
+    assert (money["quantity"], money["opening_balance"]) == ("44900", "44900.00")
 
 
 def test_sim_import_holdings_year_end_adds_no_lots(
     test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
 ) -> None:
-    write_import_map("vanguard/accounts.csv", "Bill Roth IRA,,map,Asset_Roth_Bill,,\n")
+    write_import_map("vanguard/accounts.csv", "12345678,,map,Asset_Roth_Bill,,\n")
 
     result = _import(test_data_dir, "holdings", str(vanguard_holdings_export), "--year-end", "--new-lots")
 

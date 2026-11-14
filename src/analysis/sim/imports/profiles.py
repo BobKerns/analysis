@@ -49,7 +49,7 @@ _BUILT_IN = Path(__file__).parent / "source_profiles"
 # What a holdings profile's ``columns`` may name. ``asset`` and ``value``
 # are the two a holding can't do without.
 _COLUMNS = (
-    "account", "account_name", "asset", "name", "value", "quantity", "cost_basis",
+    "account", "account_name", "asset", "name", "value", "quantity", "price", "cost_basis",
     "unrealized_gain", "acquired", "type",
 )
 _HOLDINGS_KEYS = {
@@ -59,6 +59,8 @@ _AS_OF_PLACES = ("heading", "last_lines", "file_name")
 # How far down a file its header row may be: a download may open with a
 # title and a date.
 _HEADER_SEARCH = 30
+# Share counts worked out from a value and a price: a brokerage's own places.
+_SHARES = Decimal("0.001")
 # The money at the start of a cell: '$1,234.56', '-$16,423.62 (-6.68%)',
 # '$-1,234.56', '(300.00)'.
 _MONEY = re.compile(
@@ -146,15 +148,26 @@ class HoldingsProfile:
             elif cell("unrealized_gain"):
                 basis = value - _cents(
                     cell("unrealized_gain"), f"{line}, {self.columns['unrealized_gain']}")
+            quantity = _quantity(cell("quantity"), f"{line}, {self.columns.get('quantity')}")
+            if quantity is None and cell("price"):
+                # A row with a value and a price and no share count (a money
+                # market's, at some brokerages) still says how many shares.
+                price = _price(cell("price"), f"{line}, {self.columns['price']}")
+                if price > 0:
+                    quantity = (Decimal(value) / 100 / price).quantize(_SHARES)
             holdings.append(Holding(
-                account=outside, value_cents=value, asset=asset,
-                quantity=_quantity(cell("quantity"), f"{line}, {self.columns.get('quantity')}"),
+                account=outside, value_cents=value, asset=asset, quantity=quantity,
                 cost_basis_cents=basis,
                 acquired=_date(cell("acquired"), self.acquired_format, line),
                 hints={key: found for key in ("account_name", "name", "type") if (found := cell(key))},
             ))
         return Snapshot(source=self.source, holdings=tuple(holdings),
                         as_of=self._as_of(path, header, rows[end:]))
+
+    def names_account(self, path: Path) -> bool:
+        """Whether ``path`` says which outside account it is: in a column,
+        or in its name."""
+        return self.account_pattern is None or self.account_pattern.search(path.name) is not None
 
     def _file_account(self, path: Path) -> str:
         if self.account_pattern is None:
@@ -163,7 +176,8 @@ class HoldingsProfile:
         if found is None:
             raise ProfileError(
                 f"{path}: the file's name doesn't say which account it is ({self.where} "
-                f"expects {self.account_pattern.pattern!r}); name it with --outside-account")
+                f"expects {self.account_pattern.pattern!r}); name it with --outside-account, "
+                "or import it alone at a terminal to be asked")
         return (found.group(1) if found.groups() else found.group(0)).strip()
 
     def _as_of(self, path: Path, header: list[str], tail: list[list[str]]) -> dt.date | None:
@@ -203,6 +217,14 @@ def _cents(text: str, where: str) -> int:
         raise ProfileError(f"{where}: {text!r} is not an amount of money") from None
     negative = "-" in (found["sign"], found["inner"]) or (found["open"] and found["close"])
     return -int(cents) if negative else int(cents)
+
+
+def _price(text: str, where: str) -> Decimal:
+    """A price a share, which may have more places than cents."""
+    found = _MONEY.match(text)
+    if found is None:
+        raise ProfileError(f"{where}: {text!r} is not a price")
+    return Decimal(found["number"].replace(",", ""))
 
 
 def _quantity(text: str, where: str) -> Decimal | None:

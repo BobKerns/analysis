@@ -377,8 +377,8 @@ def test_a_profile_reads_money_dates_and_where_the_holdings_stop(
     # The account is the file's name; the basis is the balance less the gain,
     # and a dash is no gain to take off.
     assert [(h.account, h.asset, h.cost_basis_cents) for h in vanguard.holdings] == [
-        ("Bill Roth IRA", "VTSAX", 30000000), ("Bill Roth IRA", "VBTLX", 11642362),
-        ("Bill Roth IRA", "VMFXX", None)]
+        ("12345678", "VTSAX", 30000000), ("12345678", "VBTLX", 11642362),
+        ("12345678", "VMFXX", None)]
 
 
 @pytest.mark.parametrize(("text", "problem"), [
@@ -428,6 +428,23 @@ def test_a_profile_reads_either_place_of_a_minus_and_any_case_of_heading(
     found = sources.read_holdings([export], imports=test_data_dir / "imports")
 
     assert [h.value_cents for h in found.holdings] == [-123456, -200, -300]
+
+
+def test_a_profile_works_out_a_share_count_from_a_value_and_a_price(
+    write_import_profile: Callable[[str, str], Path], tmp_path: Path, test_data_dir: Path,
+) -> None:
+    from decimal import Decimal
+    write_import_profile(
+        "mine", "holdings: {columns: {account: Acct, asset: Sym, value: Worth, quantity: Shares, price: Price}}\n")
+    export = tmp_path / "mine.csv"
+    export.write_text(
+        'Acct,Sym,Worth,Shares,Price\nA1,AAA,"$1,234.50",,$12.345\nA1,BBB,$500.00,7,$50.00\n'
+        "A1,CCC,$20.00,,\n", encoding="utf-8")
+
+    found = sources.read_holdings([export], imports=test_data_dir / "imports")
+
+    # The file's own count wins; neither count nor price leaves none.
+    assert [h.quantity for h in found.holdings] == [Decimal("100.000"), Decimal(7), None]
 
 
 def test_a_profile_that_cant_be_used_stops_only_its_own_source(
@@ -518,6 +535,33 @@ def test_plan_clears_a_share_count_the_file_lacks_and_keeps_lots_it_names(test_d
     assert result.cells == {0: {"quantity": "", "opening_balance": "44900.00"}}
     assert len(result.warnings) == 1 and "has 2 lots of AAA" in result.warnings[0]
     assert not result.pruned
+
+
+def test_plan_offers_a_share_count_worked_out_from_a_known_price(test_data_dir: Path) -> None:
+    from decimal import Decimal
+    account_map = _mapped(
+        test_data_dir, ("B1", "", mapping.AccountTarget("map", "Brokerage")),
+        ("Funds", "", mapping.AccountTarget("map", "Brokerage", "whole")))
+    # A row with no share count, and another source's one number for an account.
+    snapshot = Snapshot("broker", (Holding("B1", 44900_00, asset="CASH"), Holding("Funds", 12000_00)))
+    lots = [
+        {"account_name": "Brokerage", "lot": "cash", "symbol": "CASH", "quantity": "44000", "opening_balance": "",
+         "prior_year_end_balance": "1.00"},
+        {"account_name": "Brokerage", "lot": "whole", "symbol": "AAA", "quantity": "90",
+         "opening_balance": "9000.00", "prior_year_end_balance": "1.00"},
+    ]
+    prices = {"CASH": Decimal(1), "AAA": Decimal("100")}
+
+    offered = holdings.plan(snapshot, account_map, _BROKERAGE, lots, prices=prices)
+    assert [(o.lot, o.before, o.after) for o in offered.offers] == [
+        ("cash", Decimal(44000), Decimal("44900.000")), ("whole", Decimal(90), Decimal("120.000"))]
+    # Until it is answered, as with no price: a listed lot's count goes, a whole account's stays.
+    assert offered.cells == {0: {"quantity": "", "opening_balance": "44900.00"},
+                             1: {"opening_balance": "12000.00"}}
+
+    taken = holdings.plan(snapshot, account_map, _BROKERAGE, lots, prices=prices, recount={0}, keep_count={1})
+    assert not taken.offers
+    assert taken.cells == {0: {"quantity": "44900"}, 1: {"opening_balance": "12000.00"}}
 
 
 def test_plan_leaves_open_a_symbol_with_no_lot_and_fills_a_fresh_one(test_data_dir: Path) -> None:

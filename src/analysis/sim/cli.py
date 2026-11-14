@@ -8723,7 +8723,36 @@ def _outside_label(holdings: Sequence[import_forms.Holding], *, whole: bool) -> 
     first = holdings[0]
     name = first.hints.get("account_name", "") if whole else first.hints.get("name", "")
     label = first.account if whole else first.label
+    if whole and not name and all(h.asset for h in holdings):
+        # A file with no name for the account: what it holds says which it is.
+        name = "holds " + _some([h.asset for h in holdings])
     return f"{label!r} ({name})" if name else repr(label)
+
+
+def _ask_outside_account(
+    source: import_sources_.Source, path: Path, saved: import_mapping.AccountMap,
+) -> str:
+    """Which outside account ``path`` is, asked for: nothing in the file or
+    its name says. One the source's mapping has, or a new name for it."""
+    assert source.profile is not None and source.profile.holdings is not None
+    held = [h.asset for h in source.profile.holdings.read(path, "?").holdings if h.asset]
+    known = list(dict.fromkeys(outside for outside, _ in saved.entries))
+    click.echo(f"{path.name} doesn't say which {source.name} account it is"
+               + (f"; it holds {_some(held)}." if held else "."))
+    click.echo("  " + (f"One you have imported ({', '.join(known)}), or a new name for it: "
+                       if known else "Give it a name: ")
+               + "whatever you call the account. It is asked for again each time, unless "
+               "the file's name has the account's number.")
+    while True:
+        if answer := _prompt_with_completion(f"{source.name} account", choices=known).strip():
+            return answer
+
+
+def _some(names: Sequence[str], limit: int = 4) -> str:
+    """The first few of ``names``, and how many more."""
+    names = list(dict.fromkeys(names))
+    more = len(names) - limit
+    return ", ".join(names[:limit]) + (f" and {more} more" if more > 0 else "")
 
 
 def _clean_symbol(text: str) -> bool:
@@ -12040,6 +12069,12 @@ def import_holdings(
     set from a file. A lot of the account that the file doesn't have keeps
     what it holds, with a warning; ``--prune`` empties it.
 
+    A file that names no account inside says which it is by the account's
+    number in its name; one renamed without it is asked about, or named with
+    ``--outside-account``. Where a file gives a lot a balance and no share
+    count, and the plan has a recent price for the lot's symbol, the share
+    count the two make is offered at a terminal.
+
     The balances are the scenario's opening ones, so a file dated more than
     a week from the scenario's start (the December 31 before it, with
     ``--year-end``) gets a warning naming both dates.
@@ -12056,6 +12091,12 @@ def import_holdings(
         accounts = {name: (kind, subkind or "") for name, kind, subkind in con.execute(
             "SELECT name, kind, subkind FROM account")}
         scenario_start = date.fromisoformat(con.execute("SELECT start FROM scenario").fetchone()[0][:10])
+        priced: dict[str, list[tuple[date, Decimal]]] = {}
+        for symbol, day, payload in con.execute(
+                "SELECT series, effective_date, payload_json FROM aux_table "
+                "WHERE kind = 'security_price' AND series IS NOT NULL ORDER BY effective_date"):
+            priced.setdefault(symbol.upper(), []).append(
+                (date.fromisoformat(day[:10]), Decimal(json.loads(payload)["price_micros"]) / 1_000_000))
     if prune and year_end:
         raise click.UsageError("--prune empties lots as of the scenario's start, so it doesn't go with --year-end")
     lots = _import_target_lots(scenario_dir, scen_name, accounts)
@@ -12068,6 +12109,10 @@ def import_holdings(
     # holdings get a lot each, and the lots made for them (indexes of rows).
     split: set[str] = set()
     fresh: set[int] = set()
+    # The lots whose share count is worked out from a stored price, and those
+    # it was offered for and declined.
+    recount: set[int] = set()
+    keep_count: set[int] = set()
     characters: dict[str, str] = {}
     lot_context: list[calendar_guide.GuideContext] = []
 
@@ -12101,8 +12146,16 @@ def import_holdings(
         fresh.add(len(rows) - 1)
 
     imports = import_mapping.imports_dir(data_dir_p)
+    asked_account = False
     try:
-        snapshot = import_sources_.read_holdings(files, layout, imports, account=outside_account)
+        source, unnamed = import_sources_.unnamed(files, layout, imports)
+        if unnamed and outside_account is None and len(files) == 1 and _interactive():
+            outside_account = _ask_outside_account(
+                source, files[0],
+                import_mapping.load_account_map(
+                    import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
+            asked_account = True
+        snapshot = import_sources_.read_holdings(files, source.name, imports, account=outside_account)
         if not snapshot.holdings:
             raise click.ClickException(
                 "no account balances in " + ", ".join(map(str, files))
@@ -12113,9 +12166,20 @@ def import_holdings(
         # run only.
         account_map = import_mapping.AccountMap(map_path, dict(saved_map.entries))
 
+        # The price a share count can be worked out from: each symbol's
+        # latest stored one from the days up to the file's date.
+        priced_on = snapshot.as_of or scenario_start
+        latest = {
+            symbol: near[-1] for symbol, known in priced.items()
+            if (near := [(day, price) for day, price in known
+                         if 0 <= (priced_on - day).days <= _IMPORT_DATE_SLACK_DAYS])
+        }
+
         def replan() -> import_holdings_.HoldingsPlan:
-            return import_holdings_.plan(snapshot, account_map, accounts, rows, year_end=year_end,
-                                         split=split, fresh=fresh, prune=prune)
+            return import_holdings_.plan(
+                snapshot, account_map, accounts, rows, year_end=year_end, split=split, fresh=fresh,
+                prune=prune, prices={symbol: price for symbol, (_, price) in latest.items()},
+                recount=recount, keep_count=keep_count)
 
         def decided(holding: import_forms.Holding) -> tuple[str, str]:
             """The mapping row that says where ``holding`` goes: its own, or
@@ -12216,6 +12280,17 @@ def import_holdings(
             if not progress:
                 break
             result = replan()
+        while result.complete and result.offers and _interactive():
+            for offer in result.offers:
+                click.echo(
+                    f"The file gives {offer.account}:{offer.lot} a balance, "
+                    f"{format_dollars(offer.cents)}, and no share count. At {offer.symbol}'s price of "
+                    f"{offer.price.normalize():f} on {latest[offer.symbol][0]}, that is {offer.after} "
+                    f"shares; the lot has {offer.before.normalize():f}.")
+                update = click.confirm("  Update the share count (it may have grown by reinvested "
+                                       "dividends)?", default=True)
+                (recount if update else keep_count).add(offer.index)
+            result = replan()
     except ValueError as e:
         raise click.ClickException(str(e)) from None
 
@@ -12254,8 +12329,8 @@ def import_holdings(
     for warning in result.warnings:
         click.echo(f"warning: {warning}", err=True)
     profile = import_sources_.get(snapshot.source, "holdings", imports).profile
-    if outside_account is None and profile is not None and profile.holdings is not None \
-            and profile.holdings.account_pattern is not None:
+    if not asked_account and outside_account is None and profile is not None \
+            and profile.holdings is not None and profile.holdings.account_pattern is not None:
         # Nothing in such a file says whose it is, so say what was taken.
         for name in dict.fromkeys(h.account for h in snapshot.holdings):
             click.echo(f"{snapshot.source} account {name!r}, from the file's name "
@@ -12281,6 +12356,11 @@ def import_holdings(
         )
     for note in dict.fromkeys(result.notes):
         click.echo(f"note: {note}")
+    for offer in result.offers:
+        click.echo(
+            f"note: the share count of {offer.account}:{offer.lot} could be worked out from its "
+            f"balance and {offer.symbol}'s price on {latest[offer.symbol][0]}, as {offer.after} "
+            "shares: run at a terminal to be asked")
     for account in sorted(split):
         if emptied := [label for label in result.pruned if label.partition(":")[0] == account]:
             click.echo(
