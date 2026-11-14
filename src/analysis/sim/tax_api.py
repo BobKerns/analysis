@@ -26,7 +26,7 @@ load. The API is this module and the calculator classes and bases in
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, ClassVar
@@ -40,7 +40,7 @@ __all__ = [
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
-API_VERSION = 6
+API_VERSION = 7
 """Bumped when a calculator written against the previous version could
 break, or one written for this version needs what the previous lacks. 1
 (#510) is the first a data repo can write to; 2 (#511) adds a state year's
@@ -54,7 +54,11 @@ itemized lines from spending: it may figure its own Schedule A. 6 (#580)
 adds its ``separate`` step, spouses filing separately on one return; a
 state year whose module says it was written for 5 or before and that
 overrides ``deductions`` or ``tax`` never files separately, since the step
-reads the tables those would replace."""
+reads the tables those would replace. 7 (#593) adds
+:attr:`TaxPaid.refunded`, :meth:`TaxYear.tax_refunded`,
+:attr:`TaxYear.prior_taxes_paid` and :meth:`TaxYear.prior_tax_paid`, for
+the refunds a federal return recaptures; :attr:`TaxYear.taxes_paid` still
+holds this year's rows only."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""
@@ -218,6 +222,10 @@ class TaxPaid:
     year: int
     jurisdiction: str
     amount: int
+    refunded: int = 0
+    """What the jurisdiction paid back in the calendar year (#593): the
+    April refund of the year before's overpayment, which the federal return
+    recaptures as income to the extent the deduction saved tax."""
 
 
 @dataclass(frozen=True)
@@ -236,6 +244,12 @@ class Residence:
     code, and the county whose local tax applies, if it names one."""
     state: str
     county: str | None = None
+
+
+def _paid(rows: Sequence[TaxPaid], year: int, jurisdictions: Sequence[str]) -> Iterator[TaxPaid]:
+    """The ``rows`` of calendar ``year`` for the ``jurisdictions`` (all of
+    them when none are named)."""
+    return (t for t in rows if t.year == year and (not jurisdictions or t.jurisdiction in jurisdictions))
 
 
 @dataclass(frozen=True)
@@ -276,8 +290,11 @@ class TaxYear:
     gives this year's only."""
     taxes_paid: Sequence[TaxPaid] = ()
     """What was paid toward each state and local jurisdiction in a calendar
-    year (#542), the SALT deduction's income taxes; the engine gives this
-    year's only."""
+    year (#542), the SALT deduction's income taxes, and what each paid back
+    (#593); the engine gives this year's only."""
+    prior_taxes_paid: Sequence[TaxPaid] = ()
+    """The same for the year before (#593): what its SALT line deducted,
+    which caps the refund it recaptures."""
     _grown: Callable[[int, str, int], int] = field(
         repr=False, default=lambda amount, _series, _since: amount)
 
@@ -411,8 +428,17 @@ class TaxYear:
     def tax_paid(self, *jurisdictions: str) -> int:
         """What was paid this calendar year toward the ``jurisdictions``'
         income taxes (every state and local one when none are named)."""
-        return sum(t.amount for t in self.taxes_paid
-                   if t.year == self.year and (not jurisdictions or t.jurisdiction in jurisdictions))
+        return sum(t.amount for t in _paid(self.taxes_paid, self.year, jurisdictions))
+
+    def prior_tax_paid(self, *jurisdictions: str) -> int:
+        """What was paid last calendar year toward the ``jurisdictions``'
+        income taxes, as :meth:`tax_paid` (#593)."""
+        return sum(t.amount for t in _paid(self.prior_taxes_paid, self.year - 1, jurisdictions))
+
+    def tax_refunded(self, *jurisdictions: str) -> int:
+        """What the ``jurisdictions`` (every state and local one when none
+        are named) paid back this calendar year (#593): last year's refund."""
+        return sum(t.refunded for t in _paid(self.taxes_paid, self.year, jurisdictions))
 
 
 @dataclass(frozen=True)
