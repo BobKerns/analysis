@@ -1093,6 +1093,8 @@ class StateAdjustment:
     units: int = 1
     """How many exemptions a ``filers`` line is: ``phaseout_rate`` takes its
     share of each dollar over from each, as California's does."""
+    refundable: bool = False
+    """A ``credit`` the state pays in full, past the tax (#579)."""
 
     def from_base(self, amount: int) -> int:
         """The figure for a ``federal_tax``, ``federal_deduction`` or
@@ -1114,6 +1116,64 @@ class StateAdjustment:
         if self.phaseout:
             return max(0, figure - figure * over // self.phaseout)
         return 0
+
+
+def _by_person(items: Iterable[IncomeItem], people: Sequence[str]) -> dict[str, int]:
+    """Each of ``people``'s part of ``items``, whose :func:`_owner` says; the
+    household's split evenly among them. Items of the same owners are summed
+    before they are split, as :func:`person_income` does, so each sum loses
+    at most a cent to the split."""
+    totals = dict.fromkeys(people, 0)
+    groups: dict[tuple[str | None, str | None, str], int] = {}
+    for item in items:
+        key = (item.payer.owner, item.payee.owner, item.payer.kind)
+        groups[key] = groups.get(key, 0) + item.amount
+    for (payer, payee, kind), amount in groups.items():
+        for person, share in _shares(_owner(payer, payee, totals, payer_kind=kind),
+                                     amount, people, totals):
+            totals[person] += share
+    return totals
+
+
+def _tagged_income(ty: TaxYear, tag: str) -> list[IncomeItem]:
+    return [i for i in ty.tagged(tag) if i.character in _ADJUSTMENT_INCOME_CHARACTERS]
+
+
+def _living(ty: TaxYear, people: Iterable[str]) -> list[str]:
+    """``people``, less any who died before the year (their final month in
+    an earlier one): a survivor's return is theirs alone."""
+    died = {p.id for p in ty.persons
+            if p.final_month is not None and int(p.final_month[:4]) < ty.year}
+    return sorted(p for p in people if p not in died)
+
+
+def _per_person_income(
+    ty: TaxYear, row: Mapping[str, Any], birthdates: Mapping[str, date | None],
+    min_months: int,
+) -> tuple[int, int | None]:
+    """An ``income`` row's figure with ``per_person`` (#579), and the caps it
+    summed: each filer living in the year who has reached ``min_age`` gets
+    their own tagged income (a joint account's split among the living),
+    times ``rate``, up to ``amount``, less their own Social Security
+    (:func:`person_income`'s, as ``state_retirement_exclusion`` takes it)
+    with ``less_ss``."""
+    people = _living(ty, birthdates)
+    income = _by_person(_tagged_income(ty, str(row.get("tag") or "")), people)
+    ss = person_income(ty, people)[1] if _yes(row.get("less_ss")) else {}
+    rate, amount = row.get("rate_micros"), row.get("amount")
+    total, caps = 0, None if amount is None else 0
+    for person in people:
+        if min_months and (age_months(birthdates[person], ty.year) or 0) < min_months:
+            continue
+        figure = max(0, income[person])
+        if rate is not None:
+            figure = figure * int(rate) // 1_000_000
+        if amount is not None:
+            cap = max(0, int(amount) - ss.get(person, 0))
+            figure = min(figure, cap)
+            caps = (caps or 0) + cap
+        total += figure
+    return total, caps
 
 
 def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustment]:
@@ -1147,11 +1207,19 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
         cap = amount if amount is None or not _yes(row.get("per_person")) else amount * eligible
         if base == "filers":
             figure = (amount or 0) * eligible
+        elif base == "income" and _yes(row.get("per_person")) and birthdates:
+            # Each filer's own income against their own cap (#579), so
+            # one spouse's pension can't use the other's.
+            figure, cap = _per_person_income(ty, row, birthdates, min_months)
         elif base in ("spending", "income"):
             tag = str(row.get("tag") or "")
             raw = ty.spent(tag) if base == "spending" else sum(
-                i.amount for i in ty.tagged(tag) if i.character in _ADJUSTMENT_INCOME_CHARACTERS)
+                i.amount for i in _tagged_income(ty, tag))
             figure = max(0, raw) if rate is None else max(0, raw) * int(rate) // 1_000_000
+            if cap is not None and _yes(row.get("less_ss")):
+                # Less the household's Social Security (#579): Idaho's cap
+                # on a joint return falls by both spouses' benefits.
+                cap = max(0, cap - sum(i.amount for i in ty.year_items("ss_benefit")))
             figure = figure if cap is None else min(figure, cap)
         else:
             figure = 0
@@ -1164,5 +1232,6 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
             None if rate is None else int(rate), cap,
             None if limit is None else int(limit), None if phaseout is None else int(phaseout),
             None if phaseout_rate is None else int(phaseout_rate),
-            units=eligible if base == "filers" else 1))
+            units=eligible if base == "filers" else 1,
+            refundable=_yes(row.get("refundable"))))
     return out

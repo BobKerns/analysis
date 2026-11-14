@@ -1,7 +1,8 @@
 """A state's own deductions and credits (#511, #488): the
 ``state_adjustments__<state>`` table, each row a named line of the state
 return figured from tagged spending or income, the filers, or the federal
-return, and the loader's checks on it."""
+return, and the loader's checks on it. A credit may be refundable, and an
+income row's cap reduced by Social Security (#579)."""
 
 from __future__ import annotations
 
@@ -14,10 +15,11 @@ import pandas as pd
 import pytest
 
 from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.taxes.common import StateAdjustment
+from analysis.sim.tax_api import Account, IncomeItem, Person, TaxYear
+from analysis.sim.taxes.common import StateAdjustment, state_adjustments
 
 HEADER = ("effective_date,name,step,base,tag,rate,amount,per_person,min_age,filing_status,"
-          "income_limit,phaseout,phaseout_rate\n")
+          "income_limit,phaseout,phaseout_rate,less_ss,refundable\n")
 
 
 def _tag_rule(retire_alice_csv: Callable[[str], Path], rule: str, tags: str) -> None:
@@ -143,6 +145,10 @@ def test_a_tag_nothing_carries_is_noted_not_refused(
     ("x,credit,filers,,,100.00,,,,1000.00,,0%", "phaseout_rate must be more than 0%"),
     ("tax_due,credit,filers,,,100.00,,,,,,", "name 'tax_due' is a line the state return already has"),
     ("x,credit,filers,,,100.00,,,HOH,,,", "filing_status 'HOH' must be blank"),
+    ("x,deduction,filers,,,100.00,,,,,,,,yes", "refundable is for a credit; step is 'deduction'"),
+    ("x,credit,filers,,,100.00,,,,,,,,maybe", "refundable 'maybe' must be yes or blank"),
+    ("x,subtraction,spending,tax:rent,,100.00,,,,,,,yes,", "less_ss is for base income"),
+    ("x,subtraction,income,tax:pension,,,,,,,,,yes,", "less_ss needs an amount"),
 ])
 def test_the_loader_checks_a_state_adjustments_row(
     add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
@@ -162,3 +168,120 @@ def test_two_rows_for_one_line_and_status_are_refused(
     write_aux("state_adjustments__CA.csv", HEADER + "2026-01-31,x,credit,filers,,,1.00,,,MFJ,,,\n" * 2)
     with pytest.raises(LoadError, match="two rows for the same line and filing status"):
         load_test_copy()
+
+
+# -- Refundable credits and the Social Security offset (#579) ----------------
+
+PENSION = Account("Income_Pension_Alice", "income", "pension", "alice", tags=frozenset({"tax:pension"}))
+BILLS_PENSION = Account("Income_Pension_Bill", "income", "pension", "bill",
+                        tags=frozenset({"tax:pension"}))
+JOINT_PENSION = Account("Income_Pension_Joint", "income", "pension", "joint",
+                        tags=frozenset({"tax:pension"}))
+CHECKING = Account("Asset_Checking", "asset", "cash", "joint")
+SS_ALICE = Account("Income_SS_Alice", "income", "ss_benefit", "alice")
+SS_BILL = Account("Income_SS_Bill", "income", "ss_benefit", "bill")
+
+
+def _year(rows: list[dict], items: list[IncomeItem], status: str = "MFJ",
+          alice_dies: str | None = None) -> TaxYear:
+    """A 2030 tax year with only what ``state_adjustments`` reads: the
+    rows (in stored units), the items, and Alice (born 1964, final month
+    ``alice_dies``) and Bill (born 1967)."""
+    def unused(*_args: object) -> list:
+        return []
+
+    return TaxYear(
+        year=2030, jurisdiction="state", params=None, items=items, losses=[],
+        persons=[Person("alice", "1964-03-15", "primary", alice_dies),
+                 Person("bill", "1967-08-20", "primary")],
+        _table=unused, _indexed=lambda _kind, _series: rows, _dated=unused,
+        _keyed=lambda *_a: None, _filing_status_in=lambda _y: status, _prior=lambda _line: 0,
+        _series_of=unused,
+    )
+
+
+def _pension_row(**columns: object) -> dict:
+    return {"name": "pension_exclusion", "step": "subtraction", "base": "income",
+            "tag": "tax:pension", "amount": 40_000_00, "less_ss": "yes", **columns}
+
+
+def _income(payer: Account, amount: int, character: str = "ordinary") -> IncomeItem:
+    return IncomeItem(2030, character, payer, CHECKING, amount)
+
+
+def test_less_ss_per_person_takes_each_filers_own_benefits_off_their_own_cap() -> None:
+    """Maryland's shape: each filer's pension, up to the cap less their own
+    Social Security; one spouse's room can't cover the other's pension."""
+    items = [_income(PENSION, 50_000_00), _income(BILLS_PENSION, 10_000_00),
+             _income(SS_ALICE, 30_000_00, "ss_benefit"), _income(SS_BILL, 5_000_00, "ss_benefit")]
+    (line,) = state_adjustments(_year([_pension_row(per_person="yes")], items), "x", "MD")
+    # Alice: $40,000 - $30,000; Bill: all $10,000 (his cap is $35,000).
+    assert line.figure == 10_000_00 + 10_000_00
+    # A joint pension is split evenly between them.
+    joint = [_income(JOINT_PENSION, 20_000_00), _income(SS_ALICE, 35_000_00, "ss_benefit")]
+    (line,) = state_adjustments(_year([_pension_row(per_person="yes")], joint), "x", "MD")
+    assert line.figure == 5_000_00 + 10_000_00
+
+
+def test_less_ss_per_person_counts_only_filers_of_age() -> None:
+    items = [_income(PENSION, 50_000_00), _income(BILLS_PENSION, 10_000_00)]
+    # Alice is 66 at the end of 2030, Bill 63.
+    (line,) = state_adjustments(_year([_pension_row(per_person="yes", min_age=65)], items), "x", "MD")
+    assert line.figure == 40_000_00
+
+
+def test_per_person_income_after_a_death_is_the_survivors_alone() -> None:
+    """Alice died in 2028; Bill files Single. Her age doesn't take his
+    place, and a joint pension is all his."""
+    items = [_income(BILLS_PENSION, 10_000_00), _income(JOINT_PENSION, 20_000_00),
+             _income(SS_BILL, 5_000_00, "ss_benefit")]
+    year = _year([_pension_row(per_person="yes")], items, "Single", alice_dies="2028-05-31")
+    (line,) = state_adjustments(year, "x", "MD")
+    assert line.figure == 30_000_00
+    assert line.cap == 35_000_00  # his cap less his benefits
+
+
+def test_less_ss_without_per_person_takes_the_households_benefits_off_one_cap() -> None:
+    """Idaho's shape: one cap for the return, less both spouses' benefits."""
+    items = [_income(PENSION, 50_000_00), _income(BILLS_PENSION, 10_000_00),
+             _income(SS_ALICE, 30_000_00, "ss_benefit"), _income(SS_BILL, 5_000_00, "ss_benefit")]
+    (line,) = state_adjustments(_year([_pension_row(amount=60_000_00)], items), "x", "ID")
+    assert line.figure == 60_000_00 - 35_000_00
+    # Benefits past the cap leave nothing.
+    (line,) = state_adjustments(_year([_pension_row(amount=30_000_00)], items), "x", "ID")
+    assert line.figure == 0
+
+
+def test_a_credit_row_says_whether_it_is_refundable() -> None:
+    rows = [{"name": "grocery_credit", "step": "credit", "base": "filers", "amount": 155_00,
+             "refundable": "yes"},
+            {"name": "other_credit", "step": "credit", "base": "filers", "amount": 10_00}]
+    grocery, other = state_adjustments(_year(rows, []), "x", "ID")
+    assert grocery.refundable and grocery.figure == 310_00
+    assert not other.refundable
+
+
+@pytest.mark.slow
+def test_a_refundable_credit_is_paid_past_the_tax(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    run_test_copy: Callable[[], Path],
+) -> None:
+    """Idaho's grocery credit, say: paid in full, so a year with little
+    state tax ends with the state paying out; a nonrefundable credit of the
+    same size takes only the tax left."""
+    add_state_tax()
+    write_aux("state_adjustments__CA.csv", HEADER + "\n".join([
+        "2026-01-31,big_credit,credit,filers,,,50000.00,,,,,,,,yes",
+        "2026-01-31,small_credit,credit,filers,,,50000.00,,,,,,,,",
+    ]) + "\n")
+    run = run_test_copy()
+    lines = _lines(run, "state_big_credit", "state_small_credit", "state_credits", "state_tax")
+    big, small, credits, tax = (lines["state_big_credit"], lines["state_small_credit"],
+                                lines["state_credits"], lines["state_tax"])
+    assert tax  # the loop below must see some years
+    for year in tax:
+        assert big[year] == 100_000_00
+        # The nonrefundable credit took all the tax, the refundable one
+        # comes off after it and isn't among the credits taken.
+        assert small[year] == credits[year]
+        assert tax[year] == -100_000_00

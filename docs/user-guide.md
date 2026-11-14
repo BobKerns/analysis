@@ -530,7 +530,10 @@ files pays no income tax.
   exemption credits and renter's credit ship. A row that counts spending
   or income reads a tag: tag the rule that pays your rent
   `tax:rent` (`sim scheduled edit housing --tags tax:rent`) for the
-  renter's credit. `sim report tax --return state` shows each line.
+  renter's credit. A credit the state pays even past the tax (Idaho's
+  grocery credit) is marked `refundable`; a pension exclusion that shrinks
+  with your Social Security (Maryland's) is marked `less_ss`. `sim report
+  tax --return state` shows each line.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year plus municipal bond interest.
 - **RMDs** are calculated from the account's lot balances on the previous

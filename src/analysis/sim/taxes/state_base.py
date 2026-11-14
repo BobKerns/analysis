@@ -184,8 +184,11 @@ class StateYear(Prepared):
     def refundable_credits(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
         """Named credits the state pays whatever the tax (#568): each is
         written to the return in full and taken off after :meth:`excise`, so
-        the tax can end below zero, a refund. ``tax`` is the tax so far.
-        None by default."""
+        the tax can end below zero, a refund. ``tax`` is the tax so far,
+        before any of them: an override that extends another's (a
+        ``StateTables`` year's ``refundable`` table rows, #579) takes what
+        ``super()`` returns off it itself if its own credit depends on the
+        tax left. None by default."""
         return {}
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
