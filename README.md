@@ -99,15 +99,15 @@ an issue to close, or a row you write yourself.
 | Colorado | Partial | Social Security subtraction's age test ([#581](https://github.com/BobKerns/analysis/issues/581)) |
 | Connecticut | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); personal tax credit; Social Security's 25% cap |
 | Delaware | Tables needed | |
-| District of Columbia | Shipped | Extra deduction at 65 ([#582](https://github.com/BobKerns/analysis/issues/582)) |
+| District of Columbia | Shipped | Extra deduction when blind |
 | Florida | No tax | |
 | Georgia | Tables needed | |
 | Hawaii | Tables needed | |
-| Idaho | Shipped | Public pension deduction, reduced by Social Security; refundable grocery credit ([#582](https://github.com/BobKerns/analysis/issues/582)) |
+| Idaho | Shipped | Public pension deduction, reduced by Social Security (a row you write) |
 | Illinois | Tables needed | |
 | Indiana | Tables needed | |
 | Iowa | Partial | School district surtax (a share of state tax) |
-| Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing ([#582](https://github.com/BobKerns/analysis/issues/582)) |
+| Kansas | Shipped | Public pension exemption (a row you write); extra deduction when blind |
 | Kentucky | Tables needed | |
 | Louisiana | Tables needed | |
 | Maine | Partial | Standard deduction phase-out's width grows with inflation (the law's divisor is fixed) |
@@ -118,7 +118,7 @@ an issue to close, or a row you write yourself.
 | Mississippi | Tables needed | |
 | Missouri | Tables needed | |
 | Montana | Tables needed | |
-| Nebraska | Shipped | Personal exemption credit ([#582](https://github.com/BobKerns/analysis/issues/582)) |
+| Nebraska | Shipped | |
 | Nevada | No tax | |
 | New Hampshire | No tax | |
 | New Jersey | Tables needed | |

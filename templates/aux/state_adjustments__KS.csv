@@ -1,0 +1,5 @@
+effective_date,name,step,base,amount,min_age,filing_status
+2026-01-31,personal_exemption,deduction,filers,9160.00,,
+2026-01-31,age_65_deduction,deduction,filers,850.00,65,Single
+2026-01-31,age_65_deduction,deduction,filers,700.00,65,MFJ
+2026-01-31,age_65_deduction,deduction,filers,700.00,65,MFS

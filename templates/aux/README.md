@@ -187,7 +187,7 @@ every other scenario.
 | `state_hsa__<state>.csv` | How a state taxes a health savings account: `treatment` `taxable` or `federal`. Optional, keyed by state; without one the HSA follows the federal rules. `__CA` says `taxable`: California doesn't recognize HSAs and taxes one like a brokerage account, so a contribution isn't deducted, its dividends and interest are taxed the year they're paid, and a withdrawal is taxed on its gain over the account's cost basis. |
 | `state_separate_return__<state>.csv` | Optional: `allowed` `yes` or `no`, whether the state lets a married couple file separately on one return, keyed by state; without one a couple files jointly. See "Spouses filing separately on one return" below. `__DC` says `yes`. |
 | `state_retirement_exclusion__<state>.csv` | Optional: the state's retirement income exclusions, keyed by state like `state_brackets__<state>.csv` and read by a state tax. None ships (California has none); see "State retirement income exclusions" below. |
-| `state_adjustments__<state>.csv` | Optional: the state's own deductions and credits, keyed by state like `state_brackets__<state>.csv` and read by a state tax; each row is a named line of the return. `__CA` ships California's personal and senior exemption credits and its renter's credit, 2025's figures, and `__WA` Washington's credit for its gains tax from 2028; see "State deductions and credits" below. |
+| `state_adjustments__<state>.csv` | Optional: the state's own deductions and credits, keyed by state like `state_brackets__<state>.csv` and read by a state tax; each row is a named line of the return. `__CA` ships California's personal and senior exemption credits and its renter's credit, 2025's figures, `__WA` Washington's credit for its gains tax from 2028, and `__DC`, `__ID`, `__KS` and `__NE` the lines named under "The states that ship"; see "State deductions and credits" below. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split), added to the lines figured from spending (`itemized_limits.csv`). A tax jurisdiction uses whichever is greater, the itemized total or the standard deduction. `amount` can be `@name` (an itemizations/ rollup). They hold only what no line figures (a casualty loss, investment interest): medical bills, charity, property tax and mortgage interest go in tagged spending, where their floors and limits apply. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all; a state that figures no lines of its own (none but California's ships) then misses what the federal lines figure, so give it its own total, or `itemized_limits_aux` `itemized_limits` on `taxes/state.csv` to figure the federal lines for it (loading warns). |
 | `itemized_limits.csv` | The limits on the itemized deductions figured from the year's spending, by filing status: `salt_cap` (state and local taxes), which falls by `salt_phaseout_rate` of AGI over `salt_phaseout_start` but not below `salt_floor`; `mortgage_limit` (the debt whose interest counts); `charity_floor` and `charity_limit` (percents of AGI); `medical_floor` (a percent of AGI). A blank cell is no limit. Ships the 2025 law's (OBBBA) from 2026: the SALT cap's 2028 and 2029 figures are the statute's 1% a year, unrounded, until the IRS publishes them. A data repo that wants only hand-typed itemized deductions puts one with just its header in its `aux/`; that turns off a state's lines too. |
 | `state_itemized_limits__<state>.csv` | Optional: a state's own `itemized_limits`, keyed by state. Without one the state figures no lines from spending, only the hand-typed total. A state never deducts an income tax. `__CA` ships California's: no SALT cap, $1,000,000 of mortgage debt ($500,000 separate), charity up to 50% of AGI, medical over 7.5%. |
@@ -370,36 +370,53 @@ table for a state with no income tax, which `sim tax state` and
 `sim tax move` choose for such a state, so a move there needs no tables. The tables carry each state's 2026 law, checked
 against its revenue department's 2026 publications in November 2026. A
 state's personal exemption, where it has one, is folded into the standard
-deduction. None of the others taxes Social Security, so only Washington's
-needs a `state_social_security` table.
+deduction, except Kansas's, which is a `state_adjustments` row. None of
+the others taxes Social Security, so only Washington's needs a
+`state_social_security` table. Where a state's lines ship in
+`state_adjustments__<state>.csv`, they are named below. An extra
+deduction for a blind filer isn't modeled anywhere. The extra deductions
+at 65 are `filers` rows, which can't tell the standard deduction from an
+itemized one, so a household 65 or over that itemizes in DC or Kansas
+gets them too, which the state doesn't allow: at most $3,300 of deduction
+too much.
 
 - **District of Columbia:** brackets the same for every filing status, not
   indexed. The standard deduction follows the federal one ($16,100, or
-  $32,200 joint, for 2026), so it grows with `cpi`. A couple may file
+  $32,200 joint, for 2026), so it grows with `cpi`, and so does the extra
+  deduction at 65 (`age_65_deduction`), the federal one: $2,050 single,
+  or $1,650 for each spouse, for 2026 (Rev. Proc. 2025-32; DC's 2025
+  Schedule S used 2025's federal $2,000 and $1,600). A couple may file
   separately on one return (`state_separate_return__DC.csv`), which saves
-  tax when both have income. The extra deduction at 65 or blind isn't
-  modeled.
+  tax when both have income.
 - **Idaho:** 5.3% above a zero band, which is indexed. Idaho hasn't
   published its 2026 band, so the 2026 rows carry the 2025 one ($4,811, or
   $9,622 joint), about $7 of tax high, and grow it with `cpi` from there. The standard
-  deduction follows the federal one. The deduction for some public pensions
-  from 65 and the grocery credit aren't modeled.
+  deduction follows the federal one. The grocery credit
+  (`grocery_credit`) is $155 for each filer, from 65 too (House Bill 231
+  of 2025 raised it from $120, and $140 from 65, for 2025 on); it isn't
+  indexed, and it's refundable. Dependents' credits and months on SNAP
+  aren't modeled. The retirement benefits deduction from 65 for some
+  public pensions, less Social Security, is a row you write: tag the
+  pension's income account and add an `income` subtraction with
+  `less_ss`.
 - **Kansas:** 5.2%, then 5.58% over $23,000 ($46,000 joint), not indexed.
-  The deduction is the standard deduction plus the personal exemption:
-  $3,605 + $9,160 single, $8,240 + $18,320 joint, $4,120 + $9,160 separate.
-  A household that itemizes gets the greater of that and its itemized
-  deductions, so it loses the exemption Kansas allows on top: until
-  exemptions are modeled (#488), add the exemption to a Kansas
-  `state_deductions.csv` row.
-  Kansas's own public pensions (KPERS, federal civil service, military) are
-  exempt, and from 65 the standard deduction is larger; neither is modeled.
+  The standard deduction is $3,605 single, $8,240 joint and $4,120
+  separate; the personal exemption (`personal_exemption`) is a deduction
+  of $9,160 for each filer beside it, so a household that itemizes keeps
+  it, as Kansas allows. From 65 the standard deduction grows by $850
+  single, or $700 for each spouse (`age_65_deduction`). None is indexed
+  (Kansas's 2025 income tax booklet). Kansas's own public pensions (KPERS,
+  federal civil service, military) are exempt: a row you write, as for
+  North Carolina below.
   A 2025 law cuts the rates when revenue allows; it didn't for 2026.
 - **Nebraska:** 2.46%, 3.51%, then 4.55% for 2026 and 3.99% from 2027, the
   bands indexed. Standard deduction $8,850, or $17,700 joint, for 2026; the
   2027 rows use the $9,100 and $18,200 of Nebraska's draft 2027 estimated
   tax form, and estimate the 2027 floors by growing 2026's by the same
   ratio, to the nearest $10, until Nebraska publishes them. The personal
-  exemption credit isn't modeled.
+  exemption credit (`personal_exemption_credit`) is $176 for each filer
+  for 2026 (the draft 2026 Form 1040N), indexed with `cpi`, and not
+  refundable. Dependents' credits aren't modeled.
 - **Washington:** two taxes. Its capital gains tax (RCW 82.87) is
   `state_gains_tax__WA.csv` and `state_gains_deduction__WA.csv`: 7% of the
   year's net long-term gain over the deduction, and from 2025 9.9% of the
@@ -419,8 +436,17 @@ needs a `state_social_security` table.
   family-owned small business deductions aren't modeled.
 - **North Carolina:** a flat 3.99% for 2026, 3.49% for 2027-2029, 3.24% for
   2030-2032 and 2.99% from 2033 (Session Law 2026-41). Standard deduction
-  $12,750, or $25,500 joint, not indexed. The exclusion for government
-  pensions vested before August 1989 (Bailey) isn't modeled.
+  $12,750, or $25,500 joint, not indexed. Nothing general ships in
+  `state_adjustments`: the exclusion for government pensions vested
+  before August 12, 1989 (Bailey) is the household's own. Tag the
+  pension's income account (`sim account tag add`, say `tax:bailey`) and
+  write the row, with no cap, in the data repo's
+  `aux/state_adjustments__NC.csv`:
+
+  ```csv
+  effective_date,name,step,base,tag
+  2026-01-31,bailey_exclusion,subtraction,income,tax:bailey
+  ```
 
 ## Spouses filing separately on one return
 
