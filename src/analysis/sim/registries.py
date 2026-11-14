@@ -886,10 +886,12 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # phases out above phaseout_start of federal AGI: to nothing at
     # phaseout_end (linearly; at once when they're equal), or by
     # phaseout_rate of each dollar over (a credit, as a flat-rate state gives
-    # one). The phase-out columns are optional (AUX_OPTIONAL_COLUMNS). Without
-    # the file a state taxes none of it.
+    # one). Rows by `min_age` (#581; years, or `fra`, the person's own full
+    # retirement age) are age tiers: each person's share, by benefits, takes
+    # the highest they reach. The phase-out columns and min_age are optional
+    # (AUX_OPTIONAL_COLUMNS). Without the file a state taxes none of it.
     STATE_SOCIAL_SECURITY: ("effective_date", "filing_status", "exclusion_percent",
-                            "phaseout_start", "phaseout_end", "phaseout_rate"),
+                            "phaseout_start", "phaseout_end", "phaseout_rate", "min_age"),
     # A state's retirement income exclusions (#486), keyed by state like its
     # brackets: each row excludes up to `amount` per person (blank: all of
     # it) of the `income` kinds it lists (STATE_EXCLUSION_INCOME), from
@@ -1070,7 +1072,8 @@ AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
         "floor", "phaseout_start", "phaseout_end", "phaseout_rate", "phaseout_step",
         "phaseout_steps", "phaseout_agi",
     }),
-    STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
+    STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate",
+                                      "min_age"}),
     STATE_ADJUSTMENTS: frozenset({
         "tag", "rate", "amount", "per_person", "min_age", "filing_status", "income_limit",
         "phaseout", "phaseout_rate", "less_ss", "refundable",

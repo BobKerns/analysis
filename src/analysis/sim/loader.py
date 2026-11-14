@@ -4490,7 +4490,9 @@ def _validate_state_social_security(
     issues: list[str],
 ) -> None:
     """A state_social_security row (#484) phases its exclusion out one way
-    (_check_phase_out)."""
+    (_check_phase_out), from an age (#581) no other row of its date and
+    filing status starts at."""
+    tiers: set[tuple[str | None, str, str, str]] = set()
     for kind, state, payload, effective in aux_rows:
         if kind != registries.STATE_SOCIAL_SECURITY:
             continue
@@ -4500,6 +4502,14 @@ def _validate_state_social_security(
         if percent is not None and not 0 <= percent <= 1_000_000:
             issues.append(f"{where}: exclusion_percent must be 0% to 100%")
         _check_phase_out(where, payload, issues)
+        if str(payload.get("min_age") or "").strip().lower() == "fra":
+            age = "fra"
+        else:
+            age = str(_check_min_age(where, payload, issues, fra=True))
+        tier = (state, effective, str(payload.get("filing_status") or ""), age)
+        if tier in tiers:
+            issues.append(f"{where}: two rows for the same filing status and min_age")
+        tiers.add(tier)
 
 
 def _validate_state_standard_deduction(
@@ -4525,9 +4535,11 @@ def _validate_state_standard_deduction(
                           f"{', '.join(registries.STATE_PHASEOUT_AGI)} (blank: state)")
 
 
-def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str]) -> int:
+def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str], *,
+                   fra: bool = False) -> int:
     """A ``min_age`` cell, an age in years (59.5), as months; 0 when blank
-    or not an age, which is reported."""
+    or not an age, which is reported. Where ``fra`` is allowed (#581) the
+    caller reads that word itself."""
     age = payload.get("min_age")
     try:
         years = 0.0 if age in (None, "") else float(age)
@@ -4535,7 +4547,8 @@ def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str]) ->
             raise ValueError(age)
         return round(years * 12)
     except (TypeError, ValueError):
-        issues.append(f"{where}: min_age {age!r} must be an age in years, such as 59.5")
+        issues.append(f"{where}: min_age {age!r} must be an age in years, such as 59.5"
+                      + (", or fra" if fra else ""))
         return 0
 
 

@@ -96,7 +96,7 @@ an issue to close, or a row you write yourself.
 | Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
 | Arkansas | Partial | Low-income tax tables |
 | California | Shipped | |
-| Colorado | Partial | Social Security subtraction's age test ([#581](https://github.com/BobKerns/analysis/issues/581)) |
+| Colorado | Tables needed | |
 | Connecticut | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); personal tax credit; Social Security's 25% cap |
 | Delaware | Tables needed | |
 | District of Columbia | Shipped | Extra deduction when blind |
@@ -130,7 +130,7 @@ an issue to close, or a row you write yourself.
 | Oklahoma | Tables needed | |
 | Oregon | Tables needed | |
 | Pennsylvania | Partial | Separate income classes; Philadelphia's tax on investment income |
-| Rhode Island | Partial | Social Security exemption's full-retirement-age test ([#581](https://github.com/BobKerns/analysis/issues/581)) |
+| Rhode Island | Tables needed | |
 | South Carolina | Tables needed | |
 | South Dakota | No tax | |
 | Tennessee | No tax | |
