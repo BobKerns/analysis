@@ -1385,6 +1385,7 @@ def load_scenario(
     _warn_hand_typed_deductions(
         aux_rows, scheduled_rows, accounts, calendar_rows, tax_rows, residence_rows, warnings)
     _validate_state_social_security(aux_rows, issues)
+    _validate_state_standard_deduction(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_state_adjustments(
         aux_rows, issues, unused, tax_rows=tax_rows, residence_rows=residence_rows,
@@ -4397,13 +4398,49 @@ def _warn_hand_typed_deductions(
             "\"itemized_limits\" to figure the federal lines for it")
 
 
+def _check_phase_out(where: str, payload: Mapping[str, Any], issues: list[str],
+                     extra: Iterable[str] = ()) -> None:
+    """A row's phase-out columns (``common.phase_out``; #484, #578) say one
+    shape: to nothing at phaseout_end, or by phaseout_rate per dollar, both
+    from phaseout_start; phaseout_step goes with a rate and phaseout_steps
+    with an end. None of them, nor the ``extra`` columns that belong to the
+    phase-out, without a start."""
+    start, end = payload.get("phaseout_start"), payload.get("phaseout_end")
+    rate = payload.get("phaseout_rate_micros")
+    step, steps = payload.get("phaseout_step"), payload.get("phaseout_steps")
+    _check_not_negative(where, payload, ("phaseout_start", "floor"), issues)
+    if start is None:
+        given = [c for c in ("phaseout_end", "phaseout_rate", "phaseout_step", "phaseout_steps",
+                             "floor", *extra)
+                 if payload.get("phaseout_rate_micros" if c == "phaseout_rate" else c) is not None]
+        if given:
+            issues.append(f"{where}: {', '.join(given)} need a phaseout_start")
+        return
+    if (end is None) == (rate is None):
+        issues.append(f"{where}: give phaseout_end or phaseout_rate with phaseout_start, "
+                      "not both or neither")
+    elif end is not None and end < start:
+        issues.append(f"{where}: phaseout_end is below phaseout_start")
+    elif rate is not None and rate <= 0:
+        issues.append(f"{where}: phaseout_rate must be more than 0%")
+    if step is not None and (rate is None or step <= 0):
+        issues.append(f"{where}: phaseout_step must be more than 0, with a phaseout_rate")
+    if steps is not None and (end is None or not isinstance(steps, int) or steps < 1):
+        issues.append(f"{where}: phaseout_steps must be a whole number of steps, 1 or more, "
+                      "with a phaseout_end")
+    # Indexed apart, the start could pass the end and make a cliff of it.
+    if end is not None and (payload.get("phaseout_start_series") or None) != (
+            payload.get("phaseout_end_series") or None):
+        issues.append(f"{where}: phaseout_start_series and phaseout_end_series must "
+                      "name the same series, or both be blank")
+
+
 def _validate_state_social_security(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     issues: list[str],
 ) -> None:
-    """A state_social_security row (#484) phases its exclusion out one way:
-    to nothing at phaseout_end, or by phaseout_rate per dollar, both from
-    phaseout_start."""
+    """A state_social_security row (#484) phases its exclusion out one way
+    (_check_phase_out)."""
     for kind, state, payload, effective in aux_rows:
         if kind != registries.STATE_SOCIAL_SECURITY:
             continue
@@ -4412,17 +4449,30 @@ def _validate_state_social_security(
         percent = payload.get("exclusion_micros")
         if percent is not None and not 0 <= percent <= 1_000_000:
             issues.append(f"{where}: exclusion_percent must be 0% to 100%")
-        start, end = payload.get("phaseout_start"), payload.get("phaseout_end")
-        rate = payload.get("phaseout_rate_micros")
-        if start is None and (end is not None or rate is not None):
-            issues.append(f"{where}: phaseout_end and phaseout_rate need a phaseout_start")
-        elif start is not None and (end is None) == (rate is None):
-            issues.append(f"{where}: give phaseout_end or phaseout_rate with phaseout_start, "
-                          "not both or neither")
-        elif start is not None and end is not None and end < start:
-            issues.append(f"{where}: phaseout_end is below phaseout_start")
-        elif rate is not None and rate <= 0:
-            issues.append(f"{where}: phaseout_rate must be more than 0%")
+        _check_phase_out(where, payload, issues)
+
+
+def _validate_state_standard_deduction(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A state_standard_deduction row (#578) shrinks one way
+    (_check_phase_out), not below a floor it reaches, testing the AGI
+    phaseout_agi names."""
+    for kind, state, payload, effective in aux_rows:
+        if kind != registries.STATE_STANDARD_DEDUCTION:
+            continue
+        where = (f"aux/{kind}__{state}.csv" if state else f"aux/{kind}.csv") + (
+            f" ({effective}, {payload.get('filing_status')})")
+        _check_not_negative(where, payload, ("amount",), issues)
+        _check_phase_out(where, payload, issues, extra=("phaseout_agi",))
+        floor, amount = payload.get("floor"), payload.get("amount")
+        if floor is not None and amount is not None and floor > amount:
+            issues.append(f"{where}: floor is above amount")
+        agi = payload.get("phaseout_agi")
+        if agi is not None and agi not in registries.STATE_PHASEOUT_AGI:
+            issues.append(f"{where}: phaseout_agi {agi!r} must be one of "
+                          f"{', '.join(registries.STATE_PHASEOUT_AGI)} (blank: state)")
 
 
 def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str]) -> int:

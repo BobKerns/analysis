@@ -589,6 +589,11 @@ after every other rule of its month (#252)."""
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
 
+STATE_PHASEOUT_AGI: tuple[str, ...] = ("state", "federal")
+"""Which AGI a ``state_standard_deduction`` phase-out tests (#578): the
+state's own (the default, blank) or the federal, as Minnesota's, Rhode
+Island's and South Carolina's do."""
+
 STATE_SURCHARGE = "state_surcharge"
 """The aux kind of a state's surcharge on high taxable income (#490), in the
 shape of its brackets, whose rates add to the brackets' (California's 1%
@@ -762,7 +767,10 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     STATE_LTCG_BRACKETS: {"floor_series": "floor"},
     STATE_STCG_BRACKETS: {"floor_series": "floor"},
     "standard_deduction": {"amount_series": "amount"},
-    STATE_STANDARD_DEDUCTION: {"amount_series": "amount"},
+    STATE_STANDARD_DEDUCTION: {
+        "amount_series": "amount", "floor_series": "floor",
+        "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
+    },
     STATE_SOCIAL_SECURITY: {
         "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
     },
@@ -839,8 +847,19 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # The state's own standard deduction (#248), which is often far smaller
     # than the federal one. A state tax falls back to standard_deduction
     # when there is no state_standard_deduction__<state> for its brackets'
-    # state, and the loader warns that it did.
-    STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount"),
+    # state, and the loader warns that it did. Some states shrink it as
+    # income rises (#578): above phaseout_start of state AGI it falls to
+    # nothing at phaseout_end (linearly; at once when they're equal), or by
+    # phaseout_rate of each dollar over, but not below floor. With a rate,
+    # phaseout_step counts the dollars over in whole steps, a started one in
+    # full (Alabama's $500 rows); with an end, phaseout_steps splits the span
+    # into that many equal steps (Rhode Island's five 20% steps), which
+    # stay equal as the start and end are indexed. phaseout_agi
+    # (STATE_PHASEOUT_AGI) says which AGI: the state's (blank) or the
+    # federal. The columns after amount are optional (AUX_OPTIONAL_COLUMNS).
+    STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount", "floor",
+                               "phaseout_start", "phaseout_end", "phaseout_rate",
+                               "phaseout_step", "phaseout_steps", "phaseout_agi"),
     # How a state taxes Social Security (#484): it starts from the federally
     # taxable amount and excludes exclusion_percent of it, an exclusion that
     # phases out above phaseout_start of federal AGI: to nothing at
@@ -963,6 +982,7 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "rate": {"annual_rate": ("annual_rate_micros", "percent")},
     "inflation": {"annual_rate": ("annual_rate_micros", "percent")},
     "energy_credits": {"rate": ("rate_micros", "percent")},
+    STATE_STANDARD_DEDUCTION: {"phaseout_rate": ("phaseout_rate_micros", "percent")},
     STATE_SOCIAL_SECURITY: {
         "exclusion_percent": ("exclusion_micros", "percent"),
         "phaseout_rate": ("phaseout_rate_micros", "percent"),
@@ -1003,7 +1023,9 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     STATE_GAINS_TAX: frozenset({"floor"}),
     STATE_GAINS_DEDUCTION: frozenset({"amount"}),
     "standard_deduction": frozenset({"amount"}),
-    STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
+    STATE_STANDARD_DEDUCTION: frozenset({
+        "amount", "floor", "phaseout_start", "phaseout_end", "phaseout_step",
+    }),
     STATE_RETIREMENT_EXCLUSION: frozenset({"amount", "income_limit", "phaseout"}),
     STATE_ADJUSTMENTS: frozenset({"amount", "income_limit", "phaseout"}),
     "federal_deductions": frozenset({"amount"}),
@@ -1019,6 +1041,10 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
 
 AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     **{kind: frozenset(ITEMIZED_LIMITS_COLUMNS[2:]) for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
+    STATE_STANDARD_DEDUCTION: frozenset({
+        "floor", "phaseout_start", "phaseout_end", "phaseout_rate", "phaseout_step",
+        "phaseout_steps", "phaseout_agi",
+    }),
     STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
     STATE_ADJUSTMENTS: frozenset({
         "tag", "rate", "amount", "per_person", "min_age", "filing_status", "income_limit",
