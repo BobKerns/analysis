@@ -2229,6 +2229,40 @@ def test_an_account_defined_by_unrelated_scenarios_gets_a_hint(
 
 
 @pytest.mark.parametrize(("cells", "message"), [
+    ("8500,,,90000,,,,,,", "phaseout_end need a phaseout_start"),
+    ("8500,5000,,,,,,,,", "floor need a phaseout_start"),
+    ("8500,,,,,500,,,,", "phaseout_step need a phaseout_start"),
+    ("8500,,80000,,,,,,,", "not both or neither"),
+    ("8500,,80000,90000,10%,,,,,", "not both or neither"),
+    ("8500,,80000,70000,,,,,,", "phaseout_end is below phaseout_start"),
+    ("8500,,80000,,0%,,,,,", "phaseout_rate must be more than 0%"),
+    ("8500,,80000,,10%,0,,,,", "phaseout_step must be more than 0, with a phaseout_rate"),
+    ("8500,9000,80000,,10%,,,,,", "floor is above amount"),
+    ("8500,-1,80000,,10%,,,,,", "floor must not be negative"),
+    ("8500,,,,,,federal,,,", "phaseout_agi need a phaseout_start"),
+    ("8500,,80000,,10%,,magi,,,", "phaseout_agi 'magi' must be one of state, federal"),
+    ("8500,,80000,90000,,,,cpi,,", "must name the same series, or both be blank"),
+    ("8500,,80000,90000,,,,cpi,other,", "must name the same series, or both be blank"),
+    ("8500,,80000,90000,,500,,,,", "phaseout_step must be more than 0, with a phaseout_rate"),
+    ("8500,,80000,,10%,,,,,5", "phaseout_steps must be a whole number of steps"),
+    ("8500,,80000,90000,,,,,,0", "phaseout_steps must be a whole number of steps"),
+    ("8500,,80000,90000,,,,,,2.5", "phaseout_steps must be a whole number of steps"),
+    ("8500,,,,,,,,,5", "phaseout_steps need a phaseout_start"),
+])
+def test_state_standard_deduction_phase_out_is_checked(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+    cells: str, message: str,
+) -> None:
+    """A state_standard_deduction row shrinks with income one way (#578)."""
+    write_aux("state_standard_deduction__CA.csv",
+              "effective_date,filing_status,amount,floor,phaseout_start,phaseout_end,"
+              "phaseout_rate,phaseout_step,phaseout_agi,phaseout_start_series,"
+              f"phaseout_end_series,phaseout_steps\n2020-01-31,MFJ,{cells}\n")
+    with pytest.raises(LoadError, match=message):
+        load_test_copy()
+
+
+@pytest.mark.parametrize(("cells", "message"), [
     ("150%,,,", "exclusion_percent must be 0% to 100%"),
     ("100%,,90000,", "need a phaseout_start"),
     ("100%,80000,,", "not both or neither"),

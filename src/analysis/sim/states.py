@@ -52,7 +52,7 @@ TAXES_NO_MUNI_INTEREST = frozenset({"DC"})
 GAINS_TAX_ONLY = frozenset({"WA"})
 
 STATES: tuple[State, ...] = (
-    State("AL", "Alabama", PARTIAL),
+    State("AL", "Alabama", TABLES_NEEDED),
     State("AK", "Alaska", NO_TAX),
     State("AZ", "Arizona", PARTIAL),
     State("AR", "Arkansas", PARTIAL),
@@ -92,7 +92,7 @@ STATES: tuple[State, ...] = (
     State("OR", "Oregon", TABLES_NEEDED),
     State("PA", "Pennsylvania", PARTIAL),
     State("RI", "Rhode Island", PARTIAL),
-    State("SC", "South Carolina", PARTIAL),
+    State("SC", "South Carolina", TABLES_NEEDED),
     State("SD", "South Dakota", NO_TAX),
     State("TN", "Tennessee", NO_TAX),
     State("TX", "Texas", NO_TAX),
