@@ -74,7 +74,9 @@ def _year(
     return TaxYear(
         year=YEAR, jurisdiction=jurisdiction, params=type(calculator(kind)).Params(),
         items=[IncomeItem(YEAR, "ordinary", SALARY, CHECKING, salary)], losses=[], persons=[],
-        spending=list(spending), mortgages=list(mortgages), taxes_paid=list(taxes_paid),
+        spending=list(spending), mortgages=list(mortgages),
+        taxes_paid=[t for t in taxes_paid if t.year == YEAR],
+        prior_taxes_paid=[t for t in taxes_paid if t.year == YEAR - 1],
         _table=lambda kind, series, _year: list(tables.get((kind, series), [])),
         _indexed=lambda kind, series: list(tables.get((kind, series), [])),
         _dated=lambda kind, series=None: [(f"{YEAR}-01-31", r) for r in tables.get((kind, series), [])],
@@ -1115,18 +1117,18 @@ def test_a_refund_after_a_capped_year_recaptures_only_what_the_cap_let_through()
     prior = {**ITEMIZED_LAST_YEAR, "itemized_deduction": 60_000_00, "deduction": 60_000_00,
              "itemized_salt": 40_000_00, "salt_paid": 50_000_00}
     assert _refunded(19_000_00, prior)["state_refund_income"] == 9_000_00
-    assert _refunded(5_000_00, prior)["state_refund_income"] == 0
+    assert "state_refund_income" not in _refunded(5_000_00, prior).lines
 
 
 def test_a_refund_after_a_standard_deduction_year_is_no_income() -> None:
     prior = {**ITEMIZED_LAST_YEAR, "itemized_deduction": 25_000_00, "deduction": 30_000_00}
     ret = _refunded(19_000_00, prior)
     assert ret["state_refunds"] == 19_000_00
-    assert ret["state_refund_income"] == 0
+    assert "state_refund_income" not in ret.lines
     assert ret["agi"] == 200_000_00
     # Nor after a year with only the hand-typed total, which itemized no SALT.
     prior = {**ITEMIZED_LAST_YEAR, "itemized_salt": 0, "salt_paid": 0}
-    assert _refunded(19_000_00, prior)["state_refund_income"] == 0
+    assert "state_refund_income" not in _refunded(19_000_00, prior).lines
 
 
 def test_a_refund_past_the_tax_paid_was_never_deducted() -> None:
@@ -1144,6 +1146,15 @@ def test_a_deduction_past_agi_saved_nothing() -> None:
     # And a year whose deduction is past its income says how far.
     ret = _federal(20_000_00, [_paid(PROPERTY_TAX, 25_000_00, tags="tax:property")])
     assert ret["deduction_unused"] == 10_000_00
+    # A loss past the deduction isn't: it carries forward as an NOL.
+    business = Account("Asset_Business_Alice", "asset", "business", "alice")
+    supplies = Account("Expense_Supplies", "expense", "", None)
+    business_loss = IncomeItem(YEAR, "business_expense", business, supplies, 70_000_00)
+    year = _year(20_000_00)
+    year = replace(year, items=[*year.items, business_loss])
+    loss = calculator("federal").prepare(year).compute()
+    assert loss["agi"] < 0
+    assert loss["deduction_unused"] == loss["deduction"] == 30_000_00
     assert ret["salt_paid"] == ret["itemized_salt"] == 25_000_00
     assert "deduction_unused" not in _federal(200_000_00).lines
 
@@ -1163,6 +1174,9 @@ def test_a_state_starting_from_federal_agi_leaves_out_its_refund() -> None:
                      taxes_paid=[WITHHELD_LAST_YEAR, TaxPaid(YEAR, "state", 0, refund)])
         return calculator("state_tables").prepare(year).compute()
     assert _refunded(19_000_00)["state_refund_income"] == 15_000_00
+    # A named subtraction, so the gap from federal income shows.
+    assert state(19_000_00)["refund_income"] == 15_000_00
+    assert "refund_income" not in state(0).lines
     assert state(19_000_00)["agi"] == state(0)["agi"] == 200_000_00
 
 
@@ -1183,7 +1197,7 @@ def test_a_run_recaptures_an_over_withheld_state_refund(
     lines = _lines(run, *(f"federal_{line}" for line in (
         "state_refunds", "state_refund_income", "standard_deduction", "itemized_deduction",
         "itemized_salt", "salt_paid", "deduction_unused", "ordinary_income")),
-        "state_ordinary_income", "state_tax_overpaid")
+        "state_refund_income", "state_tax_overpaid")
     refunds, income = lines["federal_state_refunds"], lines["federal_state_refund_income"]
     with closing(sqlite3.connect(run)) as con:
         paid = dict(con.execute(
@@ -1201,11 +1215,8 @@ def test_a_run_recaptures_an_over_withheld_state_refund(
                    last("itemized_salt") - last("salt_paid") + min(refund, paid.get(year - 1, 0)))
         expected = (0 if gained <= 0 or last("itemized_salt") <= 0
                     else max(0, min(refund, gained, lost) - last("deduction_unused")))
-        assert income[year] == expected, year
+        assert income.get(year, 0) == expected, year
     assert any(income.values())
-    # California doesn't tax its own refund: its ordinary income is the
-    # federal one less the recapture.
-    for year, recaptured in income.items():
-        if year in lines["state_ordinary_income"]:
-            assert (lines["federal_ordinary_income"][year] - recaptured
-                    == lines["state_ordinary_income"][year]), year
+    # California doesn't tax its own refund: a named subtraction takes it
+    # off the federal income it starts from.
+    assert {year: amount for year, amount in income.items() if amount} == lines["state_refund_income"]

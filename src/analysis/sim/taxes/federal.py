@@ -206,10 +206,13 @@ class FederalYear(Prepared):
         # nothing.
         if self._itemized.salt:
             lines["salt_paid"] = self._itemized.salt
-        if before_nol < 0:
-            lines["deduction_unused"] = -before_nol
+        # Only the deduction counts: a loss past it carries forward as an
+        # NOL instead.
+        if unused := min(deductions["deduction"], max(0, -before_nol)):
+            lines["deduction_unused"] = unused
         if self._refunds:
             lines["state_refunds"] = self._refunds
+        if self._refund_income:
             lines["state_refund_income"] = self._refund_income
         # The state income tax among the deduction taken, which Utah's
         # taxpayer credit leaves out of its federal_deduction base (#542).
@@ -238,6 +241,6 @@ def recaptured_refund(ty: TaxYear, refund: int) -> int:
     gained = ty.prior("itemized_deduction") - ty.prior("standard_deduction")
     if refund <= 0 or salt <= 0 or gained <= 0:
         return 0
-    returned = min(refund, ty.tax_paid_in(ty.year - 1))
+    returned = min(refund, ty.prior_tax_paid())
     lost = min(salt, salt - ty.prior("salt_paid") + returned)
     return max(0, min(refund, gained, lost) - ty.prior("deduction_unused"))

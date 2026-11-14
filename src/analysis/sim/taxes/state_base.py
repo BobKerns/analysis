@@ -355,10 +355,7 @@ class FederalStateYear(StateYear):
     def start(self, basis: Basis) -> Income:
         fed = basis.federal
         return Income(
-            # Federal AGI less the state and local refund it recaptured
-            # (#593), which no state taxes.
-            ordinary=fed["ordinary_income"] - fed.memo.get("state_refund_income", 0),
-            stcg=fed.memo.get("net_stcg", 0),
+            ordinary=fed["ordinary_income"], stcg=fed.memo.get("net_stcg", 0),
             ltcg=fed["ltcg_taxed"], ss=fed["ss_taxable"])
 
     def fixed_lines(self, basis: Basis) -> Mapping[str, int]:
