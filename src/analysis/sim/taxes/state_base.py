@@ -18,8 +18,7 @@ override on its :class:`StateYear`:
    :meth:`~StateYear.credit_lines`;
 6. :meth:`~StateYear.excise`, a tax apart from the income tax (Washington's
    on capital gains, #489), added to the tax;
-7. :meth:`~StateYear.refundable_credits` (#568), with the refundable
-   credits of the state's own tables (#579), taken off last, which can
+7. :meth:`~StateYear.refundable_credits` (#568), taken off last, which can
    leave the tax below zero: the state pays it back.
 """
 
@@ -185,14 +184,11 @@ class StateYear(Prepared):
     def refundable_credits(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
         """Named credits the state pays whatever the tax (#568): each is
         written to the return in full and taken off after :meth:`excise`, so
-        the tax can end below zero, a refund. ``tax`` is the tax so far.
-        None by default."""
-        return {}
-
-    def _table_refundable_credits(self, income: Income, basis: Basis) -> Mapping[str, int]:
-        """The refundable credits of the state's own tables (#579), taken
-        off with :meth:`refundable_credits` but apart from it, so a
-        calculator that overrides that step keeps them. None by default."""
+        the tax can end below zero, a refund. ``tax`` is the tax so far,
+        before any of them: an override that extends another's (a
+        ``StateTables`` year's ``refundable`` table rows, #579) takes what
+        ``super()`` returns off it itself if its own credit depends on the
+        tax left. None by default."""
         return {}
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
@@ -231,14 +227,8 @@ class StateYear(Prepared):
             credit_lines[line] = max(0, min(amount, tax - credits))
             credits += credit_lines[line]
         excise_lines, excise = self.excise(basis)
-        table = {line: max(0, amount) for line, amount in
-                 self._table_refundable_credits(income, basis).items()}
         refundable = {line: max(0, amount) for line, amount in self.refundable_credits(
             tax - credits + excise, income, basis).items()}
-        if clash := sorted(set(table) & set(refundable)):
-            raise TaxError(f"refundable credit line {', '.join(clash)} is a state_adjustments "
-                           "line too; name it apart (#579)")
-        refundable = {**table, **refundable}
         lines = {
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,

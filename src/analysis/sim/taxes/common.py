@@ -1120,11 +1120,17 @@ class StateAdjustment:
 
 def _by_person(items: Iterable[IncomeItem], people: Sequence[str]) -> dict[str, int]:
     """Each of ``people``'s part of ``items``, whose :func:`_owner` says; the
-    household's split evenly among them."""
+    household's split evenly among them. Items of the same owners are summed
+    before they are split, as :func:`person_income` does, so each sum loses
+    at most a cent to the split."""
     totals = dict.fromkeys(people, 0)
+    groups: dict[tuple[str | None, str | None, str], int] = {}
     for item in items:
-        owner = _owner(item.payer.owner, item.payee.owner, totals, payer_kind=item.payer.kind)
-        for person, share in _shares(owner, item.amount, people, totals):
+        key = (item.payer.owner, item.payee.owner, item.payer.kind)
+        groups[key] = groups.get(key, 0) + item.amount
+    for (payer, payee, kind), amount in groups.items():
+        for person, share in _shares(_owner(payer, payee, totals, payer_kind=kind),
+                                     amount, people, totals):
             totals[person] += share
     return totals
 
@@ -1133,33 +1139,41 @@ def _tagged_income(ty: TaxYear, tag: str) -> list[IncomeItem]:
     return [i for i in ty.tagged(tag) if i.character in _ADJUSTMENT_INCOME_CHARACTERS]
 
 
+def _living(ty: TaxYear, people: Iterable[str]) -> list[str]:
+    """``people``, less any who died before the year (their final month in
+    an earlier one): a survivor's return is theirs alone."""
+    died = {p.id for p in ty.persons
+            if p.final_month is not None and int(p.final_month[:4]) < ty.year}
+    return sorted(p for p in people if p not in died)
+
+
 def _per_person_income(
     ty: TaxYear, row: Mapping[str, Any], birthdates: Mapping[str, date | None],
-    min_months: int, filers: int,
-) -> int:
-    """An ``income`` row's figure with ``per_person`` (#579): each filer who
-    has reached ``min_age`` gets their own tagged income, times ``rate``, up
-    to ``amount``, less their own Social Security with ``less_ss``. Only
-    the first ``filers`` people count, as a survivor files alone."""
-    people = sorted(birthdates)
+    min_months: int,
+) -> tuple[int, int | None]:
+    """An ``income`` row's figure with ``per_person`` (#579), and the caps it
+    summed: each filer living in the year who has reached ``min_age`` gets
+    their own tagged income (a joint account's split among the living),
+    times ``rate``, up to ``amount``, less their own Social Security
+    (:func:`person_income`'s, as ``state_retirement_exclusion`` takes it)
+    with ``less_ss``."""
+    people = _living(ty, birthdates)
     income = _by_person(_tagged_income(ty, str(row.get("tag") or "")), people)
-    ss = _by_person(ty.year_items("ss_benefit"), people) if _yes(row.get("less_ss")) else {}
+    ss = person_income(ty, people)[1] if _yes(row.get("less_ss")) else {}
     rate, amount = row.get("rate_micros"), row.get("amount")
-    total = counted = 0
+    total, caps = 0, None if amount is None else 0
     for person in people:
-        born = birthdates[person]
-        if min_months and (age_months(born, ty.year) or 0) < min_months:
+        if min_months and (age_months(birthdates[person], ty.year) or 0) < min_months:
             continue
-        if counted == filers:
-            break
-        counted += 1
         figure = max(0, income[person])
         if rate is not None:
             figure = figure * int(rate) // 1_000_000
         if amount is not None:
-            figure = min(figure, max(0, int(amount) - ss.get(person, 0)))
+            cap = max(0, int(amount) - ss.get(person, 0))
+            figure = min(figure, cap)
+            caps = (caps or 0) + cap
         total += figure
-    return total
+    return total, caps
 
 
 def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustment]:
@@ -1196,7 +1210,7 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
         elif base == "income" and _yes(row.get("per_person")) and birthdates:
             # Each filer's own income against their own cap (#579), so
             # one spouse's pension can't use the other's.
-            figure = _per_person_income(ty, row, birthdates, min_months, filers)
+            figure, cap = _per_person_income(ty, row, birthdates, min_months)
         elif base in ("spending", "income"):
             tag = str(row.get("tag") or "")
             raw = ty.spent(tag) if base == "spending" else sum(

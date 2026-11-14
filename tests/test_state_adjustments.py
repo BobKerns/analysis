@@ -182,16 +182,18 @@ SS_ALICE = Account("Income_SS_Alice", "income", "ss_benefit", "alice")
 SS_BILL = Account("Income_SS_Bill", "income", "ss_benefit", "bill")
 
 
-def _year(rows: list[dict], items: list[IncomeItem], status: str = "MFJ") -> TaxYear:
+def _year(rows: list[dict], items: list[IncomeItem], status: str = "MFJ",
+          alice_dies: str | None = None) -> TaxYear:
     """A 2030 tax year with only what ``state_adjustments`` reads: the
-    rows (in stored units), the items, and Alice (born 1964) and Bill
-    (born 1967)."""
+    rows (in stored units), the items, and Alice (born 1964, final month
+    ``alice_dies``) and Bill (born 1967)."""
     def unused(*_args: object) -> list:
         return []
 
     return TaxYear(
         year=2030, jurisdiction="state", params=None, items=items, losses=[],
-        persons=[Person("alice", "1964-03-15", "primary"), Person("bill", "1967-08-20", "primary")],
+        persons=[Person("alice", "1964-03-15", "primary", alice_dies),
+                 Person("bill", "1967-08-20", "primary")],
         _table=unused, _indexed=lambda _kind, _series: rows, _dated=unused,
         _keyed=lambda *_a: None, _filing_status_in=lambda _y: status, _prior=lambda _line: 0,
         _series_of=unused,
@@ -226,6 +228,17 @@ def test_less_ss_per_person_counts_only_filers_of_age() -> None:
     # Alice is 66 at the end of 2030, Bill 63.
     (line,) = state_adjustments(_year([_pension_row(per_person="yes", min_age=65)], items), "x", "MD")
     assert line.figure == 40_000_00
+
+
+def test_per_person_income_after_a_death_is_the_survivors_alone() -> None:
+    """Alice died in 2028; Bill files Single. Her age doesn't take his
+    place, and a joint pension is all his."""
+    items = [_income(BILLS_PENSION, 10_000_00), _income(JOINT_PENSION, 20_000_00),
+             _income(SS_BILL, 5_000_00, "ss_benefit")]
+    year = _year([_pension_row(per_person="yes")], items, "Single", alice_dies="2028-05-31")
+    (line,) = state_adjustments(year, "x", "MD")
+    assert line.figure == 30_000_00
+    assert line.cap == 35_000_00  # his cap less his benefits
 
 
 def test_less_ss_without_per_person_takes_the_households_benefits_off_one_cap() -> None:
@@ -265,6 +278,7 @@ def test_a_refundable_credit_is_paid_past_the_tax(
     lines = _lines(run, "state_big_credit", "state_small_credit", "state_credits", "state_tax")
     big, small, credits, tax = (lines["state_big_credit"], lines["state_small_credit"],
                                 lines["state_credits"], lines["state_tax"])
+    assert tax and min(tax) == 2026
     for year in tax:
         assert big[year] == 100_000_00
         # The nonrefundable credit took all the tax, the refundable one

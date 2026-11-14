@@ -153,6 +153,10 @@ What it does:
   written to the run as `state_<line>`. A refundable credit comes off
   last and can take the tax below zero; the April settlement pays it
   back. A credit that can't, like most, goes in `credit_lines` instead.
+  `StateTables`' own `refundable_credits` returns the state table's
+  `refundable` rows; DC's table has none, so this one leaves them out. For
+  a state whose table has some, merge them:
+  `{**super().refundable_credits(tax, income, basis), "property_credit": ...}`.
 - The built-in `itemized_lines` figures property tax, mortgage interest,
   charity and medical from tagged spending and adds them to what
   `deductions` returns; a year whose `deductions` figures its own itemized

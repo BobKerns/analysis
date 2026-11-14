@@ -98,7 +98,7 @@ return, written to the run as `state_<name>` and shown by
 | `tag` | For `spending` and `income`: the tag on what counts, as `tax:rent`. Tag the rule that pays it, or the account it is paid into (`sim scheduled edit housing --tags tax:rent`). |
 | `rate` | The share that counts (`50%`); blank is all of it. Not for `filers`. |
 | `amount` | The cap; for `filers`, each filer's amount. Blank is no cap. |
-| `per_person` | `yes`: the cap is each filer's. For `income`, each filer's own income counts against their own cap: an account's owner's, a joint account's split evenly. |
+| `per_person` | `yes`: the cap is each filer's. For `income`, each filer's own income counts against their own cap: an account's owner's, a joint account's split evenly (after a death, all the survivor's). |
 | `less_ss` | `yes`, for `income` with an `amount`: the cap is less the Social Security received that year, each filer's own with `per_person` (Maryland's pension exclusion), else the household's (Idaho's retirement benefits deduction). |
 | `refundable` | `yes`, for a `credit`: paid in full even past the tax, so the state can pay out (Idaho's grocery credit). It comes off after the other credits and isn't counted in `state_credits`. |
 | `min_age` | Only filers who have reached this age by December 31 count. |

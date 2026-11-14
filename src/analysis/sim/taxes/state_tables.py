@@ -319,8 +319,10 @@ class StateTablesYear(FederalStateYear):
     def credit_lines(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
         return self._adjusted("credit", income.agi, basis)
 
-    def _table_refundable_credits(self, income: Income, basis: Basis) -> Mapping[str, int]:
-        # Paid in full whatever the tax (#579): Idaho's grocery credit.
+    def refundable_credits(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
+        """The table's ``refundable`` credits (#579), paid in full whatever
+        the tax: Idaho's grocery credit. A calculator's own override merges
+        them, ``{**super().refundable_credits(tax, income, basis), ...}``."""
         return self._adjusted("credit", income.agi, basis, refundable=True)
 
     def _taxable_ss(self, basis: Basis) -> int:
