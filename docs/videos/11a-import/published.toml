@@ -2,39 +2,45 @@
 # scenes: each scene's length in seconds in the build that was uploaded.
 
 [en]
-video = "usFLQg8Lvsk"
-uploaded = 2026-11-12T17:26:48Z
+video = "KHS9dpUaHFc"
+uploaded = 2026-11-14T08:53:48Z
 scenes = [
-  ["title", 12.11],
-  ["contents", 19.87],
+  ["title", 15.50],
+  ["contents", 23.28],
   ["idea", 19.53],
-  ["export", 15.56],
-  ["sources", 20.88],
-  ["holdings", 82.40],
-  ["again", 34.72],
-  ["categories", 25.24],
-  ["estimates", 24.00],
-  ["transactions", 68.88],
-  ["saved", 22.48],
-  ["others", 20.91],
+  ["export", 26.05],
+  ["sources", 23.54],
+  ["holdings", 73.75],
+  ["positions", 57.32],
+  ["roth", 61.96],
+  ["again", 41.66],
+  ["sold", 29.96],
+  ["categories", 21.24],
+  ["estimates", 18.16],
+  ["transactions", 49.12],
+  ["saved", 24.82],
+  ["others", 28.01],
   ["end", 5.50],
 ]
 
 [ja]
-video = "x7PQfaDGhFA"
-uploaded = 2026-11-12T17:27:03Z
+video = "Dby3vYmfFPA"
+uploaded = 2026-11-14T08:54:06Z
 scenes = [
-  ["title", 16.42],
-  ["contents", 23.56],
+  ["title", 21.52],
+  ["contents", 27.26],
   ["idea", 24.75],
-  ["export", 20.69],
-  ["sources", 21.64],
-  ["holdings", 86.16],
-  ["again", 34.76],
-  ["categories", 25.20],
-  ["estimates", 24.04],
-  ["transactions", 68.80],
-  ["saved", 30.10],
-  ["others", 30.41],
+  ["export", 32.14],
+  ["sources", 29.05],
+  ["holdings", 90.07],
+  ["positions", 62.87],
+  ["roth", 77.28],
+  ["again", 51.30],
+  ["sold", 39.65],
+  ["categories", 24.29],
+  ["estimates", 20.62],
+  ["transactions", 52.95],
+  ["saved", 33.00],
+  ["others", 35.69],
   ["end", 6.88],
 ]
