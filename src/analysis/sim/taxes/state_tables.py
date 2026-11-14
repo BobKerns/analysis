@@ -355,12 +355,13 @@ class StateTablesYear(FederalStateYear):
             own.append(Adjustment(line, ordinary=amount))
         return (exclusion, *([swap] if self._gains_bands else []), retirement, ss, *own)
 
-    def _adjusted(self, step: str, income: int, basis: Basis) -> dict[str, int]:
+    def _adjusted(self, step: str, income: int, basis: Basis, *,
+                  refundable: bool = False) -> dict[str, int]:
         """The table's lines at ``step``, after the household income test on
-        ``income``."""
+        ``income``: of credits, the ``refundable`` ones or the others."""
         out = {}
         for a in self._adjustments:
-            if a.step != step:
+            if a.step != step or a.refundable != refundable:
                 continue
             figure = a.figure
             if a.base == "federal_tax":
@@ -380,6 +381,12 @@ class StateTablesYear(FederalStateYear):
 
     def credit_lines(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
         return self._adjusted("credit", income.agi, basis)
+
+    def refundable_credits(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
+        """The table's ``refundable`` credits (#579), paid in full whatever
+        the tax: Idaho's grocery credit. A calculator's own override merges
+        them, ``{**super().refundable_credits(tax, income, basis), ...}``."""
+        return self._adjusted("credit", income.agi, basis, refundable=True)
 
     def _taxable_ss(self, basis: Basis) -> int:
         """The state's taxable Social Security: none, or by its table the

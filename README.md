@@ -103,7 +103,7 @@ an issue to close, or a row you write yourself.
 | Florida | No tax | |
 | Georgia | Tables needed | |
 | Hawaii | Tables needed | |
-| Idaho | Shipped | Public pension deduction, reduced by Social Security; refundable grocery credit ([#579](https://github.com/BobKerns/analysis/issues/579)) |
+| Idaho | Shipped | Public pension deduction, reduced by Social Security; refundable grocery credit ([#582](https://github.com/BobKerns/analysis/issues/582)) |
 | Illinois | Tables needed | |
 | Indiana | Tables needed | |
 | Iowa | Partial | School district surtax (a share of state tax) |
@@ -111,7 +111,7 @@ an issue to close, or a row you write yourself.
 | Kentucky | Tables needed | |
 | Louisiana | Tables needed | |
 | Maine | Partial | Standard deduction phase-out's width grows with inflation (the law's divisor is fixed) |
-| Maryland | Partial | Pension exclusion reduced by Social Security ([#579](https://github.com/BobKerns/analysis/issues/579)); capital gains surtax above $350,000 of income |
+| Maryland | Partial | Capital gains surtax above $350,000 of income |
 | Massachusetts | Tables needed | |
 | Michigan | Partial | City income taxes (a base of their own) |
 | Minnesota | Partial | Standard deduction phase-out's lower 3% band (approximated); 1% surtax on investment income over $1 million; Social Security subtraction's $4,000 steps (modeled as a straight line) |

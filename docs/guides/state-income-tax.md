@@ -45,15 +45,17 @@ every state's list.
   pension's income account, or `tax:employer_plan` on a 401(k)) and write a
   `state_adjustments` subtraction on that tagged `income`, with the age,
   cap and income limit: **table**. One that's reduced by the Social
-  Security you receive (Idaho, Maryland) isn't: **not supported**
+  Security you receive (Idaho, Maryland) is too, with `less_ss`: each
+  filer's own benefits off their own cap with `per_person`, the
+  household's off one cap without it
   ([#579](https://github.com/BobKerns/analysis/issues/579)).
 - **Spending-based deductions and credits.** A renter's deduction or
   credit, a property tax deduction or credit figured as a share of the tax
   paid, a deduction for 529 contributions, a deduction or credit for
   long-term care premiums: a `state_adjustments` row on tagged spending,
-  **table**. A credit the state pays even when it's more than the tax
-  (refundable) is held to the tax:
-  **not supported** ([#579](https://github.com/BobKerns/analysis/issues/579)).
+  **table**. A credit the state pays even when it's more than the tax is
+  a row with `refundable`: **table**
+  ([#579](https://github.com/BobKerns/analysis/issues/579)).
 - **Circuit breakers.** Property tax or rent relief figured from the tax as
   a share of household income, or from a table of income bands (Michigan's
   homestead credit, Minnesota's renter's credit and property tax refund,
@@ -213,8 +215,10 @@ on interest and dividends ended with 2024.
 - Brackets and the standard deduction: **shipped**. Social Security is
   exempt.
 - The retirement benefits deduction from 65 for some public pensions,
-  reduced by Social Security: **not supported** (#579).
-- The grocery credit, which is refundable: **not supported** (#579).
+  reduced by Social Security: **table** (tagged `income`, `less_ss`
+  without `per_person`).
+- The grocery credit, which is refundable: **table** (`refundable`), not
+  shipped yet ([#582](https://github.com/BobKerns/analysis/issues/582)).
 
 ### Illinois
 
@@ -281,7 +285,8 @@ on interest and dividends ended with 2024.
 ### Maryland
 
 - The pension exclusion from 65 covers employer plans (401(a), 403, 457(b)),
-  not IRAs, and is reduced by Social Security: **not supported** (#579).
+  not IRAs, and is reduced by each person's Social Security: **table**
+  (tagged `income`, `per_person`, `less_ss`).
   Social Security is exempt.
 - The senior tax credit from 65, below an income: **table**. The personal
   exemption's phase-out and the extra exemption at 65: **table**.
@@ -300,7 +305,7 @@ on interest and dividends ended with 2024.
   surtax over about $1 million: **table** (a top row of each table, or
   `state_surcharge`).
 - The rent deduction: **table**. The senior circuit breaker:
-  **household calculator**, and refundable (#579).
+  **household calculator**, which can make it refundable.
 
 ### Michigan
 
@@ -321,7 +326,7 @@ on interest and dividends ended with 2024.
   amount. `phaseout_agi` is `federal`.
 - A 1% surtax on net investment income over $1 million: **not supported**.
 - The renter's credit and property tax refund: **household calculator**,
-  and refundable (#579).
+  which can make them refundable.
 
 ### Mississippi
 
@@ -351,7 +356,7 @@ on interest and dividends ended with 2024.
   exempt from 2024.
 - The personal exemption credit: **table**, not shipped.
 - The school district property tax credit, a share of the school tax paid,
-  which is refundable: **table**, held to the tax (#579).
+  which is refundable: **table** (`refundable`).
 
 ### New Jersey
 
