@@ -13,6 +13,7 @@ imports/
     categories.csv            outside category -> category (blank or '-' excludes)
     splits.csv                a category divided by the outside account that paid
     excluded_payees.csv       payees whose expenses the scenario models itself
+    payees.csv                payee text -> category, for a source with no categories
 ```
 
 Every outside name must be mapped or explicitly skipped: a new or renamed
@@ -33,9 +34,10 @@ from pathlib import Path
 __all__ = [
     "ACCOUNTS", "ACCOUNTS_HEADER", "CATEGORIES", "CATEGORIES_HEADER", "EXCLUDED_PAYEES",
     "EXCLUDED_PAYEES_HEADER", "EXPENSE_ACCOUNTS", "EXPENSE_ACCOUNTS_HEADER", "IMPORTS", "NO_RULE",
-    "SPLITS", "SPLITS_HEADER", "AccountMap", "AccountTarget", "ExpenseAccounts", "expense_accounts_path",
-    "imports_dir", "load_account_map", "load_category_map", "load_category_splits",
-    "load_excluded_payees", "load_expense_accounts", "rename_account", "rename_lot", "source_dir",
+    "PAYEES", "PAYEES_HEADER", "SPLITS", "SPLITS_HEADER", "TRANSFER", "AccountMap", "AccountTarget",
+    "ExpenseAccounts", "PayeeMap", "expense_accounts_path", "imports_dir", "load_account_map",
+    "load_category_map", "load_category_splits", "load_excluded_payees", "load_expense_accounts",
+    "load_payee_map", "payee_key", "rename_account", "rename_lot", "source_dir",
 ]
 
 IMPORTS = "imports"
@@ -44,12 +46,17 @@ CATEGORIES = "categories.csv"
 SPLITS = "splits.csv"
 EXCLUDED_PAYEES = "excluded_payees.csv"
 EXPENSE_ACCOUNTS = "expense_accounts.csv"
+PAYEES = "payees.csv"
 
 ACCOUNTS_HEADER = ("outside_account", "asset", "action", "account", "lot", "note")
 CATEGORIES_HEADER = ("outside_category", "category")
 SPLITS_HEADER = ("category", "outside_account", "target_category")
 EXCLUDED_PAYEES_HEADER = ("payee_pattern",)
 EXPENSE_ACCOUNTS_HEADER = ("category", "account")
+PAYEES_HEADER = ("payee_pattern", "category")
+TRANSFER = "transfer"
+"""A ``payees.csv`` category for a move between the household's own accounts
+(a card's payment, a sweep to savings): not spending."""
 NO_RULE = "-"
 """An ``expense_accounts.csv`` account meaning the category gets no rule."""
 
@@ -309,3 +316,50 @@ def rename_account(data_dir: Path, old: str, new: str) -> list[str]:
         expenses.save()
         changed.append(str(expenses.path.relative_to(data_dir)))
     return changed
+
+
+def payee_key(text: str) -> str:
+    """What of a bank's payee text says who was paid: its words in lower
+    case, less any with a digit in it (a date, a store or card number, a
+    reference), since those differ from one purchase to the next."""
+    return " ".join(word for word in text.casefold().split() if not any(c.isdigit() for c in word))
+
+
+@dataclass
+class PayeeMap:
+    """``imports/<source>/payees.csv``: the category of a transaction that
+    comes with none, by its payee. A row's pattern is text found anywhere in
+    the payee, both read as ``payee_key`` reads them; the first row found
+    wins. The category is one of the plan's, ``transfer``, or ``-`` (blank
+    too) to leave the rows out."""
+
+    path: Path
+    rows: list[tuple[str, str]] = field(default_factory=list)
+
+    def category(self, payee: str) -> str | None:
+        """The category of ``payee``; None when no row is found in it."""
+        key = payee_key(payee)
+        return next((category for pattern, category in self.rows if pattern in key), None)
+
+    def add(self, pattern: str, category: str) -> None:
+        self.rows.append((payee_key(pattern), category))
+
+    def save(self) -> None:
+        _write(self.path, PAYEES_HEADER, self.rows)
+
+
+def load_payee_map(path: Path) -> PayeeMap:
+    """The payee map at ``path``; an empty one if there's no file yet."""
+    found = PayeeMap(Path(path))
+    if not found.path.is_file():
+        return found
+    for number, row in _read(found.path, PAYEES_HEADER):
+        pattern = payee_key(row["payee_pattern"])
+        if not pattern:
+            if row["payee_pattern"]:
+                raise ValueError(
+                    f"{path} row {number}: {row['payee_pattern']!r} has no word without a digit, "
+                    "so it could match no payee")
+            continue
+        found.rows.append((pattern, row["category"] or NO_RULE))
+    return found

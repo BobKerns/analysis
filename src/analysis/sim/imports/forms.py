@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-__all__ = ["FLOW_COLUMNS", "Flows", "Holding", "Snapshot", "read_rows"]
+__all__ = ["FLOW_COLUMNS", "ORIGIN", "Flows", "Holding", "Snapshot", "read_rows"]
 
 
 @dataclass(frozen=True)
@@ -58,12 +58,22 @@ a move between the household's own accounts, ``source_row`` the 1-based line
 of the file. A source may add columns of its own."""
 
 
+ORIGIN = "origin"
+"""The column naming each row's source, in transactions read from several."""
+
+
 @dataclass(frozen=True)
 class Flows:
     """Transactions over a period, one row each (``FLOW_COLUMNS``)."""
 
     source: str
+    """The source they were read from; of several, their names joined by '+'."""
     transactions: pd.DataFrame
+
+    @property
+    def sources(self) -> tuple[str, ...]:
+        """Each source the rows came from, in the order first met."""
+        return tuple(self.source.split("+"))
 
     def __post_init__(self) -> None:
         missing = [c for c in FLOW_COLUMNS if c not in self.transactions.columns]

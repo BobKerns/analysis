@@ -1083,9 +1083,10 @@ imports/
     categories.csv         outside category -> category
     splits.csv             a category divided by the outside account that paid
     excluded_payees.csv    payees whose expenses the scenario models itself
+    payees.csv             payee text -> category, for a source with no categories
 ```
 
-**A source is code or a profile.** One that reads more than a table is code (`quicken`, whose report is an indented tree). One whose file is a plain table is a *profile*: a YAML file saying which column means what, so a household can add a source without code. The built-in profiles (`vanguard`, `fidelity`) are `src/analysis/sim/imports/source_profiles/<source>.yaml`; a household's own is `imports/<source>/profile.yaml`, which replaces a built-in profile of its name and may not take a coded source's. `sim import sources` lists every source and where it is defined.
+**A source is code or a profile.** One that reads more than a table is code (`quicken`, whose report is an indented tree). One whose file is a plain table is a *profile*: a YAML file saying which column means what, so a household can add a source without code. The built-in profiles (`vanguard` and `fidelity`, holdings; `wells_fargo`, a bank's account activity) are `src/analysis/sim/imports/source_profiles/<source>.yaml`; a household's own is `imports/<source>/profile.yaml`, which replaces a built-in profile of its name and may not take a coded source's. `sim import sources` lists every source and where it is defined.
 
 ```yaml
 description: Fidelity positions download (CSV)
@@ -1115,6 +1116,31 @@ holdings:
 
 The holdings stop at the first empty row; a row with no value is left out. Money may have a `$`, commas, a sign before or after the `$`, or parentheses, and anything after it (`-$16,423.62 (-6.68%)`). A profile with a key or column it doesn't know, or a cell that isn't money, a number or a date, is an error naming the profile or the file's line: a file is never read "mostly". A household profile that can't be used stops only an import that names its source, or of a file no other source recognizes; `sim import sources` warns of it.
 
+**A profile's transactions** ([#617](https://github.com/BobKerns/analysis/issues/617)). A profile has a `holdings` section, a `transactions` section, or both: a bank's or a card's download of an account's activity is a table too.
+
+```yaml
+description: A bank's account activity download (CSV), one account a file
+transactions:
+  layout: 'Account activity: "Download", comma delimited'
+  columns:
+    date: DATE
+    payee: DESCRIPTION
+    amount: AMOUNT
+    check: 'CHECK #'
+  date_format: '%m/%d/%Y'
+```
+
+| `transactions` key | required | notes |
+| --- | --- | --- |
+| `columns` | ✓ | `date` and `payee` are required, and the amount, said once: `amount` (one signed column) or `debit` and `credit` (two, each read without its sign). Also `category`, `memo`, `account`, `check`, `status`. The file is recognized as a holdings file is |
+| `spending` | | the sign of money out in `amount`: `negative` (the default, a bank's) or `positive` (many cards' statements) |
+| `only` | | rows to keep, by column: `{status: Posted}` leaves out what is still pending. A value or a list of them, whatever their capitals |
+| `account` | | `{file_name: PATTERN}`, as for holdings. Without it or an `account` column, the outside account is the file's name less its extension, or `--outside-account`: no mapping reads a transactions account, so it is never asked for, and only tells one file's rows from another's |
+| `date_format` | | the `date` column's format (default `%m/%d/%Y`) |
+| `blank`, `layout` | | as for holdings |
+
+A row with no date is left out (notes under the table), as is one with no amount. A payee's runs of spaces become one, since a bank pads its text to a width.
+
 `<source>/accounts.csv`, read by `sim import holdings`:
 
 | column | type | required | notes |
@@ -1126,7 +1152,7 @@ The holdings stop at the first empty row; a row with no value is left out. Money
 | `lot` | text | | the lot of `account`. Blank: a holding with a symbol goes to the account's lot of that symbol, and one without to its only lot (an account with several is skipped, with a warning) |
 | `note` | text | | |
 
-Every outside account in a file must have a row: a new or renamed one is an error naming it, never a balance quietly left out. At a terminal the command asks instead (completing the scenario's accounts that hold a balance, plus `skip`) and saves the answer. A row whose account or lot the scenario doesn't have is asked about too, but the row may be right for another scenario: the answer is used for that import, and replaces the saved row only if the user says so. Answers are saved once the scenario's own files are written, so an import that is refused saves none, and a scenario that doesn't load is asked nothing. Two outside accounts mapped to one lot are added together, as the source signs them, before a liability's total is turned into a debt. An outside account that appears in two of a run's files is refused, as are two transaction files that cover the same days of one outside account.
+Every outside account in a file must have a row: a new or renamed one is an error naming it, never a balance quietly left out. At a terminal the command asks instead (completing the scenario's accounts that hold a balance, plus `skip`) and saves the answer. A row whose account or lot the scenario doesn't have is asked about too, but the row may be right for another scenario: the answer is used for that import, and replaces the saved row only if the user says so. Answers are saved once the scenario's own files are written, so an import that is refused saves none, and a scenario that doesn't load is asked nothing. Two outside accounts mapped to one lot are added together, as the source signs them, before a liability's total is turned into a debt. An outside account that appears in two of a run's files is refused, as are two transaction files of one source that cover the same days of one outside account.
 
 **Lots by symbol.** A source that lists what an account holds gives each holding a symbol. Its outside account's row names the account and no lot, and each holding goes to the account's lot with that `symbol` (§4.5): the lot's `quantity` is set if it has one (and cleared when the file gives that holding no share count, so the lot doesn't keep an old count beside a new balance; see *Share counts from a price*), its `opening_balance` unless it is kept in shares (a quantity and a symbol, and no balance), and its `opening_cost_basis` when the account is `brokerage_taxable` and the file has a basis for all that lands in the lot. A retirement or HSA lot's basis is never set: a broker's cost basis is what the holdings cost, and a Roth lot's basis is what was contributed, so an import that sets a Roth lot with no basis says so and names the command that sets it. A row that names a lot adds everything it covers into that lot, whatever the symbols, and sets a quantity only when all of it is the lot's own symbol.
 
@@ -1138,13 +1164,18 @@ A holding whose symbol the account has no lot of is asked about at a terminal: a
 
 A target can be any lot the scenario has, its own or inherited (§4.5): a changed lot that is inherited is written as an override of the whole lot in the scenario's own `account_lots.csv`, as `sim account lot edit` writes one. A lot in the scenario's own file has only its balance cells set. Balances are compared as money, so `20000` beside an imported 20,000.00 is no change. A prior-year balance is seeded, or set by `--year-end`, only when the account's other lots (Roth lots aside) have one or get one in the same run, since the loader wants it on every lot or on none.
 
-`<source>/categories.csv` (required by `sim import transactions`), `splits.csv` and `excluded_payees.csv` (both optional):
+`<source>/categories.csv` (required by `sim import transactions` of a source whose transactions have categories), `splits.csv` and `excluded_payees.csv` (both optional), and `payees.csv` (for a source whose transactions have none):
 
 | file | columns | meaning |
 | --- | --- | --- |
 | `categories.csv` | `outside_category`, `category` | merges an outside category into `category`; a blank or `-` `category` excludes it. A category with no row becomes `Other` |
 | `splits.csv` | `category`, `outside_account`, `target_category` | sends `category` expenses paid from `outside_account` to `target_category`; a blank `outside_account` is the category's default |
 | `excluded_payees.csv` | `payee_pattern` | a case-insensitive regular expression; a matching payee's expenses are left out, the scenario modeling them itself |
+| `payees.csv` | `payee_pattern`, `category` | gives `category` to a transaction whose payee has `payee_pattern` in it; `transfer` marks a move between the household's own accounts (a card's payment, a sweep to savings), which is not spending, and a blank or `-` leaves the transaction out |
+
+**Categories by payee** ([#617](https://github.com/BobKerns/analysis/issues/617)). A bank's file says who was paid, not what for. When none of a source's transactions in a run has a category, each gets one from the source's `payees.csv`. Payee and pattern are compared as their words in lower case, less any word with a digit in it (a date, a store or card number, a reference, which differ from one purchase to the next), and a pattern matches when it is found anywhere in the payee; the first row that matches wins. A pattern with no word left is an error. Money in needs no category, since only spending makes rules. A payment no row covers is asked about at a terminal, payee by payee, the most paid first: a category (completing those in use), `transfer`, `-`, or `rest`, which puts every payee not yet asked about into `Other` for that run, saves nothing for them, and says how much went there. Each answer is followed by the words of the payee to save as the pattern (all of them by default; fewer cover more of its spellings). Away from a terminal such payees are an error listing the most paid. A payment whose payee has no word without a digit (a bare check number) goes to `Other`. The answers are saved once the scenario's files are written, as the others are. A category that `payees.csv` names is kept as it is, never folded into `Other` for want of a `categories.csv` row.
+
+**Several sources in one run.** `sim import transactions` takes files of several sources (a bank's download, a card's, a Quicken export), finds each file's source by itself unless `--source` names one for all, and works the rules out from all the transactions together; the rules' `meta_json` `source` names them all, joined by `+`. Each run replaces every generated rule, so a run is given every file the rules should come from. Each source's rows are read with that source's own `payees.csv`; the `categories.csv`, `splits.csv` and `excluded_payees.csv` of the run's sources apply as one set, and two that send one outside category, or one split, to different places are an error naming both. Nothing takes one source's transfer out of another's spending but the `transfer` rows: a card paid from the bank is `transfer` in the bank's `payees.csv`, and its purchases come from the card's own file.
 
 `expense_accounts.csv` (`category`, `account`) names the expense account each category's generated rule pays into, or `-` for no rule. It belongs to no source, since a budget and a year of transactions name the same categories. A category with the name of one of the scenario's accounts needs no row. A category with no account gets no rule and a warning, or at a terminal a question whose answer is saved. An account the scenario doesn't have is handled like an account mapping's: asked about, and replaced only if the user says so. So is a category with no row when another scenario has an account of its name, which a saved row would override. A transaction with no category at all gets no rule and a warning, never a question: no row could name it.
 
@@ -1614,3 +1645,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#582](https://github.com/BobKerns/analysis/issues/582): `templates/aux/` ships `state_adjustments` for Nebraska, Kansas, the District of Columbia and Idaho, and Kansas's standard deduction no longer folds in its personal exemption (§4.4).
 - [#580](https://github.com/BobKerns/analysis/issues/580): aux kind `state_separate_return`, spouses filing separately on one state return, taxed at the `MFS` rows and the lower of that and the joint tax taken (§2.6, §4.4).
 - [#581](https://github.com/BobKerns/analysis/issues/581): `state_social_security` optional `min_age` (years or `fra`): rows are age tiers per person, the taxable amount divided by benefits (§4.4).
+- [#617](https://github.com/BobKerns/analysis/issues/617): a profile can describe a transactions file (`transactions`; built-in `wells_fargo`); `imports/<source>/payees.csv` gives categories by payee to a source that has none; `sim import transactions` reads several sources in one run (§4.17).

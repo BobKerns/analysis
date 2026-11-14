@@ -1075,3 +1075,80 @@ def test_sim_import_holdings_warns_of_a_file_dated_far_from_the_start(
     output = dated(late)
     assert f"the file is as of {late}, and its balances are being set as of {start}" in output
     assert "sim scenario roll" in output
+
+
+# ---------- transactions from a bank's file (issue #617) ----------
+
+_BANK_PAYEES = "corner market,Food\ncity power,Utilities\ntransfer to savings,transfer\ncheck,-\n"
+
+
+def test_sim_import_transactions_reads_a_banks_file_by_its_payees(
+    test_data_dir: Path, bank_checking_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nUtilities,Expense_Housing\n")
+
+    refused = _transactions(test_data_dir, bank_checking_export)
+    assert refused.exit_code != 0
+    # The most paid first, so the file can be written from the top.
+    listed = [line.strip() for line in refused.output.splitlines() if "payment(s)" in line]
+    assert [line.split(" (")[1] for line in listed] == [
+        "1 payment(s), 1000.00)", "2 payment(s), 600.00)", "2 payment(s), 300.00)",
+        "1 payment(s), 75.00)"]
+    assert "payees.csv" in refused.output and _generated(test_data_dir) == {}
+
+    write_import_map("wells_fargo/payees.csv", _BANK_PAYEES)
+    result = _transactions(test_data_dir, bank_checking_export)
+    assert result.exit_code == 0, result.output
+    rules = _generated(test_data_dir)
+    # The move to savings and the check aren't spending; no category went to Other.
+    assert {name: (rule["amount"], rule["to_account"]) for name, rule in rules.items()} == {
+        "baseline_expense_food": ("300.00", "Expense_Living"),
+        "baseline_expense_utilities": ("150.00", "Expense_Housing"),
+    }
+    assert "warning" not in result.output
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_transactions_asks_about_payees_and_saves_the_answers(
+    test_data_dir: Path, bank_checking_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nUtilities,Expense_Housing\nOther,-\n")
+    saved = test_data_dir / "imports" / "wells_fargo" / "payees.csv"
+
+    # The transfer; the market, by two of its words; then the rest unasked.
+    answers = "transfer\n\nFood\ncorner market\nrest\n"
+    dry = _transactions(test_data_dir, bank_checking_export, "--dry-run", input=answers)
+    assert dry.exit_code == 0, dry.output
+    assert "'ONLINE TRANSFER TO SAVINGS REF #IB0XYZ12', 1 payment(s), 1000.00 in all" in dry.output
+    assert "2 payee(s) not asked about went to Other, 375.00 in all" in dry.output
+    assert "the payee categories you gave were not saved" in dry.output and not saved.exists()
+
+    result = _transactions(test_data_dir, bank_checking_export, input=answers)
+    assert result.exit_code == 0, result.output
+    assert saved.read_text(encoding="utf-8").splitlines() == [
+        "payee_pattern,category", "online transfer to savings ref,transfer", "corner market,Food"]
+    assert _generated(test_data_dir)["baseline_expense_food"]["amount"] == "300.00"
+
+    # Words the payee doesn't have are asked for again.
+    fussy = _transactions(test_data_dir, bank_checking_export, "--dry-run",
+                          input="Utilities\nelectric\ncity power\n-\n\n")
+    assert fussy.exit_code == 0, fussy.output
+    assert "words found in 'city power and water bill pay'" in fussy.output
+
+
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_makes_one_set_of_rules_from_several_sources(
+    test_data_dir: Path, bank_checking_export: Path, quicken_transaction_export: Path,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nUtilities,Expense_Housing\nGifts,-\n")
+    write_import_map("wells_fargo/payees.csv", _BANK_PAYEES)
+
+    result = _import(test_data_dir, "transactions", str(bank_checking_export),
+                     str(quicken_transaction_export), "--from-account", "Asset_Checking")
+
+    assert result.exit_code == 0, result.output
+    rules = _generated(test_data_dir)
+    # Food from both: (300 + 40 + 500) from one and (400 + 200) from the other, over two months.
+    assert rules["baseline_expense_food"]["amount"] == "720.00"
+    assert json.loads(rules["baseline_expense_food"]["meta_json"])["source"] == "wells_fargo+quicken"

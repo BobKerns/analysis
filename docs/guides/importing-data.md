@@ -16,9 +16,9 @@ Alice and Bill and a Quicken export:
 | Quicken | Export two reports, then [balances](#balances-sim-import-holdings) and [spending](#spending-sim-import-transactions) below |
 | Vanguard or Fidelity | Download each account's holdings, then [brokerage files](#brokerage-files) below |
 | Another brokerage or bank whose website downloads a table of balances | Describe its columns in a [profile](#a-source-of-your-own), then import as above |
-| A bank's transactions download | Not read yet ([#527](https://github.com/BobKerns/analysis/issues/527)) |
+| A bank's or a card's transactions download | [Bank and card files](#bank-and-card-files) below; a layout not built in needs a [profile](#a-source-of-your-own) |
 | An HSA custodian with no usable download | Type the balances when `sim scenario roll` asks ([user guide](../user-guide.md), §4.21) |
-| An OFX or QFX download | Not read yet (#527) |
+| An OFX or QFX download | Not read yet ([#618](https://github.com/BobKerns/analysis/issues/618)) |
 | Nothing a program exports, or only a few accounts | Type them: `sim scenario roll` asks for each lot's balance, and `sim scheduled add` takes an estimate of spending |
 
 `sim import sources` lists what this version reads. Given files, it says
@@ -193,6 +193,25 @@ cells that mean "nothing" are in
 [ADR-003](../architecture/ADR-003-registries-and-csv-schemas.md), §4.17.
 `sim import sources` then lists the source, and recognizes its files.
 
+A bank's or a card's download of transactions is described the same way,
+under `transactions`:
+
+```yaml
+description: Credit union card activity
+transactions:
+  layout: 'Card: Download transactions'
+  columns:
+    date: Posted Date
+    payee: Description
+    amount: Amount
+  spending: positive
+```
+
+`date` and `payee` are required, and the amount is either one `amount`
+column or a `debit` and a `credit` column. `spending: positive` is for a
+file whose charges are positive numbers; a bank's are negative, which is the
+default. A `category` column is used if the file has one.
+
 ## Spending: `sim import transactions`
 
 ```sh
@@ -229,6 +248,69 @@ exactly those and leaves every rule written by hand alone, so:
 
 Two files that cover the same days of one outside account are refused, since
 their transactions would be counted twice.
+
+### Bank and card files
+
+A bank's download of an account's activity has a date, an amount and the
+bank's text for who was paid, and no category. `sim import transactions`
+reads one as it reads any other transactions file, and finds each payment's
+category by its payee. Wells Fargo's *Download Account Activity* (comma
+delimited) is built in (`wells_fargo`); another bank's needs a
+[profile](#a-source-of-your-own).
+
+```sh
+sim import transactions ~/Downloads/Checking1.csv --from-account Asset_Checking --dry-run
+```
+
+At a terminal it asks about each payee it has no category for, the most paid
+first, so the first few answers cover most of the money:
+
+```text
+wells_fargo: 'PURCHASE AUTHORIZED ON 03/14 CORNER GROCERY S123456 CARD 9876', 41 payment(s), 6150.00 in all, has no category (212 payee(s) to go).
+category: Food
+  the words of the payee that say so [purchase authorized on corner grocery card]: corner grocery
+```
+
+The answer is a category of yours, new or one in use, or one of three words:
+
+- `transfer`: a move between your own accounts, or a card's payment. It
+  isn't spending, and makes no rule.
+- `-`: leave these payments out.
+- `rest`: stop asking, and put every payee not yet asked about into `Other`
+  for this run. Nothing is saved for them, so the next run asks again.
+
+The second question is which words of the bank's text name the payee. Words
+with a digit in them (dates, store and card numbers) are already gone; trim
+the rest to the fewest that are still this payee's alone, and its other
+spellings are covered too. The answers are saved in
+`imports/<source>/payees.csv`, which can be edited by hand as well:
+
+```csv
+payee_pattern,category
+corner grocery,Food
+city water,Home
+card payment,transfer
+```
+
+The first row found in a payee wins, so put the longer pattern above a
+shorter one it contains.
+
+**Several files, several sources.** Each run replaces all the generated
+rules, so give it every file the rules should come from: each account's
+download, each card's, a Quicken export. Each file's layout is recognized by
+itself, and the rules are averaged over all of them together:
+
+```sh
+sim import transactions Checking1.csv Card.csv --from-account Asset_Checking
+```
+
+A card's purchases come from the card's own file, so mark its payment
+`transfer` in the bank's `payees.csv`, or the money is counted twice. Each
+bank file's name stands for its account, so download each account under its
+own name.
+
+A card's file whose charges are positive numbers says so in its profile
+(`spending: positive`); see [A source of your own](#a-source-of-your-own).
 
 ## Quicken
 
