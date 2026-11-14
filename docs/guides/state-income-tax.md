@@ -156,13 +156,13 @@ on interest and dividends ended with 2024.
 
 ### Colorado
 
-- A pension and annuity subtraction from 55, larger from 65, that also
-  covers taxable Social Security: **table**.
+- A pension and annuity subtraction from 55, larger from 65: **table**.
 - Social Security is subtracted in full from 65, and from 55 below an
   income: **table**, `state_social_security` rows by `min_age`
-  ([#581](https://github.com/BobKerns/analysis/issues/581)). Over the
-  income, Social Security from 55 to 64 shares the pension subtraction's
-  cap, as that table writes it.
+  ([#581](https://github.com/BobKerns/analysis/issues/581)).
+- From 55 to 64 over that income, taxable Social Security shares the
+  pension subtraction's cap instead. `state_retirement_exclusion` covers
+  no Social Security, so that part is **not supported**.
 
 ### Connecticut
 

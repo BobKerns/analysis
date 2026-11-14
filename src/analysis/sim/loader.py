@@ -1389,7 +1389,7 @@ def load_scenario(
     _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
     _warn_hand_typed_deductions(
         aux_rows, scheduled_rows, accounts, calendar_rows, tax_rows, residence_rows, warnings)
-    _validate_state_social_security(aux_rows, issues)
+    _validate_state_social_security(aux_rows, persons, issues, warnings)
     _validate_state_standard_deduction(aux_rows, issues)
     _validate_state_retirement_exclusions(aux_rows, issues)
     _validate_state_adjustments(
@@ -4517,12 +4517,16 @@ def _check_phase_out(where: str, payload: Mapping[str, Any], issues: list[str],
 
 def _validate_state_social_security(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    persons: list[dict[str, str]],
     issues: list[str],
+    warnings: list[str],
 ) -> None:
     """A state_social_security row (#484) phases its exclusion out one way
     (_check_phase_out), from an age (#581) no other row of its date and
     filing status starts at."""
     tiers: set[tuple[str | None, str, str, str]] = set()
+    rated: set[tuple[str | None, str, str]] = set()
+    aged = False
     for kind, state, payload, effective in aux_rows:
         if kind != registries.STATE_SOCIAL_SECURITY:
             continue
@@ -4532,14 +4536,25 @@ def _validate_state_social_security(
         if percent is not None and not 0 <= percent <= 1_000_000:
             issues.append(f"{where}: exclusion_percent must be 0% to 100%")
         _check_phase_out(where, payload, issues)
-        if str(payload.get("min_age") or "").strip().lower() == "fra":
-            age = "fra"
-        else:
-            age = str(_check_min_age(where, payload, issues, fra=True))
-        tier = (state, effective, str(payload.get("filing_status") or ""), age)
-        if tier in tiers:
+        age = _check_min_age(where, payload, issues, fra=True)
+        if age != 0:
+            aged = True
+        tier = (state, effective, str(payload.get("filing_status") or ""))
+        if (*tier, str(age)) in tiers:
             issues.append(f"{where}: two rows for the same filing status and min_age")
-        tiers.add(tier)
+        tiers.add((*tier, str(age)))
+        if payload.get("phaseout_rate_micros") is not None:
+            # Each row's shares are phased at the household's AGI, so a
+            # rate on two rows would take its reduction twice.
+            if tier in rated:
+                issues.append(f"{where}: phaseout_rate on more than one min_age row; "
+                              "each would take the whole reduction")
+            rated.add(tier)
+    if aged and not any(p.get("birthdate") for p in persons):
+        warnings.append(
+            f"aux/{registries.STATE_SOCIAL_SECURITY}__<state>.csv: rows by min_age need a "
+            "person with a birthdate in persons.csv; without one only rows without "
+            "min_age apply")
 
 
 def _validate_state_standard_deduction(
@@ -4566,11 +4581,13 @@ def _validate_state_standard_deduction(
 
 
 def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str], *,
-                   fra: bool = False) -> int:
+                   fra: bool = False) -> int | str:
     """A ``min_age`` cell, an age in years (59.5), as months; 0 when blank
-    or not an age, which is reported. Where ``fra`` is allowed (#581) the
-    caller reads that word itself."""
+    or not an age, which is reported. Where ``fra`` is allowed (#581),
+    :data:`registries.MIN_AGE_FRA` for a cell that says it."""
     age = payload.get("min_age")
+    if fra and registries.is_fra(age):
+        return registries.MIN_AGE_FRA
     try:
         years = 0.0 if age in (None, "") else float(age)
         if not 0 <= years <= 150:  # also refuses nan and inf

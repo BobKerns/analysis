@@ -408,7 +408,7 @@ def min_age_months(row: Mapping[str, Any], born: date | None) -> int | None:
     age = row.get("min_age")
     if age in (None, ""):
         return 0
-    if str(age).strip().lower() == "fra":
+    if registries.is_fra(age):
         return None if born is None else full_retirement_age_months(born)
     return round(float(age) * 12)
 

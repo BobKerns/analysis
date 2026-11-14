@@ -15,7 +15,7 @@ import pytest
 
 from analysis.sim import registries
 from analysis.sim.engine import TaxRule, _prepare_tax
-from analysis.sim.loader import LoadError, LoadResult
+from analysis.sim.loader import LoadError, LoadResult, _validate_state_social_security
 from analysis.sim.tax_api import Return
 from analysis.sim.taxes import common
 
@@ -237,3 +237,29 @@ def test_age_rows_load(
               + "2020-01-31,MFJ,55,100%,95000,95000\n2020-01-31,MFJ,65,100%,,\n"
               + "2020-01-31,Single,fra,100%,107000,107000\n")
     load_test_copy()
+
+
+def test_a_rate_phase_out_goes_on_one_row_only(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_aux("state_social_security__CA.csv",
+              "effective_date,filing_status,min_age,exclusion_percent,phaseout_start,phaseout_rate\n"
+              "2020-01-31,MFJ,,100%,30000,10%\n2020-01-31,MFJ,65,100%,30000,10%\n")
+    with pytest.raises(LoadError, match="phaseout_rate on more than one min_age row"):
+        load_test_copy()
+
+
+def test_age_rows_without_a_birthdate_warn() -> None:
+    """Primary and secondary people need birthdates already; with no one
+    marked and no birthdates, no one reaches an age row."""
+    rows: list[tuple[str, str | None, dict[str, Any], str]] = [
+        (registries.STATE_SOCIAL_SECURITY, "CO",
+         {"filing_status": "MFJ", "min_age": "65", "exclusion_micros": 1_000_000},
+         "2026-01-31")]
+    for persons, warned in (([{"id": "alice", "birthdate": "1960-03-01"}], False),
+                            ([{"id": "alice", "birthdate": ""}], True)):
+        issues: list[str] = []
+        warnings: list[str] = []
+        _validate_state_social_security(rows, persons, issues, warnings)
+        assert not issues
+        assert any("need a person with a birthdate" in w for w in warnings) == warned

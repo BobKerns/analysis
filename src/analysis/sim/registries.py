@@ -692,6 +692,16 @@ STATE_LTCG_EXCLUSION = "state_ltcg_exclusion"
 a percent, at least ``min_exclusion`` and at most ``max_exclusion``."""
 
 STATE_SOCIAL_SECURITY = "state_social_security"
+MIN_AGE_FRA = "fra"
+"""A ``state_social_security`` ``min_age`` (#581): the person's own full
+retirement age, by birth year. Read by :func:`is_fra` alone, so the loader
+and the calculator spell it alike."""
+
+
+def is_fra(age: object) -> bool:
+    """Whether a ``min_age`` cell says :data:`MIN_AGE_FRA`, in any case."""
+    return isinstance(age, str) and age.strip().lower() == MIN_AGE_FRA
+
 """The aux kind of how a state taxes Social Security (#484). Without one a
 state taxes none of it."""
 
