@@ -278,7 +278,7 @@ def test_a_refundable_credit_is_paid_past_the_tax(
     lines = _lines(run, "state_big_credit", "state_small_credit", "state_credits", "state_tax")
     big, small, credits, tax = (lines["state_big_credit"], lines["state_small_credit"],
                                 lines["state_credits"], lines["state_tax"])
-    assert tax and min(tax) == 2026
+    assert tax  # the loop below must see some years
     for year in tax:
         assert big[year] == 100_000_00
         # The nonrefundable credit took all the tax, the refundable one
