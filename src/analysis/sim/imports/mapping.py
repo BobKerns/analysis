@@ -8,6 +8,7 @@ mapped once, and the targets are checked against the scenario being written.
 imports/
   expense_accounts.csv        category -> expense account ('-' = no rule)
   <source>/
+    profile.yaml              the source itself, when it is the household's own (profiles.py)
     accounts.csv              (outside account, asset) -> (account, lot), or skip
     categories.csv            outside category -> category (blank or '-' excludes)
     splits.csv                a category divided by the outside account that paid

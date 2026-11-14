@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.sim.imports.forms import Flows, Holding, Snapshot
+from analysis.sim.imports.forms import Flows, Holding, Snapshot, read_rows
 
 __all__ = [
     "NAME", "is_account_tree", "is_transaction_export", "read_account_tree",
@@ -27,16 +27,6 @@ _DATE_FORMAT = "%Y-%m-%d"
 _TRANSACTION_COLUMNS = {"Date", "Payee", "Category", "Amount"}
 
 
-def _rows(path: Path, limit: int | None = None) -> list[list[str]]:
-    with Path(path).open(newline="", encoding="utf-8-sig") as fh:
-        rows = []
-        for row in csv.reader(fh):
-            rows.append(row)
-            if limit is not None and len(rows) >= limit:
-                break
-        return rows
-
-
 def _is_transaction_header(row: list[str]) -> bool:
     return bool(row) and row[0].strip().casefold() == "account" \
         and _TRANSACTION_COLUMNS <= {cell.strip() for cell in row}
@@ -46,7 +36,7 @@ def is_transaction_export(path: Path) -> bool:
     """Whether ``path`` looks like a Transaction Export: an ``Account`` header
     row with the transaction columns, near the top."""
     try:
-        return any(_is_transaction_header(row) for row in _rows(path, 30))
+        return any(_is_transaction_header(row) for row in read_rows(path, 30))
     except (OSError, UnicodeDecodeError, csv.Error):
         return False
 
@@ -56,7 +46,7 @@ def is_account_tree(path: Path) -> bool:
     first holding only section names, with ``Assets`` or ``Liabilities``
     among them."""
     try:
-        rows = _rows(path, 60)
+        rows = read_rows(path, 60)
     except (OSError, UnicodeDecodeError, csv.Error):
         return False
     if any(_is_transaction_header(row) for row in rows):
@@ -97,7 +87,7 @@ def read_account_tree(path: Path) -> Snapshot:
     """
     holdings: list[Holding] = []
     as_of: dt.date | None = None
-    for row in _rows(path):
+    for row in read_rows(path):
         if len(row) < 3:
             continue
         if as_of is None and (found := _report_date(row)) is not None:
@@ -128,7 +118,7 @@ def read_transactions(path: Path) -> Flows:
     current_account = ""
     header: list[str] | None = None
 
-    for source_row, row in enumerate(_rows(path), start=1):
+    for source_row, row in enumerate(read_rows(path), start=1):
         if not row:
             continue
         if row[0].strip().casefold() == "account":
