@@ -15487,10 +15487,14 @@ def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
 @click.option("--yes", "accept", is_flag=True,
               help="Take every default without asking: the old plan's projections, and "
                    "pinning the old first year's rows to that year.")
+@click.option("--own", is_flag=True,
+              help="Roll only what is NAME's own, after the scenario it is built on has "
+                   "rolled: its lots, and with a start of its own, that start and its rows. "
+                   "With an inherited start, START must be given.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep: bool,
-                  accept: bool, data_dir: Path | None) -> None:
+                  accept: bool, own: bool, data_dir: Path | None) -> None:
     """Bring scenario NAME up to date: start it again at START (YYYY-MM),
     opening with what the accounts hold then (#502).
 
@@ -15510,9 +15514,21 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     START, which no longer happen, and the rules whose ytd_preroll now
     counts the new year's months, and says what last year's tax needs.
 
+    The scenarios built on NAME that take its start move with it, so the
+    same questions are asked about their own rows, in the same edit. Their
+    own lots are theirs to roll, after NAME, with --own: only what is the
+    scenario's own rolls, so it keeps inheriting the rest. Its start moves
+    only if it sets one; an inherited start must already be START (its
+    parent rolled first, and dealt with its rows), so only its lots reopen.
+    It writes no projected year-to-date rows: the months skipped are the
+    household's past, the same in every plan built on the parent, whose
+    rows it inherits. Nor does it offer to keep a copy, since its start
+    doesn't move (--keep still makes one).
+
     Everything is written in one edit, only if NAME and every scenario
     built on it still load. NAME stays current. START defaults to the
-    first January after the old start (and not before this year's)."""
+    first January after the old start (and not before this year's); with
+    --own and an inherited start it must be given."""
     if keep is not None and no_keep:
         raise click.UsageError("--keep and --no-keep are exclusive")
     data = _resolve_data_dir(data_dir)
@@ -15525,17 +15541,35 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     if old is None:
         raise click.ClickException(f"{name} has no start, so there is nothing to roll forward")
     old_start = old.month
-    if start is None:
-        suggested = roll.default_start(old_start, date.today())
-        start = suggested if accept else click.prompt("new start (YYYY-MM)", default=suggested)
-    start = month_end_iso(_validate_month_date(start.strip()))[:7]
-    if start <= old_start:
-        raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
+    # A run still being built in the background is the newest one; wait for it.
+    from analysis.sim import builder
+    builder.await_fresh(ref.runs_dir, name, echo=lambda text: click.echo(text, err=True))
+    # --own on a scenario that inherits its start: the parent's roll moved
+    # it already, and the scenario's own runs say where it was.
+    follows = own and not sc._scenario_row(scenario_dir).get("start", "").strip()
+    if follows:
+        if start is None:
+            raise click.UsageError(
+                f"{name} inherits its start: give START, the month its parent rolled to")
+        start = month_end_iso(_validate_month_date(start.strip()))[:7]
+        if start != old_start:
+            raise click.ClickException(
+                f"{name}'s start is inherited, and is {old_start}, not {start}: "
+                f"{roll.PARENT_FIRST}, or give {name} a start of its own")
+    else:
+        if start is None:
+            suggested = roll.default_start(old_start, date.today())
+            start = suggested if accept else click.prompt("new start (YYYY-MM)", default=suggested)
+        start = month_end_iso(_validate_month_date(start.strip()))[:7]
+        if start <= old_start:
+            raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
     old_year, new_year = int(old_start[:4]), int(start[:4])
     taken = set(names.scenario_names(data))
     if keep is not None:
         _check_keep_name(keep.strip(), taken)
-    if not no_keep and keep is None:
+    # Following its parent's roll, the scenario's start doesn't move, so
+    # there is no old plan to keep unless --keep asks for one.
+    if not no_keep and keep is None and not follows:
         suggested = roll.keep_name(name, old_start, taken)
         while True:
             keep = suggested if accept else click.prompt(
@@ -15548,16 +15582,16 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                 click.echo(f"  {exc.message}")
     if keep is not None:
         keep = keep.strip()
-    click.echo(f"Rolling {name} forward: {old_start} -> {start}")
+    click.echo(f"Rolling {name}'s own lots forward to {start}, its inherited start" if follows
+               else f"Rolling {name} forward: {old_start} -> {start}")
 
     month = month_before(start)
-    # A run still being built in the background is the newest one; wait for it.
-    from analysis.sim import builder
-    builder.await_fresh(ref.runs_dir, name, echo=lambda text: click.echo(text, err=True))
     projected: dict[tuple[str, str], roll.Projection] = {}
     # The Dec 31 before a start that isn't a January: what a lot's
     # prior_year_end_balance (an RMD's base) defaults to.
     year_end: dict[tuple[str, str], roll.Projection] = {}
+    # The flows of the months the roll skips, as year-to-date rows (#564).
+    skipped: list[roll.ProjectedRow] = []
     # The newest run that reaches the month: one made after an earlier roll
     # (or a trial one) starts too late to say.
     for run_path in reversed(run_files(ref.runs_dir, name)):
@@ -15567,6 +15601,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             projected = roll.projections(rc, month)
             if projected and start[5:] != "01":
                 year_end = roll.projections(rc, month_before(f"{new_year}-01"))
+            if projected and not own:
+                skipped = roll.projected_year_to_date(rc, old_start, start)
         if projected:
             break
     if projected:
@@ -15576,9 +15612,13 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         click.echo(f"No run of {name} reaches {month:%Y-%m}, so each default is the "
                    "current opening value.")
 
+    # The scenarios that take NAME's start, whose start-dependent rows move
+    # with it (none when NAME's start doesn't move here).
+    followers = [] if follows else _start_followers(data, name)
     # Read before anything is asked, to check nothing changed before writing.
     own_files = {path: path.read_bytes() if path.exists() else None
-                 for path in (scenario_dir / file for file in (
+                 for folder in (scenario_dir, *(data / "scenarios" / one for one in followers))
+                 for path in (folder / file for file in (
                      "scenario.csv", "accounts.csv", "account_lots.csv", "year_to_date.csv",
                      "scheduled.csv"))}
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
@@ -15592,6 +15632,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         if account is None or account.row.get("kind") not in ("asset", "liability"):
             continue
         seen.add((one.account, one.lot))
+        if own and one.index is None:
+            continue  # its parent's to roll
         rows.append((one, _rolled_lot(data, one, account.row, projected.get((one.account, one.lot)),
                                       year_end.get((one.account, one.lot)), start, accept,
                                       same_year=new_year == old_year)))
@@ -15601,7 +15643,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         if (account_name, lot) in seen or lot != registries.DEFAULT_LOT or not projection.balance:
             continue
         account = accounts.get(account_name)
-        if account is None:
+        if account is None or (own and (account.index is None or account.inherited_from)):
             continue
         blank = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "") | {
             "account_name": account_name, "lot": lot}
@@ -15610,37 +15652,20 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                                            year_end.get((account_name, lot)), start, accept,
                                            same_year=new_year == old_year)))
 
-    pins: list[_Overlaid] = []
-    converted: list[_Overlaid] = []
-    unconverted: list[tuple[_Overlaid, str]] = []
-    if new_year != old_year:
-        for found in roll.unpinned_year_to_date(scenario_dir):
-            label = (f"year-to-date row {found.row['name']} ({found.row.get('amount', '')}) "
-                     f"has no year, so it would move into {new_year}: pin it to {old_year}?")
-            if accept or click.confirm(label, default=True):
-                pins.append(found)
-        chains = set(names.chain_names(data, name))
-        for found in roll.ytd_amount_rules(scenario_dir):
-            rule = found.row
-            # A year-to-date row moves between accounts, with a character.
-            if why := ("it moves money through a chain"
-                       if {rule.get("from_account"), rule.get("to_account")} & chains
-                       else "it has no tax_character" if not rule.get("tax_character", "").strip()
-                       else None):
-                unconverted.append((found, why))
-                continue
-            label = (f"rule {rule['name']}'s ytd_amount ({rule['ytd_amount']}) was "
-                     f"{old_year}'s catch-up: make it a {old_year} year-to-date row?")
-            if accept or click.confirm(label, default=True):
-                converted.append(found)
-    # A rule with no start counts its cadence (a quarter, a biweekly payday,
-    # ytd_preroll's months) from the scenario's start, which is moving.
-    anchored: list[_Overlaid] = []
-    for found in roll.anchored_rules(scenario_dir):
-        label = (f"rule {found.row['name']} has no start, so its {found.row.get('cadence')} "
-                 f"schedule counts from the scenario's: keep counting from {old_start}?")
-        if accept or click.confirm(label, default=True):
-            anchored.append(found)
+    # Rows whose meaning depends on the start: NAME's (only its own with
+    # --own) and those of the scenarios that take its start (their own).
+    moved = [] if follows else [
+        _ask_start_rows(data, data / "scenarios" / one, one if one != name else None,
+                        old_start, new_year, accept, own_only=own or one != name)
+        for one in (name, *followers)]
+    if skipped:
+        months = (f"{old_start}" if month.strftime("%Y-%m") == old_start
+                  else f"{old_start} to {month:%Y-%m}")
+        label = (f"the run no longer covers {months}, so that income would drop out of "
+                 f"its tax year: add the old run's flows then as {len(skipped)} projected "
+                 "year-to-date row(s)?")
+        if not (accept or click.confirm(label, default=True)):
+            skipped = []
 
     with _scenario_edit(data, name) as edit:
         # The rows above were read before the questions, which may have taken
@@ -15657,35 +15682,22 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             except (OSError, ValueError) as exc:
                 raise click.ClickException(str(exc).replace(str(edit.data_dir), str(data))) from None
         staged_dir = edit.path(scenario_dir)
-        sc.edit_scenario_row(staged_dir, {"start": start}, {})
+        if not follows:
+            sc.edit_scenario_row(staged_dir, {"start": start}, {})
         lots_path = edit.path(scenario_dir / "account_lots.csv")
         for one, row in rows:
             _append_csv_row(lots_path, registries.ACCOUNT_LOTS_CSV_HEADER, row, replace=one.index)
+        for one in moved:
+            _write_start_rows(edit, one, old_start)
         ytd_path = edit.path(scenario_dir / "year_to_date.csv")
-        if pins or converted:
+        dropped = 0
+        if skipped or any(roll.is_projected(row) for row in _read_ytd_rows(ytd_path)):
             _widen_ytd_header(ytd_path, scenario_dir)
-        for found in pins:
-            row = {column: found.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
-            _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
-                            replace=found.index)
-        scheduled_path = edit.path(scenario_dir / "scheduled.csv")
-        # Each rule changed once, whichever of the edits below it takes.
-        rule_rows = {found.row["name"]: (found, dict(found.row)) for found in [*converted, *anchored]}
-        anchor = month_end_iso(old_start)
-        for found in anchored:
-            rule_rows[found.row["name"]][1]["start"] = anchor
-        for found in converted:
-            rule = found.row
-            rule_rows[rule["name"]][1]["ytd_amount"] = ""
-            _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, {
-                "name": f"{rule['name']}_{old_year}", "from_account": rule.get("from_account", ""),
-                "from_lot": rule.get("from_lot", ""), "to_account": rule.get("to_account", ""),
-                "to_lot": rule.get("to_lot", ""), "amount": rule["ytd_amount"],
-                "tax_character": rule.get("tax_character", ""), "year": str(old_year),
-                "description": f"{rule['name']}: paid in {old_year} before {old_start}",
-            })
-        for found, rule in rule_rows.values():
-            _append_csv_row(scheduled_path, registries.SCHEDULED_CSV_HEADER, rule, replace=found.index)
+            inherited = set(_overlay_rows(scenario_dir, "year_to_date.csv"))
+            merged, dropped = roll.merge_projected(
+                _read_ytd_rows(ytd_path), skipped, old_start, start, inherited)
+            pd.DataFrame(merged, columns=list(registries.YEAR_TO_DATE_CSV_HEADER)).to_csv(
+                ytd_path, index=False)
 
     click.echo(f"rolled {name} forward to {start}")
     if keep is not None:
@@ -15693,42 +15705,191 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     for one, row in rows:
         click.echo(f"  {one.account} ({one.lot}): {row['opening_balance'] or row['quantity'] + ' sh'}"
                    + (f", basis {row['opening_cost_basis']}" if row["opening_cost_basis"] else ""))
-    for found in pins:
-        click.echo(f"  year-to-date row {found.row['name']}: pinned to {old_year}")
-    for found in converted:
-        click.echo(f"  {found.row['name']}'s ytd_amount: now year-to-date row "
-                   f"{found.row['name']}_{old_year}")
-    for found, why in unconverted:
-        click.echo(f"  rule {found.row['name']}'s ytd_amount is {old_year}'s catch-up, but {why}: "
-                   f"record it with `sim ytd add ... --year {old_year}` and clear it "
-                   f"(`sim scheduled edit {found.row['name']} --ytd-amount ''`)")
-    for found in anchored:
-        click.echo(f"  rule {found.row['name']}: starts {old_start}, so its schedule keeps its months")
-    for entry in roll.calendar_before(scenario_dir, start):
-        click.echo(f"  calendar {entry.row.get('date')} {entry.row.get('kind')} "
-                   f"{entry.row.get('description') or entry.row.get('scheduled_name') or ''}"
-                   .rstrip() + f": before {start}, so it no longer happens")
-    for rule_name in roll.preroll_rules(scenario_dir):
-        if start[5:] != "01":
-            click.echo(f"  rule {rule_name}'s ytd_preroll now counts {new_year}'s months before {start}")
-    if new_year == old_year:
-        # Same year: the first year's catch-ups now cover fewer months
-        # than they should, and only the person knows the new totals.
-        before = f"{month_before(start):%Y-%m}"
-        for found in roll.unpinned_year_to_date(scenario_dir):
-            click.echo(f"  year-to-date row {found.row['name']} covers {new_year} before "
-                       f"{old_start}: update it through {before} (`sim ytd edit`)")
-        for found in roll.ytd_amount_rules(scenario_dir):
-            click.echo(f"  rule {found.row['name']}'s ytd_amount covers {new_year} before "
-                       f"{old_start}: update it through {before} (`sim scheduled edit`)")
-    if new_year != old_year and int(start[5:7]) <= 4:
-        # A start by April: the prior year's tax is still to be paid in it.
-        click.echo(
-            f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
-            f"record it with `sim ytd add NAME FROM TO AMOUNT --tax-character ... --year "
-            f"{new_year - 1}` (W-2s, 1099s, tax already withheld)")
+    for one in moved:
+        whose = f"{one.scenario}'s " if one.scenario else ""
+        for found in one.pins:
+            click.echo(f"  {whose}year-to-date row {found.row['name']}: pinned to {old_year}")
+        for found in one.converted:
+            click.echo(f"  {whose}rule {found.row['name']}'s ytd_amount: now year-to-date row "
+                       f"{found.row['name']}_{old_year}")
+        for found, why in one.unconverted:
+            click.echo(f"  {whose}rule {found.row['name']}'s ytd_amount is {old_year}'s catch-up, "
+                       f"but {why}: record it with `sim ytd add ... --year {old_year}` and clear "
+                       f"it (`sim scheduled edit {found.row['name']} --ytd-amount ''`)")
+        for found in one.anchored:
+            click.echo(f"  {whose}rule {found.row['name']}: starts {old_start}, so its schedule "
+                       "keeps its months")
+    if skipped:
+        click.echo(f"  {len(skipped)} projected year-to-date row(s) for {old_start} to "
+                   f"{month:%Y-%m}: replace them with the actual figures when you have them "
+                   "(`sim ytd edit`)")
+    if dropped:
+        click.echo(f"  dropped {dropped} projected year-to-date row(s) of years before {new_year - 1}, "
+                   "which no longer count")
+    # With an inherited start, its parent's roll said what follows from it.
+    if not follows:
+        for entry in roll.calendar_before(scenario_dir, start):
+            click.echo(f"  calendar {entry.row.get('date')} {entry.row.get('kind')} "
+                       f"{entry.row.get('description') or entry.row.get('scheduled_name') or ''}"
+                       .rstrip() + f": before {start}, so it no longer happens")
+        for rule_name in roll.preroll_rules(scenario_dir):
+            if start[5:] != "01":
+                click.echo(f"  rule {rule_name}'s ytd_preroll now counts {new_year}'s months before {start}")
+        if new_year == old_year and not skipped:
+            # Same year: the first year's catch-ups now cover fewer months
+            # than they should, and only the person knows the new totals.
+            before = f"{month_before(start):%Y-%m}"
+            for found in roll.unpinned_year_to_date(scenario_dir):
+                click.echo(f"  year-to-date row {found.row['name']} covers {new_year} before "
+                           f"{old_start}: update it through {before} (`sim ytd edit`)")
+            for found in roll.ytd_amount_rules(scenario_dir):
+                click.echo(f"  rule {found.row['name']}'s ytd_amount covers {new_year} before "
+                           f"{old_start}: update it through {before} (`sim scheduled edit`)")
+        if new_year != old_year and int(start[5:7]) <= 4 \
+                and not any(one.year == new_year - 1 for one in skipped):
+            # A start by April: the prior year's tax is still to be paid in it.
+            click.echo(
+                f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
+                f"record it with `sim ytd add NAME FROM TO AMOUNT --tax-character ... --year "
+                f"{new_year - 1}` (W-2s, 1099s, tax already withheld)")
+    if not own:
+        for other in _built_on_with_own_lots(data, name):
+            click.echo(f"  {other} is built on {name} and has lots of its own: roll them too "
+                       f"(`sim scenario roll {other} {start} --own`)")
     click.echo(f"next: `sim run {name} --commit`"
                + (f", `sim run {keep} --commit`, then `sim compare {keep} {name}`" if keep else ""))
+
+
+def _start_followers(data: Path, name: str) -> list[str]:
+    """The scenarios built on ``name`` that take its start: none of them,
+    nor anything after ``name`` in their load order, sets one."""
+    scenarios = data / "scenarios"
+    found = []
+    for other in names.scenario_names(data):
+        if other == name or is_pool(scenarios, other) or _is_template(scenarios, other):
+            continue
+        try:
+            order = load_order(scenarios, other)
+        except (OSError, ValueError):
+            continue
+        if name not in order[:-1]:
+            continue
+        after = order[order.index(name) + 1:]
+        if not any(sc._scenario_row(_folder_of(scenarios, one)).get("start", "").strip()
+                   for one in after):
+            found.append(other)
+    return found
+
+
+class _StartRows(NamedTuple):
+    """One scenario's rows that a moved start changes the meaning of, and
+    what ``sim scenario roll`` was told to do with them."""
+    scenario_dir: Path
+    scenario: str | None  # None: the scenario being rolled, not one that follows it
+    old_year: int
+    pins: list[_Overlaid]
+    converted: list[_Overlaid]
+    unconverted: list[tuple[_Overlaid, str]]
+    anchored: list[_Overlaid]
+
+
+def _ask_start_rows(
+    data: Path, scenario_dir: Path, scenario: str | None, old_start: str, new_year: int,
+    accept: bool, *, own_only: bool,
+) -> _StartRows:
+    """Ask about ``scenario_dir``'s rows whose meaning moves with the start
+    (``own_only``: just the rows in its own files): a year-to-date row with
+    no year and a rule's ``ytd_amount``, both the old first year's, when the
+    year changes; a rule whose schedule counts from the start."""
+    old_year = int(old_start[:4])
+    whose = f"{scenario}: " if scenario else ""
+    pins: list[_Overlaid] = []
+    converted: list[_Overlaid] = []
+    unconverted: list[tuple[_Overlaid, str]] = []
+    if new_year != old_year:
+        for found in roll.unpinned_year_to_date(scenario_dir):
+            if own_only and found.index is None:
+                continue
+            label = (f"{whose}year-to-date row {found.row['name']} ({found.row.get('amount', '')}) "
+                     f"has no year, so it would move into {new_year}: pin it to {old_year}?")
+            if accept or click.confirm(label, default=True):
+                pins.append(found)
+        chains = set(names.chain_names(data, scenario_dir.name))
+        for found in roll.ytd_amount_rules(scenario_dir):
+            if own_only and found.index is None:
+                continue
+            rule = found.row
+            # A year-to-date row moves between accounts, with a character.
+            if why := ("it moves money through a chain"
+                       if {rule.get("from_account"), rule.get("to_account")} & chains
+                       else "it has no tax_character" if not rule.get("tax_character", "").strip()
+                       else None):
+                unconverted.append((found, why))
+                continue
+            label = (f"{whose}rule {rule['name']}'s ytd_amount ({rule['ytd_amount']}) was "
+                     f"{old_year}'s catch-up: make it a {old_year} year-to-date row?")
+            if accept or click.confirm(label, default=True):
+                converted.append(found)
+    # A rule with no start counts its cadence (a quarter, a biweekly payday,
+    # ytd_preroll's months) from the scenario's start, which is moving.
+    anchored: list[_Overlaid] = []
+    for found in roll.anchored_rules(scenario_dir):
+        if own_only and found.index is None:
+            continue
+        label = (f"{whose}rule {found.row['name']} has no start, so its "
+                 f"{found.row.get('cadence')} schedule counts from the scenario's: keep counting "
+                 f"from {old_start}?")
+        if accept or click.confirm(label, default=True):
+            anchored.append(found)
+    return _StartRows(scenario_dir, scenario, old_year, pins, converted, unconverted, anchored)
+
+
+def _write_start_rows(edit: Any, rows: _StartRows, old_start: str) -> None:
+    """Write what :func:`_ask_start_rows` was told into ``edit``."""
+    old_year = rows.old_year
+    ytd_path = edit.path(rows.scenario_dir / "year_to_date.csv")
+    if rows.pins or rows.converted:
+        _widen_ytd_header(ytd_path, rows.scenario_dir)
+    for found in rows.pins:
+        row = {column: found.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
+        _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
+                        replace=found.index)
+    scheduled_path = edit.path(rows.scenario_dir / "scheduled.csv")
+    # Each rule changed once, whichever of the edits below it takes.
+    rule_rows = {found.row["name"]: (found, dict(found.row))
+                 for found in [*rows.converted, *rows.anchored]}
+    anchor = month_end_iso(old_start)
+    for found in rows.anchored:
+        rule_rows[found.row["name"]][1]["start"] = anchor
+    for found in rows.converted:
+        rule = found.row
+        rule_rows[rule["name"]][1]["ytd_amount"] = ""
+        _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, {
+            "name": f"{rule['name']}_{old_year}", "from_account": rule.get("from_account", ""),
+            "from_lot": rule.get("from_lot", ""), "to_account": rule.get("to_account", ""),
+            "to_lot": rule.get("to_lot", ""), "amount": rule["ytd_amount"],
+            "tax_character": rule.get("tax_character", ""), "year": str(old_year),
+            "description": f"{rule['name']}: paid in {old_year} before {old_start}",
+        })
+    for found, rule in rule_rows.values():
+        _append_csv_row(scheduled_path, registries.SCHEDULED_CSV_HEADER, rule, replace=found.index)
+
+
+def _built_on_with_own_lots(data: Path, name: str) -> list[str]:
+    """The scenarios built on ``name`` (as parent or mix-in) with lot rows of
+    their own, which a roll of ``name`` leaves as they were."""
+    scenarios = data / "scenarios"
+    found = []
+    for other in names.scenario_names(data):
+        if other == name or is_pool(scenarios, other) or _is_template(scenarios, other):
+            continue
+        try:
+            built_on = name in load_order(scenarios, other)[:-1]
+        except (OSError, ValueError):
+            continue
+        if built_on and _read_values_rows(scenarios / other / "account_lots.csv"):
+            found.append(other)
+    return found
 
 
 def _check_keep_name(keep: str, taken: set[str]) -> None:
@@ -15911,6 +16072,7 @@ def _apply_scenario_edit(
     data: Path, name: str, *, description: str | None = None, start: str | None = None,
     end: str | None = None, parents: str | None = None, seed: str | None = None,
     new_seed: bool = False, size: str | None = None, reserve: str | None = None,
+    roll: str | None = None,
 ) -> None:
     """Set the given fields of scenario ``name``'s scenario.csv; see ``_edit_scenario``."""
     if seed is not None and new_seed:
@@ -15953,6 +16115,10 @@ def _apply_scenario_edit(
         meta["ensemble_size"] = _blank_or(size, _member_count, "--size")
     if reserve is not None:
         meta["reserve"] = _blank_or(reserve, _reserve_json, "--reserve")
+    if roll is not None:
+        # '' drops the key, so the scenario inherits its parent's
+        # (roll_schedule.roll_mark); off opts out of it.
+        meta[registries.ROLL_KEY] = roll or None
     if not values and not meta:
         raise click.UsageError("nothing to change: give at least one option (see --help)")
 
@@ -16028,6 +16194,10 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
         click.option("--reserve", default=None,
                      help="The ensemble reports' reserve, in CPI-constant dollars "
                           "(meta_json reserve); '' or none inherits."),
+        click.option("--roll", default=None, type=click.Choice([*registries.ROLL_CHOICES, ""]),
+                     help="monthly: the background builder rolls the start forward a month "
+                          "each night the start month is over (meta_json roll, #564); off: "
+                          "it doesn't, though a parent does; '' inherits it."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
     ]
@@ -16040,7 +16210,8 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
 @_edit_options("scenario")
 def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
     """Change scenario NAME's scenario.csv: its description, start and end
-    months, parents and mix-ins, seed, ensemble size or reserve.
+    months, parents and mix-ins, seed, ensemble size, reserve, or whether the
+    background builder rolls it forward each month.
 
     Options set those fields and write at once; a blank value ('') clears
     one, so it inherits again (a blank description restores the default).
@@ -18666,8 +18837,15 @@ _BUILDER_DATA_DIR = click.option(
 @click.argument("branch", required=False)
 @click.option("--prices/--no-prices", "fetch_prices", default=None,
               help="Fetch prices after each weekday's close (default: as before, else yes).")
+@click.option("--roll/--no-roll", "roll", default=None,
+              help="Roll the scenarios marked to roll (`sim scenario edit NAME --roll monthly`) "
+                   "forward each night (default: as before, else yes).")
+@click.option("--roll-window", default=None, metavar="HH:MM-HH:MM",
+              help="When a night's roll may run, in this machine's local time (default: as "
+                   "before, else 01:00-05:00).")
 @_BUILDER_DATA_DIR
-def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Path | None) -> None:
+def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | None,
+                    roll_window: str | None, data_dir: Path | None) -> None:
     """Opt this workspace pair in: check the code worktree and the data repo
     name each other, record the pair, and install the data repo's hooks.
 
@@ -18682,19 +18860,31 @@ def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Pat
     builder/prices branch and merged into main when main is checked out and
     has no uncommitted changes; main is then pushed if it is strictly ahead of
     its upstream.
+
+    Unless --no-roll, the same timer rolls forward, each night in the
+    --roll-window, every scenario marked to roll whose start month is over
+    (#564): a month a night, as `sim scenario roll --yes` would, on the
+    builder/roll branch, merged the same way. When a start moves into a new
+    year, the plan before it is tagged plan-<year>.
     """
-    from analysis.sim import builder, price_schedule
+    from analysis.sim import builder, price_schedule, roll_schedule
 
     resolved = _builder_data_dir(data_dir)
+    if roll_window is not None:
+        try:
+            roll_schedule.parse_window(roll_window)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--roll-window") from None
     try:
-        done = builder.install(resolved, branch, fetch_prices)
+        done = builder.install(resolved, branch, fetch_prices, roll, roll_window)
     except ValueError as exc:
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
         click.echo(line)
     # By the recorded choice alone: ANALYSIS_PRICE_FETCH=off is for one shell
     # (an agent's, a test's), so install_timer then leaves the timer as it is.
-    if (builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}).get("prices", True):
+    config = builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}
+    if config.get("prices", True) or config.get("roll", True):
         click.echo(price_schedule.install_timer(resolved, _builder_sim(resolved)))
     elif line := price_schedule.uninstall_timer(resolved):
         click.echo(line)
@@ -18713,7 +18903,7 @@ def _builder_sim(data_dir: Path) -> Path:
 @builder_group.command(name="uninstall")
 @_BUILDER_DATA_DIR
 def builder_uninstall(data_dir: Path | None) -> None:
-    """Opt this workspace out, stop its builder, and remove its price timer."""
+    """Opt this workspace out, stop its builder, and remove its timer."""
     from analysis.sim import builder, price_schedule
 
     resolved = _builder_data_dir(data_dir)
@@ -18824,6 +19014,72 @@ def builder_prices(if_due: bool, data_dir: Path | None) -> None:
         click.echo(builder.notify(resolved))
 
 
+@builder_group.command(name="roll")
+@click.option("--if-due", is_flag=True, default=False,
+              help="Only when a night's roll is due (what the builder runs).")
+@_BUILDER_DATA_DIR
+def builder_roll(if_due: bool, data_dir: Path | None) -> None:
+    """Roll forward now, as the night's schedule does (#564), every scenario
+    marked to roll (`sim scenario edit NAME --roll monthly`) whose start
+    month is over: a month on, as `sim scenario roll NAME MONTH --yes
+    --no-keep` would (one further behind rolls the next month the next
+    night, from the run of the month this one opens). The builder merges the roll into the data repo's
+    main, between builds, once main is checked out with no uncommitted
+    changes.
+
+    It never touches your checkout: it works in its own worktree, on the
+    builder/roll branch. A roll that needs a question answered, or fails, is
+    reported in `sim builder status`; do that one by hand.
+    """
+    from analysis.sim import builder, price_schedule, roll_schedule
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    config = builder.read_config(paths)
+    if config is None:
+        raise click.ClickException("background builds aren't installed here (sim builder install)")
+    if roll_schedule.switched_off():
+        click.echo(f"rolls are off ({roll_schedule.SWITCH_ENV}=off)")
+        return
+    if if_due and not roll_schedule.due(resolved, config, datetime.now(UTC)):
+        click.echo("no roll due")
+        return
+    from analysis.sim.builder_log import LogWriter
+    from analysis.sim.locks import BUILDER_CHILD_ENV
+
+    writer = None if os.environ.get(BUILDER_CHILD_ENV) else LogWriter(paths.log_dir)
+    if writer is not None:
+        writer.event("rolling scenarios forward")
+    try:
+        outcome = roll_schedule.roll(resolved, paths.roll_worktree, config)
+    except (roll_schedule.RollScheduleError, price_schedule.PriceScheduleError) as exc:
+        if writer is not None:
+            writer.event(f"roll failed: {exc}")
+        raise click.ClickException(str(exc)) from None
+    for line in outcome.lines:
+        click.echo(line)
+        if writer is not None:
+            writer.output(line)
+    if outcome.committed:
+        click.echo(builder.notify(resolved))
+
+
+@builder_group.command(name="tick")
+@_BUILDER_DATA_DIR
+@click.pass_context
+def builder_tick(ctx: click.Context, data_dir: Path | None) -> None:
+    """What the hourly timer runs: `sim builder prices --if-due`, then
+    `sim builder roll --if-due`. A fetch that fails doesn't keep the roll
+    from its turn: it is reported, and the tick fails, after the roll."""
+    try:
+        ctx.invoke(builder_prices, if_due=True, data_dir=data_dir)
+    except click.ClickException as exc:
+        exc.show()
+        ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
+        raise click.exceptions.Exit(exc.exit_code) from None
+    ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
+
+
 @builder_group.command(name="series", hidden=True)
 @click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
 @_BUILDER_DATA_DIR
@@ -18895,6 +19151,15 @@ def builder_status(data_dir: Path | None) -> None:
         click.echo(f"prices: not fetched ({price_schedule.SWITCH_ENV}=off)")
     else:
         click.echo("prices: not fetched (sim builder install --prices to start)")
+    from analysis.sim import roll_schedule
+
+    if roll_schedule.enabled(config):
+        for line in roll_schedule.describe(roll_schedule.read_state(resolved), config, resolved):
+            click.echo(line)
+    elif roll_schedule.switched_off():
+        click.echo(f"roll: off ({roll_schedule.SWITCH_ENV}=off)")
+    else:
+        click.echo("roll: off (sim builder install --roll to start)")
     click.echo(f"log: {paths.log_dir} (sim builder log)")
 
 

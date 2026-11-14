@@ -394,7 +394,7 @@ def test_install_adds_one_hourly_crontab_line_and_uninstall_removes_it(
     for _ in range(2):  # installing again replaces the line
         price_schedule.install_timer(tmp_path, sim, run=run, platform="linux")
     assert crontab[0] == "0 3 * * * backup" and len(crontab) == 2
-    assert crontab[1].startswith(f"7 * * * * {sim} builder prices --if-due --data-dir {tmp_path}")
+    assert crontab[1].startswith(f"7 * * * * {sim} builder tick --data-dir {tmp_path}")
 
     assert price_schedule.uninstall_timer(tmp_path, run=run, platform="linux")
     assert crontab == ["0 3 * * * backup"]
@@ -412,7 +412,7 @@ def test_install_on_macos_loads_an_hourly_launch_agent(
         f"{price_schedule.timer_label(tmp_path)}.plist"
     agent = plistlib.loads(plist.read_bytes())
     assert agent["StartInterval"] == 3600
-    assert agent["ProgramArguments"] == [str(sim), "builder", "prices", "--if-due",
+    assert agent["ProgramArguments"] == [str(sim), "builder", "tick",
                                          "--data-dir", str(tmp_path.resolve())]
     assert calls[-1][0][:2] == ["launchctl", "bootstrap"]
 

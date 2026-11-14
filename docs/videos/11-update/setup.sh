@@ -135,26 +135,29 @@ sim scheduled add 2026-01 Asset_Checking Expense_Living 1000 --name travel --per
 sim scheduled tag add travel category:travel flex:optional > /dev/null
 git add -A && git commit -q -m "Video 10b's travel"
 
-# The scenes' commands, in order. Base's run as it stood in November, before
-# the roll: the roll tape reads its projection for December 2026.
-stage roll
+# The scenes' commands, in order. Base's and rebalance's runs as they stood
+# in November, before the roll: the roll tape reads their projections for
+# December 2026.
 demo_run base 2026-11-10T090000Z
+demo_run rebalance 2026-11-10T090100Z
+stage roll
 # The roll, answered with Alice and Bill's January statements: the balances,
-# BALX's shares, and Enter for each cost basis the plan projected.
-printf '%s\n' 22400 58200 498700 296500 '' 163900 '' 119800 '' 1024.8 '' \
+# BALX's shares, and Enter for each cost basis the plan projected, and for
+# 2026's projected year-to-date rows.
+printf '%s\n' 22400 58200 498700 296500 '' 163900 '' 119800 '' 1024.8 '' '' \
     | sim scenario roll base 2027-01 --keep plan-2026 > /dev/null
+# Rebalance's checking is its own lot (its overflow goes to invest), so it
+# rolls on its own, to the same statement.
+echo 22400 | sim scenario roll rebalance 2027-01 --own > /dev/null
 stage taxes
 # Last year's plan, run as it stood: the spending scene reads its 2026.
 demo_run plan-2026 2026-11-10T090500Z
 sim switch base > /dev/null
-sim ytd add wages_alice Income_Salary_Alice Asset_Checking 96412 --tax-character ordinary \
-    --year 2026 --description "Alice's W-2" > /dev/null
-sim ytd add wages_bill Income_Salary_Bill Asset_Checking 84780 --tax-character ordinary \
-    --year 2026 --description "Bill's W-2" > /dev/null
-sim ytd add dividends_2026 dividends Asset_Brokerage_Joint 4380 --to-lot stocks \
-    --tax-character qualified_dividend --year 2026 --description 1099-DIV > /dev/null
-sim ytd add interest_2026 interest_income Asset_Savings 1790 --tax-character ordinary \
-    --year 2026 --description 1099-INT > /dev/null
+# The roll's projected 2026 rows, numbered in the order `sim ytd list` shows.
+sim ytd edit projected_2026_4 --amount 96412 --description "Alice's W-2" > /dev/null
+sim ytd edit projected_2026_5 --amount 84780 --description "Bill's W-2" > /dev/null
+sim ytd edit projected_2026_10 --amount 4380 --description 1099-DIV > /dev/null
+sim ytd edit projected_2026_11 --amount 1790 --description 1099-INT > /dev/null
 sim ytd add gains_2026 capital_gains capital_gains 15900 --tax-character ltcg --year 2026 \
     --description 1099-B > /dev/null
 stage spending

@@ -185,8 +185,9 @@ on interest and dividends ended with 2024.
 
 - Brackets and the standard deduction: **shipped**. Social Security is
   exempt.
-- The extra standard deduction at 65: **table** (a `filers` row from 65),
-  not shipped.
+- The extra standard deduction at 65: **shipped** (a `filers` row from
+  65). The extra deduction when blind: **not supported** (the model
+  doesn't know who is blind).
 - The property tax credit (Schedule H): **household calculator**.
 - Spouses may file separately on one return: **not supported** (#580).
 
@@ -210,8 +211,7 @@ on interest and dividends ended with 2024.
 - The retirement benefits deduction from 65 for some public pensions,
   reduced by Social Security: **table** (tagged `income`, `less_ss`
   without `per_person`).
-- The grocery credit, which is refundable: **table** (`refundable`), not
-  shipped yet ([#582](https://github.com/BobKerns/analysis/issues/582)).
+- The grocery credit, which is refundable: **shipped** (`refundable`).
 
 ### Illinois
 
@@ -237,14 +237,13 @@ on interest and dividends ended with 2024.
 
 ### Kansas (shipped)
 
-- Brackets and the standard deduction with the personal exemption folded
-  in: **shipped**. Social Security is exempt.
+- Brackets, the standard deduction and the personal exemption (a
+  `filers` deduction row, so a household that itemizes keeps it):
+  **shipped**. Social Security is exempt.
 - Kansas public pensions, federal civil service and military retirement
   are exempt: **table** (tagged `income`), not shipped.
-- The larger standard deduction from 65: **table**, not shipped.
-- The personal exemption is lost by a household that itemizes: **table**
-  (a `filers` deduction row in place of the folded-in exemption), not
-  shipped.
+- The larger standard deduction from 65: **shipped**. When blind: **not
+  supported**.
 
 ### Kentucky
 
@@ -346,7 +345,7 @@ on interest and dividends ended with 2024.
 
 - Brackets and the standard deduction: **shipped**. Social Security is
   exempt from 2024.
-- The personal exemption credit: **table**, not shipped.
+- The personal exemption credit: **shipped**.
 - The school district property tax credit, a share of the school tax paid,
   which is refundable: **table** (`refundable`).
 
@@ -379,7 +378,8 @@ on interest and dividends ended with 2024.
 - The flat rate and standard deduction: **shipped**. Social Security is
   exempt.
 - Government pensions vested before August 1989 (Bailey) and military
-  retirement: **table** (tagged `income`), not shipped.
+  retirement: **table** (tagged `income`), not shipped; the aux README
+  has an example row.
 
 ### North Dakota
 
