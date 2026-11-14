@@ -659,7 +659,8 @@ from tagged spending or income, the filers, or the federal return."""
 STATE_ADJUSTMENT_STEPS: tuple[str, ...] = ("subtraction", "deduction", "credit")
 """Where a ``state_adjustments`` row's line comes off: ``subtraction`` from
 income before state AGI, ``deduction`` after it (beside the standard or
-itemized deduction), ``credit`` against the tax (never more than the tax)."""
+itemized deduction), ``credit`` against the tax (never more than the tax,
+unless the row is ``refundable``, #579: then the state pays out the rest)."""
 
 STATE_ADJUSTMENT_BASES: tuple[str, ...] = (
     "spending", "income", "filers", "federal_tax", "federal_deduction", "gains_tax",
@@ -898,10 +899,14 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # the amount each). Filers count from `min_age`. Above `income_limit`
     # it ends at once, falls to nothing over `phaseout` dollars, or loses
     # `phaseout_rate` of each dollar over. A blank filing_status applies to
-    # every status. Every column after `base` may be left out.
+    # every status. `less_ss` (an `income` row with an amount, #579) takes
+    # the Social Security received off the cap: each filer's own with
+    # `per_person`, else the household's. A `refundable` credit (#579) is
+    # paid in full, below zero tax. Every column after `base` may be left out.
     STATE_ADJUSTMENTS: (
         "effective_date", "name", "step", "base", "tag", "rate", "amount", "per_person",
         "min_age", "filing_status", "income_limit", "phaseout", "phaseout_rate",
+        "less_ss", "refundable",
     ),
     # Itemized deductions: a dated total, no filing_status split (unlike
     # standard_deduction). Optional; when present, a tax jurisdiction uses
@@ -1058,7 +1063,7 @@ AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
     STATE_ADJUSTMENTS: frozenset({
         "tag", "rate", "amount", "per_person", "min_age", "filing_status", "income_limit",
-        "phaseout", "phaseout_rate",
+        "phaseout", "phaseout_rate", "less_ss", "refundable",
     }),
 }
 """Columns of ``AUX_KIND_COLUMNS`` a file may leave out, by kind: a missing

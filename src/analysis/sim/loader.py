@@ -4662,6 +4662,15 @@ def _validate_state_adjustments(
             issues.append(f"{where}: phaseout_rate must be more than 0%")
         _check_min_age(where, payload, issues)
         _check_yes(where, payload, "per_person", issues)
+        # #579: a refundable line is a credit; less_ss reduces an income
+        # row's cap, so it needs one.
+        if _check_yes(where, payload, "refundable", issues) and step != "credit":
+            issues.append(f"{where}: refundable is for a credit; step is {step!r}")
+        if _check_yes(where, payload, "less_ss", issues):
+            if base != "income":
+                issues.append(f"{where}: less_ss is for base income; base is {base!r}")
+            elif payload.get("amount") is None:
+                issues.append(f"{where}: less_ss needs an amount for Social Security to reduce")
         _check_filing_status(where, payload, issues)
         status = payload.get("filing_status")
         key = (state, effective, name, str(status or ""))
