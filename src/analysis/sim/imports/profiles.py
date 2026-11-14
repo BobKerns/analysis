@@ -21,6 +21,18 @@ holdings:
   strip_asset: '*'
 ```
 
+A bank's or a card's activity download is the same kind of table, of
+transactions, and a profile may describe that too (or only that):
+
+```yaml
+description: Credit union activity download (CSV)
+transactions:
+  layout: 'Account activity: Download'
+  columns: {date: Date, payee: Description, amount: Amount, status: Status}
+  date_format: '%m/%d/%Y'
+  only: {status: [Posted]}
+```
+
 The built-in profiles are the ``source_profiles/*.yaml`` files beside this module.
 A household's own is ``imports/<source>/profile.yaml`` in the data dir,
 beside that source's mapping files, and replaces a built-in of its name.
@@ -39,9 +51,14 @@ from typing import Any
 
 import yaml
 
-from analysis.sim.imports.forms import Holding, Snapshot, read_rows
+import pandas as pd
 
-__all__ = ["PROFILE", "HoldingsProfile", "Profile", "ProfileError", "built_in", "load", "user"]
+from analysis.sim.imports.forms import FLOW_COLUMNS, Flows, Holding, Snapshot, read_rows
+
+__all__ = [
+    "PROFILE", "HoldingsProfile", "Profile", "ProfileError", "TransactionsProfile", "built_in",
+    "load", "user",
+]
 
 PROFILE = "profile.yaml"
 _BUILT_IN = Path(__file__).parent / "source_profiles"
@@ -56,6 +73,15 @@ _HOLDINGS_KEYS = {
     "layout", "columns", "account", "as_of", "blank", "strip_asset", "acquired_format",
 }
 _AS_OF_PLACES = ("heading", "last_lines", "file_name")
+# What a transactions profile's ``columns`` may name. A row needs its date,
+# who was paid, and the amount: in one signed column, or in two.
+_FLOW_COLUMNS = (
+    "account", "date", "payee", "amount", "debit", "credit", "category", "memo", "check", "status",
+)
+_TRANSACTIONS_KEYS = {
+    "layout", "columns", "account", "date_format", "spending", "only", "blank",
+}
+_SPENDING = ("negative", "positive")
 # How far down a file its header row may be: a download may open with a
 # title and a date.
 _HEADER_SEARCH = 30
@@ -72,7 +98,10 @@ class ProfileError(ValueError):
 
 
 @dataclass(frozen=True)
-class HoldingsProfile:
+class _TableProfile:
+    """What reading either kind of table shares: finding its header row, and
+    the outside account of a file with no column for it."""
+
     source: str
     where: str
     """The profile's file, for messages."""
@@ -80,12 +109,7 @@ class HoldingsProfile:
     columns: Mapping[str, str]
     account_pattern: re.Pattern[str] | None = None
     """The outside account, from the file's name, when no column has it."""
-    as_of_place: str = ""
-    as_of_pattern: re.Pattern[str] | None = None
-    as_of_format: str = "%m/%d/%Y"
-    acquired_format: str = "%m/%d/%Y"
     blank: frozenset[str] = frozenset()
-    strip_asset: str = ""
 
     def _header(self, rows: list[list[str]]) -> int | None:
         """The index of the header row: the first near the top with every
@@ -102,9 +126,11 @@ class HoldingsProfile:
         except (OSError, UnicodeDecodeError, csv.Error):
             return False
 
-    def read(self, path: Path, account: str | None = None) -> Snapshot:
-        """The holdings in ``path``. ``account`` names the outside account of
-        a file that has no column for it, whatever the file is called."""
+    def _table(
+        self, path: Path, account: str | None,
+    ) -> tuple[list[list[str]], int, dict[str, int]]:
+        """``path``'s rows, the index of its header row, and where each of
+        the profile's columns is in a row."""
         if account is not None and "account" in self.columns:
             raise ProfileError(
                 f"{path}: a {self.source} file names its accounts itself, so "
@@ -115,9 +141,28 @@ class HoldingsProfile:
             raise ProfileError(
                 f"{path}: no header row with the columns {self.where} names: "
                 + ", ".join(sorted(set(self.columns.values()))))
+        headings = [_heading(cell) for cell in rows[start]]
+        return rows, start, {key: headings.index(_heading(name)) for key, name in self.columns.items()}
+
+    def names_account(self, path: Path) -> bool:
+        """Whether ``path`` says which outside account it is: in a column,
+        or in its name."""
+        return self.account_pattern is None or self.account_pattern.search(path.name) is not None
+
+
+@dataclass(frozen=True)
+class HoldingsProfile(_TableProfile):
+    as_of_place: str = ""
+    as_of_pattern: re.Pattern[str] | None = None
+    as_of_format: str = "%m/%d/%Y"
+    acquired_format: str = "%m/%d/%Y"
+    strip_asset: str = ""
+
+    def read(self, path: Path, account: str | None = None) -> Snapshot:
+        """The holdings in ``path``. ``account`` names the outside account of
+        a file that has no column for it, whatever the file is called."""
+        rows, start, at = self._table(path, account)
         header = [cell.strip() for cell in rows[start]]
-        headings = [_heading(cell) for cell in header]
-        at = {key: headings.index(_heading(name)) for key, name in self.columns.items()}
         file_account = account if account is not None else self._file_account(path)
         holdings: list[Holding] = []
         end = len(rows)
@@ -164,11 +209,6 @@ class HoldingsProfile:
         return Snapshot(source=self.source, holdings=tuple(holdings),
                         as_of=self._as_of(path, header, rows[end:]))
 
-    def names_account(self, path: Path) -> bool:
-        """Whether ``path`` says which outside account it is: in a column,
-        or in its name."""
-        return self.account_pattern is None or self.account_pattern.search(path.name) is not None
-
     def _file_account(self, path: Path) -> str:
         if self.account_pattern is None:
             return ""
@@ -193,11 +233,80 @@ class HoldingsProfile:
 
 
 @dataclass(frozen=True)
+class TransactionsProfile(_TableProfile):
+    date_format: str = "%m/%d/%Y"
+    spending: str = "negative"
+    """The sign of money out in the ``amount`` column: a bank's is negative,
+    and a card's statement often has its charges positive."""
+    only: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """Rows to keep, by column: those whose cell is one of the values (a
+    bank's ``Posted``, leaving out what is still pending)."""
+
+    def read(self, path: Path, account: str | None = None) -> Flows:
+        """The transactions in ``path``. Its outside account is ``account``,
+        else what the file's name says, else the name itself: nothing maps a
+        transactions account to the plan's, so it only tells one file's rows
+        from another's."""
+        rows, start, at = self._table(path, account)
+        file_account = account
+        if file_account is None:
+            found = None if self.account_pattern is None else self.account_pattern.search(path.name)
+            file_account = path.stem if found is None \
+                else (found.group(1) if found.groups() else found.group(0)).strip()
+        records: list[dict[str, object]] = []
+        for number in range(start + 1, len(rows)):
+            row = rows[number]
+
+            def cell(key: str, row: list[str] = row) -> str:
+                index = at.get(key)
+                text = row[index].strip() if index is not None and index < len(row) else ""
+                return "" if text in self.blank else text
+
+            # Notes after the table, and rows between: a transaction has a date.
+            if not cell("date"):
+                continue
+            line = f"{path} line {number + 1}"
+            if any(cell(key).casefold() not in wanted for key, wanted in self.only.items()):
+                continue
+            day = _date(cell("date"), self.date_format, f"{line}, {self.columns['date']}")
+            if day is None:
+                continue
+            if "amount" in at:
+                if not cell("amount"):
+                    continue
+                cents = _cents(cell("amount"), f"{line}, {self.columns['amount']}")
+                if self.spending == "positive":
+                    cents = -cents
+            else:
+                paid, got = (abs(_cents(cell(key), f"{line}, {self.columns[key]}")) if cell(key) else 0
+                             for key in ("debit", "credit"))
+                if not (cell("debit") or cell("credit")):
+                    continue
+                cents = got - paid
+            records.append({
+                "source_row": number + 1,
+                "account": cell("account") if "account" in at else file_account,
+                "date": pd.Timestamp(day),
+                # A bank pads its text to a width: one space is what was meant.
+                "payee": " ".join(cell("payee").split()),
+                "category": cell("category"),
+                "transfer": "",
+                "memo": cell("memo"),
+                "amount_cents": cents,
+                "check": cell("check"),
+            })
+        frame = pd.DataFrame(records, columns=[*FLOW_COLUMNS, "check"])
+        frame["date"] = pd.to_datetime(frame["date"])
+        return Flows(source=self.source, transactions=frame)
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     description: str
     where: str
     holdings: HoldingsProfile | None = None
+    transactions: TransactionsProfile | None = None
     built_in: bool = field(default=False, compare=False)
 
 
@@ -293,6 +402,55 @@ def _holdings(source: str, where: str, data: object) -> HoldingsProfile:
     )
 
 
+def _transactions(source: str, where: str, data: object) -> TransactionsProfile:
+    if not isinstance(data, dict):
+        raise ProfileError(f"{where}: 'transactions' must be a mapping")
+    if unknown := sorted(set(data) - _TRANSACTIONS_KEYS):
+        raise ProfileError(
+            f"{where}: unknown transactions key(s) {unknown}; known: {sorted(_TRANSACTIONS_KEYS)}")
+    columns = data.get("columns")
+    if not isinstance(columns, dict) or not columns:
+        raise ProfileError(f"{where}: 'transactions' needs 'columns'")
+    if unknown := sorted(set(columns) - set(_FLOW_COLUMNS)):
+        raise ProfileError(f"{where}: unknown column(s) {unknown}; known: {list(_FLOW_COLUMNS)}")
+    if missing := [key for key in ("date", "payee") if not columns.get(key)]:
+        raise ProfileError(f"{where}: 'columns' must name {' and '.join(missing)}")
+    two = bool(columns.get("debit")) and bool(columns.get("credit"))
+    if bool(columns.get("amount")) == two or (not two and (columns.get("debit") or columns.get("credit"))):
+        raise ProfileError(
+            f"{where}: say where the amount is, once: one signed column ('amount') or two "
+            "('debit' and 'credit')")
+    account: Any = data.get("account") or {}
+    if not isinstance(account, dict) or set(account) - {"file_name"}:
+        raise ProfileError(f"{where}: 'account' may only be {{file_name: PATTERN}}")
+    if account.get("file_name") and columns.get("account"):
+        raise ProfileError(
+            f"{where}: say where the account is, once: a column ('columns: account') or "
+            "the file's name ('account: {file_name: PATTERN}')")
+    spending = str(data.get("spending") or "negative")
+    if spending not in _SPENDING:
+        raise ProfileError(f"{where}: 'spending' is one of {list(_SPENDING)}, not {spending!r}")
+    only: Any = data.get("only") or {}
+    if not isinstance(only, dict) or (strangers := sorted(set(only) - set(columns))):
+        raise ProfileError(
+            f"{where}: 'only' maps a column the profile names to the values to keep"
+            + (f", not {strangers}" if isinstance(only, dict) else ""))
+    blank = data.get("blank") or []
+    if not isinstance(blank, list):
+        raise ProfileError(f"{where}: 'blank' must be a list")
+    return TransactionsProfile(
+        source=source, where=where, layout=str(data.get("layout") or "a transactions file"),
+        columns={str(key): str(name) for key, name in columns.items()},
+        account_pattern=_pattern(account["file_name"], where) if account.get("file_name") else None,
+        blank=frozenset(str(each) for each in blank),
+        date_format=str(data.get("date_format") or "%m/%d/%Y"),
+        spending=spending,
+        only={str(key): frozenset(str(value).casefold() for value in
+                                  (values if isinstance(values, list) else [values]))
+              for key, values in only.items()},
+    )
+
+
 def load(path: Path, name: str, *, built_in: bool = False) -> Profile:
     """The profile in ``path``, for the source ``name``."""
     where = str(path)
@@ -302,15 +460,19 @@ def load(path: Path, name: str, *, built_in: bool = False) -> Profile:
         raise ProfileError(f"{where}: {error}") from None
     if not isinstance(data, dict):
         raise ProfileError(f"{where}: a profile is a mapping")
-    if unknown := sorted(set(data) - {"name", "description", "holdings"}):
-        raise ProfileError(f"{where}: unknown key(s) {unknown}; known: description, holdings")
+    if unknown := sorted(set(data) - {"name", "description", "holdings", "transactions"}):
+        raise ProfileError(
+            f"{where}: unknown key(s) {unknown}; known: description, holdings, transactions")
     if data.get("name") not in (None, name):
         raise ProfileError(f"{where}: its name is {data['name']!r}, but its folder says {name!r}")
-    if "holdings" not in data:
-        raise ProfileError(f"{where}: a profile needs 'holdings'")
+    if "holdings" not in data and "transactions" not in data:
+        raise ProfileError(f"{where}: a profile needs 'holdings' or 'transactions'")
     return Profile(
         name=name, description=str(data.get("description") or name), where=where,
-        holdings=_holdings(name, where, data["holdings"]), built_in=built_in,
+        holdings=_holdings(name, where, data["holdings"]) if "holdings" in data else None,
+        transactions=_transactions(name, where, data["transactions"])
+        if "transactions" in data else None,
+        built_in=built_in,
     )
 
 

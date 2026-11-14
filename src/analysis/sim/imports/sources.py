@@ -17,7 +17,7 @@ from typing import Literal
 import pandas as pd
 
 from analysis.sim.imports import profiles, quicken
-from analysis.sim.imports.forms import Flows, Snapshot
+from analysis.sim.imports.forms import ORIGIN, Flows, Snapshot
 
 __all__ = [
     "FORMS", "Form", "Reader", "Source", "SourceError", "broken", "detect", "get", "names",
@@ -76,10 +76,11 @@ _CODED: dict[str, Source] = {
 
 
 def _from_profile(profile: profiles.Profile) -> Source:
-    held = profile.holdings
+    held, moved = profile.holdings, profile.transactions
     return Source(
         name=profile.name, description=profile.description, profile=profile,
         holdings=None if held is None else Reader(held.matches, held.read, held.layout),
+        transactions=None if moved is None else Reader(moved.matches, moved.read, moved.layout),
     )
 
 
@@ -162,12 +163,13 @@ def detect(
 
 def _resolve(
     paths: Sequence[Path], name: str | Source | None, form: Form, imports: Path | None,
+    known: Table | None = None,
 ) -> Source:
     """The source to read ``paths`` with: ``name`` (or the source itself,
     already found), or the one source whose layout every file is in."""
     if isinstance(name, Source):
         return name
-    known = table(imports)
+    known = known or table(imports)
     if name is not None:
         return known.get(name, form)
     found: dict[str, Source] = {}
@@ -244,26 +246,45 @@ def read_holdings(
 
 def read_flows(
     paths: Sequence[Path], name: str | None = None, imports: Path | None = None,
+    *, account: str | None = None,
 ) -> Flows:
-    """Every file's transactions, in order, read with source ``name`` (or the
-    one their layout says). Two files may not cover the same days of one
-    outside account: their transactions would be counted twice."""
-    source = _resolve(paths, name, "transactions", imports)
-    assert source.transactions is not None
-    frames = [source.transactions.read(path).transactions for path in paths]
-    spans: dict[str, list[tuple[dt.date, dt.date, int]]] = {}
+    """Every file's transactions, in order, each read with source ``name``
+    (or the one its own layout says: the files of one run may come from
+    several, a bank's and a card's, and make one set of rules). Two files may
+    not cover the same days of one outside account: their transactions would
+    be counted twice. ``account`` names the outside account of a file that
+    doesn't say."""
+    if account is not None and len(paths) > 1:
+        raise SourceError("--outside-account names one file's account; import the files one at a time")
+    known = table(imports)
+    frames: list[pd.DataFrame] = []
+    met: dict[str, None] = {}
+    for path in paths:
+        source = known.get(name, "transactions") if name is not None \
+            else _resolve([path], None, "transactions", imports, known)
+        assert source.transactions is not None
+        if account is None:
+            frame = source.transactions.read(path).transactions
+        elif source.profile is None or source.profile.transactions is None:
+            raise SourceError(
+                f"a {source.name} file names its accounts itself, so --outside-account doesn't apply")
+        else:
+            frame = source.profile.transactions.read(path, account).transactions
+        frames.append(frame.assign(**{ORIGIN: source.name}))
+        met[source.name] = None
+    spans: dict[tuple[str, str], list[tuple[dt.date, dt.date, int]]] = {}
     for number, frame in enumerate(frames):
-        days: dict[str, list[dt.date]] = {}
-        for account, stamp in zip(frame["account"], frame["date"], strict=True):
-            days.setdefault(str(account), []).append(stamp.date())
-        for account, dates in days.items():
+        days: dict[tuple[str, str], list[dt.date]] = {}
+        for origin, each, stamp in zip(frame[ORIGIN], frame["account"], frame["date"], strict=True):
+            days.setdefault((str(origin), str(each)), []).append(stamp.date())
+        for key, dates in days.items():
             first, last = min(dates), max(dates)
-            for start, end, other in spans.setdefault(account, []):
+            for start, end, other in spans.setdefault(key, []):
                 if first <= end and start <= last:
                     raise SourceError(
                         f"{paths[other]} and {paths[number]} both have transactions of "
-                        f"{account!r} between {max(first, start)} and {min(last, end)}; "
+                        f"{key[1]!r} between {max(first, start)} and {min(last, end)}; "
                         "import each period of an outside account from one file")
-            spans[account].append((first, last, number))
-    return Flows(source=source.name,
+            spans[key].append((first, last, number))
+    return Flows(source="+".join(met),
                  transactions=frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True))

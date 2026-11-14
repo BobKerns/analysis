@@ -138,6 +138,7 @@ from analysis.sim.imports import forms as import_forms
 from analysis.sim.imports import holdings as import_holdings_
 from analysis.sim.imports import mapping as import_mapping
 from analysis.sim.imports import sources as import_sources_
+from analysis.sim.imports import transactions as import_transactions_
 from analysis.sim.imports.holdings import format_dollars
 import analysis.sim.scenario as sc
 from analysis.sim.staging import (
@@ -8791,6 +8792,63 @@ def _ask_holding_lot(
             click.echo(f"  {error.format_message()}")
 
 
+def _categorize_by_payee(
+    frame: pd.DataFrame, payee_maps: dict[str, import_mapping.PayeeMap], *, known: Collection[str],
+) -> tuple[pd.DataFrame, set[str], list[import_transactions_.Unmatched]]:
+    """``frame`` with categories found by payee (``payee_maps``, by source),
+    asking at a terminal about each payee no row covers, the most paid
+    first. Also the sources whose map got an answer, to save, and the payees
+    that 'rest' sent to Other unasked. ``known`` is the categories in use, to
+    complete."""
+    asked: set[str] = set()
+    explained = False
+    while True:
+        found, unmatched = import_transactions_.categorize(frame, payee_maps)
+        if not unmatched:
+            return found, asked, []
+        if not _interactive():
+            shown = unmatched[:15]
+            raise click.ClickException(
+                f"{len(unmatched)} payee(s) with no category; run at a terminal to be asked, or "
+                "add rows (payee_pattern, category) to "
+                + ", ".join(str(payee_maps[source].path)
+                            for source in dict.fromkeys(each.source for each in unmatched))
+                + ":\n  " + "\n  ".join(
+                    f"{each.example} ({each.rows} payment(s), {format_dollars(each.cents)})"
+                    for each in shown)
+                + (f"\n  and {len(unmatched) - len(shown)} more" if len(unmatched) > len(shown) else ""))
+        first = unmatched[0]
+        click.echo(
+            f"{first.source}: {first.example!r}, {first.rows} payment(s), "
+            f"{format_dollars(first.cents)} in all, has no category "
+            f"({len(unmatched)} payee(s) to go).")
+        if not explained:
+            click.echo(
+                "  A category, new or one in use; 'transfer' for a move between your own "
+                "accounts or a card's payment; '-' to leave it out; or 'rest' to put all not "
+                "yet asked into Other, for this run only.")
+            explained = True
+        in_use = sorted({*known, *(category for each in payee_maps.values() for _, category in each.rows)}
+                        - {import_mapping.NO_RULE, import_mapping.TRANSFER})
+        answer = ""
+        while not answer:
+            answer = _prompt_with_completion(
+                "category", choices=[*in_use, import_mapping.TRANSFER, import_mapping.NO_RULE, "rest"],
+            ).strip()
+        if answer == "rest":
+            found, unmatched = import_transactions_.categorize(frame, payee_maps, rest="Other")
+            return found, asked, unmatched
+        while True:
+            # The fewer words, the more of this payee's other spellings it covers.
+            pattern = import_mapping.payee_key(_prompt_with_completion(
+                "  the words of the payee that say so", default=first.key))
+            if pattern and pattern in first.key:
+                break
+            click.echo(f"  words found in {first.key!r}, in their order")
+        payee_maps[first.source].add(pattern, answer)
+        asked.add(first.source)
+
+
 @import_group_command.command("transactions")
 @click.argument("files", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--source", "layout", default=None, help=_SOURCE_OPTION_HELP)
@@ -8810,11 +8868,15 @@ def _ask_holding_lot(
               help="First scheduled month YYYY-MM or YYYY-MM-DD (default: scenario start).")
 @click.option("--series", type=completion.SCHEDULED_SERIES, default="cpi", show_default=True,
               help="Inflation series applied to generated rows ('fixed' for none).")
+@click.option("--outside-account", default=None,
+              help="The outside account of a file that doesn't name one, in place of the "
+                   "file's name (one FILE).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show how the generated rows would change without rewriting scheduled.csv.")
 def import_transactions(
     files: tuple[Path, ...],
     layout: str | None,
+    outside_account: str | None,
     scenario: str | None,
     data_dir: Path | None,
     amazon_state_dir: Path | None,
@@ -8826,12 +8888,24 @@ def import_transactions(
 ) -> None:
     """Expense rules from a period's transactions: replace the generated baseline rows in scheduled.csv.
 
-    FILE is the transactions export; left out, it is the data repo's
-    quicken/Transaction Export.csv. The category maps are read from the data
-    dir's imports/<source>/ (categories.csv, and optionally splits.csv and
+    FILE is a transactions export; left out, it is the data repo's
+    quicken/Transaction Export.csv. Several files may come from several
+    sources (a bank's download, a card's, a Quicken export): the rules are
+    worked out from all of them together, and each run replaces all the
+    generated rules, so give every file the rules should come from.
+
+    Each source's category maps are read from the data dir's
+    imports/<source>/ (categories.csv, and optionally splits.csv and
     excluded_payees.csv), and each category's expense account from
     imports/expense_accounts.csv; at a terminal a category with no account
     there is asked for and saved.
+
+    A source whose file has no categories (a bank's) gets them by payee,
+    from imports/<source>/payees.csv: text found in the payee, and its
+    category ('transfer' for a move between your own accounts or a card's
+    payment, '-' to leave the rows out). At a terminal a payee no row covers
+    is asked about, the most paid first, and saved; 'rest' puts all not yet
+    asked into Other for this run.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
@@ -8844,43 +8918,65 @@ def import_transactions(
         files = (default_file,)
     amazon_state_path = amazon_state_dir or data_repo_root / "state"
     try:
-        flows = import_sources_.read_flows(files, layout, import_mapping.imports_dir(data_dir_p))
+        flows = import_sources_.read_flows(
+            files, layout, import_mapping.imports_dir(data_dir_p), account=outside_account)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     if flows.transactions.empty:
         raise click.ClickException(
             "no transactions in " + ", ".join(map(str, files))
             + f": is it a {flows.source} transactions export?")
-    maps_dir = import_mapping.source_dir(data_dir_p, flows.source)
-    category_map_path = maps_dir / import_mapping.CATEGORIES
-    category_split_path = maps_dir / import_mapping.SPLITS
-    excluded_payees_path = maps_dir / import_mapping.EXCLUDED_PAYEES
-    if not category_map_path.exists():
-        raise click.ClickException(
-            f"category map not found: {category_map_path} "
-            f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
 
+    payee_maps: dict[str, import_mapping.PayeeMap] = {}
     try:
-        merges, exclusions = import_mapping.load_category_map(category_map_path)
-        baseline = build_expense_baseline(
-            flows,
-            load_monthly_summaries(amazon_state_path),
-            category_merges=merges,
-            excluded_categories=exclusions,
-            default_category="Other",
-            category_splits=(
-                import_mapping.load_category_splits(category_split_path)
-                if category_split_path.exists() else None
-            ),
-            excluded_payee_patterns=(
-                import_mapping.load_excluded_payees(excluded_payees_path)
-                if excluded_payees_path.exists() else ()
-            ),
-        )
+        category_maps: dict[str, import_transactions_.CategoryMaps] = {}
+        for source in flows.sources:
+            maps_dir = import_mapping.source_dir(data_dir_p, source)
+            category_map_path = maps_dir / import_mapping.CATEGORIES
+            category_split_path = maps_dir / import_mapping.SPLITS
+            excluded_payees_path = maps_dir / import_mapping.EXCLUDED_PAYEES
+            each = category_maps[source] = import_transactions_.CategoryMaps()
+            if import_transactions_.uncategorized(flows.transactions, source):
+                payee_maps[source] = import_mapping.load_payee_map(maps_dir / import_mapping.PAYEES)
+            elif not category_map_path.exists():
+                raise click.ClickException(
+                    f"category map not found: {category_map_path} "
+                    f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
+            if category_map_path.exists():
+                each.merges, each.exclusions = import_mapping.load_category_map(category_map_path)
+            if category_split_path.exists():
+                each.splits = import_mapping.load_category_splits(category_split_path)
+            if excluded_payees_path.exists():
+                each.excluded_payees = import_mapping.load_excluded_payees(excluded_payees_path)
+        maps = import_transactions_.combine(category_maps)
         expense_accounts = import_mapping.load_expense_accounts(
             import_mapping.expense_accounts_path(data_dir_p))
+        transactions, payees_asked, left_to_other = _categorize_by_payee(
+            flows.transactions, payee_maps,
+            known={*maps.merges.values(), *expense_accounts.accounts})
+        # A category a payee was given is one the household chose, as a
+        # merge's target is: not one for the default category to swallow.
+        for payee_map in payee_maps.values():
+            for _, category in payee_map.rows:
+                if category not in (import_mapping.NO_RULE, import_mapping.TRANSFER) \
+                        and category not in maps.exclusions:
+                    maps.merges.setdefault(category, category)
+        baseline = build_expense_baseline(
+            import_forms.Flows(flows.source, transactions),
+            load_monthly_summaries(amazon_state_path),
+            category_merges=maps.merges,
+            excluded_categories=maps.exclusions,
+            default_category="Other",
+            category_splits=maps.splits or None,
+            excluded_payee_patterns=maps.excluded_payees,
+        )
     except ValueError as e:
         raise click.ClickException(str(e)) from None
+    if left_to_other:
+        click.echo(
+            f"note: {len(left_to_other)} payee(s) not asked about went to Other, "
+            f"{format_dollars(sum(each.cents for each in left_to_other))} in all; the most paid: "
+            + "; ".join(f"{each.example} ({format_dollars(each.cents)})" for each in left_to_other[:5]))
     with _intent_db(data_dir_p, scenario_name) as (con, _):
         if start is None:
             # As loaded: a derived scenario's own scenario.csv may leave it
@@ -8996,10 +9092,15 @@ def import_transactions(
                    f"with {len(rows)}: {counts or 'none'}")
         if to_save:
             click.echo("(dry run) the expense accounts you gave were not saved")
+        if payees_asked:
+            click.echo("(dry run) the payee categories you gave were not saved")
         return
     with _scenario_edit(data_dir_p, scenario_name) as edit:
         replace_generated_scheduled_rows(edit.path(scheduled_path), rows)
     # Once the rules are written: an edit that is refused saves nothing.
+    for source in sorted(payees_asked):
+        payee_maps[source].save()
+        click.echo(f"saved payee categories to {_shown(payee_maps[source].path)}")
     if to_save:
         expense_accounts.save()
         click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
