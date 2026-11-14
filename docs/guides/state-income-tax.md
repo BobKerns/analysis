@@ -24,7 +24,7 @@ The tables are in the code repository's
 
 | Table | Says |
 | --- | --- |
-| `state_brackets`, `state_standard_deduction` | Rates and the standard deduction (with a personal exemption folded in) |
+| `state_brackets`, `state_standard_deduction` | Rates and the standard deduction (with a personal exemption folded in), which may shrink with income |
 | `state_social_security` | How much federally taxable Social Security the state leaves out, phased by income |
 | `state_retirement_exclusion` | Pension, IRA and other retirement income left out, by age, per person, below an income |
 | `state_adjustments` | The state's own subtractions, deductions and credits: from tagged spending or income, per filer, from federal tax or the federal deduction |
@@ -71,9 +71,14 @@ every state's list.
   **table**.
 - **A standard deduction that shrinks as income rises** (Alabama, Maine,
   Minnesota, Rhode Island, South Carolina from 2026, Wisconsin):
-  `state_standard_deduction` is one amount per filing status, so the
-  deduction is the same at every income: **not supported**
-  ([#578](https://github.com/BobKerns/analysis/issues/578)).
+  `state_standard_deduction`'s optional phase-out columns, **table**:
+  above `phaseout_start` of the state's AGI it falls to nothing at
+  `phaseout_end`, or by `phaseout_rate` of each dollar over, not below
+  `floor`. With a rate, `phaseout_step` counts the income over in whole
+  steps, as a table of $500 rows does; with an end, `phaseout_steps`
+  splits the span into equal steps. It tests the state's AGI unless
+  `phaseout_agi` is `federal`, as Minnesota's, Rhode Island's and South
+  Carolina's do.
 - **Married couples filing separately on one return** (Arkansas, Delaware,
   the District, Kentucky, Virginia): each spouse's income runs through the
   brackets and standard deduction alone, which saves tax where the lower
@@ -108,7 +113,12 @@ on interest and dividends ended with 2024.
 - Defined benefit pensions, public and private, are exempt, and from 65 a
   further amount of IRA and other retirement income: **table**
   (`state_retirement_exclusion`). Social Security is exempt.
-- The standard deduction shrinks with income: **not supported** (#578).
+- The standard deduction shrinks with income: **table**. It falls by a
+  fixed amount for each $500 of AGI from $26,000, to a minimum, so
+  `phaseout_start` is $25,999, `phaseout_step` $500, `phaseout_rate` the
+  amount a step takes over $500 (35% joint, 5% single, 27% head of
+  family), and `floor` the minimum. Married filing separately uses $250
+  steps from $13,000.
 
 ### Arizona
 
@@ -253,8 +263,12 @@ on interest and dividends ended with 2024.
   (`state_retirement_exclusion` with `less_ss`). Social Security is
   exempt.
 - The personal exemption phases out at high income: **table**.
-- The standard deduction phases out above an income: **not supported**
-  (#578).
+- The standard deduction phases out above an income: **table**, from
+  `phaseout_start` (the worksheet's threshold) to nothing at
+  `phaseout_end`, the threshold plus its divisor ($150,000 joint, $75,000
+  single). The start and end must index together (or not at all), so the
+  span grows with inflation where the law's divisor doesn't: close, not
+  exact.
 
 ### Maryland
 
@@ -291,8 +305,12 @@ on interest and dividends ended with 2024.
 
 - The Social Security subtraction falls in $4,000 steps of income:
   **table**, as a straight line.
-- The standard deduction phases out at high income: **not supported**
-  (#578).
+- The standard deduction phases out at high income, by 3% of AGI over
+  one threshold and 10% over a second, losing at most 80%: **table**,
+  approximately. One `phaseout_rate` of 10% from the second threshold
+  less a third of the 3% band's width matches the law above the second
+  threshold and is a little off within the band; `floor` is 20% of the
+  amount. `phaseout_agi` is `federal`.
 - A 1% surtax on net investment income over $1 million: **not supported**.
 - The renter's credit and property tax refund: **household calculator**,
   and refundable (#579).
@@ -400,14 +418,19 @@ on interest and dividends ended with 2024.
   income ($107,000, or $133,500 joint, for 2025). The pension modification
   is **table** (tagged `income` from 67). The age test on Social Security
   is **not supported** (#581).
-- The standard deduction and exemptions phase out at high income: **not
-  supported** (#578).
+- The standard deduction and exemptions phase out at high income in 20%
+  steps: **table**. For the standard deduction, `phaseout_end` is five
+  steps ($7,250 each for 2025) above `phaseout_start` and `phaseout_steps`
+  is 5, so each started step takes a fifth, and `phaseout_agi` is
+  `federal`. The exemptions are
+  a `state_adjustments` `filers` row, phased out as a straight line.
 
 ### South Carolina
 
 - From 2026 (H.4216), South Carolina starts from federal AGI with a
-  deduction of its own that phases down with income: **not supported**
-  (#578). Two rates, the upper one with a subtraction: **table**.
+  deduction of its own that phases down with income: **table**
+  (`phaseout_start` and `phaseout_end`: $80,000 to $190,000 joint,
+  $40,000 to $95,000 single; `phaseout_agi` `federal`). Two rates, the upper one with a subtraction: **table**.
 - The retirement deduction, and the deduction from 65: **table**. Social
   Security is exempt.
 - A share of long-term gain excluded: **table**. Check whether H.4216
@@ -452,8 +475,10 @@ on interest and dividends ended with 2024.
 - From 2025, up to $24,000 a person of retirement income is excluded from
   67: **table**. Social Security is exempt.
 - 30% of long-term gain is excluded: **table**.
-- The standard deduction slides to nothing as income rises: **not
-  supported** (#578).
+- The standard deduction slides to nothing as income rises: **table**
+  (`phaseout_rate`: 19.778% joint, 12% single). Head of household falls
+  at 22.515% until it meets the single figure and then follows it, which
+  one row can't say: its own line to nothing is close, not exact.
 - The homestead credit: **household calculator**.
 
 ## Gaps left for after beta

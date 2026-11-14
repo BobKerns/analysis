@@ -154,3 +154,19 @@ def test_a_calculators_own_figure_grows_like_a_tables() -> None:
         == 1_425_00 * factor // 1_000_000 > 1_425_00
     with pytest.raises(engine.tax_api.TaxError, match="no inflation series 'wages'"):
         engine._grown_amount(_cpi_2_5(), 1_425_00, "wages", 2025, 2030, cache)
+
+
+def test_a_state_deductions_phase_out_figures_grow_with_their_own_series() -> None:
+    # #578: the start and end of a phase-out index like the amount; a
+    # floor without a series stays as written.
+    aux = {**_cpi_2_5(), ("state_standard_deduction", "RI"): [
+        ("2027-01-31", {"filing_status": "MFJ", "amount": 20_000_00, "amount_series": "cpi",
+                        "phaseout_start": 250_000_00, "phaseout_start_series": "cpi",
+                        "phaseout_end": 290_000_00, "phaseout_end_series": "cpi",
+                        "floor": 1_000_00}),
+    ]}
+    [row] = engine._indexed_tax_rows(aux, "state_standard_deduction", "RI", 2030, {})
+    assert row["amount"] > 20_000_00
+    assert row["phaseout_start"] > 250_000_00
+    assert row["phaseout_end"] > 290_000_00
+    assert row["floor"] == 1_000_00

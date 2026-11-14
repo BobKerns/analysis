@@ -345,24 +345,42 @@ def taxable_social_security(
     return min((ss_income * 85) // 100, base + addl)
 
 
-def state_ss_exclusion(row: Mapping[str, Any], taxable_ss: int, agi: int) -> int:
-    """How much of ``taxable_ss``, the federally taxable Social Security, a
-    state leaves out by its ``state_social_security`` ``row`` (#484), at a
-    federal AGI of ``agi``: ``exclusion_percent`` of it, phased out above
-    ``phaseout_start`` to nothing at ``phaseout_end`` (at once when they are
-    equal), or less ``phaseout_rate`` of each dollar over."""
-    full = taxable_ss * int(row["exclusion_micros"]) // 1_000_000
+def phase_out(full: int, row: Mapping[str, Any], agi: int) -> int:
+    """What is left of ``full`` at an AGI of ``agi`` by a phase-out row's
+    columns (#484, #578): above ``phaseout_start`` it falls evenly to
+    nothing at ``phaseout_end`` (at once when they are equal), or by
+    ``phaseout_rate`` of each dollar over, but not below ``floor``. With a
+    rate, ``phaseout_step`` counts the dollars over in whole steps, a
+    started one in full (a table of $500 rows); with an end,
+    ``phaseout_steps`` splits the span into that many equal steps, a
+    started one taking its share in full. What is left rounds down."""
     start = row.get("phaseout_start")
     if start is None or agi <= int(start):
         return full
     over = agi - int(start)
+    floor = min(full, int(row.get("floor") or 0))
     rate = row.get("phaseout_rate_micros")
     if rate is not None:
-        return max(0, full - over * int(rate) // 1_000_000)
+        step = row.get("phaseout_step")
+        if step:
+            over = -(-over // int(step)) * int(step)
+        return max(floor, full - over * int(rate) // 1_000_000)
     span = int(row["phaseout_end"]) - int(start)
     if over >= span:
-        return 0
-    return full * (span - over) // span
+        return floor
+    steps = row.get("phaseout_steps")
+    if steps:
+        taken = -(-over * int(steps) // span)
+        return max(floor, full * (int(steps) - taken) // int(steps))
+    return max(floor, full * (span - over) // span)
+
+
+def state_ss_exclusion(row: Mapping[str, Any], taxable_ss: int, agi: int) -> int:
+    """How much of ``taxable_ss``, the federally taxable Social Security, a
+    state leaves out by its ``state_social_security`` ``row`` (#484), at a
+    federal AGI of ``agi``: ``exclusion_percent`` of it, phased out
+    (:func:`phase_out`)."""
+    return phase_out(taxable_ss * int(row["exclusion_micros"]) // 1_000_000, row, agi)
 
 
 def progressive_tax(taxable_income: int, brackets: Sequence[tuple[int, int]]) -> int:
@@ -750,10 +768,22 @@ def brackets(ty: TaxYear, kind: str, series: str | None) -> list[tuple[int, int]
 
 
 def standard_deduction(ty: TaxYear, kind: str, series: str | None = None) -> int:
+    """The full standard deduction, before any phase-out with income."""
+    return int(standard_deduction_row(ty, kind, series)["amount"])
+
+
+def standard_deduction_row(ty: TaxYear, kind: str, series: str | None = None) -> Mapping[str, Any]:
+    """The standard deduction row in force for the year's filing status."""
     rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == ty.filing_status]
     if not rows:
         raise TaxError(f"{where(ty)}: missing standard deduction for filing_status={ty.filing_status!r}")
-    return int(rows[0]["amount"])
+    return rows[0]
+
+
+def phased_standard_deduction(row: Mapping[str, Any], agi: int) -> int:
+    """A ``state_standard_deduction`` ``row``'s amount at an AGI of ``agi``,
+    phased out (:func:`phase_out`, #578)."""
+    return phase_out(int(row["amount"]), row, agi)
 
 
 def itemized_deduction(ty: TaxYear, kind: str) -> int:
