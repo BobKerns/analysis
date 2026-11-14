@@ -3223,24 +3223,34 @@ def _mortgage_months(
 
 
 def _taxes_paid(con, tax_year: int) -> list[tax_api.TaxPaid]:
-    """The state and local income tax paid in calendar ``tax_year`` (#542),
-    the SALT deduction's income taxes on a cash basis: everything paid into
-    each such jurisdiction's destination that year. The destination is the
-    jurisdiction's own account, and only its income tax payments go in
-    (the loader, #586), so nothing there needs telling apart. A refund (a
-    settlement out of the destination, #568) is never netted: the
-    settlement posts it the April after, for the year before, and under the
-    tax-benefit rule it is that year's income, to the extent the deduction
-    saved tax, which isn't modeled."""
+    """The state and local income tax paid in calendar ``tax_year`` and the
+    year before (#542), the SALT deduction's income taxes on a cash basis:
+    everything paid into each such jurisdiction's destination in the year.
+    The destination is the jurisdiction's own account, and only its income
+    tax payments go in (the loader, #586), so nothing there needs telling
+    apart. A refund (a settlement out of the destination, #568) is never
+    netted against them: the settlement posts it the April after, for the
+    year before, and the federal return recaptures it as that year's income
+    to the extent the deduction saved tax (#593), from the year before's
+    return and payments: the TaxYear gets this year's rows as
+    ``taxes_paid`` and the year before's as ``prior_taxes_paid``."""
     return [
-        tax_api.TaxPaid(tax_year, str(name), int(amount))
-        for name, amount in con.execute(
-            "SELECT j.name, SUM(e.amount) FROM tax_jurisdiction j "
-            "JOIN chain c ON c.id = j.destination_chain_id "
-            "JOIN transfer_event e ON e.to_account = c.account_id "
+        tax_api.TaxPaid(int(year), str(name), int(into), int(out))
+        for year, name, into, out in con.execute(
+            "SELECT CAST(substr(e.date, 1, 4) AS INTEGER) AS y, j.name, "
+            "       SUM(CASE WHEN e.to_account = c.account_id THEN e.amount ELSE 0 END), "
+            "       SUM(CASE WHEN e.from_account = c.account_id AND e.reason_kind = 'tax' "
+            "                THEN e.amount ELSE 0 END) "
+            # An OR, not IN, and CROSS JOINs to keep the jurisdiction first:
+            # SQLite then reads only the destination's events, through the
+            # two account indexes, not every event in the two years.
+            "FROM tax_jurisdiction j "
+            "CROSS JOIN chain c ON c.id = j.destination_chain_id "
+            "CROSS JOIN transfer_event e "
+            "  ON (e.to_account = c.account_id OR e.from_account = c.account_id) "
             "WHERE j.name != 'federal' AND e.date >= ? AND e.date < ? "
-            "AND e.reason_kind != 'initial' GROUP BY j.name ORDER BY j.name",
-            (f"{tax_year:04d}-01-01", f"{tax_year + 1:04d}-01-01"))
+            "AND e.reason_kind != 'initial' GROUP BY y, j.name ORDER BY y, j.name",
+            (f"{tax_year - 1:04d}-01-01", f"{tax_year + 1:04d}-01-01"))
     ]
 
 
@@ -3375,7 +3385,9 @@ def _tax_year(
     return tax_api.TaxYear(
         year=tax_year, jurisdiction=scope, params=typed,
         items=items, losses=losses, persons=persons, spending=spending, hsa_gains=hsa_gains,
-        mortgages=mortgages, taxes_paid=taxes_paid,
+        mortgages=mortgages,
+        taxes_paid=[t for t in taxes_paid if t.year == tax_year],
+        prior_taxes_paid=[t for t in taxes_paid if t.year == tax_year - 1],
         _table=lambda kind, series, year: _active_aux_rows(aux, kind, series, f"{year}-12-31"),
         _indexed=lambda kind, series: _indexed_tax_rows(aux, kind, series, tax_year, growth_cache),
         _dated=lambda kind, series=None: aux.get((kind, series)) or [],
