@@ -11,7 +11,10 @@ from pathlib import Path
 
 import pandas as pd
 
-__all__ = ["FLOW_COLUMNS", "ORIGIN", "REFERENCE", "Flows", "Holding", "Snapshot", "read_rows"]
+__all__ = [
+    "FLOW_COLUMNS", "ORIGIN", "REFERENCE", "Budget", "BudgetLine", "Flows", "Holding", "Snapshot",
+    "read_rows",
+]
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,34 @@ class Flows:
         missing = [c for c in FLOW_COLUMNS if c not in self.transactions.columns]
         if missing:
             raise ValueError(f"{self.source}: transactions lack column(s) {missing}")
+
+
+@dataclass(frozen=True)
+class BudgetLine:
+    """What a budget plans for one category: its own amount, apart from
+    any category under it."""
+
+    income: bool
+    """Money in; otherwise spending."""
+    category: str
+    """The category's whole path, its levels joined by ``:`` as the outside
+    program's transactions name it (``Auto:Fuel``)."""
+    total_cents: int
+    """The period's amount. Spending is positive; a budgeted refund negative."""
+    monthly_cents: tuple[int, ...] = ()
+    """Each month's amount, in the order of ``Budget.months``; empty when
+    the file has only the period's total."""
+
+
+@dataclass(frozen=True)
+class Budget:
+    """A plan of income and spending by category over a period."""
+
+    source: str
+    lines: tuple[BudgetLine, ...]
+    months: tuple[dt.date, ...] = ()
+    """The first day of each month of the period, in order; empty when the
+    file doesn't say which months it covers."""
 
 
 def read_rows(path: Path, limit: int | None = None) -> list[list[str]]:

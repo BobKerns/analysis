@@ -2416,6 +2416,67 @@ def card_exports(
     return detailed, again, short
 
 
+def _budget_export(tmp_path: Path, name: str, head: list[str], rows: list[tuple[str, list[int]]]) -> Path:
+    """A Quicken budget export as the program writes it: a title and the
+    period, then every line opened by a byte-order mark, the amounts in
+    whole dollars with commas, each an Actual, Budgeted, Difference triple."""
+    def triple(budgeted: int) -> str:
+        return f'"0","{budgeted:,}","{budgeted:,}"'
+
+    lines = [f"Household - {name}", "", "Created: 2026-11-14", "", "2026 - 2027:  JULY to JUNE", *head]
+    for label, amounts in rows:
+        lines.append(f"{label}," + ",".join(triple(each) for each in amounts) + ("," if amounts else ""))
+    path = tmp_path / f"budget-{name.casefold()}.csv"
+    mark = "\ufeff"
+    path.write_text("\n".join(line if n < 4 else mark + line for n, line in enumerate(lines)) + "\n",
+                    encoding="utf-8")
+    return path
+
+
+# Alice and Bill's budget for July 2026 to June 2027, month by month: the
+# power bill every month, groceries and eating out under Food (which has
+# 10 a month of its own besides), property tax in two months, a paycheck,
+# and a category with no budget.
+_BUDGET_ROWS: list[tuple[str, list[int]]] = [
+    ("INCOME", []),
+    (",Paycheck", [5000] * 12),
+    ("EXPENSES", []),
+    (",Food", [710] * 12),
+    (", - Groceries", [500] * 12),
+    (", - Restaurants", [200] * 12),
+    (", -  - Coffee", [50] * 12),
+    (",Property Tax", [0, 0, 0, 0, 0, 3000, 0, 0, 0, 3000, 0, 0]),
+    (",Utilities", [150] * 6 + [180] * 6),
+    (",Travel", [0] * 12),
+]
+
+
+@pytest.fixture
+def quicken_budget_full_export(tmp_path: Path) -> Path:
+    """A Quicken budget exported in its Full form: a column triple for each
+    month of July 2026 to June 2027 (see ``_BUDGET_ROWS``)."""
+    months = ["JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+              "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE"]
+    head = [
+        ",,2026" + "," * 18 + "2027" + "," * 17,
+        ",," + ",,,".join(months) + ",,",
+        ",," + ",".join(["Actual,Budgeted,Difference"] * 12),
+        "SUMMARY,",
+        ",Expenses," + ",".join(['"0","0","0"'] * 12) + ",",
+        "," + ",".join(["------------------"] * 37) + ",",
+    ]
+    return _budget_export(tmp_path, "Full", head, _BUDGET_ROWS)
+
+
+@pytest.fixture
+def quicken_budget_summary_export(tmp_path: Path) -> Path:
+    """The same budget exported in its Summary form: the year's totals only."""
+    head = [",,Actual,Budgeted,Difference", "SUMMARY,", ',Expenses,"0","0","0",',
+            ",------------------,------------------,------------------,------------------,"]
+    return _budget_export(tmp_path, "Summary", head,
+                          [(label, [sum(amounts)] if amounts else []) for label, amounts in _BUDGET_ROWS])
+
+
 @pytest.fixture
 def quicken_empty_transaction_export(tmp_path: Path) -> Path:
     """A Quicken "Transaction Export" of an account with no activity."""

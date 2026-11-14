@@ -847,3 +847,38 @@ def test_the_maps_of_several_sources_must_agree() -> None:
     with pytest.raises(ValueError, match="split two ways"):
         transactions.combine(
             {"a": one, "b": transactions.CategoryMaps(splits={"Food": {"Checking": "Food_Bill"}})})
+
+
+# ---------- a budget (issue #617) ----------
+
+def test_a_quicken_budget_is_read_month_by_month_with_each_categorys_own_amount(
+    quicken_budget_full_export: Path,
+) -> None:
+    assert [(s.name, form) for s, form in sources.detect(quicken_budget_full_export)] == [
+        ("quicken", "budget")]
+
+    budget = sources.read_budget(quicken_budget_full_export)
+
+    assert budget.months[0] == dt.date(2026, 7, 1) and budget.months[-1] == dt.date(2027, 6, 1)
+    assert len(budget.months) == 12
+    lines = {line.category: line for line in budget.lines}
+    # Food's row counts what is under it; 10 a month is its own. Travel has no budget.
+    assert {name: line.total_cents for name, line in lines.items()} == {
+        "Paycheck": 6_000_000, "Food": 12_000, "Food:Groceries": 600_000,
+        "Food:Restaurants": 180_000, "Food:Restaurants:Coffee": 60_000,
+        "Property Tax": 600_000, "Utilities": 198_000}
+    assert lines["Paycheck"].income and not lines["Food"].income
+    assert lines["Property Tax"].monthly_cents == (0, 0, 0, 0, 0, 300_000, 0, 0, 0, 300_000, 0, 0)
+    assert lines["Utilities"].monthly_cents[5:7] == (15_000, 18_000)
+
+
+def test_a_quicken_budget_summary_has_the_years_totals_and_its_months_from_the_period(
+    quicken_budget_summary_export: Path, quicken_budget_full_export: Path,
+) -> None:
+    budget = sources.read_budget(quicken_budget_summary_export)
+    full = sources.read_budget(quicken_budget_full_export)
+
+    assert budget.months == full.months
+    assert {line.category: line.total_cents for line in budget.lines} \
+        == {line.category: line.total_cents for line in full.lines}
+    assert all(line.monthly_cents == () for line in budget.lines)
