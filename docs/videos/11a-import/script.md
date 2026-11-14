@@ -121,7 +121,7 @@ lines = [
   "Portfolio_Positions_Jan-02-2026.csv",
   "holdings-88812345.csv",
 ]
-note = "From Quicken: net worth and last year's transactions. From each brokerage: what an account holds"
+note = "Quicken's two reports, and a download from each brokerage"
 ```
 
 Alice exports two reports from Quicken, as CSV files. One is a net worth
