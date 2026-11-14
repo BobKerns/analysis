@@ -82,11 +82,15 @@ every state's list.
   `phaseout_agi` is `federal`, as Minnesota's, Rhode Island's and South
   Carolina's do.
 - **Married couples filing separately on one return** (Arkansas, Delaware,
-  the District, Kentucky, Virginia): each spouse's income runs through the
-  brackets and standard deduction alone, which saves tax where the lower
-  brackets or the deduction aren't doubled for a joint return. The
-  simulator taxes a couple jointly: **not supported**
-  ([#580](https://github.com/BobKerns/analysis/issues/580)).
+  the District, Kentucky, Virginia,
+  [#580](https://github.com/BobKerns/analysis/issues/580)): each spouse's
+  income runs through the brackets and standard deduction alone, which
+  saves tax where the lower brackets or the deduction aren't doubled for a
+  joint return. A `state_separate_return__<state>.csv` with `allowed`
+  `yes` has the state tax figure both ways, each spouse with the `MFS`
+  rows and the income that's theirs (by account owner, joint income split
+  evenly), and take the lower. The rule that both spouses itemize or
+  neither (Kentucky, Delaware) isn't modeled.
 - **Itemized deductions** ([#542](https://github.com/BobKerns/analysis/issues/542)):
   a state with its own `state_itemized_limits__<state>.csv` (California's
   ships) figures them from spending as the federal return does, under its
@@ -138,7 +142,8 @@ on interest and dividends ended with 2024.
 - Half of long-term gain is excluded: **table**.
 - A personal tax credit per filer: **table**.
 - Lower incomes use separate tax tables: **not supported**.
-- Spouses may file separately on one return: **not supported** (#580).
+- Spouses may file separately on one return: **table**
+  (`state_separate_return`).
 
 ### California (shipped)
 
@@ -179,7 +184,8 @@ on interest and dividends ended with 2024.
   dividends and gains, smaller below 60: **table**. Social Security is
   exempt.
 - A larger standard deduction from 65, and personal credits: **table**.
-- Spouses may file separately on one return: **not supported** (#580).
+- Spouses may file separately on one return: **table**
+  (`state_separate_return`).
 
 ### District of Columbia (shipped)
 
@@ -189,7 +195,8 @@ on interest and dividends ended with 2024.
   65). The extra deduction when blind: **not supported** (the model
   doesn't know who is blind).
 - The property tax credit (Schedule H): **household calculator**.
-- Spouses may file separately on one return: **not supported** (#580).
+- Spouses may file separately on one return: **shipped**
+  (`state_separate_return__DC.csv`).
 
 ### Georgia
 
@@ -251,7 +258,8 @@ on interest and dividends ended with 2024.
   Social Security is exempt.
 - A personal tax credit from 65: **table**.
 - The standard deduction isn't doubled for a joint return, and spouses may
-  file separately on one return: **not supported** (#580).
+  file separately on one return, each taking one: **table**
+  (`state_separate_return`).
 
 ### Louisiana
 
@@ -461,7 +469,8 @@ on interest and dividends ended with 2024.
 
 - An age deduction from 65 that falls a dollar for each dollar of income
   over a limit: **table**. Social Security is exempt.
-- Spouses may file separately on one return: **not supported** (#580).
+- Spouses may file separately on one return: **table**
+  (`state_separate_return`).
 
 ### Washington (shipped)
 

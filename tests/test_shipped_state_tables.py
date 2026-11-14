@@ -79,8 +79,12 @@ def test_living_in_a_shipped_state_taxes_by_its_tables(
     if state == "ID":  # its 2025 zero band, grown to 2026 by the run's CPI
         assert 0 < summary["state_tax"] < taxable * 0.053
     else:  # before its credits (Nebraska's exemption credit)
-        assert summary["state_tax"] + summary["state_credits"] == progressive_tax(
+        # The District lets a couple file separately on one return (#580):
+        # its joint return is the brackets', and the tax no more than that.
+        joint = summary.get("state_joint_tax", summary["state_tax"])
+        assert joint + summary["state_credits"] == progressive_tax(
             taxable, _brackets(state, "2026-01-31"))
+        assert summary["state_tax"] <= joint
 
 
 def test_shipped_tables_need_no_inflation_before_2026(

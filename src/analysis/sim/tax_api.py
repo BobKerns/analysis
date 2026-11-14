@@ -40,7 +40,7 @@ __all__ = [
     "TaxYear", "calculator", "is_registered", "percent", "register",
 ]
 
-API_VERSION = 5
+API_VERSION = 6
 """Bumped when a calculator written against the previous version could
 break, or one written for this version needs what the previous lacks. 1
 (#510) is the first a data repo can write to; 2 (#511) adds a state year's
@@ -50,7 +50,11 @@ step and :attr:`Extra.real_estate_ltcg`; 4 (#568) its
 ``deductions_at`` and ``itemized_lines`` steps, :attr:`TaxYear.mortgages`
 and :attr:`TaxYear.taxes_paid`. A state year whose module says it was
 written for 4 or before and that overrides ``deductions`` figures no
-itemized lines from spending: it may figure its own Schedule A."""
+itemized lines from spending: it may figure its own Schedule A. 6 (#580)
+adds its ``separate`` step, spouses filing separately on one return; a
+state year whose module says it was written for 5 or before and that
+overrides ``deductions`` or ``tax`` never files separately, since the step
+reads the tables those would replace."""
 
 Row = dict[str, Any]
 """One aux table row's payload."""

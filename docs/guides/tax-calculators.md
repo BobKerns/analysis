@@ -149,7 +149,7 @@ What it does:
   `refundable_credits`, run for each return, one of the steps a
   state year goes through (`additions`, `subtractions`, `deductions`,
   `itemized_lines`, `other_deductions`, `tax`, `credits`, `credit_lines`,
-  `excise`, `refundable_credits`). Each line it returns is a line of the return,
+  `separate`, `excise`, `refundable_credits`). Each line it returns is a line of the return,
   written to the run as `state_<line>`. A refundable credit comes off
   last and can take the tax below zero; the April settlement pays it
   back. A credit that can't, like most, goes in `credit_lines` instead.
@@ -164,6 +164,13 @@ What it does:
   (A module that overrides `deductions` and says `API_VERSION = 4`, or
   sets no `API_VERSION`, gets no lines, as before they existed; say
   `API_VERSION = 5` to get them.)
+- In a state whose `state_separate_return` table allows it, the built-in
+  `separate` figures each spouse's tax alone, calling your `tax` with the
+  `MFS` tables in place of the year's (and `self.ty.filing_status`
+  saying `MFS`, so a table you read through `self.ty` gives that
+  spouse's rows), and the return takes it when it's lower. A module whose year overrides `tax` or `deductions` gets it only
+  if it says `API_VERSION = 6` or later; a year that can't figure one
+  spouse's tax overrides `separate` to return `None` and file jointly.
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is
   the year's spending carrying a tag; `ty.grown(amount, series, since)` a
   figure the law set for year `since`, grown with inflation to this one,

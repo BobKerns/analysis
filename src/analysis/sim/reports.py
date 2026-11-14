@@ -660,8 +660,9 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     return frame
 
 
-_NOT_MONEY_LINES = frozenset({"irmaa_tier"})
-"""Return lines that count something other than money (#253)."""
+_NOT_MONEY_LINES = frozenset({"irmaa_tier", "separate_return"})
+"""Return lines that count something other than money (#253): an IRMAA
+tier, and whether spouses filed separately on one return (#580)."""
 
 
 def tax_return(rc: RunConnection, jurisdiction: str,

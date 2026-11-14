@@ -185,6 +185,7 @@ every other scenario.
 | `state_local_tax__<state>.csv` | Optional: a local income tax (county, city, school district) on the state's taxable income, in the columns of its brackets: Maryland's county rate as one band, New York City's brackets, or a Portland-area tax as a 0% band below its threshold. Named for a county (`residence.csv` names the household's) or, for one table across the state, the state; paid by `taxes/local.csv` into its own `taxes_local` account, and shown as `local_tax` in `sim report tax`. Two local taxes on the same base, such as Portland's Metro and Multnomah County taxes, go in one table, their rates added. Needs a row for every filing status the state's brackets have. None ships. |
 | `state_gains_tax__<state>.csv` / `state_gains_deduction__<state>.csv` | Optional: a state's tax on long-term capital gains apart from its income tax, keyed by state; see "A state's gains tax" below. `__WA` ships Washington's. |
 | `state_hsa__<state>.csv` | How a state taxes a health savings account: `treatment` `taxable` or `federal`. Optional, keyed by state; without one the HSA follows the federal rules. `__CA` says `taxable`: California doesn't recognize HSAs and taxes one like a brokerage account, so a contribution isn't deducted, its dividends and interest are taxed the year they're paid, and a withdrawal is taxed on its gain over the account's cost basis. |
+| `state_separate_return__<state>.csv` | Optional: `allowed` `yes` or `no`, whether the state lets a married couple file separately on one return, keyed by state; without one a couple files jointly. See "Spouses filing separately on one return" below. `__DC` says `yes`. |
 | `state_retirement_exclusion__<state>.csv` | Optional: the state's retirement income exclusions, keyed by state like `state_brackets__<state>.csv` and read by a state tax. None ships (California has none); see "State retirement income exclusions" below. |
 | `state_adjustments__<state>.csv` | Optional: the state's own deductions and credits, keyed by state like `state_brackets__<state>.csv` and read by a state tax; each row is a named line of the return. `__CA` ships California's personal and senior exemption credits and its renter's credit, 2025's figures, `__WA` Washington's credit for its gains tax from 2028, and `__DC`, `__ID`, `__KS` and `__NE` the lines named under "The states that ship"; see "State deductions and credits" below. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split), added to the lines figured from spending (`itemized_limits.csv`). A tax jurisdiction uses whichever is greater, the itemized total or the standard deduction. `amount` can be `@name` (an itemizations/ rollup). They hold only what no line figures (a casualty loss, investment interest): medical bills, charity, property tax and mortgage interest go in tagged spending, where their floors and limits apply. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all; a state that figures no lines of its own (none but California's ships) then misses what the federal lines figure, so give it its own total, or `itemized_limits_aux` `itemized_limits` on `taxes/state.csv` to figure the federal lines for it (loading warns). |
@@ -384,7 +385,9 @@ too much.
   $32,200 joint, for 2026), so it grows with `cpi`, and so does the extra
   deduction at 65 (`age_65_deduction`), the federal one: $2,050 single,
   or $1,650 for each spouse, for 2026 (Rev. Proc. 2025-32; DC's 2025
-  Schedule S used 2025's federal $2,000 and $1,600).
+  Schedule S used 2025's federal $2,000 and $1,600). A couple may file
+  separately on one return (`state_separate_return__DC.csv`), which saves
+  tax when both have income.
 - **Idaho:** 5.3% above a zero band, which is indexed. Idaho hasn't
   published its 2026 band, so the 2026 rows carry the 2025 one ($4,811, or
   $9,622 joint), about $7 of tax high, and grow it with `cpi` from there. The standard
@@ -444,6 +447,45 @@ too much.
   effective_date,name,step,base,tag
   2026-01-31,bailey_exclusion,subtraction,income,tax:bailey
   ```
+
+## Spouses filing separately on one return
+
+Arkansas, Delaware, the District of Columbia, Kentucky and Virginia let a
+married couple file separately on one state return, whatever they filed
+federally: each spouse's income runs through the brackets and the
+standard deduction alone, and the two taxes are added. Where the brackets
+are the same for every filing status, or the deduction isn't doubled for a
+joint return (Kentucky), that saves tax. A
+`state_separate_return__<state>.csv` with `allowed` `yes` turns it on for
+that state:
+
+```csv
+effective_date,allowed
+2026-01-31,yes
+```
+
+The state tax then figures both and takes the lower, in a married year
+with two people in the household (`primary` and `secondary`). Each spouse
+gets the income that's theirs, by the paying account's owner as for a
+retirement exclusion, joint income split evenly: their own ordinary income,
+a loss included (a business loss stays its owner's), gains by their shares of gain, Social
+Security by their benefits, and their own retirement exclusion off their
+own. Each takes the state's `MFS` standard deduction (phased out at their
+own AGI where it shrinks), or their share of the itemized deduction by
+AGI, and is taxed with the `MFS` brackets, gain tables and surcharge, so
+the state's brackets, gain tables and standard deduction need `MFS` rows
+while the table says `yes` (loading checks). A carried-in loss offsets each spouse's income in turn. A
+`state_adjustments` line for each filer goes to the filers who reached its
+age, a `per_person` income line to each one's own, others evenly; a credit
+takes no more than its spouse's tax. Income
+tests stay the household's, as on the joint return. The run records
+`state_joint_tax`, `state_separate_tax`, `state_separate_return` (1 when
+separate was lower) and each spouse's `state_separate_agi_<person>`,
+`state_separate_deduction_<person>`, `state_separate_taxable_income_<person>`
+and `state_separate_tax_<person>`. When separate is lower, the return's
+`deduction`, `taxable_income`, `credits` and credit lines are the two
+spouses' added up (`state_joint_taxable_income` keeps the joint figure). Kentucky's and Delaware's rule that both spouses itemize or
+neither isn't modeled.
 
 ## A state's capital gains
 
