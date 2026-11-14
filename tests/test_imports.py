@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from analysis.sim.imports import flows, holdings, mapping, quicken, sources
+from analysis.sim.imports import flows, holdings, mapping, profiles, quicken, sources
 from analysis.sim.imports.forms import Flows, Holding, Snapshot
 
 # ---------- the Quicken source ----------
@@ -356,3 +357,134 @@ def test_read_transactions_reads_a_signed_dollar_amount_and_names_a_bad_one(
     quicken_transaction_export.write_text(text.replace('"-300.00"', '"n/a"'), encoding="utf-8")
     with pytest.raises(ValueError, match="row 3: 'n/a' is not an amount"):
         quicken.read_transactions(quicken_transaction_export)
+
+
+# ---------- sources described by a profile ----------
+
+def test_a_profile_reads_money_dates_and_where_the_holdings_stop(
+    fidelity_positions_export: Path, vanguard_holdings_export: Path,
+) -> None:
+    fidelity = sources.read_holdings([fidelity_positions_export])
+    assert (fidelity.source, fidelity.as_of) == ("fidelity", dt.date(2026, 1, 5))
+    # The notes after the empty row are not holdings; '**' is Fidelity's mark.
+    assert [(h.account, h.asset, h.value_cents, h.cost_basis_cents) for h in fidelity.holdings] == [
+        ("111111111", "FXAIX", 20010000, 15000000), ("111111111", "FSKAX", 7500000, 8000000),
+        ("111111111", "SPAXX", 4490000, None), ("222222222", "FXAIX", 9000000, 6000000)]
+    assert fidelity.holdings[0].hints["account_name"] == "Joint brokerage"
+
+    vanguard = sources.read_holdings([vanguard_holdings_export])
+    assert vanguard.as_of == dt.date(2026, 1, 5)
+    # The account is the file's name; the basis is the balance less the gain,
+    # and a dash is no gain to take off.
+    assert [(h.account, h.asset, h.cost_basis_cents) for h in vanguard.holdings] == [
+        ("Bill Roth IRA", "VTSAX", 30000000), ("Bill Roth IRA", "VBTLX", 11642362),
+        ("Bill Roth IRA", "VMFXX", None)]
+
+
+@pytest.mark.parametrize(("text", "problem"), [
+    ("- a list\n", "a profile is a mapping"),
+    ("description: x\n", "needs 'holdings'"),
+    ("holdings: {columns: {asset: A}}\n", "must name value"),
+    ("holdings: {columns: {asset: A, value: V}}\n", "say where the account is, once"),
+    ("holdings: {columns: {asset: A, value: V, account: C}, account: {file_name: x}}\n",
+     "say where the account is, once"),
+    ("holdings: {columns: {asset: A, value: V, account: C}, as_of: {heading: '(', format: x}}\n",
+     "is not a pattern"),
+    ("holdings: {columns: {asset: A, value: V, account: C}, stop: never}\n", "unknown holdings key(s)"),
+    ("name: other\nholdings: {columns: {asset: A, value: V, account: C}}\n", "its folder says 'mine'"),
+])
+def test_a_profile_that_cant_be_used_says_why(
+    write_import_profile: Callable[[str, str], Path], text: str, problem: str,
+) -> None:
+    path = write_import_profile("mine", text)
+    with pytest.raises(profiles.ProfileError, match=re.escape(problem)) as error:
+        profiles.load(path, "mine")
+    assert str(path) in str(error.value)
+
+
+def test_a_profile_names_the_cell_it_cant_read(
+    write_import_profile: Callable[[str, str], Path], tmp_path: Path, test_data_dir: Path,
+) -> None:
+    write_import_profile("mine", "holdings: {columns: {account: Acct, asset: Sym, value: Worth}}\n")
+    imports = test_data_dir / "imports"
+    export = tmp_path / "mine.csv"
+    export.write_text("Acct,Sym,Worth\nA1,AAA,lots\n", encoding="utf-8")
+
+    with pytest.raises(profiles.ProfileError, match=r"line 2, Worth: 'lots' is not an amount of money"):
+        sources.read_holdings([export], imports=imports)
+    # A file without the profile's columns is not the profile's.
+    export.write_text("Acct,Sym\nA1,AAA\n", encoding="utf-8")
+    assert sources.detect(export, imports=imports) == []
+
+
+def test_a_profile_may_not_take_a_coded_sources_name(
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+) -> None:
+    write_import_profile("quicken", "holdings: {columns: {account: A, asset: S, value: V}}\n")
+    with pytest.raises(sources.SourceError, match="give the profile's folder another name"):
+        sources.sources(test_data_dir / "imports")
+
+
+# ---------- lots by symbol ----------
+
+_BROKERAGE = {"Brokerage": ("asset", "brokerage_taxable"), "Roth": ("asset", "retirement")}
+
+
+def _symbol_snapshot() -> Snapshot:
+    from decimal import Decimal
+    return Snapshot("broker", (
+        Holding("B1", 12000_00, asset="AAA", quantity=Decimal("100"), cost_basis_cents=9000_00),
+        Holding("B1", 5000_00, asset="BBB", quantity=Decimal("50.5"), cost_basis_cents=6000_00),
+    ))
+
+
+def _mapped(test_data_dir: Path, *rows: tuple[str, str, mapping.AccountTarget]) -> mapping.AccountMap:
+    found = mapping.AccountMap(test_data_dir / "imports" / "broker" / "accounts.csv")
+    for outside, asset, target in rows:
+        found.set(outside, asset, target)
+    return found
+
+
+def test_plan_sends_each_holding_to_the_lot_of_its_symbol(test_data_dir: Path) -> None:
+    account_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "Brokerage")))
+    lots = [
+        # Kept in shares: only the share count is the import's to set.
+        {"account_name": "Brokerage", "lot": "a", "symbol": "AAA", "quantity": "90", "opening_balance": "",
+         "opening_cost_basis": "8000.00"},
+        {"account_name": "Brokerage", "lot": "b", "symbol": "BBB", "quantity": "", "opening_balance": "4000.00"},
+        {"account_name": "Brokerage", "lot": "gone", "symbol": "CCC", "quantity": "5", "opening_balance": "70.00"},
+    ]
+
+    result = holdings.plan(_symbol_snapshot(), account_map, _BROKERAGE, lots)
+
+    assert result.complete
+    assert result.cells == {
+        0: {"quantity": "100", "opening_cost_basis": "9000.00"},
+        1: {"opening_balance": "5000.00", "opening_cost_basis": "6000.00"},
+    }
+    assert [w for w in result.warnings if "'gone'" in w and "sim account lot delete Brokerage gone" in w]
+
+
+def test_plan_leaves_open_a_symbol_with_no_lot_and_fills_a_fresh_one(test_data_dir: Path) -> None:
+    account_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "Roth")))
+    one = {"account_name": "Roth", "lot": "default", "subkind": "roth_ira", "opening_balance": "100.00"}
+
+    # One lot with no symbol: together, or a lot each?
+    asked = holdings.plan(_symbol_snapshot(), account_map, _BROKERAGE, [one])
+    assert [h.asset for h, _ in asked.undecided] == ["AAA", "BBB"] and not asked.new
+    # A lot each: every holding needs one.
+    split = holdings.plan(_symbol_snapshot(), account_map, _BROKERAGE, [one], split={"Roth"})
+    assert [h.asset for h, _ in split.new] == ["AAA", "BBB"] and not split.undecided
+
+    fresh = [{"account_name": "Roth", "lot": name, "subkind": "roth_ira", "symbol": name.upper()}
+             for name in ("aaa", "bbb")]
+    result = holdings.plan(_symbol_snapshot(), account_map, _BROKERAGE, [one, *fresh],
+                           split={"Roth"}, fresh={1, 2})
+    assert result.complete
+    # Shares and balance both, so the lot needs no price; never a Roth's basis.
+    assert result.cells[1] == {"quantity": "100", "opening_balance": "12000.00",
+                               "prior_year_end_balance": "12000.00"}
+    assert {"quantity": "50.5", "opening_balance": "5000.00"}.items() <= result.cells[2].items()
+    assert not any("opening_cost_basis" in cells for cells in result.cells.values())
+    assert len(result.notes) == 2 and "sim account lot edit Roth aaa --opening-cost-basis" in result.notes[0]
+    assert [w for w in result.warnings if "'default'" in w and "now has lots of its own" in w]

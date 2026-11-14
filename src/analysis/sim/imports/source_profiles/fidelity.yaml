@@ -1,0 +1,16 @@
+description: Fidelity positions download (CSV)
+holdings:
+  layout: 'Positions: "Download" (Portfolio_Positions_<date>.csv)'
+  columns:
+    account: Account number
+    account_name: Account name
+    asset: Symbol
+    name: Description
+    value: Current value
+    quantity: Quantity
+    cost_basis: Cost basis total
+    type: Type
+  # The last line: "Date downloaded Nov-13-2026 at 9:23 p.m ET".
+  as_of: {last_lines: 'Date downloaded (\w{3}-\d{2}-\d{4})', format: '%b-%d-%Y'}
+  # A money market holding is "SPAXX**".
+  strip_asset: '*'

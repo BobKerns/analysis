@@ -14,7 +14,10 @@ Alice and Bill and a Quicken export:
 | You keep your accounts in | What to do |
 | --- | --- |
 | Quicken | Export two reports, then [balances](#balances-sim-import-holdings) and [spending](#spending-sim-import-transactions) below |
-| A brokerage's or a bank's website (a positions or transactions download) | Not read yet ([#527](https://github.com/BobKerns/analysis/issues/527)). Until then, type the balances when `sim scenario roll` asks ([user guide](../user-guide.md), §4.21) |
+| Vanguard or Fidelity | Download each account's holdings, then [brokerage files](#brokerage-files) below |
+| Another brokerage or bank whose website downloads a table of balances | Describe its columns in a [profile](#a-source-of-your-own), then import as above |
+| A bank's transactions download | Not read yet ([#527](https://github.com/BobKerns/analysis/issues/527)) |
+| An HSA custodian with no usable download | Type the balances when `sim scenario roll` asks ([user guide](../user-guide.md), §4.21) |
 | An OFX or QFX download | Not read yet (#527) |
 | Nothing a program exports, or only a few accounts | Type them: `sim scenario roll` asks for each lot's balance, and `sim scheduled add` takes an estimate of spending |
 
@@ -54,6 +57,7 @@ To change an answer, edit its row in the file. `sim account rename` and
 imports/
   expense_accounts.csv     category -> expense account ('-' for no rule)
   <source>/
+    profile.yaml           a source of your own (see below)
     accounts.csv           outside account -> account and lot, or skip
     categories.csv         outside category -> category
     splits.csv             a category divided by the outside account that paid
@@ -76,7 +80,7 @@ accounts hold. Export the snapshot as of the scenario's first day.
 - An account with several lots needs the lot named: the question asks for
   it. One outside number can't fill two lots, so an outside account that
   the scenario keeps as several lots is best answered `skip`, and its lots
-  typed.
+  filled from a [brokerage file](#brokerage-files) or typed.
 - A debt is stored as a positive amount owed, whatever sign the source uses.
 - Two outside accounts mapped to one lot are added together.
 - A lot the scenario inherits from its parent is changed by writing an
@@ -84,6 +88,85 @@ accounts hold. Export the snapshot as of the scenario's first day.
 - For investment accounts, a blank `prior_year_end_balance` (what required
   withdrawals are figured from) is filled with the same number.
   `--year-end` sets that column alone, from a snapshot as of December 31.
+
+### Brokerage files
+
+A brokerage's download lists what each account holds, fund by fund, so it
+can fill an account kept as several lots, which one number can't.
+
+```sh
+sim import holdings ~/Downloads/Portfolio_Positions_Jan-05-2026.csv --dry-run
+sim import holdings ~/Downloads/Portfolio_Positions_Jan-05-2026.csv
+```
+
+1. **Each outside account is matched to an account**, once, as above. No
+   lot is asked for.
+2. **Each holding goes to the account's lot with its symbol.** The lot's
+   shares and balance are set, and in a taxable brokerage account its cost
+   basis.
+3. **A holding the account has no lot of is asked about.** Press Enter for a
+   new lot named for the symbol, type another name, name a lot the account
+   has to add the holding into it, or `skip` it. `--new-lots` adds a lot for
+   each without asking.
+4. **An account with one lot and no symbol is asked about first:** add the
+   holdings together into that lot, or keep a lot for each? A lot for each
+   lets each grow as its own fund does, which matters to the plan's
+   allocation and to an ensemble's range of outcomes. One lot is simpler.
+   If you split, the old lot still holds the total: the import says so, and
+   `sim account lot delete` removes it.
+
+Things to know:
+
+- **A Roth lot's basis is yours to type.** In the plan a Roth lot's basis is
+  what was contributed and converted, which comes out untaxed at any age.
+  A broker's "cost basis" is what the holdings cost, which is something
+  else, so an import never sets it. A Roth lot with no basis counts its
+  whole balance as contributions, and the import reminds you:
+  `sim account lot edit ACCOUNT LOT --opening-cost-basis AMOUNT`. The
+  custodian's Form 5498s add up to it.
+- **A new symbol is only a label** until the plan knows it. `sim symbol add`
+  gives it a name, its asset classes and its prices; until then its lot
+  grows as its account does.
+- **A lot the file doesn't mention is kept**, with a warning: it may have
+  been sold. Remove it with `sim account lot delete`.
+- **A retirement account with a required-withdrawal rule** draws from one
+  lot. Before it has several, its rule needs a chain naming them in order;
+  the import is refused, with that message, until it has one.
+- **Roll first, then import.** At a new year, `sim scenario roll` moves the
+  plan forward on its own projections, and an import then corrects the
+  balances from the real files.
+
+| Source | What to download | The account |
+| --- | --- | --- |
+| `fidelity` | *Positions*, *Download*: one file for every account | a column of the file |
+| `vanguard` | *Holdings*, the download of one account's holdings | the file's name, less `.csv`; or `--outside-account NAME` |
+
+A Vanguard file doesn't say which account it is, so the import takes the
+file's name: give each account's download the same name every time, or pass
+`--outside-account`.
+
+### A source of your own
+
+A download that is a plain table, one row for each holding or account, needs
+no code. Describe it in `imports/<source>/profile.yaml`, with whatever name
+you like for the source:
+
+```yaml
+description: Credit union balances
+holdings:
+  layout: 'Accounts: Export'
+  columns:
+    account: Share ID
+    asset: Symbol
+    value: Balance
+```
+
+`columns` says which heading holds what; `asset` and `value` are required,
+and `quantity`, `cost_basis`, `account_name` and a few more are optional.
+The keys for a date, for an account that is only in the file's name, and for
+cells that mean "nothing" are in
+[ADR-003](../architecture/ADR-003-registries-and-csv-schemas.md), §4.17.
+`sim import sources` then lists the source, and recognizes its files.
 
 ## Spending: `sim import transactions`
 
@@ -137,7 +220,8 @@ Amazon categorizer's monthly summaries in `state/`, which split Amazon
 orders into real categories.
 
 Quicken's net worth report has one number for a brokerage account, so it
-can't fill an account kept as several lots.
+can't fill an account kept as several lots: import those from the
+[brokerage's own file](#brokerage-files).
 
 A data repo with Quicken mappings from before the `imports/` folder moves
 them with `scripts/migrate_527.py` (it reports first; `--write` does it).

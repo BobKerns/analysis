@@ -7,8 +7,9 @@ changed lots through a staged edit.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 
 from analysis.sim.imports.forms import Holding, Snapshot
 from analysis.sim.imports.mapping import AccountMap, AccountTarget
@@ -16,7 +17,13 @@ from analysis.sim.registries import DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 from analysis.sim.units import dollars_to_cents
 
-__all__ = ["Change", "HoldingsPlan", "format_dollars", "is_investment_asset", "plan"]
+__all__ = [
+    "TAXABLE_BROKERAGE", "Change", "HoldingsPlan", "format_dollars", "is_investment_asset", "plan",
+    "roth_basis_note",
+]
+
+TAXABLE_BROKERAGE = "brokerage_taxable"
+"""The account subkind whose lots keep a cost basis an import can set."""
 
 
 def is_investment_asset(kind: str, subkind: str) -> bool:
@@ -59,20 +66,43 @@ class HoldingsPlan:
     """Holdings mapped to an account the scenario doesn't have."""
     no_lot: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
     """Holdings mapped to an account the scenario has, but not to a lot of it."""
+    undecided: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
+    """Holdings with a symbol, mapped to an account whose one lot has none:
+    add them together into that lot, or keep each as a lot of its own?"""
+    new: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
+    """Holdings with a symbol none of the account's lots has."""
     skipped: list[str] = field(default_factory=list)
     ineligible: list[str] = field(default_factory=list)
     """Accounts ``--year-end`` doesn't apply to."""
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    """What the import couldn't set, and what to do about it."""
 
     @property
     def complete(self) -> bool:
         """Whether every holding found a place (or was skipped on purpose)."""
-        return not self.unmapped and not self.unknown and not self.no_lot
+        return not (self.unmapped or self.unknown or self.no_lot or self.undecided or self.new)
+
+
+@dataclass
+class _Landed:
+    """What the holdings that land in one lot add up to."""
+
+    cents: int = 0
+    quantity: Decimal | None = Decimal(0)
+    """None once any holding lacks one."""
+    basis_cents: int | None = 0
+    by_symbol: bool = False
+
+
+def _lot_name(row: Mapping[str, str]) -> str:
+    return row.get("lot", "") or DEFAULT_LOT
 
 
 def plan(
     snapshot: Snapshot, account_map: AccountMap, accounts: Mapping[str, tuple[str, str]],
     lots: Sequence[Mapping[str, str]], *, year_end: bool = False,
+    split: Collection[str] = (), fresh: Collection[int] = (),
 ) -> HoldingsPlan:
     """What importing ``snapshot`` would change.
 
@@ -88,19 +118,38 @@ def plan(
     none, so a lot is seeded, or set with ``year_end``, only when that leaves
     the account whole.
 
-    Two holdings mapped to one lot are added together, as the source signs
-    them. A liability is stored as a non-negative debt, so its total is then
-    negated.
+    **Which lot.** A mapping that names a lot takes everything it covers:
+    two holdings mapped to one lot are added together, as the source signs
+    them. One that names only the account sends a holding with a symbol to
+    the account's lot of that symbol. With no such lot, the holding is
+    ``new``, unless the account has a single lot with no symbol: then it is
+    ``undecided``, since the holdings may be meant to add up into that lot;
+    ``split`` names the accounts where that was decided against, so theirs
+    are ``new``. A holding with no symbol goes to the account's only lot.
+
+    **What is set.** A lot kept in shares (a quantity and a symbol, and no
+    balance) has its ``quantity`` set; any other lot its balance, and its
+    quantity too if it has one. The quantity is the file's only when all
+    that lands in the lot is the lot's own symbol. ``opening_cost_basis`` is
+    set on a taxable brokerage lot when the file has a basis for all of it. A retirement or
+    HSA lot's basis is never set: a broker's cost basis is what the
+    holdings cost, and a Roth lot's basis means what was contributed.
+
+    ``fresh`` is the indexes of lots made for this import, which have only
+    their names and symbol yet: each takes its holding's quantity and
+    balance both, so it needs no price to load.
+
+    A liability is stored as a non-negative debt, so its total is negated.
     """
     result = HoldingsPlan(rows=[dict(row) for row in lots])
-    totals: dict[int, int] = {}
+    landed: dict[int, _Landed] = {}
     for holding in snapshot.holdings:
         target = account_map.lookup(holding.account, holding.asset)
         if target is None:
             result.unmapped.append(holding)
             continue
         if target.action == "skip":
-            result.skipped.append(holding.account)
+            result.skipped.append(holding.label)
             continue
         info = accounts.get(target.account)
         if info is None:
@@ -109,27 +158,52 @@ def plan(
         if year_end and not is_investment_asset(*info):
             result.ineligible.append(target.account)
             continue
-        indexes = [i for i, row in enumerate(result.rows) if row.get("account_name") == target.account]
+        of_account = [i for i, row in enumerate(result.rows) if row.get("account_name") == target.account]
+        by_symbol = False
         if target.lot:
             # The default lot is a blank cell, whichever way the map spells it.
             wanted = {target.lot, "" if target.lot == DEFAULT_LOT else target.lot}
-            indexes = [i for i in indexes if result.rows[i].get("lot", "") in wanted]
-        if not indexes:
-            result.no_lot.append((holding, target))
-            continue
+            indexes = [i for i in of_account if result.rows[i].get("lot", "") in wanted]
+            if not indexes:
+                result.no_lot.append((holding, target))
+                continue
+        elif holding.asset:
+            indexes = [i for i in of_account
+                       if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper()]
+            by_symbol = True
+            if not indexes:
+                alone = len(of_account) == 1 and not result.rows[of_account[0]].get("symbol", "").strip()
+                undecided = alone and target.account not in split
+                (result.undecided if undecided else result.new).append((holding, target))
+                continue
+        else:
+            indexes = of_account
+            if not indexes:
+                result.no_lot.append((holding, target))
+                continue
         if len(indexes) > 1:
+            what = f"lots of {holding.asset}" if by_symbol else "lots"
             result.warnings.append(
-                f"{target.account!r} has {len(indexes)} lots and the mapping of "
-                f"{holding.account!r} names none, so it was skipped; set its 'lot' in "
+                f"{target.account!r} has {len(indexes)} {what} and the mapping of "
+                f"{holding.label!r} names none, so it was skipped; set its 'lot' in "
                 f"{account_map.path}"
             )
             continue
-        totals[indexes[0]] = totals.get(indexes[0], 0) + holding.value_cents
+        into = landed.setdefault(indexes[0], _Landed())
+        into.cents += holding.value_cents
+        into.by_symbol |= by_symbol
+        # Shares of two funds don't add up to a number of shares.
+        same = holding.asset.upper() == result.rows[indexes[0]].get("symbol", "").strip().upper()
+        into.quantity = None if into.quantity is None or holding.quantity is None or not same \
+            else into.quantity + holding.quantity
+        into.basis_cents = None if into.basis_cents is None or holding.cost_basis_cents is None \
+            else into.basis_cents + holding.cost_basis_cents
 
-    for index, cents in totals.items():
+    for index, into in landed.items():
         row = result.rows[index]
         name, lot = row["account_name"], row.get("lot", "")
         kind, subkind = accounts[name]
+        cents = into.cents
         if not year_end and kind == "liability":
             cents = -cents
             if cents < 0:
@@ -139,12 +213,11 @@ def plan(
                 )
                 cents = abs(cents)
         dollars = format_dollars(cents)
-        column = "prior_year_end_balance" if year_end else "opening_balance"
         # The account's other lots that must agree with this one on having a
         # prior-year balance: those this run doesn't set too.
         others = [
             other for i, other in enumerate(result.rows)
-            if i not in totals and other.get("account_name") == name
+            if i not in landed and other.get("account_name") == name
             and RETIREMENT_LOT_SUBKINDS.get(other.get("subkind", "")) != "tax_free"
         ]
         whole = all(other.get("prior_year_end_balance", "") for other in others)
@@ -154,25 +227,89 @@ def plan(
                 f"every lot of an account or on none, so lot {lot or DEFAULT_LOT!r} was "
                 "skipped; import every lot of the account in one run")
             continue
-        before = row.get(column, "")
         cells: dict[str, str] = {}
+        changed = False
+
+        def put(column: str, after: str, *, same: bool, note: str = "",
+                row: dict[str, str] = row, cells: dict[str, str] = cells,
+                name: str = name, lot: str = lot) -> bool:
+            if same:
+                return False
+            result.changes.append(Change(name, lot, column, row.get(column, ""), after, note))
+            cells[column] = after
+            return True
+
         # Compared as money: '20000' and '20000.00' are the same balance, and
         # rewriting one as the other would override an inherited lot for nothing.
-        if _cents(before) != cents:
-            result.changes.append(Change(name, lot, column, before, dollars))
-            result.lots_changed += 1
-            cells[column] = dollars
+        if year_end:
+            changed |= put("prior_year_end_balance", dollars,
+                           same=_cents(row.get("prior_year_end_balance", "")) == cents)
         else:
-            result.lots_unchanged += 1
+            had_quantity = _number(row.get("quantity", ""))
+            in_shares = had_quantity is not None and not row.get("opening_balance", "").strip() \
+                and bool(row.get("symbol", "").strip())
+            if into.quantity is not None and (had_quantity is not None or index in fresh):
+                changed |= put("quantity", _plain(into.quantity), same=had_quantity == into.quantity)
+            if not (in_shares and into.quantity is not None):
+                changed |= put("opening_balance", dollars,
+                               same=_cents(row.get("opening_balance", "")) == cents,
+                               note="new lot" if index in fresh else "")
+            if into.basis_cents is not None and subkind == TAXABLE_BROKERAGE:
+                changed |= put("opening_cost_basis", format_dollars(into.basis_cents),
+                               same=_cents(row.get("opening_cost_basis", "")) == into.basis_cents)
+            if RETIREMENT_LOT_SUBKINDS.get(row.get("subkind", "")) == "tax_free" \
+                    and not row.get("opening_cost_basis", "").strip():
+                result.notes.append(roth_basis_note(name, lot))
+        result.lots_changed += changed
+        result.lots_unchanged += not changed
         if not year_end and is_investment_asset(kind, subkind) and whole \
                 and not row.get("prior_year_end_balance", ""):
-            cells["prior_year_end_balance"] = dollars
-            result.changes.append(
-                Change(name, lot, "prior_year_end_balance", "", dollars, "seeded from opening"))
+            put("prior_year_end_balance", dollars, same=False, note="seeded from opening")
         if cells:
             row |= cells
             result.cells[index] = cells
+
+    # A file that lists an account's holdings one by one says what the
+    # account holds: a lot it doesn't mention may have been sold.
+    listed = {result.rows[index]["account_name"] for index, into in landed.items() if into.by_symbol}
+    listed |= {target.account for _, target in result.new}
+    for index, row in enumerate(result.rows):
+        if row.get("account_name") in listed and index not in landed \
+                and (_cents(row.get("opening_balance", "")) or _number(row.get("quantity", ""))):
+            # A lot the holdings were split out of still has their total.
+            why = "now has lots of its own for what it held; remove it" \
+                if row["account_name"] in split and not row.get("symbol", "").strip() \
+                else "keeps what it holds; if it was sold, remove it"
+            result.warnings.append(
+                f"lot {_lot_name(row)!r} of {row['account_name']} isn't in the "
+                f"{snapshot.source} file and {why} "
+                f"with 'sim account lot delete {row['account_name']} {_lot_name(row)}'")
     return result
+
+
+def roth_basis_note(account: str, lot: str) -> str:
+    """What to tell the user about a Roth lot an import filled: its basis
+    is the contributions, which no brokerage file has."""
+    return (
+        f"lot {lot or DEFAULT_LOT!r} of {account} is a Roth lot with no basis, so the plan "
+        "takes its whole balance as contributions, which come out untaxed at any age. An "
+        "outside file has at most what the holdings cost, which isn't that. Set what was "
+        f"contributed and converted with 'sim account lot edit {account} {lot or DEFAULT_LOT} "
+        "--opening-cost-basis AMOUNT' (the custodian's Form 5498s add up to it)")
+
+
+def _number(text: str) -> Decimal | None:
+    """A quantity cell as a number; None for a blank or malformed one."""
+    try:
+        return Decimal(text.strip()) if text.strip() else None
+    except InvalidOperation:
+        return None
+
+
+def _plain(number: Decimal) -> str:
+    """``number`` without an exponent or trailing zeros: 808.576, 1000."""
+    text = format(number, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _cents(text: str) -> int | None:

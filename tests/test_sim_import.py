@@ -737,3 +737,192 @@ def test_a_rename_follows_a_map_not_yet_migrated_and_a_category_named_like_the_a
     assert result.exit_code == 0, result.output
     assert (test_data_dir / "imports" / "expense_accounts.csv").read_text(encoding="utf-8") == \
         "category,account\nExpense_Living,Expense_Life\n"
+
+
+# ---------- brokerage files: sources described by a profile ----------
+
+def _all_lots(data: Path, scenario: str = "retire_alice") -> dict[tuple[str, str], dict[str, str]]:
+    path = data / "scenarios" / scenario / "account_lots.csv"
+    with path.open(newline="", encoding="utf-8") as f:
+        return {(r["account_name"], r["lot"]): r for r in csv.DictReader(f)}
+
+
+def _saved(data: Path, source: str) -> list[str]:
+    return (data / "imports" / source / "accounts.csv").read_text(encoding="utf-8").splitlines()[1:]
+
+
+def test_sim_import_sources_lists_the_profiles_and_knows_their_files(
+    fidelity_positions_export: Path, vanguard_holdings_export: Path,
+) -> None:
+    listed = CliRunner().invoke(main, ["sim", "import", "sources"])
+    assert listed.exit_code == 0, listed.output
+    rows = {line.split()[0]: line for line in listed.output.splitlines()}
+    assert "built in" in rows["fidelity"] and "built in" in rows["vanguard"]
+
+    found = CliRunner().invoke(main, ["sim", "import", "sources", str(fidelity_positions_export),
+                                      str(vanguard_holdings_export)])
+    assert found.output.splitlines() == [
+        f"{fidelity_positions_export}: fidelity holdings",
+        f"{vanguard_holdings_export}: vanguard holdings",
+    ]
+
+
+def test_sim_import_holdings_asks_about_a_brokerage_files_lots_once(
+    test_data_dir: Path, fidelity_positions_export: Path, at_a_terminal: None,
+) -> None:
+    # Each outside account, then: a lot for each of the brokerage's holdings
+    # (n), the Roth's added together (y), and the offered name for each lot.
+    result = _import(test_data_dir, "holdings", str(fidelity_positions_export),
+                     input="Asset_Brokerage_Joint\nAsset_Roth_Alice\nn\ny\n\n\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "'111111111' (Joint brokerage)" in result.output
+    assert "fidelity snapshot as of 2026-01-05" in result.output
+    lots = _all_lots(test_data_dir)
+    fund = lots["Asset_Brokerage_Joint", "fxaix"]
+    assert (fund["symbol"], fund["quantity"], fund["opening_balance"], fund["opening_cost_basis"]) == (
+        "FXAIX", "1000.5", "200100.00", "150000.00")
+    assert lots["Asset_Brokerage_Joint", "fskax"]["opening_cost_basis"] == "80000.00"
+    cash = lots["Asset_Brokerage_Joint", "spaxx"]
+    assert (cash["symbol"], cash["quantity"], cash["opening_balance"], cash["opening_cost_basis"]) == (
+        "SPAXX", "", "44900.00", "")
+    # The lot the holdings were split out of is the user's to remove.
+    assert lots["Asset_Brokerage_Joint", "default"]["opening_balance"] == "300000.00"
+    assert "lot 'default' of Asset_Brokerage_Joint isn't in the fidelity file and now has lots" \
+        in result.output
+    # A broker's cost basis isn't a Roth's contributions.
+    roth = lots["Asset_Roth_Alice", "default"]
+    assert (roth["opening_balance"], roth["opening_cost_basis"]) == ("90000.00", "")
+    assert "is a Roth lot with no basis" in result.output
+    assert "the plan doesn't know FSKAX, FXAIX, SPAXX yet" in result.output
+    assert _saved(test_data_dir, "fidelity") == [
+        "111111111,,map,Asset_Brokerage_Joint,,", "222222222,,map,Asset_Roth_Alice,default,"]
+
+    # The next file finds every lot by its symbol, and asks nothing.
+    fidelity_positions_export.write_text(
+        fidelity_positions_export.read_text(encoding="utf-8").replace('"$75,000.00"', '"$76,500.00"'),
+        encoding="utf-8")
+    again = _import(test_data_dir, "holdings", str(fidelity_positions_export))
+    assert again.exit_code == 0, again.output
+    assert "updated 1 lot(s)" in again.output
+    assert _all_lots(test_data_dir)["Asset_Brokerage_Joint", "fskax"]["opening_balance"] == "76500.00"
+
+
+def test_sim_import_holdings_takes_an_existing_lot_or_skip_for_a_holding(
+    test_data_dir: Path, fidelity_positions_export: Path, at_a_terminal: None,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("fidelity/accounts.csv",
+                     "111111111,,map,Asset_Brokerage_Joint,,\n222222222,,skip,,,\n")
+
+    # A lot for each; FXAIX gets one, FSKAX goes into it too, the cash is left out.
+    result = _import(test_data_dir, "holdings", str(fidelity_positions_export),
+                     input="n\nindex\nindex\nskip\n")
+
+    assert result.exit_code == 0, result.output
+    index = _all_lots(test_data_dir)["Asset_Brokerage_Joint", "index"]
+    assert (index["symbol"], index["opening_balance"]) == ("FXAIX", "275100.00")
+    # Two funds in one lot have no one share count; what they cost adds up.
+    assert (index["quantity"], index["opening_cost_basis"]) == ("", "230000.00")
+    assert _saved(test_data_dir, "fidelity")[2:] == [
+        "111111111,FSKAX,map,Asset_Brokerage_Joint,index,", "111111111,SPAXX,skip,,,"]
+
+
+def test_sim_import_holdings_new_lots_needs_no_terminal(
+    test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("vanguard/accounts.csv", "Bill Roth IRA,,map,Asset_Roth_Bill,,\n")
+
+    refused = _import(test_data_dir, "holdings", str(vanguard_holdings_export))
+    assert refused.exit_code != 0
+    assert "--new-lots" in refused.output and "Bill Roth IRA / VTSAX" in refused.output
+
+    result = _import(test_data_dir, "holdings", str(vanguard_holdings_export), "--new-lots")
+    assert result.exit_code == 0, result.output
+    assert "3 new" in result.output
+    lots = _all_lots(test_data_dir)
+    stock = lots["Asset_Roth_Bill", "vtsax"]
+    # The new lot is the kind the account's lot is; a Roth lot's basis isn't the broker's.
+    assert (stock["subkind"], stock["symbol"], stock["quantity"], stock["opening_balance"],
+            stock["opening_cost_basis"]) == ("roth_ira", "VTSAX", "2500", "400000.00", "")
+    assert lots["Asset_Roth_Bill", "vmfxx"]["opening_balance"] == "20000.00"
+    assert "lot 'vtsax' of Asset_Roth_Bill is a Roth lot with no basis" in result.output
+
+
+def test_sim_import_holdings_dry_run_adds_no_lot(
+    test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("vanguard/accounts.csv", "Bill Roth IRA,,map,Asset_Roth_Bill,,\n")
+    before = _all_lots(test_data_dir)
+
+    result = _import(test_data_dir, "holdings", str(vanguard_holdings_export), "--new-lots", "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "[new lot]" in result.output and "(dry run)" in result.output
+    assert _all_lots(test_data_dir) == before
+
+
+def test_sim_import_holdings_outside_account_names_a_files_account(
+    test_data_dir: Path, vanguard_holdings_export: Path, fidelity_positions_export: Path,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("vanguard/accounts.csv", "12345678,,map,Asset_TraditionalIRA_Alice,default,\n")
+
+    result = _import(test_data_dir, "holdings", str(vanguard_holdings_export),
+                     "--outside-account", "12345678")
+    assert result.exit_code == 0, result.output
+    assert _all_lots(test_data_dir)["Asset_TraditionalIRA_Alice", "default"]["opening_balance"] == "520000.00"
+
+    refused = _import(test_data_dir, "holdings", str(fidelity_positions_export),
+                      "--outside-account", "12345678")
+    assert refused.exit_code != 0
+    assert "names its accounts itself" in refused.output
+
+
+def test_sim_import_holdings_year_end_adds_no_lots(
+    test_data_dir: Path, vanguard_holdings_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("vanguard/accounts.csv", "Bill Roth IRA,,map,Asset_Roth_Bill,,\n")
+
+    result = _import(test_data_dir, "holdings", str(vanguard_holdings_export), "--year-end", "--new-lots")
+
+    assert result.exit_code != 0
+    assert "import the current holdings first" in result.output
+
+
+def test_sim_import_holdings_reads_a_households_own_profile(
+    test_data_dir: Path, tmp_path: Path, write_import_profile: Callable[[str, str], Path],
+    write_import_map: MapWriter,
+) -> None:
+    profile = write_import_profile("credit_union", (
+        "description: Credit union balances\n"
+        "holdings:\n"
+        "  layout: 'Accounts: Export'\n"
+        "  columns: {account: Share, value: Balance, asset: Kind}\n"
+        "  blank: [Savings]\n"
+    ))
+    write_import_map("credit_union/accounts.csv", "S1,,map,Asset_Savings,,\n")
+    export = tmp_path / "shares.csv"
+    export.write_text("Share,Kind,Balance\nS1,Savings,\"$21,500.00\"\n", encoding="utf-8")
+
+    listed = CliRunner().invoke(main, ["sim", "import", "sources", "--data-dir", str(test_data_dir)])
+    assert listed.exit_code == 0, listed.output
+    assert any(line.split()[:1] == ["credit_union"] and str(profile.name) in line
+               for line in listed.output.splitlines())
+
+    result = _import(test_data_dir, "holdings", str(export))
+    assert result.exit_code == 0, result.output
+    assert _lots(test_data_dir)["Asset_Savings"]["opening_balance"] == "21500.00"
+
+
+def test_sim_import_names_a_profile_it_cant_use_and_an_unknown_source(
+    test_data_dir: Path, fidelity_positions_export: Path, write_import_profile: Callable[[str, str], Path],
+) -> None:
+    unknown = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--source", "nowhere")
+    assert unknown.exit_code != 0
+    assert "unknown source 'nowhere'" in unknown.output and "fidelity" in unknown.output
+
+    profile = write_import_profile("my_bank", "holdings:\n  columns: {asset: Symbol, value: Worth, colour: X}\n")
+    result = _import(test_data_dir, "holdings", str(fidelity_positions_export))
+    assert result.exit_code != 0
+    assert str(profile) in result.output and "unknown column(s) ['colour']" in result.output

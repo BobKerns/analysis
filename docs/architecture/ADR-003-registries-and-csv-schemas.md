@@ -1067,7 +1067,7 @@ Where the household lives ([#509](https://github.com/BobKerns/analysis/issues/50
 
 Rows merge by `effective_date` down the lineage (§4.5): a child adds a move without restating where the household starts, and a row of the same month replaces its parent's. The loader stores them in the `residence` table (ADR-002), which the run file keeps. It refuses an unknown state, a missing or repeated date, a county without its table, a state tax with no residence, a territory with a tax code of its own (Puerto Rico, American Samoa; [#570](https://github.com/BobKerns/analysis/issues/570)), and a `state_brackets__<code>.csv` of a territory the federal tax stands in for, which would tax the same income twice; with a state tax, a state that taxes income needs its `state_brackets__<state>.csv`, a state with no income tax and no tables of its own reads the shipped 0% `none` tables, and one without its own standard deduction loads with a warning (§4.4). `sim tax state [STATE] [--county COUNTY] [--here]` writes the first row, where it is defined, and `sim tax move DATE STATE [--county COUNTY]` adds a later one to the current scenario (with a state tax, modeled on the federal one, when it moves into a state with income tax and the scenario has none). A row of a later scenario replaces an earlier one's whole: a column its file leaves out is blank. Rows have no `vary_*` columns, so an ensemble can't vary when a move happens.
 
-#### 4.17 Shared: `data_repo/imports/` (optional): saved import mappings
+#### 4.17 Shared: `data_repo/imports/` (optional): saved import mappings and source profiles
 
 `sim import` ([#527](https://github.com/BobKerns/analysis/issues/527)) reads an outside file with a *source* (one outside layout; `sim import sources` lists them), into one of two common forms: *holdings*, a snapshot of what each outside account holds, or *flows*, a period's transactions. Which of a scenario's names each outside name means is saved here, once, for every scenario: the outside world's names don't change from one scenario to the next, and a target is checked against the scenario being written. The loader never reads this folder.
 
@@ -1075,24 +1075,59 @@ Rows merge by `effective_date` down the lineage (§4.5): a child adds a move wit
 imports/
   expense_accounts.csv     category -> expense account
   <source>/
+    profile.yaml           the source itself, when the household describes its own
     accounts.csv           (outside account, asset) -> (account, lot), or skip
     categories.csv         outside category -> category
     splits.csv             a category divided by the outside account that paid
     excluded_payees.csv    payees whose expenses the scenario models itself
 ```
 
+**A source is code or a profile.** One that reads more than a table is code (`quicken`, whose report is an indented tree). One whose file is a plain table is a *profile*: a YAML file saying which column means what, so a household can add a source without code. The built-in profiles (`vanguard`, `fidelity`) are `src/analysis/sim/imports/source_profiles/<source>.yaml`; a household's own is `imports/<source>/profile.yaml`, which replaces a built-in profile of its name and may not take a coded source's. `sim import sources` lists every source and where it is defined.
+
+```yaml
+description: Fidelity positions download (CSV)
+holdings:
+  layout: 'Positions: "Download"'       # what to export, in the outside program's words
+  columns:
+    account: Account number
+    account_name: Account name
+    asset: Symbol
+    name: Description
+    value: Current value
+    quantity: Quantity
+    cost_basis: Cost basis total
+  as_of: {last_lines: 'Date downloaded (\w{3}-\d{2}-\d{4})', format: '%b-%d-%Y'}
+  strip_asset: '*'
+```
+
+| `holdings` key | required | notes |
+| --- | --- | --- |
+| `columns` | ✓ | column headings, by what they hold: `asset` and `value` are required; `account`, `account_name`, `name`, `quantity`, `cost_basis`, `unrealized_gain` (the basis is then the value less it), `acquired`, `type`. A file is the profile's when a row near its top has every heading named, and that row is its header |
+| `account` | unless `columns` has `account` | `{file_name: PATTERN}`: the outside account is the pattern's first group (or its whole match) in the file's name. `--outside-account` names it instead |
+| `as_of` | | where the snapshot's date is: one of `heading` (a column heading), `last_lines` (after the holdings) or `file_name`, each a pattern whose first group is the date, and `format` (a `strptime` format, default `%m/%d/%Y`) |
+| `blank` | | cells that mean nothing, such as a dash |
+| `strip_asset` | | characters taken off both ends of a symbol |
+| `acquired_format` | | the `acquired` column's date format (default `%m/%d/%Y`) |
+| `layout` | | shown by `sim import sources` |
+
+The holdings stop at the first empty row; a row with no value is left out. Money may have a `$`, commas, a sign or parentheses, and anything after it (`-$16,423.62 (-6.68%)`). A profile with a key or column it doesn't know, or a cell that isn't money, a number or a date, is an error naming the profile or the file's line: a file is never read "mostly".
+
 `<source>/accounts.csv`, read by `sim import holdings`:
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `outside_account` | text | ✓ | the account as the source spells it |
-| `asset` | text | | a symbol or asset name within the outside account; blank covers everything in it that has no row of its own. Unique with `outside_account` |
+| `asset` | text | | a symbol or asset name within the outside account; blank covers everything in it that has no row of its own. Unique with `outside_account`. A row with a symbol says which lot that one holding is added into, or that it is skipped |
 | `action` | `map` \| `skip` | ✓ | `skip`: acknowledged, deliberately not imported |
 | `account` | text | for `map` | the scenario account |
-| `lot` | text | | the lot of `account`; blank is its only lot. An account with several lots is skipped, with a warning, unless the row names one |
+| `lot` | text | | the lot of `account`. Blank: a holding with a symbol goes to the account's lot of that symbol, and one without to its only lot (an account with several is skipped, with a warning) |
 | `note` | text | | |
 
 Every outside account in a file must have a row: a new or renamed one is an error naming it, never a balance quietly left out. At a terminal the command asks instead (completing the scenario's accounts that hold a balance, plus `skip`) and saves the answer. A row whose account or lot the scenario doesn't have is asked about too, but the row may be right for another scenario: the answer is used for that import, and replaces the saved row only if the user says so. Answers are saved once the scenario's own files are written, so an import that is refused saves none, and a scenario that doesn't load is asked nothing. Two outside accounts mapped to one lot are added together, as the source signs them, before a liability's total is turned into a debt. An outside account that appears in two of a run's files is refused, as are two transaction files that cover the same days of one outside account.
+
+**Lots by symbol.** A source that lists what an account holds gives each holding a symbol. Its outside account's row names the account and no lot, and each holding goes to the account's lot with that `symbol` (§4.5): the lot's `quantity` is set if it has one, its `opening_balance` unless it is kept in shares (a quantity and a symbol, and no balance), and its `opening_cost_basis` when the account is `brokerage_taxable` and the file has a basis for all that lands in the lot. A retirement or HSA lot's basis is never set: a broker's cost basis is what the holdings cost, and a Roth lot's basis is what was contributed, so an import that sets a Roth lot with no basis says so and names the command that sets it. A row that names a lot adds everything it covers into that lot, whatever the symbols, and sets a quantity only when all of it is the lot's own symbol.
+
+A holding whose symbol the account has no lot of is asked about at a terminal: a new lot (named for the symbol unless another name is typed), a lot the account has (saved as an `asset` row), or `skip` (saved likewise). When the account has just one lot, with no symbol, the first question is whether the holdings are added together into it (saved by naming the lot in the account's row) or each gets a lot. `--new-lots` adds a lot for each without asking. A new lot takes its symbol, shares and balance from the file, its `subkind` from the account's other lots when they agree (asked otherwise), and sets the account's `tax_character` when it is the account's first lot to grow, as `sim account lot add` does. Away from a terminal, without `--new-lots`, such holdings are an error listing them. A lot of a listed account that the file doesn't have keeps what it holds, with a warning naming `sim account lot delete`: it may have been sold. `--year-end` adds no lots.
 
 A target can be any lot the scenario has, its own or inherited (§4.5): a changed lot that is inherited is written as an override of the whole lot in the scenario's own `account_lots.csv`, as `sim account lot edit` writes one. A lot in the scenario's own file has only its balance cells set. Balances are compared as money, so `20000` beside an imported 20,000.00 is no change. A prior-year balance is seeded, or set by `--year-end`, only when the account's other lots (Roth lots aside) have one or get one in the same run, since the loader wants it on every lot or on none.
 
@@ -1532,3 +1567,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#578](https://github.com/BobKerns/analysis/issues/578): optional phase-out columns on `state_standard_deduction` (`phaseout_start`, `phaseout_end`, `phaseout_rate`, `phaseout_step`, `phaseout_steps`, `floor`, `phaseout_agi`, with indexing series), tested against state or federal AGI (§4.4).
 - [#586](https://github.com/BobKerns/analysis/issues/586): each tax jurisdiction pays into an account of its own subkind (new `taxes_local`), none shared and `local` no longer paid with the state's; only income tax payments go into an income-tax account; spending into a `taxes_property` account is property tax; the income tax paid is what went into the jurisdiction's account (§1, §2.6, §4.15).
 - [#579](https://github.com/BobKerns/analysis/issues/579): `state_adjustments` columns `refundable` (a credit paid past the tax) and `less_ss` (an income row's cap less Social Security, per filer with `per_person`); a `per_person` income row caps each filer's own income (§4.4).
+- [#527](https://github.com/BobKerns/analysis/issues/527): a source can be a YAML profile, built in or the household's own `imports/<source>/profile.yaml`; holdings with a symbol go to the account's lot of that symbol, with quantity and a taxable lot's basis, and an import can add lots (§4.17).

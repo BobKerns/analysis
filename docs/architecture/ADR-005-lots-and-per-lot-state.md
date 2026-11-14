@@ -186,7 +186,7 @@ Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage
 - Runtime-created lots, and cost-basis lot selection (FIFO / HIFO / specific) as a policy on multi-lot withdrawals.
 - `on_death` sweeps and the other account-level rule kinds (`ss_benefit`, income tax, `mortgage_payment`) all need auditing for one-balance-per-account assumptions; the plan's Phase 0 does this.
 - Namespace collision between account names and symbols in `aux_table` rate series (lookup order in §5 covers it, but an account and a ticker with the same name would be ambiguous).
-- `sim import holdings` sets the lot each outside account is mapped to, adding together those mapped to one lot (a mapping row names the lot of a multi-lot account, ADR-003 §4.17); per-security positions need a source that carries them ([#527](https://github.com/BobKerns/analysis/issues/527)).
+- `sim import holdings` sets the lot each outside account is mapped to, adding together those mapped to one lot (a mapping row names the lot of a multi-lot account, ADR-003 §4.17). From a source that lists holdings by symbol (a brokerage's positions download), each holding sets the account's lot of that symbol, its shares, balance and, in a taxable account, its basis, and a holding with no lot can be given a new one ([#527](https://github.com/BobKerns/analysis/issues/527)).
 
 ## Amendments
 
