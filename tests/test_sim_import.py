@@ -926,3 +926,50 @@ def test_sim_import_names_a_profile_it_cant_use_and_an_unknown_source(
     result = _import(test_data_dir, "holdings", str(fidelity_positions_export))
     assert result.exit_code != 0
     assert str(profile) in result.output and "unknown column(s) ['colour']" in result.output
+
+
+def test_sim_import_holdings_prune_empties_the_lot_a_file_no_longer_has(
+    test_data_dir: Path, fidelity_positions_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("fidelity/accounts.csv",
+                     "111111111,,map,Asset_Brokerage_Joint,,\n222222222,,skip,,,\n")
+
+    kept = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--new-lots", "--dry-run")
+    assert kept.exit_code == 0, kept.output
+    assert "--prune empties such lots" in kept.output
+
+    result = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--new-lots", "--prune")
+    assert result.exit_code == 0, result.output
+    assert "[not in the file]" in result.output and "1 emptied" in result.output
+    # The lot the holdings were split out of no longer counts them twice.
+    old = _all_lots(test_data_dir)["Asset_Brokerage_Joint", "default"]
+    assert (old["opening_balance"], old["opening_cost_basis"]) == ("0.00", "0.00")
+
+    refused = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--prune", "--year-end")
+    assert refused.exit_code != 0 and "doesn't go with --year-end" in refused.output
+
+
+def test_sim_import_holdings_warns_of_a_file_dated_far_from_the_start(
+    test_data_dir: Path, fidelity_positions_export: Path, write_import_map: MapWriter,
+) -> None:
+    import datetime as dt
+
+    write_import_map("fidelity/accounts.csv", "111111111,,skip,,,\n222222222,,skip,,,\n")
+    with (test_data_dir / "scenarios" / "base" / "scenario.csv").open(encoding="utf-8") as f:
+        start = dt.date.fromisoformat(next(csv.DictReader(f))["start"][:10])
+
+    def dated(day: dt.date) -> str:
+        text = fidelity_positions_export.read_text(encoding="utf-8")
+        was = text[text.index("Date downloaded "):].split(" at ")[0]
+        fidelity_positions_export.write_text(
+            text.replace(was, f"Date downloaded {day:%b-%d-%Y}"), encoding="utf-8")
+        result = _import(test_data_dir, "holdings", str(fidelity_positions_export), "--dry-run")
+        assert result.exit_code == 0, result.output
+        return result.output
+
+    # A download is rarely made on the day itself.
+    assert "warning: the file is as of" not in dated(start + dt.timedelta(days=5))
+    late = start + dt.timedelta(days=40)
+    output = dated(late)
+    assert f"the file is as of {late}, and its balances are being set as of {start}" in output
+    assert "sim scenario roll" in output

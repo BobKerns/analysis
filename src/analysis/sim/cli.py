@@ -8613,6 +8613,10 @@ def import_group_command() -> None:
     """
 
 
+# How far a holdings file's date may be from the day its balances are set as
+# of before the import says so: a download is rarely made on the day itself.
+_IMPORT_DATE_SLACK_DAYS = 7
+
 _SOURCE_OPTION_HELP = "Outside layout to read FILE as (default: the one the file is in; see 'sim import sources')."
 
 
@@ -11986,6 +11990,9 @@ def sync_account_lots(
               help="Treat FILE as the prior year's end (Quicken's \"Year End Export\") and "
                    "write prior_year_end_balance instead of opening_balance, for "
                    "investment asset accounts only.")
+@click.option("--prune", is_flag=True, default=False,
+              help="Empty (balance, shares and basis to zero) each lot that a file listing its "
+                   "account's holdings no longer has: it was sold.")
 @click.option("--new-lots", is_flag=True, default=False,
               help="Add a lot, named for its symbol, for each holding whose symbol its account "
                    "has no lot of, without asking.")
@@ -12001,6 +12008,7 @@ def import_holdings(
     layout: str | None,
     outside_account: str | None,
     year_end: bool,
+    prune: bool,
     new_lots: bool,
     scenario: str | None,
     data_dir: Path | None,
@@ -12026,7 +12034,12 @@ def import_holdings(
     taxable account, its cost basis. A holding with no such lot is asked
     about: a new lot (``--new-lots`` adds them without asking), an existing
     lot to add it into, or skip. A retirement or HSA lot's basis is never
-    set from a file.
+    set from a file. A lot of the account that the file doesn't have keeps
+    what it holds, with a warning; ``--prune`` empties it.
+
+    The balances are the scenario's opening ones, so a file dated more than
+    a week from the scenario's start (the December 31 before it, with
+    ``--year-end``) gets a warning naming both dates.
 
     A lot inherited from a parent scenario is changed by writing an override
     of the whole lot into this scenario.
@@ -12039,6 +12052,9 @@ def import_holdings(
     with _intent_db(data_dir_p, scen_name) as (con, _):
         accounts = {name: (kind, subkind or "") for name, kind, subkind in con.execute(
             "SELECT name, kind, subkind FROM account")}
+        scenario_start = date.fromisoformat(con.execute("SELECT start FROM scenario").fetchone()[0][:10])
+    if prune and year_end:
+        raise click.UsageError("--prune empties lots as of the scenario's start, so it doesn't go with --year-end")
     lots = _import_target_lots(scenario_dir, scen_name, accounts)
     rows = [lot.row for lot in lots]
     # A file's one number for an account needs a lot to go into; a file that
@@ -12096,7 +12112,7 @@ def import_holdings(
 
         def replan() -> import_holdings_.HoldingsPlan:
             return import_holdings_.plan(snapshot, account_map, accounts, rows, year_end=year_end,
-                                         split=split, fresh=fresh)
+                                         split=split, fresh=fresh, prune=prune)
 
         def decided(holding: import_forms.Holding) -> tuple[str, str]:
             """The mapping row that says where ``holding`` goes: its own, or
@@ -12231,6 +12247,16 @@ def import_holdings(
         click.echo(f"warning: {warning}", err=True)
     if snapshot.as_of is not None:
         click.echo(f"{snapshot.source} snapshot as of {snapshot.as_of}")
+        # The numbers are written as of a fixed day whatever the file's date.
+        wanted = date(scenario_start.year - 1, 12, 31) if year_end else scenario_start
+        if abs((snapshot.as_of - wanted).days) > _IMPORT_DATE_SLACK_DAYS:
+            what = "the December 31 before it starts" if year_end else f"the start of {scen_name}"
+            click.echo(
+                f"warning: the file is as of {snapshot.as_of}, and its balances are being set as "
+                f"of {wanted}, {what}. " + (
+                    "Export the year-end report as of that day." if year_end else
+                    "Export it as of that day, or bring the plan to the file's date first "
+                    "with 'sim scenario roll'."), err=True)
     if result.changes:
         _echo_table(
             ["account", "lot", "column", "before", "after", ""],
@@ -12251,6 +12277,8 @@ def import_holdings(
                 "asset classes and its prices")
     counts = (f"{len(result.skipped)} skipped, {len(result.ineligible)} ineligible, "
               f"{result.lots_unchanged} unchanged")
+    if result.pruned:
+        counts = f"{len(result.pruned)} emptied, {counts}"
     if fresh:
         counts = f"{len(fresh)} new, {counts}"
     if dry_run:

@@ -488,3 +488,24 @@ def test_plan_leaves_open_a_symbol_with_no_lot_and_fills_a_fresh_one(test_data_d
     assert not any("opening_cost_basis" in cells for cells in result.cells.values())
     assert len(result.notes) == 2 and "sim account lot edit Roth aaa --opening-cost-basis" in result.notes[0]
     assert [w for w in result.warnings if "'default'" in w and "now has lots of its own" in w]
+
+
+def test_plan_prune_empties_a_lot_the_file_no_longer_has(test_data_dir: Path) -> None:
+    account_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "Brokerage")))
+    lots = [
+        {"account_name": "Brokerage", "lot": "a", "symbol": "AAA", "quantity": "100",
+         "opening_balance": "12000.00", "opening_cost_basis": "9000.00", "prior_year_end_balance": "1.00"},
+        {"account_name": "Brokerage", "lot": "b", "symbol": "BBB", "quantity": "50.5",
+         "opening_balance": "5000.00", "opening_cost_basis": "6000.00", "prior_year_end_balance": "1.00"},
+        {"account_name": "Brokerage", "lot": "sold", "symbol": "CCC", "quantity": "5",
+         "opening_balance": "70.00", "opening_cost_basis": "", "prior_year_end_balance": "65.00"},
+        # Another account's lot isn't the file's to judge.
+        {"account_name": "Roth", "lot": "default", "subkind": "roth_ira", "opening_balance": "100.00"},
+    ]
+
+    result = holdings.plan(_symbol_snapshot(), account_map, _BROKERAGE, lots, prune=True)
+
+    # What it held on December 31 is still what it held then.
+    assert result.cells == {2: {"opening_balance": "0.00", "quantity": "0"}}
+    assert result.pruned == ["Brokerage:sold"] and not result.warnings
+    assert (result.lots_changed, result.lots_unchanged) == (1, 2)

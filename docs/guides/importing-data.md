@@ -112,8 +112,8 @@ sim import holdings ~/Downloads/Portfolio_Positions_Jan-05-2026.csv
    holdings together into that lot, or keep a lot for each? A lot for each
    lets each grow as its own fund does, which matters to the plan's
    allocation and to an ensemble's range of outcomes. One lot is simpler.
-   If you split, the old lot still holds the total: the import says so, and
-   `sim account lot delete` removes it.
+   If you split, the old lot still holds the total: the import says so.
+   `--prune` empties it, and `sim account lot delete` removes it.
 
 Things to know:
 
@@ -128,13 +128,17 @@ Things to know:
   gives it a name, its asset classes and its prices; until then its lot
   grows as its account does.
 - **A lot the file doesn't mention is kept**, with a warning: it may have
-  been sold. Remove it with `sim account lot delete`.
+  been sold. `--prune` empties every such lot (balance, shares and basis to
+  zero), and `sim account lot delete` removes one for good.
 - **A retirement account with a required-withdrawal rule** draws from one
   lot. Before it has several, its rule needs a chain naming them in order;
   the import is refused, with that message, until it has one.
 - **Roll first, then import.** At a new year, `sim scenario roll` moves the
   plan forward on its own projections, and an import then corrects the
   balances from the real files.
+- **The file's date should be the scenario's first day**, give or take a
+  week. The balances are written as the opening ones whatever the date, so
+  an import of a file dated further away warns, naming both dates.
 
 | Source | What to download | The account |
 | --- | --- | --- |

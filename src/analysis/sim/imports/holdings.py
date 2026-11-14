@@ -72,6 +72,8 @@ class HoldingsPlan:
     new: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
     """Holdings with a symbol none of the account's lots has."""
     skipped: list[str] = field(default_factory=list)
+    pruned: list[str] = field(default_factory=list)
+    """Lots emptied because their account's file no longer has them."""
     ineligible: list[str] = field(default_factory=list)
     """Accounts ``--year-end`` doesn't apply to."""
     warnings: list[str] = field(default_factory=list)
@@ -102,7 +104,7 @@ def _lot_name(row: Mapping[str, str]) -> str:
 def plan(
     snapshot: Snapshot, account_map: AccountMap, accounts: Mapping[str, tuple[str, str]],
     lots: Sequence[Mapping[str, str]], *, year_end: bool = False,
-    split: Collection[str] = (), fresh: Collection[int] = (),
+    split: Collection[str] = (), fresh: Collection[int] = (), prune: bool = False,
 ) -> HoldingsPlan:
     """What importing ``snapshot`` would change.
 
@@ -138,6 +140,12 @@ def plan(
     ``fresh`` is the indexes of lots made for this import, which have only
     their names and symbol yet: each takes its holding's quantity and
     balance both, so it needs no price to load.
+
+    A file that lists an account's holdings one by one says all the account
+    holds, so a lot of that account it doesn't mention may have been sold.
+    Such a lot keeps what it holds, with a warning, unless ``prune``: then
+    its balance, shares and basis are set to zero. Its prior-year balance
+    stays, since it held that on December 31 whatever became of it since.
 
     A liability is stored as a non-negative debt, so its total is negated.
     """
@@ -274,16 +282,32 @@ def plan(
     listed = {result.rows[index]["account_name"] for index, into in landed.items() if into.by_symbol}
     listed |= {target.account for _, target in result.new}
     for index, row in enumerate(result.rows):
-        if row.get("account_name") in listed and index not in landed \
-                and (_cents(row.get("opening_balance", "")) or _number(row.get("quantity", ""))):
-            # A lot the holdings were split out of still has their total.
-            why = "now has lots of its own for what it held; remove it" \
-                if row["account_name"] in split and not row.get("symbol", "").strip() \
-                else "keeps what it holds; if it was sold, remove it"
-            result.warnings.append(
-                f"lot {_lot_name(row)!r} of {row['account_name']} isn't in the "
-                f"{snapshot.source} file and {why} "
-                f"with 'sim account lot delete {row['account_name']} {_lot_name(row)}'")
+        if year_end or row.get("account_name") not in listed or index in landed \
+                or not (_cents(row.get("opening_balance", "")) or _number(row.get("quantity", ""))):
+            continue
+        if prune:
+            cells = {"opening_balance": "0.00"} if row.get("opening_balance", "").strip() else {}
+            cells |= {column: zero for column, zero in (("quantity", "0"), ("opening_cost_basis", "0.00"))
+                      if row.get(column, "").strip()}
+            cells = {column: zero for column, zero in cells.items()
+                     if _number(row.get(column, "")) != 0}
+            result.changes.extend(
+                Change(row["account_name"], row.get("lot", ""), column, row.get(column, ""), zero,
+                       "not in the file")
+                for column, zero in cells.items())
+            row |= cells
+            result.cells[index] = cells
+            result.lots_changed += 1
+            result.pruned.append(f"{row['account_name']}:{_lot_name(row)}")
+            continue
+        # A lot the holdings were split out of still has their total.
+        why = "now has lots of its own for what it held" \
+            if row["account_name"] in split and not row.get("symbol", "").strip() \
+            else "keeps what it holds, though it may have been sold"
+        result.warnings.append(
+            f"lot {_lot_name(row)!r} of {row['account_name']} isn't in the "
+            f"{snapshot.source} file and {why}; --prune empties such lots, and "
+            f"'sim account lot delete {row['account_name']} {_lot_name(row)}' removes this one")
     return result
 
 
