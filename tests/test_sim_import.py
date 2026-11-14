@@ -1055,7 +1055,8 @@ def test_sim_import_holdings_warns_of_a_file_dated_far_from_the_start(
 
     write_import_map("fidelity/accounts.csv", "111111111,,skip,,,\n222222222,,skip,,,\n")
     with (test_data_dir / "scenarios" / "base" / "scenario.csv").open(encoding="utf-8") as f:
-        start = dt.date.fromisoformat(next(csv.DictReader(f))["start"][:10])
+        # The balances are the ones the first month opens with, on its first day.
+        start = dt.date.fromisoformat(next(csv.DictReader(f))["start"][:10]).replace(day=1)
 
     def dated(day: dt.date) -> str:
         text = fidelity_positions_export.read_text(encoding="utf-8")
@@ -1068,6 +1069,8 @@ def test_sim_import_holdings_warns_of_a_file_dated_far_from_the_start(
 
     # A download is rarely made on the day itself.
     assert "warning: the file is as of" not in dated(start + dt.timedelta(days=5))
+    # The start month's last day, which scenario.start is pinned to, is not it.
+    assert "warning: the file is as of" in dated(start + dt.timedelta(days=29))
     late = start + dt.timedelta(days=40)
     output = dated(late)
     assert f"the file is as of {late}, and its balances are being set as of {start}" in output

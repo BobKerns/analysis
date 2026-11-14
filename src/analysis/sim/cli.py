@@ -12345,7 +12345,9 @@ def import_holdings(
     if snapshot.as_of is not None:
         click.echo(f"{snapshot.source} snapshot as of {snapshot.as_of}")
         # The numbers are written as of a fixed day whatever the file's date.
-        wanted = date(scenario_start.year - 1, 12, 31) if year_end else scenario_start
+        # scenario.start is pinned to its month's last day, and the opening
+        # balances are those before that first month: as of its first day.
+        wanted = date(scenario_start.year - 1, 12, 31) if year_end else scenario_start.replace(day=1)
         if abs((snapshot.as_of - wanted).days) > _IMPORT_DATE_SLACK_DAYS:
             what = "the December 31 before it starts" if year_end else f"the start of {scen_name}"
             click.echo(
