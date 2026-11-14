@@ -490,7 +490,7 @@ class StateTablesYear(FederalStateYear):
         if not self._spouses:
             return None
         people = self._spouses
-        income_by = self._spouse_income(joint.income, joint.subtractions)
+        income_by = self._spouse_income(joint.income, joint.subtractions, basis)
         agi = {p: income_by[p].agi for p in people}
         fed_agi = common.apportion(basis.federal.agi, agi)
 
@@ -552,8 +552,8 @@ class StateTablesYear(FederalStateYear):
             (self.ty, self.filing_status, self.brackets, self.ltcg_brackets,
              self.stcg_brackets, self._surcharge) = saved
 
-    def _spouse_income(self, income: Income,
-                       subtractions: Sequence[Adjustment]) -> dict[str, Income]:
+    def _spouse_income(self, income: Income, subtractions: Sequence[Adjustment],
+                       basis: Basis) -> dict[str, Income]:
         """The joint return's ``income`` divided between the spouses
         (#580): before the retirement exclusion and the table's own
         subtractions, ordinary income by their shares of non-gain income,
