@@ -1086,7 +1086,7 @@ imports/
     payees.csv             payee text -> category, for a source with no categories
 ```
 
-**A source is code or a profile.** One that reads more than a table is code (`quicken`, whose report is an indented tree). One whose file is a plain table is a *profile*: a YAML file saying which column means what, so a household can add a source without code. The built-in profiles (`vanguard` and `fidelity`, holdings; `wells_fargo`, a bank's account activity) are `src/analysis/sim/imports/source_profiles/<source>.yaml`; a household's own is `imports/<source>/profile.yaml`, which replaces a built-in profile of its name and may not take a coded source's. `sim import sources` lists every source and where it is defined.
+**A source is code or a profile.** One that reads more than a table is code (`quicken`, whose report is an indented tree). One whose file is a plain table is a *profile*: a YAML file saying which column means what, so a household can add a source without code. The built-in profiles (`vanguard` and `fidelity`, holdings; `wells_fargo`, a bank's account activity; `amex`, a card's, short or detailed) are `src/analysis/sim/imports/source_profiles/<source>.yaml`; a household's own is `imports/<source>/profile.yaml`, which replaces a built-in profile of its name and may not take a coded source's. `sim import sources` lists every source and where it is defined.
 
 ```yaml
 description: Fidelity positions download (CSV)
@@ -1650,4 +1650,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#582](https://github.com/BobKerns/analysis/issues/582): `templates/aux/` ships `state_adjustments` for Nebraska, Kansas, the District of Columbia and Idaho, and Kansas's standard deduction no longer folds in its personal exemption (§4.4).
 - [#580](https://github.com/BobKerns/analysis/issues/580): aux kind `state_separate_return`, spouses filing separately on one state return, taxed at the `MFS` rows and the lower of that and the joint tax taken (§2.6, §4.4).
 - [#581](https://github.com/BobKerns/analysis/issues/581): `state_social_security` optional `min_age` (years or `fra`): rows are age tiers per person, the taxable amount divided by benefits (§4.4).
-- [#617](https://github.com/BobKerns/analysis/issues/617): a profile can describe a transactions file (`transactions`; built-in `wells_fargo`); `imports/<source>/payees.csv` gives categories by payee to a source that has none, and goes over a source's own; a transaction with a reference is counted once; `sim import transactions` reads several sources in one run (§4.17).
+- [#617](https://github.com/BobKerns/analysis/issues/617): a profile can describe a transactions file (`transactions`; built-in `wells_fargo` and `amex`); `imports/<source>/payees.csv` gives categories by payee to a source that has none, and goes over a source's own; a transaction with a reference is counted once; `sim import transactions` reads several sources in one run (§4.17).

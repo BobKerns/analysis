@@ -2382,21 +2382,13 @@ def bank_checking_export(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def card_exports(
-    write_import_profile: Callable[[str, str], Path], tmp_path: Path,
+    tmp_path: Path,
 ) -> tuple[Path, Path, Path]:
-    """A card's downloads, under a household profile ``card``: the detailed
+    """A card's downloads, in the built-in ``amex`` layouts: the detailed
     layout for January 2026 (the card's own categories, and references), the
     detailed layout again for late January into February (one row is in
     both), and the short layout for February (neither column). Charges are
     positive, the payment negative, and the account is a column."""
-    write_import_profile(
-        "card",
-        "description: A card's activity download\n"
-        "transactions:\n"
-        "  columns: {date: Date, payee: Description, account: 'Account #', amount: Amount,\n"
-        "            category: Category, reference: Reference}\n"
-        "  optional: [category, reference]\n"
-        "  spending: positive\n")
     detailed = tmp_path / "activity-detailed.csv"
     head = ("Date,Description,Card Member,Account #,Amount,Extended Details,"
             "Appears On Your Statement As,Address,City/State,Zip Code,Country,Reference,Category\n")

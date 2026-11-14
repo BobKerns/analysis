@@ -1162,8 +1162,8 @@ def test_sim_import_transactions_reads_a_cards_categories_and_its_payees_over_th
     detailed, february, _ = card_exports
     write_import_map("expense_accounts.csv", "Food,Expense_Living\nTreats,Expense_Living\n")
     write_import_map(
-        "card/categories.csv", "Merchandise & Supplies-Groceries,Food\nRestaurant-Restaurant,Food\n")
-    write_import_map("card/payees.csv", "harbor cafe,Treats\n")
+        "amex/categories.csv", "Merchandise & Supplies-Groceries,Food\nRestaurant-Restaurant,Food\n")
+    write_import_map("amex/payees.csv", "harbor cafe,Treats\n")
 
     result = _import(test_data_dir, "transactions", str(detailed), str(february),
                      "--from-account", "Asset_Checking")

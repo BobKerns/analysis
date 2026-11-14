@@ -19,7 +19,6 @@ Tesla
 Disney
 Prius
 AppleCard
-Amex
 Marin
 State Farm
 WF

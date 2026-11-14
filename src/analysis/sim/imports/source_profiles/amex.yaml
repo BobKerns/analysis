@@ -1,0 +1,20 @@
+description: American Express card activity download (CSV), short or with details
+transactions:
+  layout: 'Statements & Activity: "Download", CSV, with or without all additional details'
+  columns:
+    date: Date
+    payee: Description
+    # "-12345": a hyphen and the card's last five digits, one for each card
+    # member.
+    account: 'Account #'
+    # A charge is positive and a payment negative.
+    amount: Amount
+    # The card's own categories, which imports/amex/categories.csv gathers
+    # into the plan's; a payees.csv row goes over one that isn't right.
+    category: Category
+    # The same in every download a charge is in, so downloads may overlap.
+    reference: Reference
+  # The download without details has neither.
+  optional: [category, reference]
+  spending: positive
+  date_format: '%m/%d/%Y'

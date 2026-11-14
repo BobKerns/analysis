@@ -763,7 +763,7 @@ def test_a_cards_two_layouts_are_one_profile_and_a_reference_is_counted_once(
     detailed, february, short = card_exports
     imports = test_data_dir / "imports"
     assert [(s.name, form) for s, form in sources.detect(short, imports=imports)] == [
-        ("card", "transactions")]
+        ("amex", "transactions")]
 
     plain = sources.read_flows([short], imports=imports).transactions
     assert (plain["amount_cents"].tolist(), plain["account"].tolist(), plain["category"].tolist()) == (
@@ -782,10 +782,10 @@ def test_a_cards_two_layouts_are_one_profile_and_a_reference_is_counted_once(
     with pytest.raises(ValueError, match="both have transactions"):
         sources.read_flows([short, short], imports=imports)
 
-    payees = mapping.PayeeMap(imports / "card" / "payees.csv")
+    payees = mapping.PayeeMap(imports / "amex" / "payees.csv")
     payees.add("harbor cafe", "Treats")
     payees.add("online payment", "transfer")
-    over = transactions.override(frame, {"card": payees})
+    over = transactions.override(frame, {"amex": payees})
     assert over["category"].tolist() == [
         "Merchandise & Supplies-Groceries", "", "Treats", "Merchandise & Supplies-Groceries"]
     assert over["transfer"].tolist() == ["", "transfer", "", ""]

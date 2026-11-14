@@ -314,8 +314,10 @@ import asks which account each such file is, offering the file's name. Away
 from a terminal the file's name is the account, so rename the files, or
 import one at a time with `--outside-account`.
 
-**A card's file.** Describe it in a profile, with `spending: positive` if
-its charges are positive numbers; see
+**A card's file.** American Express's CSV download is built in (`amex`),
+with or without its additional details; the detailed one has the card's
+category and a reference for each charge. Describe another card's in a
+profile, with `spending: positive` if its charges are positive numbers; see
 [A source of your own](#a-source-of-your-own). If the card gives its own
 category for each charge, map those in `imports/<source>/categories.csv` as
 for any other source. Where the card's category isn't yours, a row of
