@@ -77,8 +77,13 @@ class FederalYear(Prepared):
         business = common.business_result(ty)
         capital = common.capital_gains(ty, loss_limit=common.loss_limit(ty))
         self._capital = capital
+        # Last year's state and local refund, as much of it as the
+        # deduction saved tax (#593).
+        self._refunds = ty.tax_refunded()
+        self._refund_income = recaptured_refund(ty, self._refunds)
         # A Schedule C loss offsets the year's other income (#231).
-        self._ordinary = other_ordinary + business.net + capital.stcg - capital.loss_deduction
+        self._ordinary = (other_ordinary + business.net + capital.stcg - capital.loss_deduction
+                          + self._refund_income)
         # Qualified dividends are taxed with long-term gains (IRC §1(h)(11)),
         # but a capital loss doesn't offset them: they join after the netting.
         self._dividends = qualified_dividends
@@ -140,6 +145,9 @@ class FederalYear(Prepared):
             "excluded_gain": ty.total("excluded_gain"),
             "roth_qualified": sum(i.amount for i in ty.year_items("tax_free")
                                   if i.payer.subkind == registries.RETIREMENT_SUBKIND),
+            # A state doesn't tax its own refund (#593): one that starts
+            # from federal AGI takes this back off.
+            "state_refund_income": self._refund_income,
             # Municipal bond interest (#265), and each issuing state's part
             # of it, for a state to add back all but its own bonds'.
             **common.exempt_interest_memo(ty),
@@ -193,6 +201,16 @@ class FederalYear(Prepared):
         }
         if self._exempt:
             lines["tax_exempt_interest"] = self._exempt
+        # What next year's recapture of a refund reads (#593): SALT before
+        # the cap, and how far the deduction went past AGI, which saved
+        # nothing.
+        if self._itemized.salt:
+            lines["salt_paid"] = self._itemized.salt
+        if before_nol < 0:
+            lines["deduction_unused"] = -before_nol
+        if self._refunds:
+            lines["state_refunds"] = self._refunds
+            lines["state_refund_income"] = self._refund_income
         # The state income tax among the deduction taken, which Utah's
         # taxpayer credit leaves out of its federal_deduction base (#542).
         income_tax = (self._itemized.income_tax_deducted(agi)
@@ -201,3 +219,25 @@ class FederalYear(Prepared):
         return Return(lines, MappingProxyType(
             {**self._memo, "ss_untaxed": self._ss_income - taxable_ss,
              "income_tax_deducted": income_tax}))
+
+
+def recaptured_refund(ty: TaxYear, refund: int) -> int:
+    """How much of ``refund``, the state and local income tax paid back this
+    year for last year, is income under the tax-benefit rule (IRC §111,
+    Pub. 525's Worksheet 2, #593): none when last year didn't itemize
+    SALT, and otherwise no more than what itemizing gained over the
+    standard deduction, nor what the SALT line would have lost had the
+    refund never been paid. SALT before the cap less the refund (no more
+    than the income tax paid, the rest being a refundable credit nothing
+    deducted) is what it would have been, under a cap that bound only if
+    the line was below SALT paid, so the loss is ``itemized_salt -
+    salt_paid + refund``. Last year's deduction past its AGI saved nothing,
+    so it comes off. State and local refunds are pooled, as Schedule A
+    pools their taxes under one cap."""
+    salt = ty.prior("itemized_salt")
+    gained = ty.prior("itemized_deduction") - ty.prior("standard_deduction")
+    if refund <= 0 or salt <= 0 or gained <= 0:
+        return 0
+    returned = min(refund, ty.tax_paid_in(ty.year - 1))
+    lost = min(salt, salt - ty.prior("salt_paid") + returned)
+    return max(0, min(refund, gained, lost) - ty.prior("deduction_unused"))

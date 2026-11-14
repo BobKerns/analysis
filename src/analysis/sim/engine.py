@@ -3223,25 +3223,31 @@ def _mortgage_months(
 
 
 def _taxes_paid(con, tax_year: int) -> list[tax_api.TaxPaid]:
-    """The state and local income tax paid in calendar ``tax_year`` (#542),
-    the SALT deduction's income taxes on a cash basis: everything paid into
-    each such jurisdiction's destination that year. The destination is the
-    jurisdiction's own account, and only its income tax payments go in
-    (the loader, #586), so nothing there needs telling apart. A refund (a
-    settlement out of the destination, #568) is never netted: the
-    settlement posts it the April after, for the year before, and under the
-    tax-benefit rule it is that year's income, to the extent the deduction
-    saved tax, which isn't modeled."""
-    return [
-        tax_api.TaxPaid(tax_year, str(name), int(amount))
-        for name, amount in con.execute(
-            "SELECT j.name, SUM(e.amount) FROM tax_jurisdiction j "
+    """The state and local income tax paid in calendar ``tax_year`` and the
+    year before (#542), the SALT deduction's income taxes on a cash basis:
+    everything paid into each such jurisdiction's destination in the year.
+    The destination is the jurisdiction's own account, and only its income
+    tax payments go in (the loader, #586), so nothing there needs telling
+    apart. A refund (a settlement out of the destination, #568) is never
+    netted against them: the settlement posts it the April after, for the
+    year before, and the federal return recaptures it as that year's income
+    to the extent the deduction saved tax (#593), from the year before's
+    return and payments."""
+    paid: dict[tuple[int, str], list[int]] = {}
+    for year, name, into, out in con.execute(
+            "SELECT CAST(substr(e.date, 1, 4) AS INTEGER) AS y, j.name, "
+            "       SUM(CASE WHEN e.to_account = c.account_id THEN e.amount ELSE 0 END), "
+            "       SUM(CASE WHEN e.from_account = c.account_id AND e.reason_kind = 'tax' "
+            "                THEN e.amount ELSE 0 END) "
+            "FROM tax_jurisdiction j "
             "JOIN chain c ON c.id = j.destination_chain_id "
-            "JOIN transfer_event e ON e.to_account = c.account_id "
+            "JOIN transfer_event e ON c.account_id IN (e.to_account, e.from_account) "
             "WHERE j.name != 'federal' AND e.date >= ? AND e.date < ? "
-            "AND e.reason_kind != 'initial' GROUP BY j.name ORDER BY j.name",
-            (f"{tax_year:04d}-01-01", f"{tax_year + 1:04d}-01-01"))
-    ]
+            "AND e.reason_kind != 'initial' GROUP BY y, j.name",
+            (f"{tax_year - 1:04d}-01-01", f"{tax_year + 1:04d}-01-01")):
+        paid[(int(year), str(name))] = [int(into), int(out)]
+    return [tax_api.TaxPaid(year, name, into, out)
+            for (year, name), (into, out) in sorted(paid.items())]
 
 
 def _tax_ledger(con, tax_year: int) -> _TaxLedger:

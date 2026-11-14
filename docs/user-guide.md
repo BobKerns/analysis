@@ -1103,6 +1103,17 @@ halves each dollar limit. The limits are in `aux/itemized_limits.csv`; a
 scenario that wants none of this, federal or state, puts an
 `itemized_limits.csv` with only its header line in its `aux/`.
 
+When more state tax was withheld than you owed, the state pays the rest
+back the April after. If you itemized that year, the refund is federal
+income the year it arrives, as far as deducting it saved tax (the
+tax-benefit rule). The simulator figures this the way the IRS's state refund
+worksheet does: none after a year you took the standard deduction, and
+otherwise no more than what itemizing gained over the standard deduction,
+nor more than the SALT line would have lost without the refund, so a year
+at the SALT cap recaptures little. The refunds show as `state_refunds` on
+the federal return and the taxable part as `state_refund_income`. The
+state doesn't tax its own refund.
+
 For deductions the ledger doesn't hold, add a year's total with
 `sim deduction add`, listing the expenses:
 
