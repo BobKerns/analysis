@@ -451,14 +451,12 @@ class StateTablesYear(FederalStateYear):
         fed = basis.federal
         weights = self._ss_benefits if set(tiers) <= set(self._ss_benefits) else dict.fromkeys(tiers, 1)
         shares = common.apportion(fed["ss_taxable"], {p: weights[p] for p in tiers})
-        groups: dict[int, list[str]] = {}
+        groups: dict[int, tuple[Mapping[str, Any], list[str]]] = {}
         for person, row in tiers.items():
             if row is not None:
-                groups.setdefault(id(row), []).append(person)
+                groups.setdefault(id(row), (row, []))[1].append(person)
         out = dict(shares)
-        for people in groups.values():
-            row = tiers[people[0]]
-            assert row is not None
+        for row, people in groups.values():
             group = {p: shares[p] for p in people}
             excluded = common.state_ss_exclusion(row, sum(group.values()), fed.agi)
             for p, amount in common.apportion(excluded, group).items():
