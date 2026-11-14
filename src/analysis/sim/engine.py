@@ -4151,14 +4151,18 @@ class IrmaaContext:
 
     def magi(self, con, year: int, tid: int) -> int:
         """The household's MAGI for tax ``year``: from ``meta_json`` before
-        the run (none given is no surcharge, as the loader warned), then the
-        federal tax rule's summary."""
-        if year < self.start_year:
-            return self.prior_magi.get(year, 0)
+        the run, else the federal tax rule's summary. That has the year
+        before the run too when year-to-date rows settle it (a rolled plan's
+        projected ones, #564); a year with neither is no surcharge, as the
+        loader warned."""
+        if year < self.start_year and year in self.prior_magi:
+            return self.prior_magi[year]
         row = con.execute(
             "SELECT amount FROM tax_year_summary WHERE year = ? AND bucket = 'federal_magi'",
             (year,),
         ).fetchone()
+        if row is None and year < self.start_year:
+            return 0
         if row is None:
             raise EngineError(
                 f"irmaa id={tid}: no federal MAGI for {year}; the federal tax "

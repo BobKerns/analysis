@@ -2019,18 +2019,23 @@ A new year changes what some rows mean, so `roll` deals with those too:
   start, so it keeps its months.
 - A calendar row dated before the new start no longer happens. `roll` lists
   them.
-- Last year's income tax is paid in April from last year's income, which
-  a new plan starting by April never ran. Record that income with `sim ytd add ...
-  --year 2026` (§4.13), from the W-2s and 1099s, with any tax already
-  withheld.
-
-Rolled to a later month of the same year, the year-to-date rows and
-`ytd_amount`s still cover only the months before the old start. `roll`
-lists them, to update with `sim ytd edit` and `sim scheduled edit`.
+- The months between the old start and the new one are no longer in the
+  run, so their income would drop out of its tax year: last year's, whose
+  tax is paid in April, or this year's, for a start later in the year.
+  `roll` offers the old run's money movements in those months as
+  year-to-date rows of their year, named `projected_<year>_<n>`, so the new
+  run taxes those years as the old one did. They are the plan's guess:
+  replace them with the real figures from the W-2s and 1099s (with any tax
+  already withheld) when you have them, with `sim ytd edit` (§4.13). Without
+  a run to take them from, `roll` says what to record by hand instead.
 
 Everything is written in one edit, only if the scenario and everything
 built on it still load. What's built on it follows by itself: a what-if
-built on `base` starts when `base` does. Then run both and compare them:
+built on `base` starts when `base` does. One with lots of its own still
+holds last year's balances in them, so `roll` lists it, to roll after
+`base` with `sim scenario roll NAME 2027-01 --own`: only its own lots
+reopen (`roll` dealt with its other rows along with `base`'s). Then run
+both and compare them:
 
 ```sh
 sim run base --commit
@@ -2042,6 +2047,40 @@ sim compare plan-2026 base
 year's plan expected it to hold, what it holds now, and the difference
 (the `start` section). Its other sections put both runs in the baseline's
 dollars, so a year's inflation doesn't show up as a difference.
+
+#### Rolling forward every month, at night
+
+A run reads prices only up to its start month, so once that month is over,
+new prices don't change it. To keep a plan current with the market, mark it
+to roll:
+
+```sh
+sim scenario edit base --roll monthly
+```
+
+Then the background builder (see [Setup](SETUP.md)) rolls it forward a
+month on the first night after its start month ends, between 01:00 and 05:00
+by default, after that day's prices are in. A scenario further behind (the
+builder was off for a while) rolls a month a night until it catches up, so
+each month opens from a run of the month before, at its prices. It takes every default,
+as `sim scenario roll --yes --no-keep` would: each lot opens with what the
+run projected (a lot kept in shares, at the new prices), and the months it
+skips become projected year-to-date rows. The mark is inherited, so the
+what-ifs built on `base` roll too, each after `base`, and only what is its
+own (`sim scenario roll --own`): its own lots. The projected rows are
+`base`'s for all of them, since the months skipped are past, the same in
+every plan. `sim scenario edit NAME --roll off` stops one rolling its own
+lots; one that takes its start from `base` still starts when `base` does,
+so give it a start of its own to keep it at the old plan.
+It works on its own branch and merges into `main` while `main` is checked out
+with nothing uncommitted, then the builder runs everything again. Instead of
+a copy of last year's plan, a roll into a new year tags the plan before it
+in the data repo, `plan-2026` for instance: `git show plan-2026:sim/scenarios/base/account_lots.csv`
+shows it, and `git worktree add ../plan-2026 plan-2026` brings it all back
+to compare. `sim builder status` lists each roll, and any that was skipped
+(a question with nothing to offer) or failed, with why; roll that one by
+hand. `sim builder install --roll-window 02:00-06:00` changes the night,
+and `--no-roll` turns rolling off.
 
 ## 5. Looking at your results
 
