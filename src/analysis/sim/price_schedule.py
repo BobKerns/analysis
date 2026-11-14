@@ -35,8 +35,8 @@ weekday's US market close, without touching the user's checkout (Bob):
 - A fetch is due when the last good one came before the latest weekday
   17:30 in New York, after the close is final. Nothing keeps the builder
   running, so ``sim builder install`` adds an hourly OS timer (a launchd agent
-  on macOS, a crontab line elsewhere) that runs ``sim builder prices
-  --if-due``: a look at the state, and a fetch when one is due, which pokes
+  on macOS, a crontab line elsewhere) that runs ``sim builder tick``: a look
+  at the state, and a fetch when one is due (and a roll, #564), which pokes
   the builder when it commits. The daemon also checks on starting, and on
   each rescan.
 - A symbol that fails is recorded, with when it first failed, and doesn't
@@ -178,26 +178,34 @@ def _is_ancestor(top: Path, older: str, newer: str) -> bool:
 # -- shared state ----------------------------------------------------------------------
 
 
-def _state_path(top: Path) -> Path:
-    return _common_dir(top) / STATE_FILE
-
-
 def read_state(data_dir: Path) -> dict[str, Any]:
     """The last fetch and merge, as every worktree of the data repo sees
     them; {} before the first, or outside a git repository."""
+    return read_state_file(data_dir, STATE_FILE)
+
+
+def read_state_file(data_dir: Path, name: str) -> dict[str, Any]:
+    """The state file ``name`` in git's common directory (this module's,
+    or the nightly roll's); {} before the first write, or outside a git
+    repository."""
     try:
-        return json.loads(_state_path(_top(data_dir)).read_text())
+        return json.loads((_common_dir(_top(data_dir)) / name).read_text())
     except (OSError, ValueError, PriceScheduleError):
         return {}
 
 
 def _update_state(top: Path, **changes: Any) -> dict[str, Any]:
-    """Change some of the state's keys, under its own lock: the daemon and
-    a fetch both write it, and neither may undo the other's keys. Each
-    writer replaces the file from a temp file of its own, so a reader never
-    sees half a file."""
-    path = _state_path(top)
-    fd = os.open(path.with_name(STATE_LOCK_FILE), os.O_RDWR | os.O_CREAT, 0o644)
+    """Change some of the state's keys (:func:`update_state_file`)."""
+    return update_state_file(top, STATE_FILE, STATE_LOCK_FILE, **changes)
+
+
+def update_state_file(top: Path, name: str, lock_name: str, **changes: Any) -> dict[str, Any]:
+    """Change some of state file ``name``'s keys, under its own lock
+    ``lock_name``: the daemon and a fetch (or roll) both write it, and
+    neither may undo the other's keys. Each writer replaces the file from a
+    temp file of its own, so a reader never sees half a file."""
+    path = _common_dir(top) / name
+    fd = os.open(path.with_name(lock_name), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
@@ -205,7 +213,7 @@ def _update_state(top: Path, **changes: Any) -> dict[str, Any]:
         except (OSError, ValueError):
             state = {}
         state.update(changes)
-        with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f"{STATE_FILE}.",
+        with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f"{name}.",
                                          suffix=".tmp", delete=False) as tmp:
             tmp.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
         os.replace(tmp.name, path)
@@ -214,10 +222,16 @@ def _update_state(top: Path, **changes: Any) -> dict[str, Any]:
         os.close(fd)
 
 
-@contextlib.contextmanager
-def _locked(top: Path) -> Generator[bool]:
+def _locked(top: Path) -> contextlib.AbstractContextManager[bool]:
     """One fetch at a time per data repo: True when this one may go ahead."""
-    fd = os.open(_common_dir(top) / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o644)
+    return locked_file(top, LOCK_FILE)
+
+
+@contextlib.contextmanager
+def locked_file(top: Path, name: str) -> Generator[bool]:
+    """Lock ``name`` in git's common directory without waiting: True when
+    this process holds it, False when another one does."""
+    fd = os.open(_common_dir(top) / name, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -539,10 +553,10 @@ def _plist_path(data_dir: Path) -> Path:
 
 
 def _timer_command(sim: Path, data_dir: Path) -> list[str]:
-    """What the timer runs: only a look at the state unless a fetch is due,
-    so the hourly wake costs no scan; a fetch that commits pokes the builder,
-    which merges between builds."""
-    return [str(sim), "builder", "prices", "--if-due", "--data-dir", str(data_dir.resolve())]
+    """What the timer runs: only a look at the state unless a fetch or a
+    roll (#564) is due, so the hourly wake costs no scan; one that commits
+    pokes the builder, which merges between builds."""
+    return [str(sim), "builder", "tick", "--data-dir", str(data_dir.resolve())]
 
 
 def _cron_marker(data_dir: Path) -> str:
@@ -559,8 +573,8 @@ def _crontab(run: Runner) -> list[str] | None:
 
 def install_timer(data_dir: Path, sim: Path, *, run: Runner = _run,
                   platform: str = sys.platform) -> str:
-    """Run ``sim builder prices --if-due`` hourly, so a due fetch happens
-    whether or not anything starts the builder. Replaces the timer of
+    """Run ``sim builder tick`` hourly, so a due fetch (or roll, #564)
+    happens whether or not anything starts the builder. Replaces the timer of
     this data dir if there is one. Returns a line saying what it did."""
     if switched_off():
         return f"price fetches are off here ({SWITCH_ENV}=off): the timer is left as it is"
@@ -578,7 +592,7 @@ def install_timer(data_dir: Path, sim: Path, *, run: Runner = _run,
         done = run(["launchctl", "bootstrap", domain, str(plist)])
         if done.returncode:
             return f"wrote {plist}, but launchctl couldn't load it: {done.stderr.strip()}"
-        return f"installed {plist}: the builder wakes hourly to fetch prices when due"
+        return f"installed {plist}: the builder wakes hourly to fetch prices and roll scenarios when due"
     lines = _crontab(run)
     if lines is None:
         return "no crontab here: prices are fetched only when the builder starts for other work"
@@ -588,7 +602,7 @@ def install_timer(data_dir: Path, sim: Path, *, run: Runner = _run,
     done = run(["crontab", "-"], input="\n".join([*kept, entry]) + "\n")
     if done.returncode:
         return f"couldn't install the crontab line: {done.stderr.strip()}"
-    return "added an hourly crontab line: the builder wakes to fetch prices when due"
+    return "added an hourly crontab line: the builder wakes to fetch prices and roll scenarios when due"
 
 
 def uninstall_timer(data_dir: Path, *, run: Runner = _run, platform: str = sys.platform) -> str | None:

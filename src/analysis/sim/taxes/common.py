@@ -9,10 +9,11 @@ import functools
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from analysis.sim import ownership, registries, states
-from analysis.sim.tax_api import Account, IncomeItem, TaxError, TaxYear
+from analysis.sim.tax_api import Account, IncomeItem, Mortgage, SpendingItem, TaxError, TaxYear, itemizing
 
 
 def income_buckets(ty: TaxYear) -> tuple[int, int, int]:
@@ -345,24 +346,87 @@ def taxable_social_security(
     return min((ss_income * 85) // 100, base + addl)
 
 
-def state_ss_exclusion(row: Mapping[str, Any], taxable_ss: int, agi: int) -> int:
-    """How much of ``taxable_ss``, the federally taxable Social Security, a
-    state leaves out by its ``state_social_security`` ``row`` (#484), at a
-    federal AGI of ``agi``: ``exclusion_percent`` of it, phased out above
-    ``phaseout_start`` to nothing at ``phaseout_end`` (at once when they are
-    equal), or less ``phaseout_rate`` of each dollar over."""
-    full = taxable_ss * int(row["exclusion_micros"]) // 1_000_000
+def phase_out(full: int, row: Mapping[str, Any], agi: int) -> int:
+    """What is left of ``full`` at an AGI of ``agi`` by a phase-out row's
+    columns (#484, #578): above ``phaseout_start`` it falls evenly to
+    nothing at ``phaseout_end`` (at once when they are equal), or by
+    ``phaseout_rate`` of each dollar over, but not below ``floor``. With a
+    rate, ``phaseout_step`` counts the dollars over in whole steps, a
+    started one in full (a table of $500 rows); with an end,
+    ``phaseout_steps`` splits the span into that many equal steps, a
+    started one taking its share in full. What is left rounds down."""
     start = row.get("phaseout_start")
     if start is None or agi <= int(start):
         return full
     over = agi - int(start)
+    floor = min(full, int(row.get("floor") or 0))
     rate = row.get("phaseout_rate_micros")
     if rate is not None:
-        return max(0, full - over * int(rate) // 1_000_000)
+        step = row.get("phaseout_step")
+        if step:
+            over = -(-over // int(step)) * int(step)
+        return max(floor, full - over * int(rate) // 1_000_000)
     span = int(row["phaseout_end"]) - int(start)
     if over >= span:
+        return floor
+    steps = row.get("phaseout_steps")
+    if steps:
+        taken = -(-over * int(steps) // span)
+        return max(floor, full * (int(steps) - taken) // int(steps))
+    return max(floor, full * (span - over) // span)
+
+
+def state_ss_exclusion(row: Mapping[str, Any], taxable_ss: int, agi: int) -> int:
+    """How much of ``taxable_ss``, the federally taxable Social Security, a
+    state leaves out by its ``state_social_security`` ``row`` (#484), at a
+    federal AGI of ``agi``: ``exclusion_percent`` of it, phased out
+    (:func:`phase_out`)."""
+    return phase_out(taxable_ss * int(row["exclusion_micros"]) // 1_000_000, row, agi)
+
+
+def full_retirement_age_months(born: date) -> int:
+    """Social Security's full retirement age (#581), in months, for someone
+    born on ``born``: 65 through 1937, two months more a year to 66 for
+    1943-1954, again two months a year to 67 from 1960. Someone born on
+    January 1 counts with the year before, as SSA counts them."""
+    year = born.year - (born.month == 1 and born.day == 1)
+    if year <= 1937:
+        return 65 * 12
+    if year <= 1942:
+        return 65 * 12 + 2 * (year - 1937)
+    if year <= 1954:
+        return 66 * 12
+    if year <= 1959:
+        return 66 * 12 + 2 * (year - 1954)
+    return 67 * 12
+
+
+def min_age_months(row: Mapping[str, Any], born: date | None) -> int | None:
+    """A row's ``min_age`` in months for someone born on ``born``: blank is
+    any age (0), ``fra`` their own full retirement age (#581), otherwise
+    years (59.5: 714). None when it needs a birthdate they don't have."""
+    age = row.get("min_age")
+    if age in (None, ""):
         return 0
-    return full * (span - over) // span
+    if registries.is_fra(age):
+        return None if born is None else full_retirement_age_months(born)
+    return round(float(age) * 12)
+
+
+def state_ss_row(rows: Sequence[Mapping[str, Any]], born: date | None,
+                 year: int) -> Mapping[str, Any] | None:
+    """Of a filing status's ``state_social_security`` ``rows``, the one
+    for someone born on ``born`` in ``year`` (#581): the highest
+    ``min_age`` they reach by December 31; None when they reach none."""
+    months = age_months(born, year)
+    best: tuple[int, Mapping[str, Any]] | None = None
+    for row in rows:
+        need = min_age_months(row, born)
+        if need is None or need > 0 and (months is None or months < need):
+            continue
+        if best is None or need > best[0]:
+            best = (need, row)
+    return None if best is None else best[1]
 
 
 def progressive_tax(taxable_income: int, brackets: Sequence[tuple[int, int]]) -> int:
@@ -386,6 +450,21 @@ def split_cents(amount: int, ways: int) -> list[int]:
     """``amount`` in ``ways`` shares that differ by at most a cent."""
     share, extra = divmod(amount, ways)
     return [share + (i < extra) for i in range(ways)]
+
+
+def apportion(amount: int, weights: Mapping[str, int]) -> dict[str, int]:
+    """``amount`` split in proportion to ``weights`` (#580), the cents
+    rounding loses going to the first key, so the parts add up; evenly when
+    the weights are all zero."""
+    keys = list(weights)
+    if not keys:
+        return {}
+    total = sum(max(0, w) for w in weights.values())
+    if total == 0:
+        return dict(zip(keys, split_cents(amount, len(keys)), strict=True))
+    out = {k: amount * max(0, weights[k]) // total for k in keys}
+    out[keys[0]] += amount - sum(out.values())
+    return out
 
 
 class ExclusionGrant(NamedTuple):
@@ -433,11 +512,37 @@ class RetirementExclusion(NamedTuple):
         test denied. Gain beyond the net capital gain (a loss offset it)
         isn't left out at all; the rest comes off the long-term gain first,
         and never more than there is."""
+        return self.split_by_person(ordinary, ltcg, net_gain)[:3]
+
+    def split_by_person(
+        self, ordinary: int, ltcg: int, net_gain: int | None = None,
+    ) -> tuple[int, int, int, dict[str, tuple[int, int]]]:
+        """:meth:`split`, and what each person's grants leave out before its
+        caps at the income, with how much of that is their gain (#580):
+        whose share of the exclusion it is, and of which kind, for a spouse
+        filing separately. One walk of the grants serves both."""
         if not self.grants:
-            return 0, 0, 0
+            return 0, 0, 0, {}
         income = ordinary + ltcg
+        granted = self._granted(income, net_gain)
+        total = sum(amount for amount, _ in granted.values())
+        gains = sum(gain for _, gain in granted.values())
+        total = min(total, max(0, income))
+        # When income is below the gain left out (a business loss), the
+        # total is all gain and none of it comes off ordinary income.
+        off_ordinary = max(0, min(total - min(gains, max(0, ltcg)), max(0, ordinary)))
+        off_ltcg = min(total - off_ordinary, max(0, ltcg))
+        # Gain left out past the long-term gain is short-term gain, which is
+        # part of ordinary income: a state's short-term rates (#485) skip it.
+        off_short = min(max(0, gains - off_ltcg), off_ordinary)
+        return off_ordinary, off_ltcg, off_short, granted
+
+    def _granted(self, income: int, net_gain: int | None) -> dict[str, tuple[int, int]]:
+        """Each person's grants' total at a household ``income``, and how
+        much of it is gain (:meth:`split`)."""
         pools = {person: dict(by_kind) for person, by_kind in self.pools.items()}
-        total = gains = 0
+        out: dict[str, tuple[int, int]] = {}
+        gains = 0
         gain_limit = max(0, self.net_gain if net_gain is None else net_gain)
         for grant in self.grants:
             left = pools[grant.person]
@@ -450,20 +555,17 @@ class RetirementExclusion(NamedTuple):
             if grant.cap is not None:
                 eligible = min(eligible, grant.cap)
             granted = grant.after_income_test(eligible, income)
+            total, gain = out.get(grant.person, (0, 0))
             total += granted
             for kind, amount in covered:
                 take = min(amount, granted)
                 left[kind] -= take
                 granted -= take
-                gains += take if kind == "capital_gain" else 0
-        total = min(total, max(0, income))
-        # When income is below the gain left out (a business loss), the
-        # total is all gain and none of it comes off ordinary income.
-        off_ordinary = max(0, min(total - min(gains, max(0, ltcg)), max(0, ordinary)))
-        off_ltcg = min(total - off_ordinary, max(0, ltcg))
-        # Gain left out past the long-term gain is short-term gain, which is
-        # part of ordinary income: a state's short-term rates (#485) skip it.
-        return off_ordinary, off_ltcg, min(max(0, gains - off_ltcg), off_ordinary)
+                if kind == "capital_gain":
+                    gains += take
+                    gain += take
+            out[grant.person] = (total, gain)
+        return out
 
 
 _EXCLUSION_POOL_BY_CHARACTER: dict[str, tuple[str, int]] = {
@@ -490,10 +592,11 @@ def _shares(owner: str | None, amount: int, people: Sequence[str],
 
 
 def person_income(
-    ty: TaxYear, people: Sequence[str], *, hsa_taxed: bool = False,
+    ty: TaxYear, people: Sequence[str], *, hsa_taxed: bool = False, clip: bool = True,
 ) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
     """Each person's income this year by ``STATE_EXCLUSION_INCOME`` kind
-    (never below zero), and their Social Security. An item is whose
+    (never below zero, unless ``clip`` is false: a spouse's own business
+    loss on a separate return, #580), and their Social Security. An item is whose
     :func:`_owner` says; the household's is split evenly among ``people``. An
     HSA's flows are ``other`` income, not a retirement account's, and none
     at all when the state taxes the HSA as a brokerage account
@@ -547,9 +650,10 @@ def person_income(
     for owner, amount in losses.items():
         for person, share in _shares(owner, amount, people, pools):
             pools[person]["capital_gain"] -= share
-    for by_kind in pools.values():
-        for pool, amount in by_kind.items():
-            by_kind[pool] = max(0, amount)
+    if clip:
+        for by_kind in pools.values():
+            for pool, amount in by_kind.items():
+                by_kind[pool] = max(0, amount)
     return pools, ss
 
 
@@ -726,34 +830,53 @@ def state_series(ty: TaxYear, year: int | None = None) -> str:
         residence.state, has_tables=ty.has_table("state_brackets", residence.state))
 
 
-def rate_table(ty: TaxYear, kind: str | None, series: str | None = None) -> list[tuple[int, int]]:
+def rate_table(ty: TaxYear, kind: str | None, series: str | None = None,
+               filing_status: str | None = None) -> list[tuple[int, int]]:
     """The year's (floor, rate micros) rows of ``kind`` for its filing
-    status, in floor order; none for no kind."""
+    status (or ``filing_status``, a spouse's separate return, #580), in
+    floor order; none for no kind."""
     if kind is None:
         return []
+    status = filing_status or ty.filing_status
     return sorted(
         (int(r["floor"]), int(r["marginal_rate_micros"]))
         for r in ty.indexed(kind, series)
-        if r.get("filing_status") == ty.filing_status
+        if r.get("filing_status") == status
     )
 
 
-def brackets(ty: TaxYear, kind: str, series: str | None) -> list[tuple[int, int]]:
+def brackets(ty: TaxYear, kind: str, series: str | None,
+             filing_status: str | None = None) -> list[tuple[int, int]]:
     """The ordinary brackets, which a jurisdiction can't do without."""
-    rows = rate_table(ty, kind, series)
+    rows = rate_table(ty, kind, series, filing_status)
     if not rows:
         raise TaxError(
             f"{where(ty)}: missing brackets kind={kind!r} "
-            f"series={series!r} filing_status={ty.filing_status!r}"
+            f"series={series!r} filing_status={filing_status or ty.filing_status!r}"
         )
     return rows
 
 
 def standard_deduction(ty: TaxYear, kind: str, series: str | None = None) -> int:
-    rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == ty.filing_status]
+    """The full standard deduction, before any phase-out with income."""
+    return int(standard_deduction_row(ty, kind, series)["amount"])
+
+
+def standard_deduction_row(ty: TaxYear, kind: str, series: str | None = None,
+                           filing_status: str | None = None) -> Mapping[str, Any]:
+    """The standard deduction row in force for the year's filing status (or
+    ``filing_status``, #580)."""
+    status = filing_status or ty.filing_status
+    rows = [r for r in ty.indexed(kind, series) if r.get("filing_status") == status]
     if not rows:
-        raise TaxError(f"{where(ty)}: missing standard deduction for filing_status={ty.filing_status!r}")
-    return int(rows[0]["amount"])
+        raise TaxError(f"{where(ty)}: missing standard deduction for filing_status={status!r}")
+    return rows[0]
+
+
+def phased_standard_deduction(row: Mapping[str, Any], agi: int) -> int:
+    """A ``state_standard_deduction`` ``row``'s amount at an AGI of ``agi``,
+    phased out (:func:`phase_out`, #578)."""
+    return phase_out(int(row["amount"]), row, agi)
 
 
 def itemized_deduction(ty: TaxYear, kind: str) -> int:
@@ -762,6 +885,158 @@ def itemized_deduction(ty: TaxYear, kind: str) -> int:
     only, never carried into the years after (#370)."""
     rows = [row for effective, row in ty.dated(kind) if effective[:4] == str(ty.year)]
     return int(rows[-1]["amount"]) if rows else 0
+
+
+@dataclass(frozen=True)
+class Itemized:
+    """A year's itemized deductions before the limits that move with AGI
+    (#542): the SALT cap's phase-down and the charity and medical floors.
+    ``limits`` is the ``itemized_limits`` row in force; None without the
+    table, when only ``other`` (the hand-typed total) counts."""
+    limits: Mapping[str, Any] | None
+    other: int
+    salt: int = 0
+    mortgage_interest: int = 0
+    charity: int = 0
+    medical: int = 0
+    income_taxes: int = 0
+    """The part of ``salt`` that is state and local income tax."""
+
+    def _salt(self, agi: int) -> int:
+        """SALT under the cap, as it stands at ``agi``."""
+        salt, limits = self.salt, self.limits
+        if limits is None or limits.get("salt_cap") is None:
+            return salt
+        cap = int(limits["salt_cap"])
+        start, rate = limits.get("salt_phaseout_start"), limits.get("salt_phaseout_rate_micros")
+        if start is not None and rate is not None and agi > int(start):
+            cap -= (agi - int(start)) * int(rate) // 1_000_000
+        cap = max(cap, int(limits.get("salt_floor") or 0))
+        return min(salt, max(0, cap))
+
+    def income_tax_deducted(self, agi: int) -> int:
+        """The state and local income tax among the SALT deducted at
+        ``agi``, its share of the capped total: what Utah's taxpayer credit
+        takes off the federal deduction."""
+        if self.limits is None or self.salt <= 0:
+            return 0
+        return self._salt(agi) * self.income_taxes // self.salt
+
+    def lines(self, agi: int) -> dict[str, int]:
+        """The itemized lines at ``agi``, and their total,
+        ``itemized_deduction``. Federal MAGI for the SALT phase-down is AGI:
+        the model has no foreign income to add back."""
+        if self.limits is None:
+            return {"itemized_deduction": self.other}
+        limits, base = self.limits, max(0, agi)
+
+        def share(key: str) -> int | None:
+            rate = limits.get(f"{key}_micros")
+            return None if rate is None else base * int(rate) // 1_000_000
+
+        salt = self._salt(agi)
+        # §170(b)(1)(I) takes the floor off what the percentage limit
+        # allows, so the cap comes first.
+        charity = self.charity
+        cap_share = share("charity_limit")
+        if cap_share is not None:
+            charity = min(charity, cap_share)
+        floor = share("charity_floor")
+        if floor is not None:
+            charity = max(0, charity - floor)
+        floor = share("medical_floor")
+        medical = self.medical if floor is None else max(0, self.medical - floor)
+        # In registries.ITEMIZED_LINES' order, the one list of their names.
+        lines = dict(zip(registries.ITEMIZED_LINES,
+                         (salt, self.mortgage_interest, charity, medical, self.other), strict=True))
+        return {**lines, "itemized_deduction": sum(lines.values())}
+
+    def deduction_lines(self, agi: int, standard: int | None, *, beside: int = 0) -> dict[str, int]:
+        """The deduction lines at ``agi``: the ``standard`` deduction (none
+        when None: a calculator without one), the itemized lines, and the
+        ``deduction`` taken: the larger of the standard deduction and the
+        itemized total, and ``beside`` it what a calculator deducts either
+        way (an exemption)."""
+        lines = self.lines(agi)
+        return {**({} if standard is None else {"standard_deduction": standard}), **lines,
+                "deduction": max(standard or 0, lines["itemized_deduction"]) + beside}
+
+
+def itemized_limits(ty: TaxYear, kind: str, series: str | None = None) -> Mapping[str, Any] | None:
+    """The year's ``kind`` (``itemized_limits``) row for its filing status;
+    None when the scenario has no such table at all, or none in force yet
+    (a year before its first date itemizes only the hand-typed total)."""
+    if not ty.has_table(kind, series):
+        return None
+    in_force = ty.indexed(kind, series)
+    if not in_force:
+        return None
+    rows = [r for r in in_force if r.get("filing_status") == ty.filing_status]
+    if not rows:
+        name = f"{kind}__{series}" if series else kind
+        raise TaxError(
+            f"{where(ty)}: aux/{name}.csv has no row for filing_status={ty.filing_status!r} "
+            f"in force in {ty.year}")
+    return rows[0]
+
+
+def itemized(ty: TaxYear, limits: Mapping[str, Any] | None, *, other: int, income_taxes: int,
+             hsa_paid_counts: bool = False) -> Itemized:
+    """The year's itemized deductions from its spending (#542), under
+    ``limits`` (:func:`itemized_limits`), with ``other`` (the hand-typed
+    total) and ``income_taxes`` (state and local income tax paid, which a
+    state doesn't deduct from its own return) added in. Only the
+    household's own spending counts (:func:`personal`).
+
+    - State and local taxes: property tax (``tax:property``, or the
+      ``property_tax`` character on spending with no other itemized tag)
+      and ``income_taxes``.
+    - Mortgage interest (``tax:mortgage_interest``), on no more than
+      ``mortgage_limit`` of the debt: each month, a ``mortgage_payment``
+      rule's interest times the limit over that month's balance of every
+      such mortgage, so mortgages held one after another in a year don't
+      add up. Other spending of the tag counts in full.
+    - Charity (``tax:charity``) and medical expenses (``tax:medical``), less
+      what an HSA paid, which was never taxed, unless ``hsa_paid_counts``
+      (a state that taxes an HSA, #490)."""
+    if limits is None:
+        return Itemized(None, other)
+    tags = registries.ITEMIZED_TAGS
+    spent = [s for s in ty.year_spending() if personal(s)]
+
+    def tagged(tag: str) -> int:
+        return sum(s.amount for s in spent if tag in s.tags)
+
+    property_tax = sum(s.amount for s in spent if tags["property_tax"] in s.tags or (
+        s.character == "property_tax" and not itemizing(s.tags)))
+    interest = tagged(tags["mortgage_interest"])
+    limit = limits.get("mortgage_limit")
+    if limit is not None:
+        by_month: dict[int, list[int]] = {}
+        for m in ty.year_mortgages():
+            if tags["mortgage_interest"] in m.tags and personal(m):
+                month = by_month.setdefault(m.month, [0, 0])
+                month[0] += m.interest
+                month[1] += m.balance
+        for paid, debt in by_month.values():
+            if debt > int(limit):
+                interest -= paid - paid * int(limit) // debt
+    medical = sum(s.amount for s in spent if tags["medical"] in s.tags
+                  and (hsa_paid_counts or s.payer.subkind != "hsa"))
+    return Itemized(
+        limits, other, salt=property_tax + income_taxes, mortgage_interest=max(0, interest),
+        charity=tagged(tags["charity"]), medical=medical, income_taxes=income_taxes)
+
+
+def personal(item: SpendingItem | Mortgage) -> bool:
+    """Whether ``item`` is the household's own, which Schedule A can
+    deduct: not a business expense (the ``business_expense`` character:
+    Schedule C deducts it, #231) or a rental's (``tax:rental``: Schedule
+    E's). What account paid doesn't decide it: a gift or the home's
+    property tax paid from business checking is still the household's,
+    and Schedule C deducts only the business_expense character."""
+    return not (item.character == registries.BUSINESS_EXPENSE
+                or registries.RENTAL_TAG in item.tags)
 
 
 def ltcg_exclusion(ty: TaxYear, kind: str | None, series: str | None) -> Callable[[int], int]:
@@ -911,6 +1186,13 @@ class StateAdjustment:
     units: int = 1
     """How many exemptions a ``filers`` line is: ``phaseout_rate`` takes its
     share of each dollar over from each, as California's does."""
+    shares: Mapping[str, int] = MappingProxyType({})
+    """Whose line it is when spouses file separately (#580): each filer's
+    weight in it, the filers who reached its age equally for a ``filers``
+    line, each filer's own figure for a ``per_person`` ``income`` line;
+    empty (split evenly) for the rest."""
+    refundable: bool = False
+    """A ``credit`` the state pays in full, past the tax (#579)."""
 
     def from_base(self, amount: int) -> int:
         """The figure for a ``federal_tax``, ``federal_deduction`` or
@@ -934,6 +1216,65 @@ class StateAdjustment:
         return 0
 
 
+def _by_person(items: Iterable[IncomeItem], people: Sequence[str]) -> dict[str, int]:
+    """Each of ``people``'s part of ``items``, whose :func:`_owner` says; the
+    household's split evenly among them. Items of the same owners are summed
+    before they are split, as :func:`person_income` does, so each sum loses
+    at most a cent to the split."""
+    totals = dict.fromkeys(people, 0)
+    groups: dict[tuple[str | None, str | None, str], int] = {}
+    for item in items:
+        key = (item.payer.owner, item.payee.owner, item.payer.kind)
+        groups[key] = groups.get(key, 0) + item.amount
+    for (payer, payee, kind), amount in groups.items():
+        for person, share in _shares(_owner(payer, payee, totals, payer_kind=kind),
+                                     amount, people, totals):
+            totals[person] += share
+    return totals
+
+
+def _tagged_income(ty: TaxYear, tag: str) -> list[IncomeItem]:
+    return [i for i in ty.tagged(tag) if i.character in _ADJUSTMENT_INCOME_CHARACTERS]
+
+
+def _living(ty: TaxYear, people: Iterable[str]) -> list[str]:
+    """``people``, less any who died before the year (their final month in
+    an earlier one): a survivor's return is theirs alone."""
+    died = {p.id for p in ty.persons
+            if p.final_month is not None and int(p.final_month[:4]) < ty.year}
+    return sorted(p for p in people if p not in died)
+
+
+def _per_person_income(
+    ty: TaxYear, row: Mapping[str, Any], birthdates: Mapping[str, date | None],
+    min_months: int,
+) -> tuple[int, int | None, dict[str, int]]:
+    """An ``income`` row's figure with ``per_person`` (#579), the caps it
+    summed, and each filer's part of the figure (#580): each filer living in the year who has reached ``min_age`` gets
+    their own tagged income (a joint account's split among the living),
+    times ``rate``, up to ``amount``, less their own Social Security
+    (:func:`person_income`'s, as ``state_retirement_exclusion`` takes it)
+    with ``less_ss``."""
+    people = _living(ty, birthdates)
+    income = _by_person(_tagged_income(ty, str(row.get("tag") or "")), people)
+    ss = person_income(ty, people)[1] if _yes(row.get("less_ss")) else {}
+    rate, amount = row.get("rate_micros"), row.get("amount")
+    total, caps, parts = 0, None if amount is None else 0, {}
+    for person in people:
+        if min_months and (age_months(birthdates[person], ty.year) or 0) < min_months:
+            continue
+        figure = max(0, income[person])
+        if rate is not None:
+            figure = figure * int(rate) // 1_000_000
+        if amount is not None:
+            cap = max(0, int(amount) - ss.get(person, 0))
+            figure = min(figure, cap)
+            caps = (caps or 0) + cap
+        total += figure
+        parts[person] = figure
+    return total, caps, parts
+
+
 def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustment]:
     """``state``'s own deductions and credits for the year (#511, #488),
     from the ``kind`` table in force (``state_adjustments__<state>``): one
@@ -955,21 +1296,32 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
     filers = 2 if ty.filing_status == "MFJ" else 1
     out = []
     for name, row in chosen.items():
+        shares: dict[str, int] = {}
         min_months = _exclusion_age_months(row)
-        eligible = min(filers, sum(
-            1 for born in birthdates.values()
+        reached = tuple(sorted(
+            person for person, born in birthdates.items()
             if min_months == 0
             or (age_months(born, ty.year) or 0) >= min_months))
+        eligible = min(filers, len(reached))
         amount = None if row.get("amount") is None else int(row["amount"])
         base, rate = str(row["base"]), row.get("rate_micros")
         cap = amount if amount is None or not _yes(row.get("per_person")) else amount * eligible
         if base == "filers":
             figure = (amount or 0) * eligible
+            shares = dict.fromkeys(reached[:eligible], 1)
+        elif base == "income" and _yes(row.get("per_person")) and birthdates:
+            # Each filer's own income against their own cap (#579), so
+            # one spouse's pension can't use the other's.
+            figure, cap, shares = _per_person_income(ty, row, birthdates, min_months)
         elif base in ("spending", "income"):
             tag = str(row.get("tag") or "")
             raw = ty.spent(tag) if base == "spending" else sum(
-                i.amount for i in ty.tagged(tag) if i.character in _ADJUSTMENT_INCOME_CHARACTERS)
+                i.amount for i in _tagged_income(ty, tag))
             figure = max(0, raw) if rate is None else max(0, raw) * int(rate) // 1_000_000
+            if cap is not None and _yes(row.get("less_ss")):
+                # Less the household's Social Security (#579): Idaho's cap
+                # on a joint return falls by both spouses' benefits.
+                cap = max(0, cap - sum(i.amount for i in ty.year_items("ss_benefit")))
             figure = figure if cap is None else min(figure, cap)
         else:
             figure = 0
@@ -982,5 +1334,6 @@ def state_adjustments(ty: TaxYear, kind: str, state: str) -> list[StateAdjustmen
             None if rate is None else int(rate), cap,
             None if limit is None else int(limit), None if phaseout is None else int(phaseout),
             None if phaseout_rate is None else int(phaseout_rate),
-            units=eligible if base == "filers" else 1))
+            units=eligible if base == "filers" else 1, shares=MappingProxyType(shares),
+            refundable=_yes(row.get("refundable"))))
     return out

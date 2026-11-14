@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
+from analysis.frames import named_rows
 from analysis.sim import compare, roll
 from analysis.sim.connection import RunConnection
 from analysis.sim.dates import month_before
@@ -70,7 +71,12 @@ def test_roll_takes_the_projection_keeps_the_old_plan_and_pins_last_years_rows(
     ytd = _rows(folder / "year_to_date.csv")
     assert ytd["prior_ordinary_wages"]["year"] == "2026"
     assert ytd["prior_ltcg_loss_carryforward"]["year"] == "2025"
-    assert "2026's tax is settled in April 2027" in result.output
+    # The months the run no longer covers stay in 2026's income (#564), so
+    # nothing is left to record by hand for its April settlement.
+    projected_rows = [row for name, row in ytd.items() if name.startswith(roll.PROJECTED_PREFIX)]
+    assert projected_rows and {row["year"] for row in projected_rows} == {"2026"}
+    assert "projected year-to-date row(s) for 2026-05 to 2026-12" in result.output
+    assert "2026's tax is settled in April 2027" not in result.output
     # The old plan is kept as it stood, and the rolled one stays current.
     kept = test_scenarios_dir / "retire_alice-2026"
     assert (kept / "account_lots.csv").read_bytes() == before
@@ -329,3 +335,151 @@ def test_roll_writes_nothing_when_a_file_changed_while_it_asked(
     assert "changed while retire_alice was being rolled forward" in result.output
     with retire_alice_csv("scenario.csv").open(newline="", encoding="utf-8") as fh:
         assert next(csv.DictReader(fh))["start"].startswith("2026-05")
+
+
+@pytest.mark.slow
+@pytest.mark.uses_current_scenario_write
+@pytest.mark.parametrize("start", ["2026-09", "2027-01"])
+def test_a_roll_keeps_the_skipped_months_in_their_tax_year(
+    start: str, test_data_dir: Path, latest_test_run: Callable[[str], Path],
+    add_state_tax: Callable[..., None],
+) -> None:
+    """#564: the old run's flows in the months the roll skips become
+    projected year-to-date rows, so the rolled run taxes the year as the old
+    one did: within the year, and across it (the April settlement)."""
+    add_state_tax()
+    old = latest_test_run("retire_alice")
+
+    result = _sim(test_data_dir, "scenario", "roll", "retire_alice", start, "--no-keep", "--yes")
+    assert result.exit_code == 0, result.output
+    new = latest_test_run("retire_alice")
+
+    def taxes(run: Path) -> dict[tuple[int, str], int]:
+        with RunConnection(run, "retire_alice") as rc:
+            frame = rc._read_sql("SELECT year, bucket, amount FROM tax_year_summary "
+                                 "WHERE year = 2026 AND bucket IN "
+                                 "('federal_agi', 'federal_magi', 'federal_tax', 'state_tax')")
+        return {(int(row.year), str(row.bucket)): int(row.amount) for row in named_rows(frame)}
+
+    before = taxes(old)
+    # MAGI too: the 2028 IRMAA tier reads 2026's from the rolled run.
+    assert (2026, "federal_magi") in before
+    assert before and taxes(new) == before
+
+
+def test_projected_rows_add_to_an_earlier_rolls_and_drop_years_that_no_longer_count() -> None:
+    earlier = [
+        {"name": "prior_wages", "from_account": "Income_Salary_Alice", "from_lot": "",
+         "to_account": "Asset_Checking", "to_lot": "", "amount": "9000.00",
+         "tax_character": "ordinary", "year": "", "description": ""},
+        {"name": "projected_2025_1", "from_account": "Income_Salary_Alice", "from_lot": "default",
+         "to_account": "Asset_Checking", "to_lot": "default", "amount": "100.00",
+         "tax_character": "ordinary", "year": "2025",
+         "description": "projected by sim scenario roll, 2025-03 to 2025-12"},
+        {"name": "projected_2026_1", "from_account": "Income_Salary_Alice", "from_lot": "default",
+         "to_account": "Asset_Checking", "to_lot": "default", "amount": "1000.00",
+         "tax_character": "ordinary", "year": "2026",
+         "description": "projected by sim scenario roll, 2026-05 to 2026-10"},
+        # Someone's own row, named like one: not the roll's to drop.
+        {"name": "projected_bonus", "from_account": "Income_Salary_Alice", "from_lot": "",
+         "to_account": "Asset_Checking", "to_lot": "", "amount": "500.00",
+         "tax_character": "ordinary", "year": "2024", "description": ""},
+    ]
+    projected = [
+        roll.ProjectedRow(2026, "Income_Salary_Alice", "default", "Asset_Checking", "default",
+                          "ordinary", 50_025),
+        roll.ProjectedRow(2027, "Asset_Checking", "default", "Expense_Living", "default",
+                          "none", 12_000),
+    ]
+
+    rows, dropped = roll.merge_projected(earlier, projected, "2026-11", "2027-02")
+
+    by_name = {row["name"]: row for row in rows}
+    # 2025 is settled before a 2027 start can see it.
+    assert dropped == 1 and "projected_2025_1" not in by_name
+    assert by_name["prior_wages"] == earlier[0]
+    assert by_name["projected_bonus"] == earlier[3]
+    assert by_name["projected_2026_1"]["amount"] == "1500.25"
+    # Each row says which months it covers, so a derived scenario's roll
+    # knows which of them its own run covers again.
+    assert by_name["projected_2026_1"]["description"] == "projected by sim scenario roll, 2026-05 to 2027-01"
+    assert roll.covers(by_name["projected_2027_1"]) == ("2026-11", "2027-01")
+    assert by_name["projected_2027_1"]["amount"] == "120.00"
+    assert by_name["projected_2027_1"]["year"] == "2027"
+
+
+@pytest.mark.slow
+@pytest.mark.uses_current_scenario_write
+def test_a_derived_scenario_rolls_only_its_own_lots_after_its_parent(
+    test_data_dir: Path, test_scenarios_dir: Path, latest_test_run: Callable[[str], Path],
+) -> None:
+    """#564: rolling a scenario moves the start-dependent rows of what takes
+    its start too; each of those then reopens only its own lots, with
+    --own, and inherits the projected rows: the months skipped are the
+    household's past, the same in every plan."""
+    assert _sim(test_data_dir, "scenario", "create", "alice_more", "retire_alice").exit_code == 0
+    edited = _sim(test_data_dir, "account", "lot", "edit", "Asset_Savings", "default",
+                  "--opening-balance", "30000.00")
+    assert edited.exit_code == 0, edited.output
+    bonus = _sim(test_data_dir, "ytd", "add", "bonus", "Income_Salary_Alice", "Asset_Checking",
+                 "2000", "--tax-character", "ordinary", "--description", "before the start")
+    assert bonus.exit_code == 0, bonus.output
+    latest_test_run("retire_alice")
+    child_run = latest_test_run("alice_more")
+    with RunConnection(child_run, "alice_more") as rc:
+        savings = roll.projections(rc, month_before("2027-01"))[("Asset_Savings", "default")]
+    child = test_scenarios_dir / "alice_more"
+
+    # Its start is retire_alice's, which hasn't moved yet.
+    early = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
+                 "--no-keep")
+    assert early.exit_code != 0 and roll.PARENT_FIRST in early.output
+    # With no START, it would take the inherited one: so it asks for one.
+    assert "give START" in _sim(test_data_dir, "scenario", "roll", "alice_more", "--own").output
+
+    parent = _sim(test_data_dir, "scenario", "roll", "retire_alice", "2027-01", "--yes", "--no-keep")
+    assert parent.exit_code == 0, parent.output
+    # The child's own row of the old first year moved with retire_alice's.
+    assert "alice_more's year-to-date row bonus: pinned to 2026" in parent.output
+    assert _rows(child / "year_to_date.csv")["bonus"]["year"] == "2026"
+    assert "sim scenario roll alice_more 2027-01 --own" in parent.output
+
+    result = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes",
+                  "--no-keep")
+
+    assert result.exit_code == 0, result.output
+    assert "Rolling alice_more's own lots forward to 2027-01" in result.output
+    with (child / "scenario.csv").open(newline="", encoding="utf-8") as fh:
+        assert next(csv.DictReader(fh))["start"] == ""
+    lots = _rows(child / "account_lots.csv")
+    assert list(lots) == ["Asset_Savings/default"]
+    assert lots["Asset_Savings/default"]["opening_balance"] == f"{savings.balance:.2f}"
+    # It keeps retire_alice's projected rows, and writes none of its own.
+    assert set(_rows(child / "year_to_date.csv")) == {"bonus"}
+    assert _sim(test_data_dir, "check", "alice_more").exit_code == 0
+    # Again is the same: its lots reopen from the same run. Its start
+    # doesn't move, so there is no old plan to keep.
+    again = _sim(test_data_dir, "scenario", "roll", "alice_more", "2027-01", "--own", "--yes")
+    assert again.exit_code == 0, again.output
+    assert _rows(child / "account_lots.csv") == lots
+    assert "kept the plan" not in again.output
+    assert sorted(test_scenarios_dir.glob("alice_more-*")) == []
+
+
+def test_a_projected_row_edited_to_the_actual_figures_is_left_alone() -> None:
+    projection = roll.ProjectedRow(2026, "Income_Salary_Alice", "default", "Asset_Checking",
+                                   "default", "ordinary", 10_000)
+    base = {"from_account": "Income_Salary_Alice", "from_lot": "default",
+            "to_account": "Asset_Checking", "to_lot": "default", "tax_character": "ordinary",
+            "year": "2026"}
+    rows = [base | {"name": "projected_2026_1", "amount": "@w2_2026",
+                    "description": "projected by sim scenario roll, 2026-05 to 2026-10"},
+            base | {"name": "projected_2025_1", "amount": "900.00", "year": "2025",
+                    "description": "Alice's W-2"}]
+
+    merged, dropped = roll.merge_projected(rows, [projection], "2026-11", "2027-01")
+
+    assert dropped == 0
+    by_name = {row["name"]: row for row in merged}
+    assert by_name["projected_2026_1"] == rows[0] and by_name["projected_2025_1"] == rows[1]
+    assert by_name["projected_2026_2"]["amount"] == "100.00"

@@ -34,6 +34,7 @@ axvspan
 Backblaze
 backfillable
 backticked
+BDFX
 begidx
 bengen
 birthdates
@@ -123,9 +124,11 @@ fontsize
 footgun
 framealpha
 frombuffer
+FSKAX
 fstat
 ftruncate
 FTSE
+FXAIX
 GAAP
 getbasetemp
 geteuid
@@ -163,6 +166,7 @@ intraday
 IRMAA
 isin
 iterm
+ITLX
 Jefferies
 jupyterhub
 keepends
@@ -210,6 +214,7 @@ microcap
 midnightblue
 misaki
 mktree
+MMKX
 modelcontextprotocol
 mojimoji
 movflags
@@ -277,6 +282,7 @@ pyeb
 pyopenjtalk
 pypi
 pytestmark
+PYTHONPYCACHEPREFIX
 QQQM
 QQQX
 QSBS
@@ -353,6 +359,7 @@ STARTPTS
 stcg
 stdlib
 steelblue
+STKX
 Stooq
 subclassing
 subkey
@@ -418,6 +425,7 @@ upserts
 usefixtures
 USSTK
 vaccts
+VBTLX
 VFIFX
 videorc
 viewpane
@@ -425,6 +433,7 @@ vmax
 VMFXX
 vmin
 vsplit
+VTSAX
 VTWNX
 Webull
 wezterm
@@ -432,6 +441,7 @@ wordcount
 worktree
 worktrees
 WRONLY
+WROS
 XBRL
 xdata
 xdate

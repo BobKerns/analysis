@@ -12,8 +12,6 @@
 # keywords" in docs/SETUP.md.
 Hiromi
 FECU
-Fidelity
-Vanguard
 Voya
 Animation
 Zeromater

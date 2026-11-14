@@ -20,7 +20,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     },
     "expense": {
         "living", "healthcare", "housing", "interest_expense", "taxes_federal",
-        "taxes_state", "taxes_property", "business", "gift", "other_expense",
+        "taxes_state", "taxes_local", "taxes_property", "business", "gift", "other_expense",
     },
 }
 
@@ -68,9 +68,23 @@ jurisdiction it computes."""
 TAX_JURISDICTIONS: tuple[str, ...] = ("federal", "state", "local")
 """The jurisdictions, in the order they settle: a state's return builds on
 the federal one, a local one on the state's (#508)."""
-TAX_PAID_WITH: dict[str, str] = {"local": "state"}
-"""A jurisdiction paid with another's (#508): a blank ``source_chain`` or
-``destination`` in its file takes that one's."""
+TAX_DESTINATION_SUBKINDS: dict[str, str] = {
+    "federal": "taxes_federal", "state": "taxes_state", "local": "taxes_local"}
+"""The expense subkind each jurisdiction's ``destination`` must have (#586):
+each tax pays into an account of its own kind, which no other jurisdiction
+shares, so what went into it is that tax's payments and nothing else."""
+INCOME_TAX_SUBKINDS: frozenset[str] = frozenset(TAX_DESTINATION_SUBKINDS.values())
+"""The income-tax expense subkinds (#586): only income tax payments go into
+one (withholding, an estimated payment, a settlement)."""
+PROPERTY_TAX_SUBKIND = "taxes_property"
+"""Spending into an account of this subkind is property tax (#586), with no
+``tax:property`` tag or ``property_tax`` character needed."""
+TAX_RATE_COUNTS: dict[str, str] = {"local": "state"}
+"""A jurisdiction whose tax a fill_bracket's ``max_marginal_rate`` in
+another's scope counts too (#508): the local tax is bands on the state's
+taxable income, so the next dollar of it costs both. The state isn't
+counted in a federal rate: it has its own income, deductions and
+brackets, and a state-scope rule measures it."""
 RESIDENCE_FILE = "residence.csv"
 RESIDENCE_CSV_HEADER: tuple[str, ...] = ("effective_date", "state", "county", "description")
 """Where the household lives (#509, ADR-003 §4.16): from each row's month
@@ -278,6 +292,16 @@ RETIREMENT_LOT_SUBKINDS: dict[str, str] = {
 # the survivor's 59½) or as a beneficiary (the decedent's clock, no age test).
 ROTH_SURVIVOR_ELECTIONS: tuple[str, ...] = ("own", "beneficiary")
 RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_401k"})
+
+# #564: scenario.meta_json "roll", inherited like any meta_json key:
+# "monthly" has the background builder roll its start forward to the
+# current month each night its start month is over; "off" opts out of a
+# parent's.
+ROLL_KEY = "roll"
+# A year-to-date row `sim scenario roll` projected from the old run's flows
+# in the months it skipped (#564): projected_<year>_<n>, of that year.
+PROJECTED_YTD_NAME = re.compile(r"projected_(\d{4})_\d+")
+ROLL_CHOICES: tuple[str, ...] = ("monthly", "off")
 
 # transfer_event.reason_kind (schema.py CHECK), in a sensible display order:
 # a rule firing, the run's opening balances, partial-first-year catch-up
@@ -575,6 +599,11 @@ after every other rule of its month (#252)."""
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
 
+STATE_PHASEOUT_AGI: tuple[str, ...] = ("state", "federal")
+"""Which AGI a ``state_standard_deduction`` phase-out tests (#578): the
+state's own (the default, blank) or the federal, as Minnesota's, Rhode
+Island's and South Carolina's do."""
+
 STATE_SURCHARGE = "state_surcharge"
 """The aux kind of a state's surcharge on high taxable income (#490), in the
 shape of its brackets, whose rates add to the brackets' (California's 1%
@@ -585,11 +614,17 @@ STATE_LOCAL_TAX = "state_local_tax"
 the state's taxable income, in the shape of its brackets (Maryland's county
 rate, New York City's brackets). Keyed by state like the brackets, since a
 household lives in one locality. The local jurisdiction reads it
-(``taxes/local.csv``, ``local_bands``, #508), paid with the state's tax,
-as most are filed on the state return, and reported apart from it."""
+(``taxes/local.csv``, ``local_bands``, #508), paid into its own
+``taxes_local`` account (#586), and reported apart from the state's."""
 
 STATE_HSA = "state_hsa"
 """The aux kind of how a state treats a health savings account (#490)."""
+
+STATE_SEPARATE_RETURN = "state_separate_return"
+"""The aux kind of whether a state lets a married couple file separately on
+one return (#580): each spouse's income through the brackets and standard
+deduction alone, the two taxes added, the couple paying the lower of that and
+the joint tax (Arkansas, Delaware, the District, Kentucky, Virginia)."""
 
 STATE_GAINS_TAX = "state_gains_tax"
 """The aux kind of a state's tax on long-term capital gains apart from its
@@ -630,7 +665,8 @@ from tagged spending or income, the filers, or the federal return."""
 STATE_ADJUSTMENT_STEPS: tuple[str, ...] = ("subtraction", "deduction", "credit")
 """Where a ``state_adjustments`` row's line comes off: ``subtraction`` from
 income before state AGI, ``deduction`` after it (beside the standard or
-itemized deduction), ``credit`` against the tax (never more than the tax)."""
+itemized deduction), ``credit`` against the tax (never more than the tax,
+unless the row is ``refundable``, #579: then the state pays out the rest)."""
 
 STATE_ADJUSTMENT_BASES: tuple[str, ...] = (
     "spending", "income", "filers", "federal_tax", "federal_deduction", "gains_tax",
@@ -656,25 +692,84 @@ STATE_LTCG_EXCLUSION = "state_ltcg_exclusion"
 a percent, at least ``min_exclusion`` and at most ``max_exclusion``."""
 
 STATE_SOCIAL_SECURITY = "state_social_security"
+MIN_AGE_FRA = "fra"
+"""A ``state_social_security`` ``min_age`` (#581): the person's own full
+retirement age, by birth year. Read by :func:`is_fra` alone, so the loader
+and the calculator spell it alike."""
+
+
+def is_fra(age: object) -> bool:
+    """Whether a ``min_age`` cell says :data:`MIN_AGE_FRA`, in any case."""
+    return isinstance(age, str) and age.strip().lower() == MIN_AGE_FRA
+
 """The aux kind of how a state taxes Social Security (#484). Without one a
 state taxes none of it."""
 
+ITEMIZED_LIMITS = "itemized_limits"
+"""The aux kind of the limits on itemized deductions figured from the
+year's spending (#542): the SALT cap and its phase-down, the mortgage debt
+limit, and the AGI floors and cap on charity and medical expenses. Without
+one, itemized deductions are only the hand-typed ``federal_deductions``."""
+
+STATE_ITEMIZED_LIMITS = "state_itemized_limits"
+"""A state's own ``itemized_limits`` (#542), keyed by state like its
+brackets (California's: no SALT cap, a $1 million mortgage limit). A state
+without one figures no lines from spending."""
+
+ITEMIZED_LINES: tuple[str, ...] = (
+    "itemized_salt", "itemized_mortgage_interest", "itemized_charity", "itemized_medical",
+    "itemized_other",
+)
+"""The lines of an itemized deduction figured from the year's spending
+(#542), and the hand-typed rest, which add up to ``itemized_deduction``."""
+
+RENTAL_TAG = "tax:rental"
+"""Spending of a rental property (#542): Schedule E deducts it, so no
+itemized line counts it, whatever its character, account or rule kind."""
+
+ITEMIZED_TAGS: dict[str, str] = {
+    "property_tax": "tax:property",
+    "mortgage_interest": "tax:mortgage_interest",
+    "charity": "tax:charity",
+    "medical": "tax:medical",
+}
+"""The spending tags an itemized line is figured from (#542), by line.
+Property tax is also spending of the ``property_tax`` character; a
+``mortgage_payment`` rule's interest carries ``tax:mortgage_interest``, and
+an ``irmaa`` rule's surcharges ``tax:medical``, unless the rule or its
+account has one of these or ``tax:rental`` already."""
+
+ITEMIZING_TAGS: frozenset[str] = frozenset({*ITEMIZED_TAGS.values(), RENTAL_TAG})
+"""The tags that say which itemized line spending is on, or that it's on
+none (``tax:rental``, #542): the engine's ``tax_api.itemizing`` and the
+loader's checks read this one set (#586)."""
+
+IMPLIED_TAX_TAGS: dict[str, str] = {
+    "mortgage_payment": ITEMIZED_TAGS["mortgage_interest"],
+    "irmaa": ITEMIZED_TAGS["medical"],
+}
+"""The ``tax:`` tag a rule kind's spending carries when neither the rule nor
+the expense account has an itemizing one (#542): a home mortgage's
+interest (a ``mortgage_payment`` on a ``mortgage`` liability; its principal
+pays down the debt, which isn't spending) and an IRMAA surcharge."""
+
 STATE_KEYED_AUX_KINDS: frozenset[str] = frozenset({
-    "state_brackets", STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
+    "state_brackets", STATE_ITEMIZED_LIMITS, STATE_STANDARD_DEDUCTION, STATE_LTCG_BRACKETS, STATE_STCG_BRACKETS,
     STATE_LTCG_EXCLUSION, STATE_SOCIAL_SECURITY, STATE_SURCHARGE, STATE_HSA,
     STATE_RETIREMENT_EXCLUSION, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
-    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
+    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION, STATE_SEPARATE_RETURN,
 })
 """The aux kinds keyed by state (or, for ``state_local_tax``, by county):
 a tax year reads the series where the household lives that year
 (``residence.csv``, #509), so none of them is swapped by a move."""
 
 OPTIONAL_STATE_AUX_KINDS: frozenset[str] = frozenset({
-    STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
-    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION,
+    STATE_ITEMIZED_LIMITS, STATE_SURCHARGE, STATE_HSA, STATE_LOCAL_TAX, STATE_ADJUSTMENTS,
+    STATE_GAINS_TAX, STATE_GAINS_DEDUCTION, STATE_SEPARATE_RETURN,
 })
-"""The state tables a state may lack (#490, #487, #489): then it has no
-surcharge, local tax or gains tax, and its HSA follows the federal rules."""
+"""The state tables a state may lack (#490, #487, #489, #542, #580): then it
+has no surcharge, local tax or gains tax, its HSA follows the federal rules,
+it figures no itemized lines from spending, and a couple files jointly."""
 
 STATE_BAND_KINDS: frozenset[str] = frozenset({STATE_SURCHARGE, STATE_LOCAL_TAX, STATE_GAINS_TAX})
 """The state tables of bands (#490, #487, #489): a surcharge's and a local
@@ -699,7 +794,10 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     STATE_LTCG_BRACKETS: {"floor_series": "floor"},
     STATE_STCG_BRACKETS: {"floor_series": "floor"},
     "standard_deduction": {"amount_series": "amount"},
-    STATE_STANDARD_DEDUCTION: {"amount_series": "amount"},
+    STATE_STANDARD_DEDUCTION: {
+        "amount_series": "amount", "floor_series": "floor",
+        "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
+    },
     STATE_SOCIAL_SECURITY: {
         "phaseout_start_series": "phaseout_start", "phaseout_end_series": "phaseout_end",
     },
@@ -726,6 +824,11 @@ AUX_SERIES_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
 """The aux table columns, by kind, that name an inflation series, which a
 series rename rewrites (#467)."""
 
+ITEMIZED_LIMITS_COLUMNS: tuple[str, ...] = (
+    "effective_date", "filing_status", "salt_cap", "salt_floor", "salt_phaseout_start",
+    "salt_phaseout_rate", "mortgage_limit", "charity_floor", "charity_limit", "medical_floor",
+)
+
 AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "federal_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
@@ -743,6 +846,10 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # How a state treats an HSA (#490), read with the brackets' series:
     # `treatment` is one of STATE_HSA_TREATMENTS. Without a table, `federal`.
     STATE_HSA: ("effective_date", "treatment"),
+    # Whether a state lets a married couple file separately on one return
+    # (#580), read with the brackets' series: `allowed` is yes or no.
+    # Without a table, no.
+    STATE_SEPARATE_RETURN: ("effective_date", "allowed"),
     # A state's tax on long-term gains apart from its income tax (#489):
     # bands in the shape of its brackets on the gain after its own
     # deduction, read with the brackets' series. Washington's.
@@ -771,17 +878,30 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # The state's own standard deduction (#248), which is often far smaller
     # than the federal one. A state tax falls back to standard_deduction
     # when there is no state_standard_deduction__<state> for its brackets'
-    # state, and the loader warns that it did.
-    STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount"),
+    # state, and the loader warns that it did. Some states shrink it as
+    # income rises (#578): above phaseout_start of state AGI it falls to
+    # nothing at phaseout_end (linearly; at once when they're equal), or by
+    # phaseout_rate of each dollar over, but not below floor. With a rate,
+    # phaseout_step counts the dollars over in whole steps, a started one in
+    # full (Alabama's $500 rows); with an end, phaseout_steps splits the span
+    # into that many equal steps (Rhode Island's five 20% steps), which
+    # stay equal as the start and end are indexed. phaseout_agi
+    # (STATE_PHASEOUT_AGI) says which AGI: the state's (blank) or the
+    # federal. The columns after amount are optional (AUX_OPTIONAL_COLUMNS).
+    STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount", "floor",
+                               "phaseout_start", "phaseout_end", "phaseout_rate",
+                               "phaseout_step", "phaseout_steps", "phaseout_agi"),
     # How a state taxes Social Security (#484): it starts from the federally
     # taxable amount and excludes exclusion_percent of it, an exclusion that
     # phases out above phaseout_start of federal AGI: to nothing at
     # phaseout_end (linearly; at once when they're equal), or by
     # phaseout_rate of each dollar over (a credit, as a flat-rate state gives
-    # one). The phase-out columns are optional (AUX_OPTIONAL_COLUMNS). Without
-    # the file a state taxes none of it.
+    # one). Rows by `min_age` (#581; years, or `fra`, the person's own full
+    # retirement age) are age tiers: each person's share, by benefits, takes
+    # the highest they reach. The phase-out columns and min_age are optional
+    # (AUX_OPTIONAL_COLUMNS). Without the file a state taxes none of it.
     STATE_SOCIAL_SECURITY: ("effective_date", "filing_status", "exclusion_percent",
-                            "phaseout_start", "phaseout_end", "phaseout_rate"),
+                            "phaseout_start", "phaseout_end", "phaseout_rate", "min_age"),
     # A state's retirement income exclusions (#486), keyed by state like its
     # brackets: each row excludes up to `amount` per person (blank: all of
     # it) of the `income` kinds it lists (STATE_EXCLUSION_INCOME), from
@@ -801,10 +921,14 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # the amount each). Filers count from `min_age`. Above `income_limit`
     # it ends at once, falls to nothing over `phaseout` dollars, or loses
     # `phaseout_rate` of each dollar over. A blank filing_status applies to
-    # every status. Every column after `base` may be left out.
+    # every status. `less_ss` (an `income` row with an amount, #579) takes
+    # the Social Security received off the cap: each filer's own with
+    # `per_person`, else the household's. A `refundable` credit (#579) is
+    # paid in full, below zero tax. Every column after `base` may be left out.
     STATE_ADJUSTMENTS: (
         "effective_date", "name", "step", "base", "tag", "rate", "amount", "per_person",
         "min_age", "filing_status", "income_limit", "phaseout", "phaseout_rate",
+        "less_ss", "refundable",
     ),
     # Itemized deductions: a dated total, no filing_status split (unlike
     # standard_deduction). Optional; when present, a tax jurisdiction uses
@@ -814,6 +938,16 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # value when no `state_deductions` rows exist at all.
     "federal_deductions": ("effective_date", "amount"),
     "state_deductions": ("effective_date", "amount"),
+    # The limits on the itemized lines figured from the year's spending
+    # (#542), by filing status: state and local taxes (SALT) up to
+    # `salt_cap`, which falls by `salt_phaseout_rate` of MAGI over
+    # `salt_phaseout_start` but not below `salt_floor`; mortgage interest on
+    # up to `mortgage_limit` of debt; charity over `charity_floor` and at
+    # most `charity_limit` of AGI; medical expenses over `medical_floor` of
+    # AGI. A blank cell is no limit. Every column after filing_status may be
+    # left out.
+    ITEMIZED_LIMITS: ITEMIZED_LIMITS_COLUMNS,
+    STATE_ITEMIZED_LIMITS: ITEMIZED_LIMITS_COLUMNS,
     "ss_taxation_thresholds":
         ("effective_date", "filing_status", "tier1_floor", "tier2_floor"),
     "rmd_factors": ("effective_date", "age", "factor"),
@@ -885,6 +1019,7 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "rate": {"annual_rate": ("annual_rate_micros", "percent")},
     "inflation": {"annual_rate": ("annual_rate_micros", "percent")},
     "energy_credits": {"rate": ("rate_micros", "percent")},
+    STATE_STANDARD_DEDUCTION: {"phaseout_rate": ("phaseout_rate_micros", "percent")},
     STATE_SOCIAL_SECURITY: {
         "exclusion_percent": ("exclusion_micros", "percent"),
         "phaseout_rate": ("phaseout_rate_micros", "percent"),
@@ -893,6 +1028,12 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
         "rate": ("rate_micros", "percent"),
         "phaseout_rate": ("phaseout_rate_micros", "percent"),
     },
+    **{kind: {
+        "salt_phaseout_rate": ("salt_phaseout_rate_micros", "percent"),
+        "charity_floor": ("charity_floor_micros", "percent"),
+        "charity_limit": ("charity_limit_micros", "percent"),
+        "medical_floor": ("medical_floor_micros", "percent"),
+    } for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
     "life_table": {"q_female": ("q_female_micros", "number"),
                    "q_male": ("q_male_micros", "number")},
 }
@@ -919,11 +1060,15 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     STATE_GAINS_TAX: frozenset({"floor"}),
     STATE_GAINS_DEDUCTION: frozenset({"amount"}),
     "standard_deduction": frozenset({"amount"}),
-    STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
+    STATE_STANDARD_DEDUCTION: frozenset({
+        "amount", "floor", "phaseout_start", "phaseout_end", "phaseout_step",
+    }),
     STATE_RETIREMENT_EXCLUSION: frozenset({"amount", "income_limit", "phaseout"}),
     STATE_ADJUSTMENTS: frozenset({"amount", "income_limit", "phaseout"}),
     "federal_deductions": frozenset({"amount"}),
     "state_deductions": frozenset({"amount"}),
+    **{kind: frozenset({"salt_cap", "salt_floor", "salt_phaseout_start", "mortgage_limit"})
+       for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
     "energy_credits": frozenset({"cap"}),
     "capital_loss_limit": frozenset({"amount"}),
@@ -932,10 +1077,16 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
 }
 
 AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
-    STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate"}),
+    **{kind: frozenset(ITEMIZED_LIMITS_COLUMNS[2:]) for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
+    STATE_STANDARD_DEDUCTION: frozenset({
+        "floor", "phaseout_start", "phaseout_end", "phaseout_rate", "phaseout_step",
+        "phaseout_steps", "phaseout_agi",
+    }),
+    STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end", "phaseout_rate",
+                                      "min_age"}),
     STATE_ADJUSTMENTS: frozenset({
         "tag", "rate", "amount", "per_person", "min_age", "filing_status", "income_limit",
-        "phaseout", "phaseout_rate",
+        "phaseout", "phaseout_rate", "less_ss", "refundable",
     }),
 }
 """Columns of ``AUX_KIND_COLUMNS`` a file may leave out, by kind: a missing

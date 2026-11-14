@@ -10,7 +10,8 @@ override on its :class:`StateYear`:
 2. :meth:`~StateYear.additions` and :meth:`~StateYear.subtractions`: named
    lines of the return, each changing income of one or more kinds;
 3. state AGI, the start plus the additions less the subtractions;
-4. :meth:`~StateYear.deductions`, then :meth:`~StateYear.other_deductions`
+4. :meth:`~StateYear.deductions` (at the year's income,
+   :meth:`~StateYear.deductions_at`), then :meth:`~StateYear.other_deductions`
    (lines that depend on the year's income), then a carried-in NOL, then
    taxable income;
 5. :meth:`~StateYear.tax`, less :meth:`~StateYear.credits` and
@@ -19,6 +20,10 @@ override on its :class:`StateYear`:
    on capital gains, #489), added to the tax;
 7. :meth:`~StateYear.refundable_credits` (#568), taken off last, which can
    leave the tax below zero: the state pays it back.
+
+Between 5 and 6, :meth:`~StateYear.separate` may figure the couple's tax
+filing separately on one return (#580), which the return takes when it's
+lower than the joint tax after credits.
 """
 
 from __future__ import annotations
@@ -92,6 +97,43 @@ class Basis:
         return self._federal
 
 
+@dataclass(frozen=True)
+class Joint:
+    """The joint return a separate one is figured beside (#580): its
+    income, the subtractions as :meth:`StateYear.subtractions` gave them
+    (an adjustment may say whose it is), deductions, the NOL it used, its
+    tax before credits, and the credits as :meth:`StateYear.credits` and
+    :meth:`StateYear.credit_lines` gave them at that tax, before the tax
+    limited them."""
+    income: Income
+    subtractions: Sequence[Adjustment]
+    deductions: Mapping[str, int]
+    others: Mapping[str, int]
+    nol_used: int
+    tax: int
+    credits: int
+    credit_lines: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class Separate:
+    """Spouses filing separately on one return (#580): the lines showing
+    each spouse's, the two taxes after credits added up, and the NOL they
+    used, which the return carries forward from when it's the one taken.
+    The rest are the two returns' figures added up, which the return shows
+    in place of the joint one's when it takes this one, so its lines
+    reconcile: the deduction, taxable income and its ordinary part, the
+    credits taken, and what each credit line took."""
+    lines: Mapping[str, int]
+    tax: int
+    nol_used: int
+    deduction: int
+    taxable: int
+    ordinary_taxable: int
+    credits: int
+    credit_lines: Mapping[str, int]
+
+
 class StateYear(Prepared):
     """One tax year of a state, ready to compute. A subclass sets
     ``brackets`` (and ``ltcg_brackets``, ``stcg_brackets``) in
@@ -110,10 +152,11 @@ class StateYear(Prepared):
         self._nol_lapse = common.nol_lapse_share(ty)
         basis = self.basis(NO_EXTRA)
         fixed = self.fixed_lines(basis)
+        income = self._income(basis)[0]
         self._nol_new = common.nol_new(
-            agi=self._income(basis)[0].agi, business_net=fixed.get("business_net", 0),
+            agi=income.agi, business_net=fixed.get("business_net", 0),
             capital_loss_used=fixed.get("capital_loss_used", 0),
-            deduction=self._deductions["deduction"])
+            deduction=self.deductions_at(income, basis)["deduction"])
 
     # -- The steps ------------------------------------------------------------
 
@@ -144,6 +187,13 @@ class StateYear(Prepared):
         """The deduction lines; ``deduction`` is the one taken."""
         raise NotImplementedError
 
+    def deductions_at(self, income: Income, basis: Basis) -> Mapping[str, int]:
+        """:meth:`deductions` at the year's ``income``: itemized lines whose
+        limits move with AGI (#542) are figured here, and a limit on the
+        deduction taken that depends on them. A copy of :meth:`deductions`
+        by default, so an override may change what it's given."""
+        return dict(self._deductions)
+
     def other_deductions(self, income: Income, basis: Basis) -> Mapping[str, int]:
         """Named deductions taken after AGI besides :meth:`deductions`'
         ``deduction``, which may depend on the year's income (a renter's
@@ -166,6 +216,13 @@ class StateYear(Prepared):
         used up. None by default."""
         return {}
 
+    def separate(self, joint: Joint, basis: Basis) -> Separate | None:
+        """The return of a married couple filing separately on one return
+        (#580), beside the ``joint`` one, or None where the state doesn't
+        allow it (the default). The return takes it when its tax after
+        credits is lower than the joint return's."""
+        return None
+
     def excise(self, basis: Basis) -> tuple[Mapping[str, int], int]:
         """A tax the state levies apart from its income tax, on its own base
         (Washington's on capital gains, #489): its lines and the tax, which
@@ -175,8 +232,11 @@ class StateYear(Prepared):
     def refundable_credits(self, tax: int, income: Income, basis: Basis) -> Mapping[str, int]:
         """Named credits the state pays whatever the tax (#568): each is
         written to the return in full and taken off after :meth:`excise`, so
-        the tax can end below zero, a refund. ``tax`` is the tax so far.
-        None by default."""
+        the tax can end below zero, a refund. ``tax`` is the tax so far,
+        before any of them: an override that extends another's (a
+        ``StateTables`` year's ``refundable`` table rows, #579) takes what
+        ``super()`` returns off it itself if its own credit depends on the
+        tax left. None by default."""
         return {}
 
     def memo(self, basis: Basis) -> Mapping[str, int]:
@@ -185,37 +245,65 @@ class StateYear(Prepared):
 
     # -- The pipeline ---------------------------------------------------------
 
-    def _income(self, basis: Basis) -> tuple[Income, dict[str, int]]:
+    def _income(self, basis: Basis) -> tuple[Income, dict[str, int], tuple[Adjustment, ...]]:
+        """The year's income after its additions and subtractions, their
+        lines, and the subtractions as applied (whose they are, for a
+        separate return, #580)."""
         income = self.start(basis)
         lines: dict[str, int] = {}
         for adjustment in self.additions(income, basis):
             income = income.changed(adjustment, 1)
             lines[adjustment.line] = adjustment.value
-        for adjustment in self.subtractions(income, basis):
+        subtracted = tuple(self.subtractions(income, basis))
+        for adjustment in subtracted:
             income = income.changed(adjustment, -1)
             lines[adjustment.line] = adjustment.value
-        return income, lines
+        return income, lines, subtracted
 
     def compute(self, extra: Extra = NO_EXTRA) -> Return:
         basis = self.basis(extra)
-        income, adjustments = self._income(basis)
+        income, adjustments, subtracted = self._income(basis)
+        deductions = self.deductions_at(income, basis)
         others = dict(self.other_deductions(income, basis))
         # A NOL is figured without these (#511): a nonbusiness deduction
         # offsets only nonbusiness income, as the federal rule says.
-        before_nol = income.agi - self._deductions["deduction"] - sum(others.values())
+        before_nol = income.agi - deductions["deduction"] - sum(others.values())
         nol_used = common.nol_used(self._nol_in, before_nol, self._nol_limit)
         taxable = max(0, before_nol - nol_used)
         tax = self.tax(taxable, income)
         # These credits can't take the tax below zero: a named line shows
         # what it took, in order, so the lines add up to the credits taken.
-        credits = min(tax, self.credits(tax, income, basis))
+        # Asked once, and handed to a separate return as they are.
+        asked_credits = self.credits(tax, income, basis)
+        asked_lines = dict(self.credit_lines(tax, income, basis))
+        credits = min(tax, asked_credits)
         credit_lines = {}
-        for line, amount in self.credit_lines(tax, income, basis).items():
+        for line, amount in asked_lines.items():
             credit_lines[line] = max(0, min(amount, tax - credits))
             credits += credit_lines[line]
+        # Spouses filing separately on one return (#580) pay the lower, and
+        # carry forward the NOL that return left; its deduction, taxable
+        # income and credits are then the two spouses' added up, so the
+        # return's lines reconcile to the tax taken.
+        owed, separate_lines = tax - credits, {}
+        ordinary_taxable = common.ordinary_taxable(
+            taxable, income.ltcg, income.stcg, bool(self.stcg_brackets))
+        joint = Joint(income, subtracted, deductions, others, nol_used, tax, asked_credits,
+                      asked_lines)
+        if (separate := self.separate(joint, basis)) is not None:
+            chosen = separate.tax < owed
+            separate_lines = {**separate.lines, "joint_taxable_income": taxable,
+                              "joint_tax": owed, "separate_tax": separate.tax,
+                              "separate_return": int(chosen)}
+            if chosen:
+                owed, nol_used = separate.tax, separate.nol_used
+                taxable, credits = separate.taxable, separate.credits
+                ordinary_taxable = separate.ordinary_taxable
+                deductions = {**deductions, "deduction": separate.deduction}
+                credit_lines = dict(separate.credit_lines)
         excise_lines, excise = self.excise(basis)
         refundable = {line: max(0, amount) for line, amount in self.refundable_credits(
-            tax - credits + excise, income, basis).items()}
+            owed + excise, income, basis).items()}
         lines = {
             "ordinary_income": income.ordinary,
             "ltcg_taxed": income.ltcg,
@@ -225,20 +313,20 @@ class StateYear(Prepared):
             "agi": income.agi,
             **self.fixed_lines(basis),
             **adjustments,
-            **self._deductions,
+            **deductions,
             **others,
             **credit_lines,
             "taxable_income": taxable,
-            "ordinary_taxable": common.ordinary_taxable(
-                taxable, income.ltcg, income.stcg, bool(self.stcg_brackets)),
+            "ordinary_taxable": ordinary_taxable,
             "credits": credits,
+            **separate_lines,
             **excise_lines,
         }
         if clash := sorted(set(refundable) & {*lines, "tax"}):
             raise TaxError(f"refundable credit line {', '.join(clash)} names a line the "
                            "return already has; name it apart (#568)")
         lines.update(refundable)
-        lines["tax"] = tax - credits + excise - sum(refundable.values())
+        lines["tax"] = owed + excise - sum(refundable.values())
         return Return(lines, MappingProxyType(dict(self.memo(basis))))
 
 

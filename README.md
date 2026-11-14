@@ -91,34 +91,34 @@ an issue to close, or a row you write yourself.
 
 | State | Status | Not modeled |
 | --- | --- | --- |
-| Alabama | Partial | Standard deduction that shrinks with income ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| Alabama | Tables needed | |
 | Alaska | No tax | |
 | Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
-| Arkansas | Partial | Low-income tax tables; spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Arkansas | Partial | Low-income tax tables |
 | California | Shipped | |
-| Colorado | Partial | Social Security subtraction's age test ([#581](https://github.com/BobKerns/analysis/issues/581)) |
+| Colorado | Partial | Social Security sharing the pension subtraction's cap from 55 to 64, over the income |
 | Connecticut | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); personal tax credit; Social Security's 25% cap |
-| Delaware | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
-| District of Columbia | Shipped | Extra deduction at 65 ([#582](https://github.com/BobKerns/analysis/issues/582)); spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Delaware | Tables needed | |
+| District of Columbia | Shipped | Extra deduction when blind |
 | Florida | No tax | |
 | Georgia | Tables needed | |
 | Hawaii | Tables needed | |
-| Idaho | Shipped | Public pension deduction, reduced by Social Security; refundable grocery credit ([#579](https://github.com/BobKerns/analysis/issues/579)) |
+| Idaho | Shipped | Public pension deduction, reduced by Social Security (a row you write) |
 | Illinois | Tables needed | |
 | Indiana | Tables needed | |
 | Iowa | Partial | School district surtax (a share of state tax) |
-| Kansas | Shipped | Public pension exemption; larger standard deduction from 65; personal exemption when itemizing ([#582](https://github.com/BobKerns/analysis/issues/582)) |
-| Kentucky | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Kansas | Shipped | Public pension exemption (a row you write); extra deduction when blind |
+| Kentucky | Tables needed | |
 | Louisiana | Tables needed | |
-| Maine | Partial | Standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)) |
-| Maryland | Partial | Pension exclusion reduced by Social Security ([#579](https://github.com/BobKerns/analysis/issues/579)); capital gains surtax above $350,000 of income |
+| Maine | Partial | Standard deduction phase-out's width grows with inflation (the law's divisor is fixed) |
+| Maryland | Partial | Capital gains surtax above $350,000 of income |
 | Massachusetts | Tables needed | |
 | Michigan | Partial | City income taxes (a base of their own) |
-| Minnesota | Partial | Standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)); 1% surtax on investment income over $1 million; Social Security subtraction's $4,000 steps (modeled as a straight line) |
+| Minnesota | Partial | Standard deduction phase-out's lower 3% band (approximated); 1% surtax on investment income over $1 million; Social Security subtraction's $4,000 steps (modeled as a straight line) |
 | Mississippi | Tables needed | |
 | Missouri | Tables needed | |
 | Montana | Tables needed | |
-| Nebraska | Shipped | Personal exemption credit ([#582](https://github.com/BobKerns/analysis/issues/582)) |
+| Nebraska | Shipped | |
 | Nevada | No tax | |
 | New Hampshire | No tax | |
 | New Jersey | Tables needed | |
@@ -130,17 +130,17 @@ an issue to close, or a row you write yourself.
 | Oklahoma | Tables needed | |
 | Oregon | Tables needed | |
 | Pennsylvania | Partial | Separate income classes; Philadelphia's tax on investment income |
-| Rhode Island | Partial | Social Security exemption's full-retirement-age test ([#581](https://github.com/BobKerns/analysis/issues/581)); standard deduction phase-out ([#578](https://github.com/BobKerns/analysis/issues/578)) |
-| South Carolina | Partial | Deduction that phases down with income, from 2026 ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| Rhode Island | Tables needed | |
+| South Carolina | Tables needed | |
 | South Dakota | No tax | |
 | Tennessee | No tax | |
 | Texas | No tax | |
 | Utah | Tables needed | |
 | Vermont | Partial | Minimum tax of 3% of AGI over $150,000; capital gain exclusion's holding period |
-| Virginia | Partial | Spouses filing separately on one return ([#580](https://github.com/BobKerns/analysis/issues/580)) |
+| Virginia | Tables needed | |
 | Washington | Shipped | Charitable and family-business deductions; credits for other states' taxes |
 | West Virginia | Tables needed | |
-| Wisconsin | Partial | Standard deduction that shrinks with income ([#578](https://github.com/BobKerns/analysis/issues/578)) |
+| Wisconsin | Partial | Head of household's standard deduction switching to the single figure |
 | Wyoming | No tax | |
 
 | Territory | Status | Not modeled |
@@ -324,6 +324,10 @@ Persistent memory:
 - `state/state.sqlite3`
 
 ### Importing the Expense Baseline
+
+[Importing your data](docs/guides/importing-data.md) is the guide to
+`sim import`, for balances and spending both; this section is the reference
+for the spending files.
 
 The baseline importer combines canonicalized Quicken expenses with Amazon
 monthly summaries and replaces only rows it previously generated:

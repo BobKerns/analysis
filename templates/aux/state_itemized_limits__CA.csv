@@ -1,0 +1,4 @@
+effective_date,filing_status,salt_cap,salt_floor,salt_phaseout_start,salt_phaseout_rate,mortgage_limit,charity_floor,charity_limit,medical_floor
+2026-01-31,MFJ,,,,,1000000.00,,50%,7.5%
+2026-01-31,Single,,,,,1000000.00,,50%,7.5%
+2026-01-31,MFS,,,,,500000.00,,50%,7.5%

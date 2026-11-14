@@ -11,8 +11,9 @@ the state you live in) and `local_bands`. When your state has a rule they
 don't model (a renter deduction, a public pension exclusion, a credit for
 long-term care premiums), first see whether a row of the state's
 `state_adjustments` table can say it: a share of tagged spending or
-income, up to a cap, for filers from an age, below an income, as a
-subtraction, deduction or credit (the code repository's
+income, up to a cap (less Social Security, if the state says so), for
+filers from an age, below an income, as a subtraction, deduction or
+credit, refundable or not (the code repository's
 `templates/aux/README.md` lists the columns). Most renter's, 529 and
 premium rules fit. When one doesn't (a circuit breaker, figured from
 property tax above a share of income, say), you can write a calculator of your own, a small
@@ -25,8 +26,8 @@ scenario's household: the District of Columbia's property tax credit
 (Schedule H), as if they retired to a DC rowhouse. It is a "circuit
 breaker": the property tax above a share of federal AGI, up to a cap, for a
 household below an income limit, and refundable, so DC pays it even when
-no tax is due. The share, the limits that depend on age, and the refund
-are what a row can't say. The design and its rules are in
+no tax is due. A row can be refundable, but the share and the limits
+that depend on age are what a row can't say. The design and its rules are in
 [ADR-011](../architecture/ADR-011-tax-calculators.md), and
 video 13, *Tax plugins*, walks through it:
 [English](https://www.youtube.com/watch?v=rWfsNvoNnVI),
@@ -147,11 +148,29 @@ What it does:
   (`fill_bracket` steps, the after-tax drawdown). It overrides
   `refundable_credits`, run for each return, one of the steps a
   state year goes through (`additions`, `subtractions`, `deductions`,
-  `other_deductions`, `tax`, `credits`, `credit_lines`, `excise`,
-  `refundable_credits`). Each line it returns is a line of the return,
+  `itemized_lines`, `other_deductions`, `tax`, `credits`, `credit_lines`,
+  `separate`, `excise`, `refundable_credits`). Each line it returns is a line of the return,
   written to the run as `state_<line>`. A refundable credit comes off
   last and can take the tax below zero; the April settlement pays it
   back. A credit that can't, like most, goes in `credit_lines` instead.
+  `StateTables`' own `refundable_credits` returns the state table's
+  `refundable` rows; DC's table has none, so this one leaves them out. For
+  a state whose table has some, merge them:
+  `{**super().refundable_credits(tax, income, basis), "property_credit": ...}`.
+- The built-in `itemized_lines` figures property tax, mortgage interest,
+  charity and medical from tagged spending and adds them to what
+  `deductions` returns; a year whose `deductions` figures its own itemized
+  total overrides `itemized_lines` to return `None`, or those count twice.
+  (A module that overrides `deductions` and says `API_VERSION = 4`, or
+  sets no `API_VERSION`, gets no lines, as before they existed; say
+  `API_VERSION = 5` to get them.)
+- In a state whose `state_separate_return` table allows it, the built-in
+  `separate` figures each spouse's tax alone, calling your `tax` with the
+  `MFS` tables in place of the year's (and `self.ty.filing_status`
+  saying `MFS`, so a table you read through `self.ty` gives that
+  spouse's rows), and the return takes it when it's lower. A module whose year overrides `tax` or `deductions` gets it only
+  if it says `API_VERSION = 6` or later; a year that can't figure one
+  spouse's tax overrides `separate` to return `None` and file jointly.
 - `self.ty` is the tax year as the calculator sees it. `ty.spent(tag)` is
   the year's spending carrying a tag; `ty.grown(amount, series, since)` a
   figure the law set for year `since`, grown with inflation to this one,

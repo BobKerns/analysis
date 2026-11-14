@@ -400,8 +400,14 @@ Each income tax is a file in the scenario's `taxes/` folder: `federal.csv`
 for federal tax and `state.csv` for state tax. Each April the file works out
 the year before's tax and pays what is still due, from its `source_chain`
 (usually `Asset_Checking`) into its `destination` (`Expense_Taxes_Federal`).
-`sim tax add federal` writes one, asking for each field, and `sim tax list`
-shows them. A child scenario inherits its parent's files; its own file for
+Each tax is paid into an expense account of its own kind: subkind
+`taxes_federal` for the federal tax, `taxes_state` for the state's and
+`taxes_local` for a local one, and no two taxes share one. Only income tax
+payments (withholding, estimated payments) go into these accounts; pay
+property tax into a `taxes_property` account, where it counts as property
+tax for itemizing with no tag. `sim tax add federal` writes one, asking for
+each field (and adds the account if the scenario has none of the right
+kind), and `sim tax list` shows them. A child scenario inherits its parent's files; its own file for
 a jurisdiction replaces the parent's whole. A scenario with no `taxes/`
 files pays no income tax.
 
@@ -501,8 +507,9 @@ files pays no income tax.
   and name the county where you live: `sim tax state --county MD-county`.
   (A table named for the state, `state_local_tax__MD.csv`, applies wherever
   you live in it without a county.) Then `sim tax add local` adds
-  `taxes/local.csv`, the local tax's own file: it is paid with the state's
-  tax unless you name another source or destination, and `sim report tax`
+  `taxes/local.csv`, the local tax's own file: it is paid from the state
+  tax's source, unless you name another, into an account of its own,
+  `Expense_Taxes_Local` (subkind `taxes_local`) unless you have one, and `sim report tax`
   shows it as `local_tax`, apart from `state_tax`. A scenario with the table
   and no `taxes/local.csv` doesn't load. A local tax only on wages, or with a base of its own
   (Philadelphia's on investment income, Yonkers's share of the state tax),
@@ -516,6 +523,15 @@ files pays no income tax.
   as `state_exclusion`. Give a pension income account its owner, so the
   pension counts as that person's; a joint account's income is split
   between you.
+- **Spouses filing separately on one state return**: Arkansas, Delaware,
+  the District of Columbia, Kentucky and Virginia let a married couple
+  file separately on one state return, each through the brackets and
+  standard deduction alone, which saves tax when you both have income.
+  `state_separate_return__<state>.csv` in `aux/` with `allowed` `yes`
+  turns it on (the District's ships): the state tax figures both ways and
+  takes the lower, with your income split by whose accounts it comes from
+  (a joint account's split evenly). `sim report tax --return state` shows
+  `joint_tax`, `separate_tax` and each of yours.
 - **State deductions and credits** of the state's own, such as a renter's
   deduction or credit, a 529 or long-term care premium deduction, personal
   exemptions and exemption credits, or a deduction for federal tax paid, are
@@ -523,7 +539,10 @@ files pays no income tax.
   exemption credits and renter's credit ship. A row that counts spending
   or income reads a tag: tag the rule that pays your rent
   `tax:rent` (`sim scheduled edit housing --tags tax:rent`) for the
-  renter's credit. `sim report tax --return state` shows each line.
+  renter's credit. A credit the state pays even past the tax (Idaho's
+  grocery credit) is marked `refundable`; a pension exclusion that shrinks
+  with your Social Security (Maryland's) is marked `less_ss`. `sim report
+  tax --return state` shows each line.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
   each year plus municipal bond interest.
 - **RMDs** are calculated from the account's lot balances on the previous
@@ -1047,23 +1066,66 @@ Any other aux table can be swapped with a calendar row, `swap_aux_table`: a
 new federal bracket table on the date a law takes effect, or another
 inflation series. A state's tables can't be: they follow where you live.
 
-### 4.9 Modeling itemized deductions (for example, a big medical year)
+### 4.9 Itemized deductions
 
-By default, tax is calculated using the standard deduction — a flat amount
-that depends only on filing status (Part 3). If a year has enough deductible
-expenses (a large medical bill is the usual case), give that year its
-itemized deductions with `sim deduction add`, listing the expenses:
+By default, tax is calculated using the standard deduction, a flat amount
+that depends only on filing status (Part 3). The simulator also adds up your
+itemized deductions from the year's spending, and uses whichever is greater.
+You do not need to compare them yourself. Each line shows in
+`sim report tax --return federal`:
+
+| Line | Comes from | Limited by |
+| --- | --- | --- |
+| `itemized_salt` | Property tax (spending tagged `tax:property`), and the state and local income tax you paid during the year, the April payment for the year before included | The SALT cap: $40,400 in 2026, rising 1% a year through 2029, less 30% of income over $505,000 but not below $10,000; $10,000 from 2030 |
+| `itemized_mortgage_interest` | A `mortgage_payment` rule's interest on a `mortgage` liability, automatically (not a car loan's or a HELOC's) | Interest on up to $750,000 of mortgage debt, tested month by month |
+| `itemized_charity` | Spending tagged `tax:charity` | At most 60% of AGI, less 0.5% of AGI |
+| `itemized_medical` | Spending tagged `tax:medical`, and IRMAA's Medicare surcharges, automatically; not what an HSA paid | Only the part over 7.5% of AGI |
+| `itemized_other` | Anything else you add by hand (below) | None |
+
+Tag the expense account (or the rule paying into it) to say what it is:
 
 ```sh
-sim deduction add 2028 --item surgery=38000 --item hospital=9000 --item prescriptions=3000
+sim account tag add Expense_Property_Tax tax:property
+sim account tag add Expense_Donations tax:charity
 ```
 
-For that tax year, the simulator uses whichever is greater: the expenses'
-total, or the standard deduction. You do not need to compare them yourself.
-A year's itemized deductions count for that year only; the years around it
-keep the standard deduction. Leave the `--item` options off and the command
-asks for the expenses one by one, or give a total instead
-(`sim deduction add 2029 12500`).
+A mortgage or property tax on a rental isn't a personal deduction: tag its
+rule `tax:rental` and it stays out. A business expense (the
+`business_expense` character) stays out by itself: Schedule C deducts it.
+Other spending paid from a business account, a gift say, still counts. A
+tag a rule carries for a report (`tax:itemized`) doesn't move spending off
+its account's line. Pay property tax by its `property_tax` character only
+from an account named directly; through a chain, tag it `tax:property`.
+Pay estimated state tax into an account of its own, not the federal
+tax's: the state tax paid into the federal account can't be told apart,
+and only the April settlement there counts. Married filing separately
+halves each dollar limit. The limits are in `aux/itemized_limits.csv`; a
+scenario that wants none of this, federal or state, puts an
+`itemized_limits.csv` with only its header line in its `aux/`.
+
+For deductions the ledger doesn't hold, add a year's total with
+`sim deduction add`, listing the expenses:
+
+```sh
+sim deduction add 2028 --item casualty_loss=38000 --item gambling_losses=2000
+```
+
+That total is added to the lines above for that tax year only; the years
+around it don't get it. Leave the `--item` options off and the command asks
+for the expenses one by one, or give a total instead
+(`sim deduction add 2029 12500`). Don't add anything the lines above already
+count, such as property tax or mortgage interest: it would count twice.
+Medical bills, too, go in tagged spending, where the 7.5% floor applies.
+A total typed in before these lines existed may hold them; `sim check`
+warns of a year's total beside a mortgage, IRMAA, tagged spending or a
+state income tax.
+
+A state with its own limits (California's ship) figures its lines the same
+way. Another state figures none, and without its own total
+(`sim deduction add --state`) takes the federal one, which now holds only
+the rest; `sim check` warns. Give it its own total, or set
+`itemized_limits_aux` to `itemized_limits` in `taxes/state.csv`'s params to
+figure the federal lines for it.
 
 `sim deduction list` shows each year's total, `sim deduction edit 2028`
 changes a year (it asks for each expense in turn), and
@@ -1076,12 +1138,18 @@ A scenario built on this one inherits them; changing them there gives that
 scenario its own copy, and the parent keeps its own.
 
 State tax uses the same idea, with `--state` on each command. If you don't
-add any, the state figure uses the federal one — most states don't need
-their own.
+add any, the state figure uses the federal one; most states don't need
+their own. The state figures its own lines from the same spending, but
+never deducts state income tax. It figures them only under its own limits,
+`aux/state_itemized_limits__<state>.csv` (California's ship: no SALT cap,
+$1,000,000 of mortgage debt, charity up to half of AGI); a state without
+them gets only the hand-typed total, since its rules may differ from the
+federal ones. A state that taxes an HSA, as California does, counts the medical
+bills the HSA paid.
 
-This is a simple, whole-dollar comparison. It does not model anything more
-detailed, such as medical expenses only counting above a share of your
-income.
+Not modeled: the 2026 law's limit on itemized deductions in the 37%
+bracket, its charity deduction for people who don't itemize, and
+California's phase-out of itemized deductions at high incomes.
 
 ### 4.10 Running an ensemble (a range of outcomes, not one number)
 
@@ -1941,6 +2009,12 @@ them all (`--yes` stops instead when a question has nothing to offer). A
 lot's Dec 31 balance (`prior_year_end_balance`), when it has one, follows,
 offering the run's Dec 31.
 
+With more than a few accounts, the balances can come from a file another
+program exported instead, and the year's spending too:
+[Importing your data](guides/importing-data.md), with its own video
+([English](https://www.youtube.com/watch?v=usFLQg8Lvsk),
+[Japanese (日本語)](https://www.youtube.com/watch?v=x7PQfaDGhFA)).
+
 A new year changes what some rows mean, so `roll` deals with those too:
 
 - A year-to-date row (§4.13) with no year belongs to the first year,
@@ -1954,18 +2028,23 @@ A new year changes what some rows mean, so `roll` deals with those too:
   start, so it keeps its months.
 - A calendar row dated before the new start no longer happens. `roll` lists
   them.
-- Last year's income tax is paid in April from last year's income, which
-  a new plan starting by April never ran. Record that income with `sim ytd add ...
-  --year 2026` (§4.13), from the W-2s and 1099s, with any tax already
-  withheld.
-
-Rolled to a later month of the same year, the year-to-date rows and
-`ytd_amount`s still cover only the months before the old start. `roll`
-lists them, to update with `sim ytd edit` and `sim scheduled edit`.
+- The months between the old start and the new one are no longer in the
+  run, so their income would drop out of its tax year: last year's, whose
+  tax is paid in April, or this year's, for a start later in the year.
+  `roll` offers the old run's money movements in those months as
+  year-to-date rows of their year, named `projected_<year>_<n>`, so the new
+  run taxes those years as the old one did. They are the plan's guess:
+  replace them with the real figures from the W-2s and 1099s (with any tax
+  already withheld) when you have them, with `sim ytd edit` (§4.13). Without
+  a run to take them from, `roll` says what to record by hand instead.
 
 Everything is written in one edit, only if the scenario and everything
 built on it still load. What's built on it follows by itself: a what-if
-built on `base` starts when `base` does. Then run both and compare them:
+built on `base` starts when `base` does. One with lots of its own still
+holds last year's balances in them, so `roll` lists it, to roll after
+`base` with `sim scenario roll NAME 2027-01 --own`: only its own lots
+reopen (`roll` dealt with its other rows along with `base`'s). Then run
+both and compare them:
 
 ```sh
 sim run base --commit
@@ -1977,6 +2056,40 @@ sim compare plan-2026 base
 year's plan expected it to hold, what it holds now, and the difference
 (the `start` section). Its other sections put both runs in the baseline's
 dollars, so a year's inflation doesn't show up as a difference.
+
+#### Rolling forward every month, at night
+
+A run reads prices only up to its start month, so once that month is over,
+new prices don't change it. To keep a plan current with the market, mark it
+to roll:
+
+```sh
+sim scenario edit base --roll monthly
+```
+
+Then the background builder (see [Setup](SETUP.md)) rolls it forward a
+month on the first night after its start month ends, between 01:00 and 05:00
+by default, after that day's prices are in. A scenario further behind (the
+builder was off for a while) rolls a month a night until it catches up, so
+each month opens from a run of the month before, at its prices. It takes every default,
+as `sim scenario roll --yes --no-keep` would: each lot opens with what the
+run projected (a lot kept in shares, at the new prices), and the months it
+skips become projected year-to-date rows. The mark is inherited, so the
+what-ifs built on `base` roll too, each after `base`, and only what is its
+own (`sim scenario roll --own`): its own lots. The projected rows are
+`base`'s for all of them, since the months skipped are past, the same in
+every plan. `sim scenario edit NAME --roll off` stops one rolling its own
+lots; one that takes its start from `base` still starts when `base` does,
+so give it a start of its own to keep it at the old plan.
+It works on its own branch and merges into `main` while `main` is checked out
+with nothing uncommitted, then the builder runs everything again. Instead of
+a copy of last year's plan, a roll into a new year tags the plan before it
+in the data repo, `plan-2026` for instance: `git show plan-2026:sim/scenarios/base/account_lots.csv`
+shows it, and `git worktree add ../plan-2026 plan-2026` brings it all back
+to compare. `sim builder status` lists each roll, and any that was skipped
+(a question with nothing to offer) or failed, with why; roll that one by
+hand. `sim builder install --roll-window 02:00-06:00` changes the night,
+and `--no-roll` turns rolling off.
 
 ## 5. Looking at your results
 

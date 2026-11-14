@@ -93,12 +93,14 @@ return, written to the run as `state_<name>` and shown by
 | --- | --- |
 | `effective_date` | When the rows take effect; the rows of one date are the whole set. |
 | `name` | The line, in lower case (`renters_credit`). One row per line and filing status. |
-| `step` | `subtraction` (off income before state AGI), `deduction` (off state AGI, after the standard or itemized deduction) or `credit` (off the tax, never below zero: each credit takes, in file order, only the tax left). |
+| `step` | `subtraction` (off income before state AGI), `deduction` (off state AGI, after the standard or itemized deduction) or `credit` (off the tax, never below zero: each credit takes, in file order, only the tax left, unless it is `refundable`). |
 | `base` | What it is figured from: `spending` or `income` carrying `tag`, `filers` (`amount` for each), `federal_tax` (the federal return's tax) or `federal_deduction` (its deduction). |
 | `tag` | For `spending` and `income`: the tag on what counts, as `tax:rent`. Tag the rule that pays it, or the account it is paid into (`sim scheduled edit housing --tags tax:rent`). |
 | `rate` | The share that counts (`50%`); blank is all of it. Not for `filers`. |
 | `amount` | The cap; for `filers`, each filer's amount. Blank is no cap. |
-| `per_person` | `yes`: the cap is each filer's. |
+| `per_person` | `yes`: the cap is each filer's. For `income`, each filer's own income counts against their own cap: an account's owner's, a joint account's split evenly (after a death, all the survivor's). |
+| `less_ss` | `yes`, for `income` with an `amount`: the cap is less the Social Security received that year, each filer's own with `per_person` (Maryland's pension exclusion), else the household's (Idaho's retirement benefits deduction). |
+| `refundable` | `yes`, for a `credit`: paid in full even past the tax, so the state can pay out (Idaho's grocery credit). It comes off after the other credits and isn't counted in `state_credits`. |
 | `min_age` | Only filers who have reached this age by December 31 count. |
 | `filing_status` | `MFJ`, `Single` or `MFS`; blank is every status. A row for the status wins over a blank one. |
 | `income_limit` | Above this state AGI the line ends, unless `phaseout` or `phaseout_rate` says otherwise. |
@@ -177,15 +179,18 @@ every other scenario.
 | `federal_brackets.csv` | US federal ordinary-income tax brackets. One row per (effective_date, filing_status, bracket_index). |
 | `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. Seven states ship; see "The states that ship" below. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
-| `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state tax (`taxes/state.csv`), keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
-| `state_social_security__<state>.csv` | Optional: how the state taxes Social Security, keyed by state like `state_brackets__<state>.csv`. Without it (California, and most states) a state rule taxes none. With it, the state starts from the federally taxable amount and leaves out `exclusion_percent` of it, for each filing status. Optional `phaseout_start` (federal AGI) starts taking the exclusion away: evenly down to nothing at `phaseout_end` (the same figure for a cliff, as in New Mexico), or by `phaseout_rate` of each dollar over (a credit in a flat-rate state such as Utah: the credit's phase-out rate divided by the tax rate). A state that follows the federal amount (Montana) writes `0%`. `phaseout_start_series`/`phaseout_end_series` index the limits like `floor_series`. Columns: `effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,phaseout_rate`. Age tests (Colorado, Rhode Island) aren't modeled. Check the figures with the state's revenue department. |
+| `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state tax (`taxes/state.csv`), keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. Optional columns shrink it with income (#578): above `phaseout_start` of state AGI it falls to nothing at `phaseout_end`, or by `phaseout_rate` of each dollar over, but not below `floor`; with a rate, `phaseout_step` counts the income over in whole steps, a started one in full; with an end, `phaseout_steps` splits the span into that many equal steps; `phaseout_agi` `federal` tests federal AGI instead. `phaseout_start`, `phaseout_end` and `floor` may be indexed with `phaseout_start_series`, `phaseout_end_series` and `floor_series`, as `amount` is with `amount_series`; the start and end take the same series or none. |
+| `state_social_security__<state>.csv` | Optional: how the state taxes Social Security, keyed by state like `state_brackets__<state>.csv`. Without it (California, and most states) a state rule taxes none. With it, the state starts from the federally taxable amount and leaves out `exclusion_percent` of it, for each filing status. Optional `phaseout_start` (federal AGI) starts taking the exclusion away: evenly down to nothing at `phaseout_end` (the same figure for a cliff, as in New Mexico), or by `phaseout_rate` of each dollar over (a credit in a flat-rate state such as Utah: the credit's phase-out rate divided by the tax rate). A state that follows the federal amount (Montana) writes `0%`. `phaseout_start_series`/`phaseout_end_series` index the limits like `floor_series`. Optional `min_age` (#581) makes rows age tiers: each person's share of the taxable amount, divided by their benefits, takes the row with the highest `min_age` they reach by December 31 (blank: any age; `fra`: their own full retirement age from their birth year, 65 to 67), and none when they reach no row. People on one row are phased out together at the household's federal AGI; only one row of a date and filing status may have a `phaseout_rate`. Colorado's is a `55` row with its income cliff and a `65` row without; Rhode Island's an `fra` row with its cliff. Columns: `effective_date,filing_status,min_age,exclusion_percent,phaseout_start,phaseout_end,phaseout_rate`. Check the figures with the state's revenue department. |
 | `state_surcharge__<state>.csv` | A state's surcharge on high taxable income, in the columns of its brackets, whose rates add to the brackets' rates. Optional, keyed by state like `state_brackets__<state>.csv`. `__CA` is California's Behavioral Health Services Tax: 1% of taxable income over $1 million, the same for every filing status and not indexed, so its `floor_series` is blank. |
-| `state_local_tax__<state>.csv` | Optional: a local income tax (county, city, school district) on the state's taxable income, in the columns of its brackets: Maryland's county rate as one band, New York City's brackets, or a Portland-area tax as a 0% band below its threshold. Named for a county (`residence.csv` names the household's) or, for one table across the state, the state; paid with the state's tax, and shown as `local_tax` in `sim report tax`. Two local taxes on the same base, such as Portland's Metro and Multnomah County taxes, go in one table, their rates added. Needs a row for every filing status the state's brackets have. None ships. |
+| `state_local_tax__<state>.csv` | Optional: a local income tax (county, city, school district) on the state's taxable income, in the columns of its brackets: Maryland's county rate as one band, New York City's brackets, or a Portland-area tax as a 0% band below its threshold. Named for a county (`residence.csv` names the household's) or, for one table across the state, the state; paid by `taxes/local.csv` into its own `taxes_local` account, and shown as `local_tax` in `sim report tax`. Two local taxes on the same base, such as Portland's Metro and Multnomah County taxes, go in one table, their rates added. Needs a row for every filing status the state's brackets have. None ships. |
 | `state_gains_tax__<state>.csv` / `state_gains_deduction__<state>.csv` | Optional: a state's tax on long-term capital gains apart from its income tax, keyed by state; see "A state's gains tax" below. `__WA` ships Washington's. |
 | `state_hsa__<state>.csv` | How a state taxes a health savings account: `treatment` `taxable` or `federal`. Optional, keyed by state; without one the HSA follows the federal rules. `__CA` says `taxable`: California doesn't recognize HSAs and taxes one like a brokerage account, so a contribution isn't deducted, its dividends and interest are taxed the year they're paid, and a withdrawal is taxed on its gain over the account's cost basis. |
+| `state_separate_return__<state>.csv` | Optional: `allowed` `yes` or `no`, whether the state lets a married couple file separately on one return, keyed by state; without one a couple files jointly. See "Spouses filing separately on one return" below. `__DC` says `yes`. |
 | `state_retirement_exclusion__<state>.csv` | Optional: the state's retirement income exclusions, keyed by state like `state_brackets__<state>.csv` and read by a state tax. None ships (California has none); see "State retirement income exclusions" below. |
-| `state_adjustments__<state>.csv` | Optional: the state's own deductions and credits, keyed by state like `state_brackets__<state>.csv` and read by a state tax; each row is a named line of the return. `__CA` ships California's personal and senior exemption credits and its renter's credit, 2025's figures, and `__WA` Washington's credit for its gains tax from 2028; see "State deductions and credits" below. |
-| `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, a tax jurisdiction uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
+| `state_adjustments__<state>.csv` | Optional: the state's own deductions and credits, keyed by state like `state_brackets__<state>.csv` and read by a state tax; each row is a named line of the return. `__CA` ships California's personal and senior exemption credits and its renter's credit, 2025's figures, `__WA` Washington's credit for its gains tax from 2028, and `__DC`, `__ID`, `__KS` and `__NE` the lines named under "The states that ship"; see "State deductions and credits" below. |
+| `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split), added to the lines figured from spending (`itemized_limits.csv`). A tax jurisdiction uses whichever is greater, the itemized total or the standard deduction. `amount` can be `@name` (an itemizations/ rollup). They hold only what no line figures (a casualty loss, investment interest): medical bills, charity, property tax and mortgage interest go in tagged spending, where their floors and limits apply. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all; a state that figures no lines of its own (none but California's ships) then misses what the federal lines figure, so give it its own total, or `itemized_limits_aux` `itemized_limits` on `taxes/state.csv` to figure the federal lines for it (loading warns). |
+| `itemized_limits.csv` | The limits on the itemized deductions figured from the year's spending, by filing status: `salt_cap` (state and local taxes), which falls by `salt_phaseout_rate` of AGI over `salt_phaseout_start` but not below `salt_floor`; `mortgage_limit` (the debt whose interest counts); `charity_floor` and `charity_limit` (percents of AGI); `medical_floor` (a percent of AGI). A blank cell is no limit. Ships the 2025 law's (OBBBA) from 2026: the SALT cap's 2028 and 2029 figures are the statute's 1% a year, unrounded, until the IRS publishes them. A data repo that wants only hand-typed itemized deductions puts one with just its header in its `aux/`; that turns off a state's lines too. |
+| `state_itemized_limits__<state>.csv` | Optional: a state's own `itemized_limits`, keyed by state. Without one the state figures no lines from spending, only the hand-typed total. A state never deducts an income tax. `__CA` ships California's: no SALT cap, $1,000,000 of mortgage debt ($500,000 separate), charity up to 50% of AGI, medical over 7.5%. |
 | `filing_status.csv` | The household's filing status from each effective date, one row per change. Empty here: put the household's in the data repo's `aux/`. A joint filer becomes Single the year after a death without a row. |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |
 | `inflation__cpi.csv` | Annual inflation rate (CPI = Consumer Price Index, the standard cost-of-living measure published by the US Bureau of Labor Statistics) used to grow non-indexed amounts, and by the CPI-constant-dollar views/reports regardless of what any scenario's own CSVs reference. Kept here, rather than in `series/`, so that lookup always has a default; a scenario can still override it. |
@@ -365,34 +370,53 @@ table for a state with no income tax, which `sim tax state` and
 `sim tax move` choose for such a state, so a move there needs no tables. The tables carry each state's 2026 law, checked
 against its revenue department's 2026 publications in November 2026. A
 state's personal exemption, where it has one, is folded into the standard
-deduction. None of the others taxes Social Security, so only Washington's
-needs a `state_social_security` table.
+deduction, except Kansas's, which is a `state_adjustments` row. None of
+the others taxes Social Security, so only Washington's needs a
+`state_social_security` table. Where a state's lines ship in
+`state_adjustments__<state>.csv`, they are named below. An extra
+deduction for a blind filer isn't modeled anywhere. The extra deductions
+at 65 are `filers` rows, which can't tell the standard deduction from an
+itemized one, so a household 65 or over that itemizes in DC or Kansas
+gets them too, which the state doesn't allow: at most $3,300 of deduction
+too much.
 
 - **District of Columbia:** brackets the same for every filing status, not
   indexed. The standard deduction follows the federal one ($16,100, or
-  $32,200 joint, for 2026), so it grows with `cpi`. The extra deduction at
-  65 or blind isn't modeled.
+  $32,200 joint, for 2026), so it grows with `cpi`, and so does the extra
+  deduction at 65 (`age_65_deduction`), the federal one: $2,050 single,
+  or $1,650 for each spouse, for 2026 (Rev. Proc. 2025-32; DC's 2025
+  Schedule S used 2025's federal $2,000 and $1,600). A couple may file
+  separately on one return (`state_separate_return__DC.csv`), which saves
+  tax when both have income.
 - **Idaho:** 5.3% above a zero band, which is indexed. Idaho hasn't
   published its 2026 band, so the 2026 rows carry the 2025 one ($4,811, or
   $9,622 joint), about $7 of tax high, and grow it with `cpi` from there. The standard
-  deduction follows the federal one. The deduction for some public pensions
-  from 65 and the grocery credit aren't modeled.
+  deduction follows the federal one. The grocery credit
+  (`grocery_credit`) is $155 for each filer, from 65 too (House Bill 231
+  of 2025 raised it from $120, and $140 from 65, for 2025 on); it isn't
+  indexed, and it's refundable. Dependents' credits and months on SNAP
+  aren't modeled. The retirement benefits deduction from 65 for some
+  public pensions, less Social Security, is a row you write: tag the
+  pension's income account and add an `income` subtraction with
+  `less_ss`.
 - **Kansas:** 5.2%, then 5.58% over $23,000 ($46,000 joint), not indexed.
-  The deduction is the standard deduction plus the personal exemption:
-  $3,605 + $9,160 single, $8,240 + $18,320 joint, $4,120 + $9,160 separate.
-  A household that itemizes gets the greater of that and its itemized
-  deductions, so it loses the exemption Kansas allows on top: until
-  exemptions are modeled (#488), add the exemption to a Kansas
-  `state_deductions.csv` row.
-  Kansas's own public pensions (KPERS, federal civil service, military) are
-  exempt, and from 65 the standard deduction is larger; neither is modeled.
+  The standard deduction is $3,605 single, $8,240 joint and $4,120
+  separate; the personal exemption (`personal_exemption`) is a deduction
+  of $9,160 for each filer beside it, so a household that itemizes keeps
+  it, as Kansas allows. From 65 the standard deduction grows by $850
+  single, or $700 for each spouse (`age_65_deduction`). None is indexed
+  (Kansas's 2025 income tax booklet). Kansas's own public pensions (KPERS,
+  federal civil service, military) are exempt: a row you write, as for
+  North Carolina below.
   A 2025 law cuts the rates when revenue allows; it didn't for 2026.
 - **Nebraska:** 2.46%, 3.51%, then 4.55% for 2026 and 3.99% from 2027, the
   bands indexed. Standard deduction $8,850, or $17,700 joint, for 2026; the
   2027 rows use the $9,100 and $18,200 of Nebraska's draft 2027 estimated
   tax form, and estimate the 2027 floors by growing 2026's by the same
   ratio, to the nearest $10, until Nebraska publishes them. The personal
-  exemption credit isn't modeled.
+  exemption credit (`personal_exemption_credit`) is $176 for each filer
+  for 2026 (the draft 2026 Form 1040N), indexed with `cpi`, and not
+  refundable. Dependents' credits aren't modeled.
 - **Washington:** two taxes. Its capital gains tax (RCW 82.87) is
   `state_gains_tax__WA.csv` and `state_gains_deduction__WA.csv`: 7% of the
   year's net long-term gain over the deduction, and from 2025 9.9% of the
@@ -412,8 +436,56 @@ needs a `state_social_security` table.
   family-owned small business deductions aren't modeled.
 - **North Carolina:** a flat 3.99% for 2026, 3.49% for 2027-2029, 3.24% for
   2030-2032 and 2.99% from 2033 (Session Law 2026-41). Standard deduction
-  $12,750, or $25,500 joint, not indexed. The exclusion for government
-  pensions vested before August 1989 (Bailey) isn't modeled.
+  $12,750, or $25,500 joint, not indexed. Nothing general ships in
+  `state_adjustments`: the exclusion for government pensions vested
+  before August 12, 1989 (Bailey) is the household's own. Tag the
+  pension's income account (`sim account tag add`, say `tax:bailey`) and
+  write the row, with no cap, in the data repo's
+  `aux/state_adjustments__NC.csv`:
+
+  ```csv
+  effective_date,name,step,base,tag
+  2026-01-31,bailey_exclusion,subtraction,income,tax:bailey
+  ```
+
+## Spouses filing separately on one return
+
+Arkansas, Delaware, the District of Columbia, Kentucky and Virginia let a
+married couple file separately on one state return, whatever they filed
+federally: each spouse's income runs through the brackets and the
+standard deduction alone, and the two taxes are added. Where the brackets
+are the same for every filing status, or the deduction isn't doubled for a
+joint return (Kentucky), that saves tax. A
+`state_separate_return__<state>.csv` with `allowed` `yes` turns it on for
+that state:
+
+```csv
+effective_date,allowed
+2026-01-31,yes
+```
+
+The state tax then figures both and takes the lower, in a married year
+with two people in the household (`primary` and `secondary`). Each spouse
+gets the income that's theirs, by the paying account's owner as for a
+retirement exclusion, joint income split evenly: their own ordinary income,
+a loss included (a business loss stays its owner's), gains by their shares of gain, Social
+Security by their benefits, and their own retirement exclusion off their
+own. Each takes the state's `MFS` standard deduction (phased out at their
+own AGI where it shrinks), or their share of the itemized deduction by
+AGI, and is taxed with the `MFS` brackets, gain tables and surcharge, so
+the state's brackets, gain tables and standard deduction need `MFS` rows
+while the table says `yes` (loading checks). A carried-in loss offsets each spouse's income in turn. A
+`state_adjustments` line for each filer goes to the filers who reached its
+age, a `per_person` income line to each one's own, others evenly; a credit
+takes no more than its spouse's tax. Income
+tests stay the household's, as on the joint return. The run records
+`state_joint_tax`, `state_separate_tax`, `state_separate_return` (1 when
+separate was lower) and each spouse's `state_separate_agi_<person>`,
+`state_separate_deduction_<person>`, `state_separate_taxable_income_<person>`
+and `state_separate_tax_<person>`. When separate is lower, the return's
+`deduction`, `taxable_income`, `credits` and credit lines are the two
+spouses' added up (`state_joint_taxable_income` keeps the joint figure). Kentucky's and Delaware's rule that both spouses itemize or
+neither isn't modeled.
 
 ## A state's capital gains
 

@@ -7,16 +7,17 @@ data = "prototype_data"
 
 [youtube]
 title = "Keeping the plan current"
+next = "12-strategy-plugins"  # not 11a, the importing side trip
 summary = """
 A year after they built their plan, Alice and Bill bring it up to date. \
 They keep last year's plan, start the plan again in January with what their \
-statements say, add last year's income for the April tax bill, fix the \
+statements say, put last year's real income in for the April tax bill, fix the \
 spending that turned out wrong, and compare the new plan with last year's: \
 where 2026 left them, and what it changes from here on."""
 contents = [
   "Why bring the plan up to date",
   "Rolling the plan forward a year (sim scenario roll)",
-  "Last year's income, for April's tax (sim ytd add --year)",
+  "Last year's income, for April's tax (sim ytd edit)",
   "Spending that turned out wrong (sim report expenses, sim scheduled edit)",
   "Running everything again (sim all)",
   "Plan against actual (sim compare --section start)",
@@ -28,14 +29,17 @@ contents = [
 
 Video 11 (issue #502): keeping the plan current. It is January 2027, a
 year after Alice and Bill built `base`, starting January 2026. They roll
-it forward with `sim scenario roll`, add 2026's income for the April tax
-bill, fix their spending, and compare the new plan with the old one.
+it forward with `sim scenario roll`, which also rolls rebalance's own
+checking (`--own`), put 2026's real income in for the April tax bill in
+place of what the roll projected, fix their spending, and compare the new
+plan with the old one.
 
 `setup.sh` beside this script builds video 7's base, with 1,000 shares of
 video 8's balanced fund BALX and its prices written in, then video 10a's
 rebalance and 10b's travel on it, tagging the data repo before each scene
-(`stage/<scene>`). Base is run once before the roll, and that run renamed
-to a fixed time, so the roll tape reads the same projection every time.
+(`stage/<scene>`). Base and rebalance are run once before the roll, and
+those runs renamed to fixed times, so the roll tape reads the same
+projections every time.
 Last year's plan, `plan-2026`, is run once too. Nothing after the roll is
 run in setup: the compare scene reruns everything on camera with
 `sim all`. The tapes work in `~/retirement/data/sim`, as in videos 3 to
@@ -43,7 +47,7 @@ run in setup: the compare scene reruns everything on camera with
 
 <!-- cspell:ignore BALX -->
 
-> Numbers in the narration were checked on 2026-11-11 against `setup.sh`.
+> Numbers in the narration were checked on 2026-11-14 against `setup.sh`.
 
 ## Scene `title`: Title card
 
@@ -146,8 +150,19 @@ Sleep 600ms
 Enter
 Sleep 3s
 Enter
+Sleep 3s
+Enter
 Wait
-Sleep 10s
+Sleep 25s
+Type "clear && sim scenario roll rebalance 2027-01 --own"
+Sleep 400ms
+Enter
+Sleep 5s
+Type "22400"
+Sleep 600ms
+Enter
+Wait
+Sleep 6s
 ```
 
 Sim scenario roll moves a scenario's start, here base, to January 2027.
@@ -163,8 +178,13 @@ nineteen thousand. Its basis is his contributions, a hundred and twenty
 thousand, so it stays; left blank, after a down year, it would shrink.
 The balanced fund has a price, so roll asks for its shares: one thousand
 twenty four point eight, worth forty eight thousand nine hundred at
-December's price. Last, roll says what it can't do by itself: 2026's tax
-is paid in April, from 2026's income.
+December's price. Last, 2026's tax is paid in April, from 2026's income,
+and a plan starting in 2027 has no 2026 in it. So roll offers 2026's
+flows, as the plan projected them, as year to date rows of 2026, and
+Enter takes them. Rebalance, from video 10a, has a checking lot of its
+own, to send the overflow to invest, so roll says to roll it too, with
+own. Only that lot is rebalance's; the rest follows base. Same checking
+account, same statement: twenty two thousand four hundred.
 
 ## Scene `taxes`: Last year's income, for April's tax
 
@@ -178,22 +198,27 @@ Enter
 Sleep 2s
 Show
 Sleep 500ms
-Type `sim ytd add wages_alice Income_Salary_Alice Asset_Checking 96412 --tax-character ordinary --year 2026 --description "Alice's W-2"`
+Type "clear && sim ytd list"
+Sleep 400ms
+Enter
+Wait
+Sleep 8s
+Type `clear && sim ytd edit projected_2026_4 --amount 96412 --description "Alice's W-2"`
 Sleep 400ms
 Enter
 Wait
 Sleep 2s
-Type `sim ytd add wages_bill Income_Salary_Bill Asset_Checking 84780 --tax-character ordinary --year 2026 --description "Bill's W-2"`
+Type `sim ytd edit projected_2026_5 --amount 84780 --description "Bill's W-2"`
 Sleep 400ms
 Enter
 Wait
 Sleep 2s
-Type "sim ytd add dividends_2026 dividends Asset_Brokerage_Joint 4380 --to-lot stocks --tax-character qualified_dividend --year 2026 --description 1099-DIV"
+Type "sim ytd edit projected_2026_10 --amount 4380 --description 1099-DIV"
 Sleep 400ms
 Enter
 Wait
 Sleep 2s
-Type "sim ytd add interest_2026 interest_income Asset_Savings 1790 --tax-character ordinary --year 2026 --description 1099-INT"
+Type "sim ytd edit projected_2026_11 --amount 1790 --description 1099-INT"
 Sleep 400ms
 Enter
 Wait
@@ -202,20 +227,18 @@ Type "sim ytd add gains_2026 capital_gains capital_gains 15900 --tax-character l
 Sleep 400ms
 Enter
 Wait
-Sleep 2s
-Type "clear && sim ytd list"
-Sleep 400ms
-Enter
-Wait
-Sleep 8s
+Sleep 5s
 ```
 
 The plan works out each year's tax in April of the next, from that year's
-income. A plan that starts in January 2027 has no 2026 in it, so without
-help, April's payment would be zero. Year to date rows with year 2026 put
-it back: Alice's and Bill's W-2 wages, the 1099s' dividends and interest,
-and the gains they realized. The last one moves no money, from capital
-gains to itself, so it counts only for tax. Sim ytd list shows the five.
+income. Sim ytd list shows what the roll put in for 2026: the plan's
+projections, fourteen rows of them. Now the W-2s and 1099s have come, so
+the real figures replace the projected ones: Alice's and Bill's wages,
+the stocks' dividends, and the savings interest. Each keeps its row,
+with the statement it came from as its description; a row the roll
+didn't project stays as it was. The plan sold nothing, but Alice and
+Bill realized some gains, so that's a row of its own. It moves no money,
+from capital gains to itself, so it counts only for tax.
 
 ## Scene `spending`: Spending that turned out wrong
 
@@ -308,8 +331,8 @@ Sleep 14s
 
 From here on, net worth after tax, in today's dollars. The two plans
 start in different years, so sim compare puts base in plan 2026's dollars,
-and the line under the title says so. Base is eighty five thousand behind
-at the end of 2027, and the gap grows: a hundred and twenty four thousand
+and the line under the title says so. Base is eighty seven thousand behind
+at the end of 2027, and the gap grows: a hundred and twenty six thousand
 by 2034, as the lost growth compounds and the extra five hundred a month
 adds up. It never catches up. That isn't bad news to hide; it's what the
 next decisions start from.
@@ -323,7 +346,7 @@ body = [
   "Base is the plan: what they've decided",
   "What-ifs stay scenarios built on it (video 5)",
   "Built on base, they move to January 2027 with it",
-  "A rule a what-if overrides keeps its own value",
+  "What a what-if has of its own stays its own",
 ]
 speaker = "bill"
 ```
@@ -331,8 +354,9 @@ speaker = "bill"
 The update goes into base, because base is the plan, what they've
 decided. A what-if they haven't decided stays a scenario built on it, as
 in video five. Those follow base by themselves: rebalance and travel now
-start in January 2027, with the new balances. Only a rule a what-if
-overrides keeps its own value, as travel's living did.
+start in January 2027, with the new balances. Only what a what-if has
+of its own stays its own: rebalance's checking, rolled with own, and
+travel's living.
 
 ## Scene `strategies`: What strategies take off the list
 

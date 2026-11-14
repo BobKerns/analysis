@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 66
+SCHEMA_VERSION = 68
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -70,7 +70,7 @@ CREATE TABLE account (
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
-            'interest_expense','taxes_federal','taxes_state','taxes_property',
+            'interest_expense','taxes_federal','taxes_state','taxes_local','taxes_property',
             'business','gift','other_expense'))
     )
 );
@@ -846,6 +846,20 @@ CREATE TABLE basis_step_up (
     -- #434: why, one of step_ups.RULES (owner, inherited, joint_half,
     -- community_property, last_survivor).
     rule            TEXT NOT NULL
+);
+
+-- #542: the balance each month's interest of a mortgage_payment rule was
+-- figured on, for the mortgage debt limit: one row per rule and month the
+-- interest covers. A ytd_amount catch-up posts several months' interest
+-- at once (``posted``), so it has a row for each month it replays.
+CREATE TABLE mortgage_balance (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    rule_id         INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    posted          TEXT NOT NULL,
+    month           TEXT NOT NULL,
+    balance         INTEGER NOT NULL,
+    interest        INTEGER NOT NULL
 );
 
 CREATE TABLE applied_calendar_event (

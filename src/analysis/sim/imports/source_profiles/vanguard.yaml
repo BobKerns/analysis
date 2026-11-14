@@ -1,0 +1,18 @@
+description: Vanguard holdings download (CSV), one account a file
+holdings:
+  layout: 'Holdings: the download of one account''s holdings'
+  columns:
+    asset: Symbol
+    name: Name
+    value: Current balance
+    quantity: Quantity
+    # "-$16,423.62 (-6.68%)": the cost basis is the balance less this.
+    unrealized_gain: 'Total unrealized capital gain/loss ($/%)'
+    type: Investment type
+  # The file has no account column. The download's name has the account's
+  # number, its only run of digits; a file renamed without it is asked
+  # about, or named with --outside-account.
+  account: {file_name: '(\d{6,})'}
+  # The date is only in two headings: "As of 11/13/2026 04:00 p.m., ET Current price".
+  as_of: {heading: 'As of (\d{2}/\d{2}/\d{4})', format: '%m/%d/%Y'}
+  blank: ['—', '--']

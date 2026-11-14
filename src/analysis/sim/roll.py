@@ -11,11 +11,16 @@ found here so the command can deal with each:
   so it would quietly move into the new one;
 - a rule's ``ytd_amount`` is the old first year's catch-up, and would do the
   same;
-- a calendar row dated before the new start no longer happens.
+- a calendar row dated before the new start no longer happens;
+- the months between the old start and the new one leave both the run and
+  the year-to-date rows, so their income would drop out of its tax year
+  (#564): the old run's flows in those months stand in for them, as
+  projected year-to-date rows (:func:`projected_year_to_date`).
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -25,16 +30,30 @@ import pandas as pd
 
 from analysis.frames import named_rows
 from analysis.sim import registries
-from analysis.sim.dates import month_end_iso
+from analysis.sim.dates import month_before, month_end_iso
 from analysis.sim.overlay import CalendarRow, Overlaid, overlay_rows, scenario_calendar_rows
+from analysis.sim.units import cents_to_dollars, dollars_to_cents
 
 if TYPE_CHECKING:
     from analysis.sim.connection import RunConnection
 
 __all__ = [
-    "Projection", "anchored_rules", "calendar_before", "cell_dollars", "default_start", "projections",
-    "preroll_rules", "unpinned_year_to_date", "ytd_amount_rules",
+    "PARENT_FIRST", "PROJECTED_PREFIX", "Projection", "ProjectedRow", "anchored_rules",
+    "calendar_before", "cell_dollars", "covers", "default_start", "is_projected",
+    "merge_projected", "preroll_rules", "projected_year_to_date",
+    "projections", "unpinned_year_to_date", "ytd_amount_rules",
 ]
+
+# A year-to-date row the roll made from a run's flows is named
+# ``projected_<year>_<n>``, so a later roll can add to it, and drop it once
+# its year no longer counts.
+PROJECTED_PREFIX = "projected_"
+# Only that exact shape: a row someone named ``projected_bonus`` is theirs.
+_PROJECTED_NAME = registries.PROJECTED_YTD_NAME
+
+# How ``sim scenario roll --own`` refuses a scenario whose inherited start
+# hasn't moved yet: the nightly roll reads it as "not this time", not a failure.
+PARENT_FIRST = "roll the scenario it inherits its start from first"
 
 
 @dataclass(frozen=True)
@@ -160,3 +179,163 @@ def calendar_before(scenario_dir: Path, start: str) -> list[CalendarRow]:
         if month < first and entry.row.get("kind") not in registries.INERT_CALENDAR_KINDS:
             before.append(entry)
     return before
+
+
+@dataclass(frozen=True)
+class ProjectedRow:
+    """One year's flows of the old run from one lot to another with one tax
+    character, in the months a roll skips: what a year-to-date row stands
+    in for (#564). ``amount`` is in cents."""
+    year: int
+    from_account: str
+    from_lot: str
+    to_account: str
+    to_lot: str
+    tax_character: str
+    amount: int
+
+    @property
+    def key(self) -> tuple[str, str, str, str, str, str]:
+        return (str(self.year), self.from_account, self.from_lot, self.to_account,
+                self.to_lot, self.tax_character)
+
+
+# A flow the new run has without a year-to-date row: the opening balances,
+# and a tax settlement, which pays a year already over (its April payment,
+# or a refund).
+_NOT_PROJECTED = ("initial", "tax", "ytd", "ytd_rule")
+
+
+def projected_year_to_date(rc: RunConnection, old_start: str, new_start: str) -> list[ProjectedRow]:
+    """The old run's flows from ``old_start`` (``YYYY-MM``, its first month)
+    up to ``new_start``'s month, summed by tax year, lots and character, for
+    the years the new run still settles: ``new_start``'s and the one before
+    (taxed the April after). A ``ytd_preroll`` rule's flows of the new
+    start's year are left out, since the rule posts those months itself
+    (ADR-003 §4.10). Only for a run that reaches the month before
+    ``new_start`` (the caller's :func:`projections` say so): before that, no
+    month of it is a projection."""
+    new_year = int(new_start[:4])
+    frame = rc._read_sql(
+        "SELECT COALESCE(t.tax_year, CAST(substr(t.date, 1, 4) AS INTEGER)) AS year, "
+        "fa.name AS from_account, fl.lot AS from_lot, ta.name AS to_account, tl.lot AS to_lot, "
+        "t.tax_character, SUM(t.amount) AS amount "
+        "FROM transfer_event t "
+        "JOIN account fa ON fa.id = t.from_account JOIN account ta ON ta.id = t.to_account "
+        "JOIN account_lot fl ON fl.id = t.from_lot_id JOIN account_lot tl ON tl.id = t.to_lot_id "
+        "WHERE t.date >= ? AND t.date < ? "
+        f"AND t.reason_kind NOT IN ({', '.join('?' * len(_NOT_PROJECTED))}) "
+        "AND NOT (t.reason_kind = 'rule' AND substr(t.date, 1, 4) = ? AND t.reason_id IN "
+        "    (SELECT id FROM scheduled_transaction WHERE ytd_preroll = 1)) "
+        "GROUP BY 1, 2, 3, 4, 5, 6 HAVING SUM(t.amount) != 0 ORDER BY 1, 2, 3, 4, 5, 6",
+        (f"{old_start}-01", f"{new_start}-01", *_NOT_PROJECTED, str(new_year)),
+    )
+    if frame.empty:
+        return []
+    found = []
+    for row in named_rows(frame):
+        year = int(row.year)
+        if year < new_year - 1 or year > new_year:
+            continue
+        found.append(ProjectedRow(
+            year=year, from_account=str(row.from_account),
+            from_lot=str(row.from_lot), to_account=str(row.to_account),
+            to_lot=str(row.to_lot), tax_character=str(row.tax_character),
+            amount=int(row.amount),
+        ))
+    return found
+
+
+# What a projected row's description records: the months its flows cover.
+_COVERS = re.compile(r"projected by sim scenario roll, (\d{4}-\d{2}) to (\d{4}-\d{2})")
+
+
+def _described(first: str, new_start: str) -> str:
+    return f"projected by sim scenario roll, {first} to {month_before(new_start):%Y-%m}"
+
+
+def covers(row: dict[str, str]) -> tuple[str, str] | None:
+    """The months (``YYYY-MM``, first and last) a projected row's flows
+    cover, as its description records them; None once that is gone (the
+    row edited to the actual figures, say)."""
+    found = _COVERS.fullmatch(row.get("description", "").strip())
+    return (found[1], found[2]) if found else None
+
+
+def merge_projected(
+    rows: list[dict[str, str]], projected: list[ProjectedRow], old_start: str, new_start: str,
+    taken: set[str] | frozenset[str] = frozenset(),
+) -> tuple[list[dict[str, str]], int]:
+    """A scenario's own year_to_date.csv ``rows`` with ``projected`` added:
+    onto an earlier roll's row for the same year, lots and character when
+    there is one (a scenario rolled each month keeps one row each), else as
+    a new ``projected_<year>_<n>`` row. The earlier rolls' rows of a year
+    the new run no longer settles (before the one before ``new_start``'s)
+    are dropped. Each row's description records the months it covers, from
+    ``old_start`` (or the earlier roll's first) on. A row is the roll's only
+    while it says so: named as above, its description the roll's, its
+    amount plain dollars. One edited to the actual figures (or an
+    ``@itemization``) is the person's, left alone. A new row's name avoids
+    ``taken`` (the names the scenario inherits) too. Returns the rows and
+    how many of them were dropped."""
+    new_year = int(new_start[:4])
+    # Replaced by the actual figures once known (`sim ytd edit`).
+    described = _described(old_start, new_start)
+    kept: list[dict[str, str]] = []
+    dropped = 0
+    for row in rows:
+        year = _projected_year(row)
+        if year is not None and year < new_year - 1 and _rolls_cents(row) is not None:
+            dropped += 1
+            continue
+        kept.append(dict(row))
+    by_key = {(row["year"].strip(), row["from_account"], row["from_lot"], row["to_account"],
+               row["to_lot"], row["tax_character"]): row
+              for row in kept if _rolls_cents(row) is not None}
+    used = {row["name"] for row in kept} | set(taken)
+    for one in projected:
+        row = by_key.get(one.key)
+        if row is not None:
+            months = covers(row)
+            row["amount"] = cents_to_dollars((_rolls_cents(row) or 0) + one.amount)
+            row["description"] = _described(min(months[0], old_start), new_start) \
+                if months is not None else described
+            continue
+        count = 1
+        while f"{PROJECTED_PREFIX}{one.year}_{count}" in used:
+            count += 1
+        name = f"{PROJECTED_PREFIX}{one.year}_{count}"
+        used.add(name)
+        row = {"name": name, "from_account": one.from_account, "from_lot": one.from_lot,
+               "to_account": one.to_account, "to_lot": one.to_lot,
+               "amount": cents_to_dollars(one.amount), "tax_character": one.tax_character,
+               "year": str(one.year),
+               "description": described}
+        by_key[one.key] = row
+        kept.append(row)
+    return kept, dropped
+
+
+def _rolls_cents(row: dict[str, str]) -> int | None:
+    """The amount, in cents, of a row that is still a roll's projection;
+    None for any other (the person's own, or one they edited)."""
+    if _projected_year(row) is None or covers(row) is None:
+        return None
+    try:
+        return dollars_to_cents(row.get("amount", ""))
+    except ValueError:
+        return None
+
+
+def is_projected(row: dict[str, str]) -> bool:
+    """Whether a year-to-date row is one a roll projected
+    (``projected_<year>_<n>``, of that year)."""
+    return _projected_year(row) is not None
+
+
+def _projected_year(row: dict[str, str]) -> int | None:
+    """The year of a row an earlier roll projected; None for any other."""
+    found = _PROJECTED_NAME.fullmatch(row.get("name", "").strip())
+    if found is None or row.get("year", "").strip() != found[1]:
+        return None
+    return int(found[1])

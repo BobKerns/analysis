@@ -16,6 +16,7 @@ import shutil
 import sys
 from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence, Set
 from contextlib import ExitStack, contextmanager, redirect_stdout
+import itertools
 import os
 import sqlite3
 import subprocess
@@ -8613,26 +8614,48 @@ def import_group_command() -> None:
     """
 
 
+# How far a holdings file's date may be from the day its balances are set as
+# of before the import says so: a download is rarely made on the day itself.
+_IMPORT_DATE_SLACK_DAYS = 7
+
 _SOURCE_OPTION_HELP = "Outside layout to read FILE as (default: the one the file is in; see 'sim import sources')."
 
 
 @import_group_command.command("sources")
 @click.argument("files", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
-def import_sources(files: tuple[Path, ...]) -> None:
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo, for its own sources (default: $ANALYSIS_DATA_DIR).")
+def import_sources(files: tuple[Path, ...], data_dir: Path | None) -> None:
     """List the outside layouts `sim import` reads; with FILEs, say which
-    one each file is in."""
-    for path in files:
-        found = import_sources_.detect(path)
-        click.echo(f"{path}: " + (", ".join(f"{source.name} {form}" for source, form in found)
-                                  or "no source recognizes it"))
-    if files:
-        return
-    rows = [
-        (source.name, form, reader.layout)
-        for source in import_sources_.sources() for form in import_sources_.FORMS
-        if (reader := source.reader(form)) is not None
-    ]
-    _echo_table(["source", "reads", "from"], rows, left=3)
+    one each file is in.
+
+    A source that reads a plain table is a profile: a YAML file naming the
+    table's columns. The data repo's own are imports/<source>/profile.yaml,
+    listed with the built-in ones when there is a data repo.
+    """
+    # The built-in sources need no data repo, so the list works without one.
+    imports = None
+    if data_dir is not None or os.environ.get("ANALYSIS_DATA_DIR"):
+        imports = import_mapping.imports_dir(_resolve_data_dir(data_dir))
+    try:
+        known = import_sources_.table(imports)
+        for error in known.broken.values():
+            click.echo(f"warning: not used: {error}", err=True)
+        for path in files:
+            found = known.detect(path)
+            click.echo(f"{_shown(path)}: " + (", ".join(f"{source.name} {form}" for source, form in found)
+                                      or "no source recognizes it"))
+        if files:
+            return
+        rows = [
+            (source.name, form, reader.layout, source.where if source.profile is None
+             or source.profile.built_in else _shown(Path(source.where)))
+            for source in known.found.values() for form in import_sources_.FORMS
+            if (reader := source.reader(form)) is not None
+        ]
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    _echo_table(["source", "reads", "from", "defined"], rows, left=4)
 
 
 def _unmigrated_import_maps(data_dir: Path) -> list[Path]:
@@ -8676,28 +8699,101 @@ def _import_target_lots(
 
 
 def _ask_holding_target(
-    holding: import_forms.Holding, source: str, lots: Sequence[Mapping[str, str]], why: str,
+    label: str, cents: int, source: str, lots: Sequence[Mapping[str, str]], why: str,
+    *, held: Collection[str], by_symbol: bool = False,
 ) -> import_mapping.AccountTarget:
     """Where one outside account goes, asked for: one of the scenario's
-    accounts that holds a balance (and which lot, if it has several), or
-    ``skip``."""
-    click.echo(f"{source} account {holding.label!r} ({format_dollars(holding.value_cents)}) {why}.")
-    held = list(dict.fromkeys(row["account_name"] for row in lots if row.get("account_name")))
-    answer = _ask_name("account", [*held, "skip"], prompt=f"account for {holding.label} (or skip)")
+    accounts that holds a balance (``held``), or ``skip``; and which lot, if
+    it has several. ``by_symbol`` is an outside account whose holdings each
+    have a symbol: those find their lots by it, so no lot is asked."""
+    click.echo(f"{source} account {label} ({format_dollars(cents)}) {why}.")
+    answer = _ask_name("account", [*held, "skip"], prompt=f"account for {label} (or skip)")
     if answer == "skip":
         return import_mapping.AccountTarget("skip")
     its_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
     lot = ""
-    if len(its_lots) > 1:
+    if len(its_lots) > 1 and not by_symbol:
         lot = _ask_name("lot", [each or registries.DEFAULT_LOT for each in its_lots],
                         prompt=f"lot of {answer}")
     return import_mapping.AccountTarget("map", answer, lot)
 
 
+def _outside_label(holdings: Sequence[import_forms.Holding], *, whole: bool) -> str:
+    """How a question names what it asks about: the outside account, with
+    the name the file gives it, or (not ``whole``) the one holding in it."""
+    first = holdings[0]
+    name = first.hints.get("account_name", "") if whole else first.hints.get("name", "")
+    label = first.account if whole else first.label
+    if whole and not name and all(h.asset for h in holdings):
+        # A file with no name for the account: what it holds says which it is.
+        name = "holds " + _some([h.asset for h in holdings])
+    return f"{label!r} ({name})" if name else repr(label)
+
+
+def _ask_outside_account(
+    source: import_sources_.Source, path: Path, saved: import_mapping.AccountMap,
+) -> str:
+    """Which outside account ``path`` is, asked for: nothing in the file or
+    its name says. One the source's mapping has, or a new name for it."""
+    assert source.profile is not None and source.profile.holdings is not None
+    held = [h.asset for h in source.profile.holdings.read(path, "?").holdings if h.asset]
+    known = list(dict.fromkeys(outside for outside, _ in saved.entries))
+    click.echo(f"{path.name} doesn't say which {source.name} account it is"
+               + (f"; it holds {_some(held)}." if held else "."))
+    click.echo("  " + (f"One you have imported ({', '.join(known)}), or a new name for it: "
+                       if known else "Give it a name: ")
+               + "whatever you call the account. It is asked for again each time, unless "
+               "the file's name has the account's number.")
+    while True:
+        if answer := _prompt_with_completion(f"{source.name} account", choices=known).strip():
+            return answer
+
+
+def _some(names: Sequence[str], limit: int = 4) -> str:
+    """The first few of ``names``, and how many more."""
+    names = list(dict.fromkeys(names))
+    more = len(names) - limit
+    return ", ".join(names[:limit]) + (f" and {more} more" if more > 0 else "")
+
+
+def _clean_symbol(text: str) -> bool:
+    """Whether a file's symbol is one a lot can hold: the loader takes no
+    spaces or lower case, and a file may say 'Pending activity' there."""
+    return bool(text) and text == text.upper() and not any(c.isspace() for c in text)
+
+
+def _ask_holding_lot(
+    holding: import_forms.Holding, target: import_mapping.AccountTarget, its_lots: Sequence[str],
+) -> str:
+    """The lot of ``target``'s account for a holding whose symbol none of
+    the account's lots (``its_lots``) has: one of those, a new name (a new
+    lot, which the symbol's own name is offered for), or ``skip``."""
+    click.echo(
+        f"{target.account} has no lot of {_outside_label([holding], whole=False)}, "
+        f"{format_dollars(holding.value_cents)}.")
+    clean = _clean_symbol(holding.asset)
+    suggested = holding.asset.lower() if clean else "skip"
+    click.echo("  " + ("A new name adds a lot for it. " if clean else "")
+               + (f"A lot the account has ({', '.join(its_lots)}) takes it in. " if its_lots else "")
+               + "'skip' leaves it out, now and in later imports.")
+    while True:
+        answer = _prompt_with_completion(
+            f"lot for {holding.asset}", choices=[*its_lots, suggested, "skip"], default=suggested).strip()
+        if answer in its_lots or answer == "skip":
+            return answer
+        if not clean:
+            click.echo(f"  {holding.asset!r} isn't a symbol a lot can hold; an existing lot, or skip")
+            continue
+        try:
+            if answer:
+                return _check_lot_label(answer)
+        except click.ClickException as error:
+            click.echo(f"  {error.format_message()}")
+
+
 @import_group_command.command("transactions")
 @click.argument("files", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--source", "layout", type=click.Choice(import_sources_.names("transactions")), default=None,
-              help=_SOURCE_OPTION_HELP)
+@click.option("--source", "layout", default=None, help=_SOURCE_OPTION_HELP)
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -8748,7 +8844,7 @@ def import_transactions(
         files = (default_file,)
     amazon_state_path = amazon_state_dir or data_repo_root / "state"
     try:
-        flows = import_sources_.read_flows(files, layout)
+        flows = import_sources_.read_flows(files, layout, import_mapping.imports_dir(data_dir_p))
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     if flows.transactions.empty:
@@ -8908,7 +9004,7 @@ def import_transactions(
         expense_accounts.save()
         click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
     click.echo(
-        f"replaced {len(rows)} generated baseline row(s) in {scheduled_path} "
+        f"replaced {len(rows)} generated baseline row(s) in {_shown(scheduled_path)} "
         f"for scenario {scenario_name} ({counts or 'none'})"
     )
 
@@ -10596,7 +10692,7 @@ def report_tax_command(
 
     For federal, and for state when the run computes it: AGI, the larger of
     the standard and itemized deduction, the taxable income (income) the brackets
-    taxed, and the tax. A local income tax, paid with the state's, is
+    taxed, and the tax. A local income tax, its own jurisdiction, is
     local_tax, shown only when some year has one; state_tax then leaves it
     out. effective_rate is total tax over federal AGI. Tax belongs to the
     year the income was earned in; its balance due or refund settles the
@@ -11919,12 +12015,20 @@ def sync_account_lots(
 @import_group_command.command("holdings")
 @click.argument("files", nargs=-1, required=True,
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--source", "layout", type=click.Choice(import_sources_.names("holdings")), default=None,
-              help=_SOURCE_OPTION_HELP)
+@click.option("--source", "layout", default=None, help=_SOURCE_OPTION_HELP)
+@click.option("--outside-account", default=None, metavar="NAME",
+              help="The outside account FILE is of, for a source whose file doesn't say and "
+                   "whose file name doesn't either (one FILE).")
 @click.option("--year-end", is_flag=True, default=False,
               help="Treat FILE as the prior year's end (Quicken's \"Year End Export\") and "
                    "write prior_year_end_balance instead of opening_balance, for "
                    "investment asset accounts only.")
+@click.option("--prune", is_flag=True, default=False,
+              help="Empty (balance, shares and basis to zero) each lot that a file listing its "
+                   "account's holdings no longer has: it was sold.")
+@click.option("--new-lots", is_flag=True, default=False,
+              help="Add a lot, named for its symbol, for each holding whose symbol its account "
+                   "has no lot of, without asking.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -11935,7 +12039,10 @@ def sync_account_lots(
 def import_holdings(
     files: tuple[Path, ...],
     layout: str | None,
+    outside_account: str | None,
     year_end: bool,
+    prune: bool,
+    new_lots: bool,
     scenario: str | None,
     data_dir: Path | None,
     dry_run: bool,
@@ -11954,6 +12061,25 @@ def import_holdings(
     of silently ignoring them. At a terminal the missing ones are asked for
     and saved.
 
+    A brokerage's file lists what each account holds, by symbol. Its outside
+    account is mapped to an account only, and each holding goes to the
+    account's lot of the same symbol: its shares, its balance and, in a
+    taxable account, its cost basis. A holding with no such lot is asked
+    about: a new lot (``--new-lots`` adds them without asking), an existing
+    lot to add it into, or skip. A retirement or HSA lot's basis is never
+    set from a file. A lot of the account that the file doesn't have keeps
+    what it holds, with a warning; ``--prune`` empties it.
+
+    A file that names no account inside says which it is by the account's
+    number in its name; one renamed without it is asked about, or named with
+    ``--outside-account``. Where a file gives a lot a balance and no share
+    count, and the plan has a recent price for the lot's symbol, the share
+    count the two make is offered at a terminal.
+
+    The balances are the scenario's opening ones, so a file dated more than
+    a week from the scenario's start (the December 31 before it, with
+    ``--year-end``) gets a warning naming both dates.
+
     A lot inherited from a parent scenario is changed by writing an override
     of the whole lot into this scenario.
     """
@@ -11965,10 +12091,72 @@ def import_holdings(
     with _intent_db(data_dir_p, scen_name) as (con, _):
         accounts = {name: (kind, subkind or "") for name, kind, subkind in con.execute(
             "SELECT name, kind, subkind FROM account")}
+        scenario_start = date.fromisoformat(con.execute("SELECT start FROM scenario").fetchone()[0][:10])
+        priced: dict[str, list[tuple[date, Decimal]]] = {}
+        for symbol, day, payload in con.execute(
+                "SELECT series, effective_date, payload_json FROM aux_table "
+                "WHERE kind = 'security_price' AND series IS NOT NULL ORDER BY effective_date"):
+            priced.setdefault(symbol.upper(), []).append(
+                (date.fromisoformat(day[:10]), Decimal(json.loads(payload)["price_micros"]) / 1_000_000))
+    if prune and year_end:
+        raise click.UsageError("--prune empties lots as of the scenario's start, so it doesn't go with --year-end")
     lots = _import_target_lots(scenario_dir, scen_name, accounts)
     rows = [lot.row for lot in lots]
+    # A file's one number for an account needs a lot to go into; a file that
+    # lists holdings can fill an account that has no lots yet.
+    with_lots = list(dict.fromkeys(row["account_name"] for row in rows if row.get("account_name")))
+    holding_lots = [name for name, (kind, _) in accounts.items() if kind in ("asset", "liability")]
+    # What the questions decide beyond the mapping: the accounts whose
+    # holdings get a lot each, and the lots made for them (indexes of rows).
+    split: set[str] = set()
+    fresh: set[int] = set()
+    # The lots whose share count is worked out from a stored price, and those
+    # it was offered for and declined.
+    recount: set[int] = set()
+    keep_count: set[int] = set()
+    characters: dict[str, str] = {}
+    lot_context: list[calendar_guide.GuideContext] = []
+
+    def context() -> calendar_guide.GuideContext:
+        if not lot_context:
+            lot_context.append(_lot_guide_context(data_dir_p, scen_name, lots))
+        return lot_context[0]
+
+    def add_lot(account: str, name: str, symbol: str) -> None:
+        """A lot of ``account`` for ``symbol``, with nothing in it yet: the
+        plan fills it from the file."""
+        params: dict[str, object] = {"account": account, "lot": name, "symbol": symbol}
+        if accounts[account][1] == registries.RETIREMENT_SUBKIND:
+            agreed = {row.get("subkind", "") for row in rows if row.get("account_name") == account}
+            if len(agreed) == 1 and "" not in agreed:
+                params["subkind"] = agreed.pop()
+            elif _interactive():
+                params["subkind"] = _ask_name(
+                    "lot subkind", sorted(registries.RETIREMENT_LOT_SUBKINDS),
+                    prompt=f"subkind of lot {name} of {account}")
+            else:
+                raise click.ClickException(
+                    f"{account}'s lots don't agree on a subkind, so a new lot's must be asked: "
+                    f"run at a terminal, or add lot {name!r} with 'sim account lot add'")
+        _check_lot_params(context(), params)
+        if (character := _lot_growth_character(context(), params)) is not None:
+            characters.setdefault(account, character)
+        row = _lot_row(params, None, investment=_is_investment(context(), account))
+        lots.append(_Lot(row, None, None))
+        rows.append(row)
+        fresh.add(len(rows) - 1)
+
+    imports = import_mapping.imports_dir(data_dir_p)
+    asked_account = False
     try:
-        snapshot = import_sources_.read_holdings(files, layout)
+        source, unnamed = import_sources_.unnamed(files, layout, imports)
+        if unnamed and outside_account is None and len(files) == 1 and _interactive():
+            outside_account = _ask_outside_account(
+                source, files[0],
+                import_mapping.load_account_map(
+                    import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
+            asked_account = True
+        snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
         if not snapshot.holdings:
             raise click.ClickException(
                 "no account balances in " + ", ".join(map(str, files))
@@ -11978,27 +12166,138 @@ def import_holdings(
         # What this run uses: the saved map, and any answer given for this
         # run only.
         account_map = import_mapping.AccountMap(map_path, dict(saved_map.entries))
-        result = import_holdings_.plan(snapshot, account_map, accounts, rows, year_end=year_end)
+
+        # The price a share count can be worked out from: each symbol's
+        # latest stored one from the days up to the file's date.
+        priced_on = snapshot.as_of or scenario_start
+        latest = {
+            symbol: near[-1] for symbol, known in priced.items()
+            if (near := [(day, price) for day, price in known
+                         if 0 <= (priced_on - day).days <= _IMPORT_DATE_SLACK_DAYS])
+        }
+
+        def replan() -> import_holdings_.HoldingsPlan:
+            return import_holdings_.plan(
+                snapshot, account_map, accounts, rows, year_end=year_end, split=split, fresh=fresh,
+                prune=prune, prices={symbol: price for symbol, (_, price) in latest.items()},
+                recount=recount, keep_count=keep_count)
+
+        def decided(holding: import_forms.Holding) -> tuple[str, str]:
+            """The mapping row that says where ``holding`` goes: its own, or
+            its outside account's."""
+            own = (holding.account, holding.asset)
+            return own if own in account_map.entries else (holding.account, "")
+
+        def of_row(key: tuple[str, str], among: Iterable[import_forms.Holding]) -> list[import_forms.Holding]:
+            return [each for each in among if decided(each) == key]
+
+        result = replan()
         to_save = False
-        while not result.complete and _interactive():
-            for holding in result.unmapped:
-                target = _ask_holding_target(holding, snapshot.source, rows, "has no saved mapping")
-                account_map.set(holding.account, holding.asset, target)
-                saved_map.set(holding.account, holding.asset, target)
-                to_save = True
-            for holding, old in (*result.unknown, *result.no_lot):
-                target = _ask_holding_target(
-                    holding, snapshot.source, rows,
-                    f"is mapped to {old.label}, which {scen_name} doesn't have")
-                account_map.set(holding.account, holding.asset, target)
-                # The saved mapping may be right for another scenario, which
-                # would then silently import into the wrong place, or not at all.
-                if click.confirm(
-                        f"Replace the saved mapping to {old.label}, for every scenario? "
-                        "(No uses your answer for this import only)", default=False):
-                    saved_map.set(holding.account, holding.asset, target)
+        while not result.complete:
+            progress = False
+            if _interactive():
+                for key in dict.fromkeys(map(decided, result.unmapped)):
+                    covered = of_row(key, result.unmapped)
+                    target = _ask_holding_target(
+                        _outside_label(covered, whole=True), sum(h.value_cents for h in covered),
+                        snapshot.source, rows, "has no saved mapping",
+                        held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
+                        by_symbol=listed)
+                    account_map.set(*key, target)
+                    saved_map.set(*key, target)
+                    to_save = progress = True
+                stale = {decided(h): old for h, old in (*result.unknown, *result.no_lot)}
+                for key, old in stale.items():
+                    covered = of_row(key, (h for h, _ in (*result.unknown, *result.no_lot)))
+                    target = _ask_holding_target(
+                        _outside_label(covered, whole=not key[1]), sum(h.value_cents for h in covered),
+                        snapshot.source, rows,
+                        f"is mapped to {old.label}, which {scen_name} doesn't have",
+                        held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
+                        by_symbol=listed)
+                    account_map.set(*key, target)
+                    progress = True
+                    # The saved mapping may be right for another scenario, which
+                    # would then silently import into the wrong place, or not at all.
+                    if click.confirm(
+                            f"Replace the saved mapping to {old.label}, for every scenario? "
+                            "(No uses your answer for this import only)", default=False):
+                        saved_map.set(*key, target)
+                        to_save = True
+            if progress:
+                # The answers may have sent holdings to accounts with lots to
+                # ask about; ask those once every account is settled.
+                result = replan()
+                continue
+            if year_end:
+                break  # last year's file can't say what a new lot holds now
+            # One lot with no symbol, and a file that lists what is in it.
+            for account in dict.fromkeys(target.account for _, target in result.undecided):
+                covered = [(h, t) for h, t in result.undecided if t.account == account]
+                only = next(_lot.lot for _lot in lots if _lot.account == account)
+                together = False
+                if _interactive() and not new_lots:
+                    click.echo(
+                        f"{account} has one lot, {only!r}, and the {snapshot.source} file lists "
+                        f"{len(covered)} holding(s) in it: "
+                        + ", ".join(h.asset for h, _ in covered) + ".")
+                    click.echo(
+                        "  A lot for each lets the plan grow each as its own fund does, and "
+                        f"empties {only!r}, whose total they then hold; one lot keeps the "
+                        "account simple.")
+                    together = click.confirm(f"Add them together into {only!r}?", default=False)
+                elif not new_lots:
+                    continue
+                if together:
+                    for key in dict.fromkeys(decided(h) for h, _ in covered):
+                        named = import_mapping.AccountTarget("map", account, only, account_map.entries[key].note)
+                        account_map.set(*key, named)
+                        saved_map.set(*key, named)
+                        to_save = True
+                else:
+                    split.add(account)
+                progress = True
+            for holding, target in result.new:
+                its_lots = [_lot.lot for _lot in lots if _lot.account == target.account]
+                if any(row.get("account_name") == target.account
+                       and row.get("symbol", "").upper() == holding.asset.upper() for row in rows):
+                    # An earlier holding of the symbol (another row of the
+                    # file, or another outside account) got the lot just now.
+                    continue
+                # --new-lots can't name a lot for 'Pending activity'.
+                if _interactive() and not (new_lots and _clean_symbol(holding.asset)):
+                    answer = _ask_holding_lot(holding, target, its_lots)
+                elif new_lots and _clean_symbol(holding.asset):
+                    # A lot of another symbol may have the name already.
+                    base = holding.asset.lower()
+                    answer = next(
+                        name for name in itertools.chain([base], (f"{base}-{n}" for n in itertools.count(2)))
+                        if name not in its_lots)
+                else:
+                    continue
+                if answer == "skip" or answer in its_lots:
+                    chosen = import_mapping.AccountTarget("skip") if answer == "skip" \
+                        else import_mapping.AccountTarget("map", target.account, answer)
+                    account_map.set(holding.account, holding.asset, chosen)
+                    saved_map.set(holding.account, holding.asset, chosen)
                     to_save = True
-            result = import_holdings_.plan(snapshot, account_map, accounts, rows, year_end=year_end)
+                else:
+                    add_lot(target.account, answer, holding.asset)
+                progress = True
+            if not progress:
+                break
+            result = replan()
+        while result.complete and result.offers and _interactive():
+            for offer in result.offers:
+                click.echo(
+                    f"The file gives {offer.account}:{offer.lot} a balance, "
+                    f"{format_dollars(offer.cents)}, and no share count. At {offer.symbol}'s price of "
+                    f"{offer.price.normalize():f} on {latest[offer.symbol][0]}, that is {offer.after} "
+                    f"shares; the lot has {offer.before.normalize():f}.")
+                update = click.confirm("  Update the share count (it may have grown by reinvested "
+                                       "dividends)?", default=True)
+                (recount if update else keep_count).add(offer.index)
+            result = replan()
     except ValueError as e:
         raise click.ClickException(str(e)) from None
 
@@ -12022,10 +12321,41 @@ def import_holdings(
             "a terminal to be asked:\n  "
             + "\n  ".join(sorted(f"{h.label} -> {t.label}" for h, t in result.no_lot))
         )
+    if year_end and (result.undecided or result.new):
+        raise click.ClickException(
+            "--year-end sets last year's balance on lots the scenario has, and these holdings "
+            "have none; import the current holdings first:\n  "
+            + "\n  ".join(f"{h.label} -> {t.account}" for h, t in (*result.undecided, *result.new)))
+    if result.undecided or result.new:
+        raise click.ClickException(
+            "holding(s) whose symbol their account has no lot of; run at a terminal to be "
+            "asked, add a lot for each with --new-lots, or say in "
+            f"{map_path} which lot each goes into (a row with its symbol as 'asset'):\n  "
+            + "\n  ".join(f"{h.label} -> {t.account}" for h, t in (*result.undecided, *result.new))
+        )
     for warning in result.warnings:
         click.echo(f"warning: {warning}", err=True)
+    profile = source.profile
+    if not asked_account and outside_account is None and profile is not None \
+            and profile.holdings is not None and profile.holdings.account_pattern is not None:
+        # Nothing in such a file says whose it is, so say what was taken.
+        for name in dict.fromkeys(h.account for h in snapshot.holdings):
+            click.echo(f"{snapshot.source} account {name!r}, from the file's name "
+                       "(--outside-account names another)")
     if snapshot.as_of is not None:
         click.echo(f"{snapshot.source} snapshot as of {snapshot.as_of}")
+        # The numbers are written as of a fixed day whatever the file's date.
+        # scenario.start is pinned to its month's last day, and the opening
+        # balances are those before that first month: as of its first day.
+        wanted = date(scenario_start.year - 1, 12, 31) if year_end else scenario_start.replace(day=1)
+        if abs((snapshot.as_of - wanted).days) > _IMPORT_DATE_SLACK_DAYS:
+            what = "the December 31 before it starts" if year_end else f"the start of {scen_name}"
+            click.echo(
+                f"warning: the file is as of {snapshot.as_of}, and its balances are being set as "
+                f"of {wanted}, {what}. " + (
+                    "Export the year-end report as of that day." if year_end else
+                    "Export it as of that day, or bring the plan to the file's date first "
+                    "with 'sim scenario roll'."), err=True)
     if result.changes:
         _echo_table(
             ["account", "lot", "column", "before", "after", ""],
@@ -12033,8 +12363,34 @@ def import_holdings(
               f"[{c.note}]" if c.note else "") for c in result.changes),
             left=3,
         )
+    for note in dict.fromkeys(result.notes):
+        click.echo(f"note: {note}")
+    for offer in result.offers:
+        click.echo(
+            f"note: the share count of {offer.account}:{offer.lot} could be worked out from its "
+            f"balance and {offer.symbol}'s price on {latest[offer.symbol][0]}, as {offer.after} "
+            "shares: run at a terminal to be asked")
+    for account in sorted(split):
+        if emptied := [label for label in result.pruned if label.partition(":")[0] == account]:
+            click.echo(
+                f"note: {emptied[0]} is emptied, since the new lots hold what it held; rules that "
+                f"name it still do: 'sim account lot delete {emptied[0].replace(':', ' ')}' "
+                "removes it and lists them")
+    # A symbol with no rate series, allocation or name grows as its account
+    # does, which may not be what the fund does.
+    if fresh:
+        known = {*context().securities, *context().growing}
+        if strangers := sorted({rows[i]["symbol"] for i in fresh} - known):
+            click.echo(
+                f"note: the plan doesn't know {', '.join(strangers)} yet, so each lot grows "
+                "as its account does; 'sim symbol add SYMBOL' gives one its name, its "
+                "asset classes and its prices")
     counts = (f"{len(result.skipped)} skipped, {len(result.ineligible)} ineligible, "
               f"{result.lots_unchanged} unchanged")
+    if result.pruned:
+        counts = f"{len(result.pruned)} emptied, {counts}"
+    if fresh:
+        counts = f"{len(fresh)} new, {counts}"
     if dry_run:
         click.echo(f"(dry run) {result.lots_changed} lot(s) would change, {counts}")
         if to_save:
@@ -12049,8 +12405,20 @@ def import_holdings(
         # over, nor its old row index written to.
         now = {(lot.account, lot.lot): lot
                for lot in _import_target_lots(scenario_dir, scen_name, accounts)}
+        for account, character in characters.items():
+            # A whole-row override when the account is inherited (#202).
+            found = _overlay_rows(scenario_dir, "accounts.csv")[account]
+            _append_csv_row(edit.path(scenario_dir / "accounts.csv"), registries.ACCOUNTS_CSV_HEADER,
+                            {**found.row, "tax_character": character}, replace=found.index)
         for index, cells in result.cells.items():
             lot = lots[index]
+            if index in fresh:
+                if (lot.account, lot.lot) in now:
+                    raise click.ClickException(
+                        f"{lot.account} got a lot {lot.lot!r} while this import was being "
+                        "answered. Nothing was written; start again.")
+                _append_csv_row(staged, registries.ACCOUNT_LOTS_CSV_HEADER, result.rows[index])
+                continue
             if (current := now.get((lot.account, lot.lot))) is None \
                     or (current.row, current.index) != (lot.row, lot.index):
                 raise click.ClickException(
@@ -12069,8 +12437,10 @@ def import_holdings(
     if to_save:
         saved_map.save()
         click.echo(f"saved mappings to {_shown(map_path)}")
+    for account, character in characters.items():
+        _echo_growth_character(account, character)
     inherited = f"; {overrides} as override(s) of inherited lots" if overrides else ""
-    click.echo(f"updated {result.lots_changed} lot(s) in {values_path} ({counts}){inherited}")
+    click.echo(f"updated {result.lots_changed} lot(s) in {_shown(values_path)} ({counts}){inherited}")
 
 
 @transfer_group_command.command("list")
@@ -15255,10 +15625,14 @@ def _ask_shares(prompt: str, default: float | None, accept: bool) -> str:
 @click.option("--yes", "accept", is_flag=True,
               help="Take every default without asking: the old plan's projections, and "
                    "pinning the old first year's rows to that year.")
+@click.option("--own", is_flag=True,
+              help="Roll only what is NAME's own, after the scenario it is built on has "
+                   "rolled: its lots, and with a start of its own, that start and its rows. "
+                   "With an inherited start, START must be given.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep: bool,
-                  accept: bool, data_dir: Path | None) -> None:
+                  accept: bool, own: bool, data_dir: Path | None) -> None:
     """Bring scenario NAME up to date: start it again at START (YYYY-MM),
     opening with what the accounts hold then (#502).
 
@@ -15278,9 +15652,21 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     START, which no longer happen, and the rules whose ytd_preroll now
     counts the new year's months, and says what last year's tax needs.
 
+    The scenarios built on NAME that take its start move with it, so the
+    same questions are asked about their own rows, in the same edit. Their
+    own lots are theirs to roll, after NAME, with --own: only what is the
+    scenario's own rolls, so it keeps inheriting the rest. Its start moves
+    only if it sets one; an inherited start must already be START (its
+    parent rolled first, and dealt with its rows), so only its lots reopen.
+    It writes no projected year-to-date rows: the months skipped are the
+    household's past, the same in every plan built on the parent, whose
+    rows it inherits. Nor does it offer to keep a copy, since its start
+    doesn't move (--keep still makes one).
+
     Everything is written in one edit, only if NAME and every scenario
     built on it still load. NAME stays current. START defaults to the
-    first January after the old start (and not before this year's)."""
+    first January after the old start (and not before this year's); with
+    --own and an inherited start it must be given."""
     if keep is not None and no_keep:
         raise click.UsageError("--keep and --no-keep are exclusive")
     data = _resolve_data_dir(data_dir)
@@ -15293,17 +15679,35 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     if old is None:
         raise click.ClickException(f"{name} has no start, so there is nothing to roll forward")
     old_start = old.month
-    if start is None:
-        suggested = roll.default_start(old_start, date.today())
-        start = suggested if accept else click.prompt("new start (YYYY-MM)", default=suggested)
-    start = month_end_iso(_validate_month_date(start.strip()))[:7]
-    if start <= old_start:
-        raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
+    # A run still being built in the background is the newest one; wait for it.
+    from analysis.sim import builder
+    builder.await_fresh(ref.runs_dir, name, echo=lambda text: click.echo(text, err=True))
+    # --own on a scenario that inherits its start: the parent's roll moved
+    # it already, and the scenario's own runs say where it was.
+    follows = own and not sc._scenario_row(scenario_dir).get("start", "").strip()
+    if follows:
+        if start is None:
+            raise click.UsageError(
+                f"{name} inherits its start: give START, the month its parent rolled to")
+        start = month_end_iso(_validate_month_date(start.strip()))[:7]
+        if start != old_start:
+            raise click.ClickException(
+                f"{name}'s start is inherited, and is {old_start}, not {start}: "
+                f"{roll.PARENT_FIRST}, or give {name} a start of its own")
+    else:
+        if start is None:
+            suggested = roll.default_start(old_start, date.today())
+            start = suggested if accept else click.prompt("new start (YYYY-MM)", default=suggested)
+        start = month_end_iso(_validate_month_date(start.strip()))[:7]
+        if start <= old_start:
+            raise click.ClickException(f"{start} is not after {name}'s start, {old_start}")
     old_year, new_year = int(old_start[:4]), int(start[:4])
     taken = set(names.scenario_names(data))
     if keep is not None:
         _check_keep_name(keep.strip(), taken)
-    if not no_keep and keep is None:
+    # Following its parent's roll, the scenario's start doesn't move, so
+    # there is no old plan to keep unless --keep asks for one.
+    if not no_keep and keep is None and not follows:
         suggested = roll.keep_name(name, old_start, taken)
         while True:
             keep = suggested if accept else click.prompt(
@@ -15316,16 +15720,16 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                 click.echo(f"  {exc.message}")
     if keep is not None:
         keep = keep.strip()
-    click.echo(f"Rolling {name} forward: {old_start} -> {start}")
+    click.echo(f"Rolling {name}'s own lots forward to {start}, its inherited start" if follows
+               else f"Rolling {name} forward: {old_start} -> {start}")
 
     month = month_before(start)
-    # A run still being built in the background is the newest one; wait for it.
-    from analysis.sim import builder
-    builder.await_fresh(ref.runs_dir, name, echo=lambda text: click.echo(text, err=True))
     projected: dict[tuple[str, str], roll.Projection] = {}
     # The Dec 31 before a start that isn't a January: what a lot's
     # prior_year_end_balance (an RMD's base) defaults to.
     year_end: dict[tuple[str, str], roll.Projection] = {}
+    # The flows of the months the roll skips, as year-to-date rows (#564).
+    skipped: list[roll.ProjectedRow] = []
     # The newest run that reaches the month: one made after an earlier roll
     # (or a trial one) starts too late to say.
     for run_path in reversed(run_files(ref.runs_dir, name)):
@@ -15335,6 +15739,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             projected = roll.projections(rc, month)
             if projected and start[5:] != "01":
                 year_end = roll.projections(rc, month_before(f"{new_year}-01"))
+            if projected and not own:
+                skipped = roll.projected_year_to_date(rc, old_start, start)
         if projected:
             break
     if projected:
@@ -15344,9 +15750,13 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         click.echo(f"No run of {name} reaches {month:%Y-%m}, so each default is the "
                    "current opening value.")
 
+    # The scenarios that take NAME's start, whose start-dependent rows move
+    # with it (none when NAME's start doesn't move here).
+    followers = [] if follows else _start_followers(data, name)
     # Read before anything is asked, to check nothing changed before writing.
     own_files = {path: path.read_bytes() if path.exists() else None
-                 for path in (scenario_dir / file for file in (
+                 for folder in (scenario_dir, *(data / "scenarios" / one for one in followers))
+                 for path in (folder / file for file in (
                      "scenario.csv", "accounts.csv", "account_lots.csv", "year_to_date.csv",
                      "scheduled.csv"))}
     accounts = _overlay_rows(scenario_dir, "accounts.csv")
@@ -15360,6 +15770,8 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         if account is None or account.row.get("kind") not in ("asset", "liability"):
             continue
         seen.add((one.account, one.lot))
+        if own and one.index is None:
+            continue  # its parent's to roll
         rows.append((one, _rolled_lot(data, one, account.row, projected.get((one.account, one.lot)),
                                       year_end.get((one.account, one.lot)), start, accept,
                                       same_year=new_year == old_year)))
@@ -15369,7 +15781,7 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
         if (account_name, lot) in seen or lot != registries.DEFAULT_LOT or not projection.balance:
             continue
         account = accounts.get(account_name)
-        if account is None:
+        if account is None or (own and (account.index is None or account.inherited_from)):
             continue
         blank = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "") | {
             "account_name": account_name, "lot": lot}
@@ -15378,37 +15790,20 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
                                            year_end.get((account_name, lot)), start, accept,
                                            same_year=new_year == old_year)))
 
-    pins: list[_Overlaid] = []
-    converted: list[_Overlaid] = []
-    unconverted: list[tuple[_Overlaid, str]] = []
-    if new_year != old_year:
-        for found in roll.unpinned_year_to_date(scenario_dir):
-            label = (f"year-to-date row {found.row['name']} ({found.row.get('amount', '')}) "
-                     f"has no year, so it would move into {new_year}: pin it to {old_year}?")
-            if accept or click.confirm(label, default=True):
-                pins.append(found)
-        chains = set(names.chain_names(data, name))
-        for found in roll.ytd_amount_rules(scenario_dir):
-            rule = found.row
-            # A year-to-date row moves between accounts, with a character.
-            if why := ("it moves money through a chain"
-                       if {rule.get("from_account"), rule.get("to_account")} & chains
-                       else "it has no tax_character" if not rule.get("tax_character", "").strip()
-                       else None):
-                unconverted.append((found, why))
-                continue
-            label = (f"rule {rule['name']}'s ytd_amount ({rule['ytd_amount']}) was "
-                     f"{old_year}'s catch-up: make it a {old_year} year-to-date row?")
-            if accept or click.confirm(label, default=True):
-                converted.append(found)
-    # A rule with no start counts its cadence (a quarter, a biweekly payday,
-    # ytd_preroll's months) from the scenario's start, which is moving.
-    anchored: list[_Overlaid] = []
-    for found in roll.anchored_rules(scenario_dir):
-        label = (f"rule {found.row['name']} has no start, so its {found.row.get('cadence')} "
-                 f"schedule counts from the scenario's: keep counting from {old_start}?")
-        if accept or click.confirm(label, default=True):
-            anchored.append(found)
+    # Rows whose meaning depends on the start: NAME's (only its own with
+    # --own) and those of the scenarios that take its start (their own).
+    moved = [] if follows else [
+        _ask_start_rows(data, data / "scenarios" / one, one if one != name else None,
+                        old_start, new_year, accept, own_only=own or one != name)
+        for one in (name, *followers)]
+    if skipped:
+        months = (f"{old_start}" if month.strftime("%Y-%m") == old_start
+                  else f"{old_start} to {month:%Y-%m}")
+        label = (f"the run no longer covers {months}, so that income would drop out of "
+                 f"its tax year: add the old run's flows then as {len(skipped)} projected "
+                 "year-to-date row(s)?")
+        if not (accept or click.confirm(label, default=True)):
+            skipped = []
 
     with _scenario_edit(data, name) as edit:
         # The rows above were read before the questions, which may have taken
@@ -15425,35 +15820,22 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
             except (OSError, ValueError) as exc:
                 raise click.ClickException(str(exc).replace(str(edit.data_dir), str(data))) from None
         staged_dir = edit.path(scenario_dir)
-        sc.edit_scenario_row(staged_dir, {"start": start}, {})
+        if not follows:
+            sc.edit_scenario_row(staged_dir, {"start": start}, {})
         lots_path = edit.path(scenario_dir / "account_lots.csv")
         for one, row in rows:
             _append_csv_row(lots_path, registries.ACCOUNT_LOTS_CSV_HEADER, row, replace=one.index)
+        for one in moved:
+            _write_start_rows(edit, one, old_start)
         ytd_path = edit.path(scenario_dir / "year_to_date.csv")
-        if pins or converted:
+        dropped = 0
+        if skipped or any(roll.is_projected(row) for row in _read_ytd_rows(ytd_path)):
             _widen_ytd_header(ytd_path, scenario_dir)
-        for found in pins:
-            row = {column: found.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
-            _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
-                            replace=found.index)
-        scheduled_path = edit.path(scenario_dir / "scheduled.csv")
-        # Each rule changed once, whichever of the edits below it takes.
-        rule_rows = {found.row["name"]: (found, dict(found.row)) for found in [*converted, *anchored]}
-        anchor = month_end_iso(old_start)
-        for found in anchored:
-            rule_rows[found.row["name"]][1]["start"] = anchor
-        for found in converted:
-            rule = found.row
-            rule_rows[rule["name"]][1]["ytd_amount"] = ""
-            _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, {
-                "name": f"{rule['name']}_{old_year}", "from_account": rule.get("from_account", ""),
-                "from_lot": rule.get("from_lot", ""), "to_account": rule.get("to_account", ""),
-                "to_lot": rule.get("to_lot", ""), "amount": rule["ytd_amount"],
-                "tax_character": rule.get("tax_character", ""), "year": str(old_year),
-                "description": f"{rule['name']}: paid in {old_year} before {old_start}",
-            })
-        for found, rule in rule_rows.values():
-            _append_csv_row(scheduled_path, registries.SCHEDULED_CSV_HEADER, rule, replace=found.index)
+            inherited = set(_overlay_rows(scenario_dir, "year_to_date.csv"))
+            merged, dropped = roll.merge_projected(
+                _read_ytd_rows(ytd_path), skipped, old_start, start, inherited)
+            pd.DataFrame(merged, columns=list(registries.YEAR_TO_DATE_CSV_HEADER)).to_csv(
+                ytd_path, index=False)
 
     click.echo(f"rolled {name} forward to {start}")
     if keep is not None:
@@ -15461,42 +15843,191 @@ def scenario_roll(name: str | None, start: str | None, keep: str | None, no_keep
     for one, row in rows:
         click.echo(f"  {one.account} ({one.lot}): {row['opening_balance'] or row['quantity'] + ' sh'}"
                    + (f", basis {row['opening_cost_basis']}" if row["opening_cost_basis"] else ""))
-    for found in pins:
-        click.echo(f"  year-to-date row {found.row['name']}: pinned to {old_year}")
-    for found in converted:
-        click.echo(f"  {found.row['name']}'s ytd_amount: now year-to-date row "
-                   f"{found.row['name']}_{old_year}")
-    for found, why in unconverted:
-        click.echo(f"  rule {found.row['name']}'s ytd_amount is {old_year}'s catch-up, but {why}: "
-                   f"record it with `sim ytd add ... --year {old_year}` and clear it "
-                   f"(`sim scheduled edit {found.row['name']} --ytd-amount ''`)")
-    for found in anchored:
-        click.echo(f"  rule {found.row['name']}: starts {old_start}, so its schedule keeps its months")
-    for entry in roll.calendar_before(scenario_dir, start):
-        click.echo(f"  calendar {entry.row.get('date')} {entry.row.get('kind')} "
-                   f"{entry.row.get('description') or entry.row.get('scheduled_name') or ''}"
-                   .rstrip() + f": before {start}, so it no longer happens")
-    for rule_name in roll.preroll_rules(scenario_dir):
-        if start[5:] != "01":
-            click.echo(f"  rule {rule_name}'s ytd_preroll now counts {new_year}'s months before {start}")
-    if new_year == old_year:
-        # Same year: the first year's catch-ups now cover fewer months
-        # than they should, and only the person knows the new totals.
-        before = f"{month_before(start):%Y-%m}"
-        for found in roll.unpinned_year_to_date(scenario_dir):
-            click.echo(f"  year-to-date row {found.row['name']} covers {new_year} before "
-                       f"{old_start}: update it through {before} (`sim ytd edit`)")
-        for found in roll.ytd_amount_rules(scenario_dir):
-            click.echo(f"  rule {found.row['name']}'s ytd_amount covers {new_year} before "
-                       f"{old_start}: update it through {before} (`sim scheduled edit`)")
-    if new_year != old_year and int(start[5:7]) <= 4:
-        # A start by April: the prior year's tax is still to be paid in it.
-        click.echo(
-            f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
-            f"record it with `sim ytd add NAME FROM TO AMOUNT --tax-character ... --year "
-            f"{new_year - 1}` (W-2s, 1099s, tax already withheld)")
+    for one in moved:
+        whose = f"{one.scenario}'s " if one.scenario else ""
+        for found in one.pins:
+            click.echo(f"  {whose}year-to-date row {found.row['name']}: pinned to {old_year}")
+        for found in one.converted:
+            click.echo(f"  {whose}rule {found.row['name']}'s ytd_amount: now year-to-date row "
+                       f"{found.row['name']}_{old_year}")
+        for found, why in one.unconverted:
+            click.echo(f"  {whose}rule {found.row['name']}'s ytd_amount is {old_year}'s catch-up, "
+                       f"but {why}: record it with `sim ytd add ... --year {old_year}` and clear "
+                       f"it (`sim scheduled edit {found.row['name']} --ytd-amount ''`)")
+        for found in one.anchored:
+            click.echo(f"  {whose}rule {found.row['name']}: starts {old_start}, so its schedule "
+                       "keeps its months")
+    if skipped:
+        click.echo(f"  {len(skipped)} projected year-to-date row(s) for {old_start} to "
+                   f"{month:%Y-%m}: replace them with the actual figures when you have them "
+                   "(`sim ytd edit`)")
+    if dropped:
+        click.echo(f"  dropped {dropped} projected year-to-date row(s) of years before {new_year - 1}, "
+                   "which no longer count")
+    # With an inherited start, its parent's roll said what follows from it.
+    if not follows:
+        for entry in roll.calendar_before(scenario_dir, start):
+            click.echo(f"  calendar {entry.row.get('date')} {entry.row.get('kind')} "
+                       f"{entry.row.get('description') or entry.row.get('scheduled_name') or ''}"
+                       .rstrip() + f": before {start}, so it no longer happens")
+        for rule_name in roll.preroll_rules(scenario_dir):
+            if start[5:] != "01":
+                click.echo(f"  rule {rule_name}'s ytd_preroll now counts {new_year}'s months before {start}")
+        if new_year == old_year and not skipped:
+            # Same year: the first year's catch-ups now cover fewer months
+            # than they should, and only the person knows the new totals.
+            before = f"{month_before(start):%Y-%m}"
+            for found in roll.unpinned_year_to_date(scenario_dir):
+                click.echo(f"  year-to-date row {found.row['name']} covers {new_year} before "
+                           f"{old_start}: update it through {before} (`sim ytd edit`)")
+            for found in roll.ytd_amount_rules(scenario_dir):
+                click.echo(f"  rule {found.row['name']}'s ytd_amount covers {new_year} before "
+                           f"{old_start}: update it through {before} (`sim scheduled edit`)")
+        if new_year != old_year and int(start[5:7]) <= 4 \
+                and not any(one.year == new_year - 1 for one in skipped):
+            # A start by April: the prior year's tax is still to be paid in it.
+            click.echo(
+                f"  {new_year - 1}'s tax is settled in April {new_year}, from {new_year - 1}'s income: "
+                f"record it with `sim ytd add NAME FROM TO AMOUNT --tax-character ... --year "
+                f"{new_year - 1}` (W-2s, 1099s, tax already withheld)")
+    if not own:
+        for other in _built_on_with_own_lots(data, name):
+            click.echo(f"  {other} is built on {name} and has lots of its own: roll them too "
+                       f"(`sim scenario roll {other} {start} --own`)")
     click.echo(f"next: `sim run {name} --commit`"
                + (f", `sim run {keep} --commit`, then `sim compare {keep} {name}`" if keep else ""))
+
+
+def _start_followers(data: Path, name: str) -> list[str]:
+    """The scenarios built on ``name`` that take its start: none of them,
+    nor anything after ``name`` in their load order, sets one."""
+    scenarios = data / "scenarios"
+    found = []
+    for other in names.scenario_names(data):
+        if other == name or is_pool(scenarios, other) or _is_template(scenarios, other):
+            continue
+        try:
+            order = load_order(scenarios, other)
+        except (OSError, ValueError):
+            continue
+        if name not in order[:-1]:
+            continue
+        after = order[order.index(name) + 1:]
+        if not any(sc._scenario_row(_folder_of(scenarios, one)).get("start", "").strip()
+                   for one in after):
+            found.append(other)
+    return found
+
+
+class _StartRows(NamedTuple):
+    """One scenario's rows that a moved start changes the meaning of, and
+    what ``sim scenario roll`` was told to do with them."""
+    scenario_dir: Path
+    scenario: str | None  # None: the scenario being rolled, not one that follows it
+    old_year: int
+    pins: list[_Overlaid]
+    converted: list[_Overlaid]
+    unconverted: list[tuple[_Overlaid, str]]
+    anchored: list[_Overlaid]
+
+
+def _ask_start_rows(
+    data: Path, scenario_dir: Path, scenario: str | None, old_start: str, new_year: int,
+    accept: bool, *, own_only: bool,
+) -> _StartRows:
+    """Ask about ``scenario_dir``'s rows whose meaning moves with the start
+    (``own_only``: just the rows in its own files): a year-to-date row with
+    no year and a rule's ``ytd_amount``, both the old first year's, when the
+    year changes; a rule whose schedule counts from the start."""
+    old_year = int(old_start[:4])
+    whose = f"{scenario}: " if scenario else ""
+    pins: list[_Overlaid] = []
+    converted: list[_Overlaid] = []
+    unconverted: list[tuple[_Overlaid, str]] = []
+    if new_year != old_year:
+        for found in roll.unpinned_year_to_date(scenario_dir):
+            if own_only and found.index is None:
+                continue
+            label = (f"{whose}year-to-date row {found.row['name']} ({found.row.get('amount', '')}) "
+                     f"has no year, so it would move into {new_year}: pin it to {old_year}?")
+            if accept or click.confirm(label, default=True):
+                pins.append(found)
+        chains = set(names.chain_names(data, scenario_dir.name))
+        for found in roll.ytd_amount_rules(scenario_dir):
+            if own_only and found.index is None:
+                continue
+            rule = found.row
+            # A year-to-date row moves between accounts, with a character.
+            if why := ("it moves money through a chain"
+                       if {rule.get("from_account"), rule.get("to_account")} & chains
+                       else "it has no tax_character" if not rule.get("tax_character", "").strip()
+                       else None):
+                unconverted.append((found, why))
+                continue
+            label = (f"{whose}rule {rule['name']}'s ytd_amount ({rule['ytd_amount']}) was "
+                     f"{old_year}'s catch-up: make it a {old_year} year-to-date row?")
+            if accept or click.confirm(label, default=True):
+                converted.append(found)
+    # A rule with no start counts its cadence (a quarter, a biweekly payday,
+    # ytd_preroll's months) from the scenario's start, which is moving.
+    anchored: list[_Overlaid] = []
+    for found in roll.anchored_rules(scenario_dir):
+        if own_only and found.index is None:
+            continue
+        label = (f"{whose}rule {found.row['name']} has no start, so its "
+                 f"{found.row.get('cadence')} schedule counts from the scenario's: keep counting "
+                 f"from {old_start}?")
+        if accept or click.confirm(label, default=True):
+            anchored.append(found)
+    return _StartRows(scenario_dir, scenario, old_year, pins, converted, unconverted, anchored)
+
+
+def _write_start_rows(edit: Any, rows: _StartRows, old_start: str) -> None:
+    """Write what :func:`_ask_start_rows` was told into ``edit``."""
+    old_year = rows.old_year
+    ytd_path = edit.path(rows.scenario_dir / "year_to_date.csv")
+    if rows.pins or rows.converted:
+        _widen_ytd_header(ytd_path, rows.scenario_dir)
+    for found in rows.pins:
+        row = {column: found.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
+        _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, row | {"year": str(old_year)},
+                        replace=found.index)
+    scheduled_path = edit.path(rows.scenario_dir / "scheduled.csv")
+    # Each rule changed once, whichever of the edits below it takes.
+    rule_rows = {found.row["name"]: (found, dict(found.row))
+                 for found in [*rows.converted, *rows.anchored]}
+    anchor = month_end_iso(old_start)
+    for found in rows.anchored:
+        rule_rows[found.row["name"]][1]["start"] = anchor
+    for found in rows.converted:
+        rule = found.row
+        rule_rows[rule["name"]][1]["ytd_amount"] = ""
+        _append_csv_row(ytd_path, registries.YEAR_TO_DATE_CSV_HEADER, {
+            "name": f"{rule['name']}_{old_year}", "from_account": rule.get("from_account", ""),
+            "from_lot": rule.get("from_lot", ""), "to_account": rule.get("to_account", ""),
+            "to_lot": rule.get("to_lot", ""), "amount": rule["ytd_amount"],
+            "tax_character": rule.get("tax_character", ""), "year": str(old_year),
+            "description": f"{rule['name']}: paid in {old_year} before {old_start}",
+        })
+    for found, rule in rule_rows.values():
+        _append_csv_row(scheduled_path, registries.SCHEDULED_CSV_HEADER, rule, replace=found.index)
+
+
+def _built_on_with_own_lots(data: Path, name: str) -> list[str]:
+    """The scenarios built on ``name`` (as parent or mix-in) with lot rows of
+    their own, which a roll of ``name`` leaves as they were."""
+    scenarios = data / "scenarios"
+    found = []
+    for other in names.scenario_names(data):
+        if other == name or is_pool(scenarios, other) or _is_template(scenarios, other):
+            continue
+        try:
+            built_on = name in load_order(scenarios, other)[:-1]
+        except (OSError, ValueError):
+            continue
+        if built_on and _read_values_rows(scenarios / other / "account_lots.csv"):
+            found.append(other)
+    return found
 
 
 def _check_keep_name(keep: str, taken: set[str]) -> None:
@@ -15679,6 +16210,7 @@ def _apply_scenario_edit(
     data: Path, name: str, *, description: str | None = None, start: str | None = None,
     end: str | None = None, parents: str | None = None, seed: str | None = None,
     new_seed: bool = False, size: str | None = None, reserve: str | None = None,
+    roll: str | None = None,
 ) -> None:
     """Set the given fields of scenario ``name``'s scenario.csv; see ``_edit_scenario``."""
     if seed is not None and new_seed:
@@ -15721,6 +16253,10 @@ def _apply_scenario_edit(
         meta["ensemble_size"] = _blank_or(size, _member_count, "--size")
     if reserve is not None:
         meta["reserve"] = _blank_or(reserve, _reserve_json, "--reserve")
+    if roll is not None:
+        # '' drops the key, so the scenario inherits its parent's
+        # (roll_schedule.roll_mark); off opts out of it.
+        meta[registries.ROLL_KEY] = roll or None
     if not values and not meta:
         raise click.UsageError("nothing to change: give at least one option (see --help)")
 
@@ -15796,6 +16332,10 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
         click.option("--reserve", default=None,
                      help="The ensemble reports' reserve, in CPI-constant dollars "
                           "(meta_json reserve); '' or none inherits."),
+        click.option("--roll", default=None, type=click.Choice([*registries.ROLL_CHOICES, ""]),
+                     help="monthly: the background builder rolls the start forward a month "
+                          "each night the start month is over (meta_json roll, #564); off: "
+                          "it doesn't, though a parent does; '' inherits it."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
     ]
@@ -15808,7 +16348,8 @@ def _add_edit_options(command: Callable[..., None], *, name_type: click.ParamTyp
 @_edit_options("scenario")
 def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
     """Change scenario NAME's scenario.csv: its description, start and end
-    months, parents and mix-ins, seed, ensemble size or reserve.
+    months, parents and mix-ins, seed, ensemble size, reserve, or whether the
+    background builder rolls it forward each month.
 
     Options set those fields and write at once; a blank value ('') clears
     one, so it inherits again (a blank description restores the default).
@@ -17636,12 +18177,15 @@ def itemization_show(name: str | None, scenario: str | None, data_dir: Path | No
 
 @sim_group_command.group(name="deduction")
 def deduction_group_command() -> None:
-    """See and change the scenario's itemized deductions: one total per tax
-    year, federal (aux/federal_deductions.csv) or, with --state, the state's
-    (aux/state_deductions.csv). ADR-003 §4.4.
+    """See and change the scenario's hand-typed itemized deductions: one
+    total per tax year, federal (aux/federal_deductions.csv) or, with
+    --state, the state's (aux/state_deductions.csv). ADR-003 §4.4.
 
-    A year's deduction is the larger of its itemized total and the standard
-    deduction. A total counts for its own tax year only.
+    The total adds to the itemized lines figured from the year's spending
+    (property and income taxes, mortgage interest, charity, medical; see
+    aux/itemized_limits.csv), so leave those out of it. A year's deduction
+    is the larger of the itemized total and the standard deduction. A total
+    counts for its own tax year only.
     """
 
 
@@ -17846,10 +18390,11 @@ def _deduction_origin(target: _DeductionEdit) -> str:
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def deduction_list(state: bool, scenario: str | None, data_dir: Path | None) -> None:
-    """List the itemized deductions, one row per tax year, with the total
-    each counts (an @itemization summed).
+    """List the hand-typed itemized deductions, one row per tax year, with
+    the total each counts (an @itemization summed).
 
-    Without any rows, every year takes the standard deduction.
+    Without any rows, a year itemizes only what it figures from spending
+    (aux/itemized_limits.csv), when that beats the standard deduction.
     """
     from rich.markup import escape
     from rich.table import Table
@@ -17864,7 +18409,8 @@ def deduction_list(state: bool, scenario: str | None, data_dir: Path | None) -> 
             click.echo(f"no state itemized deductions in {ref.name}; the state uses the "
                        "federal ones (`sim deduction list`)")
         else:
-            click.echo(f"no federal itemized deductions in {ref.name}; every year takes the "
+            click.echo(f"no hand-typed federal itemized deductions in {ref.name}; a year "
+                       "itemizes only what it figures from spending, when that beats the "
                        "standard deduction")
         return
     table = Table(title=f"{which} itemized deductions ({ref.name})", header_style="bold")
@@ -17901,8 +18447,10 @@ def deduction_add(
 
     The items go in itemizations/deductions_<YEAR>.csv
     (state_deductions_<YEAR> with --state), and the year's total is that
-    list's sum: `sim deduction add 2028 --item surgery=38000 --item
-    hospital=9000`. Whatever is left out is asked for, items first.
+    list's sum: `sim deduction add 2028 --item casualty_loss=38000 --item
+    investment_interest=9000`. Medical bills, charity, property tax and
+    mortgage interest belong in tagged spending instead, where their floors
+    and limits apply. Whatever is left out is asked for, items first.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
@@ -18030,8 +18578,9 @@ def deduction_edit(
 def deduction_delete(
     year: str | None, yes: bool, state: bool, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Delete tax YEAR's itemized deductions, so it takes the standard
-    deduction. Its itemization in this scenario, when it has one of its own,
+    """Delete tax YEAR's hand-typed itemized deductions, so it itemizes only
+    what it figures from spending, or takes the standard deduction. Its
+    itemization in this scenario, when it has one of its own,
     goes too.
 
     Without YEAR, it is asked for.
@@ -18426,8 +18975,15 @@ _BUILDER_DATA_DIR = click.option(
 @click.argument("branch", required=False)
 @click.option("--prices/--no-prices", "fetch_prices", default=None,
               help="Fetch prices after each weekday's close (default: as before, else yes).")
+@click.option("--roll/--no-roll", "roll", default=None,
+              help="Roll the scenarios marked to roll (`sim scenario edit NAME --roll monthly`) "
+                   "forward each night (default: as before, else yes).")
+@click.option("--roll-window", default=None, metavar="HH:MM-HH:MM",
+              help="When a night's roll may run, in this machine's local time (default: as "
+                   "before, else 01:00-05:00).")
 @_BUILDER_DATA_DIR
-def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Path | None) -> None:
+def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | None,
+                    roll_window: str | None, data_dir: Path | None) -> None:
     """Opt this workspace pair in: check the code worktree and the data repo
     name each other, record the pair, and install the data repo's hooks.
 
@@ -18442,19 +18998,31 @@ def builder_install(branch: str | None, fetch_prices: bool | None, data_dir: Pat
     builder/prices branch and merged into main when main is checked out and
     has no uncommitted changes; main is then pushed if it is strictly ahead of
     its upstream.
+
+    Unless --no-roll, the same timer rolls forward, each night in the
+    --roll-window, every scenario marked to roll whose start month is over
+    (#564): a month a night, as `sim scenario roll --yes` would, on the
+    builder/roll branch, merged the same way. When a start moves into a new
+    year, the plan before it is tagged plan-<year>.
     """
-    from analysis.sim import builder, price_schedule
+    from analysis.sim import builder, price_schedule, roll_schedule
 
     resolved = _builder_data_dir(data_dir)
+    if roll_window is not None:
+        try:
+            roll_schedule.parse_window(roll_window)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--roll-window") from None
     try:
-        done = builder.install(resolved, branch, fetch_prices)
+        done = builder.install(resolved, branch, fetch_prices, roll, roll_window)
     except ValueError as exc:
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
         click.echo(line)
     # By the recorded choice alone: ANALYSIS_PRICE_FETCH=off is for one shell
     # (an agent's, a test's), so install_timer then leaves the timer as it is.
-    if (builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}).get("prices", True):
+    config = builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}
+    if config.get("prices", True) or config.get("roll", True):
         click.echo(price_schedule.install_timer(resolved, _builder_sim(resolved)))
     elif line := price_schedule.uninstall_timer(resolved):
         click.echo(line)
@@ -18473,7 +19041,7 @@ def _builder_sim(data_dir: Path) -> Path:
 @builder_group.command(name="uninstall")
 @_BUILDER_DATA_DIR
 def builder_uninstall(data_dir: Path | None) -> None:
-    """Opt this workspace out, stop its builder, and remove its price timer."""
+    """Opt this workspace out, stop its builder, and remove its timer."""
     from analysis.sim import builder, price_schedule
 
     resolved = _builder_data_dir(data_dir)
@@ -18584,6 +19152,72 @@ def builder_prices(if_due: bool, data_dir: Path | None) -> None:
         click.echo(builder.notify(resolved))
 
 
+@builder_group.command(name="roll")
+@click.option("--if-due", is_flag=True, default=False,
+              help="Only when a night's roll is due (what the builder runs).")
+@_BUILDER_DATA_DIR
+def builder_roll(if_due: bool, data_dir: Path | None) -> None:
+    """Roll forward now, as the night's schedule does (#564), every scenario
+    marked to roll (`sim scenario edit NAME --roll monthly`) whose start
+    month is over: a month on, as `sim scenario roll NAME MONTH --yes
+    --no-keep` would (one further behind rolls the next month the next
+    night, from the run of the month this one opens). The builder merges the roll into the data repo's
+    main, between builds, once main is checked out with no uncommitted
+    changes.
+
+    It never touches your checkout: it works in its own worktree, on the
+    builder/roll branch. A roll that needs a question answered, or fails, is
+    reported in `sim builder status`; do that one by hand.
+    """
+    from analysis.sim import builder, price_schedule, roll_schedule
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    config = builder.read_config(paths)
+    if config is None:
+        raise click.ClickException("background builds aren't installed here (sim builder install)")
+    if roll_schedule.switched_off():
+        click.echo(f"rolls are off ({roll_schedule.SWITCH_ENV}=off)")
+        return
+    if if_due and not roll_schedule.due(resolved, config, datetime.now(UTC)):
+        click.echo("no roll due")
+        return
+    from analysis.sim.builder_log import LogWriter
+    from analysis.sim.locks import BUILDER_CHILD_ENV
+
+    writer = None if os.environ.get(BUILDER_CHILD_ENV) else LogWriter(paths.log_dir)
+    if writer is not None:
+        writer.event("rolling scenarios forward")
+    try:
+        outcome = roll_schedule.roll(resolved, paths.roll_worktree, config)
+    except (roll_schedule.RollScheduleError, price_schedule.PriceScheduleError) as exc:
+        if writer is not None:
+            writer.event(f"roll failed: {exc}")
+        raise click.ClickException(str(exc)) from None
+    for line in outcome.lines:
+        click.echo(line)
+        if writer is not None:
+            writer.output(line)
+    if outcome.committed:
+        click.echo(builder.notify(resolved))
+
+
+@builder_group.command(name="tick")
+@_BUILDER_DATA_DIR
+@click.pass_context
+def builder_tick(ctx: click.Context, data_dir: Path | None) -> None:
+    """What the hourly timer runs: `sim builder prices --if-due`, then
+    `sim builder roll --if-due`. A fetch that fails doesn't keep the roll
+    from its turn: it is reported, and the tick fails, after the roll."""
+    try:
+        ctx.invoke(builder_prices, if_due=True, data_dir=data_dir)
+    except click.ClickException as exc:
+        exc.show()
+        ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
+        raise click.exceptions.Exit(exc.exit_code) from None
+    ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
+
+
 @builder_group.command(name="series", hidden=True)
 @click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
 @_BUILDER_DATA_DIR
@@ -18655,6 +19289,15 @@ def builder_status(data_dir: Path | None) -> None:
         click.echo(f"prices: not fetched ({price_schedule.SWITCH_ENV}=off)")
     else:
         click.echo("prices: not fetched (sim builder install --prices to start)")
+    from analysis.sim import roll_schedule
+
+    if roll_schedule.enabled(config):
+        for line in roll_schedule.describe(roll_schedule.read_state(resolved), config, resolved):
+            click.echo(line)
+    elif roll_schedule.switched_off():
+        click.echo(f"roll: off ({roll_schedule.SWITCH_ENV}=off)")
+    else:
+        click.echo("roll: off (sim builder install --roll to start)")
     click.echo(f"log: {paths.log_dir} (sim builder log)")
 
 
@@ -19354,10 +19997,8 @@ def _tax_summary(name: str, row: Mapping[str, str]) -> str:
     built_on = row.get("upstream") or " ".join(tax_calculator_upstream(row.get("kind", "")))
     upstream = f" on {built_on}" if built_on else ""
     params = f" {row['params_json']}" if row.get("params_json") else ""
-    paid_with = registries.TAX_PAID_WITH.get(name)
-    with_tax = f"the {paid_with} tax's" if paid_with else "no"
-    source = row.get("source_chain") or f"{with_tax} source"
-    destination = row.get("destination") or f"{with_tax} destination"
+    source = row.get("source_chain") or "no source"
+    destination = row.get("destination") or "no destination"
     return (f"{row.get('kind', '')}{upstream}: paid from {source} into "
             f"{destination} each {row.get('schedule') or 'april'}{when}{params}")
 
@@ -19415,29 +20056,73 @@ def _tax_guide() -> calendar_guide.Guide:
     )
 
 
+def _tax_account(
+    scenario_dir: Path, jurisdiction: str, opened: str = "", *, destination_option: bool = True,
+    accounts: Mapping[str, _Overlaid] | None = None,
+) -> tuple[str, dict[str, str] | None]:
+    """The expense account ``jurisdiction``'s tax is paid into (#586): the
+    scenario's account of the jurisdiction's own subkind
+    (``registries.TAX_DESTINATION_SUBKINDS``), or a new one,
+    ``Expense_Taxes_<Jurisdiction>``, returned with its accounts.csv row.
+    That name already taken by an account of another subkind is refused:
+    adding a second row would duplicate it, or in a child scenario turn the
+    parent's account into a tax account. ``destination_option``: the
+    command has ``--destination``, which the refusal may suggest.
+    ``accounts``: the scenario's accounts.csv overlay, if already read."""
+    subkind = registries.TAX_DESTINATION_SUBKINDS[jurisdiction]
+    if accounts is None:
+        accounts = _overlay_rows(scenario_dir, "accounts.csv")
+    found = next((n for n, a in sorted(accounts.items()) if a.row.get("subkind") == subkind), None)
+    if found is not None:
+        return found, None
+    name = f"Expense_Taxes_{jurisdiction.capitalize()}"
+    if name in accounts:
+        raise click.ClickException(
+            f"the {jurisdiction} tax is paid into an expense account of subkind {subkind}, and the "
+            f"scenario has none; {name} already exists, with subkind "
+            f"{accounts[name].row.get('subkind') or '(blank)'}. Change its subkind to {subkind} "
+            f"(sim account edit {name})"
+            + (" or name another with --destination" if destination_option else "")
+            + ". Nothing was written.")
+    return name, {
+        **dict.fromkeys(registries.ACCOUNTS_CSV_HEADER, ""),
+        "name": name, "kind": "expense", "subkind": subkind,
+        "owner": "joint", "tax_treatment": "none", "opened": opened, "meta_json": "{}",
+    }
+
+
 def _tax_spec(
     data: Path, scenario_dir: Path, scenario: str, command: str, jurisdiction: str | None,
-    free: Sequence[str] = (),
+    free: Sequence[str] = (), *, own: tuple[str, dict[str, str] | None] | None = None,
+    accounts: Mapping[str, _Overlaid] | None = None, kinds: Mapping[str, Any] | None = None,
 ) -> calendar_guide.KindSpec:
     """The questions for ``sim tax add|edit``, completing from the scenario:
-    a destination is one of its expense accounts. For ``add``, the default
-    destination is the account whose subkind is the jurisdiction's tax
-    (``taxes_federal``, ``taxes_state``) and the default source the other
-    jurisdiction's, if it has one."""
-    accounts = _overlay_rows(scenario_dir, "accounts.csv")
-    expenses = sorted(n for n, a in accounts.items() if a.row.get("kind") == "expense")
+    a destination is one of its expense accounts of the jurisdiction's own
+    subkind (``taxes_federal``, ``taxes_state``, ``taxes_local``, #586), and
+    ``own``, :func:`_tax_account`'s answer, which the command creates if
+    it's new. For ``add``, that is the default destination, and the default
+    source is another jurisdiction's, if it has one. ``accounts`` (the
+    accounts.csv overlay) and ``kinds`` (the tax calculator kinds) are
+    read here unless the caller has them."""
+    if accounts is None:
+        accounts = _overlay_rows(scenario_dir, "accounts.csv")
+    subkind = registries.TAX_DESTINATION_SUBKINDS.get(jurisdiction or "")
+    expenses = sorted(n for n, a in accounts.items() if a.row.get("kind") == "expense"
+                      and (subkind is None or a.row.get("subkind") == subkind))
     source = destination = None
     if command == "add":
         taxes = _tax_rows(scenario_dir)
         source = next((t.row["source_chain"] for t in taxes.values() if t.row.get("source_chain")), None)
-        if jurisdiction is not None:
-            destination = next((n for n, a in accounts.items()
-                                if a.row.get("subkind") == f"taxes_{jurisdiction}"), None)
-    kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
+    if own is not None:
+        if command == "add":
+            destination = own[0]
+        if own[1] is not None:
+            expenses.append(own[0])
+    if kinds is None:
+        kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     return tax_guide.spec(command, endpoints=names.chain_names(data, scenario, accounts=True),
                           expenses=expenses, jurisdictions=free, source=source,
-                          destination=destination,
-                          paid_with=registries.TAX_PAID_WITH.get(jurisdiction or ""),
+                          destination=destination, subkind=subkind,
                           kinds=sorted(k for k, c in kinds.items() if c.jurisdiction == jurisdiction),
                           kind=registries.TAX_DEFAULT_KINDS.get(jurisdiction or ""))
 
@@ -19569,10 +20254,14 @@ def tax_add_command(
     settles the year before each April, paying what is due from the source
     into the destination. Given JURISDICTION, --source-chain and
     --destination, it writes at once; otherwise it asks for each field and
-    then shows them, to write or change. For a state, `sim tax state` also
-    says where the household lives, which picks its tables. A local tax is
-    paid with the state's and reads the county's (or state's) local bands,
-    so `sim tax add local` asks nothing."""
+    then shows them, to write or change. Given JURISDICTION and
+    --source-chain alone, the destination is the scenario's account of the
+    tax's own subkind (taxes_federal, taxes_state, taxes_local), created as
+    Expense_Taxes_<Jurisdiction> when it has none: each tax is paid into an
+    account of its own. For a state, `sim tax state` also says where the
+    household lives, which picks its tables. A local tax reads the county's
+    (or state's) local bands and is paid from the state tax's source, so
+    `sim tax add local` asks nothing."""
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     existing = _tax_rows(ref.path)
@@ -19581,27 +20270,41 @@ def tax_add_command(
     given = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
              "end": end, "params_json": params_json, "description": description}
 
-    def write(answers: Mapping[str, str]) -> None:
+    def write(answers: Mapping[str, str], own: tuple[str, dict[str, str] | None] | None) -> None:
+        """Write the file; ``own`` is :func:`_tax_account`'s answer, whose
+        new account is added when the destination is that account."""
         name = answers["jurisdiction"]
         row = tax_guide.row_of(name, answers)
-        path = _write_tax(data, ref.name, name, row)
-        click.echo(f"added {name} tax ({_shown(path)}): {_tax_summary(name, row)}")
+        new_account = own[1] if own is not None and own[0] == row["destination"] else None
+        if new_account is not None:
+            new_account = {**new_account, "opened": row.get("start") or ""}
+        path = _write_tax(data, ref.name, name, row, new_account=new_account)
+        made = f", and expense account {row['destination']}" if new_account is not None else ""
+        click.echo(f"added {name} tax ({_shown(path)}){made}: {_tax_summary(name, row)}")
 
-    def paid_with(name: str) -> bool:
-        """A jurisdiction paid with another's (local, #508) needs nothing
-        that one doesn't set: blank, it is paid the same way."""
-        other = registries.TAX_PAID_WITH.get(name)
-        if other is None:
-            return False
-        if other not in existing:
-            raise click.ClickException(
-                f"a {name} tax builds on the {other} tax, and {ref.name} has none "
-                f"(sim tax add {other} first)")
-        return True
+    def quick(name: str) -> tuple[dict[str, str], tuple[str, dict[str, str] | None] | None] | None:
+        """The answers for adding ``name`` without asking, and
+        :func:`_tax_account`'s answer when the destination is the tax's own
+        account (#586); None when something must be asked. Its source is
+        the one given, or a local tax's the state's (#508)."""
+        source = source_chain
+        if name == "local":
+            state = existing.get("state")
+            if state is None:
+                raise click.ClickException(
+                    f"a local tax builds on the state tax, and {ref.name} has none "
+                    "(sim tax add state first)")
+            source = source or state.row.get("source_chain") or None
+        if source is None:
+            return None
+        own = None if destination else _tax_account(ref.path, name, accounts=accounts)
+        into = destination or (own[0] if own is not None else "")
+        return ({"jurisdiction": name, **{k: v or "" for k, v in given.items()}, "source_chain": source,
+                 "destination": into}, own)
 
-    if jurisdiction is not None and (
-            paid_with(jurisdiction) or source_chain is not None and destination is not None):
-        write({"jurisdiction": jurisdiction, **{k: v or "" for k, v in given.items()}})
+    accounts = _overlay_rows(ref.path, "accounts.csv")
+    if jurisdiction is not None and (ready := quick(jurisdiction)) is not None:
+        write(*ready)
         return
     free = [n for n in registries.TAX_JURISDICTIONS if n not in existing]
     if not free:
@@ -19610,16 +20313,21 @@ def tax_add_command(
     if jurisdiction is not None:
         answers["jurisdiction"] = jurisdiction
     guide = _tax_guide()
-    spec = _tax_spec(data, ref.path, ref.name, "add", jurisdiction, free)
+    kinds = tax_code.TaxKinds(tax_code.read_sources(data)).kinds
     if "jurisdiction" not in answers:  # the defaults follow from it
+        spec = _tax_spec(data, ref.path, ref.name, "add", None, free, accounts=accounts, kinds=kinds)
         answers["jurisdiction"] = guide.ask_field(spec, spec.fields[0], calendar_guide.GuideContext(), answers)
-        if paid_with(answers["jurisdiction"]):
-            write({**dict.fromkeys(given, ""), **answers})
+        if answers["jurisdiction"] == "local" and (ready := quick("local")) is not None:
+            write(*ready)
             return
-        spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free)
+    # A made-up name already taken stops here, with what to do: the guide
+    # would offer no account to choose.
+    own = _tax_account(ref.path, answers["jurisdiction"], accounts=accounts)
+    spec = _tax_spec(data, ref.path, ref.name, "add", answers["jurisdiction"], free, own=own,
+                     accounts=accounts, kinds=kinds)
     ctx = calendar_guide.GuideContext()
     guide.complete(spec, ctx, answers)
-    guide.review(spec, ctx, answers, lambda _params: write(answers), scenario=ref.name)
+    guide.review(spec, ctx, answers, lambda _params: write(answers, own), scenario=ref.name)
 
 
 def _pick_tax(data: Path, scenario: str | None, jurisdiction: str | None, prompt: str) -> tuple[_Overlaid, str]:
@@ -19651,13 +20359,28 @@ def tax_edit_command(
     name = found.row["name"]
     row = {c: found.row.get(c, "") for c in registries.TAX_CSV_HEADER}
 
+    folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
+    # The tax's own account, or the one a destination left blank or of
+    # another subkind (before #586) may be changed to, which the edit adds.
+    try:
+        own: tuple[str, dict[str, str] | None] | None = _tax_account(folder, name)
+        clash = None
+    except click.ClickException as error:
+        own, clash = None, error
+
     def write(new: dict[str, str]) -> None:
         if new == row:
             click.echo(f"{name} tax unchanged")
             return
-        _write_tax(data, scenario_name, name, new)
+        new_account = own[1] if own is not None and own[0] == new["destination"] else None
+        if new_account is not None:
+            new_account = {**new_account, "opened": new.get("start") or ""}
+        # repair: the edit may be what fixes a scenario that doesn't load
+        # (a tax file from before #586); the result must still load.
+        _write_tax(data, scenario_name, name, new, new_account=new_account, repair=True)
         inherited = f" (overriding {found.inherited_from}'s)" if found.index is None else ""
-        click.echo(f"changed {name} tax{inherited}: {_tax_summary(name, new)}")
+        made = f", and expense account {new['destination']}" if new_account is not None else ""
+        click.echo(f"changed {name} tax{inherited}{made}: {_tax_summary(name, new)}")
 
     changes = {"kind": kind, "source_chain": source_chain, "destination": destination, "start": start,
                "end": end, "params_json": params_json, "description": description}
@@ -19666,8 +20389,9 @@ def tax_edit_command(
         new["kind"] = new["kind"] or registries.TAX_DEFAULT_KINDS[name]
         write(new)
         return
-    folder = _folder_of(_resolve_scenario(data, scenario_name, remember=False).scenarios_dir, scenario_name)
-    spec = _tax_spec(data, folder, scenario_name, "edit", name)
+    if own is None and clash is not None:
+        raise clash
+    spec = _tax_spec(data, folder, scenario_name, "edit", name, own=own)
     answers = tax_guide.answers_of(row)
     click.echo(f"{name}: {_tax_summary(name, row)}")
     _tax_guide().review(spec, calendar_guide.GuideContext(), answers,
@@ -19752,24 +20476,13 @@ def _new_state_tax(scenario_dir: Path, scenario_name: str) -> tuple[str, dict[st
         raise click.ClickException(
             "this scenario has no income tax: add the federal one first "
             "(sim tax add federal). Nothing was written.")
-    accounts = _overlay_rows(scenario_dir, "accounts.csv")
-    account = next((name for name, a in accounts.items() if a.row.get("subkind") == "taxes_state"),
-                   None)
-    new_account = None
-    if account is None:
-        account = "Expense_Taxes_State"
-        new_account = {
-            **dict.fromkeys(registries.ACCOUNTS_CSV_HEADER, ""),
-            "name": account, "kind": "expense", "subkind": "taxes_state",
-            "owner": "joint", "tax_treatment": "none",
-            "opened": federal.row.get("start", ""),
-            "meta_json": "{}",
-        }
+    account, new_account = _tax_account(scenario_dir, "state", federal.row.get("start", ""),
+                                        destination_option=False)
     params = tax_files.params(federal.row)
     # bracket_series names the federal tables' series; a state's are where
     # the household lives (residence.csv), and state.csv refuses it.
     for key in ("bracket_aux", "bracket_series", "standard_deduction_aux", "itemized_deduction_aux",
-                "ltcg_bracket_aux", "filing_status_aux"):
+                "itemized_limits_aux", "ltcg_bracket_aux", "filing_status_aux"):
         params.pop(key, None)
     row = {
         **{column: federal.row.get(column, "") for column in registries.TAX_CSV_HEADER},

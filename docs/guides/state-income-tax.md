@@ -24,8 +24,8 @@ The tables are in the code repository's
 
 | Table | Says |
 | --- | --- |
-| `state_brackets`, `state_standard_deduction` | Rates and the standard deduction (with a personal exemption folded in) |
-| `state_social_security` | How much federally taxable Social Security the state leaves out, phased by income |
+| `state_brackets`, `state_standard_deduction` | Rates and the standard deduction (with a personal exemption folded in), which may shrink with income |
+| `state_social_security` | How much federally taxable Social Security the state leaves out, phased by income, by age where its rows have a `min_age` |
 | `state_retirement_exclusion` | Pension, IRA and other retirement income left out, by age, per person, below an income |
 | `state_adjustments` | The state's own subtractions, deductions and credits: from tagged spending or income, per filer, from federal tax or the federal deduction |
 | `state_ltcg_exclusion`, `state_ltcg_brackets`, `state_stcg_brackets` | A share of long-term gain left out, or gain rates of the state's own |
@@ -45,15 +45,17 @@ every state's list.
   pension's income account, or `tax:employer_plan` on a 401(k)) and write a
   `state_adjustments` subtraction on that tagged `income`, with the age,
   cap and income limit: **table**. One that's reduced by the Social
-  Security you receive (Idaho, Maryland) isn't: **not supported**
+  Security you receive (Idaho, Maryland) is too, with `less_ss`: each
+  filer's own benefits off their own cap with `per_person`, the
+  household's off one cap without it
   ([#579](https://github.com/BobKerns/analysis/issues/579)).
 - **Spending-based deductions and credits.** A renter's deduction or
   credit, a property tax deduction or credit figured as a share of the tax
   paid, a deduction for 529 contributions, a deduction or credit for
   long-term care premiums: a `state_adjustments` row on tagged spending,
-  **table**. A credit the state pays even when it's more than the tax
-  (refundable) is held to the tax:
-  **not supported** ([#579](https://github.com/BobKerns/analysis/issues/579)).
+  **table**. A credit the state pays even when it's more than the tax is
+  a row with `refundable`: **table**
+  ([#579](https://github.com/BobKerns/analysis/issues/579)).
 - **Circuit breakers.** Property tax or rent relief figured from the tax as
   a share of household income, or from a table of income bands (Michigan's
   homestead credit, Minnesota's renter's credit and property tax refund,
@@ -71,19 +73,32 @@ every state's list.
   **table**.
 - **A standard deduction that shrinks as income rises** (Alabama, Maine,
   Minnesota, Rhode Island, South Carolina from 2026, Wisconsin):
-  `state_standard_deduction` is one amount per filing status, so the
-  deduction is the same at every income: **not supported**
-  ([#578](https://github.com/BobKerns/analysis/issues/578)).
+  `state_standard_deduction`'s optional phase-out columns, **table**:
+  above `phaseout_start` of the state's AGI it falls to nothing at
+  `phaseout_end`, or by `phaseout_rate` of each dollar over, not below
+  `floor`. With a rate, `phaseout_step` counts the income over in whole
+  steps, as a table of $500 rows does; with an end, `phaseout_steps`
+  splits the span into equal steps. It tests the state's AGI unless
+  `phaseout_agi` is `federal`, as Minnesota's, Rhode Island's and South
+  Carolina's do.
 - **Married couples filing separately on one return** (Arkansas, Delaware,
-  the District, Kentucky, Virginia): each spouse's income runs through the
-  brackets and standard deduction alone, which saves tax where the lower
-  brackets or the deduction aren't doubled for a joint return. The
-  simulator taxes a couple jointly: **not supported**
-  ([#580](https://github.com/BobKerns/analysis/issues/580)).
-- **Itemized deductions that differ from the federal ones** (no SALT cap,
-  no deduction for state income tax, a different mortgage limit): see
-  [#542](https://github.com/BobKerns/analysis/issues/542). Until then a
-  state's itemized deductions are typed by year into `state_deductions.csv`.
+  the District, Kentucky, Virginia,
+  [#580](https://github.com/BobKerns/analysis/issues/580)): each spouse's
+  income runs through the brackets and standard deduction alone, which
+  saves tax where the lower brackets or the deduction aren't doubled for a
+  joint return. A `state_separate_return__<state>.csv` with `allowed`
+  `yes` has the state tax figure both ways, each spouse with the `MFS`
+  rows and the income that's theirs (by account owner, joint income split
+  evenly), and take the lower. The rule that both spouses itemize or
+  neither (Kentucky, Delaware) isn't modeled.
+- **Itemized deductions** ([#542](https://github.com/BobKerns/analysis/issues/542)):
+  a state with its own `state_itemized_limits__<state>.csv` (California's
+  ships) figures them from spending as the federal return does, under its
+  own limits, never deducting an income tax. Another state figures none:
+  type its whole itemized total by year into `state_deductions.csv`, or set
+  `itemized_limits_aux` to `itemized_limits` in its `taxes/state.csv`
+  params to figure the federal lines for it. Without either it takes
+  `federal_deductions.csv`, which holds only what the lines don't figure.
 - **Local income taxes on wages only** (Ohio's municipal and earned income
   school district taxes, Pennsylvania's earned income tax, Kentucky's
   occupational taxes): a retired household's pensions and investments
@@ -104,7 +119,12 @@ on interest and dividends ended with 2024.
 - Defined benefit pensions, public and private, are exempt, and from 65 a
   further amount of IRA and other retirement income: **table**
   (`state_retirement_exclusion`). Social Security is exempt.
-- The standard deduction shrinks with income: **not supported** (#578).
+- The standard deduction shrinks with income: **table**. It falls by a
+  fixed amount for each $500 of AGI from $26,000, to a minimum, so
+  `phaseout_start` is $25,999, `phaseout_step` $500, `phaseout_rate` the
+  amount a step takes over $500 (35% joint, 5% single, 27% head of
+  family), and `floor` the minimum. Married filing separately uses $250
+  steps from $13,000.
 
 ### Arizona
 
@@ -122,22 +142,27 @@ on interest and dividends ended with 2024.
 - Half of long-term gain is excluded: **table**.
 - A personal tax credit per filer: **table**.
 - Lower incomes use separate tax tables: **not supported**.
-- Spouses may file separately on one return: **not supported** (#580).
+- Spouses may file separately on one return: **table**
+  (`state_separate_return`).
 
 ### California (shipped)
 
 - Brackets, standard deduction, the 1% surcharge over $1 million, the HSA
   rules, the personal and senior exemption credits and the renter's credit:
   **shipped**. Social Security is exempt.
-- No SALT cap and no deduction for state income tax: #542.
+- No SALT cap, no deduction for state income tax, $1 million of mortgage
+  debt and half of AGI for charity (`state_itemized_limits__CA.csv`):
+  **shipped** (#542).
 
 ### Colorado
 
-- A pension and annuity subtraction from 55, larger from 65, that also
-  covers taxable Social Security: **table**.
+- A pension and annuity subtraction from 55, larger from 65: **table**.
 - Social Security is subtracted in full from 65, and from 55 below an
-  income: the age test is **not supported**
+  income: **table**, `state_social_security` rows by `min_age`
   ([#581](https://github.com/BobKerns/analysis/issues/581)).
+- From 55 to 64 over that income, taxable Social Security shares the
+  pension subtraction's cap instead. `state_retirement_exclusion` covers
+  no Social Security, so that part is **not supported**.
 
 ### Connecticut
 
@@ -161,16 +186,19 @@ on interest and dividends ended with 2024.
   dividends and gains, smaller below 60: **table**. Social Security is
   exempt.
 - A larger standard deduction from 65, and personal credits: **table**.
-- Spouses may file separately on one return: **not supported** (#580).
+- Spouses may file separately on one return: **table**
+  (`state_separate_return`).
 
 ### District of Columbia (shipped)
 
 - Brackets and the standard deduction: **shipped**. Social Security is
   exempt.
-- The extra standard deduction at 65: **table** (a `filers` row from 65),
-  not shipped.
+- The extra standard deduction at 65: **shipped** (a `filers` row from
+  65). The extra deduction when blind: **not supported** (the model
+  doesn't know who is blind).
 - The property tax credit (Schedule H): **household calculator**.
-- Spouses may file separately on one return: **not supported** (#580).
+- Spouses may file separately on one return: **shipped**
+  (`state_separate_return__DC.csv`).
 
 ### Georgia
 
@@ -190,8 +218,9 @@ on interest and dividends ended with 2024.
 - Brackets and the standard deduction: **shipped**. Social Security is
   exempt.
 - The retirement benefits deduction from 65 for some public pensions,
-  reduced by Social Security: **not supported** (#579).
-- The grocery credit, which is refundable: **not supported** (#579).
+  reduced by Social Security: **table** (tagged `income`, `less_ss`
+  without `per_person`).
+- The grocery credit, which is refundable: **shipped** (`refundable`).
 
 ### Illinois
 
@@ -217,14 +246,13 @@ on interest and dividends ended with 2024.
 
 ### Kansas (shipped)
 
-- Brackets and the standard deduction with the personal exemption folded
-  in: **shipped**. Social Security is exempt.
+- Brackets, the standard deduction and the personal exemption (a
+  `filers` deduction row, so a household that itemizes keeps it):
+  **shipped**. Social Security is exempt.
 - Kansas public pensions, federal civil service and military retirement
   are exempt: **table** (tagged `income`), not shipped.
-- The larger standard deduction from 65: **table**, not shipped.
-- The personal exemption is lost by a household that itemizes: **table**
-  (a `filers` deduction row in place of the folded-in exemption), not
-  shipped.
+- The larger standard deduction from 65: **shipped**. When blind: **not
+  supported**.
 
 ### Kentucky
 
@@ -232,7 +260,8 @@ on interest and dividends ended with 2024.
   Social Security is exempt.
 - A personal tax credit from 65: **table**.
 - The standard deduction isn't doubled for a joint return, and spouses may
-  file separately on one return: **not supported** (#580).
+  file separately on one return, each taking one: **table**
+  (`state_separate_return`).
 
 ### Louisiana
 
@@ -247,13 +276,18 @@ on interest and dividends ended with 2024.
   (`state_retirement_exclusion` with `less_ss`). Social Security is
   exempt.
 - The personal exemption phases out at high income: **table**.
-- The standard deduction phases out above an income: **not supported**
-  (#578).
+- The standard deduction phases out above an income: **table**, from
+  `phaseout_start` (the worksheet's threshold) to nothing at
+  `phaseout_end`, the threshold plus its divisor ($150,000 joint, $75,000
+  single). The start and end must index together (or not at all), so the
+  span grows with inflation where the law's divisor doesn't: close, not
+  exact.
 
 ### Maryland
 
 - The pension exclusion from 65 covers employer plans (401(a), 403, 457(b)),
-  not IRAs, and is reduced by Social Security: **not supported** (#579).
+  not IRAs, and is reduced by each person's Social Security: **table**
+  (tagged `income`, `per_person`, `less_ss`).
   Social Security is exempt.
 - The senior tax credit from 65, below an income: **table**. The personal
   exemption's phase-out and the extra exemption at 65: **table**.
@@ -272,7 +306,7 @@ on interest and dividends ended with 2024.
   surtax over about $1 million: **table** (a top row of each table, or
   `state_surcharge`).
 - The rent deduction: **table**. The senior circuit breaker:
-  **household calculator**, and refundable (#579).
+  **household calculator**, which can make it refundable.
 
 ### Michigan
 
@@ -285,11 +319,15 @@ on interest and dividends ended with 2024.
 
 - The Social Security subtraction falls in $4,000 steps of income:
   **table**, as a straight line.
-- The standard deduction phases out at high income: **not supported**
-  (#578).
+- The standard deduction phases out at high income, by 3% of AGI over
+  one threshold and 10% over a second, losing at most 80%: **table**,
+  approximately. One `phaseout_rate` of 10% from the second threshold
+  less a third of the 3% band's width matches the law above the second
+  threshold and is a little off within the band; `floor` is 20% of the
+  amount. `phaseout_agi` is `federal`.
 - A 1% surtax on net investment income over $1 million: **not supported**.
 - The renter's credit and property tax refund: **household calculator**,
-  and refundable (#579).
+  which can make them refundable.
 
 ### Mississippi
 
@@ -317,9 +355,9 @@ on interest and dividends ended with 2024.
 
 - Brackets and the standard deduction: **shipped**. Social Security is
   exempt from 2024.
-- The personal exemption credit: **table**, not shipped.
+- The personal exemption credit: **shipped**.
 - The school district property tax credit, a share of the school tax paid,
-  which is refundable: **table**, held to the tax (#579).
+  which is refundable: **table** (`refundable`).
 
 ### New Jersey
 
@@ -350,7 +388,8 @@ on interest and dividends ended with 2024.
 - The flat rate and standard deduction: **shipped**. Social Security is
   exempt.
 - Government pensions vested before August 1989 (Bailey) and military
-  retirement: **table** (tagged `income`), not shipped.
+  retirement: **table** (tagged `income`), not shipped; the aux README
+  has an example row.
 
 ### North Dakota
 
@@ -392,16 +431,22 @@ on interest and dividends ended with 2024.
 - Social Security and up to $50,000 a person (2025) of pensions and
   employer plans, not IRAs, are exempt from full retirement age below an
   income ($107,000, or $133,500 joint, for 2025). The pension modification
-  is **table** (tagged `income` from 67). The age test on Social Security
-  is **not supported** (#581).
-- The standard deduction and exemptions phase out at high income: **not
-  supported** (#578).
+  is **table** (tagged `income` from 67). The Social Security exemption is
+  **table**: a `state_social_security` row with `min_age` `fra`, each
+  spouse tested on their own benefits (#581).
+- The standard deduction and exemptions phase out at high income in 20%
+  steps: **table**. For the standard deduction, `phaseout_end` is five
+  steps ($7,250 each for 2025) above `phaseout_start` and `phaseout_steps`
+  is 5, so each started step takes a fifth, and `phaseout_agi` is
+  `federal`. The exemptions are
+  a `state_adjustments` `filers` row, phased out as a straight line.
 
 ### South Carolina
 
 - From 2026 (H.4216), South Carolina starts from federal AGI with a
-  deduction of its own that phases down with income: **not supported**
-  (#578). Two rates, the upper one with a subtraction: **table**.
+  deduction of its own that phases down with income: **table**
+  (`phaseout_start` and `phaseout_end`: $80,000 to $190,000 joint,
+  $40,000 to $95,000 single; `phaseout_agi` `federal`). Two rates, the upper one with a subtraction: **table**.
 - The retirement deduction, and the deduction from 65: **table**. Social
   Security is exempt.
 - A share of long-term gain excluded: **table**. Check whether H.4216
@@ -427,7 +472,8 @@ on interest and dividends ended with 2024.
 
 - An age deduction from 65 that falls a dollar for each dollar of income
   over a limit: **table**. Social Security is exempt.
-- Spouses may file separately on one return: **not supported** (#580).
+- Spouses may file separately on one return: **table**
+  (`state_separate_return`).
 
 ### Washington (shipped)
 
@@ -446,8 +492,10 @@ on interest and dividends ended with 2024.
 - From 2025, up to $24,000 a person of retirement income is excluded from
   67: **table**. Social Security is exempt.
 - 30% of long-term gain is excluded: **table**.
-- The standard deduction slides to nothing as income rises: **not
-  supported** (#578).
+- The standard deduction slides to nothing as income rises: **table**
+  (`phaseout_rate`: 19.778% joint, 12% single). Head of household falls
+  at 22.515% until it meets the single figure and then follows it, which
+  one row can't say: its own line to nothing is close, not exact.
 - The homestead credit: **household calculator**.
 
 ## Gaps left for after beta
