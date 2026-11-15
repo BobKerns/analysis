@@ -233,6 +233,12 @@ class Occasional:
     """Whether a payment came round again about a year after another. Seen
     only once, it may as well be a one-time expense as a yearly bill."""
 
+    sources: tuple[str, ...] = ()
+    """The sources its transactions were read from, where they say."""
+    elsewhere: bool = False
+    """Whether the payee is paid in other categories too: leaving the
+    payee out would then drop more than these payments."""
+
     @property
     def total_cents(self) -> int:
         return sum(cents for _, cents in self.paid)
@@ -278,8 +284,11 @@ def occasional_payments(
         "category": used["category"], "payee": used["payee"], "key": used["payee"].map(payee_key),
         "at": (months.dt.year - first.year) * 12 + months.dt.month - first.month,
         "cents": -used["amount_cents"],
+        # Rows read by `sim import` say which source each came from.
+        "origin": used["origin"] if "origin" in used.columns else "",
     })
     keyed = keyed[keyed["key"].ne("")]
+    in_categories = keyed.groupby("key")["category"].nunique()
     by_month = keyed.groupby(["category", "key", "at"], as_index=False).agg(
         cents=("cents", "sum"), payee=("payee", "first"))
     each_payee = by_month.groupby(["category", "key"])
@@ -298,7 +307,11 @@ def occasional_payments(
             str(rows["category"].iloc[0]), str(rows["payee"].iloc[0]),
             tuple((date(first.year + (first.month - 1 + each) // 12, (first.month - 1 + each) % 12 + 1, 1),
                    int(cents)) for each, cents in zip(at, rows["cents"], strict=True)),
-            repeats))
+            repeats,
+            sources=tuple(sorted({str(origin) for origin in keyed.loc[
+                keyed["category"].eq(rows["category"].iloc[0]) & keyed["key"].eq(rows["key"].iloc[0]),
+                "origin"] if origin})),
+            elsewhere=int(in_categories[rows["key"].iloc[0]]) > 1))
     return sorted(found, key=lambda each: (-each.total_cents, each.category, each.payee))
 
 
