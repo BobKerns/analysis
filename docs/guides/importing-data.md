@@ -367,7 +367,8 @@ Then run it once with `sh yearly-rules.sh`. Each `yearly` line is a
 next `sim import transactions` no longer spreads that payee over the
 months. The row finds that payee and no other: its words in order,
 whatever dates and reference numbers come before, between and after them,
-and no other word. Should the script stop partway (an `EDIT_ME` left in,
+and no other word. The script runs the `sim` that wrote it, whatever your `PATH` is when you
+run it. Should the script stop partway (an `EDIT_ME` left in,
 say), correct it and run it again: it skips what it has already added.
 Run the import again afterwards. The yearly rules are ordinary rules of yours from then on:
 an import never replaces them, and `sim scheduled edit` changes them.

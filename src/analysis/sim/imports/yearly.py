@@ -53,12 +53,19 @@ def payee_pattern(payee: str) -> str:
     words in order with only words that have a digit before, between and
     after them. Anything looser would leave out other payees unseen:
     ``corner store`` must not find ``corner store deli``, which is another
-    key and may be paid every week."""
-    words = payee_key(payee).split()
+    key and may be paid every week.
+
+    The words are ``payee``'s own in lower case, and not the key's: the
+    key is case-folded, which a case-insensitive search is not (``ß`` is
+    ``ss`` to the one and itself to the other), and a row that doesn't
+    find its own payee would leave the bill counted twice."""
+    words = [word.lower() for word in payee.split() if not any(c.isdigit() for c in word)]
     assert words, "a candidate's payee has a word to know it by"
     numbered = r"\S*\d\S*"
-    return (rf"^\s*(?:{numbered}\s+)*" + rf"\s+(?:{numbered}\s+)*".join(re.escape(word) for word in words)
-            + rf"(?:\s+{numbered})*\s*$")
+    pattern = (rf"^\s*(?:{numbered}\s+)*" + rf"\s+(?:{numbered}\s+)*".join(re.escape(word) for word in words)
+               + rf"(?:\s+{numbered})*\s*$")
+    assert re.search(pattern, payee, re.IGNORECASE), f"{pattern!r} finds the payee it was made from"
+    return pattern
 
 
 def _csv_cell(text: str) -> str:
@@ -71,7 +78,7 @@ def script(
     occasional: Collection[Occasional], *, data_dir: Path, scenario: str, start: str,
     from_account: str | None, from_lot: str = "", series: str = "cpi",
     expense_accounts: Mapping[str, str], accounts: Collection[str] = (), source: str,
-    taken: Collection[str] = (),
+    taken: Collection[str] = (), sim: str = "sim",
 ) -> tuple[str, int, int]:
     """A POSIX shell script that adds a yearly rule for each month of the
     year each of ``occasional`` was last paid in, and leaves its payee out
@@ -99,6 +106,10 @@ def script(
     stopping for any other reason, the script skips the rules and rows it
     has already added.
 
+    ``sim`` is the command the script runs, unless the environment's
+    ``SIM`` names another: the one that wrote the script, so that it
+    doesn't depend on a PATH that may have none, or another checkout's.
+
     Two kinds of candidate are in neither count. A category whose saved
     account is ``-`` has no rule to replace, so it is only noted. A payee
     also paid in other categories is written commented out, and not as a
@@ -122,7 +133,7 @@ def script(
         "# Then:",
         "#   - Correct an amount or a month that will be different next time.",
         f"#   - Fill in each {_FILL_IN}.",
-        "# Then run it once:  sh <this file>",
+        "# Then run it once:  sh <this file>  (quoted, if its name has a space)",
         "# and run the transactions import again, so the monthly rules stop counting these payees.",
         "set -eu",
         "",
@@ -131,6 +142,7 @@ def script(
         f"FROM={quote(from_account or _FILL_IN)}    # the account that pays",
         f"FROM_LOT={quote(from_lot)}    # its lot, where it needs one",
         f"START={quote(start)}    # the rules' first month",
+        f"SIM=${{SIM:-{quote(sim)}}}    # the command that wrote this script",
         "",
         "leave_out() {  # SOURCE PATTERN: a row in the source's excluded_payees.csv, so the",
         "               # monthly rules stop counting the payee",
@@ -145,7 +157,7 @@ def script(
         f'    if grep -q "^$1," "$DATA_DIR/scenarios/$SCENARIO/{_SCHEDULED}" 2>/dev/null; then',
         '        echo "already added: $1"; return 0',
         "    fi",
-        '    sim scheduled add "$START" "$FROM" "$2" "$3" --data-dir "$DATA_DIR" --scenario "$SCENARIO" \\',
+        '    "$SIM" scheduled add "$START" "$FROM" "$2" "$3" --data-dir "$DATA_DIR" --scenario "$SCENARIO" \\',
         '        ${FROM_LOT:+--from-lot "$FROM_LOT"} --name "$1" --cadence annual --month-of-year "$4" \\',
         f'        --series {quote(series)} --base-date "$5" --description "$6"',
         "}",
