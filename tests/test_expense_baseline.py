@@ -481,3 +481,21 @@ def test_occasional_payments_need_most_of_a_year_first_day_to_last() -> None:
     payments = [("2025-01-31", "Gym", 80.0), ("2025-12-01", "Gym", 80.0), ("2025-06-01", "County Tax", 2000.0)]
     assert occasional_payments(_paid(*payments)) is None
     assert _found(*payments, ("2026-01-30", "Gym", 80.0)) == [("County Tax", 1, False)]
+
+
+def test_occasional_payments_say_where_a_payee_came_from_and_whether_it_is_paid_elsewhere() -> None:
+    baseline = _paid(*_monthly("Corner Store 114", "2025-01-01", 13),
+                     ("2025-03-01", "Corner Store 220", 900.0), ("2025-09-01", "Mutual Insurance", 900.0))
+    used = baseline.transactions
+    # The store is paid monthly for food, and once for something large in another category.
+    used.loc[used["payee"].eq("Corner Store 114"), "category"] = "Food"
+    used["origin"] = ["bank"] * 13 + ["card", "card"]
+
+    found = occasional_payments(baseline)
+
+    assert found is not None
+    assert [(each.payee, each.category, each.sources, each.elsewhere) for each in found] == [
+        ("Corner Store 220", "Insurance", ("card",), True), ("Mutual Insurance", "Insurance", ("card",), False)]
+    # A frame read without `sim import` has no source to name.
+    plain = occasional_payments(_paid(*_monthly("Gym", "2025-01-01", 13), ("2025-09-01", "Mutual Insurance", 900.0)))
+    assert plain is not None and [each.sources for each in plain] == [()]

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import re
 import shlex
 from collections.abc import Collection, Mapping
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from analysis.expenses.baseline import Occasional, category_slug
 from analysis.sim.imports.holdings import format_dollars
-from analysis.sim.imports.mapping import NO_RULE, payee_key
+from analysis.sim.imports.mapping import EXCLUDED_PAYEES, NO_RULE, payee_key
 
 __all__ = ["latest_year", "payee_pattern", "script"]
 
@@ -38,9 +39,13 @@ def latest_year(each: Occasional) -> tuple[tuple[date, int], ...]:
 def payee_pattern(payee: str) -> str:
     """A regular expression for ``excluded_payees.csv`` that finds
     ``payee`` however its dates and reference numbers change: the words
-    ``payee_key`` keeps, in order, with anything between them."""
+    ``payee_key`` keeps, whole and in order, with anything between them.
+    Whole words, as a payee map's pattern is read (``payee_matches``):
+    ``art`` must not leave out ``walmart``. Whitespace bounds them and not
+    ``\\b``, which a word ending in punctuation (``co.``) would defeat."""
     words = payee_key(payee).split()
-    return r"\s.*".join(re.escape(word) for word in words)
+    assert words, "a candidate's payee has a word to know it by"
+    return r"(?<!\S)" + r"\s(?:.*\s)?".join(re.escape(word) for word in words) + r"(?!\S)"
 
 
 def _csv_cell(text: str) -> str:
@@ -51,17 +56,25 @@ def _csv_cell(text: str) -> str:
 
 def script(
     occasional: Collection[Occasional], *, data_dir: Path, scenario: str, start: str,
-    from_account: str | None,
-    from_lot: str = "", series: str = "cpi", expense_accounts: Mapping[str, str],
-    excluded_payees: Path,
-) -> str:
+    from_account: str | None, from_lot: str = "", series: str = "cpi",
+    expense_accounts: Mapping[str, str], accounts: Collection[str] = (), source: str,
+) -> tuple[str, int]:
     """A POSIX shell script that adds a yearly rule for each month of the
     year each of ``occasional`` was last paid in, and leaves its payee out
-    of the generated rules with a row in ``excluded_payees``.
+    of the generated rules with a row in the ``excluded_payees.csv`` of
+    each source its payments came from (``source``, for one that doesn't
+    say); and how many payees it has rules for.
 
     Each amount is as paid, with inflation measured from the month it was
-    paid in. A category with no account in ``expense_accounts``, and
-    ``from_account`` when None, is left to be filled in.
+    paid in. A category's account is found as the import finds it: its
+    row in ``expense_accounts``, else the scenario account (``accounts``)
+    of the category's own name. With neither, and for ``from_account``
+    when None, a name is left to be filled in.
+
+    Two kinds of candidate get no live commands. A category whose saved
+    account is ``-`` has no rule to replace, so it is only noted. A payee
+    also paid in other categories is written commented out: the row that
+    leaves it out would drop those payments too.
     """
     quote = shlex.quote
     lines = [
@@ -83,12 +96,13 @@ def script(
         f"FROM={quote(from_account or _FILL_IN)}    # the account that pays",
         f"FROM_LOT={quote(from_lot)}    # its lot, where it needs one",
         f"START={quote(start)}    # the rules' first month",
-        f"EXCLUDED={quote(str(excluded_payees))}",
         "",
-        "leave_out() {  # a row in excluded_payees.csv: the monthly rules stop counting this payee",
-        '    [ -s "$EXCLUDED" ] || { mkdir -p "$(dirname "$EXCLUDED")"; echo payee_pattern > "$EXCLUDED"; }',
-        '    [ -z "$(tail -c 1 "$EXCLUDED")" ] || echo >> "$EXCLUDED"',
-        '    printf \'%s\\n\' "$1" >> "$EXCLUDED"',
+        "leave_out() {  # SOURCE PATTERN: a row in the source's excluded_payees.csv, so the",
+        "               # monthly rules stop counting the payee",
+        f'    excluded="$DATA_DIR/imports/$1/{EXCLUDED_PAYEES}"',
+        '    [ -s "$excluded" ] || { mkdir -p "$(dirname "$excluded")"; echo payee_pattern > "$excluded"; }',
+        '    [ -z "$(tail -c 1 "$excluded")" ] || echo >> "$excluded"',
+        '    printf \'%s\\n\' "$2" >> "$excluded"',
         "}",
         "yearly() {  # NAME TO_ACCOUNT AMOUNT MONTH_OF_YEAR PAID_IN DESCRIPTION",
         '    sim scheduled add "$START" "$FROM" "$2" "$3" --data-dir "$DATA_DIR" --scenario "$SCENARIO" \\',
@@ -96,28 +110,53 @@ def script(
         f'        --series {quote(series)} --base-date "$5" --description "$6"',
         "}",
     ]
+    named: set[str] = set()
+    written = 0
     for each in occasional:
-        account = expense_accounts.get(each.category)
-        if account is None or account == NO_RULE:
-            account = _FILL_IN
-        paid = latest_year(each)
         when = ", ".join(f"{month:%b %Y} {format_dollars(cents)}" for month, cents in each.paid)
         lines += ["", f"# {_comment(each.payee)} ({_comment(each.category)}): {when}"]
+        # As the import resolves it (`_category_accounts`).
+        account = expense_accounts.get(each.category) or (each.category if each.category in accounts else None)
+        if account == NO_RULE:
+            lines.append(f"# Left out: expense_accounts.csv gives {_comment(each.category)} no rule "
+                         f"({NO_RULE!r}), so no monthly rule spreads this, and none is added here.")
+            continue
         if not each.repeats:
             lines.append("# Not seen to come round again: a yearly bill, or a one-time expense?")
-        if account == _FILL_IN:
+        if account is None:
+            account = _FILL_IN
             lines.append(f"# No expense account is saved for {_comment(each.category)}: "
                          f"name one in place of {_FILL_IN}.")
-        slug = category_slug(each.payee)[:32].strip("_") or category_slug(each.category)
+        # Not the payee as one transaction has it: its reference numbers
+        # and dates would name the rule for one payment.
+        slug = category_slug(payee_key(each.payee))[:32].strip("_") or category_slug(each.category)
+        paid = latest_year(each)
+        block: list[str] = []
         for month, cents in paid:
-            name = f"yearly_{slug}" + (f"_{month:%b}".lower() if len(paid) > 1 else "")
-            lines.append(
+            base = f"yearly_{slug}"
+            month_part = f"_{month:%b}".lower() if len(paid) > 1 else ""
+            # One payee in two categories, or two long names alike in their
+            # first words: a repeated name would stop the script halfway.
+            name = next(candidate for candidate in itertools.chain(
+                [base + month_part, f"{base}_{category_slug(each.category)}{month_part}"],
+                (f"{base}_{count}{month_part}" for count in itertools.count(2)))
+                if candidate not in named)
+            named.add(name)
+            block.append(
                 f"yearly {quote(name)} {quote(account)} {format_dollars(cents)} {month.month} "
                 f"{month:%Y-%m} {quote(f'Yearly: {each.payee} ({each.category})')}")
-        pattern = payee_pattern(each.payee)
-        if pattern:
-            lines.append(f"leave_out {quote(_csv_cell(pattern))}")
-    return "\n".join(lines) + "\n"
+        cell = quote(_csv_cell(payee_pattern(each.payee)))
+        block += [f"leave_out {quote(origin)} {cell}" for origin in each.sources or (source,)]
+        if each.elsewhere:
+            lines += [
+                "# Commented out: this payee is paid in other categories too, and leaving it out would",
+                "# drop those payments from the monthly rules as well. To use these, first give these",
+                "# payments a payee or category pattern of their own, or accept that.",
+                *(f"# {line}" for line in block)]
+        else:
+            lines += block
+            written += 1
+    return "\n".join(lines) + "\n", written
 
 
 def _comment(text: str) -> str:

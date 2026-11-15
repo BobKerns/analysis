@@ -311,7 +311,7 @@ no rules, and puts the candidates in the file as a shell script.
 # Not seen to come round again: a yearly bill, or a one-time expense?
 yearly yearly_mutual_insurance_mar Expense_Insurance 900.00 3 2026-03 'Yearly: Mutual Insurance (Insurance)'
 yearly yearly_mutual_insurance_sep Expense_Insurance 900.00 9 2026-09 'Yearly: Mutual Insurance (Insurance)'
-leave_out 'mutual\s.*insurance'
+leave_out quicken '(?<!\S)mutual\s(?:.*\s)?insurance(?!\S)'
 ```
 
 **Edit it before you run it.** The script is a best-effort reading, and
@@ -323,13 +323,28 @@ only you know which of these payments come round:
   paid in. Where a bill was seen over several years, the latest year's
   payments are used.
 - Fill in each `EDIT_ME`: the account that pays, when `--from-account` was
-  left out, and the expense account of a category that has none saved in
-  `imports/expense_accounts.csv` yet.
+  left out, and the expense account of a category that has none (neither a
+  row in `imports/expense_accounts.csv` nor an account of its own name).
+
+Two kinds of candidate are noted in the script and not written as rules:
+
+- A category you gave no rule (`-` in `expense_accounts.csv`): nothing
+  spreads it over the months, so there is nothing for a yearly rule to
+  replace.
+- A payee that is also paid in other categories (a store paid weekly for
+  food, and twice for something large). Its lines are there, commented
+  out: leaving the payee out would drop its other payments from the
+  monthly rules too.
+
+The script is yours once written. Running the command again refuses to
+replace it (at a terminal, it asks) unless `--overwrite` is given.
 
 Then run it once with `sh yearly-rules.sh`. Each `yearly` line is a
-`sim scheduled add`, and each `leave_out` line adds a row to the source's
-`excluded_payees.csv`, so that the next `sim import transactions` no
-longer spreads that payee over the months. Run the import again
+`sim scheduled add`, and each `leave_out` line adds a row to the
+`excluded_payees.csv` of the source the payments came from, so that the
+next `sim import transactions` no longer spreads that payee over the
+months. The row finds the payee by its whole words, whatever dates and
+reference numbers come with them. Run the import again
 afterwards. The yearly rules are ordinary rules of yours from then on:
 an import never replaces them, and `sim scheduled edit` changes them.
 
