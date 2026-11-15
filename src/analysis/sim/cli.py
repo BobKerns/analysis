@@ -9454,11 +9454,12 @@ def import_transactions(
                 if start is None:
                     start = con.execute("SELECT start FROM scenario").fetchone()[0]
                 account_names = [row[0] for row in con.execute("SELECT name FROM account")]
+                rule_names = [row[0] for row in con.execute("SELECT name FROM scheduled_transaction")]
             text, written, waiting = import_yearly.script(
                 occasional, data_dir=data_dir_p.resolve(), scenario=scenario_name,
                 start=_validate_month_date(start)[:7], from_account=from_account, from_lot=from_lot,
                 series=series, expense_accounts=expense_accounts.accounts, accounts=account_names,
-                source=flows.sources[0])
+                source=flows.sources[0], taken=rule_names)
             yearly_script.write_text(text, encoding="utf-8")
             noted = len(occasional) - written - waiting
             click.echo(f"wrote {yearly_script}: {written} payee(s) as yearly rules ready to run"

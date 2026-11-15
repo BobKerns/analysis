@@ -305,7 +305,10 @@ def occasional_payments(
         if any(later - earlier < OCCASIONAL_GAP_MONTHS for earlier, later in zip(at, at[1:], strict=False)):
             continue
         # About a year on, give or take a month: a bill's date moves a little.
-        repeats = any(later - earlier >= 11 and (later - earlier + 1) % 12 <= 2
+        # Not eleven months on, though a bill may come a month early: in one
+        # year of transactions that is a January and a December payment,
+        # which a job's deposit and its last payment are as likely to be.
+        repeats = any(later - earlier >= 12 and (later - earlier + 1) % 12 <= 2
                       for index, earlier in enumerate(at) for later in at[index + 1:])
         found.append(Occasional(
             str(rows["category"].iloc[0]), str(rows["payee"].iloc[0]),
