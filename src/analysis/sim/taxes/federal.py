@@ -154,8 +154,11 @@ class FederalYear(Prepared):
             "hsa_withdrawn": hsa_withdrawn,
             "excluded_gain": ty.total("excluded_gain"),
             # Half the self-employment tax (#623), for a state that doesn't
-            # follow the federal adjustment to add back.
+            # follow the federal adjustment to add back, and each person's
+            # half of their own, for a spouse's separate state return.
             "se_tax_deduction": self._se.deduction,
+            **{f"se_tax_deduction__{person}": amount
+               for person, amount in self._se.deductions.items() if person and amount},
             "roth_qualified": sum(i.amount for i in ty.year_items("tax_free")
                                   if i.payer.subkind == registries.RETIREMENT_SUBKIND),
             # A state doesn't tax its own refund (#593): one that starts
@@ -196,6 +199,8 @@ class FederalYear(Prepared):
         nol_used = common.nol_used(self._nol_in, before_nol, self._nol_limit)
         taxable = max(0, before_nol - nol_used)
         stcg = self._capital.stcg
+        income_tax = common.stacked_tax(
+            taxable, ltcg, stcg, self.brackets, self.ltcg_brackets, self._stcg_brackets)
         lines = {
             "ordinary_income": ordinary,
             "ltcg_taxed": ltcg,
@@ -209,9 +214,7 @@ class FederalYear(Prepared):
             "ordinary_taxable": common.ordinary_taxable(taxable, ltcg, stcg, bool(self._stcg_brackets)),
             # Form 1040's total tax: the income tax and, from Schedule 2,
             # the self-employment tax and Additional Medicare Tax (#623).
-            "tax": common.stacked_tax(
-                taxable, ltcg, stcg, self.brackets, self.ltcg_brackets, self._stcg_brackets)
-            + self._se.tax + self._se.additional_medicare,
+            "tax": income_tax + self._se.tax + self._se.additional_medicare,
             # IRMAA's MAGI (#253): AGI plus tax-exempt interest (#265).
             "magi": agi + self._exempt,
         }
@@ -232,12 +235,14 @@ class FederalYear(Prepared):
             lines["state_refund_income"] = self._refund_income
         # The state income tax among the deduction taken, which Utah's
         # taxpayer credit leaves out of its federal_deduction base (#542).
-        income_tax = (self._itemized.income_tax_deducted(agi)
-                      if deductions["deduction"] == deductions["itemized_deduction"] else 0)
-        # A Return shares the memo, so it must not be writable.
+        deducted = (self._itemized.income_tax_deducted(agi)
+                    if deductions["deduction"] == deductions["itemized_deduction"] else 0)
+        # A Return shares the memo, so it must not be writable. Its
+        # income_tax is the tax less Schedule 2's self-employment taxes
+        # (#623): Form 1040 line 22, what a state deducts as federal tax.
         return Return(lines, MappingProxyType(
             {**self._memo, "ss_untaxed": self._ss_income - taxable_ss,
-             "income_tax_deducted": income_tax}))
+             "income_tax_deducted": deducted, "income_tax": income_tax}))
 
 
 def recaptured_refund(ty: TaxYear, refund: int) -> int:

@@ -44,7 +44,7 @@ bands every year with inflation. So a row of `federal_brackets.csv`,
 series in `floor_series`, and a row of `standard_deduction.csv` or
 `state_standard_deduction__<state>.csv` one in `amount_series`, and
 `self_employment_tax.csv` one in `wage_base_series` (the Social Security wage
-base, which the law raises with wages and rounds to $300). For each
+base, which the law raises with wages and rounds to the nearest $300). For each
 later tax year the figure grows by that series from the row's
 `effective_date` to the year's January, rounded down to a multiple of $50,
 as the IRS rounds it. These files name `cpi`, so in an ensemble each

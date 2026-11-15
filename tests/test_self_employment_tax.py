@@ -213,3 +213,55 @@ def test_wages_are_ordinary_income_out_of_a_salary_account() -> None:
                   IncomeItem(YEAR, "ordinary", pension, CHECKING, 99_00),
                   IncomeItem(YEAR, "none", _salary("bill"), CHECKING, 99_00)])
     assert common.wages(year) == {"alice": 10_00 + 15_01, "bill": 15_00}
+
+
+def test_a_joint_business_is_a_survivors_alone() -> None:
+    """Bill died before the year: the joint business's profit is all
+    Alice's, under her one wage base."""
+    widowed = [Person("alice", "1960-01-31", "primary"),
+               Person("bill", "1961-01-31", "primary", "2028-06-30")]
+    ret = _federal([_sales("joint", 400_000_00)], persons=widowed)
+    earned = 400_000_00 * 923_500 // MICROS
+    assert ret["se_earnings"] == earned
+    assert ret["se_tax"] == _se(earned, ss_base=160_000_00)
+    assert ret.memo["se_tax_deduction__alice"] == ret["se_tax_deduction"]
+    assert "se_tax_deduction__bill" not in ret.memo
+
+
+def test_wages_from_a_household_salary_account_are_the_receiving_owners() -> None:
+    checking_alice = Account("Asset_Checking_Alice", "asset", "cash", "alice")
+    year = _year([IncomeItem(YEAR, "ordinary", _salary(None), checking_alice, 150_000_00)])
+    assert common.wages(year) == {"alice": 150_000_00, "bill": 0}
+
+
+def test_the_income_tax_leaves_out_the_self_employment_taxes() -> None:
+    """What a state's federal_tax adjustment deducts is Form 1040 line 22."""
+    ret = _federal([_sales("alice", 100_000_00), _wages("bill", 200_000_00)])
+    assert ret.memo["income_tax"] == ret.tax - ret["se_tax"] - ret["additional_medicare_tax"]
+    rows = [{"name": "federal_tax_paid", "step": "deduction", "base": "federal_tax"}]
+    tables = {**TABLES, ("state_adjustments", "CA"): rows}
+    items = [_sales("alice", 100_000_00), _wages("bill", 200_000_00)]
+    state = calculator("state_tables").prepare(
+        _year(items, jurisdiction="state", tables=tables)).compute()
+    assert state["federal_tax_paid"] == _federal(items, tables=tables).memo["income_tax"]
+
+
+def test_a_separate_state_return_takes_the_deduction_off_its_earner() -> None:
+    """Alice's business and Bill's pension, on a state return that lets
+    them file separately: her half of her SE tax is off her income alone."""
+    pension = Account("Income_Pension_Bill", "income", "pension", "bill")
+    mfs = {
+        ("state_separate_return", "CA"): [{"allowed": "yes"}],
+        ("state_brackets", "CA"): [
+            {"filing_status": status, "floor": 0, "marginal_rate_micros": MICROS // 20}
+            for status in ("MFJ", "MFS")],
+        ("standard_deduction", None): [{"filing_status": "MFJ", "amount": 30_000_00},
+                                       {"filing_status": "MFS", "amount": 15_000_00}],
+    }
+    tables = {**TABLES, **mfs}
+    items = [_sales("alice", 100_000_00), IncomeItem(YEAR, "ordinary", pension, CHECKING, 100_000_00)]
+    federal = _federal(items, tables=tables)
+    state = calculator("state_tables").prepare(
+        _year(items, jurisdiction="state", tables=tables)).compute()
+    assert state["separate_agi_bill"] == 100_000_00
+    assert state["separate_agi_alice"] == 100_000_00 - federal["se_tax_deduction"]

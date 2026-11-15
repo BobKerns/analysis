@@ -826,6 +826,10 @@ state's own credits and limits round to the dollar (California's $153
 exemption credit, #488), where $50 would swallow most of their growth.
 The Social Security wage base moves in steps of $300 (#623)."""
 
+TAX_INDEX_ROUND_NEAREST: frozenset[str] = frozenset({SELF_EMPLOYMENT_TAX})
+"""Kinds whose indexed figures round to the nearest step, half up, rather
+than down: the Social Security wage base (42 U.S.C. §430(b)(2), #623)."""
+
 AUX_SERIES_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     IRMAA_TIERS: IRMAA_SERIES_COLUMNS,
     **{kind: tuple(columns) for kind, columns in TAX_GROWTH_SERIES_COLUMNS.items()},
