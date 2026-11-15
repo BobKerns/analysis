@@ -593,8 +593,10 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     For each of federal (``fed_``) and state (``state_``): ``agi``, the
     larger of the standard and itemized ``deduction``, ``income`` (the taxable
     income its brackets taxed), and ``tax``. Federal AGI is Form 1040 line
-    11, except that a carried loss comes off taxable income instead and there
-    are no adjustments such as half of self-employment tax.
+    11, except that a carried loss comes off taxable income instead; half
+    the self-employment tax comes off it, as the law adjusts it. ``fed_se_tax``, shown
+    only when some year has any, is the self-employment tax and Additional
+    Medicare Tax on a business's profit (#623), which ``fed_tax`` includes.
     ``fed_exempt_interest``, shown only when some year has any, is the
     municipal bond interest it leaves out (#265, line 2a). State AGI leaves
     out Social Security and, in ``state_exclusion`` (shown only when some
@@ -610,8 +612,14 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     paid or refunded. CPI-constant dollars use each year's year-end CPI, as
     the notebook does; the rate is the same in either.
     """
-    both = _tax_buckets(rc, [*_TAX_COLUMNS, "federal_tax_exempt_interest"])
+    both = _tax_buckets(rc, [*_TAX_COLUMNS, "federal_tax_exempt_interest",
+                             "federal_se_tax", "federal_additional_medicare_tax"])
     frame = both[list(_TAX_COLUMNS)].rename(columns=_TAX_COLUMNS)
+    # Self-employment tax (#623), only when some year has it: part of
+    # fed_tax, shown beside it.
+    se_tax = both["federal_se_tax"].fillna(0) + both["federal_additional_medicare_tax"].fillna(0)
+    if se_tax.ne(0).any():
+        frame.insert(frame.columns.get_loc("fed_tax"), "fed_se_tax", se_tax)
     # Municipal bond interest (#265), only when some year has it: federal
     # AGI leaves it out, though Social Security taxation and MAGI count it.
     exempt = both["federal_tax_exempt_interest"]

@@ -161,7 +161,7 @@ def test_ytd_list_has_inherited_rows_and_scheduled_ytd(
 
     rows = {r.name: r for r in setup_listings.ytd_listing(child)}
 
-    assert rows["prior_ordinary_wages"].defined_in == "retire_alice"
+    assert rows["prior_wages_alice"].defined_in == "retire_alice"
     assert rows["prior_federal_withholding"].amount == "9500.00"
     assert rows["prior_federal_withholding"].defined_in == "overrides retire_alice"
     assert rows["salary_alice"].source == "scheduled"

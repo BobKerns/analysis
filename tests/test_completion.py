@@ -57,7 +57,7 @@ def test_rules_rows_and_persons(data_dir: Path) -> None:
     assert "salary_alice" in names.scheduled_names(data_dir, "retire_alice")
     # base's latent factors, inherited.
     assert "core_inflation" in names.calendar_row_names(data_dir, "retire_alice")
-    assert "prior_ordinary_wages" in names.ytd_names(data_dir, "retire_alice")
+    assert "prior_wages_alice" in names.ytd_names(data_dir, "retire_alice")
     assert {"alice", "bill"} <= set(names.person_ids(data_dir))
 
 

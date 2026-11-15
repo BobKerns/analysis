@@ -69,7 +69,7 @@ def test_roll_takes_the_projection_keeps_the_old_plan_and_pins_last_years_rows(
     assert ira["prior_year_end_balance"] == ira["opening_balance"]
     # Rows of the old first year stay in it; one with a year keeps it.
     ytd = _rows(folder / "year_to_date.csv")
-    assert ytd["prior_ordinary_wages"]["year"] == "2026"
+    assert ytd["prior_wages_alice"]["year"] == "2026"
     assert ytd["prior_ltcg_loss_carryforward"]["year"] == "2025"
     # The months the run no longer covers stay in 2026's income (#564), so
     # nothing is left to record by hand for its April settlement.
