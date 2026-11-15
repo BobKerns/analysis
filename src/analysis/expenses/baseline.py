@@ -58,7 +58,7 @@ class BaselineResult:
     def observed_months(self) -> int:
         """The months with any spending, imported or Amazon's: what a
         category's total is divided by for its monthly rule."""
-        return max(self.monthly["summary_month_start"].nunique(), 1) if not self.monthly.empty else 1
+        return self.monthly["summary_month_start"].nunique() or 1
 
 
 def _apply_category_splits(
@@ -202,28 +202,36 @@ def build_expense_baseline(
     )
 
 
-OCCASIONAL_MONTHS = 2
-"""A payee paid in no more months than this for each year of transactions
-is paid now and then, not monthly."""
+YEARLY_MONTHS = 2
+"""What is paid in no more months of a year than this is paid in those
+months, once a year each, and not monthly: a budget's category
+(``analysis.sim.imports.budget``), or a payee of a year's transactions."""
 OCCASIONAL_LEAST_CENTS = 60_000
-"""The least such a payee comes to in a year to be worth rules of its own:
-under 50 dollars a month, spreading it changes little."""
-OCCASIONAL_BASELINE_MONTHS = 12
-"""The least months of transactions that payments now and then are looked
-for in: in less, a yearly bill can't be told from a monthly one that just
-began."""
+"""The least a payee paid now and then comes to in a year to be worth rules
+of its own: under 50 dollars a month, spreading it changes little."""
+OCCASIONAL_BASELINE_DAYS = 360
+"""The least days, first transaction to last, that payments now and then
+are looked for in: in less, a yearly bill can't be told from a monthly one
+that just began. Days and not calendar months, which the last day of one
+month to the first of another would fill with far less."""
+OCCASIONAL_GAP_MONTHS = 3
+"""Payments in months closer than this are a monthly bill that began or
+ended in the period, or a season's, and not a bill that comes round."""
 
 
 @dataclass(frozen=True)
 class Occasional:
     """A payee the baseline spreads over every month, though it was paid
-    in only a month or two of a year."""
+    in only a month or two of a year: a candidate for a yearly rule."""
 
     category: CanonicalCategory
     payee: str
     """The payee as one of its transactions has it."""
     paid: tuple[tuple[date, int], ...]
     """Each month it was paid in, and the cents paid then."""
+    repeats: bool
+    """Whether a payment came round again about a year after another. Seen
+    only once, it may as well be a one-time expense as a yearly bill."""
 
     @property
     def total_cents(self) -> int:
@@ -241,38 +249,56 @@ def months_covered(baseline: BaselineResult) -> int:
 
 
 def occasional_payments(
-    baseline: BaselineResult, *, most_months: int = OCCASIONAL_MONTHS,
+    baseline: BaselineResult, *, most_months: int = YEARLY_MONTHS,
     least_cents: int = OCCASIONAL_LEAST_CENTS,
-) -> list[Occasional]:
-    """The large payments that aren't monthly, the largest first: a payee
-    of a category paid in at most ``most_months`` months of each year
-    covered (a part of a year counting as one), for ``least_cents`` or more
-    a year. Nothing is found in less than ``OCCASIONAL_BASELINE_MONTHS`` of
-    transactions.
+) -> list[Occasional] | None:
+    """The large payments that may be yearly and not monthly, the largest
+    first; None when the transactions cover too little time to tell
+    (``OCCASIONAL_BASELINE_DAYS``).
+
+    One is a payee of a category paid in at most ``most_months`` months of
+    each twelve, counted from the first transaction's month, never in
+    months closer than ``OCCASIONAL_GAP_MONTHS``, for ``least_cents`` or
+    more a year. That leaves out a monthly bill that began or ended in the
+    period, and a season's. It can't leave out a one-time expense, which
+    looks like a yearly bill seen once: ``Occasional.repeats`` says which
+    were seen to come round.
     """
     from analysis.sim.imports.mapping import payee_key
 
-    covered = months_covered(baseline)
-    if covered < OCCASIONAL_BASELINE_MONTHS:
-        return []
     used = baseline.transactions
+    if used.empty:
+        return None
+    first, last = used["date"].min(), used["date"].max()
+    days = (last - first).days
+    if days < OCCASIONAL_BASELINE_DAYS:
+        return None
+    months = used["summary_month_start"]
     keyed = pd.DataFrame({
         "category": used["category"], "payee": used["payee"], "key": used["payee"].map(payee_key),
-        "month": used["summary_month_start"], "cents": -used["amount_cents"],
+        "at": (months.dt.year - first.year) * 12 + months.dt.month - first.month,
+        "cents": -used["amount_cents"],
     })
     keyed = keyed[keyed["key"].ne("")]
-    by_month = keyed.groupby(["category", "key", "month"], as_index=False).agg(
+    by_month = keyed.groupby(["category", "key", "at"], as_index=False).agg(
         cents=("cents", "sum"), payee=("payee", "first"))
-    each_payee = by_month.groupby(["category", "key"])["cents"]
-    # Three years of a yearly premium are three months paid, not one.
-    few = each_payee.transform("size") <= most_months * -(-covered // 12)
-    large = each_payee.transform("sum") * 12 >= least_cents * covered
+    each_payee = by_month.groupby(["category", "key"])
+    in_a_year = by_month.groupby(["category", "key", by_month["at"] // 12])["at"].transform("size")
+    few = in_a_year.le(most_months).groupby([by_month["category"], by_month["key"]]).transform("all")
+    large = each_payee["cents"].transform("sum") * 365 >= least_cents * days
     found: list[Occasional] = []
     for _, rows in by_month[few & large].groupby(["category", "key"], sort=True):
+        at = [int(each) for each in rows["at"]]
+        if any(later - earlier < OCCASIONAL_GAP_MONTHS for earlier, later in zip(at, at[1:], strict=False)):
+            continue
+        # About a year on, give or take a month: a bill's date moves a little.
+        repeats = any(later - earlier >= 11 and (later - earlier + 1) % 12 <= 2
+                      for index, earlier in enumerate(at) for later in at[index + 1:])
         found.append(Occasional(
             str(rows["category"].iloc[0]), str(rows["payee"].iloc[0]),
-            tuple((date(month.year, month.month, 1), int(cents))
-                  for month, cents in zip(rows["month"], rows["cents"], strict=True))))
+            tuple((date(first.year + (first.month - 1 + each) // 12, (first.month - 1 + each) % 12 + 1, 1),
+                   int(cents)) for each, cents in zip(at, rows["cents"], strict=True)),
+            repeats))
     return sorted(found, key=lambda each: (-each.total_cents, each.category, each.payee))
 
 

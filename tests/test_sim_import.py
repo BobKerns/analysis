@@ -299,6 +299,7 @@ def test_sim_import_transactions_writes_rules_and_a_rerun_shows_the_difference(
     result = _transactions(test_data_dir, quicken_transaction_export)
     assert result.exit_code == 0, result.output
     assert "warning" not in result.output  # Gifts is skipped on purpose
+    assert "best-effort reading of the file: review them (sim scheduled list)" in result.output
     rules = _generated(test_data_dir)
     assert list(rules) == ["baseline_expense_food"]
     food = rules["baseline_expense_food"]
@@ -335,7 +336,7 @@ def test_sim_import_transactions_summary_shows_what_the_rules_come_from_and_writ
     assert ["category", "total", "a", "month", "(of", "2)"] in lines
     assert ["Food", "840.00", "420.00"] in lines and ["Gifts", "60.00", "30.00"] in lines
     assert ["all", "900.00", "450.00"] in lines
-    assert "can't be told from monthly ones in less than 12 months" in result.output
+    assert "can't be told from monthly ones in less than 360 days" in result.output
     assert _generated(test_data_dir) == {}
 
 
@@ -349,11 +350,15 @@ def test_sim_import_transactions_summary_lists_large_payments_that_are_not_month
 
     assert result.exit_code == 0, result.output
     assert "15 transaction(s) used, January 2026 to December 2026 (12 months)" in result.output
-    assert "    1       1000.00  moves between your own accounts" in result.output
-    assert "    1       5000.00  money in" in result.output
+    lines = [line.split(maxsplit=3) for line in result.output.splitlines()]
+    # What went out and what came in are added up apart.
+    assert ["1", "1000.00", "0.00", "moves between your own accounts"] in lines
+    assert ["1", "0.00", "5000.00", "money in"] in lines
     # The premium is found; the groceries are monthly, and the small fee isn't worth a rule.
-    assert "  Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00" in result.output
+    assert ("  Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00  "
+            "(not seen to come round again)") in result.output
     assert "Market" not in result.output and "Web Host" not in result.output
+    assert "These are candidates" in result.output
     assert "a yearly rule for each month of the year it is paid in (sim scheduled add)" in result.output
 
 
@@ -379,6 +384,21 @@ def test_sim_import_transactions_asks_for_the_lot_of_an_investment_account_to_pa
     assert result.exit_code == 0, result.output
     food = _generated(test_data_dir)["baseline_expense_food"]
     assert (food["from_account"], food["from_lot"]) == ("Asset_Brokerage_Joint", "default")
+
+
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_holds_a_given_account_to_what_one_asked_for_would_be(
+    test_data_dir: Path, quicken_transaction_export: Path,
+) -> None:
+    def run(*args: str):
+        return _import(test_data_dir, "transactions", str(quicken_transaction_export), *args)
+
+    # Each is refused before the file is read: no expense accounts are saved, which would warn.
+    mistyped = run("--from-account", "Asset_Nowhere")
+    assert mistyped.exit_code != 0 and "unknown from account or chain: 'Asset_Nowhere'" in mistyped.output
+    no_lot = run("--from-account", "Asset_Brokerage_Joint")
+    assert no_lot.exit_code != 0 and "needs its lot named with --from-lot" in no_lot.output
+    assert "warning" not in mistyped.output + no_lot.output
 
 
 @pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
@@ -1180,12 +1200,11 @@ def test_sim_import_transactions_reads_a_banks_file_by_its_payees(
 
 
 @pytest.mark.usefixtures("at_a_terminal")
-def test_sim_import_transactions_summary_asks_nothing_about_payees(
+def test_sim_import_transactions_summary_asks_nothing(
     test_data_dir: Path, bank_checking_export: Path,
 ) -> None:
-    # No input to read: a question would end the run.
-    result = _import(test_data_dir, "transactions", str(bank_checking_export), "--summary",
-                     "--outside-account", "Checking")
+    # No input to read: a question, about a payee or which account the file is, would end the run.
+    result = _import(test_data_dir, "transactions", str(bank_checking_export), "--summary")
 
     assert result.exit_code == 0, result.output
     assert "payee(s) not asked about went to Other" in result.output

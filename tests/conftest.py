@@ -2362,7 +2362,8 @@ def quicken_year_export(tmp_path: Path) -> Path:
     """A Quicken "Transaction Export" of a whole year, 2026: groceries
     every month, a car insurance premium in March and September, one
     small yearly fee, a move to savings and a paycheck."""
-    rows = [f',,"2026-{month:02d}-05","","","","Market","Groceries","","","","-400.00"'
+    # From the 2nd of January to the 30th of December: all but a few days of the year.
+    rows = [f',,"2026-{month:02d}-{30 if month == 12 else 2:02d}","","","","Market","Groceries","","","","-400.00"'
             for month in range(1, 13)]
     rows += [
         ',,"2026-03-10","","","","Mutual Insurance","Auto Insurance","","","","-900.00"',
