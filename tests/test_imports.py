@@ -961,3 +961,18 @@ def test_a_budgets_income_tax_lines_are_left_out_unless_the_map_names_them() -> 
 
     # A row for the line itself keeps it: the household means to pay it by rule.
     assert budgets.gather(budget, {"Tax:Fed": "Withholding"}, set()).spending["Withholding"] == [1200]
+
+
+def test_a_budget_beside_transactions_is_gathered_into_their_categories() -> None:
+    budget = _lines("Dining", "Fun:Movies", "Insurance", "Insurance:Auto", "Travel")
+
+    found = budgets.gather(
+        budget, {"Insurance:Auto": "Car"}, set(),
+        # The card's insurance is the car's, and the rest the home's; a budget's line has no account.
+        splits={"Insurance": {"Card": "Auto Insurance", "": "Home Insurance"}, "Car": {"Card": "Fleet"}},
+        # The transactions had no row for these, and put them in Other.
+        defaulted=("Dining", "Fun"), default="Other")
+
+    assert found.spending == {"Other": [2400], "Home Insurance": [1200], "Car": [1200], "Travel": [1200]}
+    # By itself a budget keeps its own top categories.
+    assert set(budgets.gather(budget, {}, set()).spending) == {"Dining", "Fun", "Insurance", "Travel"}

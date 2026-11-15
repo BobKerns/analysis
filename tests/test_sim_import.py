@@ -1777,6 +1777,13 @@ def test_sim_import_transactions_with_a_budget_asks_once_and_again_when_an_amoun
     away = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export)
     assert away.exit_code == 0, away.output
     assert "note: Food uses the saved choice, budget, though an amount has moved more than 5%" in away.output
+    # A preference answers where a question would be asked: here too, and it is said.
+    preferred = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export,
+                             "--prefer", "actual")
+    assert preferred.exit_code == 0, preferred.output
+    assert "note: Food uses --prefer actual in place of the saved choice, budget" in preferred.output
+    assert _amounts(test_data_dir)["baseline_expense_food"] == ("620.00", "monthly")
+    assert saved.read_text(encoding="utf-8") == "category,use,budget,actual\nFood,budget,710.00,520.00\n"
 
 
 @pytest.mark.usefixtures("quicken_category_map")
@@ -1796,6 +1803,57 @@ def test_sim_import_transactions_summary_with_a_budget_shows_the_two_and_asks_no
     alone = _import(test_data_dir, "transactions", str(quicken_transaction_export), "--summary",
                     "--prefer", "budget")
     assert alone.exit_code == 2 and "--prefer goes with --budget" in alone.output
+
+
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_with_a_budget_asks_about_a_category_whose_transactions_were_all_left_out(
+    test_data_dir: Path, quicken_transaction_export: Path, quicken_budget_full_export: Path,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BOTH_ACCOUNTS)
+    # As the yearly script leaves a payee out: every payment for food, here.
+    write_import_map("quicken/excluded_payees.csv", "market\ncafe\n")
+
+    shown = _import(test_data_dir, "transactions", str(quicken_transaction_export), "--summary",
+                    "--budget", str(quicken_budget_full_export))
+
+    assert shown.exit_code == 0, shown.output
+    # Not the budget's alone, to be used unasked: the scenario may pay it already.
+    assert ["Food", "710.00", "0.00", "-710.00", "?"] in [line.split(maxsplit=4) for line in shown.output.splitlines()]
+    assert "note: every transaction of Food was left out as modeled by the scenario or replaced" in shown.output
+    undecided = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export)
+    assert undecided.exit_code != 0 and "no choice of budget or actual is saved for: Food" in undecided.output
+    result = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export,
+                          "--prefer", "actual")
+    assert result.exit_code == 0, result.output
+    assert "baseline_expense_food" not in _generated(test_data_dir)
+    assert "baseline_expense_utilities" in _generated(test_data_dir)
+
+
+def test_sim_import_transactions_yearly_script_leaves_a_category_made_from_the_budget_to_the_budget(
+    test_data_dir: Path, quicken_year_export: Path, quicken_budget_full_export: Path,
+    write_import_map: MapWriter, tmp_path: Path,
+) -> None:
+    # The premium is in Food here, which the budget has too.
+    write_import_map("quicken/categories.csv", "Groceries,Food\nGifts,Gifts\nAuto Insurance,Food\n")
+    write_import_map("expense_accounts.csv", _BOTH_ACCOUNTS)
+    script = tmp_path / "yearly.sh"
+
+    actual = _import(test_data_dir, "transactions", str(quicken_year_export), "--budget",
+                     str(quicken_budget_full_export), "--prefer", "actual", "--yearly-script", str(script))
+    assert actual.exit_code == 0, actual.output
+    assert "# yearly yearly_mutual_insurance_mar " in script.read_text(encoding="utf-8")
+
+    budget = _import(test_data_dir, "transactions", str(quicken_year_export), "--budget",
+                     str(quicken_budget_full_export), "--prefer", "budget", "--yearly-script", str(script),
+                     "--overwrite")
+
+    assert budget.exit_code == 0, budget.output
+    text = script.read_text(encoding="utf-8")
+    # The budget's rules have the category's yearly payments: a rule here would pay them twice.
+    assert "# Left out: Food is made from the budget, whose rules have its yearly payments already." in text
+    assert "yearly_mutual_insurance" not in text and "leave_out quicken" not in text
+    assert "0 payee(s) as yearly rules ready to run, 1 noted and not written as rules" in budget.output
 
 
 def test_sim_import_transactions_with_a_budget_refuses_a_choice_it_cannot_read(

@@ -78,7 +78,7 @@ def script(
     occasional: Collection[Occasional], *, data_dir: Path, scenario: str, start: str,
     from_account: str | None, from_lot: str = "", series: str = "cpi",
     expense_accounts: Mapping[str, str], accounts: Collection[str] = (), source: str,
-    taken: Collection[str] = (), sim: str = "sim",
+    taken: Collection[str] = (), sim: str = "sim", from_budget: Collection[str] = (),
 ) -> tuple[str, int, int]:
     """A POSIX shell script that adds a yearly rule for each month of the
     year each of ``occasional`` was last paid in, and leaves its payee out
@@ -110,8 +110,10 @@ def script(
     ``SIM`` names another: the one that wrote the script, so that it
     doesn't depend on a PATH that may have none, or another checkout's.
 
-    Two kinds of candidate are in neither count. A category whose saved
-    account is ``-`` has no rule to replace, so it is only noted. A payee
+    Three kinds of candidate are in neither count. A category whose saved
+    account is ``-`` has no rule to replace, so it is only noted. So is
+    one in ``from_budget``, the categories whose rules a budget makes: its
+    rules have the category's yearly payments already. A payee
     also paid in other categories is written commented out, and not as a
     choice: the row that leaves it out would drop those payments too.
     """
@@ -169,6 +171,10 @@ def script(
         lines += ["", f"# {_comment(each.payee)} ({_comment(each.category)}): {when}"]
         # As the import resolves it (`_category_accounts`).
         account = expense_accounts.get(each.category) or each.category
+        if each.category in from_budget:
+            lines.append(f"# Left out: {_comment(each.category)} is made from the budget, whose rules "
+                         "have its yearly payments already.")
+            continue
         if account == NO_RULE:
             lines.append(f"# Left out: expense_accounts.csv gives {_comment(each.category)} no rule "
                          f"({NO_RULE!r}), so no monthly rule spreads this, and none is added here.")
