@@ -392,6 +392,13 @@ pay as the income rule, with a rule for each thing taken out of it (the
 scenario's tax rules. `sim scheduled add` writes each rule, and
 `--no-income` keeps the budget's income out once you have.
 
+The scenario does not work out payroll tax (Social Security and Medicare).
+Enter the pay stub's amounts for them as an expense rule of their own, taken
+from the gross pay with the other deductions. A business's profit is another
+matter: its self-employment tax depends on a profit the run works out, and
+is not modeled yet
+([#623](https://github.com/BobKerns/analysis/issues/623)).
+
 Amounts are taken as budgeted. A budget more than a year older than the
 scenario's start is warned about, since its dollars are old ones.
 
