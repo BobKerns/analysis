@@ -2358,6 +2358,65 @@ def quicken_transaction_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def bank_checking_export(tmp_path: Path) -> Path:
+    """A bank's activity download for one checking account, January and
+    February 2026, newest first as the bank writes it: groceries and the
+    utility each month, a move to savings, a paper check, and a paycheck.
+    No categories, and nothing but the file's name for the account."""
+    path = tmp_path / "Checking1.csv"
+    path.write_text(
+        '"DATE","DESCRIPTION","AMOUNT","CHECK #","STATUS"\n'
+        '"02/20/2026","PURCHASE AUTHORIZED ON 02/19 CORNER MARKET #204   OAKLAND CA S586050 CARD 1234",'
+        '"-200.00","","Posted"\n'
+        '"02/05/2026","ONLINE TRANSFER TO SAVINGS REF #IB0XYZ12   ","-1000.00","","Posted"\n'
+        '"02/01/2026","CITY POWER AND WATER   BILL PAY 260201","-150.00","","Posted"\n'
+        '"01/20/2026","PURCHASE AUTHORIZED ON 01/19 CORNER MARKET #204   OAKLAND CA S586011 CARD 1234",'
+        '"-400.00","","Posted"\n'
+        '"01/15/2026","ALICE EMPLOYER PAYROLL 260115","5000.00","","Posted"\n'
+        '"01/10/2026","CHECK","-75.00","1042","Posted"\n'
+        '"01/02/2026","CITY POWER AND WATER   BILL PAY 260102","-150.00","","Posted"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def card_exports(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    """A card's downloads, in the built-in ``amex`` layouts: the detailed
+    layout for January 2026 (the card's own categories, and references), the
+    detailed layout again for late January into February (one row is in
+    both), and the short layout for February (neither column). Charges are
+    positive, the payment negative, and the account is a column."""
+    detailed = tmp_path / "activity-detailed.csv"
+    head = ("Date,Description,Card Member,Account #,Amount,Extended Details,"
+            "Appears On Your Statement As,Address,City/State,Zip Code,Country,Reference,Category\n")
+    detailed.write_text(
+        head
+        + "01/25/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,80.00,\"CORNER MARKET\nOAKLAND\","
+          "CORNER MARKET 204,1 MAIN ST,\"OAKLAND\nCA\",94600,UNITED STATES,'R003',"
+          "Merchandise & Supplies-Groceries\n"
+        + "01/15/2026,ONLINE PAYMENT - THANK YOU,ALICE EXAMPLE,-12345,-300.00,,,,,,,'R002',\n"
+        + "01/05/2026,HARBOR CAFE,BILL EXAMPLE,-12346,40.00,,HARBOR CAFE,,,,,'R001',Restaurant-Restaurant\n",
+        encoding="utf-8")
+    short = tmp_path / "activity.csv"
+    short.write_text(
+        "Date,Description,Card Member,Account #,Amount\n"
+        "02/10/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,60.00\n",
+        encoding="utf-8")
+    again = tmp_path / "activity-detailed-february.csv"
+    again.write_text(
+        head
+        + "02/10/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,60.00,,,,,,,'R004',"
+          "Merchandise & Supplies-Groceries\n"
+        + "01/25/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,80.00,,,,,,,'R003',"
+          "Merchandise & Supplies-Groceries\n",
+        encoding="utf-8")
+    return detailed, again, short
+
+
+@pytest.fixture
 def quicken_empty_transaction_export(tmp_path: Path) -> Path:
     """A Quicken "Transaction Export" of an account with no activity."""
     path = tmp_path / "empty_transaction_export.csv"
@@ -2400,6 +2459,7 @@ def write_import_map(test_data_dir: Path) -> Callable[[str, str], Path]:
         mapping.SPLITS: mapping.SPLITS_HEADER,
         mapping.EXCLUDED_PAYEES: mapping.EXCLUDED_PAYEES_HEADER,
         mapping.EXPENSE_ACCOUNTS: mapping.EXPENSE_ACCOUNTS_HEADER,
+        mapping.PAYEES: mapping.PAYEES_HEADER,
     }
 
     def write(relative: str, rows: str) -> Path:

@@ -7,10 +7,11 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
-from analysis.sim.imports import flows, holdings, mapping, profiles, quicken, sources
-from analysis.sim.imports.forms import Flows, Holding, Snapshot
+from analysis.sim.imports import flows, holdings, mapping, profiles, quicken, sources, transactions
+from analysis.sim.imports.forms import ORIGIN, Flows, Holding, Snapshot
 
 # ---------- the Quicken source ----------
 
@@ -383,7 +384,15 @@ def test_a_profile_reads_money_dates_and_where_the_holdings_stop(
 
 @pytest.mark.parametrize(("text", "problem"), [
     ("- a list\n", "a profile is a mapping"),
-    ("description: x\n", "needs 'holdings'"),
+    ("description: x\n", "needs 'holdings' or 'transactions'"),
+    ("transactions: {columns: {date: D, amount: A}}\n", "must name payee"),
+    ("transactions: {columns: {date: D, payee: P}}\n", "say where the amount is, once"),
+    ("transactions: {columns: {date: D, payee: P, amount: A, debit: X, credit: Y}}\n",
+     "say where the amount is, once"),
+    ("transactions: {columns: {date: D, payee: P, debit: X}}\n", "say where the amount is, once"),
+    ("transactions: {columns: {date: D, payee: P, amount: A}, spending: up}\n", "'spending' is one of"),
+    ("transactions: {columns: {date: D, payee: P, amount: A}, only: {status: [Posted]}}\n",
+     "'only' maps a column the profile names"),
     ("holdings: {columns: {asset: A}}\n", "must name value"),
     ("holdings: {columns: {asset: A, value: V}}\n", "say where the account is, once"),
     ("holdings: {columns: {asset: A, value: V, account: C}, account: {file_name: x}}\n",
@@ -688,3 +697,206 @@ def test_plan_prune_empties_a_lot_the_file_no_longer_has(test_data_dir: Path) ->
     assert not emptied.notes
     assert result.pruned == ["Brokerage:sold"] and not result.warnings
     assert (result.lots_changed, result.lots_unchanged) == (1, 2)
+
+
+# ---------- transactions from a profile, and categories by payee (issue #617) ----------
+
+def test_a_banks_download_is_read_as_transactions(bank_checking_export: Path) -> None:
+    assert [(s.name, form) for s, form in sources.detect(bank_checking_export)] == [
+        ("wells_fargo", "transactions")]
+
+    found = sources.read_flows([bank_checking_export])
+
+    assert found.source == "wells_fargo" and found.sources == ("wells_fargo",)
+    frame = found.transactions
+    # The account is the file's name: nothing inside says, and nothing maps it.
+    assert set(frame["account"]) == {"Checking1"} and set(frame[ORIGIN]) == {"wells_fargo"}
+    assert frame["amount_cents"].tolist() == [-20000, -100000, -15000, -40000, 500000, -7500, -15000]
+    assert frame["date"].iloc[0] == pd.Timestamp("2026-02-20") and not frame["category"].any()
+    # The bank's padding is not part of who was paid.
+    assert frame["payee"].iloc[2] == "CITY POWER AND WATER BILL PAY 260201"
+    assert frame["check"].iloc[5] == "1042"
+    assert sources.read_flows([bank_checking_export], account="Joint").transactions["account"].iloc[0] \
+        == "Joint"
+    # A bank names its downloads alike, so where it can the command asks.
+    asked = sources.read_flows([bank_checking_export], ask_account=lambda path, source: f"{source} joint")
+    assert set(asked.transactions["account"]) == {"wells_fargo joint"}
+
+
+def test_a_transactions_profile_reads_two_amount_columns_charges_and_only_some_rows(
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+    write_import_export: Callable[[str, str], Path],
+) -> None:
+    imports = test_data_dir / "imports"
+    write_import_profile(
+        "my_bank", "transactions: {columns: {account: Acct, date: When, payee: Who, debit: Out, "
+        "credit: In, status: State}, date_format: '%Y-%m-%d', only: {status: posted}}\n")
+    export = write_import_export(
+        "bank.csv", "Report for Alice\n\nAcct,When,Who,Out,In,State\n"
+        "A1,2026-01-05,Market,12.50,,Posted\nA1,2026-01-06,Refund,,3.00,Posted\n"
+        "A1,2026-01-07,Cafe,4.00,,Pending\n\nEnd of report\n")
+    assert sources.read_flows([export], imports=imports).transactions["amount_cents"].tolist() == [-1250, 300]
+
+    write_import_profile(
+        "my_card", "transactions: {columns: {date: Day, payee: Merchant, amount: Charge}, "
+        "spending: positive, account: {file_name: 'card-(\\d+)'}}\n")
+    card = write_import_export("card-4321.csv", "Day,Merchant,Charge\n01/05/2026,Market,12.50\n")
+    frame = sources.read_flows([card], imports=imports).transactions
+    assert (frame["amount_cents"].iloc[0], frame["account"].iloc[0]) == (-1250, "4321")
+
+
+def test_one_run_reads_files_of_several_sources(
+    bank_checking_export: Path, quicken_transaction_export: Path,
+) -> None:
+    both = sources.read_flows([bank_checking_export, quicken_transaction_export])
+
+    assert both.source == "wells_fargo+quicken" and both.sources == ("wells_fargo", "quicken")
+    assert both.transactions[ORIGIN].value_counts().to_dict() == {"wells_fargo": 7, "quicken": 4}
+    # A named source is every file's.
+    with pytest.raises((ValueError, KeyError)):
+        sources.read_flows([bank_checking_export, quicken_transaction_export], "wells_fargo")
+
+
+def test_a_cards_two_layouts_are_one_profile_and_a_reference_is_counted_once(
+    card_exports: tuple[Path, Path, Path], test_data_dir: Path,
+) -> None:
+    detailed, february, short = card_exports
+    imports = test_data_dir / "imports"
+    assert [(s.name, form) for s, form in sources.detect(short, imports=imports)] == [
+        ("amex", "transactions")]
+
+    plain = sources.read_flows([short], imports=imports).transactions
+    assert (plain["amount_cents"].tolist(), plain["account"].tolist(), plain["category"].tolist()) == (
+        [-6000], ["-12345"], [""])
+
+    # The two detailed files share January 25: by its reference it is one charge.
+    both = sources.read_flows([detailed, february], imports=imports)
+    assert both.duplicates == 1
+    frame = both.transactions
+    assert frame["reference"].tolist() == ["'R003'", "'R002'", "'R001'", "'R004'"]
+    # A charge is spending and the payment money in; a cell's line breaks don't split a row.
+    assert frame["amount_cents"].tolist() == [-8000, 30000, -4000, -6000]
+    assert frame["category"].tolist()[0] == "Merchandise & Supplies-Groceries"
+
+    # Without references, the same days of one account twice are refused.
+    with pytest.raises(ValueError, match="both have transactions"):
+        sources.read_flows([short, short], imports=imports)
+
+    payees = mapping.PayeeMap(imports / "amex" / "payees.csv")
+    payees.add("harbor cafe", "Treats")
+    payees.add("online payment", "transfer")
+    # A payee's row goes over the card's own category; the rest keep the file's.
+    over, unmatched = transactions.categorize(frame, {"amex": payees})
+    assert over["category"].tolist() == [
+        "Merchandise & Supplies-Groceries", "", "Treats", "Merchandise & Supplies-Groceries"]
+    assert over["transfer"].tolist() == ["", "transfer", "", ""] and unmatched == []
+
+
+def test_a_file_without_references_may_not_overlap_one_with_them(
+    card_exports: tuple[Path, Path, Path], test_data_dir: Path,
+) -> None:
+    detailed, february, short = card_exports
+    imports = test_data_dir / "imports"
+    # February 10 is in both, and the short download has no reference to match it by.
+    with pytest.raises(ValueError, match="both have transactions of '-12345' between 2026-02-10"):
+        sources.read_flows([february, short], imports=imports)
+    with pytest.raises(ValueError, match="both have transactions"):
+        sources.read_flows([short, february], imports=imports)
+
+    # Apart, the two layouts are one source's, and the short one's rows are found by payee.
+    both = sources.read_flows([detailed, short], imports=imports)
+    assert both.sources == ("amex",) and both.duplicates == 0
+    _, unmatched = transactions.categorize(
+        both.transactions, {"amex": mapping.PayeeMap(imports / "amex" / "payees.csv")})
+    assert [(each.key, each.rows, each.cents) for each in unmatched] == [("corner market", 1, 6000)]
+
+
+def test_files_that_name_no_account_are_named_in_order_or_refused(
+    bank_checking_export: Path, write_import_export: Callable[[str, str], Path],
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+) -> None:
+    again = write_import_export(
+        "Checking1 (1).csv", bank_checking_export.read_text(encoding="utf-8"))
+    # The same account downloaded twice: by their names they would be two.
+    with pytest.raises(ValueError, match="2 files don't say which account they are"):
+        sources.read_flows([bank_checking_export, again])
+    with pytest.raises(ValueError, match="both have transactions of 'Joint'"):
+        sources.read_flows([bank_checking_export, again], account=["Joint", "Joint"])
+    named = sources.read_flows([bank_checking_export, again], account=["Joint", "Savings"])
+    assert named.transactions["account"].value_counts().to_dict() == {"Joint": 7, "Savings": 7}
+    with pytest.raises(ValueError, match="--outside-account was given 1 time"):
+        sources.read_flows([bank_checking_export, again], account="Joint")
+
+    # A source's name may have a '+' in it: the sources are not found by splitting the label.
+    write_import_profile(
+        "bank+card", "transactions: {columns: {date: Day, payee: Merchant, amount: Charge}}\n")
+    odd = write_import_export("odd.csv", "Day,Merchant,Charge\n01/05/2026,Market,-12.50\n")
+    assert sources.read_flows([odd], imports=test_data_dir / "imports").sources == ("bank+card",)
+
+
+def test_a_payee_pattern_matches_whole_words() -> None:
+    payees = mapping.PayeeMap(Path("payees.csv"))
+    payees.add("art", "Hobbies")
+    payees.add("Corner Market", "Food")
+    assert payees.category("WALMART 1234") is None
+    assert payees.category("THE ART STORE") == "Hobbies"
+    assert payees.category("CORNER MARKET #204 OAKLAND") == "Food"
+    assert payees.category("CORNER SUPERMARKET") is None
+
+
+def test_a_transactions_profile_says_what_a_file_may_lack(
+    write_import_profile: Callable[[str, str], Path], test_data_dir: Path,
+) -> None:
+    write_import_profile(
+        "odd", "transactions: {columns: {date: D, payee: P, amount: A}, optional: [amount]}\n")
+    with pytest.raises(ValueError, match="can't do without"):
+        profiles.load(test_data_dir / "imports" / "odd" / "profile.yaml", "odd")
+    write_import_profile(
+        "odd", "transactions: {columns: {date: D, payee: P, amount: A}, optional: [memo]}\n")
+    with pytest.raises(ValueError, match="'optional' lists columns the profile names"):
+        profiles.load(test_data_dir / "imports" / "odd" / "profile.yaml", "odd")
+
+
+def test_payees_give_a_banks_rows_their_categories(test_data_dir: Path, bank_checking_export: Path) -> None:
+    frame = sources.read_flows([bank_checking_export]).transactions
+    payees = mapping.PayeeMap(test_data_dir / "imports" / "wells_fargo" / "payees.csv")
+    payees.add("Corner Market #204", "Food")
+    payees.add("transfer to savings", mapping.TRANSFER)
+    payees.add("CHECK", mapping.NO_RULE)
+
+    found, unmatched = transactions.categorize(frame, {"wells_fargo": payees})
+
+    # Words with a digit are a store's or a card's number, never the payee.
+    assert payees.rows[0] == ("corner market", "Food")
+    assert found.loc[found["category"].eq("Food"), "amount_cents"].tolist() == [-20000, -40000]
+    assert found.loc[found["transfer"].eq("transfer"), "amount_cents"].tolist() == [-100000]
+    assert -7500 not in found["amount_cents"].tolist()
+    # Money in needs no category; the utility's two payments are one payee to ask about.
+    assert [(u.key, u.rows, u.cents) for u in unmatched] == [("city power and water bill pay", 2, 30000)]
+    assert unmatched[0].example == "CITY POWER AND WATER BILL PAY 260201"
+
+    rest, still = transactions.categorize(frame, {"wells_fargo": payees}, rest="Other")
+    assert rest.loc[rest["category"].eq("Other"), "amount_cents"].tolist() == [-15000, -15000]
+    assert len(still) == 1
+
+    payees.save()
+    again = mapping.load_payee_map(payees.path)
+    assert again.rows == payees.rows and again.category("x CORNER  MARKET 99 y") == "Food"
+
+
+def test_the_maps_of_several_sources_must_agree() -> None:
+    one = transactions.CategoryMaps(merges={"Groceries": "Food"}, exclusions={"Tax"},
+                                    splits={"Food": {"Checking": "Food_Alice"}}, excluded_payees=("rent",))
+    two = transactions.CategoryMaps(merges={"Dining": "Food", "Groceries": "Food"},
+                                    splits={"Food": {"": "Food_Joint"}}, excluded_payees=("rent", "hoa"))
+
+    both = transactions.combine({"a": one, "b": two})
+
+    assert both.merges == {"Groceries": "Food", "Dining": "Food"} and both.exclusions == {"Tax"}
+    assert both.splits == {"Food": {"Checking": "Food_Alice", "": "Food_Joint"}}
+    assert both.excluded_payees == ("rent", "hoa")
+    with pytest.raises(ValueError, match="'Groceries' goes to 'Food' for a and to '-' for b"):
+        transactions.combine({"a": one, "b": transactions.CategoryMaps(exclusions={"Groceries"})})
+    with pytest.raises(ValueError, match="split two ways"):
+        transactions.combine(
+            {"a": one, "b": transactions.CategoryMaps(splits={"Food": {"Checking": "Food_Bill"}})})

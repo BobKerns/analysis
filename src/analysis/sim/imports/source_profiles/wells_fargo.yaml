@@ -1,0 +1,13 @@
+description: Wells Fargo account activity download (CSV), one account a file
+transactions:
+  layout: 'Account activity: "Download Account Activity", Comma Delimited'
+  columns:
+    date: DATE
+    # The bank's text for the payment, padded to a width; no category, so
+    # imports/wells_fargo/payees.csv says what each payee's spending is.
+    payee: DESCRIPTION
+    # Money out is negative.
+    amount: AMOUNT
+    check: 'CHECK #'
+    status: STATUS
+  date_format: '%m/%d/%Y'
