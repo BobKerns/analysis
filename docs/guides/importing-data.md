@@ -72,8 +72,10 @@ sim import map --list       # print only
 Every row has a number. At a terminal it asks for a row's number, then
 whether to change it (each thing the row says is asked for, with TAB
 completing the scenario's names and what it says now as the default) or
-remove it. A removed row is asked about again by the next import that needs
-it, which is also how a row is added: an import asks for what has no row.
+remove it. An account the scenario doesn't have is asked about before it is
+kept, since it may be a slip or another scenario's account. A removed row
+is asked about again by the next import that needs it, which is also how a
+row is added: an import asks for what has no row.
 You can still edit the files by hand. `sim account rename` and
 `sim account lot rename` follow into these files by themselves.
 
@@ -109,7 +111,10 @@ accounts hold. Export the snapshot as of the scenario's first day.
 - An outside account the scenario has no account for can be added from
   the question: answer with a new name, and it asks what `sim account add`
   asks (kind, subkind, owner) and adds the account before going on. A dry
-  run adds nothing, so it offers only the accounts there are.
+  run adds nothing, so it offers only the accounts there are. A name the
+  scenario already uses for something that can't take the balance (an
+  expense account, a chain, an account with no lot yet) is not offered as
+  new: the question says so and asks again.
 - A debt is stored as a positive amount owed, whatever sign the source uses.
 - Two outside accounts mapped to one lot are added together.
 - A lot the scenario inherits from its parent is changed by writing an

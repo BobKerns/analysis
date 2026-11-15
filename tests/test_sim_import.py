@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import os
 import subprocess
@@ -19,6 +20,7 @@ from analysis.cli import main
 from analysis.expenses.baseline import Occasional
 from analysis.sim import cli
 from analysis.sim.imports import ofx as import_ofx
+from analysis.sim.imports import mapping as import_mapping
 from analysis.sim.imports import yearly as import_yearly
 
 
@@ -943,7 +945,6 @@ def test_sim_import_holdings_takes_an_accounts_kind_as_the_scenario_loads_it(
 
 
 @pytest.mark.usefixtures("at_a_terminal")
-@pytest.mark.usefixtures("at_a_terminal")
 def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
     test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
     retire_alice_csv: Callable[[str], Path],
@@ -957,13 +958,36 @@ def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
 
     assert result.exit_code == 0, result.output
-    assert "or a new name, to add the account to the scenario" in result.output
+    assert "a new name adds the account to the scenario" in result.output
     assert "appended account 'Asset_Savings_New'" in result.output
     assert "set opening balance now?" not in result.output  # the file has the balance
     with retire_alice_csv("accounts.csv").open(newline="", encoding="utf-8") as f:
         added = next(row for row in csv.DictReader(f) if row["name"] == "Asset_Savings_New")
     assert (added["kind"], added["subkind"], added["owner"]) == ("asset", "cash", "joint")
     assert _lots(test_data_dir)["Asset_Savings_New"]["opening_balance"] == "510000.00"
+    assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,," in saved.read_text(encoding="utf-8")
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_asks_again_for_a_slip_at_a_new_account_s_questions(
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    saved = write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
+    # An expense account's name can't take the balance or be added; then a
+    # new name, with a slip at its subkind and one at its owner.
+    answers = "Expense_Living\nAsset_Savings_New\ny\nasset\nnothing\ncash\nnobody\njoint\n"
+
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "Expense_Living is already an account or chain of the scenario" in result.output
+    assert "Add account Expense_Living?" not in result.output
+    with retire_alice_csv("accounts.csv").open(newline="", encoding="utf-8") as f:
+        added = next(row for row in csv.DictReader(f) if row["name"] == "Asset_Savings_New")
+    assert (added["kind"], added["subkind"], added["owner"]) == ("asset", "cash", "joint")
     assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,," in saved.read_text(encoding="utf-8")
 
 
@@ -1027,6 +1051,56 @@ def test_sim_import_map_changes_a_row_removes_one_and_keeps_no_change_the_file_r
     assert listed.exit_code == 0 and "row to change" not in listed.output
 
 
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_map_asks_about_an_account_the_scenario_does_not_have(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    accounts = write_import_map("expense_accounts.csv", "Food,Expense_Living\n")
+
+    # A slip is asked about and, not kept, asked for again; one kept on
+    # purpose (another scenario's account) is saved.
+    result = _map(test_data_dir, "--scenario", "retire_alice", input=(
+        "1\nchange\nExpense_Missing\nn\nExpense_Housing\n"
+        "1\nchange\nExpense_Elsewhere\ny\n"
+        "done\n"))
+
+    assert result.exit_code == 0, result.output
+    assert "Expense_Missing is not one of retire_alice's accounts that fit here. Keep it?" in result.output
+    assert "saved" in result.output
+    assert accounts.read_text(encoding="utf-8") == "category,account\nFood,Expense_Elsewhere\n"
+
+
+def test_import_map_offers_no_rule_only_where_a_file_reads_it(test_data_dir: Path) -> None:
+    by_name = {kind.name: kind for kind in import_mapping.MAP_FILES}
+
+    def offered(name: str, column: str) -> list[str]:
+        return cli._map_choices(test_data_dir, by_name[name], {})[column]
+
+    assert import_mapping.NO_RULE in offered(import_mapping.CATEGORIES, "category")
+    assert {import_mapping.NO_RULE, import_mapping.TRANSFER} <= set(offered(import_mapping.PAYEES, "category"))
+    # A split's target is an ordinary category: '-' there would be one's name.
+    assert import_mapping.NO_RULE not in offered(import_mapping.SPLITS, "target_category")
+
+
+def test_a_mapping_file_is_put_back_whatever_stops_its_check(
+    write_import_map: MapWriter,
+) -> None:
+    path = write_import_map("expense_accounts.csv", "Food,Expense_Living\n")
+    before = path.read_text(encoding="utf-8")
+
+    def interrupted(_: Path) -> object:
+        raise KeyboardInterrupt
+
+    kind = dataclasses.replace(
+        next(each for each in import_mapping.MAP_FILES if each.name == import_mapping.EXPENSE_ACCOUNTS),
+        check=interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        import_mapping.write_map_rows(path, kind, [{"category": "Food", "account": "Expense_Housing"}])
+
+    assert path.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.usefixtures("at_a_terminal")
 def test_sim_import_holdings_asks_nothing_of_a_scenario_that_does_not_load(
     test_data_dir: Path, quicken_net_worth_export: Path,
     append_scheduled_row: Callable[..., None],
