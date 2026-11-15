@@ -406,7 +406,7 @@ def test_sim_import_transactions_yearly_script_adds_the_rules_and_leaves_the_pay
             march["month_of_year"], march["series"], march["base_date"]) == \
         ("Asset_Checking", "Expense_Living", "900.00", "annual", "3", "cpi", "2026-03")
     excluded = test_data_dir / "imports" / "quicken" / "excluded_payees.csv"
-    assert excluded.read_text(encoding="utf-8").splitlines()[-1] == r"mutual\s.*insurance"
+    assert excluded.read_text(encoding="utf-8").splitlines()[-1] == r"(?<!\S)mutual\s(?:.*\s)?insurance(?!\S)"
     # The next import no longer spreads the premium over the months.
     again = _import(test_data_dir, "transactions", str(quicken_year_export), "--summary")
     assert again.exit_code == 0, again.output
@@ -431,6 +431,18 @@ def test_sim_import_transactions_yearly_script_leaves_what_it_cannot_know_to_be_
     assert "# Not seen to come round again: a yearly bill, or a one-time expense?" in text
     assert "yearly yearly_mutual_insurance_sep EDIT_ME 900.00 9 2026-09 " in text
 
+    # The file is one to edit: a second run doesn't replace it unasked.
+    script.write_text("# edited\n", encoding="utf-8")
+    again = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script))
+    assert again.exit_code != 0
+    assert "exists, and may hold your edits; --overwrite replaces it" in again.output
+    assert script.read_text(encoding="utf-8") == "# edited\n"
+    forced = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
+                     "--overwrite")
+    assert forced.exit_code == 0 and "EDIT IT BEFORE RUNNING IT" in script.read_text(encoding="utf-8")
+    alone = _import(test_data_dir, "transactions", str(quicken_year_export), "--summary", "--overwrite")
+    assert alone.exit_code == 2 and "--overwrite goes with --yearly-script" in alone.output
+
     # Two months of transactions have no candidates, and write no script.
     short = tmp_path / "short.sh"
     none = _import(test_data_dir, "transactions", str(quicken_transaction_export), "--yearly-script", str(short))
@@ -438,23 +450,93 @@ def test_sim_import_transactions_yearly_script_leaves_what_it_cannot_know_to_be_
     assert f"no candidates for yearly rules: {short} was not written" in none.output and not short.exists()
 
 
-def test_yearly_script_takes_the_latest_year_and_finds_a_payee_past_its_numbers() -> None:
-    seen = Occasional("Taxes", "COUNTY TAX #4411 PMT (2027)", (
-        (date(2026, 4, 1), 210_000), (date(2026, 12, 1), 210_000),
-        (date(2027, 4, 1), 220_000), (date(2027, 12, 1), 225_000)), repeats=True)
+def _seen(category: str, payee: str, *paid: tuple[date, int], **more: object) -> Occasional:
+    return Occasional(category, payee, paid, **{"repeats": True, **more})  # ty: ignore[invalid-argument-type]
+
+
+def _script(*seen: Occasional, **more: object) -> tuple[str, int]:
+    given: dict[str, object] = {
+        "data_dir": Path("/data dir"), "scenario": "retire_alice", "start": "2028-01", "from_account": None,
+        "expense_accounts": {}, "source": "bank", **more}
+    return import_yearly.script(seen, **given)  # ty: ignore[invalid-argument-type]
+
+
+def test_yearly_script_takes_the_latest_year_and_names_a_rule_past_the_payee_s_numbers() -> None:
+    seen = _seen("Taxes", "COUNTY TAX #4411 PMT (2027)",
+                 (date(2026, 4, 1), 210_000), (date(2026, 12, 1), 210_000),
+                 (date(2027, 4, 1), 220_000), (date(2027, 12, 1), 225_000), sources=("card",))
 
     assert import_yearly.latest_year(seen) == ((date(2027, 4, 1), 220_000), (date(2027, 12, 1), 225_000))
-    pattern = import_yearly.payee_pattern(seen.payee)
-    assert pattern == r"county\s.*tax\s.*pmt"
-    assert re.search(pattern, "County Tax #5522 pmt (2028)", re.IGNORECASE)
-    text = import_yearly.script(
-        [seen], data_dir=Path("/data dir"), scenario="retire_alice", start="2028-01", from_account=None,
-        expense_accounts={"Taxes": "-"}, excluded_payees=Path("/data dir/imports/bank/excluded_payees.csv"))
+    text, written = _script(seen)
+
+    assert written == 1
     # A path with a space, and text with a quote's worth of punctuation, stay one word each.
     assert "DATA_DIR='/data dir'" in text
-    assert "yearly yearly_county_tax_4411_pmt_2027_apr EDIT_ME 2200.00 4 2027-04 " \
+    # Neither the reference nor the year is in the rule's name: the next export's differ.
+    assert "yearly yearly_county_tax_pmt_apr EDIT_ME 2200.00 4 2027-04 " \
            "'Yearly: COUNTY TAX #4411 PMT (2027) (Taxes)'" in text
     assert "Not seen to come round again" not in text
+    # The row goes to the source the payments came from, not the run's first.
+    assert "leave_out card " in text and "leave_out bank " not in text
+
+
+def test_yearly_script_s_pattern_finds_whole_words_only() -> None:
+    pattern = import_yearly.payee_pattern("COUNTY TAX #4411 PMT (2027)")
+
+    assert re.search(pattern, "County Tax #5522 pmt (2028)", re.IGNORECASE)
+    assert re.search(pattern, "ACH county tax pmt", re.IGNORECASE)
+    assert not re.search(pattern, "Twin County Taxes Pmt", re.IGNORECASE)
+    # 'art' is not in 'walmart', as a payee map reads a pattern; nor 'co.' in 'costco.'.
+    art = import_yearly.payee_pattern("ART 123")
+    assert re.search(art, "art 456", re.IGNORECASE) and not re.search(art, "WALMART 456", re.IGNORECASE)
+    assert not re.search(art, "SMART & FINAL", re.IGNORECASE)
+    dotted = import_yearly.payee_pattern("Roofing Co.")
+    assert re.search(dotted, "ROOFING CO. 77", re.IGNORECASE)
+    assert not re.search(dotted, "ROOFING COX 77", re.IGNORECASE)
+
+
+def test_yearly_script_finds_a_category_s_account_as_the_import_does() -> None:
+    premium = _seen("Expense_Insurance", "Mutual Insurance", (date(2027, 3, 1), 90_000))
+    dropped = _seen("Gifts", "Big Gift", (date(2027, 6, 1), 80_000))
+    mapped = _seen("Taxes", "County Tax", (date(2027, 4, 1), 220_000))
+
+    text, written = _script(premium, dropped, mapped, accounts=["Expense_Insurance", "Expense_Housing"],
+                            expense_accounts={"Gifts": "-", "Taxes": "Expense_Housing"})
+
+    # A category with the name of one of the scenario's accounts needs no row.
+    assert "yearly yearly_mutual_insurance Expense_Insurance 900.00 3 2027-03 " in text
+    assert "yearly yearly_county_tax Expense_Housing 2200.00 4 2027-04 " in text
+    assert "EDIT_ME" not in text.split("\nyearly() {")[1]
+    # '-' is the household's choice of no rule: nothing spreads it, and nothing is added.
+    assert "# Left out: expense_accounts.csv gives Gifts no rule ('-')" in text
+    assert "big_gift" not in text and "big\\s" not in text
+    assert written == 2
+
+
+def test_yearly_script_gives_every_rule_a_name_of_its_own() -> None:
+    long = "Northern Regional Mutual Property And Casualty Insurance"
+    text, _ = _script(
+        _seen("Insurance", "Store", (date(2027, 3, 1), 90_000)),
+        _seen("Home", "Store", (date(2027, 5, 1), 90_000)),
+        _seen("Insurance", f"{long} Auto", (date(2027, 3, 1), 90_000)),
+        _seen("Insurance", f"{long} Home", (date(2027, 3, 1), 90_000)),
+        _seen("Insurance", f"{long} Boat", (date(2027, 3, 1), 90_000)))
+
+    names = [line.split()[1] for line in text.splitlines() if line.startswith("yearly yearly_")]
+    assert len(names) == len(set(names)) == 5
+    cut = "yearly_northern_regional_mutual_propert"  # its first 32 characters; cspell:ignore propert
+    assert names == ["yearly_store", "yearly_store_home", cut, f"{cut}_insurance", f"{cut}_2"]
+
+
+def test_yearly_script_comments_out_a_payee_that_is_paid_in_other_categories_too() -> None:
+    text, written = _script(_seen("Electronics", "Corner Store", (date(2027, 3, 1), 90_000), elsewhere=True),
+                            expense_accounts={"Electronics": "Expense_Living"})
+
+    assert written == 0
+    assert "# Commented out: this payee is paid in other categories too" in text
+    assert "# yearly yearly_corner_store Expense_Living 900.00 3 2027-03 " in text
+    assert "# leave_out bank " in text
+    assert not [line for line in text.splitlines() if line.startswith(("yearly yearly_", "leave_out "))]
 
 
 def test_sim_import_transactions_needs_the_account_to_pay_from_before_it_reads_a_file(

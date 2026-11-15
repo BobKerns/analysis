@@ -9220,6 +9220,9 @@ def _categorize_by_payee(
 @click.option("--yearly-script", type=click.Path(dir_okay=False, path_type=Path), default=None,
               help="With --summary (which it implies): write the payments that aren't monthly "
                    "to this file as a shell script of yearly rules, to edit and then run.")
+@click.option("--overwrite", is_flag=True, default=False,
+              help="With --yearly-script: replace the file when there is one (asked at a "
+                   "terminal; refused otherwise, since it may hold your edits).")
 def import_transactions(
     files: tuple[Path, ...],
     layout: str | None,
@@ -9236,6 +9239,7 @@ def import_transactions(
     budget_file: Path | None,
     prefer: str | None,
     yearly_script: Path | None,
+    overwrite: bool,
 ) -> None:
     """Expense rules from a period's transactions: replace the generated baseline rows in scheduled.csv.
 
@@ -9287,6 +9291,16 @@ def import_transactions(
     scenario_accounts: set[str] = set()
     expense_names: list[str] = []
     summary = summary or yearly_script is not None
+    if overwrite and yearly_script is None:
+        raise click.UsageError("--overwrite goes with --yearly-script")
+    # Before anything is read: the file is one to edit, and a second run
+    # (to see the summary again) must not replace the edited copy unasked.
+    if yearly_script is not None and yearly_script.exists() and not overwrite and not (
+            _interactive() and click.confirm(
+                f"{yearly_script} exists, and may hold your edits. Replace it?", default=False)):
+        raise click.ClickException(
+            f"{yearly_script} exists, and may hold your edits; --overwrite replaces it, "
+            "or give another name")
     if not summary:
         # Before any file is read or payee asked about: an answer given
         # since would be lost with a slip here. Given or asked for, the
@@ -9436,18 +9450,20 @@ def import_transactions(
     if summary:
         occasional = _show_transactions_summary(baseline, scripted=yearly_script is not None)
         if yearly_script is not None and occasional:
-            if start is None:
-                with _intent_db(data_dir_p, scenario_name) as (con, _):
+            with _intent_db(data_dir_p, scenario_name) as (con, _):
+                if start is None:
                     start = con.execute("SELECT start FROM scenario").fetchone()[0]
-            yearly_script.write_text(import_yearly.script(
+                account_names = [row[0] for row in con.execute("SELECT name FROM account")]
+            text, written = import_yearly.script(
                 occasional, data_dir=data_dir_p.resolve(), scenario=scenario_name,
                 start=_validate_month_date(start)[:7], from_account=from_account, from_lot=from_lot,
-                series=series, expense_accounts=expense_accounts.accounts,
-                excluded_payees=(import_mapping.source_dir(data_dir_p, flows.sources[0])
-                                 / import_mapping.EXCLUDED_PAYEES).resolve(),
-            ), encoding="utf-8")
-            click.echo(f"wrote {len(occasional)} payee(s) as yearly rules to {yearly_script}: edit it "
-                       f"(a one-time expense is no yearly rule), then run it with: sh {yearly_script}")
+                series=series, expense_accounts=expense_accounts.accounts, accounts=account_names,
+                source=flows.sources[0])
+            yearly_script.write_text(text, encoding="utf-8")
+            click.echo(f"wrote {written} payee(s) as yearly rules to {yearly_script}"
+                       + (f", and {len(occasional) - written} noted and not written as rules"
+                          if written < len(occasional) else "")
+                       + f": edit it (a one-time expense is no yearly rule), then run it with: sh {yearly_script}")
         elif yearly_script is not None:
             click.echo(f"no candidates for yearly rules: {yearly_script} was not written")
         return
