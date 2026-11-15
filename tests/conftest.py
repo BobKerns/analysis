@@ -1039,6 +1039,7 @@ def data_repo_sim(tmp_path: Path, test_data_dir: Path) -> Path:
     repo = git.Repo.init(data_repo, b="main")
     with repo.config_writer() as cw:
         cw.set_value("commit", "gpgsign", "false")
+        cw.set_value("tag", "gpgsign", "false")
     repo.git.add(A=True)
     actor = git.Actor("t", "t@t")
     repo.index.commit("init", author=actor, committer=actor)
@@ -1068,6 +1069,7 @@ def commit_test_data(test_data_dir: Path) -> Callable[[], Path]:
         repo.git.add(A=True)
         with repo.config_writer() as cw:
             cw.set_value("commit", "gpgsign", "false")
+            cw.set_value("tag", "gpgsign", "false")
         actor = git.Actor("t", "t@t")
         repo.index.commit("init", author=actor, committer=actor)
         return test_data_dir
@@ -1705,6 +1707,7 @@ def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
     repo = git.Repo.init(tmp_path / "code", b="main")
     with repo.config_writer() as cw:
         cw.set_value("commit", "gpgsign", "false")
+        cw.set_value("tag", "gpgsign", "false")
     root = Path(str(repo.working_tree_dir))
     for name, text in {"src/engine.py": "v1\n", "templates/t.csv": "", "pyproject.toml": "",
                        "uv.lock": "", "docs/guide.md": "one\n"}.items():
