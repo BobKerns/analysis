@@ -76,6 +76,9 @@ remove it. An account the scenario doesn't have is asked about before it is
 kept, since it may be a slip or another scenario's account. A removed row
 is asked about again by the next import that needs it, which is also how a
 row is added: an import asks for what has no row.
+If an import or a rename wrote a file while `sim import map` waited at a
+question, your change to that file is dropped and the files are listed
+again as they are now.
 You can still edit the files by hand. `sim account rename` and
 `sim account lot rename` follow into these files by themselves.
 
@@ -110,7 +113,9 @@ accounts hold. Export the snapshot as of the scenario's first day.
   filled from a [brokerage file](#brokerage-files) or typed.
 - An outside account the scenario has no account for can be added from
   the question: answer with a new name, and it asks what `sim account add`
-  asks (kind, subkind, owner) and adds the account before going on. A dry
+  asks (kind, subkind, owner) and adds the account before going on. It
+  asks first whether to add it, and takes Enter as no, since a new name
+  may be a slip; `back` at the account's kind returns to the question. A dry
   run adds nothing, so it offers only the accounts there are. A name the
   scenario already uses for something that can't take the balance (an
   expense account, a chain, an account with no lot yet) is not offered as

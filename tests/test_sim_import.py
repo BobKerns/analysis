@@ -991,6 +991,35 @@ def test_sim_import_holdings_asks_again_for_a_slip_at_a_new_account_s_questions(
     assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,," in saved.read_text(encoding="utf-8")
 
 
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_adds_no_account_for_a_slip_in_a_name(
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
+    # A slip and Enter: not added. Then yes by mistake, and back at its kind.
+    answers = "Asset_Checks\n\nAsset_Checks\ny\nback\nskip\n"
+
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "not added: back to the account question" in result.output
+    assert "Asset_Checks" not in retire_alice_csv("accounts.csv").read_text(encoding="utf-8")
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_shows_no_holding_s_type_as_the_account_s(
+    test_data_dir: Path, vanguard_holdings_export: Path,
+) -> None:
+    result = _import(test_data_dir, "holdings", str(vanguard_holdings_export), input="skip\n")
+
+    assert result.exit_code == 0, result.output
+    assert "a new name adds the account to the scenario" in result.output
+    assert "the file calls this one" not in result.output
+
+
 def _map(data: Path, *args: str, input: str | None = None):  # noqa: A002
     return CliRunner().invoke(main, ["sim", "import", "map", *args, "--data-dir", str(data)], input=input)
 
@@ -1070,6 +1099,98 @@ def test_sim_import_map_asks_about_an_account_the_scenario_does_not_have(
     assert accounts.read_text(encoding="utf-8") == "category,account\nFood,Expense_Elsewhere\n"
 
 
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_map_forgets_a_change_the_file_refused(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    choices = write_import_map("budget_choices.csv", "Food,actual,710.00,420.00\nRent,actual,900.00,950.00\n")
+
+    # Food's use is refused, then its budget (no amount); Rent's change is good.
+    result = _map(test_data_dir, "--scenario", "retire_alice", input=(
+        "1\nchange\neither\n\n\n"
+        "1\nchange\n\ninf\n\n"
+        "2\nchange\nbudget\n\n\n"
+        "done\n"))
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("not kept: ") == 2
+    assert "budget and actual are dollar amounts" in result.output
+    # The row is shown as the file has it, not as the refused change left it.
+    assert "use: either" not in result.output
+    assert choices.read_text(encoding="utf-8") == (
+        "category,use,budget,actual\nFood,actual,710.00,420.00\nRent,budget,900.00,950.00\n")
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_map_changes_a_row_beside_a_file_that_does_not_read(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("bank/splits.csv", "Food,Checking,\n")  # no target category
+    payees = write_import_map("bank/payees.csv", "corner market,Food\n")
+
+    result = _map(test_data_dir, "bank", "--scenario", "retire_alice", input="2\nchange\nHome\ndone\n")
+
+    assert result.exit_code == 0, result.output
+    assert "no names to complete with: " in result.output
+    assert payees.read_text(encoding="utf-8") == "payee_pattern,category\ncorner market,Home\n"
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_map_checks_no_account_of_a_scenario_that_does_not_load(
+    test_data_dir: Path, write_import_map: MapWriter, append_scheduled_row: Callable[..., None],
+) -> None:
+    accounts = write_import_map("expense_accounts.csv", "Food,Expense_Living\n")
+    append_scheduled_row(name="broken", from_account="No_Such_Account", to_account="Expense_Living",
+                         amount_rule_kind="fixed_amount", amount="1.00", start="2026-01")
+
+    result = _map(test_data_dir, "--scenario", "retire_alice", input="1\nchange\nExpense_Housing\ndone\n")
+
+    assert result.exit_code == 0, result.output
+    assert "no scenario to check an account against or complete its name from: " in result.output
+    assert "Keep it?" not in result.output
+    assert accounts.read_text(encoding="utf-8") == "category,account\nFood,Expense_Housing\n"
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_map_writes_over_nothing_written_since_it_listed(
+    test_data_dir: Path, write_import_map: MapWriter, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payees = write_import_map("bank/payees.csv", "corner market,Food\n")
+    asked = cli._ask_name
+
+    def meanwhile(what: str, *args: object, **kwargs: object) -> str:
+        # Another command saves a row while this one waits at its question.
+        if what == "choice":
+            payees.write_text(payees.read_text(encoding="utf-8") + "city water,Home\n", encoding="utf-8")
+        return asked(what, *args, **kwargs)  # ty: ignore[invalid-argument-type]  # passed through as given
+
+    monkeypatch.setattr(cli, "_ask_name", meanwhile)
+    result = _map(test_data_dir, "bank", "--scenario", "retire_alice", input="1\nremove\ndone\n")
+
+    assert result.exit_code == 0, result.output
+    assert "has changed since it was listed" in result.output
+    assert payees.read_text(encoding="utf-8") == "payee_pattern,category\ncorner market,Food\ncity water,Home\n"
+    assert "city water" in result.output  # listed again, as it is now
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_map_writes_nothing_for_a_change_that_changes_nothing(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    payees = write_import_map("bank/payees.csv", "corner market,Food\n")
+    # As a hand might leave it: a blank row, which a rewrite would drop.
+    payees.write_text(payees.read_text(encoding="utf-8") + ",\n", encoding="utf-8")
+    before = payees.read_bytes()
+
+    # A number int() can't read, then Enter at the row's one question.
+    result = _map(test_data_dir, "bank", "--scenario", "retire_alice", input="\u00b2\n1\nchange\n\ndone\n")
+
+    assert result.exit_code == 0, result.output
+    assert "a row's number from the list, or done" in result.output
+    assert "nothing changed" in result.output and "saved" not in result.output
+    assert payees.read_bytes() == before
+
+
 def test_import_map_offers_no_rule_only_where_a_file_reads_it(test_data_dir: Path) -> None:
     by_name = {kind.name: kind for kind in import_mapping.MAP_FILES}
 
@@ -1082,7 +1203,7 @@ def test_import_map_offers_no_rule_only_where_a_file_reads_it(test_data_dir: Pat
     assert import_mapping.NO_RULE not in offered(import_mapping.SPLITS, "target_category")
 
 
-def test_a_mapping_file_is_put_back_whatever_stops_its_check(
+def test_a_mapping_file_is_as_it_was_whatever_stops_its_check(
     write_import_map: MapWriter,
 ) -> None:
     path = write_import_map("expense_accounts.csv", "Food,Expense_Living\n")
