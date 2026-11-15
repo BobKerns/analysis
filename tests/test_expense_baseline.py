@@ -5,6 +5,8 @@ import pandas as pd
 import pytest
 
 from analysis.expenses.baseline import (
+    BaselineResult,
+    occasional_payments,
     BASELINE_GENERATED_TAG,
     SCHEDULED_HEADER,
     build_expense_baseline,
@@ -430,3 +432,52 @@ def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: 
         written = list(csv.DictReader(handle))
     assert [row["name"] for row in written] == ["baseline_expense_food"]
     assert written[0]["amount"] == "36.00"
+
+def _paid(*payments: tuple[str, str, float]) -> BaselineResult:
+    """A baseline of ``payments`` (date, payee, dollars), all of one category."""
+    used = pd.DataFrame(payments, columns=["date", "payee", "amount"])
+    used["date"] = pd.to_datetime(used["date"])
+    used["summary_month_start"] = used["date"].dt.to_period("M").dt.to_timestamp()
+    used["amount_cents"] = (-used["amount"] * 100).round().astype(int)
+    used["category"] = "Insurance"
+    empty = pd.DataFrame()
+    return BaselineResult(used, empty, empty, empty, ())
+
+
+def _monthly(payee: str, start: str, months: int, amount: float = 80.0) -> list[tuple[str, str, float]]:
+    return [(f"{each:%Y-%m-%d}", payee, amount) for each in pd.date_range(start, periods=months, freq="MS")]
+
+
+def _found(*payments: tuple[str, str, float]) -> list[tuple[str, int, bool]]:
+    found = occasional_payments(_paid(*payments))
+    assert found is not None
+    return [(each.payee, len(each.paid), each.repeats) for each in found]
+
+
+def test_occasional_payments_are_a_month_or_two_of_each_year_and_say_whether_they_came_round() -> None:
+    years = (2024, 2025, 2026)
+    yearly = [(f"{year}-03-01", "Mutual Insurance", 900.0) for year in years]
+    twice = [(f"{year}-{month}-01", "County Tax", 2000.0) for year in years for month in ("04", "12")]
+    small = [(f"{year}-06-01", "Web Host", 120.0) for year in years]
+
+    # Three years of a yearly bill are three months paid; 360 in three years is under 600 a year.
+    assert _found(*_monthly("Gym", "2024-01-01", 36), *yearly, *twice, *small) == [
+        ("County Tax", 6, True), ("Mutual Insurance", 3, True)]
+
+
+def test_occasional_payments_leave_out_a_bill_that_began_and_mark_a_one_time_expense() -> None:
+    year = _monthly("Gym", "2026-01-01", 13)
+    # A car payment that began in November is monthly; furniture bought once may never come again.
+    assert _found(*year, *_monthly("Auto Loan", "2026-11-01", 2, 500.0),
+                  ("2026-05-10", "Furniture Store", 2000.0)) == [("Furniture Store", 1, False)]
+    # A summer's program is a season, and a quarterly bill is neither monthly nor yearly.
+    two_years = _monthly("Gym", "2025-01-01", 24)
+    assert _found(*two_years, *_monthly("Summer Camp", "2025-06-01", 4, 400.0),
+                  *[(f"2025-{month:02d}-01", "Water", 300.0) for month in (1, 4, 7, 10)]) == []
+
+
+def test_occasional_payments_need_most_of_a_year_first_day_to_last() -> None:
+    # Twelve calendar months, and ten of data: a yearly bill can't be told from a new monthly one.
+    payments = [("2025-01-31", "Gym", 80.0), ("2025-12-01", "Gym", 80.0), ("2025-06-01", "County Tax", 2000.0)]
+    assert occasional_payments(_paid(*payments)) is None
+    assert _found(*payments, ("2026-01-30", "Gym", 80.0)) == [("County Tax", 1, False)]
