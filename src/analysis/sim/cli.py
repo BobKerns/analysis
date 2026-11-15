@@ -8720,14 +8720,15 @@ def _map_choices(
 
 
 def _ask_map_account(column: str, was: str, choices: Sequence[str], scenario: str) -> str:
-    """An account for a mapping row, asked for until it is one of
+    """An account for a mapping row of a scenario that loaded (with none,
+    there is nothing to check a name against), asked for until it is one of
     ``choices`` (the scenario's accounts that fit), blank, or kept on
     purpose: a saved answer may be right for another scenario, so a name
     this one doesn't have is asked about and not refused."""
     while True:
         given = _prompt_with_completion(
             f"{column} (a space clears it)" if was else column, choices=list(choices), default=was).strip()
-        if not given or given in choices or given == was or not choices:
+        if not given or given in choices or given == was:
             return given
         if click.confirm(f"  {given} is not one of {scenario}'s accounts that fit here. Keep it?", default=False):
             return given
@@ -8799,9 +8800,11 @@ def import_map(source: str | None, list_only: bool, scenario: str | None, data_d
         if found is None:
             click.echo("  a row's number from the list, or done")
             continue
-        path, kind, rows, first = found
+        path, kind, listed_rows, first = found
         at = int(answer) - first
-        row = dict(rows[at])
+        # A copy: a change the file refuses must not stay in what is listed.
+        rows = [dict(each) for each in listed_rows]
+        row = rows[at]
         click.echo("  " + ", ".join(f"{column}: {row[column] or '(blank)'}" for column in kind.header))
         values = kind.header[kind.keys:]
         todo = _ask_name("choice", ["change", "remove", "back"] if values else ["remove", "back"],
@@ -8811,24 +8814,34 @@ def import_map(source: str | None, list_only: bool, scenario: str | None, data_d
         if todo == "remove":
             del rows[at]
         else:
-            choices = _map_choices(data_dir_p, kind, accounts)
+            try:
+                choices = _map_choices(data_dir_p, kind, accounts)
+            except ValueError as e:
+                # Another mapping file that doesn't read: this command is
+                # how one is put right, so it goes on without the names.
+                click.echo(f"  no names to complete with: {e}")
+                choices = dict.fromkeys(values, [])
             for column in values:
                 # '-' is a value of its own in these files, so a blank
                 # answer can't mean "clear": a space does.
-                if column == "account":
+                if column == "account" and accounts:
                     row[column] = _ask_map_account(column, row[column], choices[column], scen_name)
                     continue
                 given = _prompt_with_completion(
                     f"{column} (a space clears it)" if row[column] else column,
                     choices=choices[column], default=row[column])
                 row[column] = given.strip()
-            rows[at] = row
         try:
-            import_mapping.write_map_rows(path, kind, rows)
+            # The questions may have waited a long time, and an import or a
+            # rename elsewhere may have written the file meanwhile.
+            if import_mapping.read_map_rows(path, kind) != listed_rows:
+                click.echo(f"  not kept: {_shown(path)} has changed since it was listed; here it is now")
+            else:
+                import_mapping.write_map_rows(path, kind, rows)
+                click.echo(f"saved {_shown(path)}")
         except ValueError as e:
             click.echo(f"  not kept: {e}")
-            continue
-        click.echo(f"saved {_shown(path)}")
+        # Listed again either way, so the numbers are those of the files as they are.
         listed = show()
 
 
@@ -8899,7 +8912,8 @@ def _ask_holding_target(
                        "can go into: an expense or income account, a chain, or an account with no lot "
                        "for it yet (sim account lot add)")
             return False
-        if add is None or not click.confirm(f"Add account {name}?", default=True):
+        # No by default: a slip in an account's name is likelier than a new one.
+        if add is None or not click.confirm(f"Add account {name}?", default=False):
             return False
         try:
             add(name, by_symbol)
@@ -13191,7 +13205,9 @@ def import_holdings(
         and what the import asks next (its lots) needs it loaded."""
         # Asked here, and until each is right: `sim account add` asks once
         # and stops on a slip, which would end the import part-way.
-        kind = _ask_name("kind", ["asset", "liability"], prompt=f"kind of {name}")
+        kind = _ask_name("kind", ["asset", "liability", "back"], prompt=f"kind of {name} (or back)")
+        if kind == "back":
+            raise click.ClickException("back to the account question")
         subkind = _ask_name("subkind", sorted(registries.ACCOUNT_SUBKINDS[kind]), prompt=f"subkind of {name}")
         owner = _ask_name("owner", dict.fromkeys([*names.person_ids(data_dir_p), "joint"]), prompt=f"owner of {name}")
         lot_subkind = _ask_name(
@@ -13272,7 +13288,8 @@ def import_holdings(
                         _outside_label(covered, whole=True), sum(h.value_cents for h in covered),
                         snapshot.source, rows, "has no saved mapping",
                         held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
-                        by_symbol=listed, hint=covered[0].hints.get("type", ""),
+                        # A file of holdings gives each holding's type, not the account's.
+                        by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
                         add=add_account_or_not, taken=taken)
                     account_map.set(*key, target)
                     saved_map.set(*key, target)
@@ -13285,7 +13302,8 @@ def import_holdings(
                         snapshot.source, rows,
                         f"is mapped to {old.label}, which {scen_name} doesn't have",
                         held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
-                        by_symbol=listed, hint=covered[0].hints.get("type", ""),
+                        # A file of holdings gives each holding's type, not the account's.
+                        by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
                         add=add_account_or_not, taken=taken)
                     account_map.set(*key, target)
                     progress = True

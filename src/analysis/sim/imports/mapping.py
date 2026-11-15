@@ -321,7 +321,7 @@ def load_budget_choices(path: Path | str) -> BudgetChoices:
             raise ValueError(f"{path} row {number}: use must be budget or actual, not {row['use']!r}")
         try:
             amounts = [round(float(row[column] or 0) * 100) for column in ("budget", "actual")]
-        except ValueError:
+        except (ValueError, OverflowError):  # 'inf' is a float that no amount is
             raise ValueError(f"{path} row {number}: budget and actual are dollar amounts") from None
         found.choices[category] = BudgetChoice(row["use"], *amounts)
     return found
