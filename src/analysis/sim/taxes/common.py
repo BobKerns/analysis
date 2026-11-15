@@ -76,6 +76,101 @@ def business_result(ty: TaxYear) -> BusinessResult:
     return BusinessResult(net, disallowed)
 
 
+class SelfEmployment(NamedTuple):
+    """One tax year's self-employment tax (#623, Schedule SE and Form 8959
+    Part II): the household's net earnings from self-employment, the Social
+    Security and Medicare tax on them, the Additional Medicare Tax on them,
+    and the half of the first two that comes off income."""
+    earnings: int
+    tax: int
+    additional_medicare: int
+
+    @property
+    def deduction(self) -> int:
+        """Half the self-employment tax (IRC §164(f)): an adjustment to
+        income, so it lowers AGI. The Additional Medicare Tax isn't in it."""
+        return self.tax // 2
+
+
+NO_SELF_EMPLOYMENT = SelfEmployment(0, 0, 0)
+
+
+def _owners_shares(ty: TaxYear, owner: str | None, amount: int) -> dict[str | None, int]:
+    """``amount`` of an account ``owner``'s as each person's: all of it a
+    person's own account's, and a joint account's split evenly between the
+    household's members (a business both spouses run, a qualified joint
+    venture, #623); with no members to split it, the household's (None)."""
+    if owner not in ownership.JOINT_OWNERS and owner in {p.id for p in ty.persons}:
+        return {owner: amount}
+    members = ty.household.members
+    if not members:
+        return {None: amount}
+    share, extra = divmod(amount, len(members))
+    return {m: share + (extra if i == 0 else 0) for i, m in enumerate(members)}
+
+
+def _add(into: dict[str | None, int], parts: Mapping[str | None, int]) -> None:
+    for person, amount in parts.items():
+        into[person] = into.get(person, 0) + amount
+
+
+def wages(ty: TaxYear) -> dict[str | None, int]:
+    """The year's wages by whose they are (#623): ``ordinary`` income paid
+    out of a ``salary`` income account, its owner's (a joint one's split as
+    :func:`_owners_shares` splits it). They are taken as Social Security and
+    Medicare wages; take-home pay entered with no tax character isn't
+    income, and can't count."""
+    out: dict[str | None, int] = {}
+    for item in ty.year_items("ordinary"):
+        if item.payer.kind == "income" and item.payer.subkind == "salary":
+            _add(out, _owners_shares(ty, item.payer.owner, item.amount))
+    return out
+
+
+def _of(amount: int, micros: Any) -> int:
+    return amount * int(micros) // 1_000_000
+
+
+def self_employment(ty: TaxYear, kind: str = registries.SELF_EMPLOYMENT_TAX) -> SelfEmployment:
+    """The year's self-employment tax (#623). Each person's net profit is
+    their non-hobby ``business`` accounts' (a joint account's split evenly),
+    netted together as Schedule SE nets a person's Schedule Cs; a spouse's
+    loss doesn't offset the other's profit, a carried-in NOL never reduces
+    it, and a hobby has none. Net earnings are ``earnings_factor`` of a
+    profit, none under ``minimum``. Social Security takes ``ss_rate`` of
+    them up to the year's wage base less the person's own :func:`wages`,
+    Medicare ``medicare_rate`` of all of them, and the Additional Medicare
+    Tax ``additional_medicare_rate`` of the household's over its threshold
+    less the household's wages (Form 8959 Part II; the 0.9% on the wages
+    themselves is wage payroll tax, which the model leaves to the
+    household's spending). A year with no profit needs no ``kind`` table."""
+    profit: dict[str | None, int] = {}
+    for _item, account, added, _not_deducted in _business_legs(
+            ty, ty.year_items(registries.BUSINESS_INCOME, registries.BUSINESS_EXPENSE)):
+        if not account.hobby:
+            _add(profit, _owners_shares(ty, account.owner, added))
+    if not any(amount > 0 for amount in profit.values()):
+        return NO_SELF_EMPLOYMENT
+    status = ty.filing_status
+    rows = [r for r in ty.indexed(kind) if r.get("filing_status") == status]
+    if not rows:
+        raise TaxError(f"{where(ty)}: a business profit needs aux/{kind}.csv, "
+                       f"with a row for filing_status={status!r}")
+    row = rows[0]
+    paid = wages(ty)
+    earnings = tax = 0
+    for person, net in profit.items():
+        earned = _of(max(0, net), row["earnings_factor_micros"])
+        if earned < int(row["minimum"]):
+            continue
+        base = max(0, int(row["wage_base"]) - paid.get(person, 0))
+        tax += _of(min(earned, base), row["ss_rate_micros"]) + _of(earned, row["medicare_rate_micros"])
+        earnings += earned
+    threshold = max(0, int(row["additional_medicare_threshold"]) - sum(paid.values()))
+    additional = _of(max(0, earnings - threshold), row["additional_medicare_rate_micros"])
+    return SelfEmployment(earnings, tax, additional)
+
+
 CAPITAL_LINES = ("capital_loss_used", "capital_loss_carryover", "capital_loss_lapsed")
 """The return lines :func:`capital_lines` fills: a jurisdiction that nets its
 own gains replaces them as a group."""

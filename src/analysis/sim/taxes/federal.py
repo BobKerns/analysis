@@ -52,6 +52,8 @@ class Federal(TaxCalculator):
         ss_threshold_aux: str = "ss_taxation_thresholds"
         nol_limit_percent: int | None = None
         """How much of taxable income a carried-in NOL may offset; 80 by default."""
+        self_employment_aux: str = registries.SELF_EMPLOYMENT_TAX
+        """The self-employment tax's figures (#623)."""
 
     def prepare(self, year: TaxYear) -> Prepared:
         return FederalYear(self, year)
@@ -75,15 +77,19 @@ class FederalYear(Prepared):
 
         other_ordinary, ss_income, qualified_dividends = common.income_buckets(ty)
         business = common.business_result(ty)
+        # Self-employment tax (#623) depends on the business's profit and
+        # the wages alone, so a what-if's extra income never changes it.
+        self._se = common.self_employment(ty, params.self_employment_aux)
         capital = common.capital_gains(ty, loss_limit=common.loss_limit(ty))
         self._capital = capital
         # Last year's state and local refund, as much of it as the
         # deduction saved tax (#593).
         self._refunds = ty.tax_refunded()
         self._refund_income = recaptured_refund(ty, self._refunds)
-        # A Schedule C loss offsets the year's other income (#231).
+        # A Schedule C loss offsets the year's other income (#231); half the
+        # self-employment tax is an adjustment to it (#623).
         self._ordinary = (other_ordinary + business.net + capital.stcg - capital.loss_deduction
-                          + self._refund_income)
+                          + self._refund_income - self._se.deduction)
         # Qualified dividends are taxed with long-term gains (IRC §1(h)(11)),
         # but a capital loss doesn't offset them: they join after the netting.
         self._dividends = qualified_dividends
@@ -126,6 +132,10 @@ class FederalYear(Prepared):
             "ltcg_exclusion": capital.ltcg - self._net_ltcg(capital.ltcg),
             **common.capital_lines(capital),
             "ss_benefits": ss_income,
+            **{line: amount for line, amount in (
+                ("se_earnings", self._se.earnings), ("se_tax", self._se.tax),
+                ("se_tax_deduction", self._se.deduction),
+                ("additional_medicare_tax", self._se.additional_medicare)) if amount},
         }
         hsa_contributed, hsa_withdrawn = common.hsa_deferred_flows(ty)
         self._memo = {
@@ -143,6 +153,9 @@ class FederalYear(Prepared):
             "hsa_contributed": hsa_contributed,
             "hsa_withdrawn": hsa_withdrawn,
             "excluded_gain": ty.total("excluded_gain"),
+            # Half the self-employment tax (#623), for a state that doesn't
+            # follow the federal adjustment to add back.
+            "se_tax_deduction": self._se.deduction,
             "roth_qualified": sum(i.amount for i in ty.year_items("tax_free")
                                   if i.payer.subkind == registries.RETIREMENT_SUBKIND),
             # A state doesn't tax its own refund (#593): one that starts
@@ -194,8 +207,11 @@ class FederalYear(Prepared):
             **deductions,
             "taxable_income": taxable,
             "ordinary_taxable": common.ordinary_taxable(taxable, ltcg, stcg, bool(self._stcg_brackets)),
+            # Form 1040's total tax: the income tax and, from Schedule 2,
+            # the self-employment tax and Additional Medicare Tax (#623).
             "tax": common.stacked_tax(
-                taxable, ltcg, stcg, self.brackets, self.ltcg_brackets, self._stcg_brackets),
+                taxable, ltcg, stcg, self.brackets, self.ltcg_brackets, self._stcg_brackets)
+            + self._se.tax + self._se.additional_medicare,
             # IRMAA's MAGI (#253): AGI plus tax-exempt interest (#265).
             "magi": agi + self._exempt,
         }

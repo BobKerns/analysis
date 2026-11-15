@@ -779,6 +779,11 @@ filing status the brackets have and the table lacks would tax nothing."""
 IRMAA_TIERS = "irmaa_tiers"
 """The aux kind of the Medicare income-related surcharge tiers (#253)."""
 
+SELF_EMPLOYMENT_TAX = "self_employment_tax"
+"""The aux kind of the self-employment tax's figures (#623): the Social
+Security wage base, the rates, the share of net profit that is net
+earnings, the $400 floor and the Additional Medicare Tax threshold."""
+
 IRMAA_SERIES_COLUMNS: tuple[str, ...] = ("floor_series", "part_b_series", "part_d_series")
 """The ``irmaa_tiers`` columns naming an optional inflation series that grows
 a row's floor, Part B add-on and Part D add-on (#253)."""
@@ -803,6 +808,9 @@ TAX_GROWTH_SERIES_COLUMNS: dict[str, dict[str, str]] = {
     },
     STATE_RETIREMENT_EXCLUSION: {"amount_series": "amount"},
     STATE_ADJUSTMENTS: {"amount_series": "amount", "income_limit_series": "income_limit"},
+    # The Social Security wage base follows the national average wage, not
+    # prices; a growth series is the nearest the model has (#623).
+    SELF_EMPLOYMENT_TAX: {"wage_base_series": "wage_base"},
 }
 """Optional columns of the tax tables the law indexes for inflation (#467),
 by kind: {series column: the money column it grows}. Each names an
@@ -812,10 +820,11 @@ date to January of the tax year, rounded down to $50 (or the kind's
 holds it flat. Social Security's thresholds and the capital loss limit are
 fixed in law, so they have none."""
 
-TAX_INDEX_ROUNDING: dict[str, int] = {STATE_ADJUSTMENTS: 100}
+TAX_INDEX_ROUNDING: dict[str, int] = {STATE_ADJUSTMENTS: 100, SELF_EMPLOYMENT_TAX: 30_000}
 """Kinds whose indexed figures round down to other than $50, in cents: a
 state's own credits and limits round to the dollar (California's $153
-exemption credit, #488), where $50 would swallow most of their growth."""
+exemption credit, #488), where $50 would swallow most of their growth.
+The Social Security wage base moves in steps of $300 (#623)."""
 
 AUX_SERIES_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     IRMAA_TIERS: IRMAA_SERIES_COLUMNS,
@@ -981,6 +990,14 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # series (IRMAA_SERIES_COLUMNS); blank holds it flat.
     IRMAA_TIERS: ("effective_date", "filing_status", "tier", "magi_floor",
                   "part_b", "part_d", *IRMAA_SERIES_COLUMNS),
+    # Self-employment tax (#623), by filing status: net earnings are
+    # earnings_factor of a person's Schedule C net profit, none under
+    # `minimum`; ss_rate of them up to the wage base less the person's
+    # wages, medicare_rate of all of them, and additional_medicare_rate of
+    # the household's over additional_medicare_threshold less its wages.
+    SELF_EMPLOYMENT_TAX: ("effective_date", "filing_status", "wage_base", "ss_rate",
+                          "medicare_rate", "earnings_factor", "minimum",
+                          "additional_medicare_rate", "additional_medicare_threshold"),
 }
 
 # Aux kinds that are no longer read, with what replaced them: a file of one
@@ -1036,6 +1053,12 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     } for kind in (ITEMIZED_LIMITS, STATE_ITEMIZED_LIMITS)},
     "life_table": {"q_female": ("q_female_micros", "number"),
                    "q_male": ("q_male_micros", "number")},
+    SELF_EMPLOYMENT_TAX: {
+        "ss_rate": ("ss_rate_micros", "percent"),
+        "medicare_rate": ("medicare_rate_micros", "percent"),
+        "earnings_factor": ("earnings_factor_micros", "percent"),
+        "additional_medicare_rate": ("additional_medicare_rate_micros", "percent"),
+    },
 }
 
 # Column names the CSVs used before #130, when rates and factors were
@@ -1074,6 +1097,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "capital_loss_limit": frozenset({"amount"}),
     IRMAA_TIERS: frozenset({"magi_floor", "part_b", "part_d"}),
     STATE_SOCIAL_SECURITY: frozenset({"phaseout_start", "phaseout_end"}),
+    SELF_EMPLOYMENT_TAX: frozenset({"wage_base", "minimum", "additional_medicare_threshold"}),
 }
 
 AUX_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {

@@ -1501,6 +1501,15 @@ year. `sim ytd edit` changes a row and `sim ytd delete` removes one, and
 describes is better given as that rule's `ytd_amount` or `ytd_preroll`
 (`sim scheduled edit`).
 
+Give each spouse's wages a row of their own, out of their own salary account,
+and use gross pay (box 3 of the W-2, Social Security wages), with any 401(k)
+contribution as its own `tax_deferred_in` row, so income tax still sees the
+taxable wages. Self-employment tax on a
+business's profit counts a person's wages toward their own Social Security
+wage base, so wages entered under the wrong person, or as take-home pay with
+no tax character, make it come out wrong
+([#623](https://github.com/BobKerns/analysis/issues/623)).
+
 ### 4.14 Medicare's income surcharge (IRMAA)
 
 Medicare charges more for Part B and Part D when your income is high. The
