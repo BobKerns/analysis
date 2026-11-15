@@ -607,6 +607,16 @@ Food: budget 710.00 or actual 420.00 a month? (budget, actual, all-budget, all-a
 - A category only one has is made from that one.
 - A category made from the budget keeps the budget's yearly payments (the
   property tax above is two yearly rules, not 500 a month).
+- A category whose transactions were all left out (a payee the yearly
+  script took, say) shows an actual of 0.00 and is asked about. Choosing
+  actual gives it no rule; choosing budget may pay again what your own
+  rules already do.
+
+The budget is read into the transactions' categories, so that nothing is
+counted on both sides under two names: a category your `splits.csv`
+divides takes the split's row with no account, and a budget category that
+the transactions put in `Other`, for want of a row in `categories.csv`,
+goes to `Other` too.
 
 Your answers are saved in `imports/budget_choices.csv`, with the two
 amounts each was chosen between. The next run uses them and asks nothing,
@@ -615,9 +625,13 @@ again, offering what you chose before. Edit the file, or delete a row, to
 change your mind.
 
 Away from a terminal the saved choices are used. A category with none
-needs `--prefer budget` or `--prefer actual`, which is also how to skip
-the questions at a terminal; a preference is not saved. With `--summary`
-the table is shown and nothing is asked or written.
+needs `--prefer budget` or `--prefer actual`. A preference answers
+wherever a question would be asked (no saved choice, or an amount that
+has moved), at a terminal or away from one, and is not saved. With
+`--summary` the table is shown and nothing is asked or written. With
+`--yearly-script` too, a payee in a category made from the budget (by a
+saved choice or `--prefer`) is noted in the script and given no rule: the
+budget's rules have that category's yearly payments already.
 
 Neither side is the truth: a budget is a plan and the transactions are one
 period's history. The choice is a starting point to review, like the rules
