@@ -317,7 +317,7 @@ no rules, and puts the candidates in the file as a shell script.
 #   none, to keep it spread over the months.
 # yearly yearly_mutual_insurance_mar Expense_Insurance 900.00 3 2026-03 'Yearly: Mutual Insurance (Insurance)'
 # yearly yearly_mutual_insurance_sep Expense_Insurance 900.00 9 2026-09 'Yearly: Mutual Insurance (Insurance)'
-# leave_out quicken '(?<!\S)mutual\s(?:.*\s)?insurance(?!\S)'
+# leave_out quicken '^\s*(?:\S*\d\S*\s+)*mutual\s+(?:\S*\d\S*\s+)*insurance(?:\s+\S*\d\S*)*\s*$'
 ```
 
 **Edit it before you run it.** The script is a best-effort reading, and
@@ -343,8 +343,9 @@ Then:
   paid in. Where a bill was seen over several years, the latest year's
   payments are used.
 - Fill in each `EDIT_ME`: the account that pays, when `--from-account` was
-  left out, and the expense account of a category that has none (neither a
-  row in `imports/expense_accounts.csv` nor an account of its own name).
+  left out, and the expense account of a category that has none in this
+  scenario (neither a row in `imports/expense_accounts.csv` that names one
+  of its accounts, nor an account of its own name).
 
 Two kinds of candidate are noted in the script and not written as rules:
 
@@ -363,9 +364,11 @@ Then run it once with `sh yearly-rules.sh`. Each `yearly` line is a
 `sim scheduled add`, and each `leave_out` line adds a row to the
 `excluded_payees.csv` of the source the payments came from, so that the
 next `sim import transactions` no longer spreads that payee over the
-months. The row finds the payee by its whole words, whatever dates and
-reference numbers come with them. Run the import again
-afterwards. The yearly rules are ordinary rules of yours from then on:
+months. The row finds that payee and no other: its words in order,
+whatever dates and reference numbers come before, between and after them,
+and no other word. Should the script stop partway (an `EDIT_ME` left in,
+say), correct it and run it again: it skips what it has already added.
+Run the import again afterwards. The yearly rules are ordinary rules of yours from then on:
 an import never replaces them, and `sim scheduled edit` changes them.
 
 With less than a year of transactions, first day to last, a yearly bill

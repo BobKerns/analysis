@@ -26,6 +26,7 @@ from analysis.sim.imports.mapping import EXCLUDED_PAYEES, NO_RULE, payee_key
 
 __all__ = ["latest_year", "payee_pattern", "script"]
 
+_SCHEDULED = "scheduled.csv"
 _FILL_IN = "EDIT_ME"
 """Stands where the script can't know a name: `sim scheduled add` refuses
 it, or at a terminal asks for the account in its place."""
@@ -33,22 +34,31 @@ it, or at a terminal asks for the account in its place."""
 
 def latest_year(each: Occasional) -> tuple[tuple[date, int], ...]:
     """The payments of the twelve months up to ``each``'s last: what a bill
-    seen over several years comes to now."""
-    last = each.paid[-1][0]
+    seen over several years comes to now. A payment that another follows
+    eleven months later is that one's last year, paid a month later in the
+    year (a bill's date moves), and not a second bill."""
+    def months(month: date) -> int:
+        return month.year * 12 + month.month
+
+    last = months(each.paid[-1][0])
+    paid_in = {months(month) for month, _ in each.paid}
     return tuple((month, cents) for month, cents in each.paid
-                 if (last.year - month.year) * 12 + last.month - month.month < 12)
+                 if last - months(month) < 12 and months(month) + 11 not in paid_in)
 
 
 def payee_pattern(payee: str) -> str:
-    """A regular expression for ``excluded_payees.csv`` that finds
-    ``payee`` however its dates and reference numbers change: the words
-    ``payee_key`` keeps, whole and in order, with anything between them.
-    Whole words, as a payee map's pattern is read (``payee_matches``):
-    ``art`` must not leave out ``walmart``. Whitespace bounds them and not
-    ``\\b``, which a word ending in punctuation (``co.``) would defeat."""
+    """A regular expression for ``excluded_payees.csv`` that finds the
+    payees of ``payee``'s key (``payee_key``) and no others, however their
+    dates and reference numbers change: the whole text, being the key's
+    words in order with only words that have a digit before, between and
+    after them. Anything looser would leave out other payees unseen:
+    ``corner store`` must not find ``corner store deli``, which is another
+    key and may be paid every week."""
     words = payee_key(payee).split()
     assert words, "a candidate's payee has a word to know it by"
-    return r"(?<!\S)" + r"\s(?:.*\s)?".join(re.escape(word) for word in words) + r"(?!\S)"
+    numbered = r"\S*\d\S*"
+    return (rf"^\s*(?:{numbered}\s+)*" + rf"\s+(?:{numbered}\s+)*".join(re.escape(word) for word in words)
+            + rf"(?:\s+{numbered})*\s*$")
 
 
 def _csv_cell(text: str) -> str:
@@ -61,6 +71,7 @@ def script(
     occasional: Collection[Occasional], *, data_dir: Path, scenario: str, start: str,
     from_account: str | None, from_lot: str = "", series: str = "cpi",
     expense_accounts: Mapping[str, str], accounts: Collection[str] = (), source: str,
+    taken: Collection[str] = (),
 ) -> tuple[str, int, int]:
     """A POSIX shell script that adds a yearly rule for each month of the
     year each of ``occasional`` was last paid in, and leaves its payee out
@@ -77,9 +88,16 @@ def script(
 
     Each amount is as paid, with inflation measured from the month it was
     paid in. A category's account is found as the import finds it: its
-    row in ``expense_accounts``, else the scenario account (``accounts``)
-    of the category's own name. With neither, and for ``from_account``
-    when None, a name is left to be filled in.
+    row in ``expense_accounts``, else the category's own name, and in
+    either case one of the scenario's accounts (``accounts``): the saved
+    rows are shared by every scenario. Without one, and for
+    ``from_account`` when None, a name is left to be filled in.
+
+    No rule is given a name in ``taken``, the scenario's scheduled names,
+    nor one used earlier in the script: `sim scheduled add` refuses a
+    name it has, which would stop the script halfway. Run again after
+    stopping for any other reason, the script skips the rules and rows it
+    has already added.
 
     Two kinds of candidate are in neither count. A category whose saved
     account is ``-`` has no rule to replace, so it is only noted. A payee
@@ -119,29 +137,36 @@ def script(
         f'    excluded="$DATA_DIR/imports/$1/{EXCLUDED_PAYEES}"',
         '    [ -s "$excluded" ] || { mkdir -p "$(dirname "$excluded")"; echo payee_pattern > "$excluded"; }',
         '    [ -z "$(tail -c 1 "$excluded")" ] || echo >> "$excluded"',
-        '    printf \'%s\\n\' "$2" >> "$excluded"',
+        "    # Not twice, when the script is run again.",
+        '    grep -qxF -e "$2" "$excluded" || printf \'%s\\n\' "$2" >> "$excluded"',
         "}",
         "yearly() {  # NAME TO_ACCOUNT AMOUNT MONTH_OF_YEAR PAID_IN DESCRIPTION",
+        "    # A rule this script added before it stopped, when it is run again.",
+        f'    if grep -q "^$1," "$DATA_DIR/scenarios/$SCENARIO/{_SCHEDULED}" 2>/dev/null; then',
+        '        echo "already added: $1"; return 0',
+        "    fi",
         '    sim scheduled add "$START" "$FROM" "$2" "$3" --data-dir "$DATA_DIR" --scenario "$SCENARIO" \\',
         '        ${FROM_LOT:+--from-lot "$FROM_LOT"} --name "$1" --cadence annual --month-of-year "$4" \\',
         f'        --series {quote(series)} --base-date "$5" --description "$6"',
         "}",
     ]
-    named: set[str] = set()
+    named = set(taken)
     written = waiting = 0
     for each in occasional:
         when = ", ".join(f"{month:%b %Y} {format_dollars(cents)}" for month, cents in each.paid)
         lines += ["", f"# {_comment(each.payee)} ({_comment(each.category)}): {when}"]
         # As the import resolves it (`_category_accounts`).
-        account = expense_accounts.get(each.category) or (each.category if each.category in accounts else None)
+        account = expense_accounts.get(each.category) or each.category
         if account == NO_RULE:
             lines.append(f"# Left out: expense_accounts.csv gives {_comment(each.category)} no rule "
                          f"({NO_RULE!r}), so no monthly rule spreads this, and none is added here.")
             continue
-        if account is None:
+        if account not in accounts:
+            lines.append(
+                (f"# No expense account is saved for {_comment(each.category)}" if account == each.category else
+                 f"# {_comment(each.category)} is saved as {_comment(account)}, which {scenario} doesn't have")
+                + f": name one in place of {_FILL_IN}.")
             account = _FILL_IN
-            lines.append(f"# No expense account is saved for {_comment(each.category)}: "
-                         f"name one in place of {_FILL_IN}.")
         # Not the payee as one transaction has it: its reference numbers
         # and dates would name the rule for one payment.
         slug = category_slug(payee_key(each.payee))[:32].strip("_") or category_slug(each.category)
@@ -159,7 +184,7 @@ def script(
             named.add(name)
             block.append(
                 f"yearly {quote(name)} {quote(account)} {format_dollars(cents)} {month.month} "
-                f"{month:%Y-%m} {quote(f'Yearly: {each.payee} ({each.category})')}")
+                f"{month:%Y-%m} {quote(f'Yearly: {_comment(each.payee)} ({_comment(each.category)})')}")
         cell = quote(_csv_cell(payee_pattern(each.payee)))
         block += [f"leave_out {quote(origin)} {cell}" for origin in each.sources or (source,)]
         if each.elsewhere:
