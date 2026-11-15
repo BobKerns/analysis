@@ -206,6 +206,10 @@ YEARLY_MONTHS = 2
 """What is paid in no more months of a year than this is paid in those
 months, once a year each, and not monthly: a budget's category
 (``analysis.sim.imports.budget``), or a payee of a year's transactions."""
+OCCASIONAL_MONTHS = 4
+"""A payee paid in no more months of a year than this is a candidate for
+yearly rules: a quarterly bill is the most that months three apart
+(``OCCASIONAL_GAP_MONTHS``) allow."""
 OCCASIONAL_LEAST_CENTS = 60_000
 """The least a payee paid now and then comes to in a year to be worth rules
 of its own: under 50 dollars a month, spreading it changes little."""
@@ -222,7 +226,7 @@ ended in the period, or a season's, and not a bill that comes round."""
 @dataclass(frozen=True)
 class Occasional:
     """A payee the baseline spreads over every month, though it was paid
-    in only a month or two of a year: a candidate for a yearly rule."""
+    in only a few months of a year: a candidate for a yearly rule for each."""
 
     category: CanonicalCategory
     payee: str
@@ -255,7 +259,7 @@ def months_covered(baseline: BaselineResult) -> int:
 
 
 def occasional_payments(
-    baseline: BaselineResult, *, most_months: int = YEARLY_MONTHS,
+    baseline: BaselineResult, *, most_months: int = OCCASIONAL_MONTHS,
     least_cents: int = OCCASIONAL_LEAST_CENTS,
 ) -> list[Occasional] | None:
     """The large payments that may be yearly and not monthly, the largest
