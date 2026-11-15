@@ -354,10 +354,12 @@ def test_lot_history_adds_basis_and_quantity(two_lot_run: RunConnection) -> None
 
 
 def test_income_account_history_changes_are_the_flows(two_lot_run: RunConnection) -> None:
-    history = reports.account_history(two_lot_run, "Income_Salary_Bill", yearly=True)
+    # Not a salary account: its year_to_date.csv wages count in the flows
+    # but never move its balance.
+    history = reports.account_history(two_lot_run, "Income_SS_Bill", yearly=True)
     income = reports.flows_by_year(two_lot_run, "income", by="account")
     assert history["change"].to_numpy() == pytest.approx(
-        income["Income_Salary_Bill"].reindex(history.index).to_numpy())
+        income["Income_SS_Bill"].reindex(history.index).to_numpy())
 
 
 def test_report_commands_print_their_tables(report_run_file: Path) -> None:
