@@ -2519,6 +2519,7 @@ def write_import_map(test_data_dir: Path) -> Callable[[str, str], Path]:
         mapping.CATEGORIES: mapping.CATEGORIES_HEADER,
         mapping.SPLITS: mapping.SPLITS_HEADER,
         mapping.EXCLUDED_PAYEES: mapping.EXCLUDED_PAYEES_HEADER,
+        mapping.INCOME_ACCOUNTS: mapping.EXPENSE_ACCOUNTS_HEADER,
         mapping.EXPENSE_ACCOUNTS: mapping.EXPENSE_ACCOUNTS_HEADER,
         mapping.PAYEES: mapping.PAYEES_HEADER,
     }

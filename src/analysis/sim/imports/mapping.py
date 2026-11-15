@@ -25,6 +25,7 @@ balance quietly left out.
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import tempfile
@@ -307,22 +308,50 @@ def rename_lot(data_dir: Path, account: str, old: str, new: str) -> list[str]:
                      if (t.account, t.lot) == (account, old) else None)
 
 
+def _income_categories(data_dir: Path, account: str) -> set[str]:
+    """The budget categories whose generated income rules are paid from
+    ``account`` in any scenario. No map lists a budget's income categories,
+    so the rules a budget's import wrote are where they are found."""
+    from analysis.expenses.baseline import INCOME_GENERATED_TAG
+
+    found: set[str] = set()
+    for path in (data_dir / "scenarios").glob("*/scheduled.csv"):
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            for row in csv.DictReader(handle):
+                if row.get("from_account") != account or INCOME_GENERATED_TAG not in (row.get("tags") or ""):
+                    continue
+                try:
+                    category = json.loads(row.get("meta_json") or "{}").get("category")
+                except ValueError:
+                    continue
+                if isinstance(category, str):
+                    found.add(category)
+    return found
+
+
 def rename_account(data_dir: Path, old: str, new: str) -> list[str]:
     """Follow a renamed scenario account in every saved mapping; the files
     changed, relative to the data dir. A category that had no row because
-    the account had its name gets one, so its rule still finds the account."""
+    the account had its name gets one, so its rule still finds the account.
+    The scenarios' own files are renamed first: an income category that
+    relied on the account's name is known by the rule a budget gave it."""
     root = imports_dir(data_dir)
     # Read, and so checked, before anything is rewritten.
     expenses = load_expense_accounts(root / EXPENSE_ACCOUNTS)
-    implicit = old not in expenses.accounts and old in _categories(data_dir)
+    income = load_expense_accounts(root / INCOME_ACCOUNTS)
+    implicit = {
+        expenses.path: old not in expenses.accounts and old in _categories(data_dir),
+        income.path: old not in income.accounts and old in _income_categories(data_dir, new),
+    }
     changed = _retarget(data_dir, lambda t: AccountTarget(t.action, new, t.lot, t.note)
                         if t.account == old else None)
-    if implicit or old in expenses.accounts.values():
-        expenses.accounts = {c: new if a == old else a for c, a in expenses.accounts.items()}
-        if implicit:
-            expenses.accounts[old] = new
-        expenses.save()
-        changed.append(str(expenses.path.relative_to(data_dir)))
+    for saved in (expenses, income):
+        if implicit[saved.path] or old in saved.accounts.values():
+            saved.accounts = {c: new if a == old else a for c, a in saved.accounts.items()}
+            if implicit[saved.path]:
+                saved.accounts[old] = new
+            saved.save()
+            changed.append(str(saved.path.relative_to(data_dir)))
     return changed
 
 

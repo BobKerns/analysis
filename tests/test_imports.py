@@ -10,8 +10,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from analysis.sim.imports import budget as budgets
 from analysis.sim.imports import flows, holdings, mapping, profiles, quicken, sources, transactions
-from analysis.sim.imports.forms import ORIGIN, Flows, Holding, Snapshot
+from analysis.sim.imports.forms import ORIGIN, Budget, BudgetLine, Flows, Holding, Snapshot
 
 # ---------- the Quicken source ----------
 
@@ -935,3 +936,28 @@ def test_a_quicken_budget_summary_has_the_years_totals_and_its_months_from_the_p
     assert {line.category: line.total_cents for line in budget.lines} \
         == {line.category: line.total_cents for line in full.lines}
     assert all(line.monthly_cents == () for line in budget.lines)
+
+
+def _lines(*categories: str) -> Budget:
+    return Budget("quicken", tuple(BudgetLine(False, category, 1200, ()) for category in categories), ())
+
+
+def test_a_category_row_is_for_its_path_and_never_a_same_named_category_elsewhere() -> None:
+    found = budgets.gather(
+        _lines("Insurance", "Auto:Insurance", "Auto:Fuel", "Home:Tax", "Tax"),
+        {"Insurance": "Insurance", "Auto": "Car"}, {"Tax"})
+
+    # The top category's rows say nothing of Auto:Insurance or Home:Tax.
+    assert found.spending == {"Insurance": [1200], "Car": [2400], "Home": [1200]}
+    assert found.excluded == ["Tax"]
+
+
+def test_a_budgets_income_tax_lines_are_left_out_unless_the_map_names_them() -> None:
+    budget = _lines("Tax:Fed", "Tax:State", "Tax:Property", "Taxes:Federal Estimated", "Sales Tax", "Statement Fees")
+
+    found = budgets.gather(budget, {}, set())
+    assert found.taxes == ["Tax:Fed", "Tax:State", "Taxes:Federal Estimated"]
+    assert found.spending == {"Tax": [1200], "Sales Tax": [1200], "Statement Fees": [1200]}
+
+    # A row for the line itself keeps it: the household means to pay it by rule.
+    assert budgets.gather(budget, {"Tax:Fed": "Withholding"}, set()).spending["Withholding"] == [1200]

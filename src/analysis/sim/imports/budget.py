@@ -21,6 +21,12 @@ those months, once a year each; in more, every month at its average."""
 _TRANSFER = re.compile(r"^(FROM|TO)\s")
 # The scenario models a mortgage itself, as the transactions' baseline holds.
 _MODELED = re.compile(r"mortgage", re.IGNORECASE)
+# Income tax, withheld or paid as estimates: the scenario's tax rules work
+# it out and pay it, so a rule for it too would pay it twice. Property and
+# sales tax are spending, and no rule of the scenario pays the payroll taxes.
+_INCOME_TAX = re.compile(
+    r"\btax(es)?\b.*\b(fed|federal|state|income|estimated|withholding)\b"
+    r"|\b(fed|federal|state|income|estimated|withholding)\b.*\btax(es)?\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -49,6 +55,9 @@ class Gathered:
     """Lines left out as moves between the household's own accounts."""
     modeled: list[str] = field(default_factory=list)
     """Lines left out because the scenario models them itself (a mortgage)."""
+    taxes: list[str] = field(default_factory=list)
+    """Income tax lines left out: the scenario's tax rules pay it. A line
+    with a row of its own in the category map is kept."""
     excluded: list[str] = field(default_factory=list)
     """Lines the category map leaves out."""
 
@@ -56,16 +65,16 @@ class Gathered:
 def _target(line: BudgetLine, merges: Mapping[str, str], exclusions: Collection[str]) -> str | None:
     """The plan's category for ``line``, or None when the map leaves it out.
 
-    The map's row for the line's whole path wins, then one for its own name,
-    then one for each category it is under, nearest first: a row for ``Food``
-    covers all that is under it. With no row, a line is its top category's,
-    since a budget's top level is about what a plan wants.
+    The map's row for the line's whole path wins, then one for each category
+    it is under, nearest first: a row for ``Food`` covers all that is under
+    it. A row names a category by its path from the top, so one for the top
+    category ``Insurance`` says nothing of ``Auto:Insurance``. With no row, a
+    line is its top category's, since a budget's top level is about what a
+    plan wants.
     """
     parts = line.category.split(":")
-    tried = [line.category, parts[-1]]
-    for depth in range(len(parts) - 1, 0, -1):
-        tried += [":".join(parts[:depth]), parts[depth - 1]]
-    for name in tried:
+    for depth in range(len(parts), 0, -1):
+        name = ":".join(parts[:depth])
         if name in exclusions:
             return None
         if name in merges:
@@ -84,6 +93,9 @@ def gather(budget: Budget, merges: Mapping[str, str], exclusions: Collection[str
             continue
         if not line.income and _MODELED.search(line.category):
             found.modeled.append(line.category)
+            continue
+        if not line.income and _INCOME_TAX.search(line.category) and line.category not in merges:
+            found.taxes.append(line.category)
             continue
         target = _target(line, merges, exclusions)
         if target is None:

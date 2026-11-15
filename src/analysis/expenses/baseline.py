@@ -13,6 +13,7 @@ import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
@@ -239,19 +240,21 @@ def generated_row(
     name: str, category: str, amount: str, *, from_account: AccountName, to_account: AccountName,
     start: str, from_lot: str = "", series: str = "cpi", priority: int = 200,
     month_of_year: int | None = None, person: str = "", tax_character: str = "none",
-    tag: str = BASELINE_GENERATED_TAG, provenance: Mapping[str, str] | None = None,
+    to_lot: str = "", producer: Literal["expense_baseline", "income_baseline"] = "expense_baseline",
+    provenance: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """One generated fixed-amount rule, monthly, or yearly in ``month_of_year``.
-    ``provenance`` (the source, a hash of its files) goes in its ``meta_json``."""
-    income = tag == INCOME_GENERATED_TAG
-    metadata = {"generated_by": "income_baseline" if income else "expense_baseline",
-                "category": category, **(provenance or {})}
+    ``producer`` says which generated rows it is one of: its tag is
+    ``generated:<producer>``. ``provenance`` (the source, a hash of its
+    files) goes in its ``meta_json``."""
+    income = producer == "income_baseline"
+    metadata = {"generated_by": producer, "category": category, **(provenance or {})}
     return {
         "name": name,
         "from_account": from_account,
         "from_lot": from_lot,
         "to_account": to_account,
-        "to_lot": "",
+        "to_lot": to_lot,
         "cadence": "monthly" if month_of_year is None else "annual",
         "month_of_year": "" if month_of_year is None else str(month_of_year),
         "amount_rule_kind": "fixed_amount",
@@ -272,7 +275,7 @@ def generated_row(
         "description": f"Generated {'income' if income else 'expense'} baseline: {category}",
         "meta_json": json.dumps(metadata, separators=(",", ":")),
         "params_json": "{}",
-        "tags": tag,
+        "tags": f"generated:{producer}",
     }
 
 

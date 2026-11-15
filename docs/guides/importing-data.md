@@ -354,19 +354,22 @@ over twelve months.
 
 A budget's categories are already yours, so no category file is needed:
 everything under a top-level category is added into it. To divide one, or
-leave one out, add rows to `imports/quicken/categories.csv`; a row for a
-category covers what is under it.
+leave one out, add rows to `imports/quicken/categories.csv`. A row names a
+category by its whole path, and covers what is under it.
 
 ```csv
 outside_category,category
-Restaurants,Dining
-Taxes,-
+Food:Restaurants,Dining
+Gifts,-
 ```
 
 The import asks which expense account each category belongs to. Type a new
 name there and it offers to add the account. A mortgage category is left
 out, since the scenario models the loan, and so are the budget's transfer
-rows.
+rows. Income tax categories (`Tax:Fed`, `Tax:State`) are left out as well:
+the scenario works out and pays that tax itself, so a rule would pay it
+twice. A row for such a category's own path keeps it. Property tax is
+spending and stays.
 
 **Income.** If the budget has income, the import says so and asks whether
 to write income rules from it. A plan usually models its own income (a
@@ -374,6 +377,12 @@ salary that ends at retirement, Social Security by claim age), so the
 default is no. To stop being asked, copy the budget in Quicken, exclude its
 income, and export the copy. Away from a terminal income is left out unless
 `--income` is given.
+
+A budget's paycheck is usually take-home pay, with its tax already
+withheld, so income rules are written untaxed. If your budget has pay
+before tax, say so when asked, or with `--gross-income`, and the scenario
+taxes it. Income goes into `--from-account` unless `--income-to` names
+another account, which it must when the spending comes from a chain.
 
 Amounts are taken as budgeted. A budget more than a year older than the
 scenario's start is warned about, since its dollars are old ones.
