@@ -415,7 +415,13 @@ def test_sim_import_transactions_yearly_script_adds_the_rules_and_leaves_the_pay
             march["month_of_year"], march["series"], march["base_date"]) == \
         ("Asset_Checking", "Expense_Living", "900.00", "annual", "3", "cpi", "2026-03")
     excluded = test_data_dir / "imports" / "quicken" / "excluded_payees.csv"
-    assert excluded.read_text(encoding="utf-8").splitlines()[-1] == r"(?<!\S)mutual\s(?:.*\s)?insurance(?!\S)"
+    assert excluded.read_text(encoding="utf-8").splitlines()[-1] == import_yearly.payee_pattern("mutual insurance")
+    # Run again, it adds neither the rules nor the row a second time.
+    rerun = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, check=False)
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert rerun.stdout.splitlines() == [
+        "already added: yearly_mutual_insurance_mar", "already added: yearly_mutual_insurance_sep"]
+    assert excluded.read_text(encoding="utf-8").count("mutual") == 1
     # The next import no longer spreads the premium over the months.
     again = _import(test_data_dir, "transactions", str(quicken_year_export), "--summary")
     assert again.exit_code == 0, again.output
@@ -491,19 +497,56 @@ def test_yearly_script_takes_the_latest_year_and_names_a_rule_past_the_payee_s_n
     assert "leave_out card " in text and "leave_out bank " not in text
 
 
-def test_yearly_script_s_pattern_finds_whole_words_only() -> None:
-    pattern = import_yearly.payee_pattern("COUNTY TAX #4411 PMT (2027)")
+def test_yearly_script_s_pattern_finds_the_payee_s_own_key_and_no_other() -> None:
+    def found(pattern: str, payee: str) -> bool:
+        return bool(re.search(pattern, payee, re.IGNORECASE))
 
-    assert re.search(pattern, "County Tax #5522 pmt (2028)", re.IGNORECASE)
-    assert re.search(pattern, "ACH county tax pmt", re.IGNORECASE)
-    assert not re.search(pattern, "Twin County Taxes Pmt", re.IGNORECASE)
-    # 'art' is not in 'walmart', as a payee map reads a pattern; nor 'co.' in 'costco.'.
+    pattern = import_yearly.payee_pattern("COUNTY TAX #4411 PMT (2027)")
+    # Its dates and reference numbers change, before, between and after its words.
+    assert found(pattern, "County Tax #5522 pmt (2028)") and found(pattern, "11/02 county tax pmt")
+    # Any other word makes another payee, with a key of its own.
+    assert not found(pattern, "ACH county tax pmt") and not found(pattern, "Twin County Taxes Pmt")
+    store = import_yearly.payee_pattern("Corner Store")
+    assert found(store, "CORNER STORE #114") and found(store, "corner 22 store")
+    for other in ("CORNER STORE DELI", "THE CORNER STORE", "CORNER LIQUOR STORE", "CORNER STOREFRONT"):
+        assert not found(store, other)
+    # One word does not find every payee that has it, nor part of a word; punctuation is kept.
     art = import_yearly.payee_pattern("ART 123")
-    assert re.search(art, "art 456", re.IGNORECASE) and not re.search(art, "WALMART 456", re.IGNORECASE)
-    assert not re.search(art, "SMART & FINAL", re.IGNORECASE)
+    assert found(art, "art 456") and not found(art, "WALMART 456") and not found(art, "ART SUPPLY")
     dotted = import_yearly.payee_pattern("Roofing Co.")
-    assert re.search(dotted, "ROOFING CO. 77", re.IGNORECASE)
-    assert not re.search(dotted, "ROOFING COX 77", re.IGNORECASE)
+    assert found(dotted, "ROOFING CO. 77") and not found(dotted, "ROOFING COX 77")
+    # What it finds is what `payee_key` reads the same.
+    assert all(found(import_yearly.payee_pattern(text), text)
+               for text in ("A+ (Plumbing) [24h]", "Bill's $ Shop | 7", "x.y*z ^ w?"))
+
+
+def test_yearly_script_counts_a_bill_that_moved_a_month_once() -> None:
+    # Paid in April, and the next year at the end of March: one premium, not two.
+    moved = _seen("Insurance", "Mutual Insurance", (date(2025, 4, 1), 88_000), (date(2026, 3, 1), 90_000))
+    assert import_yearly.latest_year(moved) == ((date(2026, 3, 1), 90_000),)
+    # Two installments, the second a month early this year.
+    twice = _seen("Taxes", "County Tax", (date(2025, 12, 1), 200_000), (date(2026, 4, 1), 210_000),
+                  (date(2026, 11, 1), 220_000))
+    assert import_yearly.latest_year(twice) == ((date(2026, 4, 1), 210_000), (date(2026, 11, 1), 220_000))
+    text, _ = _script(moved)
+    assert [line.split()[1] for line in text.splitlines() if line.startswith("yearly ")] == ["yearly_mutual_insurance"]
+
+
+def test_yearly_script_keeps_a_payee_s_line_break_out_of_the_commands() -> None:
+    text, _ = _script(_seen("Home\nRepair", "Roofing Co.\ntouch /tmp/x #", (date(2027, 5, 1), 900_000), repeats=False))
+
+    block = text.split("\nyearly() {")[1].split("\n}\n", 1)[1]
+    assert all(line.startswith("#") for line in block.splitlines() if line)
+    assert "'Yearly: Roofing Co. touch /tmp/x # (Home Repair)'" in block
+
+
+def test_yearly_script_names_no_rule_as_one_the_scenario_has() -> None:
+    text, _ = _script(_seen("Taxes", "County Tax", (date(2027, 4, 1), 220_000)),
+                      _seen("Insurance", "Mutual Insurance", (date(2027, 3, 1), 90_000)),
+                      taken=["yearly_county_tax", "yearly_county_tax_taxes", "baseline_expense_food"])
+
+    names = [line.split()[1] for line in text.splitlines() if line.startswith("yearly yearly_")]
+    assert names == ["yearly_county_tax_2", "yearly_mutual_insurance"]
 
 
 def test_yearly_script_finds_a_category_s_account_as_the_import_does() -> None:
@@ -522,6 +565,11 @@ def test_yearly_script_finds_a_category_s_account_as_the_import_does() -> None:
     assert "# Left out: expense_accounts.csv gives Gifts no rule ('-')" in text
     assert "big_gift" not in text and "big\\s" not in text
     assert written == 2
+
+    # The saved rows are every scenario's: an account this one lacks is no account to pay.
+    other, _ = _script(mapped, accounts=["Expense_Living"], expense_accounts={"Taxes": "Expense_Housing"})
+    assert "# Taxes is saved as Expense_Housing, which retire_alice doesn't have: name one" in other
+    assert "yearly yearly_county_tax EDIT_ME 2200.00 4 2027-04 " in other
 
 
 def test_yearly_script_gives_every_rule_a_name_of_its_own() -> None:
@@ -569,7 +617,7 @@ def test_yearly_script_makes_a_payee_not_seen_again_a_choice_and_runs_only_one_t
 
 def test_yearly_script_comments_out_a_payee_that_is_paid_in_other_categories_too() -> None:
     text, written = _script(_seen("Electronics", "Corner Store", (date(2027, 3, 1), 90_000), elsewhere=True),
-                            expense_accounts={"Electronics": "Expense_Living"})
+                            expense_accounts={"Electronics": "Expense_Living"}, accounts=["Expense_Living"])
 
     assert written == 0
     assert "# Commented out: this payee is paid in other categories too" in text
