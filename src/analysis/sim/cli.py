@@ -39,6 +39,7 @@ from analysis.expenses.baseline import (
     months_covered,
     occasional_payments,
     BaselineResult,
+    OCCASIONAL_BASELINE_MONTHS,
     BASELINE_GENERATED_TAG,
     INCOME_GENERATED_TAG,
     replace_generated_scheduled_rows,
@@ -8977,12 +8978,14 @@ def _ask_transactions_account(path: Path, source: str) -> str:
 
 def _categorize_by_payee(
     frame: pd.DataFrame, payee_maps: dict[str, import_mapping.PayeeMap], *, known: Collection[str],
+    ask: bool = True,
 ) -> tuple[pd.DataFrame, set[str], list[import_transactions_.Unmatched]]:
     """``frame`` with categories found by payee (``payee_maps``, by source),
     asking at a terminal about each payee with uncategorized payments that
     no row covers, the most paid first. Also the sources whose map got an
     answer, to save, and the payees that 'rest' sent to Other unasked.
-    ``known`` is the categories in use, to complete."""
+    ``known`` is the categories in use, to complete. Without ``ask`` (a
+    summary, which saves nothing) every such payee goes to Other unasked."""
     sorter = import_transactions_.Categorizer(frame, payee_maps)
     asked: set[str] = set()
     explained = False
@@ -8990,6 +8993,8 @@ def _categorize_by_payee(
         unmatched = sorter.unmatched()
         if not unmatched:
             return sorter.result(), asked, []
+        if not ask:
+            return sorter.result("Other"), asked, unmatched
         if not _interactive():
             shown = unmatched[:15]
             raise click.ClickException(
@@ -9100,13 +9105,26 @@ def import_transactions(
     the categories that fell to Other. Given a year or more, it also lists
     the large payments made in only a month or two (an insurance premium, a
     property tax), which a monthly rule misstates: give such a payee a
-    yearly rule of its own (sim scheduled add) and a '-' row in payees.csv
-    or excluded_payees.csv.
+    yearly rule for each month it is paid in (sim scheduled add) and a '-'
+    row in payees.csv or excluded_payees.csv. It asks nothing: a payee with
+    no category yet is counted in Other.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     data_repo_root = data_dir_p.parent
     _refuse_unmigrated_imports(data_dir_p)
+    # Before any file is read or payee asked about: an answer given since
+    # would be lost with a slip here.
+    if from_account is None and not summary:
+        if not _interactive():
+            raise click.UsageError("Missing option '--from-account'.")
+        with _intent_db(data_dir_p, scenario_name) as (con, _):
+            endpoints = _endpoints(con)
+        sources = endpoints.chains_for("source")
+        _echo_endpoints(endpoints.accounts, endpoints.lot_info, sources)
+        from_account, from_lot = _pick_endpoint(
+            "from", None, from_lot or None, accounts=endpoints.accounts, lot_info=endpoints.lot_info,
+            chains=sources, roles=endpoints.roles, role="source")
     if not files:
         default_file = data_repo_root / "quicken" / "Transaction Export.csv"
         if not default_file.exists():
@@ -9160,7 +9178,7 @@ def import_transactions(
             import_mapping.expense_accounts_path(data_dir_p))
         transactions, payees_asked, left_to_other = _categorize_by_payee(
             flows.transactions, payee_maps,
-            known={*maps.merges.values(), *expense_accounts.accounts})
+            known={*maps.merges.values(), *expense_accounts.accounts}, ask=not summary)
         # A category a payee was given is one the household chose, as a
         # merge's target is: not one for the default category to swallow.
         for payee_map in payee_maps.values():
@@ -9186,15 +9204,8 @@ def import_transactions(
             + "; ".join(f"{each.example} ({format_dollars(each.cents)})" for each in left_to_other[:5]))
     if summary:
         _show_transactions_summary(baseline)
-        if payees_asked:
-            click.echo("(summary) the payee categories you gave were not saved")
         return
-    if from_account is None:
-        if not _interactive():
-            raise click.UsageError("Missing option '--from-account'.")
-        from_account = _ask_name(
-            "account or chain", names.chain_names(data_dir_p, scenario_name, accounts=True),
-            prompt="account the expenses are paid from", plural="accounts and chains")
+    assert from_account is not None  # given, or asked for above
     with _intent_db(data_dir_p, scenario_name) as (con, _):
         if start is None:
             # As loaded: a derived scenario's own scenario.csv may leave it
@@ -9211,7 +9222,7 @@ def import_transactions(
     start = _validate_month_date(start)
     totals = {str(r["category"]): float(r["amount_total"])
               for r in baseline.category_totals.to_dict("records")}
-    months = max(baseline.monthly["summary_month_start"].nunique(), 1)
+    months = baseline.observed_months
     mappings, ignored, to_save = _category_accounts(
         data_dir_p, scenario_name, {category: total / months for category, total in totals.items()},
         expense_accounts, scenario_accounts, expense_names)
@@ -9262,7 +9273,7 @@ def _show_transactions_summary(baseline: BaselineResult) -> None:
     """What `sim import transactions` would make its rules from (#333)."""
     used = baseline.transactions
     months = months_covered(baseline)
-    observed = max(baseline.monthly["summary_month_start"].nunique(), 1)
+    observed = baseline.observed_months
     if used.empty:
         click.echo("no imported transactions are used")
     else:
@@ -9277,30 +9288,34 @@ def _show_transactions_summary(baseline: BaselineResult) -> None:
     if baseline.categories_defaulted_to_other:
         click.echo("put in Other, having no row in a category map: "
                    + ", ".join(baseline.categories_defaulted_to_other))
-    totals = baseline.category_totals.to_dict("records")
+    # Cents, as the rules' amounts are worked out from; Amazon's summaries
+    # are in dollars.
+    totals = {str(row["category"]): round(float(row["amount_total"]) * 100)
+              for row in baseline.category_totals.to_dict("records")}
     if totals:
-        width = max(len("category"), *(len(str(row["category"])) for row in totals))
-        click.echo(f"{'category':<{width}}  {'total':>12}  {'a month':>10}")
-        for row in totals:
-            total = float(row["amount_total"])
-            click.echo(f"{row['category']!s:<{width}}  {total:>12,.2f}  {total / observed:>10,.2f}")
-        everything = sum(float(row["amount_total"]) for row in totals)
-        click.echo(f"{'all':<{width}}  {everything:>12,.2f}  {everything / observed:>10,.2f}")
-    if months < 12:
+        # The divisor the rules use: it counts Amazon's months too, and no
+        # month without spending, so it can differ from the span above.
+        rate = f"a month (of {observed})"
+        width = max(len("category"), *map(len, totals))
+        click.echo(f"{'category':<{width}}  {'total':>12}  {rate:>15}")
+        for category, cents in (*totals.items(), ("all", sum(totals.values()))):
+            click.echo(f"{category:<{width}}  {format_dollars(cents):>12}  "
+                       f"{format_dollars(round(cents / observed)):>15}")
+    if months < OCCASIONAL_BASELINE_MONTHS:
         click.echo("note: payments made only once or twice a year (an insurance premium, a property "
-                   "tax) can't be told from monthly ones in less than a year of transactions; "
-                   "every category is spread by the month.")
+                   f"tax) can't be told from monthly ones in less than {OCCASIONAL_BASELINE_MONTHS} "
+                   "months of transactions; every category is spread by the month.")
         return
     occasional = occasional_payments(baseline)
     if not occasional:
         return
-    click.echo("paid in only a month or two, and spread over every month by the rules:")
+    click.echo("paid in only a month or two of a year, and spread over every month by the rules:")
     for each in occasional:
-        when = ", ".join(f"{month:%b %Y} {amount:,.2f}" for month, amount in each.paid)
+        when = ", ".join(f"{month:%b %Y} {format_dollars(cents)}" for month, cents in each.paid)
         click.echo(f"  {each.payee} ({each.category}): {when}")
-    click.echo("To pay one when it falls, give it a yearly rule of its own (sim scheduled add) and "
-               "leave its payee out of the rules with a '-' row in payees.csv, or a row in "
-               "excluded_payees.csv.")
+    click.echo("To pay one when it falls, give it a yearly rule for each month of the year it is paid "
+               "in (sim scheduled add), each for that month's amount, and leave its payee out of the "
+               "generated rules with a '-' row in payees.csv, or a row in excluded_payees.csv.")
 
 
 @import_group_command.command("budget")

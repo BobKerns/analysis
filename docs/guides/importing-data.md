@@ -259,14 +259,17 @@ sim import transactions transactions.csv --summary
 ```
 
 Shows what the rules would be made from, and writes nothing: the period
-covered, each category's total and what it comes to a month, what was left
+covered, each category's total and what it comes to a month (over the
+months that had any spending, as the rules are worked out), what was left
 out and why (money in, moves between your own accounts, what the scenario
 models itself), and the outside categories that fell to `Other`. It needs
 no `--from-account` and no expense accounts yet, so it is a good first
-command with a new file.
+command with a new file. It asks nothing: a payee with no category yet is
+counted in `Other`, with a note of the most paid.
 
 Give it a year or more of transactions and it also lists the large payments
-made in only a month or two: an insurance premium, a property tax.
+made in only a month or two of each year: an insurance premium, a
+property tax.
 
 ```text
 paid in only a month or two, and spread over every month by the rules:
@@ -274,9 +277,11 @@ paid in only a month or two, and spread over every month by the rules:
 ```
 
 A monthly rule gets the year's total right and the months wrong. To pay
-such a bill when it falls, give it a yearly rule of its own with
-`sim scheduled add`, and leave its payee out of the generated rules: a `-`
-row in `payees.csv`, or a row in `excluded_payees.csv`. With less than a
+such a bill when it falls, give it a yearly rule for each month of the
+year it is paid in with `sim scheduled add` (two rules for the premium
+above, 900 in March and 900 in September), and leave its payee out of the
+generated rules: a `-` row in `payees.csv`, or a row in
+`excluded_payees.csv`. With less than a
 year of transactions a yearly bill can't be told from a monthly one that
 just began, so nothing is listed.
 

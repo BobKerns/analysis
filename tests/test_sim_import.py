@@ -332,9 +332,10 @@ def test_sim_import_transactions_summary_shows_what_the_rules_come_from_and_writ
     assert result.exit_code == 0, result.output
     assert "4 transaction(s) used, January 2026 to February 2026 (2 months)" in result.output
     lines = [line.split() for line in result.output.splitlines()]
+    assert ["category", "total", "a", "month", "(of", "2)"] in lines
     assert ["Food", "840.00", "420.00"] in lines and ["Gifts", "60.00", "30.00"] in lines
     assert ["all", "900.00", "450.00"] in lines
-    assert "can't be told from monthly ones in less than a year" in result.output
+    assert "can't be told from monthly ones in less than 12 months" in result.output
     assert _generated(test_data_dir) == {}
 
 
@@ -353,7 +354,31 @@ def test_sim_import_transactions_summary_lists_large_payments_that_are_not_month
     # The premium is found; the groceries are monthly, and the small fee isn't worth a rule.
     assert "  Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00" in result.output
     assert "Market" not in result.output and "Web Host" not in result.output
-    assert "sim scheduled add" in result.output
+    assert "a yearly rule for each month of the year it is paid in (sim scheduled add)" in result.output
+
+
+def test_sim_import_transactions_needs_the_account_to_pay_from_before_it_reads_a_file(
+    test_data_dir: Path, quicken_transaction_export: Path,
+) -> None:
+    # No category map either, which reading the file would have refused.
+    result = _import(test_data_dir, "transactions", str(quicken_transaction_export))
+
+    assert result.exit_code == 2
+    assert "Missing option '--from-account'" in result.output and "category map" not in result.output
+
+
+@pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
+def test_sim_import_transactions_asks_for_the_lot_of_an_investment_account_to_pay_from(
+    test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
+
+    result = _import(test_data_dir, "transactions", str(quicken_transaction_export),
+                     input="Asset_Brokerage_Joint\ndefault\n")
+
+    assert result.exit_code == 0, result.output
+    food = _generated(test_data_dir)["baseline_expense_food"]
+    assert (food["from_account"], food["from_lot"]) == ("Asset_Brokerage_Joint", "default")
 
 
 @pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
@@ -1152,6 +1177,20 @@ def test_sim_import_transactions_reads_a_banks_file_by_its_payees(
         "baseline_expense_utilities": ("150.00", "Expense_Housing"),
     }
     assert "warning" not in result.output
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_transactions_summary_asks_nothing_about_payees(
+    test_data_dir: Path, bank_checking_export: Path,
+) -> None:
+    # No input to read: a question would end the run.
+    result = _import(test_data_dir, "transactions", str(bank_checking_export), "--summary",
+                     "--outside-account", "Checking")
+
+    assert result.exit_code == 0, result.output
+    assert "payee(s) not asked about went to Other" in result.output
+    assert "has no category" not in result.output and "not saved" not in result.output
+    assert not (test_data_dir / "imports" / "wells_fargo" / "payees.csv").exists()
 
 
 @pytest.mark.usefixtures("at_a_terminal")

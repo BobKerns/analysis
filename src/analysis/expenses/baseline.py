@@ -54,6 +54,12 @@ class BaselineResult:
     category_totals: pd.DataFrame
     categories_defaulted_to_other: tuple[SourceCategory, ...]
 
+    @property
+    def observed_months(self) -> int:
+        """The months with any spending, imported or Amazon's: what a
+        category's total is divided by for its monthly rule."""
+        return max(self.monthly["summary_month_start"].nunique(), 1) if not self.monthly.empty else 1
+
 
 def _apply_category_splits(
     frame: pd.DataFrame, splits: CategorySplits, *, has_accounts: bool,
@@ -197,27 +203,31 @@ def build_expense_baseline(
 
 
 OCCASIONAL_MONTHS = 2
-"""A payee paid in no more months of a year or more than this is paid now
-and then, not monthly."""
-OCCASIONAL_LEAST = 600.0
-"""The least such a payee comes to, in dollars, to be worth a rule of its
-own: under 50 a month, spreading it changes little."""
+"""A payee paid in no more months than this for each year of transactions
+is paid now and then, not monthly."""
+OCCASIONAL_LEAST_CENTS = 60_000
+"""The least such a payee comes to in a year to be worth rules of its own:
+under 50 dollars a month, spreading it changes little."""
+OCCASIONAL_BASELINE_MONTHS = 12
+"""The least months of transactions that payments now and then are looked
+for in: in less, a yearly bill can't be told from a monthly one that just
+began."""
 
 
 @dataclass(frozen=True)
 class Occasional:
     """A payee the baseline spreads over every month, though it was paid
-    in only a month or two."""
+    in only a month or two of a year."""
 
     category: CanonicalCategory
     payee: str
     """The payee as one of its transactions has it."""
-    paid: tuple[tuple[date, float], ...]
-    """Each month it was paid in, and what was paid then."""
+    paid: tuple[tuple[date, int], ...]
+    """Each month it was paid in, and the cents paid then."""
 
     @property
-    def total(self) -> float:
-        return sum(amount for _, amount in self.paid)
+    def total_cents(self) -> int:
+        return sum(cents for _, cents in self.paid)
 
 
 def months_covered(baseline: BaselineResult) -> int:
@@ -231,30 +241,39 @@ def months_covered(baseline: BaselineResult) -> int:
 
 
 def occasional_payments(
-    baseline: BaselineResult, *, most_months: int = OCCASIONAL_MONTHS, least: float = OCCASIONAL_LEAST,
+    baseline: BaselineResult, *, most_months: int = OCCASIONAL_MONTHS,
+    least_cents: int = OCCASIONAL_LEAST_CENTS,
 ) -> list[Occasional]:
     """The large payments that aren't monthly, the largest first: a payee
-    of a category paid in at most ``most_months`` months, for ``least`` or
-    more in all. Nothing is found in less than a year of transactions,
-    where a yearly bill can't be told from a monthly one that just began.
+    of a category paid in at most ``most_months`` months of each year
+    covered (a part of a year counting as one), for ``least_cents`` or more
+    a year. Nothing is found in less than ``OCCASIONAL_BASELINE_MONTHS`` of
+    transactions.
     """
     from analysis.sim.imports.mapping import payee_key
 
-    used = baseline.transactions
-    if months_covered(baseline) < 12:
+    covered = months_covered(baseline)
+    if covered < OCCASIONAL_BASELINE_MONTHS:
         return []
-    keyed = used.assign(payee_key=used["payee"].map(payee_key))
+    used = baseline.transactions
+    keyed = pd.DataFrame({
+        "category": used["category"], "payee": used["payee"], "key": used["payee"].map(payee_key),
+        "month": used["summary_month_start"], "cents": -used["amount_cents"],
+    })
+    keyed = keyed[keyed["key"].ne("")]
+    by_month = keyed.groupby(["category", "key", "month"], as_index=False).agg(
+        cents=("cents", "sum"), payee=("payee", "first"))
+    each_payee = by_month.groupby(["category", "key"])["cents"]
+    # Three years of a yearly premium are three months paid, not one.
+    few = each_payee.transform("size") <= most_months * -(-covered // 12)
+    large = each_payee.transform("sum") * 12 >= least_cents * covered
     found: list[Occasional] = []
-    for _, rows in keyed[keyed["payee_key"].ne("")].groupby(["category", "payee_key"], sort=True):
-        category = rows["category"].iloc[0]
-        by_month = rows.groupby("summary_month_start")["amount"].sum()
-        if len(by_month) > most_months or by_month.sum() < least:
-            continue
+    for _, rows in by_month[few & large].groupby(["category", "key"], sort=True):
         found.append(Occasional(
-            str(category), str(rows["payee"].iloc[0]),
-            tuple((date(month.year, month.month, 1), float(amount))
-                  for month, amount in zip(by_month.index, by_month, strict=True))))
-    return sorted(found, key=lambda each: (-each.total, each.category, each.payee))
+            str(rows["category"].iloc[0]), str(rows["payee"].iloc[0]),
+            tuple((date(month.year, month.month, 1), int(cents))
+                  for month, cents in zip(rows["month"], rows["cents"], strict=True))))
+    return sorted(found, key=lambda each: (-each.total_cents, each.category, each.payee))
 
 
 def build_scheduled_baseline_rows(
@@ -275,7 +294,7 @@ def build_scheduled_baseline_rows(
     row's ``meta_json``."""
     if baseline.monthly.empty:
         return []
-    observed_months = baseline.monthly["summary_month_start"].nunique()
+    observed_months = baseline.observed_months
     rows: list[dict[str, str]] = []
     ignored = set(ignored_categories)
     for record in baseline.category_totals.to_dict("records"):

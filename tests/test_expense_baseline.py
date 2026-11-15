@@ -5,6 +5,8 @@ import pandas as pd
 import pytest
 
 from analysis.expenses.baseline import (
+    BaselineResult,
+    occasional_payments,
     BASELINE_GENERATED_TAG,
     SCHEDULED_HEADER,
     build_expense_baseline,
@@ -430,3 +432,27 @@ def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: 
         written = list(csv.DictReader(handle))
     assert [row["name"] for row in written] == ["baseline_expense_food"]
     assert written[0]["amount"] == "36.00"
+
+def _paid(*payments: tuple[str, str, float]) -> BaselineResult:
+    """A baseline of ``payments`` (month, payee, dollars), all of one category."""
+    used = pd.DataFrame(payments, columns=["month", "payee", "amount"])
+    used["summary_month_start"] = pd.to_datetime(used.pop("month"))
+    used["amount_cents"] = (-used["amount"] * 100).round().astype(int)
+    used["category"] = "Insurance"
+    empty = pd.DataFrame()
+    return BaselineResult(used, empty, empty, empty, ())
+
+
+def test_occasional_payments_allow_a_month_or_two_for_each_year_covered() -> None:
+    monthly = [(f"{year}-{month:02d}-01", "Gym", 80.0) for year in (2024, 2025, 2026) for month in range(1, 13)]
+    yearly = [(f"{year}-03-01", "Mutual Insurance", 900.0) for year in (2024, 2025, 2026)]
+    twice = [(f"{year}-{month}-01", "County Tax", 2000.0) for year in (2024, 2025, 2026) for month in ("04", "12")]
+    small = [(f"{year}-06-01", "Web Host", 120.0) for year in (2024, 2025, 2026)]
+
+    found = occasional_payments(_paid(*monthly, *yearly, *twice, *small))
+
+    # Three years of a yearly bill are three months paid; 360 in three years is under 600 a year.
+    assert [(each.payee, len(each.paid), each.total_cents) for each in found] == [
+        ("County Tax", 6, 1_200_000), ("Mutual Insurance", 3, 270_000)]
+    # Under a year, a yearly bill can't be told from a monthly one that just began.
+    assert occasional_payments(_paid(*monthly[:11], yearly[0])) == []
