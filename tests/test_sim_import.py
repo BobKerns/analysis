@@ -1197,3 +1197,182 @@ def test_sim_import_transactions_finds_a_short_card_files_rows_by_payee_beside_a
     # (80 + 40) in January and 60 in February.
     assert {name: rule["amount"] for name, rule in _generated(test_data_dir).items()} == {
         "baseline_expense_food": "90.00"}
+
+
+# ---------- a budget (issue #617) ----------
+
+def _budget(data: Path, export: Path, *args: str, input: str | None = None):  # noqa: A002
+    return _import(data, "budget", str(export), "--from-account", "Asset_Checking", *args, input=input)
+
+
+_BUDGET_ACCOUNTS = "Food,Expense_Living\nUtilities,Expense_Housing\nProperty Tax,Expense_Housing\n"
+
+
+def test_sim_import_budget_pays_monthly_categories_monthly_and_yearly_ones_in_their_months(
+    test_data_dir: Path, quicken_budget_full_export: Path, quicken_budget_summary_export: Path,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS)
+
+    dry = _budget(test_data_dir, quicken_budget_full_export, "--dry-run")
+    assert dry.exit_code == 0, dry.output
+    assert "would replace" in dry.output and _generated(test_data_dir) == {}
+
+    result = _budget(test_data_dir, quicken_budget_full_export)
+    assert result.exit_code == 0, result.output
+    rules = _generated(test_data_dir)
+    # With no category map, what is under Food is Food's. Utilities at its average month.
+    assert {name: (rule["cadence"], rule["month_of_year"], rule["amount"], rule["to_account"])
+            for name, rule in rules.items()} == {
+        "baseline_expense_food": ("monthly", "", "710.00", "Expense_Living"),
+        "baseline_expense_utilities": ("monthly", "", "165.00", "Expense_Housing"),
+        "baseline_expense_property_tax_dec": ("annual", "12", "3000.00", "Expense_Housing"),
+        "baseline_expense_property_tax_apr": ("annual", "4", "3000.00", "Expense_Housing"),
+    }
+    assert json.loads(rules["baseline_expense_food"]["meta_json"])["source"] == "quicken budget"
+    # Income is offered, never assumed.
+    assert "The budget has income: 1 category, 60000.00 over its period. It is left out" in result.output
+    assert "copy the budget" in result.output
+
+    # The Summary form has no months, so the tax is spread over the year.
+    spread = _budget(test_data_dir, quicken_budget_summary_export)
+    assert spread.exit_code == 0, spread.output
+    rules = _generated(test_data_dir)
+    assert rules["baseline_expense_property_tax"]["amount"] == "500.00"
+    assert "baseline_expense_property_tax_dec" not in rules and "removed" in spread.output
+
+
+def test_sim_import_budget_gathers_categories_by_the_category_map(
+    test_data_dir: Path, quicken_budget_full_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS + "Dining,Expense_Living\n")
+    # A row covers what is under its category; '-' leaves one out.
+    write_import_map("quicken/categories.csv", "Food:Restaurants,Dining\nProperty Tax,-\n")
+
+    result = _budget(test_data_dir, quicken_budget_full_export)
+
+    assert result.exit_code == 0, result.output
+    assert {name: rule["amount"] for name, rule in _generated(test_data_dir).items()} == {
+        "baseline_expense_food": "510.00", "baseline_expense_dining": "200.00",
+        "baseline_expense_utilities": "165.00"}
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_budget_asks_about_income_and_adds_an_expense_account(
+    test_data_dir: Path, quicken_budget_full_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nUtilities,Expense_Housing\n")
+    # Use the income, which is take-home pay; for the tax, an asset and a chain are refused,
+    # then a new account of the property tax subkind; the paycheck's account.
+    answers = ("y\nn\nAsset_Savings\nasset_checking_liquidity\nExpense_Property_Tax\ny\ntaxes_property\n"
+               "Income_Salary_Alice\n")
+
+    result = _budget(test_data_dir, quicken_budget_full_export, input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "added expense account Expense_Property_Tax" in result.output
+    assert "Asset_Savings is an account or chain of the scenario, and not an expense account" in result.output
+    assert "Add expense account asset_checking_liquidity" not in result.output
+    accounts = (test_data_dir / "scenarios" / "retire_alice" / "accounts.csv").read_text(encoding="utf-8")
+    assert "Expense_Property_Tax,expense,taxes_property,joint" in accounts
+    assert _generated(test_data_dir)["baseline_expense_property_tax_dec"]["to_account"] \
+        == "Expense_Property_Tax"
+    with (test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv").open(
+            newline="", encoding="utf-8") as f:
+        income = [row for row in csv.DictReader(f) if "generated:income_baseline" in row["tags"]]
+    assert [(row["name"], row["from_account"], row["to_account"], row["amount"], row["tax_character"],
+             row["person"]) for row in income] == [
+        ("baseline_income_paycheck", "Income_Salary_Alice", "Asset_Checking", "5000.00", "none",
+         "alice")]
+    saved = test_data_dir / "imports"
+    assert "Property Tax,Expense_Property_Tax" in (saved / "expense_accounts.csv").read_text(encoding="utf-8")
+    assert (saved / "income_accounts.csv").read_text(encoding="utf-8").splitlines() == [
+        "category,account", "Paycheck,Income_Salary_Alice"]
+
+    # The account's rename follows into the saved income accounts.
+    renamed = CliRunner().invoke(main, [
+        "sim", "account", "rename", "Income_Salary_Alice", "Income_Pay_Alice",
+        "--scenario", "retire_alice", "--data-dir", str(test_data_dir)])
+    assert renamed.exit_code == 0, renamed.output
+    assert "imports/income_accounts.csv" in renamed.output
+    assert (saved / "income_accounts.csv").read_text(encoding="utf-8").splitlines()[1] \
+        == "Paycheck,Income_Pay_Alice"
+
+    # A rerun that declines the income leaves the income rule alone.
+    again = _budget(test_data_dir, quicken_budget_full_export, input="n\n")
+    assert again.exit_code == 0, again.output
+    assert "baseline_income_paycheck" in (
+        test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv").read_text(encoding="utf-8")
+
+
+def _income_rules(data: Path) -> list[dict[str, str]]:
+    with (data / "scenarios" / "retire_alice" / "scheduled.csv").open(newline="", encoding="utf-8") as f:
+        return [row for row in csv.DictReader(f) if "generated:income_baseline" in row["tags"]]
+
+
+def test_sim_import_budget_income_is_take_home_pay_unless_said_to_be_gross(
+    test_data_dir: Path, quicken_budget_full_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS)
+    write_import_map("income_accounts.csv", "Paycheck,Income_Salary_Alice\n")
+
+    net = _budget(test_data_dir, quicken_budget_full_export, "--income")
+    assert net.exit_code == 0, net.output
+    assert "written as take-home pay, untaxed" in net.output
+    assert [row["tax_character"] for row in _income_rules(test_data_dir)] == ["none"]
+
+    gross = _budget(test_data_dir, quicken_budget_full_export, "--income", "--gross-income")
+    assert gross.exit_code == 0, gross.output
+    assert [row["tax_character"] for row in _income_rules(test_data_dir)] == ["ordinary"]
+
+
+def test_sim_import_budget_from_a_chain_needs_an_income_account_only_for_income(
+    test_data_dir: Path, quicken_budget_full_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS)
+    write_import_map("income_accounts.csv", "Paycheck,Income_Salary_Alice\n")
+    chain = ("budget", str(quicken_budget_full_export), "--from-account", "asset_checking_liquidity")
+
+    spending = _import(test_data_dir, *chain)
+    assert spending.exit_code == 0, spending.output
+    assert _generated(test_data_dir)["baseline_expense_food"]["from_account"] == "asset_checking_liquidity"
+
+    refused = _import(test_data_dir, *chain, "--income")
+    assert refused.exit_code != 0
+    assert "'asset_checking_liquidity' is a chain; name one with --income-to" in refused.output
+
+    named = _import(test_data_dir, *chain, "--income", "--income-to", "Asset_Checking")
+    assert named.exit_code == 0, named.output
+    assert [row["to_account"] for row in _income_rules(test_data_dir)] == ["Asset_Checking"]
+
+
+def test_sim_import_budget_pays_income_into_the_lot_the_spending_comes_from(
+    test_data_dir: Path, quicken_budget_full_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS)
+    write_import_map("income_accounts.csv", "Paycheck,Income_Salary_Alice\n")
+
+    result = _import(test_data_dir, "budget", str(quicken_budget_full_export), "--income",
+                     "--from-account", "Asset_Brokerage_Joint", "--from-lot", "default")
+
+    assert result.exit_code == 0, result.output
+    assert [(row["to_account"], row["to_lot"]) for row in _income_rules(test_data_dir)] == [
+        ("Asset_Brokerage_Joint", "default")]
+
+
+def test_a_rename_gives_an_income_category_named_like_the_account_a_row(
+    test_data_dir: Path, quicken_budget_full_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS)
+    where = ["--scenario", "retire_alice", "--data-dir", str(test_data_dir)]
+    # The budget's category is Paycheck: an account of that name needs no row.
+    renamed = CliRunner().invoke(main, ["sim", "account", "rename", "Income_Salary_Alice", "Paycheck", *where])
+    assert renamed.exit_code == 0, renamed.output
+    assert _budget(test_data_dir, quicken_budget_full_export, "--income").exit_code == 0
+    assert [row["from_account"] for row in _income_rules(test_data_dir)] == ["Paycheck"]
+
+    result = CliRunner().invoke(main, ["sim", "account", "rename", "Paycheck", "Income_Pay_Alice", *where])
+
+    assert result.exit_code == 0, result.output
+    assert (test_data_dir / "imports" / "income_accounts.csv").read_text(encoding="utf-8") \
+        == "category,account\nPaycheck,Income_Pay_Alice\n"

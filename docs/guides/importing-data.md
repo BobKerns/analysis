@@ -14,6 +14,7 @@ Alice and Bill and a Quicken export:
 | You keep your accounts in | What to do |
 | --- | --- |
 | Quicken | Export two reports, then [balances](#balances-sim-import-holdings) and [spending](#spending-sim-import-transactions) below |
+| A budget in Quicken | Export it, then [a budget](#a-budget-sim-import-budget) below |
 | Vanguard or Fidelity | Download each account's holdings, then [brokerage files](#brokerage-files) below |
 | Another brokerage or bank whose website downloads a table of balances | Describe its columns in a [profile](#a-source-of-your-own), then import as above |
 | A bank's or a card's transactions download | [Bank and card files](#bank-and-card-files) below; a layout not built in needs a [profile](#a-source-of-your-own) |
@@ -329,6 +330,78 @@ downloads that all have it may then overlap, and a transaction in two of
 them is counted once. A download without references can't be matched that
 way, so it mustn't cover the same days as another.
 
+## A budget: `sim import budget`
+
+```sh
+sim import budget budget-full.csv --from-account Asset_Checking --dry-run
+sim import budget budget-full.csv --from-account Asset_Checking
+```
+
+Writes the same expense rules from what you plan to spend instead of what
+you spent. Transactions miss plans not yet carried out, and a budget may be
+out of date, so which to use is yours to choose: each import replaces all
+the generated rules, whichever wrote them.
+
+Quicken exports a budget in two forms. Use **Full**, which has each month:
+
+- A category budgeted in most months becomes one monthly rule, at its
+  average month.
+- A category budgeted in only one or two months of the year (property tax,
+  an insurance premium) becomes a yearly rule in each of those months.
+
+The **Summary** form has only the year's totals, so everything is spread
+over twelve months.
+
+A budget's categories are already yours, so no category file is needed:
+everything under a top-level category is added into it. To divide one, or
+leave one out, add rows to `imports/quicken/categories.csv`. A row names a
+category by its whole path, and covers what is under it.
+
+```csv
+outside_category,category
+Food:Restaurants,Dining
+Gifts,-
+```
+
+The import asks which expense account each category belongs to. Type a new
+name there and it offers to add the account. A mortgage category is left
+out, since the scenario models the loan, and so are the budget's transfer
+rows. Income tax categories (`Tax:Fed`, `Tax:State`) are left out as well:
+the scenario works out and pays that tax itself, so a rule would pay it
+twice. A row for such a category's own path keeps it. Property tax is
+spending and stays.
+
+**Income.** If the budget has income, the import says so and asks whether
+to write income rules from it. A plan usually models its own income (a
+salary that ends at retirement, Social Security by claim age), so the
+default is no. To stop being asked, copy the budget in Quicken, exclude its
+income, and export the copy. Away from a terminal income is left out unless
+`--income` is given.
+
+A budget's paycheck is usually take-home pay, with its tax already
+withheld, so income rules are written untaxed. If your budget has pay
+before tax, say so when asked, or with `--gross-income`, and the scenario
+taxes it. Income goes into `--from-account` unless `--income-to` names
+another account, which it must when the spending comes from a chain.
+
+Treat a budget's income as a convenient start, not the finished model. It
+has no withholding and no 401(k) contribution for the plan's taxes to see.
+For those to come out right, set the income up from a pay stub: the gross
+pay as the income rule, with a rule for each thing taken out of it (the
+401(k) contribution, other deductions), and leave the income tax to the
+scenario's tax rules. `sim scheduled add` writes each rule, and
+`--no-income` keeps the budget's income out once you have.
+
+The scenario does not work out payroll tax (Social Security and Medicare).
+Enter the pay stub's amounts for them as an expense rule of their own, taken
+from the gross pay with the other deductions. A business's profit is another
+matter: its self-employment tax depends on a profit the run works out, and
+is not modeled yet
+([#623](https://github.com/BobKerns/analysis/issues/623)).
+
+Amounts are taken as budgeted. A budget more than a year older than the
+scenario's start is warned about, since its dollars are old ones.
+
 ## Quicken
 
 Save two reports under *My Reports*, and export each as CSV:
@@ -337,6 +410,7 @@ Save two reports under *My Reports*, and export each as CSV:
 | --- | --- | --- |
 | Net worth (every account, with its balance) | `sim import holdings` | the scenario's first day; or December 31 for `--year-end` |
 | Transactions (every account, itemized, with payee and category) | `sim import transactions` | the year to average |
+| A budget's export, Full | `sim import budget` | the year planned |
 
 With no file named, `sim import transactions` reads
 `quicken/Transaction Export.csv` at the data repo's top level, along with the

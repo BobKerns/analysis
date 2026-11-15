@@ -2,6 +2,7 @@
 
 from analysis.expenses.baseline import (
     BASELINE_GENERATED_TAG,
+    INCOME_GENERATED_TAG,
     AccountName,
     BaselineResult,
     CanonicalCategory,
@@ -13,12 +14,15 @@ from analysis.expenses.baseline import (
     SourceCategory,
     build_expense_baseline,
     build_scheduled_baseline_rows,
+    category_slug,
+    generated_row,
     replace_generated_scheduled_rows,
 )
 
 __all__ = [
     "BaselineResult",
     "BASELINE_GENERATED_TAG",
+    "INCOME_GENERATED_TAG",
     "AccountName",
     "CanonicalCategory",
     "CategoryAccountMap",
@@ -29,5 +33,7 @@ __all__ = [
     "SourceCategory",
     "build_expense_baseline",
     "build_scheduled_baseline_rows",
+    "category_slug",
+    "generated_row",
     "replace_generated_scheduled_rows",
 ]

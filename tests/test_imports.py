@@ -10,8 +10,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from analysis.sim.imports import budget as budgets
 from analysis.sim.imports import flows, holdings, mapping, profiles, quicken, sources, transactions
-from analysis.sim.imports.forms import ORIGIN, Flows, Holding, Snapshot
+from analysis.sim.imports.forms import ORIGIN, Budget, BudgetLine, Flows, Holding, Snapshot
 
 # ---------- the Quicken source ----------
 
@@ -900,3 +901,63 @@ def test_the_maps_of_several_sources_must_agree() -> None:
     with pytest.raises(ValueError, match="split two ways"):
         transactions.combine(
             {"a": one, "b": transactions.CategoryMaps(splits={"Food": {"Checking": "Food_Bill"}})})
+
+
+# ---------- a budget (issue #617) ----------
+
+def test_a_quicken_budget_is_read_month_by_month_with_the_own_amount_of_each_category(
+    quicken_budget_full_export: Path,
+) -> None:
+    assert [(s.name, form) for s, form in sources.detect(quicken_budget_full_export)] == [
+        ("quicken", "budget")]
+
+    budget = sources.read_budget(quicken_budget_full_export)
+
+    assert budget.months[0] == dt.date(2026, 7, 1) and budget.months[-1] == dt.date(2027, 6, 1)
+    assert len(budget.months) == 12
+    lines = {line.category: line for line in budget.lines}
+    # Food's row counts what is under it; 10 a month is its own. Travel has no budget.
+    assert {name: line.total_cents for name, line in lines.items()} == {
+        "Paycheck": 6_000_000, "Food": 12_000, "Food:Groceries": 600_000,
+        "Food:Restaurants": 180_000, "Food:Restaurants:Coffee": 60_000,
+        "Property Tax": 600_000, "Utilities": 198_000}
+    assert lines["Paycheck"].income and not lines["Food"].income
+    assert lines["Property Tax"].monthly_cents == (0, 0, 0, 0, 0, 300_000, 0, 0, 0, 300_000, 0, 0)
+    assert lines["Utilities"].monthly_cents[5:7] == (15_000, 18_000)
+
+
+def test_a_quicken_budget_summary_has_the_years_totals_and_its_months_from_the_period(
+    quicken_budget_summary_export: Path, quicken_budget_full_export: Path,
+) -> None:
+    budget = sources.read_budget(quicken_budget_summary_export)
+    full = sources.read_budget(quicken_budget_full_export)
+
+    assert budget.months == full.months
+    assert {line.category: line.total_cents for line in budget.lines} \
+        == {line.category: line.total_cents for line in full.lines}
+    assert all(line.monthly_cents == () for line in budget.lines)
+
+
+def _lines(*categories: str) -> Budget:
+    return Budget("quicken", tuple(BudgetLine(False, category, 1200, ()) for category in categories), ())
+
+
+def test_a_category_row_is_for_its_path_and_never_a_same_named_category_elsewhere() -> None:
+    found = budgets.gather(
+        _lines("Insurance", "Auto:Insurance", "Auto:Fuel", "Home:Tax", "Tax"),
+        {"Insurance": "Insurance", "Auto": "Car"}, {"Tax"})
+
+    # The top category's rows say nothing of Auto:Insurance or Home:Tax.
+    assert found.spending == {"Insurance": [1200], "Car": [2400], "Home": [1200]}
+    assert found.excluded == ["Tax"]
+
+
+def test_a_budgets_income_tax_lines_are_left_out_unless_the_map_names_them() -> None:
+    budget = _lines("Tax:Fed", "Tax:State", "Tax:Property", "Taxes:Federal Estimated", "Sales Tax", "Statement Fees")
+
+    found = budgets.gather(budget, {}, set())
+    assert found.taxes == ["Tax:Fed", "Tax:State", "Taxes:Federal Estimated"]
+    assert found.spending == {"Tax": [1200], "Sales Tax": [1200], "Statement Fees": [1200]}
+
+    # A row for the line itself keeps it: the household means to pay it by rule.
+    assert budgets.gather(budget, {"Tax:Fed": "Withholding"}, set()).spending["Withholding"] == [1200]

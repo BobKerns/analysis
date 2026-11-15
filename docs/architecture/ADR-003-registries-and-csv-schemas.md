@@ -1072,11 +1072,12 @@ Rows merge by `effective_date` down the lineage (§4.5): a child adds a move wit
 
 #### 4.17 Shared: `data_repo/imports/` (optional): saved import mappings and source profiles
 
-`sim import` ([#527](https://github.com/BobKerns/analysis/issues/527)) reads an outside file with a *source* (one outside layout; `sim import sources` lists them), into one of two common forms: *holdings*, a snapshot of what each outside account holds, or *flows*, a period's transactions. Which of a scenario's names each outside name means is saved here, once, for every scenario: the outside world's names don't change from one scenario to the next, and a target is checked against the scenario being written. The loader never reads this folder.
+`sim import` ([#527](https://github.com/BobKerns/analysis/issues/527)) reads an outside file with a *source* (one outside layout; `sim import sources` lists them), into one of three common forms: *holdings*, a snapshot of what each outside account holds, *flows*, a period's transactions, or a *budget*, a plan of income and spending by category. Which of a scenario's names each outside name means is saved here, once, for every scenario: the outside world's names don't change from one scenario to the next, and a target is checked against the scenario being written. The loader never reads this folder.
 
 ```text
 imports/
   expense_accounts.csv     category -> expense account
+  income_accounts.csv      category -> income account, for a budget's income
   <source>/
     profile.yaml           the source itself, when the household describes its own
     accounts.csv           (outside account, asset) -> (account, lot), or skip
@@ -1186,7 +1187,14 @@ A transaction that does have a category (a card's own, which may not be the hous
 
 The import's before-and-after compares against every generated rule the scenario loads. It replaces only the scenario's own rows, so a rule a parent scenario generated that the rerun no longer produces is listed as `kept`, with a warning naming `sim scheduled delete`.
 
-`sim account rename` and `sim account lot rename` follow an account or a lot into these files once no scenario still has the old name; a category that found a renamed account by its name gets a row. A mapping file that doesn't read leaves them all unchanged, with a warning, after the rename itself is written. Generated rules carry the tag `generated:expense_baseline` (§6) and, in `meta_json`, `source` and a hash of the imported files.
+**A budget** ([#617](https://github.com/BobKerns/analysis/issues/617)). `sim import budget FILE` writes the same generated expense rules from a budget instead of a period's transactions, and replaces them all, whichever import wrote them. The `quicken` source reads a budget's export, in its Full form (Actual, Budgeted and Difference for each month) or its Summary form (the period's totals). Only the Budgeted amounts are read. A category's row there counts all that is under it, so its own amount is the row less the rows one level down; the export is in whole dollars, each row rounded by itself, so a remainder no bigger than that rounding explains is nothing. A category's name is its path, joined by `:`.
+
+- **Categories.** The source's `categories.csv` is optional. A row names a category by its whole path. The row that applies to a category is its own, else the one for each category it is under, nearest first, so a row for a category covers all that is under it and none of a same-named category elsewhere. With no row, a category is its top category's: a budget's top level is about what a plan wants. A top-level row named `FROM ...` or `TO ...` is a move between the household's own accounts and is left out, as is any category with `mortgage` in its path (the scenario models that). An income tax category (`tax` or `taxes` with `fed`, `federal`, `state`, `income`, `estimated` or `withholding` in its path) is left out too, since the scenario's tax rules work out and pay that tax, unless a row names the category's own path. Each kind left out, and what the map leaves out, gets a note.
+- **Monthly or yearly.** When the budget covers twelve months and has them, a category budgeted in only one or two of them gets a yearly rule (`cadence` `annual`) in each, for that month's amount, named `baseline_expense_<category>` or, with two, `baseline_expense_<category>_<mon>`. Any other category gets one monthly rule at the period's total over its months (twelve, when the file doesn't say). A category whose total is zero or less (a budgeted refund) gets no rule, with a note. Amounts are written as budgeted, as of the rules' start; a budget that ended more than a year before then is warned about.
+- **Expense accounts.** As for transactions, from `expense_accounts.csv`; at a terminal an answer that names no account of the scenario is offered as a new expense account, with its subkind asked for, which is added with the rules as `sim account add` would write it. An account that isn't an expense account, or a chain, is refused there.
+- **Income.** A budget's income is offered, never assumed, since a plan usually models its own: asked at a terminal, and otherwise left out with a note unless `--income` is given (`--no-income` leaves it out unasked). Used, each income category gets a rule from its income account (`income_accounts.csv`, which is `expense_accounts.csv` for income) into `--income-to` and `--income-to-lot` (default `--from-account` and `--from-lot`; a chain can't be paid into, so `--income-to` is then required), for the account's owner. A budget's income is usually take-home pay, whose tax is already withheld, so its `tax_character` is `none` unless the amounts are said to be before tax (`--gross-income`, asked at a terminal): then it is `ordinary` when the account's subkind is `salary`, `pension` or `interest`. These carry the tag `generated:income_baseline`, and only a budget import that uses the income replaces them. Left out, the import suggests exporting a copy of the budget without its income.
+
+`sim account rename` and `sim account lot rename` follow an account or a lot into these files once no scenario still has the old name; a category that found a renamed account by its name gets a row (an income category is known by the generated rule a budget gave it). A mapping file that doesn't read leaves them all unchanged, with a warning, after the rename itself is written. Generated rules carry the tag `generated:expense_baseline` (§6) and, in `meta_json`, `source` and a hash of the imported files.
 
 ### 5. Default priorities
 
@@ -1225,7 +1233,7 @@ rejects malformed tokens.
   been read off an SSA statement). The row's `meta_json` should carry the
   derivation; the tag is what makes the guess *findable*.
 - `generated:<producer>` — the row is machine-written and will be overwritten
-  (e.g. `generated:expense_baseline`); hand edits to those rows do not survive.
+  (e.g. `generated:expense_baseline`, `generated:income_baseline`); hand edits to those rows do not survive.
 
 Selectors accept `role:*` to match an entire role, so a review pass is
 `rc.items("scheduled", tags="estimate:*")` — no need to know each subject.
@@ -1652,3 +1660,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#581](https://github.com/BobKerns/analysis/issues/581): `state_social_security` optional `min_age` (years or `fra`): rows are age tiers per person, the taxable amount divided by benefits (§4.4).
 - [#617](https://github.com/BobKerns/analysis/issues/617): a profile can describe a transactions file (`transactions`; built-in `wells_fargo` and `amex`); `imports/<source>/payees.csv` gives categories by payee to a source that has none, and goes over a source's own; a transaction with a reference is counted once; `sim import transactions` reads several sources in one run (§4.17).
 - [#593](https://github.com/BobKerns/analysis/issues/593): federal `state_refunds` and `state_refund_income` (a state or local refund recaptured under the tax-benefit rule), `salt_paid` and `deduction_unused`; the state subtracts the recapture as `refund_income` (§2.6).
+- [#617](https://github.com/BobKerns/analysis/issues/617): `sim import budget` writes the generated rules from a budget (Quicken's export), monthly or yearly by the months budgeted, with its income offered as rules tagged `generated:income_baseline` and mapped by `imports/income_accounts.csv` (§4.17, §6).

@@ -17,15 +17,15 @@ from typing import Literal
 import pandas as pd
 
 from analysis.sim.imports import profiles, quicken
-from analysis.sim.imports.forms import ORIGIN, REFERENCE, Flows, Snapshot
+from analysis.sim.imports.forms import ORIGIN, REFERENCE, Budget, Flows, Snapshot
 
 __all__ = [
     "FORMS", "Form", "Reader", "Source", "SourceError", "broken", "detect", "get", "names",
-    "read_flows", "read_holdings", "sources", "table", "unnamed",
+    "read_budget", "read_flows", "read_holdings", "sources", "table", "unnamed",
 ]
 
-Form = Literal["holdings", "transactions"]
-FORMS: tuple[Form, ...] = ("holdings", "transactions")
+Form = Literal["holdings", "transactions", "budget"]
+FORMS: tuple[Form, ...] = ("holdings", "transactions", "budget")
 
 
 class SourceError(ValueError):
@@ -49,11 +49,12 @@ class Source:
     description: str
     holdings: Reader[Snapshot] | None = None
     transactions: Reader[Flows] | None = None
+    budget: Reader[Budget] | None = None
     profile: profiles.Profile | None = None
     """What describes it, when that is a profile and not code."""
 
-    def reader(self, form: Form) -> Reader[Snapshot] | Reader[Flows] | None:
-        return self.holdings if form == "holdings" else self.transactions
+    def reader(self, form: Form) -> Reader[Snapshot] | Reader[Flows] | Reader[Budget] | None:
+        return {"holdings": self.holdings, "transactions": self.transactions, "budget": self.budget}[form]
 
     @property
     def where(self) -> str:
@@ -71,6 +72,8 @@ _CODED: dict[str, Source] = {
                         'My Reports: "Net Worth Export" or "Year End Export"'),
         transactions=Reader(quicken.is_transaction_export, quicken.read_transactions,
                             'My Reports: "Transaction Export"'),
+        budget=Reader(quicken.is_budget, quicken.read_budget,
+                      'Budget: Export, "Full" (a column for each month) or "Summary"'),
     ),
 }
 
@@ -336,3 +339,14 @@ def read_flows(
         met[source.name] = None
     return Flows(source="+".join(met), duplicates=duplicates, origins=tuple(met),
                  transactions=frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True))
+
+
+def read_budget(path: Path, name: str | None = None, imports: Path | None = None) -> Budget:
+    """The budget in ``path``, read with source ``name`` (or the one its
+    layout says)."""
+    source = _resolve([path], name, "budget", imports)
+    assert source.budget is not None
+    try:
+        return source.budget.read(path)
+    except ValueError as error:
+        raise SourceError(str(error)) from None
