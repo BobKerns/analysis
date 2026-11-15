@@ -9109,7 +9109,7 @@ def import_transactions(
     --summary shows what the rules would be made from and stops: the period,
     each category's total and monthly rate, what was left out and why, and
     the categories that fell to Other. Given a year or more, it also lists
-    the large payments made in only a month or two of a year (an insurance
+    the large payments made in only a few months of a year (an insurance
     premium, a property tax), which a monthly rule misstates; they are
     candidates for yearly rules of their own, since a one-time expense
     looks the same: --yearly-script FILE writes them as a script of
@@ -9253,16 +9253,18 @@ def import_transactions(
                 if start is None:
                     start = con.execute("SELECT start FROM scenario").fetchone()[0]
                 account_names = [row[0] for row in con.execute("SELECT name FROM account")]
-            text, written = import_yearly.script(
+            text, written, waiting = import_yearly.script(
                 occasional, data_dir=data_dir_p.resolve(), scenario=scenario_name,
                 start=_validate_month_date(start)[:7], from_account=from_account, from_lot=from_lot,
                 series=series, expense_accounts=expense_accounts.accounts, accounts=account_names,
                 source=flows.sources[0])
             yearly_script.write_text(text, encoding="utf-8")
-            click.echo(f"wrote {written} payee(s) as yearly rules to {yearly_script}"
-                       + (f", and {len(occasional) - written} noted and not written as rules"
-                          if written < len(occasional) else "")
-                       + f": edit it (a one-time expense is no yearly rule), then run it with: sh {yearly_script}")
+            noted = len(occasional) - written - waiting
+            click.echo(f"wrote {yearly_script}: {written} payee(s) as yearly rules ready to run"
+                       + (f", {waiting} commented out and waiting for your choice (a bill that comes "
+                          "round, a one-time expense, or left spread over the months)" if waiting else "")
+                       + (f", {noted} noted and not written as rules" if noted else "")
+                       + f". Edit it, then run it with: sh {yearly_script}")
         elif yearly_script is not None:
             click.echo(f"no candidates for yearly rules: {yearly_script} was not written")
         return
@@ -9370,7 +9372,7 @@ def _show_transactions_summary(baseline: BaselineResult, *, scripted: bool = Fal
         return []
     if not occasional:
         return []
-    click.echo("paid in only a month or two of a year, and spread over every month by the rules:")
+    click.echo("paid in only a few months of a year, and spread over every month by the rules:")
     for each in occasional:
         when = ", ".join(f"{month:%b %Y} {format_dollars(cents)}" for month, cents in each.paid)
         click.echo(f"  {each.payee} ({each.category}): {when}"
@@ -9378,7 +9380,8 @@ def _show_transactions_summary(baseline: BaselineResult, *, scripted: bool = Fal
     click.echo("These are candidates: one not seen to come round again may be a yearly bill or a "
                "one-time expense, which no rule should repeat. A bill that does come round wants a "
                "yearly rule for each month of the year it is paid in, each for that month's amount, "
-               "and its payee left out of the generated rules (a row in excluded_payees.csv)."
+               "and its payee left out of the generated rules (a row in excluded_payees.csv); one "
+               "you already have rules for wants only its payee left out."
                + ("" if scripted else " --yearly-script FILE writes both as a script to edit and run."))
     return occasional
 
