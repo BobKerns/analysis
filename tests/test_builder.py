@@ -13,7 +13,7 @@ from pathlib import Path
 import git
 import pytest
 
-from analysis.sim import builder, freshness, locks, provenance
+from analysis.sim import builder, freshness, locks, price_schedule, provenance
 from analysis.sim.builder import BuilderPaths
 
 
@@ -899,3 +899,24 @@ def test_the_daemon_merges_fetched_prices_only_between_builds(
         daemon.prices_tick(True)
         assert repo.head.commit.hexsha != before
         assert repo.head.commit.author.name == "sim builder"
+
+
+def test_notify_forgets_the_repository_of_the_hook_that_ran_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#627: what git sets for a hook would aim the daemon, and everything it
+    starts, at the worktree that ran the hook."""
+    for name in price_schedule.HOOK_GIT_ENV:
+        monkeypatch.setenv(name, "/elsewhere")
+    builder.forget_hook_repository()
+    assert not set(price_schedule.HOOK_GIT_ENV) & set(os.environ)
+
+
+@pytest.mark.parametrize("hook", ["post-checkout", "post-commit", "post-merge", "post-rewrite"])
+def test_the_builder_hooks_start_notify_without_the_hooks_repository(
+    repo_root: Path, hook: str,
+) -> None:
+    text = (repo_root / ".githooks" / hook).read_text()
+    assert "builder notify" in text
+    for name in price_schedule.HOOK_GIT_ENV:
+        assert f"-u {name} " in text

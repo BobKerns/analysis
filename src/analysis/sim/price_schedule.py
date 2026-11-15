@@ -85,6 +85,10 @@ _MAIN_REF = f"refs/heads/{DATA_BRANCH}"
 # Commits the builder makes in its own worktree: no hooks (it isn't a
 # worktree the builder watches) and no signing (nobody is there to unlock a key).
 _QUIET = ("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false")
+# What git sets for a hook: the repository that ran it. Git honors these over
+# -C, so inherited by a builder a hook started they'd aim every command at the
+# worktree that ran the hook instead (#627).
+HOOK_GIT_ENV = ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_PREFIX", "GIT_COMMON_DIR")
 SWITCH_ENV = "ANALYSIS_PRICE_FETCH"
 MARKET = ZoneInfo("America/New_York")
 # After the 16:00 close, once the provider's close is final.
@@ -139,11 +143,17 @@ def due(state: dict[str, Any], now: datetime) -> bool:
 # -- git ------------------------------------------------------------------------
 
 
+def git_environ(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """This process's environment for a git command, less :data:`HOOK_GIT_ENV`."""
+    base = {k: v for k, v in os.environ.items() if k not in HOOK_GIT_ENV}
+    return {**base, **(extra or {})}
+
+
 def _git(where: Path, *args: str, env: dict[str, str] | None = None,
          check: bool = False) -> subprocess.CompletedProcess[str]:
     done = subprocess.run(
         ["git", "-C", str(where), *args], capture_output=True, text=True, check=False,
-        env={**os.environ, **env} if env else None,
+        env=git_environ(env),
     )
     if check and done.returncode:
         raise PriceScheduleError((done.stderr or done.stdout).strip() or f"git {args[0]} failed")
@@ -522,7 +532,7 @@ def _push(top: Path) -> str:
         done = subprocess.run(
             ["git", "-C", str(top), "push", "-q", remote, f"{_MAIN_REF}:{target}"],
             capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-            timeout=PUSH_SECONDS, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            timeout=PUSH_SECONDS, env=git_environ({"GIT_TERMINAL_PROMPT": "0"}),
         )
     except subprocess.TimeoutExpired:
         return f"push of {DATA_BRANCH} to {remote} failed: no answer in {PUSH_SECONDS}s"
