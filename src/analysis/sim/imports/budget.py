@@ -10,13 +10,11 @@ import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
+from analysis.expenses.baseline import YEARLY_MONTHS
 from analysis.sim.imports.forms import Budget, BudgetLine
 
 __all__ = ["YEARLY_MONTHS", "Gathered", "Planned", "gather", "plan"]
 
-YEARLY_MONTHS = 2
-"""A category budgeted in no more months of a year than this is paid in
-those months, once a year each; in more, every month at its average."""
 # A budget's rows for money moved between the household's own accounts.
 _TRANSFER = re.compile(r"^(FROM|TO)\s")
 # The scenario models a mortgage itself, as the transactions' baseline holds.

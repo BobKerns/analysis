@@ -2358,6 +2358,30 @@ def quicken_transaction_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def quicken_year_export(tmp_path: Path) -> Path:
+    """A Quicken "Transaction Export" of a whole year, 2026: groceries
+    every month, a car insurance premium in March and September, one
+    small yearly fee, a move to savings and a paycheck."""
+    # From the 2nd of January to the 30th of December: all but a few days of the year.
+    rows = [f',,"2026-{month:02d}-{30 if month == 12 else 2:02d}","","","","Market","Groceries","","","","-400.00"'
+            for month in range(1, 13)]
+    rows += [
+        ',,"2026-03-10","","","","Mutual Insurance","Auto Insurance","","","","-900.00"',
+        ',,"2026-09-10","","","","Mutual Insurance","Auto Insurance","","","","-900.00"',
+        ',,"2026-06-01","","","","Web Host","Gifts","","","","-120.00"',
+        ',,"2026-06-15","","","","Savings","","","[Savings]","","-1000.00"',
+        ',,"2026-06-30","","","","Employer","Salary","","","","5000.00"',
+    ]
+    path = tmp_path / "year_export.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n' + "\n".join(rows) + '\n"Total Checking",,,,,,,,,,,"0.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
 def bank_checking_export(tmp_path: Path) -> Path:
     """A bank's activity download for one checking account, January and
     February 2026, newest first as the bank writes it: groceries and the

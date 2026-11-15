@@ -47,6 +47,16 @@ Checking*, a category called *Groceries*), and a scenario has its own
 `--dry-run` shows what would change, before and after, and writes nothing
 (the answers given during a dry run aren't saved either).
 
+**What an import writes is a first draft.** A file says what was paid or
+budgeted, not what it meant. The import reads it by the odds: a category
+budgeted in two months is taken as a yearly bill, a payee paid once in a
+year as one that may come round, a paycheck as take-home pay. Some of those
+readings will be wrong for your household, and no file can settle them: a
+new monthly payment and a one-time purchase look the same at first. So
+read what was written (`sim scheduled list`), and change what doesn't fit
+with `sim scheduled edit`, or by correcting a row in `imports/` and running
+the import again.
+
 When a saved answer names an account the scenario doesn't have, it may still
 be right for another scenario. The import asks again, uses the new answer for
 that run, and replaces the saved one only if you say so.
@@ -251,6 +261,47 @@ exactly those and leaves every rule written by hand alone, so:
 
 Two files that cover the same days of one outside account are refused, since
 their transactions would be counted twice.
+
+### Look before writing: `--summary`
+
+```sh
+sim import transactions transactions.csv --summary
+```
+
+Shows what the rules would be made from, and writes nothing: the period
+covered, each category's total and what it comes to a month (over the
+months that had any spending, as the rules are worked out), what was left
+out and why (money in, moves between your own accounts, what the scenario
+models itself), and the outside categories that fell to `Other`. It needs
+no `--from-account` and no expense accounts yet, so it is a good first
+command with a new file. It asks nothing: a payee with no category yet is
+counted in `Other`, with a note of the most paid, and a file that doesn't
+name its account is taken as its own name's.
+
+Give it a year or more of transactions and it also lists the large payments
+made in only a month or two of each year: an insurance premium, a
+property tax.
+
+```text
+paid in only a month or two of a year, and spread over every month by the rules:
+  Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00  (not seen to come round again)
+These are candidates: one not seen to come round again may be a yearly bill or a one-time expense, which no rule should repeat. For a bill that does come round, add a yearly rule for each month of the year it is paid in (sim scheduled add), each for that month's amount, and then leave its payee out of the generated rules with a '-' row in payees.csv, or a row in excluded_payees.csv.
+```
+
+The list is of candidates. One year can't tell a yearly premium from a
+one-time purchase, so a payment is marked until a later year shows it
+again. A monthly bill that began or ended in the period is not listed, nor
+is a season's.
+
+A monthly rule gets the year's total right and the months wrong. To pay
+such a bill when it falls, give it a yearly rule for each month of the
+year it is paid in with `sim scheduled add` (two rules for the premium
+above, 900 in March and 900 in September), and leave its payee out of the
+generated rules: a `-` row in `payees.csv`, or a row in
+`excluded_payees.csv`.
+
+With less than a year of transactions, first day to last, a yearly bill
+can't be told from a monthly one that just began, so nothing is listed.
 
 ### Bank and card files
 
