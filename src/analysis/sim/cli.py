@@ -9288,7 +9288,9 @@ def import_budget(
     own. Used, each income category gets a rule from its income account
     (imports/income_accounts.csv) into --income-to. A budget's paycheck is
     usually take-home pay, so the rules are untaxed unless --gross-income
-    says the amounts are before tax. To leave income out for good, export a
+    says the amounts are before tax. Either way it is a starting point:
+    income set up from a pay stub (gross pay, and what is taken out of it)
+    is what gets the plan's taxes right. To leave income out for good, export a
     copy of the budget without its income.
 
     The rules replace every generated baseline row, those a transactions
@@ -9366,6 +9368,11 @@ def import_budget(
             else:
                 click.echo("note: the budget's income is written as take-home pay, untaxed; "
                            "--gross-income says its amounts are before tax.")
+        # Either way a budget's income is rough: it has no withholding, and no
+        # contribution to a retirement plan, for the scenario's taxes to see.
+        click.echo("note: a budget's income is a starting point. For the plan's taxes to come out "
+                   "right, set the income up from a pay stub instead: its gross pay, with rules for "
+                   "what is taken out of it (retirement plan contributions, other deductions).")
 
     per_month = len(budget.months) or 12
     elsewhere = _accounts_of_every_scenario(data_dir_p)

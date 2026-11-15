@@ -384,6 +384,14 @@ before tax, say so when asked, or with `--gross-income`, and the scenario
 taxes it. Income goes into `--from-account` unless `--income-to` names
 another account, which it must when the spending comes from a chain.
 
+Treat a budget's income as a convenient start, not the finished model. It
+has no withholding and no 401(k) contribution for the plan's taxes to see.
+For those to come out right, set the income up from a pay stub: the gross
+pay as the income rule, with a rule for each thing taken out of it (the
+401(k) contribution, other deductions), and leave the income tax to the
+scenario's tax rules. `sim scheduled add` writes each rule, and
+`--no-income` keeps the budget's income out once you have.
+
 Amounts are taken as budgeted. A budget more than a year older than the
 scenario's start is warned about, since its dollars are old ones.
 
