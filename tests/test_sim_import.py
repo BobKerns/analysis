@@ -977,7 +977,7 @@ def test_sim_import_holdings_asks_again_for_a_slip_at_a_new_account_s_questions(
         "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
     # An expense account's name can't take the balance or be added; then a
     # new name, with a slip at its subkind and one at its owner.
-    answers = "Expense_Living\nAsset_Savings_New\ny\nasset\ncsh\ncash\nnobody\njoint\n"
+    answers = "Expense_Living\nAsset_Savings_New\ny\nasset\nnothing\ncash\nnobody\njoint\n"
 
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
 
@@ -1059,12 +1059,12 @@ def test_sim_import_map_asks_about_an_account_the_scenario_does_not_have(
     # A slip is asked about and, not kept, asked for again; one kept on
     # purpose (another scenario's account) is saved.
     result = _map(test_data_dir, "--scenario", "retire_alice", input=(
-        "1\nchange\nExpense_Livng\nn\nExpense_Housing\n"
+        "1\nchange\nExpense_Missing\nn\nExpense_Housing\n"
         "1\nchange\nExpense_Elsewhere\ny\n"
         "done\n"))
 
     assert result.exit_code == 0, result.output
-    assert "Expense_Livng is not one of retire_alice's accounts that fit here. Keep it?" in result.output
+    assert "Expense_Missing is not one of retire_alice's accounts that fit here. Keep it?" in result.output
     assert "saved" in result.output
     assert accounts.read_text(encoding="utf-8") == "category,account\nFood,Expense_Elsewhere\n"
 
