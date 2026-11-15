@@ -1486,7 +1486,8 @@ reports, but they don't change any balance, since the opening balances
 already include them.
 
 ```sh
-sim ytd add prior_wages Income_Salary_Alice Asset_Checking 62000 --tax-character ordinary
+sim ytd add prior_wages_alice Income_Salary_Alice Asset_Checking 32000 --tax-character ordinary
+sim ytd add prior_wages_bill Income_Salary_Bill Asset_Checking 30000 --tax-character ordinary
 sim ytd add loss_2025 Income_CapitalGain Income_CapitalGain \
     --tax-character ltcg --year 2025 -- -1500
 ```

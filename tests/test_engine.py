@@ -331,10 +331,10 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         assert con.execute(
             "SELECT COUNT(*) FROM transfer_event WHERE reason_kind = 'refill'"
         ).fetchone()[0] > 0
-        # Fixture's year_to_date.csv (3 rows) posts once, balance-neutral.
+        # Fixture's year_to_date.csv (4 rows) posts once, balance-neutral.
         assert con.execute(
             "SELECT COUNT(*) FROM transfer_event WHERE reason_kind = 'ytd'"
-        ).fetchone()[0] == 3
+        ).fetchone()[0] == 4
 
         # Liabilities store debt magnitude; signed ledger sum is the invariant.
         rows = con.execute(

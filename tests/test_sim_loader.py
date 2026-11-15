@@ -82,7 +82,7 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         tax_priors = con.execute(
             "SELECT name, amount, tax_character, year FROM year_to_date ORDER BY name"
         ).fetchall()
-        assert len(tax_priors) == 3
+        assert len(tax_priors) == 4
         assert (
             "prior_ltcg_loss_carryforward", -150000, "ltcg", 2025
         ) in [tuple(r) for r in tax_priors]
