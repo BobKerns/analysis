@@ -9068,8 +9068,8 @@ def _categorize_by_payee(
               help="A budget's export to set beside the transactions: each category both have is "
                    "made from the one you choose, and a category only one has from that one.")
 @click.option("--prefer", type=click.Choice(["budget", "actual"]), default=None,
-              help="With --budget: which to use for a category both have and no choice is saved "
-                   "for, in place of being asked.")
+              help="With --budget: which to use for a category both have, where no choice is saved "
+                   "or an amount has moved since, in place of being asked.")
 @click.option("--yearly-script", type=click.Path(dir_okay=False, path_type=Path), default=None,
               help="With --summary (which it implies): write the payments that aren't monthly "
                    "to this file as a shell script of yearly rules, to edit and then run.")
@@ -9131,9 +9131,12 @@ def import_transactions(
     choose which its rule is made from (the budget's keeps the budget's
     yearly payments). The choice is saved in imports/budget_choices.csv and
     used again, and asked again only once an amount has moved by more than
-    5%. A category only one of the two has is made from that one. Away from
-    a terminal a category with no saved choice needs --prefer. The budget's
-    income is not used here (sim import budget --income).
+    5%. A category only one of the two has is made from that one. --prefer
+    answers in place of every question, and is not saved; away from a
+    terminal a category with no saved choice needs it. The budget is read
+    into the transactions' categories (their splits, and Other for what
+    they put there). The budget's income is not used here (sim import
+    budget --income).
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
@@ -9288,7 +9291,11 @@ def import_transactions(
         except ValueError as e:
             raise click.ClickException(str(e)) from None
         budget_source = budget.source
-        gathered = import_budget_.gather(budget, budget_merges, budget_exclusions)
+        # In the transactions' categories, so that the two can be compared:
+        # their splits, and Other for what they put there for want of a row.
+        gathered = import_budget_.gather(
+            budget, budget_merges, budget_exclusions, splits=maps.splits,
+            defaulted=baseline.categories_defaulted_to_other, default="Other")
         if not gathered.spending:
             raise click.ClickException(f"no budgeted spending in {budget_file}: is it a budget's export?")
         _note_budget_left_out(gathered, budget_map_path)
@@ -9299,11 +9306,23 @@ def import_transactions(
         if nothing:
             click.echo(f"note: nothing budgeted to pay: {', '.join(nothing)}")
         per_month = len(budget.months) or 12
+        budget_monthly = {category: round(sum(gathered.spending[category]) / per_month)
+                          for category in dict.fromkeys(each.category for each in budgeted)}
+        # A category whose transactions were all left out (a payee the
+        # yearly script took, say) is not the budget's alone: its rule from
+        # the budget would pay again what the scenario already does.
+        left = baseline.excluded
+        left_out = sorted(
+            {str(category) for category in left.loc[
+                left["exclude_reason"].eq("modeled_separately") & left["amount_cents"].lt(0), "category"]}
+            & set(budget_monthly) - set(actual_monthly))
         compared = import_budget_.compare(
-            {category: round(sum(gathered.spending[category]) / per_month)
-             for category in dict.fromkeys(each.category for each in budgeted)},
-            actual_monthly, choices.choices)
+            budget_monthly, {**dict.fromkeys(left_out, 0), **actual_monthly}, choices.choices)
         _show_budget_and_actual(compared)
+        if left_out:
+            click.echo(f"note: every transaction of {', '.join(left_out)} was left out as "
+                       f"{_LEFT_OUT['modeled_separately']}: choosing actual gives it no rule, and "
+                       "choosing budget may pay again what the scenario already does.")
     if summary:
         occasional = _show_transactions_summary(baseline, scripted=yearly_script is not None)
         if yearly_script is not None and occasional:
@@ -9316,7 +9335,10 @@ def import_transactions(
                 occasional, data_dir=data_dir_p.resolve(), scenario=scenario_name,
                 start=_validate_month_date(start)[:7], from_account=from_account, from_lot=from_lot,
                 series=series, expense_accounts=expense_accounts.accounts, accounts=account_names,
-                source=flows.sources[0], taken=rule_names, sim=_sim_command())
+                source=flows.sources[0], taken=rule_names, sim=_sim_command(),
+                # As far as is known without asking: a saved choice, or --prefer.
+                from_budget={each.category for each in compared
+                             if not each.only and _budget_or_actual_unasked(each, prefer) == "budget"})
             yearly_script.write_text(text, encoding="utf-8")
             noted = len(occasional) - written - waiting
             click.echo(f"wrote {yearly_script}: {written} payee(s) as yearly rules ready to run"
@@ -9454,9 +9476,10 @@ def _budget_or_actual(
     made at a question, to save.
 
     A category only one has is that one's. One both have takes its saved
-    choice; with none, or at a terminal once an amount has moved since,
-    ``prefer`` decides, else it is asked. Away from a terminal a category
-    with neither a saved choice nor ``prefer`` is an error naming them all.
+    choice. With none, or once an amount has moved since it was made,
+    ``prefer`` decides (and is not saved); without ``prefer`` it is asked
+    at a terminal. Away from one, a moved amount keeps the saved choice
+    with a note, and a category with no choice is an error naming them all.
     """
     from_budget = {each.category for each in compared if each.only == "budget"}
     chosen: dict[str, import_mapping.BudgetChoice] = {}
@@ -9466,12 +9489,16 @@ def _budget_or_actual(
         if each.only or each.budget_cents is None or each.actual_cents is None:
             continue
         use = each.saved
-        if for_the_rest is not None and (use is None or each.moved):
+        open_again = use is None or each.moved
+        if open_again and for_the_rest is not None:
             use = for_the_rest
             chosen[each.category] = import_mapping.BudgetChoice(use, each.budget_cents, each.actual_cents)
-        elif use is None and prefer is not None:
+        elif open_again and prefer is not None:
+            if use is not None and use != prefer:
+                click.echo(f"note: {each.category} uses --prefer {prefer} in place of the saved choice, "
+                           f"{use}, an amount having moved more than {import_budget_.MOVED:.0%} since")
             use = prefer
-        elif (use is None or each.moved) and prefer is None and _interactive():
+        elif open_again and _interactive():
             answer = click.prompt(
                 f"{each.category}: budget {format_dollars(each.budget_cents)} or actual "
                 f"{format_dollars(each.actual_cents)} a month?",
@@ -9493,6 +9520,12 @@ def _budget_or_actual(
             "no choice of budget or actual is saved for: " + ", ".join(undecided)
             + "; give --prefer budget or --prefer actual, or run at a terminal to be asked")
     return from_budget, chosen
+
+
+def _budget_or_actual_unasked(each: import_budget_.Compared, prefer: str | None) -> str | None:
+    """Which of the two a category both have is made from, as far as is
+    settled without a question (as ``_budget_or_actual`` settles it)."""
+    return prefer if prefer is not None and (each.saved is None or each.moved) else each.saved
 
 
 # Said by every import that writes rules: no file says what a payment meant.

@@ -61,7 +61,10 @@ class Gathered:
     """Lines the category map leaves out."""
 
 
-def _target(line: BudgetLine, merges: Mapping[str, str], exclusions: Collection[str]) -> str | None:
+def _target(
+    line: BudgetLine, merges: Mapping[str, str], exclusions: Collection[str],
+    defaulted: Collection[str] = (), default: str | None = None,
+) -> str | None:
     """The plan's category for ``line``, or None when the map leaves it out.
 
     The map's row for the line's whole path wins, then one for each category
@@ -69,21 +72,38 @@ def _target(line: BudgetLine, merges: Mapping[str, str], exclusions: Collection[
     it. A row names a category by its path from the top, so one for the top
     category ``Insurance`` says nothing of ``Auto:Insurance``. With no row, a
     line is its top category's, since a budget's top level is about what a
-    plan wants.
+    plan wants; unless it is one of ``defaulted``, the categories that
+    transactions set beside the budget put in ``default`` for want of a
+    row, when it goes there with them.
     """
     parts = line.category.split(":")
-    for depth in range(len(parts), 0, -1):
-        name = ":".join(parts[:depth])
+    paths = [":".join(parts[:depth]) for depth in range(len(parts), 0, -1)]
+    for name in paths:
         if name in exclusions:
             return None
         if name in merges:
             return merges[name]
+    if default is not None and any(name in defaulted for name in paths):
+        return default
     return parts[0]
 
 
-def gather(budget: Budget, merges: Mapping[str, str], exclusions: Collection[str]) -> Gathered:
+def gather(
+    budget: Budget, merges: Mapping[str, str], exclusions: Collection[str], *,
+    splits: Mapping[str, Mapping[str, str]] | None = None,
+    defaulted: Collection[str] = (), default: str | None = None,
+) -> Gathered:
     """``budget``'s lines added up by the plan's categories (``merges`` and
-    ``exclusions`` are the source's ``categories.csv``)."""
+    ``exclusions`` are the source's ``categories.csv``).
+
+    The rest is for a budget set beside transactions, so that the two are
+    in the same categories and neither is counted beside the other. A
+    budget's line has no account, so a category in ``splits`` (the
+    transactions' ``splits.csv``) takes the split's category for a row no
+    named account claims, as Amazon's summaries do. A line with no row
+    whose category the transactions put in ``default`` (``defaulted``)
+    goes there too.
+    """
     found = Gathered()
     for line in budget.lines:
         top = line.category.split(":")[0]
@@ -96,10 +116,11 @@ def gather(budget: Budget, merges: Mapping[str, str], exclusions: Collection[str
         if not line.income and _INCOME_TAX.search(line.category) and line.category not in merges:
             found.taxes.append(line.category)
             continue
-        target = _target(line, merges, exclusions)
+        target = _target(line, merges, exclusions, defaulted, default)
         if target is None:
             found.excluded.append(line.category)
             continue
+        target = (splits or {}).get(target, {}).get("", target)
         amounts = list(line.monthly_cents) or [line.total_cents]
         into = (found.income if line.income else found.spending).setdefault(target, [0] * len(amounts))
         for at, amount in enumerate(amounts):
@@ -168,7 +189,9 @@ def compare(
     budget: Mapping[str, int], actual: Mapping[str, int], saved: Mapping[str, BudgetChoice],
 ) -> list[Compared]:
     """Every category of ``budget`` or ``actual`` (each a month's cents), by
-    name, with its choice in ``saved`` where both have it."""
+    name, with its choice in ``saved`` where both have it. An ``actual``
+    of zero is a category whose transactions were all left out: both have
+    it, and choosing the transactions gives it no rule."""
     found: list[Compared] = []
     for category in sorted({*budget, *actual}):
         ours, theirs = budget.get(category), actual.get(category)
