@@ -193,6 +193,15 @@ def switched_off() -> bool:
     return os.environ.get(BUILDER_SWITCH_ENV, "").strip().lower() in {"off", "0", "no", "false"}
 
 
+def forget_hook_repository() -> None:
+    """Drop what git set for the hook that started this process, so neither it
+    nor the daemon, builds, fetches and rolls it starts aim git at the worktree
+    that ran the hook (#627)."""
+    from analysis.sim import price_schedule
+    for name in price_schedule.HOOK_GIT_ENV:
+        os.environ.pop(name, None)
+
+
 @dataclass(frozen=True)
 class BuilderPaths:
     """The builder's files under a data repo's ``state/``."""
@@ -507,6 +516,7 @@ def spawn_daemon(paths: BuilderPaths, data_dir: Path) -> None:
 def notify(data_dir: Path, *, start: bool = True) -> str:
     """What a hook calls: ask the daemon to look again, starting it if it
     isn't running. Returns a line saying what happened."""
+    forget_hook_repository()
     if switched_off():
         return f"background builds are off ({BUILDER_SWITCH_ENV}=off)"
     paths = BuilderPaths.for_data(data_dir)
@@ -1016,6 +1026,7 @@ class _Daemon:
             return 1
         # This process and its builds must never wait on the builder itself.
         os.environ[BUILDER_SWITCH_ENV] = "off"
+        forget_hook_repository()
 
         def stop(_signum: int, _frame: object) -> None:
             self.stopping = True

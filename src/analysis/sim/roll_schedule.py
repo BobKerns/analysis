@@ -527,7 +527,8 @@ def _push_tags(top: Path, tags: Sequence[str]) -> list[str]:
         done = subprocess.run(
             ["git", "-C", str(top), "push", "-q", remote, *(f"refs/tags/{t}" for t in tags)],
             capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-            timeout=price_schedule.PUSH_SECONDS, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            timeout=price_schedule.PUSH_SECONDS,
+            env=price_schedule.git_environ({"GIT_TERMINAL_PROMPT": "0"}),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return [f"push of {', '.join(tags)} failed: {exc}"]

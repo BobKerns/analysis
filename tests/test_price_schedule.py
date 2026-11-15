@@ -447,3 +447,26 @@ def test_install_records_whether_to_fetch_prices(
     assert (builder.read_config(paths) or {}).get("prices") is False
     monkeypatch.delenv(price_schedule.SWITCH_ENV)
     assert not price_schedule.enabled(builder.read_config(paths))
+
+
+def test_a_fetch_started_from_a_git_hook_leaves_the_hooks_repository_alone(
+    priced: tuple[Path, git.Repo], fetching: None, code_repo: git.Repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#627: a hook's GIT_DIR and GIT_INDEX_FILE, inherited, would otherwise
+    aim the fetch's git commands at the code worktree that ran the hook."""
+    data, repo = priced
+    hooked = Path(code_repo.git_dir)
+    head = code_repo.head.commit.hexsha
+    monkeypatch.setenv("GIT_DIR", str(hooked))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(hooked / "index"))
+    outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.delenv("GIT_INDEX_FILE")
+
+    assert outcome.committed is not None
+    assert repo.commit(price_schedule.PRICES_BRANCH).hexsha == outcome.committed
+    assert code_repo.head.commit.hexsha == head
+    assert [b.name for b in code_repo.branches] == ["main"]
+    assert len(code_repo.git.worktree("list").splitlines()) == 1
+    assert not code_repo.is_dirty(untracked_files=True)
