@@ -77,6 +77,32 @@ def test_a_hobby_still_pays_tax_on_its_sales(
     hobby = run_business("alice_business_hobby")[2030]
     assert hobby["business_net"] > 0  # the sales, with no expense against them
     assert hobby["hobby_disallowed"] > hobby["business_net"]
+    assert "se_tax" not in hobby  # a hobby isn't self-employment (#623)
+
+
+def test_a_profit_pays_self_employment_tax_with_the_federal_settlement(
+    business_scenarios: Path, run_file: Callable[[str], Path],
+) -> None:
+    """A profitable year owes self-employment tax (#623), in the federal
+    tax the April settlement pays, and half of it comes off AGI."""
+    path = business_scenarios / "alice_business" / "scheduled.csv"
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.loc[frame["name"] == "business_sales", "amount"] = "6000.00"
+    frame.to_csv(path, index=False)
+    run = run_file("alice_business")
+    with closing(sqlite3.connect(run)) as con:
+        year = {bucket.removeprefix("federal_"): amount for bucket, amount in con.execute(
+            "SELECT bucket, amount FROM tax_year_summary "
+            "WHERE year = 2031 AND bucket LIKE 'federal_%'")}
+    assert year["business_net"] > 0 < year["se_tax"]
+    assert year["se_tax_deduction"] == year["se_tax"] // 2
+    assert year["tax"] > year["se_tax"]
+    # The settlement squares the year's tax, self-employment tax included.
+    assert year["tax_paid"] + year.get("tax_due", 0) - year.get("tax_overpaid", 0) == year["tax"]
+    result = CliRunner().invoke(
+        main, ["sim", "report", "tax", "--runfile", str(run)])
+    assert result.exit_code == 0, result.output
+    assert "fed_se_tax" in result.output
 
 
 def test_the_tax_report_shows_the_business(run_file: Callable[[str], Path]) -> None:

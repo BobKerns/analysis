@@ -1,0 +1,4 @@
+effective_date,filing_status,wage_base,wage_base_series,ss_rate,medicare_rate,earnings_factor,minimum,additional_medicare_rate,additional_medicare_threshold
+2026-01-31,MFJ,184500.00,cpi,12.4%,2.9%,92.35%,400.00,0.9%,250000.00
+2026-01-31,Single,184500.00,cpi,12.4%,2.9%,92.35%,400.00,0.9%,200000.00
+2026-01-31,MFS,184500.00,cpi,12.4%,2.9%,92.35%,400.00,0.9%,125000.00

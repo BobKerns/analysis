@@ -239,7 +239,8 @@ class Allocation:
 
 @dataclass(frozen=True)
 class TaxEstimate:
-    """A tax year's income tax as the settlement would figure it, in cents."""
+    """A tax year's tax as the settlement would figure it, in cents: the
+    income tax, and federally the self-employment tax (#623)."""
 
     tax: int
     taxable_income: int

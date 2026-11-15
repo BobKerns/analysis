@@ -60,8 +60,8 @@ def test_identical_scenarios_have_no_definition_differences(lot_variant_runs: Ru
 
 def test_year_to_date_rows_are_compared_by_name(lot_variant_runs: Runs) -> None:
     diff = year_to_date_differences(_connections(lot_variant_runs), SCENARIOS, "retire_alice")
-    assert list(diff.index) == [("prior_ordinary_wages", "amount")]  # inherited rows are not repeated
-    assert diff.iloc[0].to_list() == ["$62,000.00", "$70,000.00"]
+    assert list(diff.index) == [("prior_wages_alice", "amount")]  # inherited rows are not repeated
+    assert diff.iloc[0].to_list() == ["$32,000.00", "$70,000.00"]
 
 
 def _account_diffs(runs: Runs, monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
