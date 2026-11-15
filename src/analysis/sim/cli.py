@@ -9301,7 +9301,11 @@ def import_transactions(
         raise click.ClickException(
             f"{yearly_script} exists, and may hold your edits; --overwrite replaces it, "
             "or give another name")
-    if not summary:
+    if summary and from_lot and from_account is None:
+        raise click.UsageError("--from-lot goes with --from-account")
+    # A summary needs no account to pay from, but one given for the yearly
+    # script is checked as an import's is: the script would only fail on it.
+    if not summary or from_account is not None:
         # Before any file is read or payee asked about: an answer given
         # since would be lost with a slip here. Given or asked for, the
         # account is held to what a transfer's from side takes.
@@ -9459,14 +9463,14 @@ def import_transactions(
                 occasional, data_dir=data_dir_p.resolve(), scenario=scenario_name,
                 start=_validate_month_date(start)[:7], from_account=from_account, from_lot=from_lot,
                 series=series, expense_accounts=expense_accounts.accounts, accounts=account_names,
-                source=flows.sources[0], taken=rule_names)
+                source=flows.sources[0], taken=rule_names, sim=_sim_command())
             yearly_script.write_text(text, encoding="utf-8")
             noted = len(occasional) - written - waiting
             click.echo(f"wrote {yearly_script}: {written} payee(s) as yearly rules ready to run"
                        + (f", {waiting} commented out and waiting for your choice (a bill that comes "
                           "round, a one-time expense, or left spread over the months)" if waiting else "")
                        + (f", {noted} noted and not written as rules" if noted else "")
-                       + f". Edit it, then run it with: sh {yearly_script}")
+                       + f". Edit it, then run it with: sh {shlex.quote(str(yearly_script))}")
         elif yearly_script is not None:
             click.echo(f"no candidates for yearly rules: {yearly_script} was not written")
         return
@@ -9651,6 +9655,13 @@ _LEFT_OUT = {
 }
 
 
+def _sim_command() -> str:
+    """The `sim` beside the running Python, for a script to run later: the
+    PATH it is run with may have none, or another checkout's."""
+    beside = Path(sys.executable).parent / "sim"
+    return str(beside) if beside.is_file() else shutil.which("sim") or "sim"
+
+
 def _show_transactions_summary(baseline: BaselineResult, *, scripted: bool = False) -> list[Occasional]:
     """What `sim import transactions` would make its rules from (#333);
     returns the candidates for yearly rules it listed. ``scripted`` says
@@ -9693,7 +9704,7 @@ def _show_transactions_summary(baseline: BaselineResult, *, scripted: bool = Fal
                "category or a payee in imports/ where it is wrong for your household.")
     occasional = occasional_payments(baseline)
     if occasional is None:
-        click.echo("note: payments made only once or twice a year (an insurance premium, a property "
+        click.echo("note: payments made in only a few months of a year (an insurance premium, a property "
                    f"tax) can't be told from monthly ones in less than {OCCASIONAL_BASELINE_DAYS} days "
                    "of transactions, first to last; every category is spread by the month.")
         return []

@@ -8,7 +8,7 @@ import os
 import subprocess
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 from datetime import date
 from pathlib import Path
 
@@ -390,8 +390,12 @@ def test_sim_import_transactions_yearly_script_adds_the_rules_and_leaves_the_pay
     assert (f"wrote {script}: 0 payee(s) as yearly rules ready to run, 1 commented out and waiting "
             "for your choice") in result.output and "1 noted" not in result.output
     assert "--yearly-script FILE writes" not in result.output and _generated(test_data_dir) == {}
+    # The command to copy is one word for the shell, though the name has a space.
+    assert result.output.rstrip().endswith(f"run it with: sh '{script}'")
     text = script.read_text(encoding="utf-8")
     assert "EDIT IT BEFORE RUNNING IT" in text and "EDIT_ME" not in text.split("set -eu")[1]
+    # It runs the `sim` that wrote it, whatever the PATH it is run with.
+    assert f"SIM=${{SIM:-{Path(sys.executable).parent / 'sim'}}}" in text
     assert "# Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00" in text
     assert "# yearly yearly_mutual_insurance_mar Expense_Living 900.00 3 2026-03 " in text
     # Run as written, it does nothing.
@@ -458,6 +462,18 @@ def test_sim_import_transactions_yearly_script_leaves_what_it_cannot_know_to_be_
     alone = _import(test_data_dir, "transactions", str(quicken_year_export), "--summary", "--overwrite")
     assert alone.exit_code == 2 and "--overwrite goes with --yearly-script" in alone.output
 
+    # An account to pay from is checked as an import's is, though a summary needs none.
+    unknown = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
+                      "--overwrite", "--from-account", "Asset_Nowhere")
+    assert unknown.exit_code != 0 and "unknown from account or chain: 'Asset_Nowhere'" in unknown.output
+    no_lot = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
+                     "--overwrite", "--from-account", "Asset_Brokerage_Joint")
+    assert no_lot.exit_code != 0 and "needs its lot named with --from-lot" in no_lot.output
+    lot_alone = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
+                        "--overwrite", "--from-lot", "default")
+    assert lot_alone.exit_code == 2 and "--from-lot goes with --from-account" in lot_alone.output
+    assert "EDIT IT BEFORE RUNNING IT" in script.read_text(encoding="utf-8")
+
     # Two months of transactions have no candidates, and write no script.
     short = tmp_path / "short.sh"
     none = _import(test_data_dir, "transactions", str(quicken_transaction_export), "--yearly-script", str(short))
@@ -465,16 +481,21 @@ def test_sim_import_transactions_yearly_script_leaves_what_it_cannot_know_to_be_
     assert f"no candidates for yearly rules: {short} was not written" in none.output and not short.exists()
 
 
-def _seen(category: str, payee: str, *paid: tuple[date, int], **more: object) -> Occasional:
-    return Occasional(category, payee, paid, **{"repeats": True, **more})  # ty: ignore[invalid-argument-type]
+def _seen(
+    category: str, payee: str, *paid: tuple[date, int],
+    repeats: bool = True, sources: tuple[str, ...] = (), elsewhere: bool = False,
+) -> Occasional:
+    return Occasional(category, payee, paid, repeats, sources=sources, elsewhere=elsewhere)
 
 
-def _script(*seen: Occasional, **more: object) -> tuple[str, int]:
+def _script(
+    *seen: Occasional, expense_accounts: Mapping[str, str] | None = None,
+    accounts: Collection[str] = (), taken: Collection[str] = (),
+) -> tuple[str, int]:
     """The script for ``seen``, and how many payees have live commands."""
-    given: dict[str, object] = {
-        "data_dir": Path("/data dir"), "scenario": "retire_alice", "start": "2028-01", "from_account": None,
-        "expense_accounts": {}, "source": "bank", **more}
-    text, written, _ = import_yearly.script(seen, **given)  # ty: ignore[invalid-argument-type]
+    text, written, _ = import_yearly.script(
+        seen, data_dir=Path("/data dir"), scenario="retire_alice", start="2028-01", from_account=None,
+        expense_accounts=expense_accounts or {}, accounts=accounts, source="bank", taken=taken)
     return text, written
 
 
@@ -515,6 +536,8 @@ def test_yearly_script_s_pattern_finds_the_payee_s_own_key_and_no_other() -> Non
     assert found(art, "art 456") and not found(art, "WALMART 456") and not found(art, "ART SUPPLY")
     dotted = import_yearly.payee_pattern("Roofing Co.")
     assert found(dotted, "ROOFING CO. 77") and not found(dotted, "ROOFING COX 77")
+    # It finds its own payee where folding case would change the letters.
+    assert found(import_yearly.payee_pattern("STRAßE GMBH 123"), "Straße GmbH 456")  # cspell:ignore Straße
     # What it finds is what `payee_key` reads the same.
     assert all(found(import_yearly.payee_pattern(text), text)
                for text in ("A+ (Plumbing) [24h]", "Bill's $ Shop | 7", "x.y*z ^ w?"))

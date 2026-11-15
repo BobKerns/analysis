@@ -470,6 +470,9 @@ def test_occasional_payments_leave_out_a_bill_that_began_and_mark_a_one_time_exp
     # A car payment that began in November is monthly; furniture bought once may never come again.
     assert _found(*year, *_monthly("Auto Loan", "2026-11-01", 2, 500.0),
                   ("2026-05-10", "Furniture Store", 2000.0)) == [("Furniture Store", 1, False)]
+
+
+def test_occasional_payments_take_a_quarterly_bill_and_no_season_s_nor_one_paid_every_other_month() -> None:
     # A summer's program is a season; a quarterly bill is four months of the year, each its own.
     two_years = _monthly("Gym", "2025-01-01", 24)
     quarterly = [(f"{year}-{month:02d}-01", "Water", 300.0) for year in (2025, 2026) for month in (1, 4, 7, 10)]
