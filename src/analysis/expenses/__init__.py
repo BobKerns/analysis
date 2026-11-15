@@ -16,6 +16,8 @@ from analysis.expenses.baseline import (
     build_scheduled_baseline_rows,
     category_slug,
     generated_row,
+    months_covered,
+    occasional_payments,
     replace_generated_scheduled_rows,
 )
 
@@ -35,5 +37,7 @@ __all__ = [
     "build_scheduled_baseline_rows",
     "category_slug",
     "generated_row",
+    "months_covered",
+    "occasional_payments",
     "replace_generated_scheduled_rows",
 ]

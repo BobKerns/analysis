@@ -36,6 +36,9 @@ from analysis.expenses.baseline import (
     build_scheduled_baseline_rows,
     category_slug,
     generated_row,
+    months_covered,
+    occasional_payments,
+    BaselineResult,
     BASELINE_GENERATED_TAG,
     INCOME_GENERATED_TAG,
     replace_generated_scheduled_rows,
@@ -9040,8 +9043,9 @@ def _categorize_by_payee(
 @click.option("--amazon-state-dir", type=click.Path(file_okay=False, path_type=Path),
               default=None,
               help="Amazon state directory (default: sibling data-repo/state).")
-@click.option("--from-account", type=completion.ENDPOINT, required=True,
-              help="Scenario account that funds all generated expense rows.")
+@click.option("--from-account", type=completion.ENDPOINT, default=None,
+              help="Scenario account that funds all generated expense rows "
+                   "(asked at a terminal when left out; not needed with --summary).")
 @click.option("--from-lot", type=completion.LotName("from_account"), default="",
               help="Lot of --from-account (required for investment accounts).")
 @click.option("--start", default=None,
@@ -9053,6 +9057,9 @@ def _categorize_by_payee(
                    "file's name; once for each such FILE, in their order.")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show how the generated rows would change without rewriting scheduled.csv.")
+@click.option("--summary", is_flag=True, default=False,
+              help="Show what the transactions come to, by category, what was left out and "
+                   "what isn't paid monthly, and write nothing.")
 def import_transactions(
     files: tuple[Path, ...],
     layout: str | None,
@@ -9060,11 +9067,12 @@ def import_transactions(
     scenario: str | None,
     data_dir: Path | None,
     amazon_state_dir: Path | None,
-    from_account: str,
+    from_account: str | None,
     from_lot: str,
     start: str | None,
     series: str,
     dry_run: bool,
+    summary: bool,
 ) -> None:
     """Expense rules from a period's transactions: replace the generated baseline rows in scheduled.csv.
 
@@ -9086,6 +9094,14 @@ def import_transactions(
     payment, '-' to leave the rows out). At a terminal a payee no row covers
     is asked about, the most paid first, and saved; 'rest' puts all not yet
     asked into Other for this run.
+
+    --summary shows what the rules would be made from and stops: the period,
+    each category's total and monthly rate, what was left out and why, and
+    the categories that fell to Other. Given a year or more, it also lists
+    the large payments made in only a month or two (an insurance premium, a
+    property tax), which a monthly rule misstates: give such a payee a
+    yearly rule of its own (sim scheduled add) and a '-' row in payees.csv
+    or excluded_payees.csv.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
@@ -9168,6 +9184,17 @@ def import_transactions(
             f"note: {len(left_to_other)} payee(s) not asked about went to Other, "
             f"{format_dollars(sum(each.cents for each in left_to_other))} in all; the most paid: "
             + "; ".join(f"{each.example} ({format_dollars(each.cents)})" for each in left_to_other[:5]))
+    if summary:
+        _show_transactions_summary(baseline)
+        if payees_asked:
+            click.echo("(summary) the payee categories you gave were not saved")
+        return
+    if from_account is None:
+        if not _interactive():
+            raise click.UsageError("Missing option '--from-account'.")
+        from_account = _ask_name(
+            "account or chain", names.chain_names(data_dir_p, scenario_name, accounts=True),
+            prompt="account the expenses are paid from", plural="accounts and chains")
     with _intent_db(data_dir_p, scenario_name) as (con, _):
         if start is None:
             # As loaded: a derived scenario's own scenario.csv may leave it
@@ -9221,6 +9248,59 @@ def import_transactions(
         f"replaced {len(rows)} generated baseline row(s) in {_shown(scheduled_path)} "
         f"for scenario {scenario_name} ({counts or 'none'})"
     )
+
+
+_LEFT_OUT = {
+    "non_expense": "money in",
+    "transfer": "moves between your own accounts",
+    "modeled_separately": "modeled by the scenario or replaced (a mortgage, Amazon, excluded payees)",
+    "category_excluded": "left out by the category map",
+}
+
+
+def _show_transactions_summary(baseline: BaselineResult) -> None:
+    """What `sim import transactions` would make its rules from (#333)."""
+    used = baseline.transactions
+    months = months_covered(baseline)
+    observed = max(baseline.monthly["summary_month_start"].nunique(), 1)
+    if used.empty:
+        click.echo("no imported transactions are used")
+    else:
+        first, last = used["summary_month_start"].min(), used["summary_month_start"].max()
+        click.echo(f"{len(used)} transaction(s) used, {first:%B %Y} to {last:%B %Y} "
+                   f"({months} month{'' if months == 1 else 's'})")
+    if not baseline.excluded.empty:
+        click.echo("left out:")
+        for reason, rows in baseline.excluded.groupby("exclude_reason", sort=True):
+            click.echo(f"  {len(rows):>5}  {format_dollars(int(rows['amount_cents'].abs().sum())):>12}  "
+                       f"{_LEFT_OUT.get(str(reason), str(reason))}")
+    if baseline.categories_defaulted_to_other:
+        click.echo("put in Other, having no row in a category map: "
+                   + ", ".join(baseline.categories_defaulted_to_other))
+    totals = baseline.category_totals.to_dict("records")
+    if totals:
+        width = max(len("category"), *(len(str(row["category"])) for row in totals))
+        click.echo(f"{'category':<{width}}  {'total':>12}  {'a month':>10}")
+        for row in totals:
+            total = float(row["amount_total"])
+            click.echo(f"{row['category']!s:<{width}}  {total:>12,.2f}  {total / observed:>10,.2f}")
+        everything = sum(float(row["amount_total"]) for row in totals)
+        click.echo(f"{'all':<{width}}  {everything:>12,.2f}  {everything / observed:>10,.2f}")
+    if months < 12:
+        click.echo("note: payments made only once or twice a year (an insurance premium, a property "
+                   "tax) can't be told from monthly ones in less than a year of transactions; "
+                   "every category is spread by the month.")
+        return
+    occasional = occasional_payments(baseline)
+    if not occasional:
+        return
+    click.echo("paid in only a month or two, and spread over every month by the rules:")
+    for each in occasional:
+        when = ", ".join(f"{month:%b %Y} {amount:,.2f}" for month, amount in each.paid)
+        click.echo(f"  {each.payee} ({each.category}): {when}")
+    click.echo("To pay one when it falls, give it a yearly rule of its own (sim scheduled add) and "
+               "leave its payee out of the rules with a '-' row in payees.csv, or a row in "
+               "excluded_payees.csv.")
 
 
 @import_group_command.command("budget")

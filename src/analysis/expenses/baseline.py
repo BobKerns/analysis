@@ -12,6 +12,7 @@ import json
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -193,6 +194,67 @@ def build_expense_baseline(
         category_totals=category_totals.reset_index(drop=True),
         categories_defaulted_to_other=defaulted_categories,
     )
+
+
+OCCASIONAL_MONTHS = 2
+"""A payee paid in no more months of a year or more than this is paid now
+and then, not monthly."""
+OCCASIONAL_LEAST = 600.0
+"""The least such a payee comes to, in dollars, to be worth a rule of its
+own: under 50 a month, spreading it changes little."""
+
+
+@dataclass(frozen=True)
+class Occasional:
+    """A payee the baseline spreads over every month, though it was paid
+    in only a month or two."""
+
+    category: CanonicalCategory
+    payee: str
+    """The payee as one of its transactions has it."""
+    paid: tuple[tuple[date, float], ...]
+    """Each month it was paid in, and what was paid then."""
+
+    @property
+    def total(self) -> float:
+        return sum(amount for _, amount in self.paid)
+
+
+def months_covered(baseline: BaselineResult) -> int:
+    """The calendar months from the first imported transaction used to the
+    last, both counted."""
+    months = baseline.transactions["summary_month_start"]
+    if months.empty:
+        return 0
+    first, last = months.min(), months.max()
+    return (last.year - first.year) * 12 + last.month - first.month + 1
+
+
+def occasional_payments(
+    baseline: BaselineResult, *, most_months: int = OCCASIONAL_MONTHS, least: float = OCCASIONAL_LEAST,
+) -> list[Occasional]:
+    """The large payments that aren't monthly, the largest first: a payee
+    of a category paid in at most ``most_months`` months, for ``least`` or
+    more in all. Nothing is found in less than a year of transactions,
+    where a yearly bill can't be told from a monthly one that just began.
+    """
+    from analysis.sim.imports.mapping import payee_key
+
+    used = baseline.transactions
+    if months_covered(baseline) < 12:
+        return []
+    keyed = used.assign(payee_key=used["payee"].map(payee_key))
+    found: list[Occasional] = []
+    for _, rows in keyed[keyed["payee_key"].ne("")].groupby(["category", "payee_key"], sort=True):
+        category = rows["category"].iloc[0]
+        by_month = rows.groupby("summary_month_start")["amount"].sum()
+        if len(by_month) > most_months or by_month.sum() < least:
+            continue
+        found.append(Occasional(
+            str(category), str(rows["payee"].iloc[0]),
+            tuple((date(month.year, month.month, 1), float(amount))
+                  for month, amount in zip(by_month.index, by_month, strict=True))))
+    return sorted(found, key=lambda each: (-each.total, each.category, each.payee))
 
 
 def build_scheduled_baseline_rows(

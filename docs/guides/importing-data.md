@@ -252,6 +252,34 @@ exactly those and leaves every rule written by hand alone, so:
 Two files that cover the same days of one outside account are refused, since
 their transactions would be counted twice.
 
+### Look before writing: `--summary`
+
+```sh
+sim import transactions transactions.csv --summary
+```
+
+Shows what the rules would be made from, and writes nothing: the period
+covered, each category's total and what it comes to a month, what was left
+out and why (money in, moves between your own accounts, what the scenario
+models itself), and the outside categories that fell to `Other`. It needs
+no `--from-account` and no expense accounts yet, so it is a good first
+command with a new file.
+
+Give it a year or more of transactions and it also lists the large payments
+made in only a month or two: an insurance premium, a property tax.
+
+```text
+paid in only a month or two, and spread over every month by the rules:
+  Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00
+```
+
+A monthly rule gets the year's total right and the months wrong. To pay
+such a bill when it falls, give it a yearly rule of its own with
+`sim scheduled add`, and leave its payee out of the generated rules: a `-`
+row in `payees.csv`, or a row in `excluded_payees.csv`. With less than a
+year of transactions a yearly bill can't be told from a monthly one that
+just began, so nothing is listed.
+
 ### Bank and card files
 
 A bank's download of an account's activity has a date, an amount and the

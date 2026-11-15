@@ -323,6 +323,52 @@ def test_sim_import_transactions_writes_rules_and_a_rerun_shows_the_difference(
 
 
 @pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_summary_shows_what_the_rules_come_from_and_writes_nothing(
+    test_data_dir: Path, quicken_transaction_export: Path,
+) -> None:
+    # No account to pay from, and no expense accounts: a summary needs neither.
+    result = _import(test_data_dir, "transactions", str(quicken_transaction_export), "--summary")
+
+    assert result.exit_code == 0, result.output
+    assert "4 transaction(s) used, January 2026 to February 2026 (2 months)" in result.output
+    lines = [line.split() for line in result.output.splitlines()]
+    assert ["Food", "840.00", "420.00"] in lines and ["Gifts", "60.00", "30.00"] in lines
+    assert ["all", "900.00", "450.00"] in lines
+    assert "can't be told from monthly ones in less than a year" in result.output
+    assert _generated(test_data_dir) == {}
+
+
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_summary_lists_large_payments_that_are_not_monthly(
+    test_data_dir: Path, quicken_year_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("quicken/categories.csv", "Groceries,Food\nGifts,Gifts\nAuto Insurance,Insurance\n")
+
+    result = _import(test_data_dir, "transactions", str(quicken_year_export), "--summary")
+
+    assert result.exit_code == 0, result.output
+    assert "15 transaction(s) used, January 2026 to December 2026 (12 months)" in result.output
+    assert "    1       1000.00  moves between your own accounts" in result.output
+    assert "    1       5000.00  money in" in result.output
+    # The premium is found; the groceries are monthly, and the small fee isn't worth a rule.
+    assert "  Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00" in result.output
+    assert "Market" not in result.output and "Web Host" not in result.output
+    assert "sim scheduled add" in result.output
+
+
+@pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
+def test_sim_import_transactions_asks_for_the_account_to_pay_from(
+    test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
+
+    result = _import(test_data_dir, "transactions", str(quicken_transaction_export), input="Asset_Checking\n")
+
+    assert result.exit_code == 0, result.output
+    assert _generated(test_data_dir)["baseline_expense_food"]["from_account"] == "Asset_Checking"
+
+
+@pytest.mark.usefixtures("quicken_category_map")
 def test_sim_import_transactions_warns_about_a_category_with_no_account(
     test_data_dir: Path, quicken_transaction_export: Path, write_import_map: MapWriter,
 ) -> None:
