@@ -379,12 +379,14 @@ def read_map_rows(path: Path, kind: MapFile) -> list[dict[str, str]]:
 
 def write_map_rows(path: Path, kind: MapFile, rows: Sequence[Mapping[str, str]]) -> None:
     """Replace ``path``'s rows, unless the file's loader then refuses it:
-    the file is put back as it was, and the loader's ValueError raised."""
+    the file is put back as it was, and the loader's ValueError raised.
+    It is put back whatever stops the check (an interrupt too), so that
+    nothing unchecked is ever left in its place."""
     before = path.read_bytes()
     _write(path, kind.header, ([row[column] for column in kind.header] for row in rows))
     try:
         kind.check(path)
-    except ValueError:
+    except BaseException:
         path.write_bytes(before)
         raise
 
