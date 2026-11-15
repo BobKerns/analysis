@@ -693,6 +693,7 @@ def _git_init_commit(repo: Path) -> None:
     r.git.add(A=True)
     with r.config_writer() as cw:
         cw.set_value("commit", "gpgsign", "false")
+        cw.set_value("tag", "gpgsign", "false")
     actor = git.Actor("t", "t@t")
     r.index.commit("init", author=actor, committer=actor)
 
