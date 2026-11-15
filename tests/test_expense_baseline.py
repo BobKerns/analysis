@@ -478,6 +478,15 @@ def test_occasional_payments_leave_out_a_bill_that_began_and_mark_a_one_time_exp
     assert _found(*two_years, *[(f"2025-{month:02d}-01", "Trash", 300.0) for month in range(1, 13, 2)]) == []
 
 
+def test_occasional_payments_in_one_year_are_never_seen_to_come_round() -> None:
+    # A job's deposit in January and its last payment in December are eleven months apart.
+    job = [("2026-01-10", "Roofing Co.", 5000.0), ("2026-12-10", "Roofing Co.", 5000.0)]
+    assert _found(*_monthly("Gym", "2026-01-01", 12), ("2026-12-30", "Gym", 80.0), *job) == [("Roofing Co.", 2, False)]
+    # Twelve or thirteen months apart is a year on.
+    later = [("2026-01-10", "Mutual Insurance", 900.0), ("2027-02-10", "Mutual Insurance", 900.0)]
+    assert _found(*_monthly("Gym", "2026-01-01", 14), *later) == [("Mutual Insurance", 2, True)]
+
+
 def test_occasional_payments_need_most_of_a_year_first_day_to_last() -> None:
     # Twelve calendar months, and ten of data: a yearly bill can't be told from a new monthly one.
     payments = [("2025-01-31", "Gym", 80.0), ("2025-12-01", "Gym", 80.0), ("2025-06-01", "County Tax", 2000.0)]
