@@ -1145,6 +1145,7 @@ def test_sim_import_map_checks_no_account_of_a_scenario_that_does_not_load(
     result = _map(test_data_dir, "--scenario", "retire_alice", input="1\nchange\nExpense_Housing\ndone\n")
 
     assert result.exit_code == 0, result.output
+    assert "no scenario to check an account against or complete its name from: " in result.output
     assert "Keep it?" not in result.output
     assert accounts.read_text(encoding="utf-8") == "category,account\nFood,Expense_Housing\n"
 
@@ -1171,6 +1172,24 @@ def test_sim_import_map_writes_over_nothing_written_since_it_listed(
     assert "city water" in result.output  # listed again, as it is now
 
 
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_map_writes_nothing_for_a_change_that_changes_nothing(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    payees = write_import_map("bank/payees.csv", "corner market,Food\n")
+    # As a hand might leave it: a blank row, which a rewrite would drop.
+    payees.write_text(payees.read_text(encoding="utf-8") + ",\n", encoding="utf-8")
+    before = payees.read_bytes()
+
+    # A number int() can't read, then Enter at the row's one question.
+    result = _map(test_data_dir, "bank", "--scenario", "retire_alice", input="\u00b2\n1\nchange\n\ndone\n")
+
+    assert result.exit_code == 0, result.output
+    assert "a row's number from the list, or done" in result.output
+    assert "nothing changed" in result.output and "saved" not in result.output
+    assert payees.read_bytes() == before
+
+
 def test_import_map_offers_no_rule_only_where_a_file_reads_it(test_data_dir: Path) -> None:
     by_name = {kind.name: kind for kind in import_mapping.MAP_FILES}
 
@@ -1183,7 +1202,7 @@ def test_import_map_offers_no_rule_only_where_a_file_reads_it(test_data_dir: Pat
     assert import_mapping.NO_RULE not in offered(import_mapping.SPLITS, "target_category")
 
 
-def test_a_mapping_file_is_put_back_whatever_stops_its_check(
+def test_a_mapping_file_is_as_it_was_whatever_stops_its_check(
     write_import_map: MapWriter,
 ) -> None:
     path = write_import_map("expense_accounts.csv", "Food,Expense_Living\n")
