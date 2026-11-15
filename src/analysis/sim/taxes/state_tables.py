@@ -171,8 +171,12 @@ class StateTablesYear(FederalStateYear):
         # leaving the other's income to the joint total.
         pools, ss = common.person_income(
             ty, self._spouses, hsa_taxed=self._hsa_taxed, clip=False)
+        # Each spouse's half of their own self-employment tax comes off
+        # their own income (#623), not the couple's by shares.
+        se_deductions = self.federal.compute().memo
         self._ordinary_own = {
             p: sum(v for kind, v in pools[p].items() if kind != "capital_gain")
+            - se_deductions.get(f"se_tax_deduction__{p}", 0)
             for p in self._spouses}
         self._ordinary_weights = {p: max(0, v) for p, v in self._ordinary_own.items()}
         self._gain_weights = {p: max(0, pools[p]["capital_gain"]) for p in self._spouses}
@@ -397,7 +401,11 @@ class StateTablesYear(FederalStateYear):
                 continue
             figure = a.figure
             if a.base == "federal_tax":
-                figure = a.from_base(basis.federal["tax"])
+                # The federal income tax, not Schedule 2's self-employment
+                # taxes (#623); a household calculator's return without the
+                # memo line is taken at its tax.
+                fed = basis.federal
+                figure = a.from_base(fed.memo.get("income_tax", fed["tax"]))
             elif a.base == "federal_deduction":
                 # Less the state income tax it deducted (#542): the
                 # state's own tax mustn't grow its own credit.

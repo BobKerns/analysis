@@ -4634,6 +4634,8 @@ def _indexed_tax_rows(
             if not growth or january <= base or row.get(money) is None:
                 continue
             amount = _grow(aux, int(row[money]), str(growth), base, january, cache)
+            if kind in registries.TAX_INDEX_ROUND_NEAREST:
+                amount += step // 2
             grown = {**grown, money: amount // step * step}
         out.append(grown)
     return out

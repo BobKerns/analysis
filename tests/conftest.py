@@ -593,7 +593,7 @@ def lot_variant_runs(
     )
     (variant_dir / "year_to_date.csv").write_text(
         "name,from_account,from_lot,to_account,to_lot,amount,tax_character,year,description\n"
-        "prior_ordinary_wages,Income_Salary_Alice,,Asset_Checking,,70000.00,ordinary,,\n"
+        "prior_wages_alice,Income_Salary_Alice,,Asset_Checking,,70000.00,ordinary,,\n"
     )
     loaded = load_scenario(test_data_dir, "variant", intent_dir=intent_dir,
                            scenarios_dir=test_scenarios_dir, allow_dirty_data=True)

@@ -91,12 +91,12 @@ def test_add_asks_for_what_it_needs(test_data_dir: Path, ytd: Callable[[], pd.Da
 def test_add_refuses_a_name_already_taken(test_data_dir: Path, ytd: Callable[[], pd.DataFrame]) -> None:
     before = ytd()
     result = _sim(
-        test_data_dir, "retire_alice", "add", "prior_ordinary_wages", "Income_Salary_Alice",
+        test_data_dir, "retire_alice", "add", "prior_wages_alice", "Income_Salary_Alice",
         "Asset_Checking", "1", "--tax-character", "ordinary",
     )
 
     assert result.exit_code != 0
-    assert "sim ytd edit prior_ordinary_wages" in result.output
+    assert "sim ytd edit prior_wages_alice" in result.output
     pd.testing.assert_frame_equal(ytd(), before)
 
 
@@ -146,7 +146,7 @@ def test_add_trims_the_name_before_checking_it_is_new(
 ) -> None:
     before = ytd()
     result = _sim(
-        test_data_dir, "retire_alice", "add", " prior_ordinary_wages ", "Income_Salary_Alice",
+        test_data_dir, "retire_alice", "add", " prior_wages_alice ", "Income_Salary_Alice",
         "Asset_Checking", "1", "--tax-character", "ordinary",
     )
 
@@ -167,7 +167,7 @@ def test_add_fills_in_columns_the_files_header_left_out(
 
     assert result.exit_code == 0, result.output
     assert _row(ytd(), "prior_interest")["year"] == "2025"
-    assert _row(ytd(), "prior_ordinary_wages")["amount"] == "62000.00"
+    assert _row(ytd(), "prior_wages_alice")["amount"] == "32000.00"
 
 
 # ---------- edit ----------
@@ -186,27 +186,27 @@ def test_edit_options_change_those_fields_and_keep_the_rest(
     assert {k: v for k, v in after.items() if k not in ("amount", "description")} == {
         k: v for k, v in before.items() if k not in ("amount", "description")}
     # In its place, not moved to the end.
-    assert list(ytd()["name"]).index("prior_federal_withholding") == 1
+    assert list(ytd()["name"]).index("prior_federal_withholding") == 2
 
 
 def test_guided_edit_changes_a_named_field(
     test_data_dir: Path, ytd: Callable[[], pd.DataFrame],
 ) -> None:
-    result = _sim(test_data_dir, "retire_alice", "edit", "prior_ordinary_wages",
+    result = _sim(test_data_dir, "retire_alice", "edit", "prior_wages_alice",
                   answers=["amount", "63000", "write"])
 
     assert result.exit_code == 0, result.output
-    assert "updated year-to-date row 'prior_ordinary_wages'" in result.output
-    assert _row(ytd(), "prior_ordinary_wages")["amount"] == "63000.00"
+    assert "updated year-to-date row 'prior_wages_alice'" in result.output
+    assert _row(ytd(), "prior_wages_alice")["amount"] == "63000.00"
 
 
 def test_edit_asks_which_row(test_data_dir: Path, ytd: Callable[[], pd.DataFrame]) -> None:
     result = _sim(test_data_dir, "retire_alice", "edit",
-                  answers=["prior_ordinary_wages", "year", "2025", "write"])
+                  answers=["prior_wages_alice", "year", "2025", "write"])
 
     assert result.exit_code == 0, result.output
     assert "prior_federal_withholding" in result.output  # the choices are listed
-    assert _row(ytd(), "prior_ordinary_wages")["year"] == "2025"
+    assert _row(ytd(), "prior_wages_alice")["year"] == "2025"
 
 
 def test_edit_with_nothing_changed_writes_nothing(
@@ -214,7 +214,7 @@ def test_edit_with_nothing_changed_writes_nothing(
 ) -> None:
     path = retire_alice_csv("year_to_date.csv")
     before = path.read_bytes()
-    result = _sim(test_data_dir, "retire_alice", "edit", "prior_ordinary_wages", answers=["write"])
+    result = _sim(test_data_dir, "retire_alice", "edit", "prior_wages_alice", answers=["write"])
 
     assert result.exit_code == 0, result.output
     assert "no change" in result.output
@@ -262,10 +262,10 @@ def test_edit_works_in_a_file_whose_header_left_columns_out(
     pd.read_csv(path, dtype=str, keep_default_na=False).drop(
         columns=["from_lot", "to_lot"]).to_csv(path, index=False)
 
-    result = _sim(test_data_dir, "retire_alice", "edit", "prior_ordinary_wages", "--amount", "1")
+    result = _sim(test_data_dir, "retire_alice", "edit", "prior_wages_alice", "--amount", "1")
 
     assert result.exit_code == 0, result.output
-    assert _row(ytd(), "prior_ordinary_wages")["amount"] == "1.00"
+    assert _row(ytd(), "prior_wages_alice")["amount"] == "1.00"
 
 
 def test_widening_a_header_keeps_what_the_rows_inherit(
@@ -275,13 +275,13 @@ def test_widening_a_header_keeps_what_the_rows_inherit(
     child = test_child_scenario / "year_to_date.csv"
     child.write_text("name,amount\nprior_ltcg_loss_carryforward,-1000.00\n")
 
-    result = _sim(test_data_dir, "child", "edit", "prior_ordinary_wages", "--amount", "1")
+    result = _sim(test_data_dir, "child", "edit", "prior_wages_alice", "--amount", "1")
 
     assert result.exit_code == 0, result.output
     frame = _read(child)
     assert _row(frame, "prior_ltcg_loss_carryforward")["year"] == "2025"
     assert _row(frame, "prior_ltcg_loss_carryforward")["amount"] == "-1000.00"
-    assert _row(frame, "prior_ordinary_wages")["amount"] == "1.00"
+    assert _row(frame, "prior_wages_alice")["amount"] == "1.00"
 
 
 def test_editing_an_own_row_of_a_partial_header_keeps_what_it_inherits(
@@ -311,14 +311,14 @@ def test_edit_of_an_unknown_row_says_so(test_data_dir: Path) -> None:
 def test_editing_an_inherited_row_writes_a_whole_row_override(
     test_data_dir: Path, test_child_scenario: Path, ytd: Callable[[], pd.DataFrame],
 ) -> None:
-    parent = _row(ytd(), "prior_ordinary_wages")
-    result = _sim(test_data_dir, "child", "edit", "prior_ordinary_wages", "--amount", "50000")
+    parent = _row(ytd(), "prior_wages_alice")
+    result = _sim(test_data_dir, "child", "edit", "prior_wages_alice", "--amount", "50000")
 
     assert result.exit_code == 0, result.output
     assert "inherited from 'retire_alice'" in result.output
-    override = _row(_read(test_child_scenario / "year_to_date.csv"), "prior_ordinary_wages")
+    override = _row(_read(test_child_scenario / "year_to_date.csv"), "prior_wages_alice")
     assert override == {**parent, "amount": "50000.00"}
-    assert _row(ytd(), "prior_ordinary_wages") == parent  # the parent keeps its own
+    assert _row(ytd(), "prior_wages_alice") == parent  # the parent keeps its own
 
 
 # ---------- delete ----------
@@ -344,15 +344,15 @@ def test_delete_writes_nothing_unless_confirmed(
 def test_deleting_an_inherited_row_zeroes_it_with_an_override(
     test_data_dir: Path, test_child_scenario: Path, ytd: Callable[[], pd.DataFrame],
 ) -> None:
-    parent = _row(ytd(), "prior_ordinary_wages")
-    result = _sim(test_data_dir, "child", "delete", "prior_ordinary_wages", "--yes")
+    parent = _row(ytd(), "prior_wages_alice")
+    result = _sim(test_data_dir, "child", "delete", "prior_wages_alice", "--yes")
 
     assert result.exit_code == 0, result.output
     assert "can't remove what it inherits" in result.output
-    override = _row(_read(test_child_scenario / "year_to_date.csv"), "prior_ordinary_wages")
+    override = _row(_read(test_child_scenario / "year_to_date.csv"), "prior_wages_alice")
     assert override == {**parent, "amount": "0.00"}
 
-    again = _sim(test_data_dir, "child", "delete", "prior_ordinary_wages", "--yes")
+    again = _sim(test_data_dir, "child", "delete", "prior_wages_alice", "--yes")
     assert again.exit_code == 0, again.output
     assert "inherited from 'retire_alice' again" in again.output
     assert _read(test_child_scenario / "year_to_date.csv").empty
@@ -361,10 +361,10 @@ def test_deleting_an_inherited_row_zeroes_it_with_an_override(
 def test_deleting_an_inherited_row_already_zero_writes_nothing(
     test_data_dir: Path, test_child_scenario: Path,
 ) -> None:
-    zeroed = _sim(test_data_dir, "retire_alice", "edit", "prior_ordinary_wages", "--amount", "0")
+    zeroed = _sim(test_data_dir, "retire_alice", "edit", "prior_wages_alice", "--amount", "0")
     assert zeroed.exit_code == 0, zeroed.output
 
-    result = _sim(test_data_dir, "child", "delete", "prior_ordinary_wages", "--yes")
+    result = _sim(test_data_dir, "child", "delete", "prior_wages_alice", "--yes")
 
     assert result.exit_code == 0, result.output
     assert "already zero" in result.output
