@@ -39,6 +39,7 @@ from analysis.expenses.baseline import (
     months_covered,
     occasional_payments,
     BaselineResult,
+    Occasional,
     OCCASIONAL_BASELINE_DAYS,
     BASELINE_GENERATED_TAG,
     INCOME_GENERATED_TAG,
@@ -147,6 +148,7 @@ from analysis.sim.imports import mapping as import_mapping
 from analysis.sim.imports import sources as import_sources_
 from analysis.sim.imports import budget as import_budget_
 from analysis.sim.imports import transactions as import_transactions_
+from analysis.sim.imports import yearly as import_yearly
 from analysis.sim.imports.holdings import format_dollars
 import analysis.sim.scenario as sc
 from analysis.sim.staging import (
@@ -9061,6 +9063,12 @@ def _categorize_by_payee(
 @click.option("--summary", is_flag=True, default=False,
               help="Show what the transactions come to, by category, what was left out and "
                    "what isn't paid monthly, and write nothing.")
+@click.option("--yearly-script", type=click.Path(dir_okay=False, path_type=Path), default=None,
+              help="With --summary (which it implies): write the payments that aren't monthly "
+                   "to this file as a shell script of yearly rules, to edit and then run.")
+@click.option("--overwrite", is_flag=True, default=False,
+              help="With --yearly-script: replace the file when there is one (asked at a "
+                   "terminal; refused otherwise, since it may hold your edits).")
 def import_transactions(
     files: tuple[Path, ...],
     layout: str | None,
@@ -9074,6 +9082,8 @@ def import_transactions(
     series: str,
     dry_run: bool,
     summary: bool,
+    yearly_script: Path | None,
+    overwrite: bool,
 ) -> None:
     """Expense rules from a period's transactions: replace the generated baseline rows in scheduled.csv.
 
@@ -9099,10 +9109,11 @@ def import_transactions(
     --summary shows what the rules would be made from and stops: the period,
     each category's total and monthly rate, what was left out and why, and
     the categories that fell to Other. Given a year or more, it also lists
-    the large payments made in only a month or two of a year (an insurance
+    the large payments made in only a few months of a year (an insurance
     premium, a property tax), which a monthly rule misstates; they are
-    candidates for yearly rules of their own (sim scheduled add), since a
-    one-time expense looks the same. It asks nothing: a payee with no
+    candidates for yearly rules of their own, since a one-time expense
+    looks the same: --yearly-script FILE writes them as a script of
+    `sim scheduled add` commands to edit and then run. It asks nothing: a payee with no
     category yet is counted in Other, and a file that doesn't name its
     account is its own name's.
     """
@@ -9112,7 +9123,22 @@ def import_transactions(
     _refuse_unmigrated_imports(data_dir_p)
     scenario_accounts: set[str] = set()
     expense_names: list[str] = []
-    if not summary:
+    summary = summary or yearly_script is not None
+    if overwrite and yearly_script is None:
+        raise click.UsageError("--overwrite goes with --yearly-script")
+    # Before anything is read: the file is one to edit, and a second run
+    # (to see the summary again) must not replace the edited copy unasked.
+    if yearly_script is not None and yearly_script.exists() and not overwrite and not (
+            _interactive() and click.confirm(
+                f"{yearly_script} exists, and may hold your edits. Replace it?", default=False)):
+        raise click.ClickException(
+            f"{yearly_script} exists, and may hold your edits; --overwrite replaces it, "
+            "or give another name")
+    if summary and from_lot and from_account is None:
+        raise click.UsageError("--from-lot goes with --from-account")
+    # A summary needs no account to pay from, but one given for the yearly
+    # script is checked as an import's is: the script would only fail on it.
+    if not summary or from_account is not None:
         # Before any file is read or payee asked about: an answer given
         # since would be lost with a slip here. Given or asked for, the
         # account is held to what a transfer's from side takes.
@@ -9225,7 +9251,27 @@ def import_transactions(
             f"{format_dollars(sum(each.cents for each in left_to_other))} in all; the most paid: "
             + "; ".join(f"{each.example} ({format_dollars(each.cents)})" for each in left_to_other[:5]))
     if summary:
-        _show_transactions_summary(baseline)
+        occasional = _show_transactions_summary(baseline, scripted=yearly_script is not None)
+        if yearly_script is not None and occasional:
+            with _intent_db(data_dir_p, scenario_name) as (con, _):
+                if start is None:
+                    start = con.execute("SELECT start FROM scenario").fetchone()[0]
+                account_names = [row[0] for row in con.execute("SELECT name FROM account")]
+                rule_names = [row[0] for row in con.execute("SELECT name FROM scheduled_transaction")]
+            text, written, waiting = import_yearly.script(
+                occasional, data_dir=data_dir_p.resolve(), scenario=scenario_name,
+                start=_validate_month_date(start)[:7], from_account=from_account, from_lot=from_lot,
+                series=series, expense_accounts=expense_accounts.accounts, accounts=account_names,
+                source=flows.sources[0], taken=rule_names, sim=_sim_command())
+            yearly_script.write_text(text, encoding="utf-8")
+            noted = len(occasional) - written - waiting
+            click.echo(f"wrote {yearly_script}: {written} payee(s) as yearly rules ready to run"
+                       + (f", {waiting} commented out and waiting for your choice (a bill that comes "
+                          "round, a one-time expense, or left spread over the months)" if waiting else "")
+                       + (f", {noted} noted and not written as rules" if noted else "")
+                       + f". Edit it, then run it with: sh {shlex.quote(str(yearly_script))}")
+        elif yearly_script is not None:
+            click.echo(f"no candidates for yearly rules: {yearly_script} was not written")
         return
     assert from_account is not None and start is not None  # settled above, for all but a summary
     totals = {str(r["category"]): float(r["amount_total"])
@@ -9283,8 +9329,17 @@ _LEFT_OUT = {
 }
 
 
-def _show_transactions_summary(baseline: BaselineResult) -> None:
-    """What `sim import transactions` would make its rules from (#333)."""
+def _sim_command() -> str:
+    """The `sim` beside the running Python, for a script to run later: the
+    PATH it is run with may have none, or another checkout's."""
+    beside = Path(sys.executable).parent / "sim"
+    return str(beside) if beside.is_file() else shutil.which("sim") or "sim"
+
+
+def _show_transactions_summary(baseline: BaselineResult, *, scripted: bool = False) -> list[Occasional]:
+    """What `sim import transactions` would make its rules from (#333);
+    returns the candidates for yearly rules it listed. ``scripted`` says
+    they are being written as a script, which the advice then points to."""
     used = baseline.transactions
     months = months_covered(baseline)
     observed = baseline.observed_months
@@ -9323,22 +9378,24 @@ def _show_transactions_summary(baseline: BaselineResult) -> None:
                "category or a payee in imports/ where it is wrong for your household.")
     occasional = occasional_payments(baseline)
     if occasional is None:
-        click.echo("note: payments made only once or twice a year (an insurance premium, a property "
+        click.echo("note: payments made in only a few months of a year (an insurance premium, a property "
                    f"tax) can't be told from monthly ones in less than {OCCASIONAL_BASELINE_DAYS} days "
                    "of transactions, first to last; every category is spread by the month.")
-        return
+        return []
     if not occasional:
-        return
-    click.echo("paid in only a month or two of a year, and spread over every month by the rules:")
+        return []
+    click.echo("paid in only a few months of a year, and spread over every month by the rules:")
     for each in occasional:
         when = ", ".join(f"{month:%b %Y} {format_dollars(cents)}" for month, cents in each.paid)
         click.echo(f"  {each.payee} ({each.category}): {when}"
                    + ("" if each.repeats else "  (not seen to come round again)"))
     click.echo("These are candidates: one not seen to come round again may be a yearly bill or a "
-               "one-time expense, which no rule should repeat. For a bill that does come round, add "
-               "a yearly rule for each month of the year it is paid in (sim scheduled add), each for "
-               "that month's amount, and then leave its payee out of the generated rules with a '-' "
-               "row in payees.csv, or a row in excluded_payees.csv.")
+               "one-time expense, which no rule should repeat. A bill that does come round wants a "
+               "yearly rule for each month of the year it is paid in, each for that month's amount, "
+               "and its payee left out of the generated rules (a row in excluded_payees.csv); one "
+               "you already have rules for wants only its payee left out."
+               + ("" if scripted else " --yearly-script FILE writes both as a script to edit and run."))
+    return occasional
 
 
 @import_group_command.command("budget")

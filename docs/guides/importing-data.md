@@ -279,26 +279,98 @@ counted in `Other`, with a note of the most paid, and a file that doesn't
 name its account is taken as its own name's.
 
 Give it a year or more of transactions and it also lists the large payments
-made in only a month or two of each year: an insurance premium, a
-property tax.
+made in only a few months of each year: an insurance premium, a property
+tax paid in two installments, a utility billed every quarter.
 
 ```text
-paid in only a month or two of a year, and spread over every month by the rules:
+paid in only a few months of a year, and spread over every month by the rules:
   Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00  (not seen to come round again)
-These are candidates: one not seen to come round again may be a yearly bill or a one-time expense, which no rule should repeat. For a bill that does come round, add a yearly rule for each month of the year it is paid in (sim scheduled add), each for that month's amount, and then leave its payee out of the generated rules with a '-' row in payees.csv, or a row in excluded_payees.csv.
+These are candidates: one not seen to come round again may be a yearly bill or a one-time expense, which no rule should repeat. A bill that does come round wants a yearly rule for each month of the year it is paid in, each for that month's amount, and its payee left out of the generated rules (a row in excluded_payees.csv); one you already have rules for wants only its payee left out. --yearly-script FILE writes both as a script to edit and run.
 ```
 
 The list is of candidates. One year can't tell a yearly premium from a
 one-time purchase, so a payment is marked until a later year shows it
-again. A monthly bill that began or ended in the period is not listed, nor
-is a season's.
+again. A candidate is paid in at most four months of a year, no two of
+them closer than three months, so a quarterly bill is one and a bill paid
+every other month is not. A monthly bill that began or ended in the period
+is not listed, nor is a season's.
 
 A monthly rule gets the year's total right and the months wrong. To pay
-such a bill when it falls, give it a yearly rule for each month of the
-year it is paid in with `sim scheduled add` (two rules for the premium
-above, 900 in March and 900 in September), and leave its payee out of the
-generated rules: a `-` row in `payees.csv`, or a row in
-`excluded_payees.csv`.
+such a bill when it falls, it wants a yearly rule for each month of the
+year it is paid in (two rules for the premium above, 900 in March and 900
+in September; four for a quarterly bill, each for its own quarter's
+amount), and its payee left out of the generated rules. Have both written
+for you as a script:
+
+```sh
+sim import transactions transactions.csv --yearly-script yearly-rules.sh --from-account Asset_Checking
+```
+
+`--yearly-script` implies `--summary`: it shows the same summary, writes
+no rules, and puts the candidates in the file as a shell script.
+
+```sh
+# Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00
+# Not seen to come round again: a bill, or a one-time expense? Choose, and uncomment:
+#   every line, for a bill that comes round;
+#   only `leave_out`, for a one-time expense or a bill you already have rules for;
+#   none, to keep it spread over the months.
+# yearly yearly_mutual_insurance_mar Expense_Insurance 900.00 3 2026-03 'Yearly: Mutual Insurance (Insurance)'
+# yearly yearly_mutual_insurance_sep Expense_Insurance 900.00 9 2026-09 'Yearly: Mutual Insurance (Insurance)'
+# leave_out quicken '^\s*(?:\S*\d\S*\s+)*mutual\s+(?:\S*\d\S*\s+)*insurance(?:\s+\S*\d\S*)*\s*$'
+```
+
+**Edit it before you run it.** The script is a best-effort reading, and
+each payee in it is a choice that only you can make:
+
+- **A bill that comes round** wants all of its lines: the `yearly` rules
+  and the `leave_out` row.
+- **A one-time expense** (a repair, a trip), **or a bill you already have
+  rules for**, wants only its `leave_out` line. No rule should repeat the
+  first, and the second would be counted twice.
+- **To keep it spread over the months** as it is, it wants none of them.
+
+A payee seen again about a year later has its lines ready to run, since
+the odds favor a bill. Any other has them commented out, as above, and
+does nothing until you remove the `#` from the lines you choose. With only
+one year of transactions that is every payee. The command says how many
+are waiting for a choice.
+
+Then:
+
+- Correct an amount, or a month, that will be different next time. Each
+  amount is as it was paid, and grows with inflation from the month it was
+  paid in. Where a bill was seen over several years, the latest year's
+  payments are used.
+- Fill in each `EDIT_ME`: the account that pays, when `--from-account` was
+  left out, and the expense account of a category that has none in this
+  scenario (neither a row in `imports/expense_accounts.csv` that names one
+  of its accounts, nor an account of its own name).
+
+Two kinds of candidate are noted in the script and not written as rules:
+
+- A category you gave no rule (`-` in `expense_accounts.csv`): nothing
+  spreads it over the months, so there is nothing for a yearly rule to
+  replace.
+- A payee that is also paid in other categories (a store paid weekly for
+  food, and twice for something large). Its lines are there, commented
+  out: leaving the payee out would drop its other payments from the
+  monthly rules too.
+
+The script is yours once written. Running the command again refuses to
+replace it (at a terminal, it asks) unless `--overwrite` is given.
+
+Then run it once with `sh yearly-rules.sh`. Each `yearly` line is a
+`sim scheduled add`, and each `leave_out` line adds a row to the
+`excluded_payees.csv` of the source the payments came from, so that the
+next `sim import transactions` no longer spreads that payee over the
+months. The row finds that payee and no other: its words in order,
+whatever dates and reference numbers come before, between and after them,
+and no other word. The script runs the `sim` that wrote it, whatever your `PATH` is when you
+run it. Should the script stop partway (an `EDIT_ME` left in,
+say), correct it and run it again: it skips what it has already added.
+Run the import again afterwards. The yearly rules are ordinary rules of yours from then on:
+an import never replaces them, and `sim scheduled edit` changes them.
 
 With less than a year of transactions, first day to last, a yearly bill
 can't be told from a monthly one that just began, so nothing is listed.
