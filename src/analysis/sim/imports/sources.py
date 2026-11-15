@@ -16,7 +16,7 @@ from typing import Literal
 
 import pandas as pd
 
-from analysis.sim.imports import profiles, quicken
+from analysis.sim.imports import ofx, profiles, quicken
 from analysis.sim.imports.forms import ORIGIN, REFERENCE, Budget, Flows, Snapshot
 
 __all__ = [
@@ -52,6 +52,15 @@ class Source:
     budget: Reader[Budget] | None = None
     profile: profiles.Profile | None = None
     """What describes it, when that is a profile and not code."""
+    payees: bool = False
+    """A coded source whose transactions never come with categories, so a
+    payee map gives them, as it does for a profile's."""
+
+    @property
+    def by_payee(self) -> bool:
+        """Whether rows with no category are read by the source's
+        ``payees.csv``, and asked about, even before it has one."""
+        return self.payees or self.profile is not None
 
     def reader(self, form: Form) -> Reader[Snapshot] | Reader[Flows] | Reader[Budget] | None:
         return {"holdings": self.holdings, "transactions": self.transactions, "budget": self.budget}[form]
@@ -74,6 +83,15 @@ _CODED: dict[str, Source] = {
                             'My Reports: "Transaction Export"'),
         budget=Reader(quicken.is_budget, quicken.read_budget,
                       'Budget: Export, "Full" (a column for each month) or "Summary"'),
+    ),
+    ofx.NAME: Source(
+        name=ofx.NAME,
+        description="OFX and QFX downloads (a bank's, a card's, a brokerage's)",
+        holdings=Reader(ofx.is_ofx, ofx.read_holdings,
+                        'a download for "Quicken" or "Money" (.qfx, .ofx): balances and positions'),
+        transactions=Reader(ofx.is_ofx, ofx.read_transactions,
+                            'a download for "Quicken" or "Money" (.qfx, .ofx): a bank account\'s or a card\'s'),
+        payees=True,
     ),
 }
 

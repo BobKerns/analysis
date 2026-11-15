@@ -23,6 +23,7 @@ dependencies = [
   "playwright>=1.64.0",
   "pyyaml>=6.0.3",
   "jinja2>=3.1.6",
+  "ofxtools>=1.1.1",
 ]
 
 [project.scripts]

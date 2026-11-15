@@ -19,7 +19,7 @@ Alice and Bill and a Quicken export:
 | Another brokerage or bank whose website downloads a table of balances | Describe its columns in a [profile](#a-source-of-your-own), then import as above |
 | A bank's or a card's transactions download | [Bank and card files](#bank-and-card-files) below; a layout not built in needs a [profile](#a-source-of-your-own) |
 | An HSA custodian with no usable download | Type the balances when `sim scenario roll` asks ([user guide](../user-guide.md), §4.21) |
-| An OFX or QFX download | Not read yet ([#618](https://github.com/BobKerns/analysis/issues/618)) |
+| An OFX or QFX download (what a bank, a card or a brokerage offers for "Quicken" or "Money") | [OFX and QFX files](#ofx-and-qfx-files) below: no profile needed, whatever the institution |
 | Nothing a program exports, or only a few accounts | Type them: `sim scenario roll` asks for each lot's balance, and `sim scheduled add` takes an estimate of spending |
 
 `sim import sources` lists what this version reads. Given files, it says
@@ -431,6 +431,42 @@ reference for each transaction, name that column too (`reference`):
 downloads that all have it may then overlap, and a transaction in two of
 them is counted once. A download without references can't be matched that
 way, so it mustn't cover the same days as another.
+
+### OFX and QFX files
+
+Most banks, cards and brokerages offer a download "for Quicken" (`.qfx`) or
+"for Money" (`.ofx`). They are one format, and it is read whatever the
+institution: no profile is needed. A file is recognized by what is in it,
+not by its name.
+
+```sh
+sim import transactions ~/Downloads/Checking.qfx ~/Downloads/card.ofx --from-account Asset_Checking --dry-run
+sim import holdings ~/Downloads/Checking.qfx --dry-run
+```
+
+One download feeds both commands:
+
+| In the file | Becomes |
+| --- | --- |
+| A bank account's or a card's transactions | spending, for `sim import transactions` |
+| Each transaction's own id | what lets two downloads overlap: a transaction in both is counted once |
+| The institution's name and the account's number | the outside account, as `First Example Bank ...4321`: the last four digits only |
+| The statement's balance and its date | the account's balance, for `sim import holdings` (what a card owes is a debt) |
+| A brokerage account's positions | holdings by symbol, as for [brokerage files](#brokerage-files) |
+
+The transactions have no categories, so they are categorized
+[by payee](#bank-and-card-files), with one map for every institution's
+file: `imports/ofx/payees.csv`. The same payee text means the same thing
+whichever bank reports it. A card paid from the bank is `transfer` there,
+as for any other bank file.
+
+The balance is what a bank's CSV download never has, so an OFX file is the
+easy way to set a checking or savings account's opening balance: download
+it as of the scenario's first day.
+
+Not read: a brokerage's transactions (buys, sales, dividends,
+reinvestments), which are investment activity and not spending, and its
+cash balance where that isn't also a position in a money market fund.
 
 ## A budget: `sim import budget`
 

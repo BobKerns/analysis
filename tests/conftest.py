@@ -2504,6 +2504,137 @@ def quicken_budget_summary_export(tmp_path: Path) -> Path:
                           [(label, [sum(amounts)] if amounts else []) for label, amounts in _BUDGET_ROWS])
 
 
+def _ofx_transactions(rows: list[tuple[str, str, str, str]], close: bool) -> str:
+    """STMTTRN elements for ``rows`` (day, amount, id, name); ``close``
+    closes each tag, as OFX 2 must and OFX 1 needn't."""
+    def tag(name: str, value: str) -> str:
+        return f"<{name}>{value}</{name}>" if close else f"<{name}>{value}"
+
+    return "\n".join(
+        "<STMTTRN>\n" + "\n".join([
+            tag("TRNTYPE", "CREDIT" if not amount.startswith("-") else "DEBIT"),
+            # Late in the institution's own evening: the next day already, in UTC.
+            tag("DTPOSTED", f"{day}210000.000[-8:PST]"), tag("TRNAMT", amount), tag("FITID", ident),
+            tag("NAME", name),
+        ]) + "\n</STMTTRN>" for day, amount, ident, name in rows)
+
+
+_OFX_BANK_ROWS = [
+    ("20260102", "-150.00", "B0001", "CITY POWER AND WATER BILL PAY 260102"),
+    ("20260115", "5000.00", "B0002", "ALICE EMPLOYER PAYROLL 260115"),
+    ("20260120", "-400.00", "B0003", "CORNER MARKET #204 OAKLAND CA"),
+    ("20260201", "-150.00", "B0004", "CITY POWER AND WATER BILL PAY 260201"),
+    ("20260205", "-1000.00", "B0005", "ONLINE TRANSFER TO SAVINGS REF #IB0XYZ12"),
+    ("20260220", "-200.00", "B0006", "CORNER MARKET #204 OAKLAND CA"),
+]
+
+
+def _ofx_bank(rows: list[tuple[str, str, str, str]]) -> str:
+    """An OFX 1 (SGML) bank statement of ``rows``: no closing tags on its
+    values, and a tag of the institution's own that the specification
+    doesn't have."""
+    return (
+        "OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\nSECURITY:NONE\nENCODING:USASCII\nCHARSET:1252\n"
+        "COMPRESSION:NONE\nOLDFILEUID:NONE\nNEWFILEUID:NONE\n\n"
+        "<OFX>\n<SIGNONMSGSRSV1>\n<SONRS>\n<STATUS>\n<CODE>0\n<SEVERITY>INFO\n</STATUS>\n"
+        "<DTSERVER>20260228120000.000[-8:PST]\n<LANGUAGE>ENG\n<FI>\n<ORG>First Example Bank\n<FID>1234\n</FI>\n"
+        "<INTU.BID>1234\n</SONRS>\n</SIGNONMSGSRSV1>\n"
+        "<BANKMSGSRSV1>\n<STMTTRNRS>\n<TRNUID>0\n<STATUS>\n<CODE>0\n<SEVERITY>INFO\n</STATUS>\n"
+        "<STMTRS>\n<CURDEF>USD\n<BANKACCTFROM>\n<BANKID>121000000\n<ACCTID>000987654321\n"
+        "<ACCTTYPE>CHECKING\n</BANKACCTFROM>\n<BANKTRANLIST>\n<DTSTART>20260101\n<DTEND>20260228\n"
+        + _ofx_transactions(rows, close=False)
+        + "\n</BANKTRANLIST>\n<LEDGERBAL>\n<BALAMT>4321.09\n<DTASOF>20260228210000.000[-8:PST]\n</LEDGERBAL>\n"
+        "</STMTRS>\n</STMTTRNRS>\n</BANKMSGSRSV1>\n</OFX>\n")
+
+
+@pytest.fixture
+def ofx_bank_download(tmp_path: Path) -> Path:
+    """A bank's QFX download (OFX 1) of one checking account, January and
+    February 2026: groceries and the utility each month, a move to savings
+    and a paycheck, each with the bank's id, and the ledger balance as of
+    February 28. Every time is 9 p.m. in the bank's own zone."""
+    path = tmp_path / "Checking.qfx"
+    path.write_text(_ofx_bank(_OFX_BANK_ROWS), encoding="cp1252")
+    return path
+
+
+@pytest.fixture
+def ofx_bank_later_download(tmp_path: Path) -> Path:
+    """A later download of ``ofx_bank_download``'s account that overlaps
+    it: February again, and one more purchase in March."""
+    path = tmp_path / "Checking (1).qfx"
+    path.write_text(
+        _ofx_bank([*_OFX_BANK_ROWS[3:], ("20260305", "-90.00", "B0007", "CORNER MARKET #204 OAKLAND CA")]),
+        encoding="cp1252")
+    return path
+
+
+@pytest.fixture
+def ofx_card_download(tmp_path: Path) -> Path:
+    """A card's OFX download (OFX 2, XML), February 2026: one purchase and
+    the payment from the bank, with what is owed as of February 28."""
+    path = tmp_path / "card.ofx"
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+        '<?OFX OFXHEADER="200" VERSION="211" SECURITY="NONE" OLDFILEUID="NONE" NEWFILEUID="NONE"?>\n'
+        "<OFX><SIGNONMSGSRSV1><SONRS><STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>"
+        "<DTSERVER>20260228120000</DTSERVER><LANGUAGE>ENG</LANGUAGE>"
+        "<FI><ORG>Example Card</ORG><FID>5678</FID></FI></SONRS></SIGNONMSGSRSV1>"
+        "<CREDITCARDMSGSRSV1><CCSTMTTRNRS><TRNUID>0</TRNUID>"
+        "<STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>"
+        "<CCSTMTRS><CURDEF>USD</CURDEF><CCACCTFROM><ACCTID>370000000001007</ACCTID></CCACCTFROM>"
+        "<BANKTRANLIST><DTSTART>20260201</DTSTART><DTEND>20260228</DTEND>\n"
+        + _ofx_transactions([("20260210", "-80.00", "C0001", "CORNER MARKET #204 OAKLAND CA"),
+                             ("20260225", "80.00", "C0002", "ONLINE PAYMENT - THANK YOU")], close=True)
+        + "\n</BANKTRANLIST><LEDGERBAL><BALAMT>-250.00</BALAMT><DTASOF>20260228</DTASOF></LEDGERBAL>"
+        "</CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>\n",
+        encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def ofx_brokerage_download(tmp_path: Path) -> Path:
+    """A brokerage's OFX download (OFX 2) of one account as of 2026-01-05:
+    a stock fund and a money market fund, named by ids that its list of
+    securities gives symbols to, and one purchase, which is not read."""
+    def position(kind: str, unique: str, units: str, price: str, value: str) -> str:
+        return (f"<{kind}><INVPOS><SECID><UNIQUEID>{unique}</UNIQUEID><UNIQUEIDTYPE>CUSIP</UNIQUEIDTYPE></SECID>"
+                f"<HELDINACCT>CASH</HELDINACCT><POSTYPE>LONG</POSTYPE><UNITS>{units}</UNITS>"
+                f"<UNITPRICE>{price}</UNITPRICE><MKTVAL>{value}</MKTVAL>"
+                f"<DTPRICEASOF>20260105160000</DTPRICEASOF></INVPOS></{kind}>")
+
+    def security(unique: str, name: str, ticker: str) -> str:
+        return (f"<MFINFO><SECINFO><SECID><UNIQUEID>{unique}</UNIQUEID><UNIQUEIDTYPE>CUSIP</UNIQUEIDTYPE></SECID>"
+                f"<SECNAME>{name}</SECNAME><TICKER>{ticker}</TICKER></SECINFO></MFINFO>")
+
+    path = tmp_path / "brokerage.ofx"
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+        '<?OFX OFXHEADER="200" VERSION="211" SECURITY="NONE" OLDFILEUID="NONE" NEWFILEUID="NONE"?>\n'
+        "<OFX><SIGNONMSGSRSV1><SONRS><STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>"
+        "<DTSERVER>20260105170000</DTSERVER><LANGUAGE>ENG</LANGUAGE>"
+        "<FI><ORG>Example Brokerage</ORG><FID>9012</FID></FI></SONRS></SIGNONMSGSRSV1>"
+        "<INVSTMTMSGSRSV1><INVSTMTTRNRS><TRNUID>0</TRNUID>"
+        "<STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>"
+        "<INVSTMTRS><DTASOF>20260105160000</DTASOF><CURDEF>USD</CURDEF>"
+        "<INVACCTFROM><BROKERID>example.com</BROKERID><ACCTID>12345678</ACCTID></INVACCTFROM>"
+        "<INVTRANLIST><DTSTART>20260101</DTSTART><DTEND>20260105</DTEND>"
+        "<BUYMF><INVBUY><INVTRAN><FITID>T1</FITID><DTTRADE>20260102</DTTRADE></INVTRAN>"
+        "<SECID><UNIQUEID>111111111</UNIQUEID><UNIQUEIDTYPE>CUSIP</UNIQUEIDTYPE></SECID>"
+        "<UNITS>10</UNITS><UNITPRICE>160.00</UNITPRICE><TOTAL>-1600.00</TOTAL>"
+        "<SUBACCTSEC>CASH</SUBACCTSEC><SUBACCTFUND>CASH</SUBACCTFUND></INVBUY><BUYTYPE>BUY</BUYTYPE></BUYMF>"
+        "</INVTRANLIST><INVPOSLIST>"
+        + position("POSMF", "111111111", "2500", "160.00", "400000.00")
+        + position("POSMF", "222222222", "20000", "1.00", "20000.00")
+        + "</INVPOSLIST></INVSTMTRS></INVSTMTTRNRS></INVSTMTMSGSRSV1>"
+        "<SECLISTMSGSRSV1><SECLIST>"
+        + security("111111111", "Total Stock Market Index", "VTSAX")
+        + security("222222222", "Federal Money Market", "VMFXX")
+        + "</SECLIST></SECLISTMSGSRSV1></OFX>\n",
+        encoding="utf-8")
+    return path
+
+
 @pytest.fixture
 def quicken_empty_transaction_export(tmp_path: Path) -> Path:
     """A Quicken "Transaction Export" of an account with no activity."""

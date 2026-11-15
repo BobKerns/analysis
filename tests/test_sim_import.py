@@ -18,6 +18,7 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.expenses.baseline import Occasional
 from analysis.sim import cli
+from analysis.sim.imports import ofx as import_ofx
 from analysis.sim.imports import yearly as import_yearly
 
 
@@ -1794,3 +1795,113 @@ def test_a_rename_gives_an_income_category_named_like_the_account_a_row(
     assert result.exit_code == 0, result.output
     assert (test_data_dir / "imports" / "income_accounts.csv").read_text(encoding="utf-8") \
         == "category,account\nPaycheck,Income_Pay_Alice\n"
+
+
+# ---------- OFX and QFX (#618) ----------
+
+_OFX_PAYEES = ("corner market,Food\ncity power,Utilities\ntransfer to savings,transfer\n"
+               "online payment,transfer\n")
+
+
+def test_sim_import_sources_recognizes_an_ofx_file_by_its_content(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_card_download: Path, tmp_path: Path,
+) -> None:
+    renamed = tmp_path / "download.txt"
+    renamed.write_bytes(ofx_card_download.read_bytes())
+
+    result = CliRunner().invoke(main, ["sim", "import", "sources", str(ofx_bank_download), str(renamed),
+                                       "--data-dir", str(test_data_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("ofx holdings, ofx transactions") == 2
+
+
+def test_ofx_reads_both_versions_and_keeps_the_institution_s_own_day(
+    ofx_bank_download: Path, ofx_card_download: Path,
+) -> None:
+    bank = import_ofx.read_transactions(ofx_bank_download).transactions
+    card = import_ofx.read_transactions(ofx_card_download).transactions
+
+    # The account's whole number stays out: the institution and the last four digits.
+    assert set(bank["account"]) == {"First Example Bank ...4321"}
+    assert set(card["account"]) == {"Example Card ...1007"}
+    # 9 p.m. Pacific on the 2nd is the 3rd in UTC; the bank's day is kept.
+    assert [f"{day:%Y-%m-%d}" for day in bank["date"]][:2] == ["2026-01-02", "2026-01-15"]
+    assert list(bank["amount_cents"]) == [-15000, 500000, -40000, -15000, -100000, -20000]
+    assert list(bank["reference"])[0] == "B0001" and not bank["category"].any()
+    assert list(card["payee"]) == ["CORNER MARKET #204 OAKLAND CA", "ONLINE PAYMENT - THANK YOU"]
+
+
+def test_ofx_refuses_a_file_it_cannot_read(ofx_bank_download: Path, tmp_path: Path) -> None:
+    bad = tmp_path / "bad.qfx"
+    bad.write_text(ofx_bank_download.read_text(encoding="cp1252").replace("20260102210000.000[-8:PST]", "soon"),
+                   encoding="cp1252")
+    with pytest.raises(ValueError, match="DTPOSTED 'soon' is not a date"):
+        import_ofx.read_transactions(bad)
+
+    # A header and no more: the library's own refusal, with the file named.
+    bad.write_text("OFXHEADER:100\nDATA:OFXSGML\n\n<OFX>\n</OFX>\n", encoding="utf-8")
+    assert import_ofx.is_ofx(bad)
+    with pytest.raises(ValueError, match=r"bad\.qfx: not an OFX file that can be read"):
+        import_ofx.read_holdings(bad)
+
+
+def test_sim_import_transactions_reads_ofx_files_by_payee_and_drops_what_two_downloads_share(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_bank_later_download: Path, ofx_card_download: Path,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nUtilities,Expense_Housing\n")
+
+    # No payees.csv yet: the payees are listed, as for a bank's CSV.
+    refused = _transactions(test_data_dir, ofx_bank_download)
+    assert refused.exit_code != 0 and "payees.csv" in refused.output
+
+    # One map for every institution's OFX file.
+    write_import_map("ofx/payees.csv", _OFX_PAYEES)
+    result = _transactions(test_data_dir, ofx_bank_download, str(ofx_bank_later_download),
+                           str(ofx_card_download))
+
+    assert result.exit_code == 0, result.output
+    # February is in both of the bank's downloads, and counted once.
+    assert "3 transaction(s) that an earlier file had too, by their reference, were left out" in result.output
+    rules = _generated(test_data_dir)
+    # Over three months: food is 400 + 200 + 90 from the bank and 80 on the card, and the
+    # utility's two payments (March's isn't in yet).
+    assert {name: (rule["amount"], rule["to_account"]) for name, rule in rules.items()} == {
+        "baseline_expense_food": ("256.67", "Expense_Living"),
+        "baseline_expense_utilities": ("100.00", "Expense_Housing"),
+    }
+    assert json.loads(rules["baseline_expense_food"]["meta_json"])["source"] == "ofx"
+
+
+def test_sim_import_holdings_sets_a_balance_from_an_ofx_statement(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_card_download: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("ofx/accounts.csv", "First Example Bank ...4321,,map,Asset_Checking,,\n")
+
+    result = _import(test_data_dir, "holdings", str(ofx_bank_download))
+
+    assert result.exit_code == 0, result.output
+    assert "ofx snapshot as of 2026-02-28" in result.output
+    assert _lots(test_data_dir)["Asset_Checking"]["opening_balance"] == "4321.09"
+
+    # The card's file is another outside account, which nothing maps yet.
+    card = _import(test_data_dir, "holdings", str(ofx_card_download))
+    assert card.exit_code != 0 and "Example Card ...1007" in card.output
+
+
+def test_sim_import_holdings_reads_an_ofx_brokerage_s_positions_by_symbol(
+    test_data_dir: Path, ofx_brokerage_download: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map("ofx/accounts.csv", "Example Brokerage ...5678,,map,Asset_Roth_Bill,,\n")
+
+    result = _import(test_data_dir, "holdings", str(ofx_brokerage_download), "--new-lots")
+
+    assert result.exit_code == 0, result.output
+    assert "2 new" in result.output and "ofx snapshot as of 2026-01-05" in result.output
+    lots = _all_lots(test_data_dir)
+    stock = lots["Asset_Roth_Bill", "vtsax"]
+    assert (stock["symbol"], stock["quantity"], stock["opening_balance"]) == ("VTSAX", "2500", "400000.00")
+    assert lots["Asset_Roth_Bill", "vmfxx"]["opening_balance"] == "20000.00"
+    # The purchase in the file is investment activity, not spending.
+    assert import_ofx.read_transactions(ofx_brokerage_download).transactions.empty

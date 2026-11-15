@@ -9355,7 +9355,7 @@ def import_transactions(
             # short download beside its detailed one); a coded source's
             # uncategorized rows are warned about, unless it has a payee map.
             payees_path = maps_dir / import_mapping.PAYEES
-            if payees_path.is_file() or (source in described and described[source].profile is not None):
+            if payees_path.is_file() or (source in described and described[source].by_payee):
                 payee_maps[source] = import_mapping.load_payee_map(payees_path)
             if category_map_path.exists():
                 each.merges, each.exclusions = import_mapping.load_category_map(category_map_path)
