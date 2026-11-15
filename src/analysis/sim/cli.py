@@ -9063,6 +9063,13 @@ def _categorize_by_payee(
 @click.option("--summary", is_flag=True, default=False,
               help="Show what the transactions come to, by category, what was left out and "
                    "what isn't paid monthly, and write nothing.")
+@click.option("--budget", "budget_file", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="A budget's export to set beside the transactions: each category both have is "
+                   "made from the one you choose, and a category only one has from that one.")
+@click.option("--prefer", type=click.Choice(["budget", "actual"]), default=None,
+              help="With --budget: which to use for a category both have and no choice is saved "
+                   "for, in place of being asked.")
 @click.option("--yearly-script", type=click.Path(dir_okay=False, path_type=Path), default=None,
               help="With --summary (which it implies): write the payments that aren't monthly "
                    "to this file as a shell script of yearly rules, to edit and then run.")
@@ -9079,6 +9086,8 @@ def import_transactions(
     series: str,
     dry_run: bool,
     summary: bool,
+    budget_file: Path | None,
+    prefer: str | None,
     yearly_script: Path | None,
 ) -> None:
     """Expense rules from a period's transactions: replace the generated baseline rows in scheduled.csv.
@@ -9112,11 +9121,22 @@ def import_transactions(
     `sim scheduled add` commands to edit and then run. It asks nothing: a payee with no
     category yet is counted in Other, and a file that doesn't name its
     account is its own name's.
+
+    --budget FILE sets a budget's export beside the transactions, a month
+    of each: a category both have is shown with its two amounts, and you
+    choose which its rule is made from (the budget's keeps the budget's
+    yearly payments). The choice is saved in imports/budget_choices.csv and
+    used again, and asked again only once an amount has moved by more than
+    5%. A category only one of the two has is made from that one. Away from
+    a terminal a category with no saved choice needs --prefer. The budget's
+    income is not used here (sim import budget --income).
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     data_repo_root = data_dir_p.parent
     _refuse_unmigrated_imports(data_dir_p)
+    if prefer is not None and budget_file is None:
+        raise click.UsageError("--prefer goes with --budget")
     scenario_accounts: set[str] = set()
     expense_names: list[str] = []
     summary = summary or yearly_script is not None
@@ -9232,6 +9252,40 @@ def import_transactions(
             f"note: {len(left_to_other)} payee(s) not asked about went to Other, "
             f"{format_dollars(sum(each.cents for each in left_to_other))} in all; the most paid: "
             + "; ".join(f"{each.example} ({format_dollars(each.cents)})" for each in left_to_other[:5]))
+    months = baseline.observed_months
+    # A month of each category in cents: what the two are compared by.
+    actual_monthly = {str(r["category"]): round(float(r["amount_total"]) * 100 / months)
+                      for r in baseline.category_totals.to_dict("records")}
+    budgeted: list[import_budget_.Planned] = []
+    compared: list[import_budget_.Compared] = []
+    choices = import_mapping.BudgetChoices(import_mapping.budget_choices_path(data_dir_p))
+    budget_source = ""
+    if budget_file is not None:
+        try:
+            budget = import_sources_.read_budget(budget_file, None, import_mapping.imports_dir(data_dir_p))
+            budget_map_path = import_mapping.source_dir(data_dir_p, budget.source) / import_mapping.CATEGORIES
+            budget_merges, budget_exclusions = import_mapping.load_category_map(budget_map_path) \
+                if budget_map_path.exists() else ({}, set())
+            choices = import_mapping.load_budget_choices(choices.path)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from None
+        budget_source = budget.source
+        gathered = import_budget_.gather(budget, budget_merges, budget_exclusions)
+        if not gathered.spending:
+            raise click.ClickException(f"no budgeted spending in {budget_file}: is it a budget's export?")
+        _note_budget_left_out(gathered, budget_map_path)
+        if gathered.income:
+            click.echo("note: the budget's income is not used here; "
+                       "sim import budget --income writes income rules from it.")
+        budgeted, nothing = import_budget_.plan(gathered.spending, budget.months)
+        if nothing:
+            click.echo(f"note: nothing budgeted to pay: {', '.join(nothing)}")
+        per_month = len(budget.months) or 12
+        compared = import_budget_.compare(
+            {category: round(sum(gathered.spending[category]) / per_month)
+             for category in dict.fromkeys(each.category for each in budgeted)},
+            actual_monthly, choices.choices)
+        _show_budget_and_actual(compared)
     if summary:
         occasional = _show_transactions_summary(baseline, scripted=yearly_script is not None)
         if yearly_script is not None and occasional:
@@ -9251,22 +9305,34 @@ def import_transactions(
             click.echo(f"no candidates for yearly rules: {yearly_script} was not written")
         return
     assert from_account is not None and start is not None  # settled above, for all but a summary
-    totals = {str(r["category"]): float(r["amount_total"])
-              for r in baseline.category_totals.to_dict("records")}
-    months = baseline.observed_months
+    from_budget, chosen = _budget_or_actual(compared, prefer)
+    monthly = {each.category: each.budget_cents for each in compared
+               if each.category in from_budget and each.budget_cents is not None}
     mappings, ignored, to_save = _category_accounts(
-        data_dir_p, scenario_name, {category: total / months for category, total in totals.items()},
+        data_dir_p, scenario_name,
+        {category: cents / 100 for category, cents in {**actual_monthly, **monthly}.items()},
         expense_accounts, scenario_accounts, expense_names)
     rows = build_scheduled_baseline_rows(
         baseline,
         mappings,
         start,
         from_account,
-        ignored_categories=ignored,
+        ignored_categories={*ignored, *from_budget},
         from_lot=from_lot,
         series=series,
         provenance={"source": flows.source, "files_sha256": import_flows_.file_digest(files)},
     )
+    if budget_file is not None:
+        _warn_of_an_old_budget(budget.months, start)
+        provenance = {"source": f"{budget_source} budget",
+                      "files_sha256": import_flows_.file_digest([budget_file])}
+        rows += [
+            generated_row(
+                _budget_rule_name(each), each.category, format_dollars(each.amount_cents),
+                from_account=from_account, from_lot=from_lot, to_account=mappings[each.category],
+                start=start, series=series, month_of_year=each.month, provenance=provenance)
+            for each in budgeted if each.category in from_budget and each.category not in ignored]
+        rows.sort(key=lambda row: row["name"])
     scheduled_path = scenario_dir / "scheduled.csv"
     counts = _show_generated_changes(scenario_dir, scenario_name, rows, (BASELINE_GENERATED_TAG,))
     if dry_run:
@@ -9276,6 +9342,8 @@ def import_transactions(
             click.echo("(dry run) the expense accounts you gave were not saved")
         if payees_asked:
             click.echo("(dry run) the payee categories you gave were not saved")
+        if chosen:
+            click.echo("(dry run) your choices of budget or actual were not saved")
         return
     with _scenario_edit(data_dir_p, scenario_name) as edit:
         replace_generated_scheduled_rows(edit.path(scheduled_path), rows)
@@ -9286,11 +9354,122 @@ def import_transactions(
     if to_save:
         expense_accounts.save()
         click.echo(f"saved expense accounts to {_shown(expense_accounts.path)}")
+    if chosen:
+        choices.choices.update(chosen)
+        choices.save()
+        click.echo(f"saved your choices of budget or actual to {_shown(choices.path)}")
     click.echo(
         f"replaced {len(rows)} generated baseline row(s) in {_shown(scheduled_path)} "
         f"for scenario {scenario_name} ({counts or 'none'})"
     )
     click.echo(_FIRST_DRAFT)
+
+
+def _budget_rule_name(each: import_budget_.Planned) -> str:
+    """The generated rule's name: its category's, with the month where the
+    category is paid in two of the year."""
+    return f"baseline_{'income' if each.income else 'expense'}_{category_slug(each.category)}" \
+        + (f"_{date(2000, each.month, 1):%b}".casefold() if each.several and each.month else "")
+
+
+def _note_budget_left_out(gathered: import_budget_.Gathered, category_map_path: Path) -> None:
+    for what, left in (("a move between your own accounts", gathered.transfers),
+                       ("modeled by the scenario itself", gathered.modeled),
+                       ("income tax, which the scenario's tax rules pay (a categories.csv row "
+                        "for the category's own path keeps it)", gathered.taxes),
+                       (f"{_shown(category_map_path)} says", gathered.excluded)):
+        if left:
+            click.echo(f"note: left out as {what}: {', '.join(left)}")
+
+
+def _warn_of_an_old_budget(months: Sequence[date], start: str) -> None:
+    if not months:
+        return
+    first = date.fromisoformat(start if len(start) > 7 else f"{start}-01").replace(day=1)
+    ended = months[-1]
+    if (first.year - ended.year) * 12 + first.month - ended.month > 12:
+        click.echo(
+            f"warning: the budget ends in {ended:%B %Y}, more than a year before the rules "
+            f"start ({first:%B %Y}); its amounts are written as they are, in {first:%Y} dollars",
+            err=True)
+
+
+def _show_budget_and_actual(compared: Sequence[import_budget_.Compared]) -> None:
+    """Each category a month, as the budget has it and as the transactions do."""
+    def cents(value: int | None) -> str:
+        return "" if value is None else format_dollars(value)
+
+    def use(each: import_budget_.Compared) -> str:
+        if each.only:
+            return f"{each.only} (the only one)"
+        if each.saved is None:
+            return "?"
+        return each.saved + (f" (saved; moved more than {import_budget_.MOVED:.0%} since)" if each.moved
+                             else " (saved)")
+
+    def difference(each: import_budget_.Compared) -> str:
+        if each.budget_cents is None or each.actual_cents is None:
+            return ""
+        gap = each.actual_cents - each.budget_cents
+        return ("+" if gap > 0 else "") + format_dollars(gap)
+
+    click.echo("a month of each category, budgeted and as the transactions have it:")
+    _echo_table(
+        ["category", "budget", "actual", "difference", "use"],
+        ((each.category or "(none)", cents(each.budget_cents), cents(each.actual_cents),
+          difference(each),
+          use(each)) for each in compared))
+
+
+_BUDGET_OR_ACTUAL = ("budget", "actual", "all-budget", "all-actual")
+
+
+def _budget_or_actual(
+    compared: Sequence[import_budget_.Compared], prefer: str | None,
+) -> tuple[set[str], dict[str, import_mapping.BudgetChoice]]:
+    """The categories whose rules are made from the budget, and the choices
+    made at a question, to save.
+
+    A category only one has is that one's. One both have takes its saved
+    choice; with none, or at a terminal once an amount has moved since,
+    ``prefer`` decides, else it is asked. Away from a terminal a category
+    with neither a saved choice nor ``prefer`` is an error naming them all.
+    """
+    from_budget = {each.category for each in compared if each.only == "budget"}
+    chosen: dict[str, import_mapping.BudgetChoice] = {}
+    undecided: list[str] = []
+    for_the_rest: str | None = None
+    for each in compared:
+        if each.only or each.budget_cents is None or each.actual_cents is None:
+            continue
+        use = each.saved
+        if for_the_rest is not None and (use is None or each.moved):
+            use = for_the_rest
+            chosen[each.category] = import_mapping.BudgetChoice(use, each.budget_cents, each.actual_cents)
+        elif use is None and prefer is not None:
+            use = prefer
+        elif (use is None or each.moved) and prefer is None and _interactive():
+            answer = click.prompt(
+                f"{each.category}: budget {format_dollars(each.budget_cents)} or actual "
+                f"{format_dollars(each.actual_cents)} a month?",
+                type=click.Choice(_BUDGET_OR_ACTUAL), default=each.saved)
+            if answer.startswith("all-"):
+                answer = for_the_rest = answer.removeprefix("all-")
+            use = answer
+            chosen[each.category] = import_mapping.BudgetChoice(use, each.budget_cents, each.actual_cents)
+        elif use is None:
+            undecided.append(each.category)
+            continue
+        elif each.moved:
+            click.echo(f"note: {each.category} uses the saved choice, {use}, though an amount has "
+                       f"moved more than {import_budget_.MOVED:.0%} since it was made")
+        if use == "budget":
+            from_budget.add(each.category)
+    if undecided:
+        raise click.ClickException(
+            "no choice of budget or actual is saved for: " + ", ".join(undecided)
+            + "; give --prefer budget or --prefer actual, or run at a terminal to be asked")
+    return from_budget, chosen
 
 
 # Said by every import that writes rules: no file says what a payment meant.
@@ -9457,13 +9636,7 @@ def import_budget(
     gathered = import_budget_.gather(budget, merges, exclusions)
     if not gathered.spending and not gathered.income:
         raise click.ClickException(f"no budgeted categories in {file}: is it a budget's export?")
-    for what, left in (("a move between your own accounts", gathered.transfers),
-                       ("modeled by the scenario itself", gathered.modeled),
-                       ("income tax, which the scenario's tax rules pay (a categories.csv row "
-                        "for the category's own path keeps it)", gathered.taxes),
-                       (f"{_shown(category_map_path)} says", gathered.excluded)):
-        if left:
-            click.echo(f"note: left out as {what}: {', '.join(left)}")
+    _note_budget_left_out(gathered, category_map_path)
 
     with _intent_db(data_dir_p, scenario_name) as (con, _):
         if start is None:
@@ -9474,14 +9647,7 @@ def import_budget(
     if from_account not in scenario_sources:
         raise click.ClickException(f"unknown from account or chain: {from_account!r}")
     start = _validate_month_date(start)
-    if budget.months:
-        first = date.fromisoformat(start).replace(day=1)
-        ended = budget.months[-1]
-        if (first.year - ended.year) * 12 + first.month - ended.month > 12:
-            click.echo(
-                f"warning: the budget ends in {ended:%B %Y}, more than a year before the rules "
-                f"start ({first:%B %Y}); its amounts are written as they are, in {first:%Y} dollars",
-                err=True)
+    _warn_of_an_old_budget(budget.months, start)
 
     if gathered.income and use_income is None:
         yearly = sum(sum(each) for each in gathered.income.values())
@@ -9551,8 +9717,7 @@ def import_budget(
     for each in (*planned, *earned):
         if each.category in (income_ignored if each.income else ignored):
             continue
-        name = f"baseline_{'income' if each.income else 'expense'}_{category_slug(each.category)}" \
-            + (f"_{date(2000, each.month, 1):%b}".casefold() if each.several and each.month else "")
+        name = _budget_rule_name(each)
         if each.income:
             account = income_mappings[each.category]
             _, subkind, owner = accounts[account]

@@ -67,6 +67,7 @@ To change an answer, edit its row in the file. `sim account rename` and
 ```text
 imports/
   expense_accounts.csv     category -> expense account ('-' for no rule)
+  budget_choices.csv       category -> budget or actual, where you have both
   <source>/
     profile.yaml           a source of your own (see below)
     accounts.csv           outside account -> account and lot, or skip
@@ -424,7 +425,9 @@ sim import budget budget-full.csv --from-account Asset_Checking
 Writes the same expense rules from what you plan to spend instead of what
 you spent. Transactions miss plans not yet carried out, and a budget may be
 out of date, so which to use is yours to choose: each import replaces all
-the generated rules, whichever wrote them.
+the generated rules, whichever wrote them. To choose for each category,
+give the budget to the transactions import
+([below](#budget-or-actual-for-each-category)).
 
 Quicken exports a budget in two forms. Use **Full**, which has each month:
 
@@ -485,6 +488,47 @@ is not modeled yet
 
 Amounts are taken as budgeted. A budget more than a year older than the
 scenario's start is warned about, since its dollars are old ones.
+
+### Budget or actual, for each category
+
+```sh
+sim import transactions transactions.csv --budget budget-full.csv --from-account Asset_Checking
+```
+
+Reads both, gathers each into the same categories, and shows a month of
+each side by side:
+
+```text
+a month of each category, budgeted and as the transactions have it:
+  category      budget  actual  difference                    use
+  Food          710.00  420.00     -290.00                      ?
+  Gifts                  30.00              actual (the only one)
+  Property Tax  500.00                      budget (the only one)
+  Utilities     165.00                      budget (the only one)
+Food: budget 710.00 or actual 420.00 a month? (budget, actual, all-budget, all-actual):
+```
+
+- A category both have is asked about. `all-budget` or `all-actual`
+  answers for every one still to be asked.
+- A category only one has is made from that one.
+- A category made from the budget keeps the budget's yearly payments (the
+  property tax above is two yearly rules, not 500 a month).
+
+Your answers are saved in `imports/budget_choices.csv`, with the two
+amounts each was chosen between. The next run uses them and asks nothing,
+until one of a category's amounts has moved by more than 5%: then it asks
+again, offering what you chose before. Edit the file, or delete a row, to
+change your mind.
+
+Away from a terminal the saved choices are used. A category with none
+needs `--prefer budget` or `--prefer actual`, which is also how to skip
+the questions at a terminal; a preference is not saved. With `--summary`
+the table is shown and nothing is asked or written.
+
+Neither side is the truth: a budget is a plan and the transactions are one
+period's history. The choice is a starting point to review, like the rules
+it makes. The budget's income is not used here; `sim import budget
+--income` writes income rules.
 
 ## Quicken
 

@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 
 from analysis.expenses.baseline import YEARLY_MONTHS
 from analysis.sim.imports.forms import Budget, BudgetLine
+from analysis.sim.imports.mapping import BudgetChoice
 
-__all__ = ["YEARLY_MONTHS", "Gathered", "Planned", "gather", "plan"]
+__all__ = ["MOVED", "YEARLY_MONTHS", "Compared", "Gathered", "Planned", "compare", "gather", "plan"]
 
 # A budget's rows for money moved between the household's own accounts.
 _TRANSFER = re.compile(r"^(FROM|TO)\s")
@@ -132,3 +133,49 @@ def plan(
         else:
             planned.append(Planned(category, income, round(total / (len(months) or 12))))
     return planned, nothing
+
+
+MOVED = 0.05
+"""How far either amount may move from what a saved choice was made
+between before the choice is asked again: less is one more month's
+transactions, more may be a different answer."""
+
+
+@dataclass(frozen=True)
+class Compared:
+    """One category as a budget and the transactions each have it, a month."""
+
+    category: str
+    budget_cents: int | None
+    """None when the budget has no such category."""
+    actual_cents: int | None
+    """None when no transaction is in it."""
+    saved: str | None = None
+    """The saved choice, ``budget`` or ``actual``, where both have it."""
+    moved: bool = False
+    """Whether an amount has moved more than ``MOVED`` since ``saved`` was
+    chosen."""
+
+    @property
+    def only(self) -> str | None:
+        """``budget`` or ``actual`` when just that one has the category."""
+        if self.actual_cents is None:
+            return "budget"
+        return "actual" if self.budget_cents is None else None
+
+
+def compare(
+    budget: Mapping[str, int], actual: Mapping[str, int], saved: Mapping[str, BudgetChoice],
+) -> list[Compared]:
+    """Every category of ``budget`` or ``actual`` (each a month's cents), by
+    name, with its choice in ``saved`` where both have it."""
+    found: list[Compared] = []
+    for category in sorted({*budget, *actual}):
+        ours, theirs = budget.get(category), actual.get(category)
+        was = saved.get(category) if ours is not None and theirs is not None else None
+        found.append(Compared(
+            category, ours, theirs, was.use if was else None,
+            was is not None and ours is not None and theirs is not None and (
+                abs(ours - was.budget_cents) > MOVED * abs(was.budget_cents)
+                or abs(theirs - was.actual_cents) > MOVED * abs(was.actual_cents))))
+    return found

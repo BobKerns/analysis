@@ -1397,6 +1397,141 @@ def test_sim_import_transactions_finds_a_short_card_files_rows_by_payee_beside_a
 
 # ---------- a budget (issue #617) ----------
 
+_BOTH_ACCOUNTS = ("Food,Expense_Living\nGifts,Expense_Living\nUtilities,Expense_Housing\n"
+                  "Property Tax,Expense_Housing\n")
+
+
+def _with_budget(data: Path, export: Path, budget: Path, *args: str, input: str | None = None):  # noqa: A002
+    return _import(data, "transactions", str(export), "--budget", str(budget),
+                   "--from-account", "Asset_Checking", *args, input=input)
+
+
+def _amounts(data: Path) -> dict[str, tuple[str, str]]:
+    return {name: (row["amount"], row["cadence"]) for name, row in _generated(data).items()}
+
+
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_with_a_budget_makes_each_category_from_the_one_preferred(
+    test_data_dir: Path, quicken_transaction_export: Path, quicken_budget_full_export: Path,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", _BOTH_ACCOUNTS)
+
+    # Food is in both, and nothing says which to use.
+    undecided = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export)
+    assert undecided.exit_code != 0
+    assert "no choice of budget or actual is saved for: Food; give --prefer" in undecided.output
+    assert _generated(test_data_dir) == {}
+
+    result = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export,
+                          "--prefer", "budget")
+
+    assert result.exit_code == 0, result.output
+    lines = [line.split(maxsplit=4) for line in result.output.splitlines()]
+    assert ["Food", "710.00", "420.00", "-290.00", "?"] in lines
+    assert ["Gifts", "30.00", "actual", "(the", "only one)"] in lines
+    assert "the budget's income is not used here" in result.output
+    # The budget's yearly payments come with a category taken from it.
+    assert _amounts(test_data_dir) == {
+        "baseline_expense_food": ("710.00", "monthly"),
+        "baseline_expense_gifts": ("30.00", "monthly"),
+        "baseline_expense_property_tax_apr": ("3000.00", "annual"),
+        "baseline_expense_property_tax_dec": ("3000.00", "annual"),
+        "baseline_expense_utilities": ("165.00", "monthly"),
+    }
+    rules = _generated(test_data_dir)
+    assert json.loads(rules["baseline_expense_food"]["meta_json"])["source"] == "quicken budget"
+    assert json.loads(rules["baseline_expense_gifts"]["meta_json"])["source"] == "quicken"
+    # A preference is not a choice made: nothing is saved.
+    assert not (test_data_dir / "imports" / "budget_choices.csv").exists()
+
+    actual = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export,
+                          "--prefer", "actual")
+    assert actual.exit_code == 0, actual.output
+    assert _amounts(test_data_dir)["baseline_expense_food"] == ("420.00", "monthly")
+
+
+@pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
+def test_sim_import_transactions_with_a_budget_asks_once_and_again_when_an_amount_moves(
+    test_data_dir: Path, quicken_transaction_export: Path, quicken_budget_full_export: Path,
+    write_import_map: MapWriter, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_import_map("expense_accounts.csv", _BOTH_ACCOUNTS)
+    saved = test_data_dir / "imports" / "budget_choices.csv"
+
+    dry = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export, "--dry-run",
+                       input="actual\n")
+    assert dry.exit_code == 0, dry.output
+    assert "(dry run) your choices of budget or actual were not saved" in dry.output and not saved.exists()
+
+    asked = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export,
+                         input="actual\n")
+
+    assert asked.exit_code == 0, asked.output
+    assert "Food: budget 710.00 or actual 420.00 a month?" in asked.output
+    assert saved.read_text(encoding="utf-8") == "category,use,budget,actual\nFood,actual,710.00,420.00\n"
+    assert _amounts(test_data_dir)["baseline_expense_food"] == ("420.00", "monthly")
+
+    # The same files again: the saved choice stands, and nothing is asked.
+    again = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export)
+    assert again.exit_code == 0, again.output
+    assert "a month?" not in again.output
+    assert ["Food", "710.00", "420.00", "-290.00", "actual (saved)"] in \
+        [line.split(maxsplit=4) for line in again.output.splitlines()]
+
+    # More spent on food, by more than 5%: asked again, the saved choice offered.
+    quicken_transaction_export.write_text(
+        quicken_transaction_export.read_text(encoding="utf-8").replace('"-500.00"', '"-700.00"'),
+        encoding="utf-8")
+    moved = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export,
+                         input="all-budget\n")
+    assert moved.exit_code == 0, moved.output
+    assert "Food: budget 710.00 or actual 520.00 a month?" in moved.output and "[actual]" in moved.output
+    assert saved.read_text(encoding="utf-8") == "category,use,budget,actual\nFood,budget,710.00,520.00\n"
+    assert _amounts(test_data_dir)["baseline_expense_food"] == ("710.00", "monthly")
+
+    # Away from a terminal a moved amount keeps the saved choice, and says so.
+    quicken_transaction_export.write_text(
+        quicken_transaction_export.read_text(encoding="utf-8").replace('"-700.00"', '"-900.00"'),
+        encoding="utf-8")
+    monkeypatch.setattr(cli, "_interactive", lambda: False)
+    away = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export)
+    assert away.exit_code == 0, away.output
+    assert "note: Food uses the saved choice, budget, though an amount has moved more than 5%" in away.output
+
+
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_summary_with_a_budget_shows_the_two_and_asks_nothing(
+    test_data_dir: Path, quicken_transaction_export: Path, quicken_budget_full_export: Path,
+) -> None:
+    result = _import(test_data_dir, "transactions", str(quicken_transaction_export), "--summary",
+                     "--budget", str(quicken_budget_full_export))
+
+    assert result.exit_code == 0, result.output
+    lines = [line.split(maxsplit=4) for line in result.output.splitlines()]
+    assert ["category", "budget", "actual", "difference", "use"] in lines
+    assert ["Food", "710.00", "420.00", "-290.00", "?"] in lines
+    assert ["Utilities", "165.00", "budget", "(the", "only one)"] in lines
+    assert _generated(test_data_dir) == {}
+
+    alone = _import(test_data_dir, "transactions", str(quicken_transaction_export), "--summary",
+                    "--prefer", "budget")
+    assert alone.exit_code == 2 and "--prefer goes with --budget" in alone.output
+
+
+def test_sim_import_transactions_with_a_budget_refuses_a_choice_it_cannot_read(
+    test_data_dir: Path, quicken_transaction_export: Path, quicken_budget_full_export: Path,
+    write_import_map: MapWriter, quicken_category_map: Path,
+) -> None:
+    write_import_map("expense_accounts.csv", _BOTH_ACCOUNTS)
+    write_import_map("budget_choices.csv", "Food,either,710.00,420.00\n")
+
+    result = _with_budget(test_data_dir, quicken_transaction_export, quicken_budget_full_export)
+
+    assert result.exit_code != 0
+    assert "budget_choices.csv row 2: use must be budget or actual, not 'either'" in result.output
+
+
 def _budget(data: Path, export: Path, *args: str, input: str | None = None):  # noqa: A002
     return _import(data, "budget", str(export), "--from-account", "Asset_Checking", *args, input=input)
 
