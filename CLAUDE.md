@@ -17,6 +17,14 @@ shared with Copilot; edit it there, not here:
 - Work in a worktree at `../analysis-worktrees/<branch with / flattened to ->`,
   not in the main checkout. Remove the worktree (not the branch) once its PR
   is merged.
+- The main checkout is the user's alone: never check out, switch, reset,
+  merge, stash or commit there, not even briefly. Every agent gets its own
+  worktree and branch; two agents never share one.
+- Reviewing a pull request counts too. Read its code with
+  `git show <ref>:<path>` and `git grep <pattern> <ref>`; to run or browse
+  its tree, make a detached worktree and remove it afterwards:
+  `git worktree add --detach ../analysis-worktrees/review-<n> <ref>` (with
+  the filter bypass below). Fetched `pr<n>` refs can stay.
 
 The nbstripout filter runs `<toplevel>/.venv/bin/python`, which a fresh worktree
 lacks, so bypass the filter for the initial checkout only:
