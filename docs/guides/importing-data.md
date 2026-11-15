@@ -61,7 +61,20 @@ When a saved answer names an account the scenario doesn't have, it may still
 be right for another scenario. The import asks again, uses the new answer for
 that run, and replaces the saved one only if you say so.
 
-To change an answer, edit its row in the file. `sim account rename` and
+To see the saved answers, or change one, use `sim import map`:
+
+```sh
+sim import map              # what every source shares, then each source's own
+sim import map quicken      # one source's
+sim import map --list       # print only
+```
+
+Every row has a number. At a terminal it asks for a row's number, then
+whether to change it (each thing the row says is asked for, with TAB
+completing the scenario's names and what it says now as the default) or
+remove it. A removed row is asked about again by the next import that needs
+it, which is also how a row is added: an import asks for what has no row.
+You can still edit the files by hand. `sim account rename` and
 `sim account lot rename` follow into these files by themselves.
 
 ```text
@@ -93,6 +106,10 @@ accounts hold. Export the snapshot as of the scenario's first day.
   it. One outside number can't fill two lots, so an outside account that
   the scenario keeps as several lots is best answered `skip`, and its lots
   filled from a [brokerage file](#brokerage-files) or typed.
+- An outside account the scenario has no account for can be added from
+  the question: answer with a new name, and it asks what `sim account add`
+  asks (kind, subkind, owner) and adds the account before going on. A dry
+  run adds nothing, so it offers only the accounts there are.
 - A debt is stored as a positive amount owed, whatever sign the source uses.
 - Two outside accounts mapped to one lot are added together.
 - A lot the scenario inherits from its parent is changed by writing an

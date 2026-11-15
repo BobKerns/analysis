@@ -8616,7 +8616,8 @@ def import_group_command() -> None:
     `holdings` sets account balances from a snapshot of what each outside
     account holds; `transactions` turns a period's transactions (with the
     Amazon categorizer's monthly summaries) into expense rules. `sources`
-    lists the outside layouts that can be read.
+    lists the outside layouts that can be read, and `map` shows the saved
+    mappings and changes them.
 
     Which of the scenario's names each outside name means is saved in the
     data dir's imports/ folder, shared by every scenario. At a terminal an
@@ -8669,6 +8670,134 @@ def import_sources(files: tuple[Path, ...], data_dir: Path | None) -> None:
     _echo_table(["source", "reads", "from", "defined"], rows, left=4)
 
 
+def _show_map_file(data_dir: Path, path: Path, kind: import_mapping.MapFile, first: int) -> int:
+    """List ``path``'s rows, numbered from ``first``; how many there were."""
+    rows = import_mapping.read_map_rows(path, kind)
+    click.echo(f"{path.relative_to(data_dir)}:" + ("" if rows else " no rows"))
+    if rows:
+        _echo_table(["#", *kind.header],
+                    ([str(first + at), *(row[column] for column in kind.header)] for at, row in enumerate(rows)),
+                    left=1 + len(kind.header))
+    return len(rows)
+
+
+def _map_choices(
+    data_dir: Path, kind: import_mapping.MapFile, column: str, accounts: Mapping[str, str],
+) -> list[str]:
+    """What completes an answer for ``column`` of a ``kind`` file;
+    ``accounts`` is the scenario's, each with its kind."""
+    match column:
+        case "account":
+            wanted = {import_mapping.EXPENSE_ACCOUNTS: ("expense",), import_mapping.INCOME_ACCOUNTS: ("income",)}.get(
+                kind.name, ("asset", "liability"))
+            return [name for name, its in accounts.items() if its in wanted] + (
+                [import_mapping.NO_RULE] if kind.shared else [])
+        case "category" | "target_category":
+            known = {*import_mapping.categories(data_dir),
+                     *import_mapping.load_expense_accounts(import_mapping.expense_accounts_path(data_dir)).accounts}
+            extra = [import_mapping.TRANSFER] if kind.name == import_mapping.PAYEES else []
+            return [*sorted(known), *extra, import_mapping.NO_RULE]
+        case "use":
+            return ["budget", "actual"]
+        case "action":
+            return ["map", "skip"]
+    return []
+
+
+@import_group_command.command("map")
+@click.argument("source", required=False, type=completion.IMPORT_SOURCE)
+@click.option("--list", "list_only", is_flag=True, default=False,
+              help="Print the mappings and ask nothing.")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario whose account names complete an answer (default: the current scenario).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None)
+def import_map(source: str | None, list_only: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """Show the saved import mappings, and change or remove a row.
+
+    With no SOURCE, the mappings every source shares (each category's
+    expense and income account, budget or actual) and then each source's
+    own; with SOURCE, that source's: which account each outside account is,
+    its categories, its payees. Every row has a number.
+
+    At a terminal, a row's number is asked for, and then what to do with
+    it: change it (each thing the row says is asked for, with what it says
+    now as the default) or remove it. A removed row is asked about again by
+    the next import that needs it. A change the file's own rules refuse is
+    not kept. --list, or running away from a terminal, only prints.
+
+    To add a row, run the import: it asks for what has no row, and saves
+    the answer.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    known = import_mapping.sources_with_maps(data_dir_p)
+    if source is not None and source not in known:
+        raise click.ClickException(
+            f"no mappings are saved for a source {source!r}" + (f"; there are: {', '.join(known)}" if known else ""))
+
+    def show() -> list[tuple[Path, import_mapping.MapFile, int]]:
+        """Print every file; each with the number of its first row."""
+        listed: list[tuple[Path, import_mapping.MapFile, int]] = []
+        count = 0
+        try:
+            for path, kind in import_mapping.map_files(data_dir_p, source):
+                listed.append((path, kind, count + 1))
+                count += _show_map_file(data_dir_p, path, kind, count + 1)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from None
+        if not listed:
+            click.echo("no import mappings are saved yet: an import asks for them, and saves the answers")
+        return listed
+
+    listed = show()
+    if list_only or not _interactive() or not listed:
+        return
+    accounts: dict[str, str] = {}
+    try:
+        with _intent_db(data_dir_p, scenario) as (con, _):
+            accounts = dict(con.execute("SELECT name, kind FROM account ORDER BY name"))
+    except click.ClickException:
+        pass  # no scenario to complete names from: the answers are typed whole
+    while True:
+        answer = _prompt_with_completion("row to change or remove (its number), or done", default="done").strip()
+        if answer in ("done", ""):
+            return
+        found = None
+        if answer.isdigit():
+            for path, kind, first in listed:
+                rows = import_mapping.read_map_rows(path, kind)
+                if first <= int(answer) < first + len(rows):
+                    found = (path, kind, rows, int(answer) - first)
+        if found is None:
+            click.echo("  a row's number from the list, or done")
+            continue
+        path, kind, rows, at = found
+        row = dict(rows[at])
+        click.echo("  " + ", ".join(f"{column}: {row[column] or '(blank)'}" for column in kind.header))
+        values = kind.header[kind.keys:]
+        todo = _ask_name("choice", ["change", "remove", "back"] if values else ["remove", "back"],
+                         prompt="change, remove, or back" if values else "remove, or back", plural="choices")
+        if todo == "back":
+            continue
+        if todo == "remove":
+            del rows[at]
+        else:
+            for column in values:
+                # '-' is a value of its own in these files, so a blank
+                # answer can't mean "clear": a space does.
+                given = _prompt_with_completion(
+                    f"{column} (a space clears it)" if row[column] else column,
+                    choices=_map_choices(data_dir_p, kind, column, accounts), default=row[column])
+                row[column] = given.strip()
+            rows[at] = row
+        try:
+            import_mapping.write_map_rows(path, kind, rows)
+        except ValueError as e:
+            click.echo(f"  not kept: {e}")
+            continue
+        click.echo(f"saved {_shown(path)}")
+        listed = show()
+
+
 def _unmigrated_import_maps(data_dir: Path) -> list[Path]:
     """Mapping files from before the imports/ folder (#527), anywhere in the
     data repo: any scenario's account map, and the baseline's category files."""
@@ -8711,14 +8840,32 @@ def _import_target_lots(
 
 def _ask_holding_target(
     label: str, cents: int, source: str, lots: Sequence[Mapping[str, str]], why: str,
-    *, held: Collection[str], by_symbol: bool = False,
+    *, held: Collection[str], by_symbol: bool = False, hint: str = "",
+    add: Callable[[str, bool], None] | None = None,
 ) -> import_mapping.AccountTarget:
     """Where one outside account goes, asked for: one of the scenario's
     accounts that holds a balance (``held``), or ``skip``; and which lot, if
     it has several. ``by_symbol`` is an outside account whose holdings each
-    have a symbol: those find their lots by it, so no lot is asked."""
+    have a symbol: those find their lots by it, so no lot is asked.
+
+    With ``add``, any other name is offered as a new account, which ``add``
+    adds to the scenario (told ``by_symbol``) before this returns; ``hint``
+    is what the file calls the account's type, shown to help say its kind.
+    """
     click.echo(f"{source} account {label} ({format_dollars(cents)}) {why}.")
-    answer = _ask_name("account", [*held, "skip"], prompt=f"account for {label} (or skip)")
+    shown = list(dict.fromkeys([*held, "skip"]))
+    click.echo(f"accounts: {', '.join(shown)}")
+    if add is not None:
+        click.echo("  or a new name, to add the account to the scenario"
+                   + (f" (the file calls this one {hint!r})" if hint else ""))
+    while True:
+        answer = _prompt_with_completion(f"account for {label} (or skip)", choices=shown).strip()
+        if answer in shown:
+            break
+        if add is not None and answer and click.confirm(f"Add account {answer}?", default=True):
+            add(answer, by_symbol)
+            break
+        click.echo(f"  one of: {', '.join(shown)}")
     if answer == "skip":
         return import_mapping.AccountTarget("skip")
     its_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
@@ -12927,6 +13074,30 @@ def import_holdings(
         rows.append(row)
         fresh.add(len(rows) - 1)
 
+    def add_account_now(name: str, listed: bool) -> None:
+        """Add account ``name`` to the scenario as `sim account add` does,
+        asking what it is, and take it and its lot in. It is written at
+        once and not with the balances: its questions are that command's,
+        and what the import asks next (its lots) needs it loaded."""
+        kind = _ask_name("kind", ["asset", "liability"], prompt=f"kind of {name}")
+        click.get_current_context().invoke(
+            add_account, name=name, kind=kind, scenario=scen_name, data_dir=data_dir_p,
+            # The file says what it holds: no balance is asked for. A file
+            # with one number for the account needs a lot to put it in.
+            opening_balance="" if listed else "0")
+        with _intent_db(data_dir_p, scen_name) as (con, _):
+            subkind = con.execute("SELECT subkind FROM account WHERE name = ?", (name,)).fetchone()[0]
+        accounts[name] = (kind, subkind or "")
+        new = [lot for lot in _import_target_lots(scenario_dir, scen_name, accounts) if lot.account == name]
+        lots.extend(new)
+        rows.extend(lot.row for lot in new)
+        holding_lots.append(name)
+        if new:
+            with_lots.append(name)
+        lot_context.clear()
+
+    # A dry run writes nothing, so it adds no account.
+    add_account_or_not = None if dry_run else add_account_now
     imports = import_mapping.imports_dir(data_dir_p)
     asked_account = False
     try:
@@ -12983,7 +13154,8 @@ def import_holdings(
                         _outside_label(covered, whole=True), sum(h.value_cents for h in covered),
                         snapshot.source, rows, "has no saved mapping",
                         held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
-                        by_symbol=listed)
+                        by_symbol=listed, hint=covered[0].hints.get("type", ""),
+                        add=add_account_or_not)
                     account_map.set(*key, target)
                     saved_map.set(*key, target)
                     to_save = progress = True
@@ -12995,7 +13167,8 @@ def import_holdings(
                         snapshot.source, rows,
                         f"is mapped to {old.label}, which {scen_name} doesn't have",
                         held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
-                        by_symbol=listed)
+                        by_symbol=listed, hint=covered[0].hints.get("type", ""),
+                        add=add_account_or_not)
                     account_map.set(*key, target)
                     progress = True
                     # The saved mapping may be right for another scenario, which

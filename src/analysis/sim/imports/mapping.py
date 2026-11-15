@@ -29,11 +29,12 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = [
+    "MAP_FILES", "MapFile", "categories", "map_files", "read_map_rows", "sources_with_maps", "write_map_rows",
     "ACCOUNTS", "ACCOUNTS_HEADER", "BUDGET_CHOICES", "BUDGET_CHOICES_HEADER", "CATEGORIES",
     "CATEGORIES_HEADER", "EXCLUDED_PAYEES", "EXCLUDED_PAYEES_HEADER", "EXPENSE_ACCOUNTS",
     "EXPENSE_ACCOUNTS_HEADER", "IMPORTS", "INCOME_ACCOUNTS", "NO_RULE", "PAYEES", "PAYEES_HEADER", "SPLITS",
@@ -326,6 +327,68 @@ def load_budget_choices(path: Path | str) -> BudgetChoices:
     return found
 
 
+# ---------- every file, for `sim import map` ----------
+
+@dataclass(frozen=True)
+class MapFile:
+    """One kind of mapping file: what `sim import map` needs to list one
+    and to change a row of it."""
+
+    name: str
+    header: tuple[str, ...]
+    keys: int
+    """How many leading columns say what a row is about; the rest say what
+    it means, and are what a change asks for."""
+    check: Callable[[Path], object]
+    """The file's own loader: a change it refuses is not kept."""
+    shared: bool = False
+    """In ``imports/`` itself, for every source."""
+
+
+MAP_FILES: tuple[MapFile, ...] = (
+    MapFile(EXPENSE_ACCOUNTS, EXPENSE_ACCOUNTS_HEADER, 1, load_expense_accounts, shared=True),
+    MapFile(INCOME_ACCOUNTS, EXPENSE_ACCOUNTS_HEADER, 1, load_expense_accounts, shared=True),
+    MapFile(BUDGET_CHOICES, BUDGET_CHOICES_HEADER, 1, load_budget_choices, shared=True),
+    MapFile(ACCOUNTS, ACCOUNTS_HEADER, 2, lambda path: load_account_map(path)),
+    MapFile(CATEGORIES, CATEGORIES_HEADER, 1, load_category_map),
+    MapFile(SPLITS, SPLITS_HEADER, 2, load_category_splits),
+    MapFile(PAYEES, PAYEES_HEADER, 1, lambda path: load_payee_map(path)),
+    MapFile(EXCLUDED_PAYEES, EXCLUDED_PAYEES_HEADER, 1, load_excluded_payees),
+)
+
+
+def sources_with_maps(data_dir: Path) -> list[str]:
+    """The sources that have a folder under ``imports/``."""
+    root = imports_dir(data_dir)
+    return sorted(path.name for path in root.iterdir() if path.is_dir()) if root.is_dir() else []
+
+
+def map_files(data_dir: Path, source: str | None = None) -> list[tuple[Path, MapFile]]:
+    """The mapping files there are: ``source``'s, or with none the shared
+    ones and then every source's."""
+    root = imports_dir(data_dir)
+    places = [root / source] if source else [root, *(root / each for each in sources_with_maps(data_dir))]
+    return [(place / kind.name, kind) for place in places for kind in MAP_FILES
+            if kind.shared == (place == root) and (place / kind.name).is_file()]
+
+
+def read_map_rows(path: Path, kind: MapFile) -> list[dict[str, str]]:
+    """``path``'s rows as written, less blank ones."""
+    return [row for _, row in _read(path, kind.header) if any(row.values())]
+
+
+def write_map_rows(path: Path, kind: MapFile, rows: Sequence[Mapping[str, str]]) -> None:
+    """Replace ``path``'s rows, unless the file's loader then refuses it:
+    the file is put back as it was, and the loader's ValueError raised."""
+    before = path.read_bytes()
+    _write(path, kind.header, ([row[column] for column in kind.header] for row in rows))
+    try:
+        kind.check(path)
+    except ValueError:
+        path.write_bytes(before)
+        raise
+
+
 # ---------- following a rename ----------
 
 def _retarget(data_dir: Path, moved: Callable[[AccountTarget], AccountTarget | None]) -> list[str]:
@@ -345,7 +408,7 @@ def _retarget(data_dir: Path, moved: Callable[[AccountTarget], AccountTarget | N
     return changed
 
 
-def _categories(data_dir: Path) -> set[str]:
+def categories(data_dir: Path) -> set[str]:
     """Every category the saved maps can produce: what an outside category
     is merged into, and what a split sends it on to."""
     found: set[str] = set()
@@ -397,7 +460,7 @@ def rename_account(data_dir: Path, old: str, new: str) -> list[str]:
     expenses = load_expense_accounts(root / EXPENSE_ACCOUNTS)
     income = load_expense_accounts(root / INCOME_ACCOUNTS)
     implicit = {
-        expenses.path: old not in expenses.accounts and old in _categories(data_dir),
+        expenses.path: old not in expenses.accounts and old in categories(data_dir),
         income.path: old not in income.accounts and old in _income_categories(data_dir, new),
     }
     changed = _retarget(data_dir, lambda t: AccountTarget(t.action, new, t.lot, t.note)

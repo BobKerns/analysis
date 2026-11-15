@@ -1088,6 +1088,8 @@ imports/
     payees.csv             payee text -> category, for a source with no categories
 ```
 
+**Seeing and changing the mappings** ([#617](https://github.com/BobKerns/analysis/issues/617)). `sim import map [SOURCE]` lists the saved mapping files with their rows numbered: with no source, the files every source shares and then each source's own; with one, that source's. At a terminal (and without `--list`) it asks for a row's number and then changes or removes the row: a change asks for each column after the row's key columns (the outside name a row is about), completing over the scenario's accounts of the kind the file takes and the known categories. The file is rewritten and read back with its own loader, and a change the loader refuses is not kept. It adds no rows: an import asks for what has no row. At the holdings question for an outside account, a name the scenario doesn't have is offered as a new asset or liability account, added at once as `sim account add` adds one (its subkind and owner asked for, no opening balance); a dry run offers none.
+
 **A source is code or a profile.** One that reads more than a table is code (`quicken`, whose report is an indented tree). One whose file is a plain table is a *profile*: a YAML file saying which column means what, so a household can add a source without code. The built-in profiles (`vanguard` and `fidelity`, holdings; `wells_fargo`, a bank's account activity; `amex`, a card's, short or detailed) are `src/analysis/sim/imports/source_profiles/<source>.yaml`; a household's own is `imports/<source>/profile.yaml`, which replaces a built-in profile of its name and may not take a coded source's. `sim import sources` lists every source and where it is defined.
 
 ```yaml
@@ -1675,3 +1677,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#617](https://github.com/BobKerns/analysis/issues/617): `sim import transactions --summary` shows what the rules would be made from and the large payments that aren't monthly, and writes nothing; `--from-account` is asked for when left out (§4.17).
 - [#617](https://github.com/BobKerns/analysis/issues/617): `sim import transactions --yearly-script FILE` writes the candidates for yearly rules as a shell script to edit and run (§4.17).
 - [#617](https://github.com/BobKerns/analysis/issues/617): `sim import transactions --budget FILE` makes each category's rule from the budget or the transactions, chosen for each category and saved in `imports/budget_choices.csv` (§4.17).
+- [#617](https://github.com/BobKerns/analysis/issues/617): `sim import map [SOURCE]` lists the saved import mappings and changes or removes a row; the holdings mapping question offers a new account (§4.17).

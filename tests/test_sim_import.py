@@ -173,8 +173,11 @@ def test_sim_import_holdings_asks_for_unmapped_accounts_and_saves_the_answers(
     assert "were not saved" in dry.output
     assert "Asset_TraditionalIRA_Alice" not in saved.read_text(encoding="utf-8")
 
-    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
+    # A name that isn't a choice is offered as a new account, which is declined here.
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export),
+                     input=answers.replace("nope\n", "nope\nn\n"))
     assert result.exit_code == 0, result.output
+    assert "Add account nope?" in result.output and "Add account" not in dry.output
     assert "1 skipped" in result.output
 
     assert saved.read_text(encoding="utf-8").splitlines() == [
@@ -747,6 +750,90 @@ def test_sim_import_holdings_takes_an_accounts_kind_as_the_scenario_loads_it(
 
 
 @pytest.mark.usefixtures("at_a_terminal")
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    saved = write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
+    # The outside IRA is a new savings account here: its name, yes, then what `sim account add` asks.
+    answers = "Asset_Savings_New\ny\nasset\ncash\njoint\n"
+
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "or a new name, to add the account to the scenario" in result.output
+    assert "appended account 'Asset_Savings_New'" in result.output
+    assert "set opening balance now?" not in result.output  # the file has the balance
+    with retire_alice_csv("accounts.csv").open(newline="", encoding="utf-8") as f:
+        added = next(row for row in csv.DictReader(f) if row["name"] == "Asset_Savings_New")
+    assert (added["kind"], added["subkind"], added["owner"]) == ("asset", "cash", "joint")
+    assert _lots(test_data_dir)["Asset_Savings_New"]["opening_balance"] == "510000.00"
+    assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,," in saved.read_text(encoding="utf-8")
+
+
+def _map(data: Path, *args: str, input: str | None = None):  # noqa: A002
+    return CliRunner().invoke(main, ["sim", "import", "map", *args, "--data-dir", str(data)], input=input)
+
+
+def test_sim_import_map_lists_the_shared_mappings_and_each_source_s(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    empty = _map(test_data_dir)
+    assert empty.exit_code == 0 and "no import mappings are saved yet" in empty.output
+
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
+    write_import_map("bank/payees.csv", "corner market,Food\n")
+    write_import_map("quicken/categories.csv", "Groceries,Food\n")
+
+    result = _map(test_data_dir)
+
+    assert result.exit_code == 0, result.output
+    lines = [line.split() for line in result.output.splitlines()]
+    # The shared file first, then each source's, numbered through.
+    assert lines.index(["imports/expense_accounts.csv:"]) < lines.index(["imports/bank/payees.csv:"]) \
+        < lines.index(["imports/quicken/categories.csv:"])
+    assert ["1", "Food", "Expense_Living"] in lines and ["2", "Gifts", "-"] in lines
+    assert ["3", "corner", "market", "Food"] in lines and ["4", "Groceries", "Food"] in lines
+
+    one = _map(test_data_dir, "bank", "--list")
+    assert one.exit_code == 0, one.output
+    assert "expense_accounts.csv" not in one.output and "quicken" not in one.output
+    assert ["1", "corner", "market", "Food"] in [line.split() for line in one.output.splitlines()]
+
+    unknown = _map(test_data_dir, "other")
+    assert unknown.exit_code != 0
+    assert "no mappings are saved for a source 'other'; there are: bank, quicken" in unknown.output
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_map_changes_a_row_removes_one_and_keeps_no_change_the_file_refuses(
+    test_data_dir: Path, write_import_map: MapWriter,
+) -> None:
+    accounts = write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
+    choices = write_import_map("budget_choices.csv", "Food,actual,710.00,420.00\n")
+
+    # Row 2's account, then remove row 1; row 3 (now 2) is given a use the file refuses.
+    result = _map(test_data_dir, "--scenario", "retire_alice", input=(
+        "9\n2\nchange\nExpense_Housing\n"
+        "1\nremove\n"
+        "2\nchange\neither\n\n\n"
+        "done\n"))
+
+    assert result.exit_code == 0, result.output
+    assert "a row's number from the list, or done" in result.output
+    assert "category: Gifts, account: -" in result.output
+    assert accounts.read_text(encoding="utf-8") == "category,account\nGifts,Expense_Housing\n"
+    assert "not kept: " in result.output and "use must be budget or actual, not 'either'" in result.output
+    assert choices.read_text(encoding="utf-8") == "category,use,budget,actual\nFood,actual,710.00,420.00\n"
+
+    # --list asks nothing, even at a terminal.
+    listed = _map(test_data_dir, "--list")
+    assert listed.exit_code == 0 and "row to change" not in listed.output
+
+
 def test_sim_import_holdings_asks_nothing_of_a_scenario_that_does_not_load(
     test_data_dir: Path, quicken_net_worth_export: Path,
     append_scheduled_row: Callable[..., None],
