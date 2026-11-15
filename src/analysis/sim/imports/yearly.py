@@ -2,8 +2,11 @@
 monthly (#617), as a shell script for the household to edit and run.
 
 A script and not rules written straight into ``scheduled.csv``: one year of
-transactions can't tell a yearly bill from a one-time expense, so somebody who
+transactions can't tell a yearly bill from a one-time expense, nor say that
+the household already has rules of its own for a bill, so somebody who
 knows the household has to read the list before any of it becomes a rule.
+Each payee is therefore a choice, and only one seen to come round again has
+its commands live: the rest are commented out until somebody chooses.
 """
 
 from __future__ import annotations
@@ -58,12 +61,19 @@ def script(
     occasional: Collection[Occasional], *, data_dir: Path, scenario: str, start: str,
     from_account: str | None, from_lot: str = "", series: str = "cpi",
     expense_accounts: Mapping[str, str], accounts: Collection[str] = (), source: str,
-) -> tuple[str, int]:
+) -> tuple[str, int, int]:
     """A POSIX shell script that adds a yearly rule for each month of the
     year each of ``occasional`` was last paid in, and leaves its payee out
     of the generated rules with a row in the ``excluded_payees.csv`` of
     each source its payments came from (``source``, for one that doesn't
-    say); and how many payees it has rules for.
+    say); how many payees have those commands live; and how many have
+    them commented out, waiting for a choice.
+
+    The commands are live for a payee seen to come round again
+    (``Occasional.repeats``). Any other may as well be a one-time expense,
+    so its commands are commented out under the choices: all of them for a
+    bill, the row alone for a one-time expense or a bill that has rules
+    already, none to keep it spread over the months.
 
     Each amount is as paid, with inflation measured from the month it was
     paid in. A category's account is found as the import finds it: its
@@ -71,20 +81,27 @@ def script(
     of the category's own name. With neither, and for ``from_account``
     when None, a name is left to be filled in.
 
-    Two kinds of candidate get no live commands. A category whose saved
+    Two kinds of candidate are in neither count. A category whose saved
     account is ``-`` has no rule to replace, so it is only noted. A payee
-    also paid in other categories is written commented out: the row that
-    leaves it out would drop those payments too.
+    also paid in other categories is written commented out, and not as a
+    choice: the row that leaves it out would drop those payments too.
     """
     quote = shlex.quote
     lines = [
         "#!/bin/sh",
         f"# Yearly rules for scenario {scenario}, from the payments `sim import transactions`",
-        "# found in only a month or two of a year.",
+        "# found in only a few months of a year.",
         "#",
         "# This is a best-effort reading, by the odds: EDIT IT BEFORE RUNNING IT.",
-        "#   - Delete the block of anything that was a one-time expense (a repair, a trip):",
-        "#     the transactions can't say which a payment seen once was.",
+        "# Each payee below is a choice, which the transactions can't make for you:",
+        "#   - a bill that comes round: its `yearly` lines, one for each month it is paid in,",
+        "#     and its `leave_out` line, so the monthly rules stop counting it;",
+        "#   - a one-time expense (a repair, a trip), or a bill you already have rules for:",
+        "#     its `leave_out` line alone;",
+        "#   - to keep it spread over the months as it is: none of its lines.",
+        "# A payee seen to come round again has its lines ready to run. Any other has them",
+        "# commented out: remove the `# ` from the lines you choose.",
+        "# Then:",
         "#   - Correct an amount or a month that will be different next time.",
         f"#   - Fill in each {_FILL_IN}.",
         "# Then run it once:  sh <this file>",
@@ -111,7 +128,7 @@ def script(
         "}",
     ]
     named: set[str] = set()
-    written = 0
+    written = waiting = 0
     for each in occasional:
         when = ", ".join(f"{month:%b %Y} {format_dollars(cents)}" for month, cents in each.paid)
         lines += ["", f"# {_comment(each.payee)} ({_comment(each.category)}): {when}"]
@@ -121,8 +138,6 @@ def script(
             lines.append(f"# Left out: expense_accounts.csv gives {_comment(each.category)} no rule "
                          f"({NO_RULE!r}), so no monthly rule spreads this, and none is added here.")
             continue
-        if not each.repeats:
-            lines.append("# Not seen to come round again: a yearly bill, or a one-time expense?")
         if account is None:
             account = _FILL_IN
             lines.append(f"# No expense account is saved for {_comment(each.category)}: "
@@ -153,10 +168,21 @@ def script(
                 "# drop those payments from the monthly rules as well. To use these, first give these",
                 "# payments a payee or category pattern of their own, or accept that.",
                 *(f"# {line}" for line in block)]
-        else:
-            lines += block
+        elif each.repeats:
+            lines += [
+                "# Seen to come round again. If you already have rules for it, delete its `yearly` lines",
+                "# and keep `leave_out`; to keep it spread over the months, delete them all.",
+                *block]
             written += 1
-    return "\n".join(lines) + "\n", written
+        else:
+            lines += [
+                "# Not seen to come round again: a bill, or a one-time expense? Choose, and uncomment:",
+                "#   every line, for a bill that comes round;",
+                "#   only `leave_out`, for a one-time expense or a bill you already have rules for;",
+                "#   none, to keep it spread over the months.",
+                *(f"# {line}" for line in block)]
+            waiting += 1
+    return "\n".join(lines) + "\n", written, waiting
 
 
 def _comment(text: str) -> str:

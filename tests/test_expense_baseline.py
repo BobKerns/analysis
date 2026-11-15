@@ -454,7 +454,7 @@ def _found(*payments: tuple[str, str, float]) -> list[tuple[str, int, bool]]:
     return [(each.payee, len(each.paid), each.repeats) for each in found]
 
 
-def test_occasional_payments_are_a_month_or_two_of_each_year_and_say_whether_they_came_round() -> None:
+def test_occasional_payments_are_a_few_months_of_each_year_and_say_whether_they_came_round() -> None:
     years = (2024, 2025, 2026)
     yearly = [(f"{year}-03-01", "Mutual Insurance", 900.0) for year in years]
     twice = [(f"{year}-{month}-01", "County Tax", 2000.0) for year in years for month in ("04", "12")]
@@ -470,10 +470,12 @@ def test_occasional_payments_leave_out_a_bill_that_began_and_mark_a_one_time_exp
     # A car payment that began in November is monthly; furniture bought once may never come again.
     assert _found(*year, *_monthly("Auto Loan", "2026-11-01", 2, 500.0),
                   ("2026-05-10", "Furniture Store", 2000.0)) == [("Furniture Store", 1, False)]
-    # A summer's program is a season, and a quarterly bill is neither monthly nor yearly.
+    # A summer's program is a season; a quarterly bill is four months of the year, each its own.
     two_years = _monthly("Gym", "2025-01-01", 24)
-    assert _found(*two_years, *_monthly("Summer Camp", "2025-06-01", 4, 400.0),
-                  *[(f"2025-{month:02d}-01", "Water", 300.0) for month in (1, 4, 7, 10)]) == []
+    quarterly = [(f"{year}-{month:02d}-01", "Water", 300.0) for year in (2025, 2026) for month in (1, 4, 7, 10)]
+    assert _found(*two_years, *_monthly("Summer Camp", "2025-06-01", 4, 400.0), *quarterly) == [("Water", 8, True)]
+    # Every other month is six months of a year, closer than a quarter: spread, as a monthly bill is.
+    assert _found(*two_years, *[(f"2025-{month:02d}-01", "Trash", 300.0) for month in range(1, 13, 2)]) == []
 
 
 def test_occasional_payments_need_most_of_a_year_first_day_to_last() -> None:
