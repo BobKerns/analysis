@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import subprocess
+import re
+import sys
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.expenses.baseline import Occasional
 from analysis.sim import cli
+from analysis.sim.imports import yearly as import_yearly
 
 
 MapWriter = Callable[[str, str], Path]
@@ -359,7 +366,92 @@ def test_sim_import_transactions_summary_lists_large_payments_that_are_not_month
             "(not seen to come round again)") in result.output
     assert "Market" not in result.output and "Web Host" not in result.output
     assert "These are candidates" in result.output
-    assert "a yearly rule for each month of the year it is paid in (sim scheduled add)" in result.output
+    assert "--yearly-script FILE writes both as a script to edit and run." in result.output
+
+
+@pytest.mark.slow
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_yearly_script_adds_the_rules_and_leaves_the_payee_out_when_run(
+    test_data_dir: Path, quicken_year_export: Path, write_import_map: MapWriter, tmp_path: Path,
+) -> None:
+    write_import_map("quicken/categories.csv", "Groceries,Food\nGifts,Gifts\nAuto Insurance,Insurance\n")
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nInsurance,Expense_Living\nGifts,-\n")
+    script = tmp_path / "yearly rules.sh"
+
+    result = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
+                     "--from-account", "Asset_Checking")
+
+    # It implies --summary: nothing is written but the script.
+    assert result.exit_code == 0, result.output
+    assert f"wrote 1 payee(s) as yearly rules to {script}" in result.output
+    assert "--yearly-script FILE writes" not in result.output and _generated(test_data_dir) == {}
+    text = script.read_text(encoding="utf-8")
+    assert "EDIT IT BEFORE RUNNING IT" in text and "EDIT_ME" not in text.split("set -eu")[1]
+    assert "# Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00" in text
+    assert "yearly yearly_mutual_insurance_mar Expense_Living 900.00 3 2026-03 " in text
+
+    # As the household would run it, with `sim` on the PATH.
+    env = {**os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}"}
+    ran = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, check=False)
+
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    with (test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv").open(newline="", encoding="utf-8") as f:
+        rules = {row["name"]: row for row in csv.DictReader(f) if row["name"].startswith("yearly_")}
+    assert sorted(rules) == ["yearly_mutual_insurance_mar", "yearly_mutual_insurance_sep"]
+    march = rules["yearly_mutual_insurance_mar"]
+    assert (march["from_account"], march["to_account"], march["amount"], march["cadence"],
+            march["month_of_year"], march["series"], march["base_date"]) == \
+        ("Asset_Checking", "Expense_Living", "900.00", "annual", "3", "cpi", "2026-03")
+    excluded = test_data_dir / "imports" / "quicken" / "excluded_payees.csv"
+    assert excluded.read_text(encoding="utf-8").splitlines()[-1] == r"mutual\s.*insurance"
+    # The next import no longer spreads the premium over the months.
+    again = _import(test_data_dir, "transactions", str(quicken_year_export), "--summary")
+    assert again.exit_code == 0, again.output
+    assert "Mutual Insurance" not in again.output and "Insurance" not in again.output.split("category")[1]
+
+
+@pytest.mark.usefixtures("quicken_category_map")
+def test_sim_import_transactions_yearly_script_leaves_what_it_cannot_know_to_be_filled_in(
+    test_data_dir: Path, quicken_year_export: Path, quicken_transaction_export: Path,
+    write_import_map: MapWriter, tmp_path: Path,
+) -> None:
+    write_import_map("quicken/categories.csv", "Groceries,Food\nGifts,Gifts\nAuto Insurance,Insurance\n")
+    script = tmp_path / "yearly.sh"
+
+    # No account to pay from and no expense account for the category: both are marked.
+    result = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script))
+
+    assert result.exit_code == 0, result.output
+    text = script.read_text(encoding="utf-8")
+    assert "FROM=EDIT_ME " in text
+    assert "# No expense account is saved for Insurance: name one in place of EDIT_ME." in text
+    assert "# Not seen to come round again: a yearly bill, or a one-time expense?" in text
+    assert "yearly yearly_mutual_insurance_sep EDIT_ME 900.00 9 2026-09 " in text
+
+    # Two months of transactions have no candidates, and write no script.
+    short = tmp_path / "short.sh"
+    none = _import(test_data_dir, "transactions", str(quicken_transaction_export), "--yearly-script", str(short))
+    assert none.exit_code == 0, none.output
+    assert f"no candidates for yearly rules: {short} was not written" in none.output and not short.exists()
+
+
+def test_yearly_script_takes_the_latest_year_and_finds_a_payee_past_its_numbers() -> None:
+    seen = Occasional("Taxes", "COUNTY TAX #4411 PMT (2027)", (
+        (date(2026, 4, 1), 210_000), (date(2026, 12, 1), 210_000),
+        (date(2027, 4, 1), 220_000), (date(2027, 12, 1), 225_000)), repeats=True)
+
+    assert import_yearly.latest_year(seen) == ((date(2027, 4, 1), 220_000), (date(2027, 12, 1), 225_000))
+    pattern = import_yearly.payee_pattern(seen.payee)
+    assert pattern == r"county\s.*tax\s.*pmt"
+    assert re.search(pattern, "County Tax #5522 pmt (2028)", re.IGNORECASE)
+    text = import_yearly.script(
+        [seen], data_dir=Path("/data dir"), scenario="retire_alice", start="2028-01", from_account=None,
+        expense_accounts={"Taxes": "-"}, excluded_payees=Path("/data dir/imports/bank/excluded_payees.csv"))
+    # A path with a space, and text with a quote's worth of punctuation, stay one word each.
+    assert "DATA_DIR='/data dir'" in text
+    assert "yearly yearly_county_tax_4411_pmt_2027_apr EDIT_ME 2200.00 4 2027-04 " \
+           "'Yearly: COUNTY TAX #4411 PMT (2027) (Taxes)'" in text
+    assert "Not seen to come round again" not in text
 
 
 def test_sim_import_transactions_needs_the_account_to_pay_from_before_it_reads_a_file(
