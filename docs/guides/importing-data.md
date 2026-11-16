@@ -67,6 +67,7 @@ To change an answer, edit its row in the file. `sim account rename` and
 ```text
 imports/
   expense_accounts.csv     category -> expense account ('-' for no rule)
+  budget_choices.csv       category -> budget or actual, where you have both
   <source>/
     profile.yaml           a source of your own (see below)
     accounts.csv           outside account -> account and lot, or skip
@@ -279,26 +280,98 @@ counted in `Other`, with a note of the most paid, and a file that doesn't
 name its account is taken as its own name's.
 
 Give it a year or more of transactions and it also lists the large payments
-made in only a month or two of each year: an insurance premium, a
-property tax.
+made in only a few months of each year: an insurance premium, a property
+tax paid in two installments, a utility billed every quarter.
 
 ```text
-paid in only a month or two of a year, and spread over every month by the rules:
+paid in only a few months of a year, and spread over every month by the rules:
   Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00  (not seen to come round again)
-These are candidates: one not seen to come round again may be a yearly bill or a one-time expense, which no rule should repeat. For a bill that does come round, add a yearly rule for each month of the year it is paid in (sim scheduled add), each for that month's amount, and then leave its payee out of the generated rules with a '-' row in payees.csv, or a row in excluded_payees.csv.
+These are candidates: one not seen to come round again may be a yearly bill or a one-time expense, which no rule should repeat. A bill that does come round wants a yearly rule for each month of the year it is paid in, each for that month's amount, and its payee left out of the generated rules (a row in excluded_payees.csv); one you already have rules for wants only its payee left out. --yearly-script FILE writes both as a script to edit and run.
 ```
 
 The list is of candidates. One year can't tell a yearly premium from a
 one-time purchase, so a payment is marked until a later year shows it
-again. A monthly bill that began or ended in the period is not listed, nor
-is a season's.
+again. A candidate is paid in at most four months of a year, no two of
+them closer than three months, so a quarterly bill is one and a bill paid
+every other month is not. A monthly bill that began or ended in the period
+is not listed, nor is a season's.
 
 A monthly rule gets the year's total right and the months wrong. To pay
-such a bill when it falls, give it a yearly rule for each month of the
-year it is paid in with `sim scheduled add` (two rules for the premium
-above, 900 in March and 900 in September), and leave its payee out of the
-generated rules: a `-` row in `payees.csv`, or a row in
-`excluded_payees.csv`.
+such a bill when it falls, it wants a yearly rule for each month of the
+year it is paid in (two rules for the premium above, 900 in March and 900
+in September; four for a quarterly bill, each for its own quarter's
+amount), and its payee left out of the generated rules. Have both written
+for you as a script:
+
+```sh
+sim import transactions transactions.csv --yearly-script yearly-rules.sh --from-account Asset_Checking
+```
+
+`--yearly-script` implies `--summary`: it shows the same summary, writes
+no rules, and puts the candidates in the file as a shell script.
+
+```sh
+# Mutual Insurance (Insurance): Mar 2026 900.00, Sep 2026 900.00
+# Not seen to come round again: a bill, or a one-time expense? Choose, and uncomment:
+#   every line, for a bill that comes round;
+#   only `leave_out`, for a one-time expense or a bill you already have rules for;
+#   none, to keep it spread over the months.
+# yearly yearly_mutual_insurance_mar Expense_Insurance 900.00 3 2026-03 'Yearly: Mutual Insurance (Insurance)'
+# yearly yearly_mutual_insurance_sep Expense_Insurance 900.00 9 2026-09 'Yearly: Mutual Insurance (Insurance)'
+# leave_out quicken '^\s*(?:\S*\d\S*\s+)*mutual\s+(?:\S*\d\S*\s+)*insurance(?:\s+\S*\d\S*)*\s*$'
+```
+
+**Edit it before you run it.** The script is a best-effort reading, and
+each payee in it is a choice that only you can make:
+
+- **A bill that comes round** wants all of its lines: the `yearly` rules
+  and the `leave_out` row.
+- **A one-time expense** (a repair, a trip), **or a bill you already have
+  rules for**, wants only its `leave_out` line. No rule should repeat the
+  first, and the second would be counted twice.
+- **To keep it spread over the months** as it is, it wants none of them.
+
+A payee seen again about a year later has its lines ready to run, since
+the odds favor a bill. Any other has them commented out, as above, and
+does nothing until you remove the `#` from the lines you choose. With only
+one year of transactions that is every payee. The command says how many
+are waiting for a choice.
+
+Then:
+
+- Correct an amount, or a month, that will be different next time. Each
+  amount is as it was paid, and grows with inflation from the month it was
+  paid in. Where a bill was seen over several years, the latest year's
+  payments are used.
+- Fill in each `EDIT_ME`: the account that pays, when `--from-account` was
+  left out, and the expense account of a category that has none in this
+  scenario (neither a row in `imports/expense_accounts.csv` that names one
+  of its accounts, nor an account of its own name).
+
+Two kinds of candidate are noted in the script and not written as rules:
+
+- A category you gave no rule (`-` in `expense_accounts.csv`): nothing
+  spreads it over the months, so there is nothing for a yearly rule to
+  replace.
+- A payee that is also paid in other categories (a store paid weekly for
+  food, and twice for something large). Its lines are there, commented
+  out: leaving the payee out would drop its other payments from the
+  monthly rules too.
+
+The script is yours once written. Running the command again refuses to
+replace it (at a terminal, it asks) unless `--overwrite` is given.
+
+Then run it once with `sh yearly-rules.sh`. Each `yearly` line is a
+`sim scheduled add`, and each `leave_out` line adds a row to the
+`excluded_payees.csv` of the source the payments came from, so that the
+next `sim import transactions` no longer spreads that payee over the
+months. The row finds that payee and no other: its words in order,
+whatever dates and reference numbers come before, between and after them,
+and no other word. The script runs the `sim` that wrote it, whatever your `PATH` is when you
+run it. Should the script stop partway (an `EDIT_ME` left in,
+say), correct it and run it again: it skips what it has already added.
+Run the import again afterwards. The yearly rules are ordinary rules of yours from then on:
+an import never replaces them, and `sim scheduled edit` changes them.
 
 With less than a year of transactions, first day to last, a yearly bill
 can't be told from a monthly one that just began, so nothing is listed.
@@ -391,7 +464,9 @@ sim import budget budget-full.csv --from-account Asset_Checking
 Writes the same expense rules from what you plan to spend instead of what
 you spent. Transactions miss plans not yet carried out, and a budget may be
 out of date, so which to use is yours to choose: each import replaces all
-the generated rules, whichever wrote them.
+the generated rules, whichever wrote them. To choose for each category,
+give the budget to the transactions import
+([below](#budget-or-actual-for-each-category)).
 
 Quicken exports a budget in two forms. Use **Full**, which has each month:
 
@@ -454,6 +529,61 @@ base, so gross pay matters there too.
 
 Amounts are taken as budgeted. A budget more than a year older than the
 scenario's start is warned about, since its dollars are old ones.
+
+### Budget or actual, for each category
+
+```sh
+sim import transactions transactions.csv --budget budget-full.csv --from-account Asset_Checking
+```
+
+Reads both, gathers each into the same categories, and shows a month of
+each side by side:
+
+```text
+a month of each category, budgeted and as the transactions have it:
+  category      budget  actual  difference                    use
+  Food          710.00  420.00     -290.00                      ?
+  Gifts                  30.00              actual (the only one)
+  Property Tax  500.00                      budget (the only one)
+  Utilities     165.00                      budget (the only one)
+Food: budget 710.00 or actual 420.00 a month? (budget, actual, all-budget, all-actual):
+```
+
+- A category both have is asked about. `all-budget` or `all-actual`
+  answers for every one still to be asked.
+- A category only one has is made from that one.
+- A category made from the budget keeps the budget's yearly payments (the
+  property tax above is two yearly rules, not 500 a month).
+- A category whose transactions were all left out (a payee the yearly
+  script took, say) shows an actual of 0.00 and is asked about. Choosing
+  actual gives it no rule; choosing budget may pay again what your own
+  rules already do.
+
+The budget is read into the transactions' categories, so that nothing is
+counted on both sides under two names: a category your `splits.csv`
+divides takes the split's row with no account, and a budget category that
+the transactions put in `Other`, for want of a row in `categories.csv`,
+goes to `Other` too.
+
+Your answers are saved in `imports/budget_choices.csv`, with the two
+amounts each was chosen between. The next run uses them and asks nothing,
+until one of a category's amounts has moved by more than 5%: then it asks
+again, offering what you chose before. Edit the file, or delete a row, to
+change your mind.
+
+Away from a terminal the saved choices are used. A category with none
+needs `--prefer budget` or `--prefer actual`. A preference answers
+wherever a question would be asked (no saved choice, or an amount that
+has moved), at a terminal or away from one, and is not saved. With
+`--summary` the table is shown and nothing is asked or written. With
+`--yearly-script` too, a payee in a category made from the budget (by a
+saved choice or `--prefer`) is noted in the script and given no rule: the
+budget's rules have that category's yearly payments already.
+
+Neither side is the truth: a budget is a plan and the transactions are one
+period's history. The choice is a starting point to review, like the rules
+it makes. The budget's income is not used here; `sim import budget
+--income` writes income rules.
 
 ## Quicken
 
