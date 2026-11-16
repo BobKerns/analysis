@@ -508,7 +508,7 @@ One download feeds both commands:
 | --- | --- |
 | A bank account's or a card's transactions, and a brokerage account's checks, card purchases and bill payments | spending, for `sim import transactions` |
 | Each transaction's own id | what lets two downloads overlap: a transaction in both is counted once |
-| The institution's name, a bank account's type and the account's number | the outside account, as `First Example Bank checking ...4321`: the last four digits only |
+| The institution's name, the account's type and the account's number | the outside account, as `First Example Bank checking ...4321` (`card` or `investment` where it is one): the last four digits only |
 | The statement's balance and its date | the account's balance, for `sim import holdings` (what a card owes is a debt) |
 | A brokerage account's positions | holdings by symbol, as for [brokerage files](#brokerage-files) |
 | A brokerage account's cash that no position holds | a holding named `(cash)`, for the account's lot with no symbol (`(margin)` for what it has borrowed) |

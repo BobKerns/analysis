@@ -296,9 +296,10 @@ def _kind(statement: Element) -> str:
 
 
 def _account(root: Element, statement: Element) -> str:
-    """How a statement's account is named: the institution, a bank
-    account's type, and the last four digits of the account's number. The
-    whole number stays out of the mapping files.
+    """How a statement's account is named: the institution, the account's
+    type (a bank account's own, ``card`` or ``investment``), and the last
+    four digits of the account's number. The whole number stays out of the
+    mapping files.
 
     The mappings and the dropping of duplicates go by the name, so it
     should be the same in every download of the account. It is made from
@@ -312,8 +313,9 @@ def _account(root: Element, statement: Element) -> str:
     signed_on = root.find(".//SONRS/FI")
     institution = _text(signed_on, "ORG") or _text(signed_on, "FID") or _text(own, "BANKID") \
         or _text(own, "BROKERID")
-    kind = "" if statement.tag == "CCSTMTRS" else _kind(statement).lower()
-    return " ".join(part for part in (institution, kind, f"...{number[-4:] if number else '?'}") if part)
+    # A card and a brokerage account of one institution may end alike too.
+    kind = {"CCSTMTRS": "card", _INVESTMENT: "investment"}.get(statement.tag) or _kind(statement).lower()
+    return " ".join(part for part in (institution, kind, f"...{number[-4:]}") if part)
 
 
 def _accounts(path: Path, root: Element, statements: list[Element]) -> list[str]:
@@ -321,7 +323,15 @@ def _accounts(path: Path, root: Element, statements: list[Element]) -> list[str]
     that would get one name (one institution, one type, the same last four
     digits), since read as one each would take the other's mapping and
     lose transactions as the other's duplicates; and one account with two
-    statements in the file, which would be counted twice."""
+    statements in the file, which would be counted twice; and a statement
+    whose own group gives no number, since every such account, of any
+    institution, would have one name (a group left unclosed reads so: it
+    is an empty value, and what was in it is beside it)."""
+    for statement in statements:
+        if not _text(_own(statement), "ACCTID"):
+            raise ValueError(
+                f"{path}: not an OFX file that can be read: a statement doesn't say which account it is "
+                f"(no ACCTID in its {_OWN[statement.tag]})")
     names = [_account(root, each) for each in statements]
     numbers: dict[str, str] = {}
     for name, statement in zip(names, statements, strict=True):
