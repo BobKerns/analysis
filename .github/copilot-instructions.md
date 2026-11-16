@@ -34,7 +34,9 @@ could be logged or kept. A deliberate use can be let through locally with
 ## Architecture
 
 Read the ADRs before changing the simulator; they are the specification, and
-they are kept in sync with the code.
+they are kept in sync with the code. [`docs/architecture/README.md`](../docs/architecture/README.md)
+has overview diagrams of the whole (blocks, data flow, one month, tax,
+strategies, input tiers and inheritance); update a diagram a change makes wrong.
 
 | Doc | Covers |
 | --- | --- |
