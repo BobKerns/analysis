@@ -766,7 +766,7 @@ class Strategy:
 
     kind: ClassVar[str]
 
-    Params: type[Any] = _NoParams
+    Params = _NoParams
     """The kind's parameters: a frozen dataclass nested in the subclass."""
 
     hooks: ClassVar[frozenset[str]] = frozenset()

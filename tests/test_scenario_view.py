@@ -477,7 +477,7 @@ def test_overview_views_say_where_each_row_is_defined(
     assert by_description["child's own row"] == setup_listings.THIS_SCENARIO
     assert by_description["Alice retires"] == "retire_alice"
     assert "t_inflation_factors" in set(calendar["defined_in"])
-    accounts = shown[-1].data["defined_in"]  # ty: ignore[unresolved-attribute] -- a Styler
+    accounts = shown[-1].data["defined_in"]  # ty: ignore[missing-attribute] -- a Styler
     assert accounts["Asset_Savings"] == "overrides retire_alice"
     assert accounts["Asset_Checking"] == "retire_alice"
     assert accounts["interest_income"] == setup_listings.BUILT_IN
@@ -548,7 +548,7 @@ def test_origins_are_dashes_when_a_row_is_gone_from_the_folders_since_the_load(
         show_account_setup(scenario)
     # Not "built in": the intent's rule is one a scenario wrote.
     assert set(scheduled["defined_in"]) == {setup_listings.UNCONFIRMED}
-    accounts = shown[-1].data["defined_in"]  # ty: ignore[unresolved-attribute] -- a Styler
+    accounts = shown[-1].data["defined_in"]  # ty: ignore[missing-attribute] -- a Styler
     assert set(accounts) == {setup_listings.UNCONFIRMED}
 
 
@@ -572,7 +572,7 @@ def test_every_origin_is_a_dash_once_the_folders_differ_from_the_load(
         }
         show_account_setup(scenario)
         manifest = manifest_view(scenario)["value"]
-    views["accounts"] = shown[-1].data["defined_in"]  # ty: ignore[unresolved-attribute] -- a Styler
+    views["accounts"] = shown[-1].data["defined_in"]  # ty: ignore[missing-attribute] -- a Styler
     for view, column in views.items():
         assert set(column) - {""} == {setup_listings.UNCONFIRMED}, view
     assert "open it again" in manifest["folders"]

@@ -1076,7 +1076,7 @@ class RunConnection(Connection):
                 "WHERE a.kind IN ('asset', 'liability') ORDER BY a.name, m.id"
             )
             lots = df.groupby("account", sort=True)["lot"].agg(list)
-            return {account: names for account, names in lots.items()
+            return {str(account): list(names) for account, names in lots.items()
                     if single or len(names) > 1}
 
         return self._cached(f"lots_by_account_{single}", _build)

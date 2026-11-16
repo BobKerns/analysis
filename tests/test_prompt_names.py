@@ -282,7 +282,7 @@ def test_a_mistyped_account_is_asked_again_once_the_ensemble_is(
 
 
 def test_a_compared_variants_names_count(test_data_dir: Path) -> None:
-    ctx = click.Context(sim_group_command.commands["ensemble"].commands["compare"])  # ty: ignore[unresolved-attribute] -- a Group
+    ctx = click.Context(sim_group_command.commands["ensemble"].commands["compare"])  # ty: ignore[missing-attribute] -- a Group
     ctx.params = {"baseline": "base", "variant": "retire_alice", "data_dir": str(test_data_dir)}
     assert "Asset_Checking" in completion.ACCOUNT.choices(ctx)  # base has no accounts
 
