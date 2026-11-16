@@ -356,6 +356,16 @@ PERSON = NameType(lambda ctx, data_dir: names.person_ids(data_dir), "person")  #
 OWNER = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), "owner")  # noqa: ARG005
 # A rule's person: one person's lifespan, or the household's (`joint`, #368).
 RULE_PERSON = NameType(lambda ctx, data_dir: _with_joint(names.person_ids(data_dir)), "person")  # noqa: ARG005
+
+
+def _import_sources(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
+    from analysis.sim.imports.mapping import sources_with_maps
+
+    return sources_with_maps(data_dir)
+
+
+# A source with saved mappings: a folder under the data dir's imports/.
+IMPORT_SOURCE = NameType(_import_sources, "import source")
 # A lot may hold a symbol nothing names yet, and prices can fetch one.
 SYMBOL = NameType(lambda ctx, data_dir: names.symbols(data_dir), "symbol", check=False)  # noqa: ARG005
 
