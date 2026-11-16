@@ -17279,7 +17279,7 @@ def lifespan_check_command(age: float | None, data_dir: Path | None) -> None:
     from rich.markup import escape
     from rich.table import Table
 
-    from analysis.sim.lifespan_tables import SEXES, at_age
+    from analysis.sim.lifespan_tables import at_age_frame
 
     data = _resolve_data_dir(data_dir)
     if age is None:
@@ -17287,18 +17287,18 @@ def lifespan_check_command(age: float | None, data_dir: Path | None) -> None:
     if not 0 <= age <= registries.MAX_AGE_AT_DEATH:
         raise click.BadParameter(f"must be from 0 to {registries.MAX_AGE_AT_DEATH:g}",
                                  param_hint="AGE")
+    frame = at_age_frame(data, age)
+    if frame.empty:
+        raise click.ClickException(f"no life tables under templates/aux or {data}")
     table = Table(title=f"life tables at age {age:g}", header_style="bold")
     for column in ("Table", "Location"):
         table.add_column(column)
-    for sex in SEXES.values():
-        for measure in ("q", "expected", "years left"):
-            table.add_column(f"{sex}\n{measure}", justify="right")
-    for each, _, by_sex, expected in _life_tables(data):
-        cells = [escape(each.label), escape(each.location)]
-        for sex, life_table in by_sex.items():
-            q, at = at_age(life_table, expected[sex], age)
-            cells += [f"{q:.6f}", f"{at:.2f}", f"{at - age:.2f}"]
-        table.add_row(*cells)
+    for sex, measure in frame.columns:
+        table.add_column(f"{sex}\n{measure}", justify="right")
+    for (label, location), values in zip(frame.index, frame.itertuples(index=False), strict=True):
+        table.add_row(escape(label), escape(location), *(
+            f"{v:.6f}" if measure == "q" else f"{v:.2f}"
+            for v, (_, measure) in zip(values, frame.columns, strict=True)))
     _print_wide(table)
 
 

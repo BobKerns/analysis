@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
@@ -118,3 +119,29 @@ def test_lifespan_tables_lists_the_tables_and_every_age(sim: Callable[..., Resul
     assert "templates/aux" in result.output
     assert "0-119" in result.output and "0-109" in result.output
     assert "│ 119 │" in result.output
+
+
+def test_at_age_frame_has_a_row_per_table_and_years_left(data_dir: Path) -> None:
+    frame = lifespan_tables.at_age_frame(data_dir, 67.5)
+    assert ("default", "templates/aux") in frame.index
+    row = frame.loc[("default", "templates/aux")]
+    assert row[("female", "years left")] == pytest.approx(row[("female", "expected")] - 67.5)
+    assert 0 < row[("male", "q")] < 1
+
+
+def test_at_age_widget_redraws_for_a_new_age(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import life_table_widgets
+
+    asked: list[float] = []
+
+    def at_age_frame(data: Path, age: float) -> pd.DataFrame:
+        asked.append(age)
+        return lifespan_tables.at_age_frame(data, age)
+
+    monkeypatch.setattr(life_table_widgets, "at_age_frame", at_age_frame)
+    box = life_table_widgets.at_age_widget(data_dir).children[0]
+    assert box.value == 65
+    box.value = 70.5
+    assert asked == [65, 70.5]

@@ -28,8 +28,8 @@ from analysis.sim.life_table import LIFE_TABLE_KIND, LifeTable, life_table_from_
 from analysis.sim.lineage import TEMPLATE_AUX_DIR, TEMPLATE_SCENARIOS_DIR
 
 __all__ = [
-    "DEFAULT_NAME", "SEXES", "TableFile", "at_age", "expected_ages", "find_tables",
-    "read_table", "comparison",
+    "DEFAULT_NAME", "SEXES", "TableFile", "at_age", "at_age_frame", "expected_ages",
+    "find_tables", "read_table", "comparison",
 ]
 
 # What the unnamed life_table.csv is called here; lifespan.csv leaves its
@@ -127,3 +127,22 @@ def at_age(table: LifeTable, expected: list[float], age: float) -> tuple[float, 
     frac = age - whole
     after = expected[whole + 1] if whole + 1 < len(expected) else whole + 1 + _WITHIN_THE_MONTH
     return table.at(age), (1 - frac) * expected[whole] + frac * after
+
+
+def at_age_frame(data_dir: Path, age: float) -> pd.DataFrame:
+    """Every table found at ``age``, one row each (indexed by table and
+    location): columns ``(sex, measure)``, with measure ``q``, ``expected``
+    (the expected age at death) or ``years left``."""
+    rows = {}
+    for each in find_tables(data_dir):
+        _, by_sex = read_table(each.path)
+        row = {}
+        for sex, table in by_sex.items():
+            q, expected = at_age(table, expected_ages(table), age)
+            row |= {(SEXES[sex], "q"): q, (SEXES[sex], "expected"): expected,
+                    (SEXES[sex], "years left"): expected - age}
+        rows[(each.label, each.location)] = row
+    frame = pd.DataFrame.from_dict(rows, orient="index")
+    frame.index = pd.MultiIndex.from_tuples(frame.index, names=["table", "location"])
+    frame.columns = pd.MultiIndex.from_tuples(frame.columns, names=["sex", "measure"])
+    return frame
