@@ -546,7 +546,7 @@ class TaxCalculator:
     loader refuses a scenario where no account, rule or calendar row
     carries it, so a deduction never silently comes out zero."""
     kind: ClassVar[str]
-    Params: type[Any] = _NoParams
+    Params = _NoParams
     """The calculator's parameters: a frozen dataclass nested in the class.
     A subclass of a calculator may extend its ``Params``."""
     upstream: ClassVar[tuple[str, ...]] = ()
